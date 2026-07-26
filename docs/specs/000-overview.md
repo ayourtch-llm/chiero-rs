@@ -55,10 +55,19 @@ the frontend, so the entire symbolic core can be built and tested against hand-w
 CIR before the C parser exists. This is what makes the chosen build order — symbolic
 core first — actually tractable.
 
-**gcc is the oracle.** clang and z3 are absent from the target environment; gcc 13.3 is
-present. The primary correctness test for the engine is differential: run a C program
+**Real compilers are the oracle.** gcc 13.3 is present; clang 18 and z3 are being
+installed. The primary correctness test for the engine is differential: run a C program
 under gcc with concrete inputs, run it under chiero with the same inputs concretized,
-compare. See [070](070-testing-and-tdd-protocol.md).
+compare. Layout and constant evaluation are checked by generating `_Static_assert`s and
+compiling them ([014 §7](014-semantics-and-types.md)); the preprocessor is checked
+against `gcc -E`/`clang -E`; solver answers are cross-checked against z3.
+
+chiero **never links** clang or z3, and builds and runs fully without them. They are
+test oracles and optional accelerators, reached through subprocess boundaries or
+off-by-default features ([001 §5](001-architecture.md), [022](022-solver.md)). This is a
+deliberate constraint: the moment a core capability requires an external toolchain, the
+"modular and reusable library" property is gone. See
+[070](070-testing-and-tdd-protocol.md).
 
 ## 4. Non-goals
 

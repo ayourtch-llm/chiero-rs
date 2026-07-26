@@ -47,9 +47,21 @@ specs themselves is fine and expected.
   Do not clone from gerrit (the bare URL 404s to curl anyway).
   Scale: 1552 `.c`, 924 `.h`, ~1.01M lines, **754 distinct `foreach_*` X-macros**,
   340 `VLIB_REGISTER_NODE` sites.
-- **NO clang, NO libclang, NO llvm-config, NO z3.** `gcc`/`gcov` **13.3.0** present.
-  This is why: pure-Rust frontend; solver backends are built-in + SMT-LIB2-over-subprocess,
-  never FFI-linked; and **gcc is the differential-testing oracle**.
+- `gcc`/`gcov` **13.3.0** present.
+- **clang 18.1.3 + libz3 4.8.12 were being installed by the user at 2026-07-26** (debs
+  were in `/var/cache/apt/archives`, `dpkg -l` still empty). **VERIFY before relying on
+  them.** Note the z3 debs were `libz3-4`/`libz3-dev` — the *library*, not the `z3` CLI
+  binary; the SMT-LIB2 subprocess backend needs `apt install z3` as well.
+- **This does NOT change the frontend decision.** Provenance is still why we own the
+  preprocessor; do not retreat to clang. What it changes:
+  - clang becomes a **differential oracle**: `clang -E` for preprocessor conformance,
+    `-ast-dump` for parser cross-checking, alongside gcc.
+  - z3 becomes a **first-class solver backend** and a cross-check for `solver-lite`,
+    instead of a hypothetical.
+  - **Hard constraint retained**: chiero never *links* clang or z3 and must build and
+    run fully without them. They are oracles and optional accelerators only, behind
+    subprocess boundaries or off-by-default features. If a core capability ever requires
+    an external toolchain, the "modular reusable library" property is gone.
 - Rust 1.97.1, cargo 1.97.1. crates.io reachable.
 - 12 cores, 251 GB RAM. Parallel test/agent work is cheap.
 - Scratchpad: `/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/7452d602-bc54-4f42-b1e5-54f072255730/scratchpad`
@@ -218,6 +230,35 @@ Handle the `foreach_*` X-macro idiom explicitly — it's the dominant pattern (7
 **Multiarch**: VPP compiles the same source multiple times under different
 `CLIB_MARCH_VARIANT` → one source maps to MANY TUs. Don't assume 1:1.
 
+### 4.12b Measured VPP extension budget (don't re-derive; use `grep -rF`, not `-rE`)
+
+Counted by file over `/home/ubuntu/vpp/src` @ `7fe9c26`. **My first pass used `grep -rE`
+with broken escaping and reported false zeros for `({` and `asm`** — always cross-check
+a zero with `grep -rF`.
+
+| Extension | Files | Verdict |
+|---|---|---|
+| designated initializers | 1019 | required |
+| zero/flexible arrays `[0]` | 1165 | required |
+| `__attribute__` | 155 | required |
+| `_Static_assert` (VPP `STATIC_ASSERT`) | 140 | required |
+| statement exprs `({...})` | **217** | required |
+| `typeof`/`__typeof__` | 52 | required |
+| `asm`/`__asm__` | **31** | parse, do NOT model — opaque effect + `Fidelity::Approximated` |
+| `__builtin_*` | 30 | required |
+| `__restrict` | 6 | trivial |
+| case ranges | 7 | required |
+| `__int128` | 1 | required |
+| `__label__`/nested fns | 1 | **not supported** — diagnose + skip fn |
+| `_Generic`, `__extension__`, `__auto_type` | 0 | defer |
+
+Attributes by frequency: packed 112, unused 85, constructor/destructor 51, aligned 31,
+weak 27, always_inline 15, fallthrough 6, visibility 3, vector_size 2, section 2,
+may_alias 2, noinline 2. **Only `packed`, `aligned`, `may_alias`, `vector_size` change
+analysis semantics**; the rest are recorded and ignored.
+Top builtins: shufflevector 25, shuffle 9, prefetch 9, expect 4, clzll 4, unreachable 3,
+frame_address 3, ctz 3, constant_p 3, clz 3, object_size 2, mul_overflow 2, bswap64 2.
+
 ### 4.13 Testing strategy
 
 **Primary oracle is differential against gcc** (gcc 13.3 is installed, clang is not):
@@ -247,16 +288,16 @@ chiero-rs/
 
 ## 7. Spec set — status
 
-Planned 22 documents in `docs/specs/`. **Written so far: 3.**
+Planned 22 documents in `docs/specs/`. **Written so far: 8 (frontend block complete).**
 
 - [x] `README.md` — index + reading order + status
 - [x] `000-overview.md` — goals, 4 capabilities, design commitments, non-goals, glossary
-- [ ] `001-architecture.md` — crate graph, dependency rules, CIR-as-contract-boundary
-- [ ] `010-source-and-provenance.md` — **most important**; §4.2
-- [ ] `011-lexer.md` — translation phases 1–3, pp-tokens
-- [ ] `012-preprocessor.md` — phase 4, expansion w/ provenance, `#if` eval, includes
-- [ ] `013-parser.md` — C11 + enumerated GNU extensions
-- [ ] `014-semantics-and-types.md` — types, layout/ABI, name resolution, const-eval
+- [x] `001-architecture.md` — crate graph, dependency rules, CIR-as-contract-boundary
+- [x] `010-source-and-provenance.md` — **the crown jewel**; §4.2, worked `vec_add1` example
+- [x] `011-lexer.md` — translation phases 1–3, pp-tokens
+- [x] `012-preprocessor.md` — phase 4, expansion w/ provenance, `#if` eval, includes
+- [x] `013-parser.md` — C11 + GNU extensions, **grounded in measured VPP usage** (below)
+- [x] `014-semantics-and-types.md` — types, layout/ABI, name resolution, const-eval
 - [ ] `020-cir.md` — §4.4
 - [ ] `021-memory-model.md` — §4.5
 - [ ] `022-solver.md` — §4.6
@@ -294,16 +335,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-1. **Write the remaining 19 specs** listed in §7, in order, from the §4 digest.
-   Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at natural
-   boundaries (e.g. after the frontend specs, after the core specs) — updating this
-   file's §7 checkboxes and committing first, every time.
-2. `git add -A && git commit` the spec set (`spec:` prefix). Repo has **no commits yet**;
-   the first commit should include `.gitignore`, this file, and `docs/specs/`.
-3. **STOP. Present the spec set to the user for the review gate.** Offer an adversarial
-   subagent review of the specs at that point.
-4. Only after approval: begin the TDD loop at Milestone 1 (symbolic core — CIR, memory,
-   solver-lite, engine, tested against hand-written CIR; frontend comes after).
+**You are here:** frontend spec block done and committed. 14 specs remain.
+
+1. **Write the remaining 14 specs** in §7 order, from the §4 digest. Next up is the
+   symbolic-core block: `020-cir`, `021-memory-model`, `022-solver`,
+   `023-execution-engine`, `024-environment-models`. Then the verticals
+   (`030`–`041`), then `050`/`060`, then `070`/`080`.
+2. Every spec ends with `## Testable contracts` — numbered, checkable. These become the
+   RED tests. Style: dense, decisive, concrete Rust sketches, no filler.
+3. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at block boundaries
+   (after the core block, after the verticals). **Update §7 checkboxes and commit this
+   file first, every time.**
+4. When all 22 are written: commit with `spec:` prefix, then **STOP and present the spec
+   set to the user for the review gate.** Offer an adversarial subagent review of the
+   specs at that point.
+5. Only after approval: begin the TDD loop at Milestone 1 (symbolic core — CIR, memory,
+   solver-lite, engine, all tested against **hand-written CIR**; frontend comes after).
+6. Re-verify clang/z3 availability (§3) before writing `022`'s backend section or `070`'s
+   oracle section — the install was in flight.
 
 ## 10. Standing reminders
 
