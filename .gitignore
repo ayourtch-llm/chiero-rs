@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# differential-testing scratch
+/tests/differential/.work/
+*.gcno
+*.gcda
+*.gcov
+
+# editor
+.idea/
+.vscode/
+*.swp
