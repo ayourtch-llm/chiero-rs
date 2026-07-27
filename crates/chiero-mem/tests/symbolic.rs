@@ -895,3 +895,140 @@ fn a_conditionally_written_bitfield_is_not_a_definite_finding() {
         far.faults
     );
 }
+
+// ---------------------------------------------------------------------------
+// Wave 11, chiero-mem half. All four probed before being treated as findings.
+// ---------------------------------------------------------------------------
+
+/// **A byte write to a promoted object must not vanish.** `read` refuses one — its
+/// contents live in the arrays and the `Bytes` view beneath is frozen — but no *write*
+/// path did, so a store returned no faults, mutated the frozen view, and was invisible:
+/// a wrong value *and* a spurious uninitialized-read finding on the byte just written.
+#[test]
+fn a_byte_write_to_a_promoted_object_is_refused_rather_than_lost() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.promote_to_array(&mut a, o);
+    for faults in [
+        m.write(ptr(o, 0), &[0xAB], sp(2)).faults,
+        m.set(ptr(o, 0), 0xAB, 1, sp(3)).faults,
+        m.write_bits(ptr(o, 0), 0, 8, 0xAB, sp(4)).faults,
+    ] {
+        assert!(
+            matches!(faults[..], [MemFault::SymbolicByte { .. }]),
+            "a write that cannot be represented must say so: {faults:#?}"
+        );
+    }
+    let x = a.var(Sort::BitVec(8), "x");
+    assert!(matches!(
+        m.write_sym_byte(ptr(o, 0), x, sp(5)).faults[..],
+        [MemFault::SymbolicByte { .. }]
+    ));
+}
+
+/// **The join of two guarded writes is the *disjunction* of their guards.**
+///
+/// Taking only the newer one loses initialization: after `v[i] = 0x11` then `v[j] = 0x22`
+/// at the same candidate, the model `i = 5, j = 9` has the byte holding `0x11` — the
+/// first write fired — while the guard said "uninitialized". A byte cannot have a value
+/// and simultaneously report that nobody wrote it, and the array path disagreed with the
+/// Bytes path about exactly this, which is a **021 contract 6 violation**.
+#[test]
+fn two_guarded_writes_join_their_guards() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let i = a.var(Sort::BitVec(8), "i");
+    let j = a.var(Sort::BitVec(8), "j");
+    let v1 = a.bv(8, 0x11);
+    let v2 = a.bv(8, 0x22);
+    m.write_at_symbolic_offset(&mut a, o, i, &[5], v1, sp(2));
+    m.write_at_symbolic_offset(&mut a, o, j, &[5], v2, sp(3));
+
+    let InitBit::Cond(g) = m.init_bit_of(o, 5 * 8) else {
+        panic!("expected a guarded bit")
+    };
+    let (iv, jv) = (a.var_id(i).unwrap(), a.var_id(j).unwrap());
+    for (ival, jval, want) in [(5u128, 9u128, 1u128), (9, 5, 1), (9, 9, 0), (5, 5, 1)] {
+        let mut model = Model::new();
+        model.set(iv, BvConst::new(8, ival));
+        model.set(jv, BvConst::new(8, jval));
+        assert_eq!(
+            a.eval(&model, g).unwrap().bits(),
+            want,
+            "i={ival}, j={jval}: initialized iff *either* write fired"
+        );
+    }
+}
+
+/// **021 §3.1: `Cond` collapses to `Yes`/`No` when its guard folds to a constant.**
+///
+/// A write at a *concrete* offset produces the guard `off == k`, which folds — but the
+/// tag stayed `Cond`, so a definitely-written byte reported `MaybeUninitialized`. And
+/// `init_bit_via` *does* collapse, so the two paths disagreed: a second contract 6
+/// violation, on a different input class from the one above.
+#[test]
+fn a_conditional_write_at_a_concrete_offset_collapses_to_definite() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let off = a.bv(8, 3);
+    let v = a.bv(8, 1);
+    m.write_at_symbolic_offset(&mut a, o, off, &[3], v, sp(2));
+    assert_eq!(
+        m.init_bit_of(o, 3 * 8),
+        InitBit::Yes,
+        "the guard is `3 == 3`, so the byte is definitely written"
+    );
+    let r = m.read_term(&mut a, ptr(o, 3), 1, Endian::Little, sp(3));
+    assert!(
+        r.faults.is_empty(),
+        "a definitely-written byte reports nothing: {:#?}",
+        r.faults
+    );
+    // A candidate the offset cannot equal is definitely *not* written.
+    m.write_at_symbolic_offset(&mut a, o, off, &[4], v, sp(4));
+    assert_eq!(m.init_bit_of(o, 4 * 8), InitBit::No);
+}
+
+/// Contract 26 on a promoted object too: `read_term` memoized into the `InitMask` while
+/// `init_bit_via` reads the array, so the memo was a no-op there and one never-written
+/// byte was reported on every read.
+#[test]
+fn read_term_memoizes_on_a_promoted_object_as_well() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.promote_to_array(&mut a, o);
+    let first = m.read_term(&mut a, ptr(o, 0), 1, Endian::Little, sp(2));
+    assert_eq!(first.faults.len(), 1, "{:#?}", first.faults);
+    let second = m.read_term(&mut a, ptr(o, 0), 1, Endian::Little, sp(3));
+    assert!(
+        second.faults.is_empty(),
+        "the fresh symbol is memoized on both representations: {:#?}",
+        second.faults
+    );
+}
+
+/// Promotion is a state change, so it obeys the state check like every other operation:
+/// a freed object is not promoted, and an object too large to materialize reports that
+/// rather than silently staying `Bytes` while the caller believes otherwise.
+#[test]
+fn promotion_respects_object_state() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let freed = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.free(freed, sp(2));
+    let r = m.promote_to_array(&mut a, freed);
+    assert!(matches!(r.faults[..], [MemFault::UseAfterFree { .. }]));
+    assert!(m.is_bytes(freed), "a dead object is not promoted");
+
+    let huge = m.alloc(ObjKind::Heap, u64::MAX / 4, 8, sp(3));
+    let r = m.promote_to_array(&mut a, huge);
+    assert!(
+        matches!(r.faults[..], [MemFault::AllocationTooLarge { .. }]),
+        "silently staying Bytes leaves the caller believing a promotion happened: {:#?}",
+        r.faults
+    );
+}
