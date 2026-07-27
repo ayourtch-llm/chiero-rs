@@ -356,3 +356,134 @@ fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
         "the extern return, named: {origins:?}"
     );
 }
+
+/// **080's M1 exit item: an out-of-bounds finding with a witness.**
+///
+/// `int buf[4]; if (x > 10) buf[16] = 1;` — the access is out of bounds by construction,
+/// but only on one side of a branch the input decides. The finding names the object and
+/// the witness names the input value that gets there, which together are what 040 turns
+/// into a replay harness. Either alone is a guess: the fault without the input is a
+/// claim about a path nobody can re-enter.
+#[test]
+fn an_out_of_bounds_write_is_reported_with_a_witness() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 4,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: at(5),
+        }],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        10,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Cmp {
+                                op: CmpOp::SGt,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(10),
+                            },
+                        },
+                        20,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::AddrOfLocal {
+                                alloca: AllocaId(0),
+                            },
+                        },
+                        30,
+                    ),
+                    // `&buf[16]` — four elements past the end of a four-element array.
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(3),
+                            rv: RValue::PtrAdd {
+                                base: Operand::Value(ValueId(2)),
+                                off: Operand::Const(Const::Int { bits: 64, val: 64 }),
+                            },
+                        },
+                        35,
+                    ),
+                    inst(
+                        InstKind::Store {
+                            addr: Operand::Value(ValueId(3)),
+                            val: i32c(1),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                        40,
+                    ),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let oob = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("out-of-bounds") || f.message.contains("bounds"))
+        .unwrap_or_else(|| panic!("the write past the end is reported: {:#?}", r.findings()));
+    assert_eq!(oob.span, at(40), "at the access, not at the branch");
+    let w = oob.witness.expect("witnessed");
+    assert_eq!(w.bindings.len(), 1, "{:?}", w.bindings);
+    let b = &w.bindings[0];
+    assert!(
+        b.pinned && (b.value as i32) > 10,
+        "the input value that reaches the access: {b:?}"
+    );
+    // The other side of the branch is a path with no finding at all — so the witness is
+    // load-bearing, not decoration.
+    assert_eq!(
+        r.reports().len(),
+        1,
+        "one finding, on the one path that has it: {:#?}",
+        r.findings()
+    );
+}
