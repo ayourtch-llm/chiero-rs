@@ -1,6 +1,12 @@
 //! **Scope markers** — 021 contracts 30 and 39, and the use-after-scope finding.
 //!
-//! Covers: 021 contracts 30 and 39.
+//! Covers: 021 contracts 30 and 39; 020 contract 39.
+//!
+//! 020 c39 and 021 c30 state the same property from two sides — "`Lifetime::Function`
+//! memory survives `Scope(Exit)` … and is retired at function return; accessing it after
+//! the inner scope exits produces **no** finding" — and both halves are tested below, so
+//! both are cited. One test citing one of two identical contracts leaves the other
+//! reported as nobody's work.
 //!
 //! 020 §4.4: "`Scope` markers are **semantic**: they bound the lifetime of stack objects,
 //! which is what makes use-after-scope detectable." `InstKind::Marker(_)` was a no-op, so
