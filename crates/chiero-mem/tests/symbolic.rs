@@ -1565,3 +1565,40 @@ fn an_uninitialized_havoc_drops_the_symbolic_overlay() {
         r.faults
     );
 }
+
+/// **020 contract 25, the half I cited and did not test.** "`StoreBits` to `a` leaves every
+/// bit of `b` unchanged, **including when `b`'s bits are symbolic** — checked by term
+/// equality before and after."
+///
+/// The bit API and the symbolic overlay do not know about each other: `write_bits` touches
+/// only `data` and never `sym`, and `read_bits` never calls `first_symbolic`. So a
+/// `StoreBits` into a symbolic byte is **silently lost**, and the neighbouring bitfield
+/// reads back as a definite constant with no fault — chiero proves `s.b == 0` about bits it
+/// knows nothing about and prunes the real path. A false negative wearing a proof.
+///
+/// I claimed contract 25 was "the same fact from the other side" as 24. It is not: 24 is
+/// about the init *mask*, 25 is about the *value*. Found by review.
+#[test]
+fn a_bit_write_into_a_symbolic_byte_is_not_silently_lost() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 4, 4, sp(1));
+    let x = a.var(Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(o, 0), x, sp(2));
+
+    // `s.a = 0b101` over bits 0..3 of a byte whose value is unknown.
+    let w = m.write_bits(ptr(o, 0), 0, 3, 0b101, sp(3));
+    // Either the write lands and the byte stops being wholly symbolic, or it is refused —
+    // what it must not do is claim success and change nothing.
+    let landed = w.faults.is_empty();
+
+    // Reading the *neighbouring* field must never hand back a definite value for bits that
+    // came from the symbol.
+    let r = m.read_bits(ptr(o, 0), 3, 5, sp(4));
+    assert!(
+        r.value.is_none() || !r.faults.is_empty(),
+        "b is symbolic: a concrete answer with no fault is a proof about unknown bits \
+         (write landed: {landed}, got {:?})",
+        r.value
+    );
+}
