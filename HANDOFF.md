@@ -1367,8 +1367,15 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    Findings carry an identity minted where the report is; deduplicating on *text* would
    collapse two genuine reports that read the same, which is the common case in a loop.
 
-   **STILL OWED from wave 15's review:** `chiero_mark_fidelity` discards the `why` its
-   caller passed; 024 §1 step 3's `__builtin_x` → `x` aliasing is unimplemented; the
+   **Wave D** (`939c5e7` red, `e6ff100` green, 488 tests) — `chiero_mark_fidelity` reads
+   its reason through the new `Memory::c_string_at` (a *partly* readable string is `None`,
+   never a prefix), and `__builtin_x` resolves to `x` for names chiero dispatches. Not a
+   blanket strip: `__builtin_expect` has no counterpart and aliasing it would turn a clear
+   "no model" into a lookup miss. This got *more* urgent from wave B, not less — an
+   unmodeled call now havocs its buffer, so leaving gcc's preferred spelling unmodeled
+   would make the most common calls in an optimized TU the biggest holes.
+
+   **STILL OWED from wave 15's review:** the
    `model{n}` fresh value is always `BitVec(64)` regardless of return type; symbolic sizes
    degrade though 024 §3 permits them; `AllocPolicy` is engine-global where 024 §3 wants it
    per allocator; `State::findings()` has no direct test.
