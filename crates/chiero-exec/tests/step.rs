@@ -6029,3 +6029,123 @@ fn a_width_limit_does_not_mask_a_use_after_free() {
         r.faults
     );
 }
+
+/// **Provenance must not be launderable.** `ptr_ints` was keyed on the `Term`, and an
+/// address is a ground `bv(64, …)` constant that the arena hash-conses — so **term
+/// identity is value identity**, and *any* integer expression that happens to evaluate to
+/// a recorded address recovered that object. The `Unknown` degrade on the range-search
+/// fallback was bypassed exactly when it should fire, and the run sealed as **PROVEN**.
+///
+/// Both doc comments on the table claimed the opposite: "keyed on the term, so arithmetic
+/// that produces a *different* term correctly loses the provenance". Hash-consing
+/// guarantees they are the same term. Found by review.
+///
+/// The C is `(uintptr_t)&a + ((uintptr_t)&b - (uintptr_t)&a)` — an integer that reaches
+/// `b`'s address with no provenance chain from `b`.
+#[test]
+fn provenance_cannot_be_laundered_through_arithmetic() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(1)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+                // delta = addr(b) - addr(a)
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(64),
+                        a: Operand::Value(ValueId(3)),
+                        b: Operand::Value(ValueId(2)),
+                    },
+                }),
+                // laundered = addr(a) + delta, which *evaluates* to addr(b) while the
+                // only pointer it was ever derived from is `a`.
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Bin {
+                        op: BinOp::Add,
+                        ty: CTy::Int(64),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Value(ValueId(4)),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(6),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(5)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Int(64), 1)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(64), 1)
+        },
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    // The *object* may well be right — the range search finds it — but chiero must say
+    // it guessed. Reaching an address by arithmetic is not a provenance chain.
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "an address reached by arithmetic is a guess: {:#?}",
+        s.assumptions()
+    );
+    assert!(seal(&r, r.witness()).is_err(), "and it cannot seal");
+    assert!(
+        s.assumptions()
+            .iter()
+            .any(|x| x.detail.contains("provenance")),
+        "{:#?}",
+        s.assumptions()
+    );
+}
