@@ -828,7 +828,11 @@ fn strlen_reports_the_faults_its_reads_provoke() {
     let mut a = TermArena::new();
     let o = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    let r = models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy::default(),
+    );
     assert!(
         !cx.findings().is_empty(),
         "an uninitialized buffer has no string in it: {r:?}"
@@ -849,7 +853,11 @@ fn strlen_on_freed_memory_reports_the_use_after_free() {
     m.write(Pointer { base: o, off: 0 }, b"abc\0", Span::DUMMY);
     m.free(o, Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy::default(),
+    );
     assert!(
         cx.findings().iter().any(|f| f.contains("UseAfterFree")),
         "{:#?}",
@@ -869,9 +877,27 @@ fn a_walk_that_reads_nothing_does_not_claim_an_unterminated_string() {
     let small = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
     for (what, p) in [
-        ("a null pointer", Pointer { base: chiero_mem::ObjectId::NULL, off: 0 }),
-        ("a zero-size object", Pointer { base: empty, off: 0 }),
-        ("an offset past the end", Pointer { base: small, off: 100 }),
+        (
+            "a null pointer",
+            Pointer {
+                base: chiero_mem::ObjectId::NULL,
+                off: 0,
+            },
+        ),
+        (
+            "a zero-size object",
+            Pointer {
+                base: empty,
+                off: 0,
+            },
+        ),
+        (
+            "an offset past the end",
+            Pointer {
+                base: small,
+                off: 100,
+            },
+        ),
     ] {
         let before = cx.findings().len();
         let r = models::strlen(&mut cx, p, StringPolicy::default());
@@ -921,7 +947,11 @@ fn strlen_walks_from_the_pointer_not_the_object_base() {
     let o = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
     m.write(Pointer { base: o, off: 0 }, b"abcdef\0", Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    match models::strlen(&mut cx, Pointer { base: o, off: 4 }, StringPolicy::default()) {
+    match models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 4 },
+        StringPolicy::default(),
+    ) {
         StrScan::Exact(n) => assert_eq!(n, 2, "\"ef\" is two bytes"),
         other => panic!("expected 2, got {other:?}"),
     }
@@ -938,4 +968,32 @@ fn calloc_of_an_enormous_size_is_a_fault_not_an_abort() {
     let mut cx = ctx(&mut m, &mut a);
     let out = models::calloc(&mut cx, 1, 1 << 45, AllocPolicy { may_fail: false });
     assert!(!cx.findings().is_empty(), "{out:?}");
+}
+
+/// A pointer **before** the object has no room to walk. Measuring room from `max(0, off)`
+/// licensed a scan that started before the object and ran past its end, and the faults it
+/// provoked were then misfiled as an unimplemented-feature note.
+#[test]
+fn strlen_before_the_object_is_reported_rather_than_walked() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, b"abc\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: -4 },
+        StringPolicy::default(),
+    );
+    assert!(
+        !matches!(r, StrScan::Exact(_)),
+        "a pointer before the object has no string at it: {r:?}"
+    );
+    assert!(
+        cx.findings()
+            .iter()
+            .any(|f| f.contains("before the object")),
+        "{:#?}",
+        cx.findings()
+    );
 }

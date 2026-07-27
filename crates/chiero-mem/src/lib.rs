@@ -1388,12 +1388,23 @@ impl Memory {
 
     /// 021 contract 28: the range becomes initialized and reads back as the set byte.
     pub fn set(&mut self, dst: Pointer, byte: u8, size: u64, at: Span) -> AccessResult<()> {
+        // **Guard before materializing.** `vec![byte; size]` ran before any check, so a
+        // `calloc(1, 1 << 45)` killed the process — reintroducing exactly the abort
+        // `MAX_MATERIALIZED_BYTES` exists to prevent, one level up from where the guard
+        // sits. An abort is not something `catch_unwind` can contain.
+        if size > MAX_MATERIALIZED_BYTES {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: dst.base,
+                size,
+                at,
+            });
+        }
         let bytes = vec![byte; size as usize];
         self.write_bytewise(dst, &bytes, at)
     }
 
-    /// The source side of a `copy`: state, bounds and alignment as usual, but **no
-    /// uninitialized-read fault and no memoization**.
+    /// The source side of a `copy`: every check `read` makes **except** alignment (a copy
+    /// is byte-wise) and **except** the uninitialized-read fault and memoization.
     ///
     /// A copy moves bytes without using them. `memcpy` of a partially-filled struct is
     /// ubiquitous and correct, so reporting there is a false-positive storm — and
@@ -1406,11 +1417,18 @@ impl Memory {
         size: u64,
         at: Span,
     ) -> AccessResult<(Vec<u8>, Vec<InitBit>)> {
-        // Byte-wise, so no alignment fault here either.
+        // Byte-wise, so no alignment fault here — but every *other* check `read` makes
+        // still applies. Omitting them let a copy launder what a read refuses: a promoted
+        // object served its frozen `Bytes` view, and a symbolic byte came back concrete
+        // with no fault, which turns a `memcpy` of a struct with a symbolic field into a
+        // silent constant.
         if let Some(f) = self.state_fault(p.base, p.off, at) {
             return AccessResult::fault(f);
         }
         if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.promoted_fault(p, at) {
             return AccessResult::fault(f);
         }
         let Some(e) = self.entry(p.base) else {
@@ -1429,9 +1447,17 @@ impl Memory {
         let init = (0..size * 8)
             .map(|b| obj.init_bit(p.off as u64 * 8 + b))
             .collect::<Vec<_>>();
+        let mut faults = Vec::new();
+        if let Some(b) = obj.first_symbolic(p.off, size) {
+            faults.push(MemFault::SymbolicByte {
+                obj: p.base,
+                off: b as i64,
+                at,
+            });
+        }
         AccessResult {
             value: Some((bytes, init)),
-            faults: vec![],
+            faults,
         }
     }
 

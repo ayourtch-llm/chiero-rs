@@ -727,9 +727,24 @@ impl<'m> Engine<'m> {
                         &format!("`{name}` is modeled approximately: {why}"),
                     );
                 }
-                // An exact model claims to be faithful, so nothing degrades. Without this
-                // the distinction would carry no information.
-                Some(Precision::Exact) => {}
+                // **An exact model is only faithful if it actually runs.** Reading the
+                // precision and recording nothing made a registered name *more* trusted
+                // than an unregistered one: `strcpy` into a four-byte buffer finished
+                // `Exact` and sealed, for a textbook overflow. Adding a correct model to
+                // the library reduced safety, because the registration was read as a
+                // claim about the *call* rather than about the model.
+                Some(Precision::Exact) if self.can_dispatch(&name) => {}
+                Some(Precision::Exact) => {
+                    self.note_once(
+                        s,
+                        AssumptionKind::UnmodeledCall,
+                        span,
+                        &format!(
+                            "`{name}` has an exact model, but the engine cannot dispatch \
+                             it yet, so the call was not performed"
+                        ),
+                    );
+                }
                 None => {
                     self.note_once(
                         s,
@@ -1098,6 +1113,16 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// Whether the engine can actually *run* this model. Deliberately explicit and short:
+    /// a model becomes dispatchable when the code to call it exists, not when it is
+    /// registered, and conflating the two is what let a registration mint a proof.
+    fn can_dispatch(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "chiero_assume" | "chiero_assert" | "chiero_mark_fidelity"
+        )
     }
 
     /// An indirect call: fork per candidate, **plus one unresolvable state**.

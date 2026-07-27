@@ -479,11 +479,33 @@ pub mod models {
     pub fn strlen(cx: &mut ModelCtx, p: Pointer, policy: StringPolicy) -> StrScan {
         let at = cx.span();
         let size = cx.mem().size_of_pub(p.base).unwrap_or(0);
-        let from = p.off.max(0) as u64;
+        // A **negative** offset has no room at all: measuring from `max(0)` licensed a
+        // walk that started before the object and ran past its end.
+        if p.off < 0 {
+            cx.report(format!(
+                "strlen: pointer is {} bytes before the object",
+                -p.off
+            ));
+            return StrScan::CapReached { scanned: 0 };
+        }
+        let from = p.off as u64;
         let room = size.saturating_sub(from);
+        let mut read_any = false;
         for i in 0..room.min(policy.max_scan) {
             let off = p.off + i as i64;
             let r = cx.mem().read(Pointer { base: p.base, off }, 1, at);
+            // **Every fault is reported.** Dropping them made `strlen` over a `malloc`'d
+            // buffer answer 0 with no finding: an uninitialized byte reads back as
+            // `Some([0])` *plus* a fault, so the model saw the zero and called it a
+            // terminator — while consuming the memory model's report-once memoization and
+            // throwing it away, so a later genuine read of those bytes was clean forever.
+            let faulted = !r.faults.is_empty();
+            let faults = r.faults.clone();
+            cx.lift(&faults);
+            if faulted {
+                return StrScan::CapReached { scanned: i };
+            }
+            read_any = true;
             match r.value.as_deref() {
                 Some([0]) => return StrScan::Exact(i),
                 Some(_) => {}
@@ -497,6 +519,12 @@ pub mod models {
                     return StrScan::CapReached { scanned: i };
                 }
             }
+        }
+        // **An unterminated-string finding requires having looked.** With no room the loop
+        // never ran, and asserting an out-of-bounds read on zero reads is inventing a bug
+        // — the mirror of the mistake §4 warns about for the cap.
+        if !read_any {
+            return StrScan::CapReached { scanned: 0 };
         }
         if room <= policy.max_scan {
             cx.report(format!(

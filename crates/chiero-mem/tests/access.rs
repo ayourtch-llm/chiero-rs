@@ -977,3 +977,39 @@ fn a_byte_wise_copy_is_not_subject_to_the_scalar_alignment_rule() {
         "the scalar rule still applies to a scalar access"
     );
 }
+
+/// **A copy's source side runs every check a read does**, bar the ones a byte-wise
+/// operation is exempt from. It had neither the promoted-object refusal nor the
+/// symbolic-byte report, so a `memcpy` could launder what a `read` refuses: a promoted
+/// object served its frozen `Bytes` view, and a struct with a symbolic field came back a
+/// silent constant.
+#[test]
+fn a_copys_source_side_refuses_what_a_read_refuses() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let src = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let dst = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m.set(ptr(src, 0), 1, 16, sp(3));
+    let x = a.var(chiero_solver::Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(src, 2), x, sp(4));
+    assert!(
+        m.copy(ptr(dst, 0), ptr(src, 0), 8, Overlap::Allowed, sp(5))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "a symbolic source byte cannot be copied as a concrete one"
+    );
+
+    let mut m2 = Memory::new();
+    let s2 = m2.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let d2 = m2.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m2.set(ptr(s2, 0), 1, 16, sp(3));
+    m2.promote_to_array(&mut a, s2);
+    assert!(
+        m2.copy(ptr(d2, 0), ptr(s2, 0), 8, Overlap::Allowed, sp(4))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "a promoted source's Bytes view is frozen and must not be served"
+    );
+}
