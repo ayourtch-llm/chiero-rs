@@ -109,6 +109,41 @@ fn contract_coverage() -> ExitCode {
                 total - missing,
                 total
             );
+
+            // **The frontend, measured separately.** 080's M2 exit is stated as
+            // behaviours rather than as "all contracts of these documents", so this is
+            // not a gate and is never folded into the M1 number. It is reported because a
+            // coverage tool that cannot see half the work in flight reports a comfortable
+            // number about the half it can.
+            let mut ftotal = 0usize;
+            let mut fmissing = 0usize;
+            let mut lines = Vec::new();
+            for doc in xtask::contracts::M2_DOCS {
+                let declared = cov.declared.get(*doc).map(|v| v.len()).unwrap_or(0);
+                if declared == 0 {
+                    continue;
+                }
+                let un = cov.uncovered(doc);
+                ftotal += declared;
+                fmissing += un.len();
+                lines.push(format!(
+                    "{doc}: {}/{} cited{}",
+                    declared - un.len(),
+                    declared,
+                    if un.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  — uncited: {}", un.join(", "))
+                    }
+                ));
+            }
+            if ftotal > 0 {
+                println!("\nfrontend (measure, not a gate):");
+                for l in lines {
+                    println!("  {l}");
+                }
+                println!("  total: {}/{} cited", ftotal - fmissing, ftotal);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

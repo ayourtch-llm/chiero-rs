@@ -18,6 +18,16 @@ use std::path::Path;
 /// The documents M1's exit names.
 pub const M1_DOCS: &[&str] = &["020", "021", "022", "023", "024"];
 
+/// The frontend documents, measured but **not** an exit gate.
+///
+/// 080's M2 exit is stated as behaviours — the preprocessor matching `gcc -E`/`clang -E`,
+/// the differential oracle, vppinfra headers parsing — not as "all contracts of these
+/// documents", so this is reported separately and never folded into the M1 number.
+/// Measuring it anyway is the point: the frontend is being built in parallel, and a
+/// coverage tool that cannot see half the work in flight reports a comfortable number
+/// about the half it can. Found by the M2 agent, about this gate.
+pub const M2_DOCS: &[&str] = &["010", "011", "012", "013", "014", "015"];
+
 #[derive(Debug, Default)]
 pub struct Coverage {
     /// Contract ids declared by each document, in source order.
@@ -95,7 +105,7 @@ fn contracts_in(text: &str) -> Vec<String> {
 
 pub fn measure(root: &Path) -> std::io::Result<Coverage> {
     let mut cov = Coverage::default();
-    for doc in M1_DOCS {
+    for doc in M1_DOCS.iter().chain(M2_DOCS) {
         let dir = root.join("docs/specs");
         let Some(path) = std::fs::read_dir(&dir)?
             .filter_map(|e| e.ok())
