@@ -686,3 +686,130 @@ fn the_destination_must_hold_the_terminator_too() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Compiler builtins and harness intrinsics (024 §6, §7; contracts 13-16).
+// ---------------------------------------------------------------------------
+
+/// **024 contract 13.** `__builtin_add_overflow(INT_MAX, 1, &r)` returns 1 and stores
+/// `INT_MIN`; `(1, 1, &r)` returns 0 and stores 2. Both halves matter: a model that
+/// always reported overflow would pass the first, and one that never did would pass the
+/// second.
+#[test]
+fn add_overflow_reports_and_stores_the_wrapped_result() {
+    for (x, y, want_overflow, want_stored) in [
+        (i32::MAX as i128, 1i128, true, i32::MIN as i128),
+        (1, 1, false, 2),
+        (i32::MIN as i128, -1, true, i32::MAX as i128),
+    ] {
+        let got = builtins::add_overflow(32, x, y);
+        assert_eq!(got.overflowed, want_overflow, "add_overflow({x}, {y})");
+        assert_eq!(got.wrapped, want_stored, "add_overflow({x}, {y}) stored");
+    }
+}
+
+/// The same for multiplication, where the wide computation matters most — a 32-bit
+/// product that fits in 64 bits is exactly the case a narrow implementation gets wrong.
+#[test]
+fn mul_overflow_uses_a_wide_computation() {
+    let got = builtins::mul_overflow(32, 0x1_0000, 0x1_0000);
+    assert!(got.overflowed, "65536 * 65536 does not fit in 32 bits");
+    assert_eq!(got.wrapped, 0);
+    let ok = builtins::mul_overflow(32, 3, 5);
+    assert!(!ok.overflowed);
+    assert_eq!(ok.wrapped, 15);
+}
+
+/// **024 contract 14.** `__builtin_clz(0)` is exactly one UB finding; `__builtin_clz(1)`
+/// returns 31 on a 32-bit input with none. The zero case is undefined behaviour, and a
+/// model that returned 32 for it would silently answer a question C does not define.
+#[test]
+fn count_leading_zeros_treats_zero_as_undefined() {
+    match builtins::clz(32, 0) {
+        BuiltinResult::Undefined(why) => assert!(why.contains("zero"), "{why}"),
+        other => panic!("clz(0) is UB, got {other:?}"),
+    }
+    assert_eq!(builtins::clz(32, 1), BuiltinResult::Value(31));
+    assert_eq!(builtins::clz(32, 0x8000_0000), BuiltinResult::Value(0));
+    assert_eq!(builtins::ctz(32, 1), BuiltinResult::Value(0));
+    assert_eq!(builtins::ctz(32, 8), BuiltinResult::Value(3));
+    assert!(matches!(builtins::ctz(32, 0), BuiltinResult::Undefined(_)));
+    assert_eq!(builtins::popcount(32, 0xFF), BuiltinResult::Value(8));
+    assert_eq!(builtins::popcount(32, 0), BuiltinResult::Value(0));
+}
+
+/// `__builtin_bswap` is a byte permutation, and the width matters — a 32-bit swap of a
+/// value that happens to be symmetric in 16 bits would hide a width mix-up.
+#[test]
+fn byte_swap_permutes_at_the_declared_width() {
+    assert_eq!(builtins::bswap(16, 0x1234), 0x3412);
+    assert_eq!(builtins::bswap(32, 0x1122_3344), 0x4433_2211);
+    assert_eq!(
+        builtins::bswap(64, 0x0102_0304_0506_0708),
+        0x0807_0605_0403_0201
+    );
+}
+
+/// **024 contract 16.** `chiero_assume(0)` terminates the state with **no finding** — it
+/// says "this path cannot happen", which is a statement about the harness rather than
+/// about the program.
+#[test]
+fn assuming_a_contradiction_kills_the_state_silently() {
+    let r = intrinsics::assume(Some(false));
+    assert_eq!(r, IntrinsicOutcome::KillState);
+}
+
+/// **024 contract 15, and §7's warning.** `chiero_assert` produces a **finding** where
+/// `chiero_assume` produces a constraint. They are not interchangeable, and confusing
+/// them is the classic way to make a test suite vacuous: an `assert` that silently
+/// constrained would turn every failing check into a pruned path, so the suite would
+/// pass by not testing anything.
+#[test]
+fn assert_and_assume_are_not_interchangeable() {
+    assert_eq!(intrinsics::assume(Some(true)), IntrinsicOutcome::Continue);
+    assert_eq!(intrinsics::assume(Some(false)), IntrinsicOutcome::KillState);
+    // An assert that *can* be violated is a finding, not a pruned path.
+    assert_eq!(
+        intrinsics::assert_(Some(false)),
+        IntrinsicOutcome::Finding("chiero_assert failed".into())
+    );
+    assert_eq!(intrinsics::assert_(Some(true)), IntrinsicOutcome::Continue);
+    // A condition nobody can decide is where the two differ most: `assume` constrains,
+    // `assert` reports.
+    assert_eq!(intrinsics::assume(None), IntrinsicOutcome::Constrain);
+    assert!(matches!(
+        intrinsics::assert_(None),
+        IntrinsicOutcome::Finding(_)
+    ));
+}
+
+/// `chiero_mark_fidelity` degrades deliberately, which is how a harness says "what
+/// follows is approximate" without pretending otherwise.
+#[test]
+fn marking_fidelity_degrades_with_the_given_reason() {
+    match intrinsics::mark_fidelity("the driver stubs out the PHY") {
+        IntrinsicOutcome::Degrade(why) => assert!(why.contains("PHY")),
+        other => panic!("expected a degradation, got {other:?}"),
+    }
+}
+
+/// The builtins are registered, and every registered `Exact` name is implemented — the
+/// invariant that stopped the earlier declaration-only list from claiming faithfulness
+/// it did not have.
+#[test]
+fn the_builtins_are_registered_and_implemented() {
+    let r = ModelRegistry::with_builtins();
+    for n in [
+        "__builtin_clz",
+        "__builtin_ctz",
+        "__builtin_popcount",
+        "__builtin_bswap32",
+        "__builtin_add_overflow",
+        "__builtin_mul_overflow",
+        "chiero_assume",
+        "chiero_assert",
+    ] {
+        assert!(r.lookup(n).is_some(), "`{n}` is not registered");
+        assert!(models::is_implemented(n), "`{n}` is registered but absent");
+    }
+}
