@@ -563,12 +563,14 @@ fn every_let_bound_name_in_an_emission_is_distinct() {
     let mut a = TermArena::new();
     let x = a.var(Sort::BitVec(8), "x");
     let y = a.var(Sort::BitVec(8), "y");
-    // A DAG with genuine sharing at several levels.
+    // A DAG with genuine sharing at several levels: each of `s`, `p` and `q` is used
+    // more than once, so each must get its own binding.
     let s = a.add(x, y);
     let p = a.mul(x, y);
     let q = a.add(s, p);
     let r = a.mul(q, s);
-    let t = a.add(r, p);
+    let u = a.add(q, p);
+    let t = a.add(r, u);
     let text = a.to_smtlib(t);
 
     let mut names = Vec::new();
@@ -581,7 +583,10 @@ fn every_let_bound_name_in_an_emission_is_distinct() {
         );
         names.push(name);
     }
-    assert!(names.len() >= 3, "this DAG should share several nodes: {text}");
+    assert!(
+        names.len() >= 3,
+        "this DAG should share several nodes: {text}"
+    );
 }
 
 /// `children()` is what the post-order walks, so a missing child is a subterm that is

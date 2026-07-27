@@ -1572,10 +1572,16 @@ impl Memory {
                 bit,
                 at,
             });
-            // 021 §5 / contract 26: the fresh symbol is memoized, so a repeated read is
-            // the same value and not a second finding. `read` did this and `read_term`
-            // did not, which left the two APIs disagreeing about the same byte.
+            // **021 §3: a fresh symbol, never zero.** Handing back the `0` behind an
+            // uninitialized byte is what the spec calls the single most common way a
+            // symbolic executor produces confidently wrong results — a checker then
+            // reasons about a value nobody wrote.
+            //
+            // Minting and memoizing are one act: contract 26 wants a repeated read to
+            // give the same term, §3 wants that term to be a symbol, and doing either
+            // alone satisfies neither.
             if p.off >= 0 {
+                self.materialize_fresh(a, p.base, p.off, size);
                 self.memoize_via(a, p.base, p.off as u64 * 8, size * 8);
             }
         } else if let Some(bit) = first_cond {
@@ -1857,6 +1863,43 @@ impl Memory {
             && let Some(o) = e.obj.as_mut()
         {
             o.memoize_fresh(lo_bit, n_bits);
+        }
+    }
+
+    /// Give every *definitely uninitialized* byte in the range a fresh symbol, so the
+    /// value the caller receives is one nobody has claimed rather than a stale zero.
+    ///
+    /// Only `No` bytes: a `Cond` byte already has a term whose guard is live, and
+    /// overwriting it would discharge that guard in chiero's favour.
+    fn materialize_fresh(&mut self, a: &mut TermArena, id: ObjectId, off: i64, size: u64) {
+        for k in off as u64..off as u64 + size {
+            let fresh_needed = self
+                .entry(id)
+                .and_then(|e| e.obj.as_ref())
+                .is_some_and(|o| o.init.first_no(k * 8, 8).is_some() && o.sym_at(k).is_none());
+            if !fresh_needed {
+                continue;
+            }
+            let t = a.var(
+                chiero_solver::Sort::BitVec(8),
+                &format!("uninit_{}_{k}", id.0),
+            );
+            match self.entry(id).and_then(|e| e.arr) {
+                Some(mut arr) => {
+                    let i = a.bv(arr.idx_bits, k as u128);
+                    arr.data = a.store(arr.data, i, t);
+                    if let Some(e) = self.entry_mut(id) {
+                        e.arr = Some(arr);
+                    }
+                }
+                None => {
+                    if let Some(e) = self.entry_mut(id)
+                        && let Some(o) = e.obj.as_mut()
+                    {
+                        o.sym.insert(k, t);
+                    }
+                }
+            }
         }
     }
 

@@ -701,7 +701,14 @@ fn the_bytes_path_and_the_array_path_agree_on_value_and_initialization() {
             (x, y) => assert_eq!(x, y, "byte {k}: initialization status differs"),
         }
 
-        // And the value must agree under every feasible offset.
+        // Values are compared only where the byte was *written*. A never-written byte
+        // gets a fresh symbol per object (021 §3), and the two objects standing in for
+        // the two paths are necessarily different objects — so their symbols differ by
+        // construction and comparing them would be comparing the stand-in rather than
+        // the contract. Promotion of a *single* object is checked separately.
+        if ib == InitBit::No {
+            continue;
+        }
         let tb = m
             .read_term(&mut a, ptr(via_bytes, k as i64), 1, Endian::Little, sp(5))
             .value
@@ -853,8 +860,26 @@ fn read_term_memoizes_the_fresh_symbol_like_the_byte_api() {
         "the fresh symbol is memoized, so the second read is not a new finding: {:#?}",
         second.faults
     );
-    // And the byte API now agrees the bytes are defined.
-    assert!(m.read(ptr(o, 0), 4, sp(4)).faults.is_empty());
+    // The byte API no longer reports them *uninitialized* — but it cannot answer either,
+    // because they now hold fresh symbols. `SymbolicByte` is the honest reply, and it is
+    // a different statement from "nobody wrote this".
+    let byte_api = m.read(ptr(o, 0), 4, sp(4));
+    assert!(
+        !byte_api
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "{:#?}",
+        byte_api.faults
+    );
+    assert!(
+        byte_api
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "{:#?}",
+        byte_api.faults
+    );
 }
 
 /// **Contract 6b holds for the bit API too.** §3.1 argues the tri-state *from bitfields*,
@@ -1107,8 +1132,14 @@ fn distinct_uninitialized_bytes_get_distinct_symbols() {
     let mut a = TermArena::new();
     let mut m = Memory::new();
     let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
-    let b0 = m.read_term(&mut a, ptr(o, 0), 1, Endian::Little, sp(2)).value.unwrap();
-    let b1 = m.read_term(&mut a, ptr(o, 1), 1, Endian::Little, sp(3)).value.unwrap();
+    let b0 = m
+        .read_term(&mut a, ptr(o, 0), 1, Endian::Little, sp(2))
+        .value
+        .unwrap();
+    let b1 = m
+        .read_term(&mut a, ptr(o, 1), 1, Endian::Little, sp(3))
+        .value
+        .unwrap();
     assert_ne!(b0, b1);
     let mut v0 = Vec::new();
     let mut v1 = Vec::new();
@@ -1126,6 +1157,9 @@ fn an_initialized_read_is_still_concrete() {
     let mut m = Memory::new();
     let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
     m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
-    let t = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3)).value.unwrap();
+    let t = m
+        .read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3))
+        .value
+        .unwrap();
     assert_eq!(a.eval_ground(t).unwrap().bits(), 0x0403_0201);
 }
