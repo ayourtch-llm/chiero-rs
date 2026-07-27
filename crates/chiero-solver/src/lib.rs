@@ -1481,13 +1481,17 @@ impl Session {
         // rejected under `QF_ABV`, and the next malformed emission should degrade to a
         // clean error rather than to another query's answer. Deleting a guard because the
         // bug it caught is currently fixed is how the bug comes back worse.
-        loop {
-            let form = self.read_form()?;
-            if form.trim_start().starts_with("(error") {
-                continue;
-            }
-            return Some(form);
+        let form = self.read_form()?;
+        if form.trim_start().starts_with("(error") {
+            // **Skipping the error and returning the next form is not a fix.** z3 prints
+            // the error and then answers anyway, so accepting that answer turns a
+            // *malformed script* into a confident verdict — which is worse than the
+            // desync this replaced, because nothing looks wrong. The following form is
+            // drained to keep the pipe aligned, and the query is reported as failed.
+            let _ = self.read_form();
+            return None;
         }
+        Some(form)
     }
 
     fn read_form(&mut self) -> Option<String> {

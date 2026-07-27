@@ -1626,6 +1626,138 @@ impl Memory {
         AccessResult { value: t, faults }
     }
 
+    /// Read one byte at a **symbolic** offset (021 §3).
+    ///
+    /// Within `ITE_THRESHOLD` the answer is an if-then-else chain over the candidates and
+    /// the object stays on the fast path; past it the object promotes and the answer is a
+    /// single `select`. The threshold governs both directions — it had governed only the
+    /// write side, which is half of what §3 says.
+    ///
+    /// An empty candidate list means "no pinning available", which is a promoted object's
+    /// normal case: the select is unpinned and no enumeration happens.
+    pub fn read_term_at(
+        &mut self,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        candidates: &[u64],
+        at: Span,
+    ) -> AccessResult<Term> {
+        if let Some(f) = self.state_fault(id, 0, at) {
+            return AccessResult::fault(f);
+        }
+        if candidates.len() > ITE_THRESHOLD || candidates.is_empty() {
+            let r = self.promote_to_array(a, id);
+            if !r.faults.is_empty() {
+                return AccessResult {
+                    value: None,
+                    faults: r.faults,
+                };
+            }
+        }
+        if let Some(arr) = self.entry(id).and_then(|e| e.arr) {
+            let i = fit(a, off, arr.idx_bits);
+            return AccessResult {
+                value: Some(a.select(arr.data, i)),
+                faults: vec![],
+            };
+        }
+        // The `Bytes` path: an ite chain, innermost first, over the candidates.
+        let w = a.width(off);
+        // Innermost-first, so the last candidate is the unguarded fallback. Building it
+        // the other way round is *equivalent*: the fallback is only reached when the
+        // offset equals no candidate, and the candidate set is the feasible set — so
+        // that case cannot arise, and a test for it would pin an arbitrary choice.
+        let mut acc: Option<Term> = None;
+        for &k in candidates.iter().rev() {
+            let byte = match self
+                .read_term(
+                    a,
+                    Pointer {
+                        base: id,
+                        off: k as i64,
+                    },
+                    1,
+                    Endian::Little,
+                    at,
+                )
+                .value
+            {
+                Some(t) => t,
+                None => continue,
+            };
+            let kc = a.bv(w, k as u128);
+            let cond = a.eq(off, kc);
+            acc = Some(match acc {
+                None => byte,
+                Some(rest) => a.ite(cond, byte, rest),
+            });
+        }
+        AccessResult {
+            value: acc,
+            faults: vec![],
+        }
+    }
+
+    /// An **unpinned** symbolic store: one `store` at a symbolic index, no enumeration.
+    ///
+    /// This is the write promotion exists for. The object is promoted first if it is not
+    /// already, because the `Bytes` representation has nowhere to put a value whose
+    /// address is unknown.
+    pub fn store_at(
+        &mut self,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        val: Term,
+        at: Span,
+    ) -> AccessResult<()> {
+        if let Some(f) = self.state_fault(id, 0, at) {
+            return AccessResult::fault(f);
+        }
+        if self.entry(id).is_some_and(|e| e.readonly) {
+            return AccessResult::fault(MemFault::ReadOnly {
+                obj: id,
+                off: 0,
+                at,
+            });
+        }
+        let r = self.promote_to_array(a, id);
+        if !r.faults.is_empty() {
+            return AccessResult {
+                value: None,
+                faults: r.faults,
+            };
+        }
+        let Some(mut arr) = self.entry(id).and_then(|e| e.arr) else {
+            return AccessResult::fault(MemFault::WildPointer { off: 0, at });
+        };
+        let i = fit(a, off, arr.idx_bits);
+        arr.data = a.store(arr.data, i, val);
+        // Every byte the store *may* have touched is conditionally initialized, and with
+        // no pinning that is the whole object — so the honest mark is `Cond` everywhere,
+        // guarded by "the offset was this one".
+        let one = a.bv(1, 1);
+        let size = self.entry(id).map_or(0, |e| e.size);
+        for b in 0..size {
+            let kc = a.bv(a.width(off), b as u128);
+            let hit = a.eq(off, kc);
+            for bit in b * 8..b * 8 + 8 {
+                let bi = a.bv(arr.idx_bits, bit as u128);
+                let prev = a.select(arr.init, bi);
+                let now = a.ite(hit, one, prev);
+                arr.init = a.store(arr.init, bi, now);
+            }
+        }
+        if let Some(e) = self.entry_mut(id) {
+            e.arr = Some(arr);
+        }
+        AccessResult {
+            value: Some(()),
+            faults: vec![],
+        }
+    }
+
     /// A write whose offset is symbolic but pinned to a small set of feasible values
     /// (021 §3.1).
     ///
@@ -2094,6 +2226,18 @@ impl Memory {
 /// A signed byte offset plus an unsigned bit offset within it. `None` when the byte
 /// offset is negative, which the object-relative bit index cannot represent — the caller
 /// turns that into an out-of-bounds fault rather than wrapping.
+/// Widen or narrow `t` to `w` bits. An array index whose width differs from the array's
+/// is a sort error the backend rejects, and the arena cannot catch it because arrays
+/// carry no scalar width — so it would surface as an unexplained backend failure.
+fn fit(a: &mut TermArena, t: Term, w: u32) -> Term {
+    let tw = a.width(t);
+    match tw.cmp(&w) {
+        std::cmp::Ordering::Equal => t,
+        std::cmp::Ordering::Less => a.zext(t, w),
+        std::cmp::Ordering::Greater => a.extract(t, w - 1, 0),
+    }
+}
+
 fn ranges_overlap(a: i64, b: i64, size: u64) -> bool {
     let n = size as i64;
     a < b + n && b < a + n

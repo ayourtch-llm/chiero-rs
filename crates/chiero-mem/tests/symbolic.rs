@@ -1245,13 +1245,38 @@ fn a_promoted_object_takes_an_unpinned_symbolic_store() {
         model.set(ov, BvConst::new(8, k));
         assert_eq!(a.eval(&model, r).unwrap().bits(), 0x7F, "index {k}");
     }
+    // The store also *initializes* what it wrote. Without this the byte holds the right
+    // value and simultaneously reports that nobody wrote it, which is the contradiction
+    // the init array exists to prevent.
+    for b in [0u64, 7, 255] {
+        let bit = m.init_bit_via(&mut a, o, b * 8);
+        let mut model = Model::new();
+        model.set(ov, BvConst::new(8, b as u128));
+        match bit {
+            InitBit::Yes => {}
+            InitBit::Cond(g) => assert_eq!(
+                a.eval(&model, g).unwrap().bits(),
+                1,
+                "byte {b} is written when the offset is {b}"
+            ),
+            InitBit::No => panic!("byte {b} was written and reports otherwise"),
+        }
+    }
 }
 
-/// **The index width must match the offset's**, not a hardcoded 64. A `store` whose index
-/// is a different width from the array's is a sort error the backend rejects, and the
-/// arena's own width assertions would not catch it because arrays carry no scalar width.
+/// **An offset of any width is usable against the array.**
+///
+/// The array keeps one canonical index width and offsets are coerced at the boundary,
+/// rather than each object's arrays taking the width of whichever offset happened to
+/// reach them first. Either design works; this one keeps a single array per object no
+/// matter how many differently-typed indices address it.
+///
+/// What must not happen is an index of the wrong width reaching a `store` or `select`:
+/// that is a sort error the backend rejects, and the arena cannot catch it because
+/// arrays carry no scalar width — so it would surface as another unexplained "backend
+/// gave no usable answer", exactly as `as const` under `QF_ABV` did.
 #[test]
-fn the_array_index_width_follows_the_offset() {
+fn an_offset_of_any_width_is_usable_against_the_array() {
     let mut a = TermArena::new();
     let mut m = Memory::new();
     let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
@@ -1264,6 +1289,36 @@ fn the_array_index_width_follows_the_offset() {
         "a 16-bit offset must be usable against the array: {:#?}",
         w.faults
     );
-    let r = m.read_term_at(&mut a, o, off, &[], sp(3));
-    assert!(r.value.is_some(), "{:#?}", r.faults);
+    // Read at a **different** symbolic index, or `select` folds over the store by
+    // syntactic identity and no array term reaches the backend at all — which would make
+    // the check below vacuous in exactly the way the first draft of it was.
+    let off2 = a.var(Sort::BitVec(16), "off2");
+    let r = m.read_term_at(&mut a, o, off2, &[], sp(3));
+    let t = r.value.expect("a value comes back");
+
+    // **The check that matters is the backend's.** The arena builds a mis-sorted index
+    // happily — arrays carry no scalar width, so there is nothing for it to assert
+    // against — and the evaluator compares numerically, so both widths agree there too.
+    // Only a solver reads the sorts, which is exactly why this went unnoticed for
+    // `as const`.
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping the backend half: no SMT-LIB2 backend on PATH");
+        return;
+    };
+    let want = a.bv(8, 1);
+    let e = a.eq(t, want);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+    let mut s = chiero_solver::TieredSolver::with_backend(backend);
+    chiero_solver::Solver::assert(&mut s, e);
+    chiero_solver::Solver::assert(&mut s, e2);
+    assert!(
+        !matches!(
+            chiero_solver::Solver::check(&mut s, &mut a, &[]),
+            chiero_solver::CheckResult::Unknown(_)
+        ),
+        "a mis-sorted index makes the whole script unparseable"
+    );
 }
