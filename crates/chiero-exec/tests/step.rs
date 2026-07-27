@@ -3630,3 +3630,114 @@ fn a_builtin_alias_reaches_the_model_of_the_same_name() {
         "the model ran, it was not merely not-degraded"
     );
 }
+
+/// **024 contract 20.** `longjmp` yields exactly one "unsupported" diagnostic and a state
+/// **terminated** at `Fidelity::Unknown` — never a silently-continued path. Today it is
+/// merely `Approximate`, so execution walks on past a call that in reality never returns,
+/// and everything after it is a path the program does not have.
+///
+/// `Approximated` is the wrong level as well as the wrong control flow: 023 §7 reserves
+/// `Unknown` for "the engine does not know and cannot bound its ignorance", which is
+/// exactly non-local control flow.
+#[test]
+fn longjmp_terminates_the_state_at_unknown() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+                // Never reached: `longjmp` does not return.
+                inst(InstKind::Assign {
+                    dst: ValueId(9),
+                    rv: RValue::Use(i32c(1)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "longjmp", vec![], CTy::Void)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
+    assert!(
+        r.states()[0].local(ValueId(9)).is_none(),
+        "the instruction after a `longjmp` is not on any path"
+    );
+    let unsupported: Vec<_> = r.states()[0]
+        .assumptions()
+        .iter()
+        .filter(|x| x.detail.contains("longjmp"))
+        .collect();
+    assert_eq!(unsupported.len(), 1, "{unsupported:#?}");
+}
+
+/// **The fresh value an extern returns has the *declared* return type's sort.** Every
+/// unmodeled extern minted a `BitVec(64)` regardless — harmless while the models all
+/// returned `size_t`, and a trap for the next one: an `int`-returning function whose
+/// result is compared against a 32-bit value produces a width mismatch, and a
+/// pointer-returning one produces a scalar where 023 §1.1 wants provenance.
+#[test]
+fn an_externs_fresh_value_has_the_declared_width() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "mystery", vec![], CTy::Int(16))],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    match r.states()[0].local(ValueId(0)) {
+        Some(Value::Scalar(t)) => assert_eq!(a.width(t), 16),
+        other => panic!("{other:?}"),
+    }
+
+    // And the same on the *dispatch* path, which mints its own `model{n}` when a model
+    // ran and produced nothing. That one hardcoded `BitVec(64)` and overwrote the
+    // correctly-sorted value the extern path had already set.
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![Operand::Const(Const::Null)],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Int(16))],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    match r.states()[0].local(ValueId(0)) {
+        Some(Value::Scalar(t)) => assert_eq!(a.width(t), 16, "the dispatch fallback too"),
+        other => panic!("{other:?}"),
+    }
+}
