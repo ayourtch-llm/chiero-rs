@@ -13,7 +13,12 @@ use xtask::deps::{Graph, check};
 fn graph(edges: &[(&str, &[&str])]) -> Graph {
     edges
         .iter()
-        .map(|(k, v)| ((*k).to_string(), v.iter().map(|s| (*s).to_string()).collect()))
+        .map(|(k, v)| {
+            (
+                (*k).to_string(),
+                v.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
         .collect()
 }
 
@@ -29,13 +34,22 @@ fn legal() -> Graph {
         ("chiero-lower", &["chiero-ast", "chiero-sema", "chiero-cir"]),
         ("chiero-solver", &[]),
         ("chiero-mem", &["chiero-span", "chiero-solver"]),
-        ("chiero-exec", &["chiero-cir", "chiero-mem", "chiero-solver"]),
+        (
+            "chiero-exec",
+            &["chiero-cir", "chiero-mem", "chiero-solver"],
+        ),
         ("chiero-gcov", &["chiero-span", "chiero-cir"]),
         ("chiero-diff", &["chiero-span", "chiero-ast", "chiero-sema"]),
         ("chiero-check", &["chiero-cir", "chiero-exec"]),
         ("chiero-opt", &["chiero-exec", "chiero-check"]),
-        ("chiero-recipe", &["chiero-sema", "chiero-exec", "chiero-check"]),
-        ("chiero-select", &["chiero-gcov", "chiero-diff", "chiero-opt"]),
+        (
+            "chiero-recipe",
+            &["chiero-sema", "chiero-exec", "chiero-check"],
+        ),
+        (
+            "chiero-select",
+            &["chiero-gcov", "chiero-diff", "chiero-opt"],
+        ),
         ("chiero-vpp", &["chiero-check", "chiero-recipe"]),
         ("chiero-cli", &["chiero-exec", "chiero-vpp"]),
     ])
@@ -66,8 +80,14 @@ fn assert_violates(g: &Graph, rule: &str) {
 /// parser exists. The single most important structural rule in the project.
 #[test]
 fn cir_may_not_depend_on_the_frontend() {
-    assert_violates(&with_edge("chiero-cir", "chiero-ast"), "cir-contract-boundary");
-    assert_violates(&with_edge("chiero-cir", "chiero-parse"), "cir-contract-boundary");
+    assert_violates(
+        &with_edge("chiero-cir", "chiero-ast"),
+        "cir-contract-boundary",
+    );
+    assert_violates(
+        &with_edge("chiero-cir", "chiero-parse"),
+        "cir-contract-boundary",
+    );
 }
 
 /// 001 §4 rule 5.
@@ -79,14 +99,23 @@ fn span_depends_on_nothing() {
 /// 001 §4 rule 2 — the core never reaches upward into a vertical.
 #[test]
 fn core_may_not_depend_on_a_vertical() {
-    assert_violates(&with_edge("chiero-exec", "chiero-check"), "no-upward-dependency");
-    assert_violates(&with_edge("chiero-mem", "chiero-gcov"), "no-upward-dependency");
+    assert_violates(
+        &with_edge("chiero-exec", "chiero-check"),
+        "no-upward-dependency",
+    );
+    assert_violates(
+        &with_edge("chiero-mem", "chiero-gcov"),
+        "no-upward-dependency",
+    );
 }
 
 /// 001 §4 rule 7 — the core is frontend-free; only two verticals may use the AST.
 #[test]
 fn frontend_use_is_restricted() {
-    assert_violates(&with_edge("chiero-mem", "chiero-sema"), "core-is-frontend-free");
+    assert_violates(
+        &with_edge("chiero-mem", "chiero-sema"),
+        "core-is-frontend-free",
+    );
     assert_violates(
         &with_edge("chiero-gcov", "chiero-ast"),
         "vertical-frontend-allowlist",
@@ -123,7 +152,10 @@ fn cycles_are_detected() {
 #[test]
 fn unknown_crates_are_reported() {
     let mut g = legal();
-    g.insert("chiero-mystery".to_string(), vec!["chiero-span".to_string()]);
+    g.insert(
+        "chiero-mystery".to_string(),
+        vec!["chiero-span".to_string()],
+    );
     assert_violates(&g, "known-crate");
 }
 
@@ -131,7 +163,9 @@ fn unknown_crates_are_reported() {
 #[test]
 fn violation_order_is_deterministic() {
     let mut g = with_edge("chiero-cir", "chiero-ast");
-    g.entry("chiero-mem".to_string()).or_default().push("chiero-gcov".to_string());
+    g.entry("chiero-mem".to_string())
+        .or_default()
+        .push("chiero-gcov".to_string());
     let a: Vec<String> = check(&g).iter().map(|v| v.to_string()).collect();
     let b: Vec<String> = check(&g).iter().map(|v| v.to_string()).collect();
     assert_eq!(a, b);
@@ -144,5 +178,8 @@ fn violation_order_is_deterministic() {
 fn the_real_workspace_is_clean() {
     let g = xtask::deps::workspace_graph().expect("cargo metadata");
     let v = check(&g);
-    assert!(v.is_empty(), "workspace violates its own architecture:\n{v:#?}");
+    assert!(
+        v.is_empty(),
+        "workspace violates its own architecture:\n{v:#?}"
+    );
 }
