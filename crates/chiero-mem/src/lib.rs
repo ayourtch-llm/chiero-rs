@@ -1835,11 +1835,20 @@ impl Memory {
     /// filter first and ask the solver only about what survives it — the tree is the
     /// optimisation, the filter is the semantics.
     pub fn live_ranges(&self) -> Vec<(ObjectId, u64, u64)> {
+        let at = self.placements();
         self.entries
             .iter()
             .filter(|(_, e)| e.state == ObjState::Live)
-            .filter_map(|(id, e)| self.space.addr_of(*id).map(|a| (*id, a, e.size)))
+            .filter_map(|(id, e)| at.get(id).map(|a| (*id, *a, e.size)))
             .collect()
+    }
+
+    /// Every placed object's address, by id, in one pass.
+    ///
+    /// `AddressSpace::addr_of` is a linear scan, so calling it per entry made building
+    /// the ranges O(objects²) — on the very path §5.1 says must not be linear.
+    fn placements(&self) -> indexmap::IndexMap<ObjectId, u64> {
+        self.space.objs.iter().map(|(i, a, _)| (*i, *a)).collect()
     }
 
     /// Every object a *pointer* may resolve to, **including freed and out-of-scope ones**.
@@ -1850,10 +1859,42 @@ impl Memory {
     /// pointer at address 0 rather than the use-after-free. The access itself still faults
     /// — `state_fault` is what turns the resolution into the finding.
     pub fn resolvable_ranges(&self) -> Vec<(ObjectId, u64, u64)> {
+        let at = self.placements();
         self.entries
             .iter()
-            .filter_map(|(id, e)| self.space.addr_of(*id).map(|a| (*id, a, e.size)))
+            .filter_map(|(id, e)| at.get(id).map(|a| (*id, *a, e.size)))
             .collect()
+    }
+
+    /// The largest address interval containing `a` in which **no resolvable object**
+    /// lies — the wild region around `a`.
+    ///
+    /// This is what lets 021 §5.1's search rule out a whole region of the address space
+    /// per solver query instead of one object per query: a model that lands in a guard
+    /// gap proves the wild case once, and the *region* — not just that one address — is
+    /// what the next query excludes.
+    ///
+    /// Computed over exactly the objects [`Memory::resolvable_ranges`] reports, not over
+    /// every address the space has ever handed out. An object the space placed but this
+    /// memory has no entry for can never be a candidate, so a region spanning it is still
+    /// a region the address may not be resolved in — but a region computed from the
+    /// *space* would end at its edge, and excluding "the gap" would then quietly exclude
+    /// its living neighbours too. Bounds are inclusive on both ends.
+    pub fn wild_region_around(&self, a: u64) -> (u64, u64) {
+        let (mut lo, mut hi) = (0u64, u64::MAX);
+        for (_, base, size) in self.resolvable_ranges() {
+            let top = base.saturating_add(size);
+            if top < a {
+                lo = lo.max(top.saturating_add(1));
+            } else if base > a {
+                hi = hi.min(base.saturating_sub(1));
+            } else {
+                // `a` is inside a resolvable object after all: it is not wild, and the
+                // only interval this can honestly claim is the point itself.
+                return (a, a);
+            }
+        }
+        (lo, hi)
     }
 
     /// Whether `id`'s storage is **the same allocation** in both memories — the only way

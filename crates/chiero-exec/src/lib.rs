@@ -1648,7 +1648,8 @@ impl<'m> Engine<'m> {
         }
     }
 
-    fn feasible(&mut self, a: &mut TermArena, s: &State, t: Term) -> Feas {
+    /// One solver query under the path condition plus `extra`, keeping the model.
+    fn probe(&mut self, a: &mut TermArena, s: &State, extra: &[Term]) -> CheckResult {
         self.solver_calls += 1;
         let _ = self.tier;
         // A fresh solver per query is wasteful and will be replaced by a per-state
@@ -1669,8 +1670,12 @@ impl<'m> Engine<'m> {
         // solver's own stack stays empty between queries and sibling states share both
         // the process and the caches.
         let mut asks: Vec<Term> = s.path.clone();
-        asks.push(t);
-        match solver.check(a, &asks) {
+        asks.extend_from_slice(extra);
+        solver.check(a, &asks)
+    }
+
+    fn feasible(&mut self, a: &mut TermArena, s: &State, t: Term) -> Feas {
+        match self.probe(a, s, &[t]) {
             CheckResult::Sat(_) => Feas::Yes,
             CheckResult::Unsat => Feas::No,
             CheckResult::Unknown(_) => Feas::Unknown,
@@ -2089,6 +2094,29 @@ impl<'m> Engine<'m> {
     /// **Steps 4 and 5 must stay distinct.** 021 records that an earlier draft merged
     /// them, so an unconstrained pointer was concretized to an arbitrary object and the run
     /// said `Bounded` — which reads as "we looked and bounded it" when nothing was known.
+    /// 021 §5.1 step 4: the value is unconstrained, so the path ends here.
+    ///
+    /// **Not** step 5 — concretizing an unconstrained pointer to some object and
+    /// reporting `Bounded` is the failure §5.1 calls the highest-value instance of
+    /// "wrong answer instead of honest unknown".
+    fn unresolvable_pointer(&mut self, s: &mut State, span: Span) {
+        self.finding_seq += 1;
+        s.findings.push((
+            self.finding_seq,
+            None,
+            "unresolvable pointer: the value is unconstrained, so it could refer to \
+             any object or to none"
+                .to_string(),
+        ));
+        s.degrade(
+            Fidelity::Unknown,
+            AssumptionKind::NoInformation,
+            span,
+            "a symbolic pointer with no constraint at all was not resolved",
+        );
+        s.status = Status::Terminated(TermReason::Unsupported);
+    }
+
     fn resolve_symbolic_base(
         &mut self,
         a: &mut TermArena,
@@ -2101,84 +2129,147 @@ impl<'m> Engine<'m> {
         // object reports a wild pointer at address 0 instead.
         let ranges = s.mem.resolvable_ranges();
         let cap = self.budget.max_resolutions as usize;
-        // The cheap arithmetic filter is the semantics; §5.1's interval tree is the
-        // optimisation, and asking the solver about every object is what it forbids.
-        let mut candidates: Vec<chiero_mem::ObjectId> = Vec::new();
-        let mut over_cap = false;
-        let mut undecided = false;
-        let mut feasible_count = 0usize;
-        for (id, base, size) in ranges.iter().copied() {
+        // **The address term itself decides which objects to ask about.** §5.1 requires
+        // the search be "over an interval tree keyed on base address, not a linear scan",
+        // because §8 concedes a VPP entry point may exceed 10⁴ objects and "a
+        // per-dereference O(objects) solver sweep is not viable". The previous loop was
+        // exactly that sweep: 36 unrelated allocas cost 36 extra solver queries for an
+        // address pinned to one value.
+        //
+        // So the search is model-driven. Each query asks for *some* value the address can
+        // still take; the object containing that value is found by arithmetic, and the
+        // next query excludes it. Cost is one query per answer plus one to prove there
+        // are no more — proportional to what the address can name, not to what exists.
+        // (The per-model containment lookup is a linear scan of placements. It is
+        // arithmetic, not solver time, and is where an interval tree goes when the object
+        // count makes even that matter.)
+        let inside = |a: &mut TermArena, base: u64, size: u64| -> Term {
             let lo = a.bv(64, base as u128);
             let hi = a.bv(64, base.wrapping_add(size) as u128);
-            // Only `ult`, `eq`, `not`, `and` and `or` exist in the arena, so the range
-            // test is built from them: `!(addr < lo) && (addr < hi || addr == hi)`. The
-            // upper bound is inclusive because one-past-the-end is a legal C pointer.
+            // Only `ult`, `eq`, `not` and `or` exist in the arena, so the range test is
+            // built from them: `!(addr < lo) && (addr < hi || addr == hi)`. The upper
+            // bound is inclusive because one-past-the-end is a legal C pointer.
             let below = a.ult(addr, lo);
             let in_lo = a.not(below);
             let lt_hi = a.ult(addr, hi);
             let eq_hi = a.eq(addr, hi);
             let in_hi = a.or(lt_hi, eq_hi);
-            let inside = a.and(in_lo, in_hi);
-            match self.feasible(a, s, inside) {
-                Feas::Yes => {
-                    feasible_count += 1;
-                    // **Counted past the cap, not stopped at it.** Breaking out here meant
-                    // step 4's "every object is feasible" test could never be reached once
-                    // the object count exceeded `max_resolutions` — so at VPP's >10⁴
-                    // objects the unconstrained case was permanently invisible. The scan
-                    // already costs one query per object; counting the rest costs nothing
-                    // more.
-                    if candidates.len() < cap {
-                        candidates.push(id);
-                    } else {
-                        over_cap = true;
-                    }
+            a.and(in_lo, in_hi)
+        };
+
+        // **"Wholly unconstrained" is a syntactic property.** Discovering it by asking
+        // whether every object is feasible is the sweep itself, and it is the one case
+        // §5.1 most wants distinguished (step 4, not step 5). If no constraint on the
+        // path mentions any variable the address depends on, every value it could take is
+        // feasible — decided here with no queries at all. The converse is not exact: an
+        // address a constraint *mentions* but does not narrow falls through to the
+        // enumeration below, which reaches step 4 too whenever it completes.
+        let mut addr_vars = Vec::new();
+        a.vars_of(addr, &mut addr_vars);
+        let unconstrained = !addr_vars.is_empty()
+            && s.path.iter().all(|c| {
+                let mut cv = Vec::new();
+                a.vars_of(*c, &mut cv);
+                !cv.iter().any(|v| addr_vars.contains(v))
+            });
+        if unconstrained && !ranges.is_empty() {
+            self.unresolvable_pointer(s, span);
+            return None;
+        }
+
+        let mut candidates: Vec<chiero_mem::ObjectId> = Vec::new();
+        let mut excluded: Vec<Term> = Vec::new();
+        let mut over_cap = false;
+        let mut undecided = false;
+        let mut can_be_wild = false;
+        let mut complete = false;
+        // Each round rules out either one object or one whole gap between objects, and
+        // there is one more gap than there are objects. The bound is what keeps an
+        // address that can land in many separate gaps from spinning; hitting it is
+        // reported as a cut exploration, never as a resolved pointer.
+        let rounds = 2 * cap + 4;
+        for _ in 0..rounds {
+            let m = match self.probe(a, s, &excluded) {
+                // Nothing left to name: the set found so far is *exactly* the feasible
+                // set, which is what makes step 4's test below sound.
+                CheckResult::Unsat => {
+                    complete = true;
+                    break;
                 }
-                // **"The solver could not tell" is not "the program said nothing".**
-                // Folding them together is the same mistake 021 records against an
-                // earlier draft, one level up: it would report an *unconstrained pointer*
-                // finding about a program that constrains it perfectly well and a tier
-                // that cannot see it.
-                Feas::Unknown => undecided = true,
-                Feas::No => {}
+                CheckResult::Unknown(_) => {
+                    undecided = true;
+                    break;
+                }
+                CheckResult::Sat(m) => m,
+            };
+            let Ok(v) = a.eval(&m, addr) else {
+                undecided = true;
+                break;
+            };
+            let v = v.bits() as u64;
+            match ranges
+                .iter()
+                .copied()
+                .find(|(_, base, size)| v >= *base && v <= base.wrapping_add(*size))
+            {
+                Some((id, base, size)) => {
+                    if candidates.len() == cap {
+                        over_cap = true;
+                        break;
+                    }
+                    candidates.push(id);
+                    let t = inside(a, base, size);
+                    let n = a.not(t);
+                    excluded.push(n);
+                }
+                None => {
+                    // A model in no object *is* the wild case, proven once rather than
+                    // asked about separately.
+                    can_be_wild = true;
+                    let (glo, ghi) = s.mem.wild_region_around(v);
+                    let t = inside(a, glo, ghi.saturating_sub(glo));
+                    let n = a.not(t);
+                    excluded.push(n);
+                }
             }
         }
-        // Can the pointer be outside *every* object? That is the wild state, and it is
-        // also how step 4 is told from step 3.
-        let mut outside = a.bv(1, 1);
-        for (_, base, size) in ranges.iter().copied() {
-            let lo = a.bv(64, base as u128);
-            let hi = a.bv(64, base.wrapping_add(size) as u128);
-            let below = a.ult(addr, lo);
-            let lt_hi = a.ult(addr, hi);
-            let eq_hi = a.eq(addr, hi);
-            let in_hi = a.or(lt_hi, eq_hi);
-            let above = a.not(in_hi);
-            let not_in = a.or(below, above);
-            outside = a.and(outside, not_in);
-        }
-        let can_be_wild = !matches!(self.feasible(a, s, outside), Feas::No);
+        let exhausted = !complete && !over_cap && !undecided;
 
         // **Step 4 is decided before step 5**, because "every object *and* nowhere" is a
         // statement about the program and the cap is a statement about chiero. Testing the
-        // cap first let the number of objects decide which one a reader was told.
-        if can_be_wild && feasible_count == ranges.len() && !ranges.is_empty() {
-            self.finding_seq += 1;
-            s.findings.push((
-                self.finding_seq,
-                None,
-                "unresolvable pointer: the value is unconstrained, so it could refer to \
-                 any object or to none"
-                    .to_string(),
-            ));
-            s.degrade(
-                Fidelity::Unknown,
-                AssumptionKind::NoInformation,
-                span,
-                "a symbolic pointer with no constraint at all was not resolved",
-            );
-            s.status = Status::Terminated(TermReason::Unsupported);
+        // cap first let the number of objects decide which one a reader was told. The
+        // enumeration only licenses this when it ran to unsat: short of that, "the ones I
+        // found" is not "the ones there are".
+        //
+        // `complete` is an invariant here rather than an observable branch, and mutation
+        // testing says so — removing it fails nothing. It cannot be reached by a *cut*
+        // enumeration: the address space holds `2n+1` regions for `n` objects and the
+        // round bound is `2*cap+4`, so running out of rounds needs `n >= cap+2`, and an
+        // address that can name that many objects trips the cap first, leaving
+        // `candidates.len() < ranges.len()`. What it does rule out is a solver that gives
+        // up *after* every object has been named: that is `SolverUnknown`, a statement
+        // about chiero, and reporting it as step 4 would blame the program for it.
+        if complete && can_be_wild && candidates.len() == ranges.len() && !ranges.is_empty() {
+            self.unresolvable_pointer(s, span);
             return None;
+        }
+        if exhausted {
+            // Not step 4 and not quite step 5: the address can be pinned down, but not
+            // within the query budget this resolution is allowed. Saying which is the
+            // difference between a reader strengthening the program and raising a limit.
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::OpaqueCode,
+                span,
+                &format!(
+                    "a symbolic pointer's object set was not enumerated within {rounds} \
+                     queries, so it was concretized to one"
+                ),
+            );
+            return Some(Value::Ptr(Pointer {
+                base: candidates.first().copied()?,
+                off: 0,
+            }));
         }
         if over_cap {
             // Step 5: concretize, and say the exploration was cut rather than that the
@@ -2237,21 +2328,7 @@ impl<'m> Engine<'m> {
         }
         if candidates.is_empty() {
             // Step 4: no information at all. Not a concretization — the path ends.
-            self.finding_seq += 1;
-            s.findings.push((
-                self.finding_seq,
-                None,
-                "unresolvable pointer: the value is unconstrained, so it could refer to \
-                 any object or to none"
-                    .to_string(),
-            ));
-            s.degrade(
-                Fidelity::Unknown,
-                AssumptionKind::NoInformation,
-                span,
-                "a symbolic pointer with no constraint at all was not resolved",
-            );
-            s.status = Status::Terminated(TermReason::Unsupported);
+            self.unresolvable_pointer(s, span);
             return None;
         }
         // Steps 2 and 3: one state per candidate, plus the wild one when it is feasible.

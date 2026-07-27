@@ -9643,11 +9643,11 @@ fn over_max_resolutions_concretizes_and_says_approximated() {
 /// statement about **chiero**. Both end the path at `Fidelity::Unknown`, and only the
 /// reason tells a reader whether to strengthen the program or the solver.
 ///
-/// ⚠️ **With the current tier, step 4 is not reachable**: `solver-lite`'s §3.2 fragment
-/// does not decide `addr ∈ [base, base+size]` over a variable, so every case arrives as
-/// `SolverUnknown`. An earlier version of this test asserted the step-4 text and passed —
-/// for the wrong reason, on a run whose real cause was the solver. Step 4's own detection
-/// is owed a tier that can answer, and is *not* claimed as covered.
+/// Step 4 *is* reachable at this tier now: "wholly unconstrained" is decided from the
+/// path, which mentions this value nowhere, so no range query is asked and `solver-lite`
+/// never has to answer one. An earlier version of this test asserted the step-4 text and
+/// passed for the wrong reason — the run's real cause was the solver — which is why the
+/// assertion below names the cause rather than only the fidelity.
 #[test]
 fn an_unresolvable_pointer_stops_the_path_and_names_its_reason() {
     let mut caller = defined(
@@ -9705,8 +9705,8 @@ fn an_unresolvable_pointer_stops_the_path_and_names_its_reason() {
     assert!(
         r.findings()
             .iter()
-            .any(|f| f.contains("solver did not decide") || f.contains("value is unconstrained")),
-        "{:#?}",
+            .any(|f| f.contains("value is unconstrained")),
+        "step 4's own cause, not the solver's: {:#?}",
         r.findings()
     );
 }
@@ -10907,5 +10907,144 @@ fn resolution_cost_does_not_grow_with_the_object_count() {
         "36 more objects cost {} more solver calls ({few} -> {many}): that is the \
          linear scan §5.1 forbids",
         many - few
+    );
+}
+
+/// **Step 4 does not depend on how many objects exist.** A wholly unconstrained address
+/// among 40 objects is the VPP case §5.1 §8 has in mind, and it is the one the spec most
+/// wants told apart from step 5: concretizing here and reporting `Bounded` means the rest
+/// of the function reads and writes *the wrong memory*. Discovering it by asking whether
+/// every one of the 40 is feasible would be the forbidden sweep, so it is decided from
+/// the path alone — with no solver at all, which this pins by running at tier 1.
+#[test]
+fn an_unconstrained_pointer_is_step_four_however_many_objects_exist() {
+    let mut f = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(64) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    f.allocas = (0..40).map(|i| alloca(i, CTy::Int(8), 32)).collect();
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("value is unconstrained")),
+        "step 4, named as such: {:#?}",
+        r.findings()
+    );
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
+    assert!(
+        r.states()[0].local(ValueId(1)).is_none(),
+        "step 5 would hand back a pointer into one arbitrary object"
+    );
+    assert_eq!(
+        r.solver_calls, 0,
+        "the path mentions the value nowhere; that is readable without a solver"
+    );
+}
+
+/// The enumeration reaches step 4 too, for an address a constraint *mentions* without
+/// narrowing — the syntactic test above cannot see this one. It matters that the search
+/// terminates at all here: each model that lands outside every object must rule out the
+/// whole surrounding region, because ruling out one address at a time never finishes.
+#[test]
+fn a_mentioned_but_unnarrowed_pointer_still_reaches_step_four() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut f = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(0)),
+                            b: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: 0xDEAD,
+                            }),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(1)))),
+            block(
+                2,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    f.allocas = (0..3).map(|i| alloca(i, CTy::Int(8), 32)).collect();
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("value is unconstrained")),
+        "x != 0xDEAD still leaves every object and nowhere feasible: {:#?}",
+        r.findings()
+    );
+    assert!(
+        !r.findings().iter().any(|f| f.contains("not enumerated")),
+        "the search must terminate, not run out of queries: {:#?}",
+        r.findings()
+    );
+    assert!(
+        r.states().iter().all(|s| s.local(ValueId(2)).is_none()),
+        "step 5 would hand back a pointer"
     );
 }
