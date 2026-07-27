@@ -119,6 +119,41 @@ pub fn preprocess_str(path: impl AsRef<Path>, src: &str, config: Config) -> Prep
     Engine::new(path.as_ref(), src, config).run()
 }
 
+#[derive(Debug, Default)]
+pub struct PreprocessorSession {
+    lex_session: LexSession,
+}
+
+impl PreprocessorSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn preprocess_str(
+        &self,
+        path: impl AsRef<Path>,
+        src: &str,
+        config: Config,
+    ) -> PreprocessedTu {
+        Engine::new_with_lexer(path.as_ref(), src, config, self.lex_session.clone()).run()
+    }
+
+    pub fn preprocess_with_loader<L: FileLoader>(
+        &self,
+        path: impl AsRef<Path>,
+        src: &str,
+        config: Config,
+        loader: &mut L,
+    ) -> PreprocessedTu {
+        Engine::new_with_lexer(path.as_ref(), src, config, self.lex_session.clone())
+            .run_with_loader(loader)
+    }
+
+    pub fn lex_cache_stats(&self) -> (u64, u64) {
+        self.lex_session.cache_stats()
+    }
+}
+
 pub trait FileLoader {
     fn load(&mut self, path: &Path) -> io::Result<String>;
 }
@@ -222,9 +257,12 @@ struct Engine {
 
 impl Engine {
     fn new(path: &Path, src: &str, config: Config) -> Self {
+        Self::new_with_lexer(path, src, config, LexSession::new())
+    }
+
+    fn new_with_lexer(path: &Path, src: &str, config: Config, lex_session: LexSession) -> Self {
         let mut source_map = SourceMap::new();
         let file = source_map.add_file(path, src);
-        let lex_session = LexSession::new();
         let lexed = lex_session.lex_cached(&source_map, file, LexConfig::default());
         // 012 contract 10: inactive branches are lexed but not analyzed. Lexer
         // diagnostics cannot be promoted until conditional activity is known.

@@ -61,6 +61,10 @@
 - The unbounded expansion robustness claim reproduced in a subprocess: a 20,000-link
   acyclic macro chain died with `SIGABRT`. Expansion now stops at a configurable depth
   with a diagnostic, and the same child exits normally.
+- REVIEW-1 finding 14 reproduced architecturally: one-shot entry points created a fresh
+  lexer session, so only lexer-unit tests could hit the cache. `PreprocessorSession` now
+  shares one per-worker interner/cache across real TU preprocessing; its pipeline test
+  observes one miss followed by one hit.
 
 ## Mutation checks
 

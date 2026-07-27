@@ -7,6 +7,7 @@ use chiero_span::{BytePos, FileId, SourceMap, Span};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -174,12 +175,12 @@ impl Interner {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LexSession {
-    interner: RefCell<Interner>,
-    cache: RefCell<BTreeMap<CacheKey, Arc<LexedFile>>>,
-    cache_hits: Cell<u64>,
-    cache_misses: Cell<u64>,
+    interner: Rc<RefCell<Interner>>,
+    cache: Rc<RefCell<BTreeMap<CacheKey, Arc<LexedFile>>>>,
+    cache_hits: Rc<Cell<u64>>,
+    cache_misses: Rc<Cell<u64>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
