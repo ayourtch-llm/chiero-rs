@@ -2329,11 +2329,20 @@ fn bits_of_cty(t: &CTy) -> Option<u32> {
     }
 }
 
+/// The bit-vector sort a value of `ty` occupies.
+///
+/// **Every arm is written out.** The `_ => 64` fallthrough made a *faulting* `f32` load
+/// yield 64 bits where a succeeding one yields 32 — a width that depended on whether the
+/// bytes behind it happened to be written. 023 §7 approximates floating point, but it
+/// approximates an `f32` at *its own width*; the bits are the bits (021 §3).
 fn sort_of(ty: &CTy) -> chiero_solver::Sort {
     chiero_solver::Sort::BitVec(match ty {
         CTy::Int(b) => *b,
         CTy::Ptr => 64,
-        _ => 64,
+        CTy::Float(FloatKind::F32) => 32,
+        CTy::Float(FloatKind::F64) => 64,
+        CTy::Float(FloatKind::X87_80) => 80,
+        CTy::Vector { .. } | CTy::Void => (size_of_cty(ty) * 8).clamp(1, 128) as u32,
     })
 }
 
