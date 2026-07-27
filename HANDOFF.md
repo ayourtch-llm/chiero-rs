@@ -1028,6 +1028,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `kill_backend_for_test` initially dropped the *session*, which only tests
    "spawn when none exists" rather than the real failure of a process dying mid-query.
 
+   **`Concat` and `Ite` ADDED** (`ba642f3` red, `cb8f368` green, 258 tests) — prerequisites
+   for 021 §3's symbolic bytes and §3.1's conditional writes. Both fold at construction.
+
+   *They exposed a real pre-existing defect unrelated to either:* the arena gives
+   predicates width 1, but `(= x y)` is an SMT-LIB **`Bool`** and `#b1` is a one-bit
+   vector. So `or` over two comparisons emitted `(bvor (bvult …) (bvult …))` — a sort
+   error the backend rejects — **reachable from any query with a disjunction of
+   comparisons**. Unnoticed because 022 contract 7c's disjunction is answered `Unknown` by
+   tier 1 and never reaches translation. `smt_is_bool` now decides emission; `not` had the
+   same bug. Both directions are tested, because declaring *everything* `Bool` also passed
+   the suite.
+
    **STILL OWED in `chiero-solver`:** independence slicing and the counterexample cache (022 §6.2) with the
    `possibly_infeasible` guard, `--dump-queries`, and the contract-18 differential
    campaign over random terms.
