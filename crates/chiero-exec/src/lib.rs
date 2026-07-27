@@ -2256,6 +2256,24 @@ impl<'m> Engine<'m> {
                 let in_hi = a.or(lt_hi, eq_hi);
                 a.and(in_lo, in_hi)
             };
+        // **The offset comes from the address, not from zero.** Discarding it made every
+        // resolution point at byte 0, so `d[i] = x` wrote `d[0]` for every `i`. Where the
+        // path pins the address, the offset is exact; where it does not, the object is
+        // known and the offset is not, which is a *bounded* answer rather than a wrong one.
+        let offset_in = |eng: &mut Self, a: &mut TermArena, s: &mut State, p: Pointer| -> i64 {
+            if p.base == chiero_mem::ObjectId::UNBOUND {
+                return 0;
+            }
+            let Some(base) = s.mem.addr_of(p.base) else {
+                return 0;
+            };
+            // Pinned iff no other offset in the object is feasible: ask whether the
+            // address can differ from `base + k` for the k the model gives.
+            let Some(k) = eng.pinned_offset(a, s, addr, base) else {
+                return 0;
+            };
+            k
+        };
         let mine = sibs.pop().expect("non-empty");
         for p in sibs {
             let mut sib = s.clone();
@@ -2263,13 +2281,28 @@ impl<'m> Engine<'m> {
             sib.pc.1 = sib.pc.1.wrapping_add(1);
             let c = constrain(a, &ranges, p);
             sib.path.push(c);
+            let off = offset_in(self, a, &mut sib, p);
             if let Some(d) = self.pending_dst {
-                sib.set_local(d, Value::Ptr(p));
+                sib.set_local(d, Value::Ptr(Pointer { off, ..p }));
             }
+            // **Each path records how its pointer was obtained.** Degrading only the
+            // continuing state left every sibling reporting `Exact` with an empty
+            // assumption list, and 023 §7 attaches fidelity to *paths*, not only runs.
+            sib.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                span,
+                "a symbolic pointer was resolved by searching the address space",
+            );
             self.pending.push(sib);
         }
         let c = constrain(a, &ranges, mine);
         s.path.push(c);
+        let mine_off = offset_in(self, a, s, mine);
+        let mine = Pointer {
+            off: mine_off,
+            ..mine
+        };
         s.degrade(
             Fidelity::Bounded,
             AssumptionKind::BudgetHit,
@@ -2277,6 +2310,39 @@ impl<'m> Engine<'m> {
             "a symbolic pointer was resolved by searching the address space",
         );
         Some(Value::Ptr(mine))
+    }
+
+    /// The offset within `base` that `addr` is pinned to, if the path admits exactly one.
+    ///
+    /// Asking "is any *other* offset feasible" is what makes this an answer rather than a
+    /// guess: a model alone would name one of many, and using it would fabricate a
+    /// position the program never chose.
+    fn pinned_offset(
+        &mut self,
+        a: &mut TermArena,
+        s: &State,
+        addr: Term,
+        base: u64,
+    ) -> Option<i64> {
+        let model = {
+            self.solver_calls += 1;
+            let solver = self.solver.as_mut()?;
+            match solver.check(a, &s.path) {
+                CheckResult::Sat(m) => m,
+                _ => return None,
+            }
+        };
+        let v = a.eval(&model, addr).ok()?.bits() as u64;
+        // Could it be anything else? If so the offset is not pinned and claiming one
+        // would be worse than admitting the object is all that is known.
+        let k = a.bv(64, v as u128);
+        let ne = a.eq(addr, k);
+        let differs = a.not(ne);
+        if matches!(self.feasible(a, s, differs), Feas::No) {
+            Some(v.wrapping_sub(base) as i64)
+        } else {
+            None
+        }
     }
 
     /// A pointer's address as a term, **remembering where it came from** (021 §7.1). The

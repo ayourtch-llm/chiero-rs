@@ -9820,6 +9820,33 @@ fn a_constrained_symbolic_base_forks_per_candidate_plus_one_wild() {
     uniq.sort_by_key(|o| o.0);
     uniq.dedup();
     assert_eq!(uniq.len(), resolved.len(), "{resolved:?}");
+    // **Exactly one state per candidate, plus the wild one.** `>= 2` was satisfied by the
+    // wild state and a single candidate, so "forks *per candidate*" was unpinned — taking
+    // only the first sibling survived. Three objects are below `&d`, so three plus wild.
+    assert_eq!(
+        resolved.len(),
+        4,
+        "one per candidate plus wild: {resolved:?}"
+    );
+    // **Every forked path records how its pointer was obtained.** The degrade ran on the
+    // continuing state only, so paths whose pointer was manufactured by an address-space
+    // search reported `Exact` with an empty assumption list — and 023 §7 attaches fidelity
+    // to *paths*, not only to runs.
+    for s in r.states() {
+        if s.local(ValueId(4)).is_none() {
+            continue;
+        }
+        assert_ne!(
+            s.fidelity(),
+            Fidelity::Exact,
+            "a searched pointer is not an exact one: {:#?}",
+            s.assumptions()
+        );
+        assert!(
+            !s.assumptions().is_empty(),
+            "and the path says why it was degraded"
+        );
+    }
 }
 
 /// **021 §5.1: "the solver could not tell" is not "the program said nothing".** A base
@@ -10304,8 +10331,12 @@ fn a_resolved_pointer_keeps_the_offset_it_was_given() {
             _ => None,
         })
         .collect();
+    // **Every** resolved pointer, not just one of them: the continuing state and the
+    // siblings take different paths through the code, and asserting `contains` left the
+    // siblings' offsets unpinned.
+    assert!(!offs.is_empty(), "something resolved");
     assert!(
-        offs.contains(&4),
+        offs.iter().all(|o| *o == 4),
         "the address was pinned four bytes into the object: {offs:?}"
     );
 }
