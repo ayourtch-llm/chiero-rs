@@ -582,7 +582,7 @@ fn forking_shares_every_object_it_did_not_write() {
     let objs: Vec<_> = (0..1000)
         .map(|i| {
             let o = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
-            m.set(Pointer { base: o, off: 0 }, i as u8, 8, Span::DUMMY);
+            m.set(Pointer { base: o, off: 0 }, (i % 256) as u8, 8, Span::DUMMY);
             o
         })
         .collect();
@@ -621,6 +621,6 @@ fn forking_shares_every_object_it_did_not_write() {
             Span::DUMMY
         )
         .value,
-        Some(vec![500u8 as u8])
+        Some(vec![(500u32 % 256) as u8])
     );
 }

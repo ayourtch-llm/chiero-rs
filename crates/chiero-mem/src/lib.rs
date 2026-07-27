@@ -1291,7 +1291,11 @@ pub const ITE_THRESHOLD: usize = 16;
 
 #[derive(Clone, Debug)]
 struct Entry {
-    obj: Option<MemObject>,
+    /// **Shared until written** (021 contract 20). Forking a state clones `Memory`, and a
+    /// `MemObject` held by value copied every byte of every object — quadratic in the
+    /// program's memory rather than in its branching, at the engine's most frequent
+    /// operation. `Arc::make_mut` clones exactly the one object a write touches.
+    obj: Option<std::sync::Arc<MemObject>>,
     repr: Repr,
     /// Present exactly when `repr == Repr::Array`.
     arr: Option<ArrayContents>,
@@ -1338,8 +1342,8 @@ impl Memory {
         let id = self.space.alloc(kind, size, align, at);
         // Oversized objects are recorded but not materialized: every access faults, which
         // is a finding rather than a dead process.
-        let obj =
-            (size <= MAX_MATERIALIZED_BYTES).then(|| MemObject::new(id, kind, size, align, at));
+        let obj = (size <= MAX_MATERIALIZED_BYTES)
+            .then(|| std::sync::Arc::new(MemObject::new(id, kind, size, align, at)));
         self.entries.push((
             id,
             Entry {
@@ -1375,7 +1379,7 @@ impl Memory {
             e.readonly = true;
             // Mirrored onto the object so *every* write path sees it. Two independent
             // flags is how contract 21 came to hold for one write path out of three.
-            if let Some(o) = e.obj.as_mut() {
+            if let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut) {
                 o.readonly = true;
             }
         }
@@ -1605,7 +1609,11 @@ impl Memory {
                 faults,
             };
         }
-        let obj = e.obj.as_mut().expect("materialized");
+        let obj = e
+            .obj
+            .as_mut()
+            .map(std::sync::Arc::make_mut)
+            .expect("materialized");
         match obj.write_bytes(p.off, bytes) {
             Ok(()) => AccessResult {
                 value: Some(()),
@@ -1743,7 +1751,11 @@ impl Memory {
         let Some(e) = self.entry_mut(p.base) else {
             return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
         };
-        let obj = e.obj.as_mut().expect("materialized");
+        let obj = e
+            .obj
+            .as_mut()
+            .map(std::sync::Arc::make_mut)
+            .expect("materialized");
         match obj.write_bits(b, n_bits, v) {
             Ok(()) => AccessResult {
                 value: Some(()),
@@ -1799,6 +1811,19 @@ impl Memory {
             frontier = next;
         }
         out
+    }
+
+    /// Whether `id`'s storage is **the same allocation** in both memories — the only way
+    /// to tell structural sharing from an identical copy, which is what 021 contract 20
+    /// asks for.
+    pub fn shares_storage_with(&self, other: &Memory, id: ObjectId) -> bool {
+        match (
+            self.entry(id).and_then(|e| e.obj.as_ref()),
+            other.entry(id).and_then(|e| e.obj.as_ref()),
+        ) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        }
     }
 
     /// How many objects this memory holds. Only for tests: a caller that needs to know
@@ -1879,7 +1904,7 @@ impl Memory {
     /// initialize, and the distinction is exactly what `pointees` turns on.
     pub fn write_uninit_bytes_for_test(&mut self, p: Pointer, bytes: &[u8]) {
         if let Some(e) = self.entry_mut(p.base)
-            && let Some(o) = e.obj.as_mut()
+            && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
         {
             o.write_raw_uninit(p.off, bytes);
         }
@@ -2067,7 +2092,7 @@ impl Memory {
                         break;
                     }
                     if let Some(e) = self.entry_mut(p.base)
-                        && let Some(o) = e.obj.as_mut()
+                        && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
                     {
                         o.init.set_exact_range_uninit(q.off as u64 * 8, 8);
                         o.sym.remove(&(q.off as u64));
@@ -2132,7 +2157,7 @@ impl Memory {
             }
             HavocFill::Uninitialized => {
                 if let Some(e) = self.entry_mut(id) {
-                    if let Some(o) = e.obj.as_mut() {
+                    if let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut) {
                         o.clear_contents(size);
                     }
                     // 021 §3: promotion is **one-way within a state**. Clearing `arr`
@@ -2196,7 +2221,7 @@ impl Memory {
         // initialized would launder an uninitialized source.
         if dst.off >= 0
             && let Some(e) = self.entry_mut(dst.base)
-            && let Some(o) = e.obj.as_mut()
+            && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
         {
             o.restore_init(dst.off as u64 * 8, &init);
             // The **triple** carries across. `write_bytewise` cleared the destination's
@@ -2343,7 +2368,7 @@ impl Memory {
         let Some(e) = self.entry_mut(p.base) else {
             return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
         };
-        let Some(o) = e.obj.as_mut() else {
+        let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut) else {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: p.base,
                 size: 0,
@@ -2670,7 +2695,7 @@ impl Memory {
             return AccessResult::fault(MemFault::WildPointer { off: 0, at });
         };
         let mut arr = e.arr;
-        let Some(o) = e.obj.as_mut() else {
+        let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut) else {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: id,
                 size: obj_size,
@@ -2866,7 +2891,7 @@ impl Memory {
     /// uninitialized memory, and two findings for one defect is noise on top of that.
     fn memoize(&mut self, id: ObjectId, lo_bit: u64, n_bits: u64) {
         if let Some(e) = self.entry_mut(id)
-            && let Some(o) = e.obj.as_mut()
+            && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
         {
             o.memoize_fresh(lo_bit, n_bits);
         }
@@ -2900,7 +2925,7 @@ impl Memory {
                 }
                 None => {
                     if let Some(e) = self.entry_mut(id)
-                        && let Some(o) = e.obj.as_mut()
+                        && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
                     {
                         o.sym.insert(k, t);
                     }
@@ -3027,7 +3052,7 @@ impl Memory {
             match (src, init) {
                 (Some(src), Some(init)) => {
                     if let Some(e) = self.entry_mut(new)
-                        && let Some(o) = e.obj.as_mut()
+                        && let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut)
                     {
                         let _ = o.write_bytes(0, &src);
                         o.restore_init(0, &init);
