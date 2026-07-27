@@ -1464,10 +1464,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    and silently keeping the destination's old bytes. `CopyMem` uses `Overlap::Forbidden`,
    because 021 contract 22's answer must not depend on which spelling the frontend chose.
 
-   **Still unimplemented in `exec_inst`/`eval`:** `LoadBits`, `StoreBits` (021 §3.1's
-   bit-granular init exists precisely for these), `AddrOfGlobal`, `Shuffle`, and the
-   `Const` families `operand` cannot represent. Worth an audit pass rather than
-   discovering them one at a time — that is how `Load`/`Store` stayed hidden.
+   **WAVE 19 — the audit** (`b75fed1` red, `70e3ebf` green, 514 tests). Enumerating the
+   CIR against `exec_inst`/`eval` found more than expected: `Un`, `Cast`, `Select` and
+   `AddrOfGlobal` were *all* unhandled. A unary minus, an integer cast, a ternary and any
+   function touching a file-scope variable — most of C — were degrading to `Unknown`.
+   Doing this as an audit rather than one discovery at a time is what found them together;
+   `Load`/`Store` had stayed hidden for waves behind a uniform `memset` workaround.
+
+   Decisions worth not re-litigating: `Neg` is `0 - x` at the operand's width, so the wrap
+   is the machine's. Casts are integer-only — `bits_of_cty` is `None` for floats and
+   vectors rather than a plausible width, since reinterpreting a `double` would be silent.
+   `Select` is **not** a fork: `?:` yields a value, and forking would double the state
+   count for every conditional expression while exploring nothing new. A `const` global is
+   `readonly`, which is also what keeps a havoc off a string literal.
+
+   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `LoadBits` and
+   `StoreBits` (021 §3.1's bit-granular init exists precisely for these, and it is
+   currently untested from the engine side); `AllocaDyn`; the four `Va*` (010 measured
+   2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
+   `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
+   not a scalar operand.
 
    **STILL OWED from wave 16:** the engine's use of `reachable_depth` is unpinned (needs a
    stored pointer — now possible, since `Store` exists); a store through NULL produces a
