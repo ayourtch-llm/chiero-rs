@@ -98,9 +98,11 @@ fn no_findings_under_a_hit_budget_renders_the_bound_not_a_proof() {
     );
     // The bound that was actually hit, by name and value — "within some bound" tells a
     // reader nothing they can act on.
+    // `contains('3')` would have passed on "max_recursion_depth 32" — the bound and its
+    // value have to be asserted *together* or the assertion is nearly vacuous.
     assert!(
-        text.contains("max_loop_iters") && text.contains('3'),
-        "which bound, and what it was set to: {text}"
+        text.contains("max_loop_iters (3)"),
+        "which bound was hit, and what it was set to: {text}"
     );
 }
 
@@ -145,10 +147,25 @@ fn an_exact_run_reports_exhaustion_without_claiming_the_program_is_safe() {
         vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
         CTy::Int(32),
     );
-    let r = Engine::new(&m).run(&mut a);
+    // Bounds that were **not** hit, and deliberately not the defaults: 023 §8 reports
+    // them either way, "so a reader can tell `Exact`-with-generous-bounds from
+    // `Exact`-with-trivial-bounds". A line that prints the names with some other run's
+    // numbers tells them the opposite, and nothing in the assumptions would show it —
+    // an `Exact` run has none.
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 7,
+            max_states: 55,
+            ..Budget::default()
+        })
+        .run(&mut a);
     assert_eq!(r.fidelity(), Fidelity::Exact);
 
     let text = render(&r);
+    assert!(
+        text.contains("max_loop_iters 7") && text.contains("max_states 55"),
+        "the bounds in force, not some other run's: {text}"
+    );
     assert!(
         text.contains("no bugs found"),
         "an exhaustive search that found nothing says so: {text}"
@@ -204,4 +221,108 @@ fn inst_null_deref() -> Inst {
         },
         span: Span::DUMMY,
     }
+}
+
+/// **A fork copies its parent's assumptions into every descendant**, so a flat
+/// concatenation prints one degradation as many times as the run happened to branch
+/// afterwards — which reads as a run in far worse shape than it is. Same argument
+/// `RunResult::findings` makes for reports, one field over.
+#[test]
+fn one_degradation_before_a_fork_is_reported_once() {
+    let mut a = TermArena::new();
+    let mut f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 1,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::AddrOfLocal {
+                                alloca: AllocaId(0),
+                            },
+                        },
+                        span: Span::DUMMY,
+                    },
+                    // Uninitialized: one `NoInformation` degradation, before any fork.
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Load {
+                                addr: Operand::Value(ValueId(0)),
+                                ty: CTy::Int(32),
+                                align: 4,
+                                vol: Volatility::Normal,
+                            },
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Eq,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(1)),
+                                b: i32c(0),
+                            },
+                        },
+                        span: Span::DUMMY,
+                    },
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(0)))),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    f.blocks[0].span = Span::DUMMY;
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.states().len() > 1,
+        "the fixture must fork, or this checks nothing: {}",
+        r.states().len()
+    );
+    let text = render(&r);
+    let carried: usize = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .filter(|x| x.detail.contains("could not produce the program's value"))
+        .count();
+    assert!(
+        carried > 1,
+        "every forked state must carry the assumption, or the dedup is untested: {carried}"
+    );
+    let printed = text
+        .matches("could not produce the program's value")
+        .count();
+    assert_eq!(printed, 1, "printed once, not once per descendant:\n{text}");
 }

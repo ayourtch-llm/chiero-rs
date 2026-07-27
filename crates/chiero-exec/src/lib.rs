@@ -12,6 +12,9 @@
 //! engine is allowed to be incomplete; it is not allowed to *claim* completeness it does
 //! not have.
 
+mod report;
+pub use report::render;
+
 use chiero_cir::*;
 use chiero_mem::{Endian, HavocFill, Memory, ObjKind, ObjectId, Pointer};
 use chiero_model::{
