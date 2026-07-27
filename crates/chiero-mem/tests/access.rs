@@ -1217,3 +1217,42 @@ fn the_term_api_refuses_an_access_wider_than_it_can_carry() {
     // The bytes are untouched — a refused write writes nothing.
     assert_eq!(m.read(ptr(o, 0), 8, sp(5)).value, Some(vec![7; 8]));
 }
+
+/// **The `MAX_ACCESS_BITS` boundary, both sides.** `>` versus `>=` is the whole question
+/// for a 16-byte access — `__int128`, `<2 x i64>`, an SSE register — which is exactly the
+/// width VPP's vector code uses most. The review found this unpinned: the mutation
+/// changing the comparison survived, so nothing said whether a 16-byte access is answered
+/// or refused.
+#[test]
+fn the_widest_access_chiero_carries_is_answered_and_one_more_is_not() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 32, sp(1));
+    m.set(ptr(o, 0), 7, 64, sp(2));
+    let at_limit = MAX_ACCESS_BITS / 8;
+
+    let r = m.read_term(
+        &mut a,
+        ptr(o, 0),
+        at_limit,
+        chiero_mem::Endian::Little,
+        sp(3),
+    );
+    assert!(r.faults.is_empty(), "exactly at the limit: {:#?}", r.faults);
+    assert!(r.value.is_some());
+
+    let r = m.read_term(
+        &mut a,
+        ptr(o, 0),
+        at_limit + 1,
+        chiero_mem::Endian::Little,
+        sp(4),
+    );
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| f.kind() == "unsupported-access-width"),
+        "one byte over: {:#?}",
+        r.faults
+    );
+}

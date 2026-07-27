@@ -6568,3 +6568,50 @@ fn every_errored_state_degrades_itself() {
         s.assumptions()
     );
 }
+
+/// **An argument `scanf` could not resolve is not the absence of a buffer.** The positional
+/// `&[Option<Pointer>]` fix made `None` mean "not a pointer", and `scanf` then havocs
+/// nothing for that position — so a program whose output argument chiero cannot translate
+/// keeps whatever was in the buffer, silently. `havoc_args`' own doc comment says this is
+/// the failure to avoid: "the findings on the surviving paths are false and the absences
+/// are wrong". Found by review.
+#[test]
+fn scanf_says_so_when_it_could_not_resolve_an_output_argument() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Null),
+                    // An untranslatable output argument: a float constant is not a
+                    // pointer and `operand` cannot represent it at all.
+                    Operand::Const(Const::Float(FloatKind::F64, 0)),
+                ],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "scanf", vec![CTy::Ptr, CTy::Ptr], CTy::Int(32)),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("could not be resolved")),
+        "chiero says which argument it could not follow: {:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
