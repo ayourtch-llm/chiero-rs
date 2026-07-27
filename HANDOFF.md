@@ -1963,6 +1963,53 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `Volatile`; 42 needs `IndirectGoto` execution; 44 needs the pass pipeline. Contracts 12
    and 14–18 are M2's.
 
+   **WAVE 41 — the contract-tests review.** Ten confirmed defects. Two applied so far
+   (`8ad0177`, `499272a`; 579 tests).
+
+   ⚠️ **The coverage gate was lying in both directions**, which matters more than any one
+   contract because everything else is measured by it. It counted `024 contract 22` —
+   `printf` format checking, wholly unimplemented — as covered, because a doc comment about
+   *deduplication* listed it in passing; counted `021 contract 3` because a header explains
+   why it is **unimplementable**; and **cited itself**, since its own doc comments use
+   `023 contract 10` as a syntax example. It also *missed* real citations (`024 §4,
+   contracts 6-9`, and ranges) and its declaration parser anchored on the first mention of
+   "Testable contracts" anywhere — one cross-reference sentence moved 020's denominator
+   from 44 to 60 — while slicing to end of file, so an appendix would invent contracts that
+   collide with real ids and be counted as cited. **Only `tests/` and `xtask/` count now.**
+   The honest number is **99/161**, not 100. *A gate that overcounts is worse than no gate:
+   it retires work that was never done.*
+
+   ⚠️ **020 contract 25 was cited by me and was false.** `write_bits` touched only `data`,
+   `read_bits` never called `first_symbolic` — so a `StoreBits` into a symbolic byte
+   **vanished** and the neighbouring bitfield read back as a definite constant with no
+   fault. `if (s.b != 0)` pruned, run seals `Exact`: a false negative wearing a proof. I had
+   written that 25 was "the same fact from the other side" as 24; it is not — **24 is about
+   the mask, 25 is about the value**. Ordering the new check took two attempts: after
+   `check_bits` (or the byte range overflows) *and* after the init checks (or contract 6b's
+   conditional bitfield reports the wrong fault).
+
+   **STILL OWED from wave 41, all with probes in the review:**
+   - **D2** `havoc_range` clobbering only the **first** byte survives the suite — the test
+     pins the upper bound only. Also `concrete_size → 1` survives.
+   - **D3** `HavocFill::Uninitialized` in `havoc_range` is unreachable in-tree *and* wrong
+     if reached: it mutates read-only, freed and promoted objects, and on a promoted one it
+     reports success while changing nothing — what 020 §4.3 forbids.
+   - **D4** an `Opaque` write past the end partially clobbers, discards the `OutOfBounds`
+     fault (so a declared overflow is detected and **not reported**), returns `false` after
+     mutating, and its message says "outside any object" for a range that started inside.
+   - **D8** contract 27 is pinned at the `LoadBits` site only; deleting `check_bits` at the
+     `StoreBits` site survives, and `> w` → `>= w` survives (a full-width bitfield is
+     correct and unpinned).
+   - **D9** `verify.rs:822` overflows on `BitRange { off: u32::MAX, width: 4 }` — panic in
+     debug, *accepts* in release. Reachable only from a programmatically built module, i.e.
+     `chiero-lower`.
+   - **D10** contract 9's "solver agrees with the engine" assertion is **structurally
+     vacuous**: both operands are constants, so `bin` const-folds and `return_value_bits`
+     *is* the same `eval_ground` call. Proven by mutation — deleting the assertion loses
+     nothing. Needs symbolic operands to be real.
+   - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
+     honoured" is untested.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
