@@ -488,8 +488,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 ## 9. Next actions
 
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
-complete at draft-2 (post-review). ~6750 lines, 24 numbered documents + index, 482
-numbered testable contracts.
+complete at **draft-3** (post-review, three review waves applied). ~7030 lines,
+24 numbered documents + index, **497** numbered testable contracts.
 
 **✅ SPEC GATE PASSED — 2026-07-27.** The user read the specs ("looks reasonable to me")
 and granted **full autonomy**. §2 decision 3 is now discharged: run free, no check-ins
@@ -555,7 +555,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      analysed the wrong memory for a whole function — and it fires on `vlib_get_buffer`,
      the most-executed function in VPP's data plane. Hence arenas (021 §5.2).
 
-   **Wave 2 (QUEUED — nothing cached, relaunch fresh):**
+   **Wave 2 — COMPLETE, findings applied in `99a58a0`.** The recipe/tool review found
+   that the DSL cannot express two of its three advertised catalogue rules (verified:
+   1638 of 3350 `clib_error_return` sites are inline returns needing a result binder the
+   grammar lacks; 655 of 749 pool functions do `pool_get` or `pool_put` but not both, so
+   a per-function typestate is structurally wrong). 042 §4.3 now states what the DSL
+   covers and routes the rest to Rust checkers. Also found: a verified tier-1 recall hole
+   in `vnet/interface_cli.c`, a false-positive `double_free` in the flagship example
+   (`unformat_free` memsets), and a job-response path where a 5%-complete run could
+   report `proven: true` over an empty findings list.
+
+   **Wave 3 (QUEUED — nothing cached):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -572,8 +582,11 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      cancelled-job paths as overclaim vectors.
    - **A second Fable pass over the *revised* specs.** The first pass found the most, and
      the specs changed substantially under it; the fixes themselves deserve adversarial
-     review, especially 021 §3.1's tri-state `InitMask`, 021 §5.2 arenas, and 015 (brand
-     new, never reviewed).
+     review, especially 021 §3.1's tri-state `InitMask`, 021 §5.2 arenas, 042 §4.2.1's
+     `(ObjectId, byte range)` entity identity, and **015, which is brand new and has
+     never been reviewed at all**.
+   - **`chiero-span`'s implementation** — the cooked index and provenance queries are now
+     real code (49 tests) and have had no adversarial review.
 
 3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
    subagent finding is a claim, not a verdict; several will be wrong, and adopting a
@@ -617,10 +630,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      010 contracts 3–10. `expansion_loc` allocates zero times, measured with a real
      counting allocator.
 
-   **Still owed in `chiero-span`**: the §6.2 **cooked cross-TU index**
-   (`GlobalInterner`, `CookedExpansionIndex`, `MacroEntity`) — 010 contracts 13–19, the
-   ones that catch the dangling-`ExpnCtx` design error. Also `Diagnostic` (010 §7) with
-   macro-backtrace rendering, which 001 §5 says lives here.
+   - cooked cross-TU index (`0e101e9`, `b184c89`): `GlobalInterner`,
+     `CookedExpansionIndex`, `MacroEntity`, `GlobalFileId`. 010 contracts 13–19 — the
+     ones that catch the dangling-`ExpnCtx` design error. `cook_tu` resolves eagerly so
+     the index is self-contained by construction.
+
+   **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace
+   rendering, which 001 §5 says lives here; and 010 contracts 11 (re-lex round trip)
+   and 18 (peak-memory bound), which need a lexer and a bigger fixture respectively.
+
+   ⚠️ **Three times this session I wrote an instrument that could not observe what its
+   assertion claimed** — the vacuous `alloc_count`, the empty-graph workspace test (found
+   by review), and a process-global allocation counter under parallel tests (found only
+   because unrelated tests happened to run beside it). Before writing any "X does not
+   happen" assertion, **prove the instrument can see X happen** — the allocation test now
+   does exactly that with a probe that fails if the allocator is not installed.
 
    Working rhythm that is going well: write the test file first, stub the impl with
    `todo!()` so failures are behavioural not missing-symbol, commit `red:` with the
