@@ -650,16 +650,32 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    first real function. The crate had gone out of its way to tolerate unreachable C by
    skipping the scan *inside* dead blocks, and never fixed the lattice underneath.
 
+   **Spans and unordered predicates DONE** (`9c8aa62` red, `dcc3db1` green, 175 tests).
+   Spans print as a trailing `; span lo:hi:ctx`; 020 §6 was amended from `; file:line`,
+   which a `Module` *cannot* round-trip since it carries no `SourceMap` — rendering
+   `file:line` and the macro backtrace is a diagnostic concern (010 §7), where a
+   `SourceMap` is in hand, and serialization only has to be reversible. `CmpOp` gained
+   `FUEq`/`FUNe`/`FULt`/`FULe`/`FOrd`/`FUno`.
+
+   *Two mutation false-negatives worth remembering, both of which look exactly like an
+   unpinned fix:* `cargo fmt` collapsed a `format!` onto one line between reading and
+   patching, so the replace silently did nothing (**eighth** silent no-op this session —
+   every mutation now asserts its anchor first); and dropping a field from a parser arm
+   produced code that **does not compile**, which is indistinguishable from a green suite
+   when counting failing tests. Mutate the printer instead when the parser mutation
+   won't typecheck.
+
    **Judged valid but not yet applied** (in rough value order):
-   - **Spans do not round-trip.** Nothing prints or parses them; every `span` becomes
+   - ~~**Spans do not round-trip.**~~ DONE, see above. Original finding kept for the
+     reasoning: Nothing prints or parses them; every `span` becomes
      `Span::DUMMY`. Contracts 1 and 015/22 hold *only* because every fixture has dummy
      spans, and `every_corpus_module_round_trips` compares `print(m)` to
      `print(parse(print(m)))`, which is invariant under anything the printer omits.
      020 §1.5 calls provenance "the product". **This breaks the moment `chiero-lower`
      emits real CIR, and it breaks silently.** Highest-value remaining item.
-   - **Unordered float predicates are absent from `CmpOp`.** C's `isnan` idiom `x != x`
-     needs one; `FONe` is *ordered* not-equal, which is **false** for NaN — the opposite
-     of C. This is a wrong-answer bug, not a coverage gap.
+   - ~~**Unordered float predicates are absent from `CmpOp`.**~~ DONE. C's `isnan` idiom
+     `x != x` needs one; `FONe` is *ordered* not-equal, **false** for NaN — the opposite
+     of C. Was a wrong-answer bug, not a coverage gap.
    - `InstKind::Opaque` still absent (015 §7 forbids the workarounds); also missing:
      `ShuffleDyn`, `Fresh.why`, `MarkerKind::Assume`, `AccessPath`/`PtrAdd.path`,
      `CopyMem.overlap` (memmove vs memcpy is inexpressible), `Call.conv`,
