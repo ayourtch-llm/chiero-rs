@@ -791,6 +791,35 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      even for objects never bit-accessed. With 021 §8's ~10⁴ objects and VPP's ~2.5 KB
      buffers this is the dominant cost.
 
+   **WAVE 9 — access-layer review COMPLETE and applied** (`34f2706`, 274 tests). 33%
+   escape rate, **fourteen** confirmed defects and **four** of my tests shown to prove
+   nothing. Highlights: `abs_bit` overflowed (the byte API went to i128, the bit API did
+   not follow); **two independent `readonly` fields**, with `write_bits` consulting the
+   one nothing set; `realloc` inherited no graph position, so every `vec_resize` of a
+   rooted vector was reported leaked; `leaks()` walked *through freed objects*, hiding
+   free-the-head-forget-the-children; `exit_scope` overwrote `Freed`, erasing every free
+   record at frame teardown; the alignment requirement was `min(object_align, size)`,
+   wrong in both directions; `read_bits` returned a fault *instead of* a value and skipped
+   the state check; `free(NULL)` was a false positive while `free(global)` was accepted;
+   and **contract 26 — the stated reason `read` takes `&mut self` — was not implemented**,
+   so two reads of one uninitialized byte gave two findings and could give two symbols.
+
+   **The same-answer trap caught me a fourth time, and this one stings:** I wrote a
+   comment warning about it and landed another instance in the same commit. The byte↔bit
+   scale test wrote *and* read through the bit path, so both shared any wrong multiplier —
+   `off * 8` → `off * 4` survived, and so did the extra assertion I added to disambiguate.
+   **The fix is always cross-checking through an independent path**, not adding another
+   assertion on the same one.
+
+   **STILL OWED from wave 9** (judged valid, not applied): `AccessCtx`, `copy`, `set`
+   (contracts 22, 28); §5 step 2's may-OOB "continue on the in-bounds branch" — only
+   concrete must-OOB exists, though the test docs describe both; `InitBit::Cond` is
+   unreachable through the `Memory` API; §4's leak roots ("globals, the return value, or
+   any live stack object") are not *derived* — the caller must `set_root` by hand, so a
+   heap object held only by a live stack local reads as a leak; and `point_at` is
+   append-only, so an overwritten pointer field can never drop an edge, systematically
+   under-reporting leaks after any pointer store.
+
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
    offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
    13d); lazy initialization (18, 19); symbolic-base forking (16, 17); §7.2's symbolic
