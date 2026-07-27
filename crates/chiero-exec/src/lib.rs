@@ -104,6 +104,23 @@ impl AssumptionKind {
     }
 }
 
+/// Something the outside world can see, in the order the path did it (020 §4.2).
+///
+/// A device register written twice was written twice, and the sequence is what a driver's
+/// correctness depends on — so this is a list, not a set, and nothing coalesces entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Effect {
+    pub kind: EffectKind,
+    pub span: Span,
+    pub detail: String,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EffectKind {
+    /// A `Volatility::Volatile` store.
+    VolatileStore,
+}
+
 /// A defined-but-undefined-behaviour operation, as 020 §4.1 wants it recorded.
 ///
 /// §4.1's separation: "defined IR semantics, UB reported as findings". The *value* is
@@ -332,6 +349,8 @@ pub struct State {
     findings: Vec<StateFinding>,
     /// 020 §4.1's UB events, in the order this path met them.
     ub: Vec<UbEvent>,
+    /// 020 §4.2's observable effects, in program order.
+    effects: Vec<Effect>,
     /// **Every symbolic input this path ever created**, in creation order (023 §9). The
     /// witness is an assignment to exactly these, so a symbol minted without landing here
     /// is a value the replay harness would leave to chance.
@@ -417,6 +436,7 @@ impl State {
             findings: Vec::new(),
             inputs: Vec::new(),
             ub: Vec::new(),
+            effects: Vec::new(),
             replay_used: 0,
             witness: None,
             unwitnessed: None,
@@ -480,6 +500,11 @@ impl State {
     /// 020 §4.1's UB events on this path.
     pub fn ub_events(&self) -> &[UbEvent] {
         &self.ub
+    }
+
+    /// 020 §4.2's observable effects on this path, in program order.
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
     }
 
     /// This path's witness, or `None` with a reason (023 contract 15).
@@ -890,6 +915,7 @@ impl<'m> Engine<'m> {
                 findings: Vec::new(),
                 inputs: Vec::new(),
                 ub: Vec::new(),
+                effects: Vec::new(),
                 replay_used: 0,
                 witness: None,
                 unwitnessed: None,
@@ -969,6 +995,7 @@ impl<'m> Engine<'m> {
             findings: Vec::new(),
             inputs: entry_inputs,
             ub: Vec::new(),
+            effects: Vec::new(),
             replay_used: 0,
             witness: None,
             unwitnessed: None,
@@ -1528,7 +1555,7 @@ impl<'m> Engine<'m> {
                 val,
                 ty,
                 align,
-                ..
+                vol,
             } => {
                 let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     self.lowering_gap(s, i.span, "a store through a non-pointer address");
@@ -1553,6 +1580,17 @@ impl<'m> Engine<'m> {
                 };
                 let _ = align;
                 let size = size_of_cty(ty);
+                // **020 §4.2: a volatile store is an observable event.** Recorded before
+                // the write so a fault on the write cannot lose it — the outside world
+                // saw the attempt either way, and a device register written twice was
+                // written twice.
+                if *vol == Volatility::Volatile {
+                    s.effects.push(Effect {
+                        kind: EffectKind::VolatileStore,
+                        span: i.span,
+                        detail: format!("volatile store of {size} byte(s) to {p:?}"),
+                    });
+                }
                 let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
                 self.report_faults(s, &r.faults, i.span);
             }
@@ -2297,10 +2335,28 @@ impl<'m> Engine<'m> {
             // a zero — 021 §3.1 names reading uninitialized bytes as zero the single most
             // common way a symbolic executor produces confidently wrong results, and the
             // backing store really does read as zero, so this is where it happens.
-            RValue::Load { addr, ty, .. } => {
+            RValue::Load { addr, ty, vol, .. } => {
                 let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     return self.lowering_gap(s, span, "a load through a non-pointer address");
                 };
+                // **020 §4.2: a volatile load never reads the stored bytes.** It is a
+                // device register, and reading back what was written is the one thing
+                // hardware does not do — modelling it as memory makes
+                // `*reg = 0; if (*reg == 0)` a certainty and explores branches the device
+                // can never take. A fresh symbol *each time*, so two reads are two reads:
+                // §4.2 forbids caching or CSE-ing them, and one shared value is CSE by
+                // another name.
+                if *vol == Volatility::Volatile {
+                    self.fresh_count += 1;
+                    let t = self.input(
+                        a,
+                        s,
+                        sort_of(ty),
+                        &format!("vol{}", self.fresh_count),
+                        InputOrigin::Volatile { span },
+                    );
+                    return Some(Value::Scalar(t));
+                }
                 let size = size_of_cty(ty);
                 if size == 0 {
                     // Nothing to read, so nothing to invent. `sort_of` would have handed

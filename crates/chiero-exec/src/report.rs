@@ -79,6 +79,17 @@ pub fn render(r: &RunResult) -> String {
         }
     }
 
+    // 020 §4.2's observable effects — what the outside world saw, in the order it saw
+    // it. A device register written twice was written twice.
+    let effects: Vec<_> = r.states().iter().flat_map(|s| s.effects()).collect();
+    if !effects.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "observable effects ({}):", effects.len());
+        for e in &effects {
+            let _ = writeln!(out, "  - [{:?}] {} at {:?}", e.kind, e.detail, e.span);
+        }
+    }
+
     // 020 §4.1's UB events. Not findings — the engine does not decide whether wrapping
     // was a mistake, and VPP wraps deliberately all over — but a reader who cannot see
     // them has to take a checker's word for what the program did.

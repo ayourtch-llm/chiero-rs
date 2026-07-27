@@ -35,6 +35,9 @@ pub enum InputOrigin {
     ModelReturn { func: String, span: Span },
     /// An output of `InstKind::Opaque` — inline asm and friends (020 §4.3).
     Opaque { span: Span },
+    /// A `Volatility::Volatile` load — a device register, whose value the program did
+    /// not compute and the replay harness must supply (020 §4.2).
+    Volatile { span: Span },
     /// A byte `chiero-mem` invented: lazily-materialized contents, or memory clobbered by
     /// code with no model. 023 §9 lists these among what a witness must bind, and the
     /// engine cannot see them being created — memory reports them.
@@ -52,6 +55,7 @@ impl InputOrigin {
             | InputOrigin::ExternReturn { span, .. }
             | InputOrigin::ModelReturn { span, .. }
             | InputOrigin::Opaque { span, .. }
+            | InputOrigin::Volatile { span }
             | InputOrigin::Memory { span, .. } => *span,
         }
     }
@@ -68,6 +72,7 @@ impl InputOrigin {
             InputOrigin::ExternReturn { func, .. } => format!("return of extern `{func}`"),
             InputOrigin::ModelReturn { func, .. } => format!("return of modeled `{func}`"),
             InputOrigin::Opaque { .. } => "opaque output".to_string(),
+            InputOrigin::Volatile { .. } => "volatile read".to_string(),
             InputOrigin::Memory { why, .. } => (*why).to_string(),
         }
     }

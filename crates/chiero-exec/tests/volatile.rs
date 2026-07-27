@@ -227,3 +227,62 @@ fn observable_effects_appear_in_the_report() {
     let r2 = Engine::new(&m2).run(&mut a2);
     assert!(!render(&r2).contains("observable"), "{}", render(&r2));
 }
+
+/// **One site, executed twice, is two effects.** The test above uses two *different*
+/// store instructions, so a coalescer keyed on the site slips through it — a loop writing
+/// one register on each pass is the shape that catches that, and is also what VPP's
+/// counter code does.
+#[test]
+fn one_volatile_store_executed_twice_is_two_effects() {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 1,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: at(1),
+        }],
+        blocks: vec![
+            // A preheader: the verifier rejects a back edge into the entry block, and a
+            // fixture that never runs reports zero effects and looks like a pass.
+            block(0, vec![addr(0, 10)], Terminator::Goto(BlockId(1))),
+            block(
+                1,
+                vec![store(1, Volatility::Volatile, 20)],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 2,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    let effects = r.states()[0].effects();
+    assert!(
+        effects.len() >= 2,
+        "each pass writes the register again: {effects:?}"
+    );
+    assert!(
+        effects.iter().all(|e| e.span == at(20)),
+        "all from the one site, which is the point: {effects:?}"
+    );
+}
