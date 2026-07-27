@@ -8,6 +8,7 @@
 //! stops detecting a rule — which a test that only ran against the (clean) real
 //! workspace could never catch.
 
+use std::collections::BTreeSet;
 use xtask::deps::{Graph, check};
 
 fn graph(edges: &[(&str, &[&str])]) -> Graph {
@@ -68,83 +69,143 @@ fn with_edge(from: &str, to: &str) -> Graph {
     g
 }
 
-fn assert_violates(g: &Graph, rule: &str) {
-    let v = check(g);
-    assert!(
-        v.iter().any(|x| x.rule == rule),
-        "expected a `{rule}` violation, got: {v:?}"
-    );
+/// The set of rule names a graph violates.
+fn rules(g: &Graph) -> BTreeSet<&'static str> {
+    check(g).into_iter().map(|v| v.rule).collect()
+}
+
+/// Assert that adding one edge to `legal()` produces **exactly** the named rules.
+///
+/// Asserting only that the expected rule is *among* the violations is not enough: an
+/// implementation that decides legality correctly but tags every violation with all
+/// seven rule names passes such a suite completely, while telling an engineer nothing
+/// about which invariant they broke. The rule name is the entire diagnostic value of
+/// this tool, so the delta is pinned exactly.
+#[track_caller]
+fn assert_new_rules(from: &str, to: &str, expected: &[&str]) {
+    let g = with_edge(from, to);
+    // `no-cycles` is excluded: many single-edge additions to `legal()` are back edges
+    // that incidentally close a cycle, which would swamp the layering delta under test.
+    // Cycles have their own test.
+    let got: BTreeSet<_> = rules(&g)
+        .difference(&rules(&legal()))
+        .copied()
+        .filter(|r| *r != "no-cycles")
+        .collect();
+    let want: BTreeSet<_> = expected.iter().copied().collect();
+    assert_eq!(got, want, "adding `{from}` -> `{to}`");
+
+    // The detail must name both crates, or the message is not actionable.
+    for v in check(&g).iter().filter(|v| want.contains(v.rule)) {
+        assert!(
+            v.detail.contains(from) && v.detail.contains(to),
+            "detail must name both crates: {}",
+            v.detail
+        );
+    }
 }
 
 /// 001 §4 rule 3 / §3 — the rule that makes the symbolic core buildable before the
 /// parser exists. The single most important structural rule in the project.
 #[test]
 fn cir_may_not_depend_on_the_frontend() {
-    assert_violates(
-        &with_edge("chiero-cir", "chiero-ast"),
-        "cir-contract-boundary",
+    // Both fire: cir is Core (rule 7) and is also specifically named by rule 3.
+    assert_new_rules(
+        "chiero-cir",
+        "chiero-ast",
+        &["cir-contract-boundary", "core-is-frontend-free"],
     );
-    assert_violates(
-        &with_edge("chiero-cir", "chiero-parse"),
-        "cir-contract-boundary",
+    assert_new_rules(
+        "chiero-cir",
+        "chiero-parse",
+        &["cir-contract-boundary", "core-is-frontend-free"],
     );
 }
 
 /// 001 §4 rule 5.
 #[test]
 fn span_depends_on_nothing() {
-    assert_violates(&with_edge("chiero-span", "chiero-lex"), "span-is-leaf");
+    assert_new_rules("chiero-span", "chiero-lex", &["span-is-leaf"]);
+    // Even a dependency on a crate missing from the layer table must trip it.
+    assert_new_rules("chiero-span", "chiero-unknown", &["span-is-leaf"]);
 }
 
 /// 001 §4 rule 2 — the core never reaches upward into a vertical.
 #[test]
 fn core_may_not_depend_on_a_vertical() {
-    assert_violates(
-        &with_edge("chiero-exec", "chiero-check"),
-        "no-upward-dependency",
-    );
-    assert_violates(
-        &with_edge("chiero-mem", "chiero-gcov"),
-        "no-upward-dependency",
-    );
+    assert_new_rules("chiero-exec", "chiero-check", &["no-upward-dependency"]);
+    assert_new_rules("chiero-mem", "chiero-gcov", &["no-upward-dependency"]);
+}
+
+/// The core must not reach *any* layer above it, and `chiero-vpp` is filed under
+/// Surfaces rather than Verticals (001 §2) — so a rule keyed only on Verticals leaves
+/// `chiero-cir -> chiero-vpp` legal, which is exactly the leak 001 §2 warns about.
+#[test]
+fn nothing_below_a_surface_may_depend_on_one() {
+    assert_new_rules("chiero-cir", "chiero-vpp", &["no-upward-dependency"]);
+    assert_new_rules("chiero-mem", "chiero-tool", &["no-upward-dependency"]);
+    assert_new_rules("chiero-gcov", "chiero-vpp", &["no-upward-dependency"]);
+    assert_new_rules("chiero-lex", "chiero-cli", &["no-upward-dependency"]);
+    // Surface-to-surface stays legal.
+    assert_new_rules("chiero-cli", "chiero-vpp", &[]);
 }
 
 /// 001 §4 rule 7 — the core is frontend-free; only two verticals may use the AST.
 #[test]
 fn frontend_use_is_restricted() {
-    assert_violates(
-        &with_edge("chiero-mem", "chiero-sema"),
-        "core-is-frontend-free",
+    assert_new_rules("chiero-mem", "chiero-sema", &["core-is-frontend-free"]);
+    assert_new_rules(
+        "chiero-gcov",
+        "chiero-ast",
+        &["vertical-frontend-allowlist"],
     );
-    assert_violates(
-        &with_edge("chiero-gcov", "chiero-ast"),
-        "vertical-frontend-allowlist",
-    );
-    // ...but the two allowlisted verticals are fine, and already exercise this in
-    // `legal()`.
-    assert!(check(&with_edge("chiero-recipe", "chiero-ast")).is_empty());
+    // ...but the two allowlisted verticals may.
+    assert_new_rules("chiero-recipe", "chiero-ast", &[]);
+    assert_new_rules("chiero-diff", "chiero-lex", &[]);
 }
 
 /// 001 §4 rule 6 — vertical-to-vertical edges are an explicit allowlist.
 #[test]
 fn vertical_edges_are_allowlisted() {
-    assert_violates(
-        &with_edge("chiero-gcov", "chiero-check"),
-        "vertical-edge-allowlist",
-    );
-    // A permitted edge is not a violation.
-    assert!(check(&with_edge("chiero-select", "chiero-gcov")).is_empty());
+    assert_new_rules("chiero-gcov", "chiero-check", &["vertical-edge-allowlist"]);
+    assert_new_rules("chiero-check", "chiero-opt", &["vertical-edge-allowlist"]);
+    // A permitted edge that is not already in `legal()` is accepted.
+    assert_new_rules("chiero-select", "chiero-check", &[]);
 }
 
 /// 001 §4 rule 1 / contract 1.
 #[test]
 fn cycles_are_detected() {
-    let g = graph(&[
+    let three = graph(&[
         ("chiero-cir", &["chiero-solver"]),
         ("chiero-solver", &["chiero-mem"]),
         ("chiero-mem", &["chiero-cir"]),
     ]);
-    assert_violates(&g, "no-cycles");
+    assert!(rules(&three).contains("no-cycles"));
+
+    // A two-cycle and a self-loop are the boundary cases.
+    let two = graph(&[
+        ("chiero-cir", &["chiero-mem"]),
+        ("chiero-mem", &["chiero-cir"]),
+    ]);
+    assert!(rules(&two).contains("no-cycles"));
+
+    let self_loop = graph(&[("chiero-cir", &["chiero-cir"])]);
+    assert!(rules(&self_loop).contains("no-cycles"));
+
+    // Every distinct cycle is reported, not just the first one found. An engineer
+    // who fixes the reported cycle and re-runs should not discover a new one.
+    let two_cycles = graph(&[
+        ("chiero-cir", &["chiero-mem", "chiero-solver"]),
+        ("chiero-mem", &["chiero-cir"]),
+        ("chiero-solver", &["chiero-mem"]),
+    ]);
+    let cycles = check(&two_cycles);
+    assert_eq!(
+        cycles.iter().filter(|v| v.rule == "no-cycles").count(),
+        2,
+        "both cycles must be reported, got: {cycles:#?}"
+    );
 }
 
 /// An unknown crate must be reported rather than silently skipped — otherwise a
@@ -156,7 +217,7 @@ fn unknown_crates_are_reported() {
         "chiero-mystery".to_string(),
         vec!["chiero-span".to_string()],
     );
-    assert_violates(&g, "known-crate");
+    assert!(rules(&g).contains("known-crate"));
 }
 
 /// Violations must be reported in a stable order (001 §5: determinism).
