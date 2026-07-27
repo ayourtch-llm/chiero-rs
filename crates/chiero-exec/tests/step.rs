@@ -5207,3 +5207,125 @@ fn an_integer_with_no_provenance_degrades() {
         r.states()[0].assumptions()
     );
 }
+
+/// **023 contract 23: a `Value::Ptr` survives a store and a load.** `Store` took its value
+/// through `scalar`, which returns `None` for a pointer, so `p->next = q` hit the
+/// `let-else` and degraded **every run containing it** to `Unknown` — while blaming the
+/// *address*, which was fine, and manufacturing a false uninitialized-read on the reload
+/// because the store never happened. Found by review.
+///
+/// Essentially all of VPP's data structures are this shape.
+#[test]
+fn a_pointer_survives_a_store_and_a_load() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Value(ValueId(1)),
+                    ty: CTy::Ptr,
+                    align: 8,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Ptr,
+                        align: 8,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Ptr, 1)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(8), 16)
+        },
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert_eq!(
+        s.local(ValueId(2)),
+        s.local(ValueId(1)),
+        "the same pointer, object and offset, came back"
+    );
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", s.assumptions());
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+}
+
+/// **Misalignment is a finding only in `ub-strict` mode** (021 §5 step 3), and no such
+/// mode exists — so `report_faults` turning *every* fault into a finding reported it
+/// unconditionally. `align_fault` compares against the **object's declared** alignment, so
+/// any N-byte access into an object declared with less is flagged whatever its address.
+/// Anything using `CLIB_PACKED` — every VPP packet header — is a false positive. Found by
+/// review, which noted the commit's own pinning test manufactures two and cannot see them.
+#[test]
+fn misalignment_is_not_a_finding_by_default() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Store {
+                addr: Operand::Value(ValueId(0)),
+                val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                ty: CTy::Int(32),
+                align: 1,
+                vol: Volatility::Normal,
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.blocks[0].insts.insert(
+        0,
+        inst(InstKind::Assign {
+            dst: ValueId(0),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(0),
+            },
+        }),
+    );
+    // Declared align 1 — a packed struct — and a four-byte store into it.
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        !r.findings().iter().any(|f| f.contains("misaligned")),
+        "x86-64 tolerates this and VPP relies on it: {:#?}",
+        r.findings()
+    );
+}
