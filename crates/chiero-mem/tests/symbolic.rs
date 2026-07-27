@@ -833,3 +833,65 @@ fn a_second_promotion_does_not_rebuild_from_the_frozen_bytes() {
         "the second promotion rebuilt from the frozen Bytes view and lost the write"
     );
 }
+
+/// **`read_term` memoizes like `read` does** (021 §5, contract 26).
+///
+/// Without it one never-written byte is reported on *every* read, and the two read APIs
+/// disagree about the same byte — `read` says "reported once, now defined", `read_term`
+/// says "still uninitialized". Two APIs over one object cannot hold different opinions
+/// about whether anybody wrote to it.
+#[test]
+fn read_term_memoizes_the_fresh_symbol_like_the_byte_api() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let first = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(2));
+    assert_eq!(first.faults.len(), 1, "{:#?}", first.faults);
+    let second = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3));
+    assert!(
+        second.faults.is_empty(),
+        "the fresh symbol is memoized, so the second read is not a new finding: {:#?}",
+        second.faults
+    );
+    // And the byte API now agrees the bytes are defined.
+    assert!(m.read(ptr(o, 0), 4, sp(4)).faults.is_empty());
+}
+
+/// **Contract 6b holds for the bit API too.** §3.1 argues the tri-state *from bitfields*,
+/// so enforcing it only on the byte path leaves the case it was designed for unguarded: a
+/// conditionally-written bitfield must not report a *definite* uninitialized read.
+#[test]
+fn a_conditionally_written_bitfield_is_not_a_definite_finding() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0b101);
+    m.write_at_symbolic_offset(&mut a, o, off, &[0], val, sp(2));
+
+    let r = m.read_bits(ptr(o, 0), 0, 3, sp(3));
+    assert!(
+        !r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "a conditionally-written bitfield is not definitely uninitialized: {:#?}",
+        r.faults
+    );
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::MaybeUninitialized { .. })),
+        "but it is not silently initialized either: {:#?}",
+        r.faults
+    );
+    assert!(r.value.is_some(), "and a value comes back regardless");
+    // A bitfield in a byte nobody touched is still a definite finding.
+    let far = m.read_bits(ptr(o, 4), 0, 3, sp(4));
+    assert!(
+        far.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "{:#?}",
+        far.faults
+    );
+}
