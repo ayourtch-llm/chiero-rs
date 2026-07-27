@@ -84,11 +84,11 @@ fn straight_line_arithmetic_terminates_exactly_with_no_solver_calls() {
     );
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 1, "{:#?}", r.states);
-    let s = &r.states[0];
+    assert_eq!(r.states().len(), 1, "{:#?}", r.states());
+    let s = &r.states()[0];
     assert!(matches!(s.status, Status::Terminated(_)));
     assert_eq!(s.return_value_bits(&mut a), Some(5));
-    assert_eq!(s.fidelity, Fidelity::Exact);
+    assert_eq!(s.fidelity(), Fidelity::Exact);
     assert_eq!(r.solver_calls, 0, "arithmetic must not consult a solver");
 }
 
@@ -115,10 +115,10 @@ fn a_constant_branch_makes_no_solver_call_and_one_successor() {
     );
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 1);
-    assert_eq!(r.states[0].return_value_bits(&mut a), Some(10));
+    assert_eq!(r.states().len(), 1);
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(10));
     assert_eq!(r.solver_calls, 0);
-    assert_eq!(r.states[0].fidelity, Fidelity::Exact);
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Exact);
 }
 
 /// **023 contract 3.** A symbolic branch forks into exactly two states with path
@@ -149,17 +149,18 @@ fn a_symbolic_branch_forks_into_two_states_true_first() {
     );
     let _ = x;
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 2, "{:#?}", r.states);
+    assert_eq!(r.states().len(), 2, "{:#?}", r.states());
     assert_eq!(
-        r.states[0].return_value_bits(&mut a),
+        r.states()[0].return_value_bits(&mut a),
         Some(10),
         "the true branch is explored first"
     );
-    assert_eq!(r.states[1].return_value_bits(&mut a), Some(20));
-    assert_eq!(r.states[0].path.len(), 1);
-    assert_eq!(r.states[1].path.len(), 1);
+    assert_eq!(r.states()[1].return_value_bits(&mut a), Some(20));
+    assert_eq!(r.states()[0].path.len(), 1);
+    assert_eq!(r.states()[1].path.len(), 1);
     assert_ne!(
-        r.states[0].path[0], r.states[1].path[0],
+        r.states()[0].path[0],
+        r.states()[1].path[0],
         "the two states must carry opposite constraints"
     );
 }
@@ -222,17 +223,17 @@ fn an_undecidable_branch_is_taken_and_yields_unknown_fidelity() {
     // dropped — keeping one and discarding the other loses a path the solver never
     // refuted, which is the same unsoundness in half measure, and asserting only that
     // *some* state survived cannot tell the two apart.
-    assert_eq!(r.states.len(), 2, "{:#?}", r.states);
-    assert_eq!(r.states[0].return_value_bits(&mut a), Some(10));
-    assert_eq!(r.states[1].return_value_bits(&mut a), Some(20));
-    for s in &r.states {
+    assert_eq!(r.states().len(), 2, "{:#?}", r.states());
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(10));
+    assert_eq!(r.states()[1].return_value_bits(&mut a), Some(20));
+    for s in r.states() {
         assert_eq!(
-            s.fidelity,
+            s.fidelity(),
             Fidelity::Unknown,
             "a solver Unknown on a decision that mattered is Unknown, not Approximated"
         );
-        assert_eq!(s.assumptions.len(), 1, "{:#?}", s.assumptions);
-        assert_eq!(s.assumptions[0].kind, AssumptionKind::SolverUnknown);
+        assert_eq!(s.assumptions().len(), 1, "{:#?}", s.assumptions());
+        assert_eq!(s.assumptions()[0].kind, AssumptionKind::SolverUnknown);
     }
 }
 
@@ -276,63 +277,21 @@ fn every_degraded_state_names_what_degraded_it() {
         CTy::Int(32),
     );
     let r = Engine::new(&m).run(&mut a);
-    for s in &r.states {
-        if s.fidelity != Fidelity::Exact {
+    for s in r.states() {
+        if s.fidelity() != Fidelity::Exact {
             assert!(
-                s.assumptions.iter().any(|x| x.kind.matches(s.fidelity)),
+                s.assumptions().iter().any(|x| x.kind.matches(s.fidelity())),
                 "a degraded state must name a cause of the right kind: {:#?}",
-                s.assumptions
+                s.assumptions()
             );
         }
     }
     // `Opaque` is a modeling lie, not a truncated search (§7's table).
-    assert_eq!(r.states[0].fidelity, Fidelity::Approximated);
-    assert_eq!(r.states[0].assumptions[0].kind, AssumptionKind::OpaqueCode);
-}
-
-/// **023 §7 rule 4 and §7.1.** A negative result may be presented as a proof only at
-/// `Exact`. `seal` is the one function in the workspace that reads a run's fidelity to
-/// decide that, and it additionally checks the witness belongs to *this* run — a token
-/// minted from a trivial `return 0` must not bless a degraded one.
-#[test]
-fn only_an_exact_run_can_be_sealed_as_proven() {
-    let mut a = TermArena::new();
-    let exact = func(
-        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
-        CTy::Int(32),
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Approximated);
+    assert_eq!(
+        r.states()[0].assumptions()[0].kind,
+        AssumptionKind::OpaqueCode
     );
-    let r1 = Engine::new(&exact).run(&mut a);
-    assert_eq!(r1.fidelity(), Fidelity::Exact);
-    let w1 = r1.witness().expect("an exact run yields a witness");
-    assert!(seal(&r1, w1).is_ok());
-
-    let degraded = func(
-        vec![block(
-            0,
-            vec![inst(InstKind::Opaque {
-                dsts: vec![(ValueId(0), CTy::Int(32))],
-                writes: vec![],
-                reads: vec![],
-                why: OpaqueReason::InlineAsm,
-            })],
-            Terminator::Return(Some(i32c(0))),
-        )],
-        CTy::Int(32),
-    );
-    let r2 = Engine::new(&degraded).run(&mut a);
-    assert_ne!(r2.fidelity(), Fidelity::Exact);
-    assert!(
-        r2.witness().is_none(),
-        "a degraded run must not mint a witness at all"
-    );
-
-    // And a witness from one run cannot bless another, even though both are Exact.
-    let r3 = Engine::new(&exact).run(&mut a);
-    let w3 = r3.witness().unwrap();
-    match seal(&r1, w3) {
-        Err(NotProven { .. }) => {}
-        Ok(_) => panic!("a witness from another run must be rejected"),
-    }
 }
 
 /// A run's fidelity is the **worst** over every state that contributed (§7 rule 2). One
@@ -370,13 +329,17 @@ fn a_runs_fidelity_is_the_worst_of_its_states() {
         CTy::Int(32),
     );
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 1, "a constant condition has one successor");
+    assert_eq!(
+        r.states().len(),
+        1,
+        "a constant condition has one successor"
+    );
     assert_eq!(
         r.fidelity(),
         Fidelity::Approximated,
         "one imprecise path degrades the run"
     );
-    assert!(r.witness().is_none());
+    assert!(seal(&r, r.witness()).is_err());
 
     // And the aggregation itself: worst wins over a mixed set.
     assert_eq!(
@@ -418,7 +381,7 @@ fn a_local_holding_a_pointer_keeps_its_object_identity() {
     }];
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    match r.states[0].local(ValueId(0)) {
+    match r.states()[0].local(ValueId(0)) {
         Some(Value::Ptr(p)) => {
             assert_ne!(p.base, chiero_mem::ObjectId::UNBOUND);
             assert_eq!(p.off, 0);
@@ -455,17 +418,17 @@ fn a_branch_tier_one_cannot_decide_is_escalated_and_stays_exact() {
     let mut a = TermArena::new();
     let m = undecidable_branch_module();
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
-    assert_eq!(r.states.len(), 2, "both branches are feasible");
-    for s in &r.states {
+    assert_eq!(r.states().len(), 2, "both branches are feasible");
+    for s in r.states() {
         assert_eq!(
-            s.fidelity,
+            s.fidelity(),
             Fidelity::Exact,
             "the backend decided it, so nothing was approximated: {:#?}",
-            s.assumptions
+            s.assumptions()
         );
-        assert!(s.assumptions.is_empty());
+        assert!(s.assumptions().is_empty());
     }
-    assert!(r.witness().is_some(), "an exact run can be sealed");
+    assert!(seal(&r, r.witness()).is_ok(), "an exact run can be sealed");
 }
 
 /// The same program without a backend is `Unknown` — which is the honest answer, and the
@@ -476,7 +439,7 @@ fn the_same_branch_without_a_backend_is_unknown() {
     let mut a = TermArena::new();
     let m = undecidable_branch_module();
     let r = Engine::new(&m).run(&mut a);
-    assert!(r.states.iter().all(|s| s.fidelity == Fidelity::Unknown));
+    assert!(r.states().iter().all(|s| s.fidelity() == Fidelity::Unknown));
 }
 
 fn undecidable_branch_module() -> Module {
@@ -568,34 +531,34 @@ fn a_loop_is_bounded_per_back_edge_and_the_run_says_so() {
         .run(&mut a);
 
     assert!(
-        r.states
+        r.states()
             .iter()
             .any(|s| s.status == Status::Terminated(TermReason::Budget)),
         "some state must be cut by the bound: {:#?}",
-        r.states.iter().map(|s| &s.status).collect::<Vec<_>>()
+        r.states().iter().map(|s| &s.status).collect::<Vec<_>>()
     );
     let cut: Vec<_> = r
-        .states
+        .states()
         .iter()
         .filter(|s| s.status == Status::Terminated(TermReason::Budget))
         .collect();
     for s in cut {
         assert_eq!(
-            s.fidelity,
+            s.fidelity(),
             Fidelity::Bounded,
             "a budget is a truncated search, not a modeling lie"
         );
         assert!(
-            s.assumptions
+            s.assumptions()
                 .iter()
                 .any(|x| x.kind == AssumptionKind::BudgetHit && x.detail.contains("back edge")),
             "the assumption must name the back edge: {:#?}",
-            s.assumptions
+            s.assumptions()
         );
     }
     assert_eq!(r.fidelity(), Fidelity::Bounded);
     assert!(
-        r.witness().is_none(),
+        seal(&r, r.witness()).is_err(),
         "a bounded run cannot be presented as a proof"
     );
 }
@@ -633,9 +596,9 @@ fn a_loop_that_terminates_within_the_bound_stays_exact() {
         r.fidelity(),
         Fidelity::Exact,
         "{:#?}",
-        r.states[0].assumptions
+        r.states()[0].assumptions()
     );
-    assert!(r.witness().is_some());
+    assert!(seal(&r, r.witness()).is_ok());
 }
 
 /// **023 contract 6, the determinism core.** The same program run twice produces the same
@@ -665,9 +628,9 @@ fn two_runs_of_one_program_are_identical() {
             CTy::Int(32),
         );
         let r = Engine::new(&m).run(&mut a);
-        let ids: Vec<u32> = r.states.iter().map(|s| s.id.0).collect();
+        let ids: Vec<u32> = r.states().iter().map(|s| s.id.0).collect();
         let rets: Vec<Option<u128>> = r
-            .states
+            .states()
             .iter()
             .map(|s| s.return_value_bits(&mut a))
             .collect();
@@ -705,9 +668,9 @@ fn a_long_forward_path_is_not_mistaken_for_a_loop() {
             ..Budget::default()
         })
         .run(&mut a);
-    assert_eq!(r.states.len(), 1);
+    assert_eq!(r.states().len(), 1);
     assert_eq!(
-        r.states[0].status,
+        r.states()[0].status,
         Status::Terminated(TermReason::Return),
         "eight forward edges are not eight loop iterations"
     );
@@ -715,7 +678,7 @@ fn a_long_forward_path_is_not_mistaken_for_a_loop() {
         r.fidelity(),
         Fidelity::Exact,
         "{:#?}",
-        r.states[0].assumptions
+        r.states()[0].assumptions()
     );
 }
 
@@ -774,9 +737,9 @@ fn a_direct_call_runs_the_callee_and_returns_its_value() {
     );
     let mut a = TermArena::new();
     let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
-    assert_eq!(r.states.len(), 1, "{:#?}", r.states);
-    assert_eq!(r.states[0].return_value_bits(&mut a), Some(42));
-    assert_eq!(r.states[0].fidelity, Fidelity::Exact);
+    assert_eq!(r.states().len(), 1, "{:#?}", r.states());
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(42));
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Exact);
 }
 
 /// A callee's locals are its own. Without a real frame the callee would overwrite the
@@ -821,7 +784,7 @@ fn a_callees_locals_do_not_overwrite_the_callers() {
     let mut a = TermArena::new();
     let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
     assert_eq!(
-        r.states[0].return_value_bits(&mut a),
+        r.states()[0].return_value_bits(&mut a),
         Some(7),
         "the caller's %0 survives the call"
     );
@@ -852,20 +815,20 @@ fn an_unmodeled_extern_returns_a_fresh_value_and_says_so() {
 
     let mut a = TermArena::new();
     let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
-    assert_eq!(r.states.len(), 1);
-    let s = &r.states[0];
+    assert_eq!(r.states().len(), 1);
+    let s = &r.states()[0];
     assert_eq!(
         s.return_value_bits(&mut a),
         None,
         "a fresh symbol, not a concrete zero"
     );
-    assert_eq!(s.fidelity, Fidelity::Approximated);
-    assert_eq!(s.assumptions.len(), 1, "{:#?}", s.assumptions);
-    assert_eq!(s.assumptions[0].kind, AssumptionKind::UnmodeledCall);
+    assert_eq!(s.fidelity(), Fidelity::Approximated);
+    assert_eq!(s.assumptions().len(), 1, "{:#?}", s.assumptions());
+    assert_eq!(s.assumptions()[0].kind, AssumptionKind::UnmodeledCall);
     assert!(
-        s.assumptions[0].detail.contains("getenv"),
+        s.assumptions()[0].detail.contains("getenv"),
         "the finding must name the function: {:#?}",
-        s.assumptions[0]
+        s.assumptions()[0]
     );
 }
 
@@ -900,16 +863,16 @@ fn unbounded_recursion_is_bounded_without_overflowing_the_interpreter() {
         ..Budget::default()
     })
     .run(&mut a);
-    assert_eq!(r.states.len(), 1);
-    assert_eq!(r.states[0].status, Status::Terminated(TermReason::Budget));
-    assert_eq!(r.states[0].fidelity, Fidelity::Bounded);
+    assert_eq!(r.states().len(), 1);
+    assert_eq!(r.states()[0].status, Status::Terminated(TermReason::Budget));
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Bounded);
     assert!(
-        r.states[0]
-            .assumptions
+        r.states()[0]
+            .assumptions()
             .iter()
             .any(|x| x.kind == AssumptionKind::BudgetHit && x.detail.contains("recursion")),
         "{:#?}",
-        r.states[0].assumptions
+        r.states()[0].assumptions()
     );
 }
 
@@ -951,8 +914,8 @@ fn recursion_within_the_bound_completes() {
         ..Default::default()
     })
     .run(&mut a);
-    assert_eq!(r.states[0].return_value_bits(&mut a), Some(5));
-    assert_eq!(r.states[0].fidelity, Fidelity::Exact);
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(5));
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Exact);
 }
 
 /// `FnAttrs::noreturn` terminates the state at the call (023 §5). Continuing past
@@ -986,15 +949,15 @@ fn a_noreturn_call_terminates_the_state_at_the_call() {
 
     let mut a = TermArena::new();
     let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
-    assert_eq!(r.states.len(), 1);
-    assert!(matches!(r.states[0].status, Status::Terminated(_)));
+    assert_eq!(r.states().len(), 1);
+    assert!(matches!(r.states()[0].status, Status::Terminated(_)));
     assert_eq!(
-        r.states[0].return_value_bits(&mut a),
+        r.states()[0].return_value_bits(&mut a),
         None,
         "the state ended at the call, so nothing was returned"
     );
     assert!(
-        r.states[0].local(ValueId(0)).is_none(),
+        r.states()[0].local(ValueId(0)).is_none(),
         "the instruction after a noreturn call must not execute"
     );
 }
@@ -1041,11 +1004,11 @@ fn every_implemented_binop_computes_its_own_operation() {
         let mut a = TermArena::new();
         let r = Engine::new(&m).run(&mut a);
         assert_eq!(
-            r.states[0].return_value_bits(&mut a),
+            r.states()[0].return_value_bits(&mut a),
             Some(want),
             "{op:?} {x}, {y}"
         );
-        assert_eq!(r.states[0].fidelity, Fidelity::Exact, "{op:?}");
+        assert_eq!(r.states()[0].fidelity(), Fidelity::Exact, "{op:?}");
     }
 }
 
@@ -1084,7 +1047,7 @@ fn every_implemented_cmpop_answers_its_own_question() {
         let mut a = TermArena::new();
         let r = Engine::new(&m).run(&mut a);
         assert_eq!(
-            r.states[0].return_value_bits(&mut a),
+            r.states()[0].return_value_bits(&mut a),
             Some(want),
             "{op:?} {x}, {y}"
         );
@@ -1165,10 +1128,10 @@ fn nothing_unmodeled_can_end_at_exact() {
         let mut a = TermArena::new();
         let r = Engine::new(&m).run(&mut a);
         assert_ne!(r.fidelity(), Fidelity::Exact, "{what} ended at Exact");
-        assert!(r.witness().is_none(), "{what} minted a witness");
+        assert!(seal(&r, r.witness()).is_err(), "{what} sealed as proven");
         assert!(
-            r.states.iter().all(|s| s.fidelity == Fidelity::Exact
-                || s.assumptions.iter().any(|x| x.kind.matches(s.fidelity))),
+            r.states().iter().all(|s| s.fidelity() == Fidelity::Exact
+                || s.assumptions().iter().any(|x| x.kind.matches(s.fidelity()))),
             "{what}: a degraded state must name a cause of the right kind"
         );
     }
@@ -1225,7 +1188,7 @@ fn a_refuted_branch_is_not_explored_even_when_the_other_side_is_unknown() {
     );
     let r = Engine::new(&m).run(&mut a);
     let rets: Vec<_> = r
-        .states
+        .states()
         .iter()
         .map(|s| s.return_value_bits(&mut a))
         .collect();
@@ -1295,7 +1258,7 @@ fn a_side_the_solver_refuted_is_dropped_even_when_the_other_is_undecided() {
     );
     let r = Engine::new(&m).run(&mut a);
     let rets: Vec<_> = r
-        .states
+        .states()
         .iter()
         .map(|s| s.return_value_bits(&mut a))
         .collect();
@@ -1330,9 +1293,9 @@ fn an_unimplemented_operation_degrades_rather_than_computing_something_else() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert_ne!(r.fidelity(), Fidelity::Exact);
-    assert!(r.witness().is_none());
+    assert!(seal(&r, r.witness()).is_err());
     assert!(
-        r.states[0].local(ValueId(0)).is_none(),
+        r.states()[0].local(ValueId(0)).is_none(),
         "an unmodeled operation produces no value at all, rather than a wrong one"
     );
 }
@@ -1348,8 +1311,8 @@ fn a_branch_to_a_missing_block_terminates_the_state() {
         CTy::Int(32),
     );
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 1);
-    assert!(matches!(r.states[0].status, Status::Errored(_)));
+    assert_eq!(r.states().len(), 1);
+    assert!(matches!(r.states()[0].status, Status::Errored(_)));
     assert_ne!(r.fidelity(), Fidelity::Exact);
 }
 
@@ -1382,7 +1345,7 @@ fn an_alloca_is_sized_by_its_element_type() {
         let mut a = TermArena::new();
         let r = Engine::new(&m).run(&mut a);
         assert_eq!(
-            r.states[0].object_size_for_test(),
+            r.states()[0].object_size_for_test(),
             Some(want),
             "{ty:?} x {count}"
         );
@@ -1415,9 +1378,13 @@ fn a_dynamic_extent_does_not_overflow_the_size_computation() {
     }];
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 1, "the run completes rather than panicking");
     assert_eq!(
-        r.states[0].object_size_for_test(),
+        r.states().len(),
+        1,
+        "the run completes rather than panicking"
+    );
+    assert_eq!(
+        r.states()[0].object_size_for_test(),
         Some(0),
         "no extent yet; `AllocaDyn` supplies it, and a wrapped number would masquerade \
          as a real bound"
@@ -1447,8 +1414,8 @@ fn max_depth_counts_instructions_not_edges() {
             ..Budget::default()
         })
         .run(&mut a);
-    assert_eq!(r.states[0].status, Status::Terminated(TermReason::Budget));
-    assert_eq!(r.states[0].fidelity, Fidelity::Bounded);
+    assert_eq!(r.states()[0].status, Status::Terminated(TermReason::Budget));
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Bounded);
 }
 
 /// **`feasible` asserts the path condition.** Every solver query the suite made had an
@@ -1504,7 +1471,7 @@ fn a_later_branch_sees_the_constraints_of_an_earlier_one() {
     );
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
     let rets: Vec<_> = r
-        .states
+        .states()
         .iter()
         .map(|s| s.return_value_bits(&mut a))
         .collect();
@@ -1580,7 +1547,10 @@ fn seal_is_the_only_thing_that_decides_whether_a_result_is_proven() {
     // branch contract 13b is about, and it was unreachable while `witness()` also judged.
     let r2 = Engine::new(&degraded).run(&mut a);
     match seal(&r2, r2.witness()) {
-        Err(NotProven { fidelity, assumptions }) => {
+        Err(NotProven {
+            fidelity,
+            assumptions,
+        }) => {
             assert_ne!(fidelity, Fidelity::Exact);
             assert!(!assumptions.is_empty(), "and it says why");
         }

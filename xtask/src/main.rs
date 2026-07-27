@@ -7,6 +7,10 @@ fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("check-deps") => check_deps(),
         Some("check-vpp-leak") => check_vpp_leak(),
+        Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
+            0 => ExitCode::SUCCESS,
+            _ => ExitCode::FAILURE,
+        },
         Some(other) => {
             eprintln!("unknown task: {other}");
             usage();
@@ -23,7 +27,8 @@ fn usage() {
     eprintln!(
         "usage: cargo xtask <task>\n\n  \
          check-deps       enforce the 001 §4 graph rules (1,2,3,5,6,7)\n  \
-         check-vpp-leak   enforce 001 §4 rule 4 / contract 5"
+         check-vpp-leak   enforce 001 §4 rule 4 / contract 5\n  \
+         check-proof-surface  enforce 023 contract 13a (a proof cannot be forged)"
     );
 }
 

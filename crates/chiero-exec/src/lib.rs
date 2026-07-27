@@ -165,9 +165,14 @@ pub struct State {
     pub pc: (BlockId, usize),
     /// Append-only (023 §1).
     pub path: Vec<Term>,
-    pub fidelity: Fidelity,
-    pub assumptions: Vec<Assumption>,
+    /// **Private.** A public field here let a consumer set a genuinely degraded run to
+    /// `Exact` and have `seal` bless it — §7.1's claim rests on this not being writable.
+    fidelity: Fidelity,
+    assumptions: Vec<Assumption>,
     pub status: Status,
+    /// 023 §1: the block sequence, for replay and so exploration order is observable at
+    /// all. Sorting the result by id erased it from the output entirely.
+    trace: Vec<BlockId>,
     /// **An explicit stack, not host recursion.** 023 contract 9 requires the
     /// interpreter's own stack usage to be O(1) in program recursion depth, and this is
     /// what delivers it — along with honest `Span` backtraces and a recursion bound that
@@ -186,6 +191,18 @@ impl State {
             .values()
             .next()
             .and_then(|o| self.mem.size_of_pub(*o))
+    }
+
+    pub fn fidelity(&self) -> Fidelity {
+        self.fidelity
+    }
+
+    pub fn assumptions(&self) -> &[Assumption] {
+        &self.assumptions
+    }
+
+    pub fn trace(&self) -> &[BlockId] {
+        &self.trace
     }
 
     pub fn local(&self, v: ValueId) -> Option<Value> {
@@ -260,18 +277,40 @@ pub fn seal(r: &RunResult, w: ExactWitness) -> Result<Proven<'_>, NotProven> {
     }
 }
 
+/// **Not constructible outside this crate.** A hand-built `RunResult` carrying a real
+/// run's id and no states used to seal as `Proven`; the private field is what stops the
+/// struct literal.
 #[derive(Debug)]
 pub struct RunResult {
-    pub id: u32,
-    pub states: Vec<State>,
+    id: u32,
+    states: Vec<State>,
     pub solver_calls: u64,
     /// 022 §4 wants this at one for a whole run. A per-query spawn shows up immediately.
     pub backend_spawns: u64,
     /// How many solvers the run built. One, or the caches are discarded between queries.
     pub solver_inits: u64,
+    /// The order states *finished*, so a change of searcher is visible in the output
+    /// rather than hidden by sorting.
+    completion_order: Vec<u32>,
+    _seal: Sealed,
 }
 
+#[derive(Debug)]
+struct Sealed;
+
 impl RunResult {
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn states(&self) -> &[State] {
+        &self.states
+    }
+
+    pub fn completion_order(&self) -> &[u32] {
+        &self.completion_order
+    }
+
     /// 023 §7 rule 2: the **worst** over every state that contributed.
     pub fn fidelity(&self) -> Fidelity {
         self.states
@@ -285,9 +324,12 @@ impl RunResult {
             .fold(Fidelity::Exact, Fidelity::degrade)
     }
 
-    /// A witness exists only for an `Exact` run.
-    pub fn witness(&self) -> Option<ExactWitness> {
-        (self.fidelity() == Fidelity::Exact).then_some(ExactWitness { run: self.id })
+    /// A witness bound to *this* run. Minting is unconditional: 023 §7.1 wants exactly
+    /// **one** function reading fidelity to decide whether a result is a proof, and that
+    /// function is `seal`. Gating here as well made `seal`'s own check unreachable, which
+    /// is why contract 13b could not be written.
+    pub fn witness(&self) -> ExactWitness {
+        ExactWitness { run: self.id }
     }
 }
 
@@ -370,6 +412,7 @@ impl<'m> Engine<'m> {
             fidelity: Fidelity::Exact,
             assumptions: Vec::new(),
             status: Status::Running,
+            trace: vec![f.entry],
             stack: vec![Frame {
                 func: f.id,
                 ret_to: None,
@@ -395,6 +438,9 @@ impl<'m> Engine<'m> {
             }
             done.push(s);
         }
+        // The order states *finished* is recorded before sorting, so a change of searcher
+        // shows up in the output instead of being erased by the sort.
+        let completion_order: Vec<u32> = done.iter().map(|s| s.id.0).collect();
         done.sort_by_key(|s| s.id.0);
         let backend_spawns = self.solver.as_ref().map_or(0, |s| s.stats().backend_spawns);
         RunResult {
@@ -403,6 +449,8 @@ impl<'m> Engine<'m> {
             solver_calls: self.solver_calls,
             backend_spawns,
             solver_inits: self.solver_inits,
+            completion_order,
+            _seal: Sealed,
         }
     }
 
@@ -652,6 +700,7 @@ impl<'m> Engine<'m> {
             }
         }
         s.pc = (to, 0);
+        s.trace.push(to);
         None
     }
 
@@ -677,6 +726,7 @@ impl<'m> Engine<'m> {
         let f_ok = self.feasible(a, s, neg);
         let mut sibling = s.clone();
         sibling.id = self.new_id();
+        // The clone shares the trace up to here; each side records its own next block.
 
         match (t_ok, f_ok) {
             (Feas::Yes, Feas::Yes) => {
