@@ -2510,6 +2510,33 @@ fn strcpy_into_a_short_buffer_is_found_through_the_engine() {
                         alloca: AllocaId(1),
                     },
                 }),
+                // Ten non-zero bytes and a terminator, so the source is a real
+                // ten-character string rather than an uninitialized read.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(1)),
+                        Operand::Const(Const::Int { bits: 32, val: 120 }),
+                        Operand::Const(Const::Int { bits: 64, val: 10 }),
+                    ],
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(1)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 10 }),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(2)),
+                        Operand::Const(Const::Int { bits: 32, val: 0 }),
+                        Operand::Const(Const::Int { bits: 64, val: 1 }),
+                    ],
+                }),
                 inst(InstKind::Call {
                     dst: None,
                     callee: Callee::Direct(FuncId(1)),
@@ -2525,18 +2552,30 @@ fn strcpy_into_a_short_buffer_is_found_through_the_engine() {
         funcs: vec![
             caller,
             extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
         ],
         ..Default::default()
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    // The source is uninitialized, so `strlen` reports that rather than a length — which
-    // is itself correct, and the run must not be `Exact` either way.
     assert_ne!(r.fidelity(), Fidelity::Exact);
+    // **The finding has to be the destination check.** This test asserted only
+    // "not `Exact`" and "some finding", and the source was never initialized — so
+    // `strlen` faulted on byte 0, `strcpy` bailed before the bounds check, and both
+    // assertions passed on an uninitialized-read report. Swapping `dst` and `src` gave
+    // the same two answers, because the destination is uninitialized too. The classic
+    // overflow had no end-to-end evidence at all. Found by review.
     assert!(
-        !r.findings().is_empty(),
-        "the model's findings reach the run: {:#?}",
-        r.states()[0].assumptions()
+        r.findings()
+            .iter()
+            .any(|f| f.contains("destination holds 4 bytes and the source needs 11")),
+        "the destination bounds check ran: {:#?}",
+        r.findings()
     );
 }
 
@@ -2851,5 +2890,152 @@ fn an_indirect_candidate_executes_its_entry_block() {
     assert!(
         rets.contains(&Some(42)),
         "the candidate's body ran: {rets:?}"
+    );
+}
+
+/// **024 contract 8 and 023 §7, through the engine.** A `strlen` that hit `max_string_scan`
+/// established nothing, and the engine handed the caller a *fresh unconstrained* 64-bit
+/// symbol as the length — while staying `Exact` with no assumption recorded, so the run
+/// sealed as `Proven`. `StrScan::CapReached` became `ModelOutcome::Value(None)`, which is
+/// not the untranslatable arm: `translated` stayed true and the `dst` fallback minted a
+/// symbol.
+///
+/// The consequence is worse than a missed bug: `n = strlen(buf); if (n == 999999) bug();`
+/// is *feasible* against an unconstrained `n`, so chiero reports a bug that cannot happen
+/// and calls the run a proof. Found by review.
+#[test]
+fn a_strlen_that_established_nothing_does_not_leave_the_run_exact() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // Filled with 'x' and never terminated, so the scan runs off the end.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 32, val: 120 }),
+                        Operand::Const(Const::Int { bits: 64, val: 16 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "strlen", vec![CTy::Ptr], CTy::Int(64)),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "an unestablished length is not an exact run"
+    );
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("strlen")),
+        "and the reason names the model: {:#?}",
+        r.states()[0].assumptions()
+    );
+    assert!(
+        seal(&r, r.witness()).is_err(),
+        "a run carrying a fabricated length cannot seal"
+    );
+}
+
+/// **A `ModelOutcome::Finding`'s message reaches the run.** `dispatch` matched only
+/// `Value`, so `Finding(msg)` fell into the catch-all and the payload was dropped. It
+/// looked fine because two of the three producers *also* call `cx.report` — the third,
+/// `strcpy`'s source-scan bail, does not, and reported nothing at all. Found by review.
+#[test]
+fn a_findings_only_outcome_still_reports() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                // 'x' with no terminator: the source scan cannot give a length, so
+                // `strcpy` returns a bare `Finding`.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(1)),
+                        Operand::Const(Const::Int { bits: 32, val: 120 }),
+                        Operand::Const(Const::Int { bits: 64, val: 16 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("strcpy")),
+        "the model said why it gave up: {:#?}",
+        r.findings()
     );
 }

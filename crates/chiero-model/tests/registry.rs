@@ -997,3 +997,39 @@ fn strlen_before_the_object_is_reported_rather_than_walked() {
         cx.findings()
     );
 }
+
+/// **`strcpy` measures the destination's room from the *pointer*, not the object base.**
+/// This is the identical `max(0)` mistake that was found and fixed in `strlen` — "measuring
+/// from `max(0)` licensed a walk that started before the object" — left in place on
+/// `strcpy`'s destination. At a negative offset `have` came out as the whole object, so a
+/// ten-byte string into ten bytes of room *starting four before the object* reported
+/// success. Worse than a missed finding: the outcome was `Value`, so the engine kept
+/// `translated` and the run stayed **`Exact`** — the negative-offset overflow was less
+/// degraded than the ordinary one. Found by review.
+#[test]
+fn strcpy_measures_destination_room_from_the_pointer_not_the_base() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let dst = m.alloc(ObjKind::Heap, 10, 1, Span::DUMMY);
+    let src = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.write(Pointer { base: src, off: 0 }, b"012345678\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::strcpy(
+        &mut cx,
+        Pointer {
+            base: dst,
+            off: -4,
+        },
+        Pointer { base: src, off: 0 },
+        StringPolicy::default(),
+    );
+    assert!(
+        matches!(out, ModelOutcome::Finding(_)),
+        "a copy that starts before the object is not a success: {out:?}"
+    );
+    assert!(
+        cx.findings().iter().any(|f| f.contains("destination")),
+        "reported at the destination: {:#?}",
+        cx.findings()
+    );
+}

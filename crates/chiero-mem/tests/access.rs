@@ -992,12 +992,15 @@ fn a_copys_source_side_refuses_what_a_read_refuses() {
     m.set(ptr(src, 0), 1, 16, sp(3));
     let x = a.var(chiero_solver::Sort::BitVec(8), "x");
     m.write_sym_byte(ptr(src, 2), x, sp(4));
+    // A *scalar* read still refuses the symbolic byte; only the byte-wise copy, which
+    // carries the term across, does not — see
+    // `a_copy_carries_a_symbolic_byte_rather_than_a_stale_constant`.
     assert!(
-        m.copy(ptr(dst, 0), ptr(src, 0), 8, Overlap::Allowed, sp(5))
+        m.read(ptr(src, 0), 8, sp(5))
             .faults
             .iter()
             .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
-        "a symbolic source byte cannot be copied as a concrete one"
+        "a concrete read cannot answer for a symbolic byte"
     );
 
     let mut m2 = Memory::new();
@@ -1012,4 +1015,46 @@ fn a_copys_source_side_refuses_what_a_read_refuses() {
             .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
         "a promoted source's Bytes view is frozen and must not be served"
     );
+}
+
+/// **A copy carries the symbolic overlay, it does not launder it into a constant.**
+/// `read_raw` grew a `SymbolicByte` fault on the *source* but still handed back the stale
+/// concrete bytes sitting behind the overlay, and `copy` wrote those. So `memcpy` of a
+/// struct with a symbolic field stopped being *silent* without stopping being a
+/// *constant* — the destination held a fabricated value and every later read of it was
+/// clean forever, which is worse than the fault it now reports.
+///
+/// A byte-wise copy is exactly the operation that *can* answer for a symbolic byte:
+/// carrying the term across is what `memcpy` does in C. Found by review.
+#[test]
+fn a_copy_carries_a_symbolic_byte_rather_than_a_stale_constant() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let src = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let dst = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m.set(ptr(src, 0), 1, 16, sp(3));
+    let x = a.var(chiero_solver::Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(src, 2), x, sp(4));
+    let r = m.copy(ptr(dst, 0), ptr(src, 0), 8, Overlap::Allowed, sp(5));
+    assert!(
+        !r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "a byte-wise copy can answer for a symbolic byte: {:#?}",
+        r.faults
+    );
+    // The destination word is no longer a constant — the symbol came with the bytes.
+    let t = m
+        .read_term(&mut a, ptr(dst, 0), 4, chiero_mem::Endian::Little, sp(6))
+        .value
+        .expect("the copy landed");
+    assert!(
+        a.eval_ground(t).is_err(),
+        "the destination holds the symbol, not a fabricated constant"
+    );
+    // And the bytes *around* it are still concrete, so this is not "everything became
+    // symbolic" — a concrete read of them succeeds, which a symbolic byte would refuse.
+    let plain = m.read(ptr(dst, 0), 2, sp(7));
+    assert!(plain.faults.is_empty(), "{:#?}", plain.faults);
+    assert_eq!(plain.value, Some(vec![1, 1]));
 }
