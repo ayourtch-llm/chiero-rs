@@ -2003,6 +2003,20 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `bits.off + bits.width` as well. When guarding an arithmetic overflow, check every use
    of the expression, not just the one that panicked.
 
+   **WAVE 42** (`7727db7`, `6fe4547`; 587 tests). 020 contract 32's **execution** half —
+   a parser test cited it and honestly said it covered "the representational half"; nothing
+   ran the other. And the review's last item: every `OpaqueWrite` fixture had exactly one
+   entry, so `writes.take(1)` survived. ⚠️ **A property over a collection is untested
+   whenever every fixture supplies a collection of one** — same shape as the finding-key
+   components and the two `check_bits` call sites.
+
+   ⚠️ **021 contract 20 was unimplemented and is an architectural one.** `Entry` held its
+   `MemObject` by value, so cloning a `Memory` copied every byte of every object — and
+   forking is the engine's *most frequent* operation, so the cost was quadratic in the
+   program's memory rather than in its branching. Objects now sit behind an `Arc` with
+   `Arc::make_mut` at every mutation site. The test checks **pointer equality**, the only
+   way to tell sharing from an identical copy.
+
    **STILL OWED from wave 41:** E5 — every `OpaqueWrite` fixture has exactly one entry, so
    "each declared write is honoured" is untested. Plus the suspicions the review left open:
    a faulting `LoadBits` invents an unconstrained `w`-bit symbol where the field's range is
