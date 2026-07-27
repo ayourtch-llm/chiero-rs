@@ -10520,3 +10520,120 @@ fn an_address_in_a_guard_gap_is_a_wild_pointer() {
         r.findings()
     );
 }
+
+/// **A use-after-free through a symbolic address reports the use-after-free.**
+/// `live_ranges` filtered to `ObjState::Live`, so a freed object was invisible to §5.1's
+/// search: the address resolved to nothing, the run said "the value is unconstrained" —
+/// blaming the program for an address it had pinned exactly — and terminated, so nothing
+/// downstream of the bug was explored.
+///
+/// 021 §4 keeps `Freed` and `OutOfScope` objects around **precisely so the site can be
+/// named**; the resolution search was the one consumer that could not see them. Found by
+/// review.
+#[test]
+fn a_use_after_free_through_a_symbolic_address_is_reported() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    // malloc, remember the address, free, then reach it again through a symbolic
+    // integer that the path pins to that same address.
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Call {
+                        dst: Some(ValueId(0)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Const(Const::Int { bits: 64, val: 16 })],
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![Operand::Value(ValueId(0))],
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(1)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cast {
+                            kind: CastKind::IntToPtr,
+                            a: Operand::Value(ValueId(2)),
+                            from: CTy::Int(64),
+                            to: CTy::Ptr,
+                        },
+                    }),
+                    inst(InstKind::Store {
+                        addr: Operand::Value(ValueId(4)),
+                        val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "malloc", vec![CTy::Int(64)], CTy::Ptr),
+            extern_fn(2, "free", vec![CTy::Ptr], CTy::Void),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(backend)
+        .with_alloc_policy(chiero_model::AllocPolicy { may_fail: false })
+        .run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("use-after-free")),
+        "the freed object is still nameable: {:#?}",
+        r.findings()
+    );
+    assert!(
+        !r.findings()
+            .iter()
+            .any(|f| f.contains("value is unconstrained")),
+        "and the program is not blamed for an address it pinned: {:#?}",
+        r.findings()
+    );
+}
