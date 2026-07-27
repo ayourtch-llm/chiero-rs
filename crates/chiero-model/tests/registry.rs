@@ -288,7 +288,13 @@ fn free_of_null_is_silent_and_free_of_a_stack_object_is_not() {
     assert!(matches!(n, ModelOutcome::Value(None)));
     assert!(cx.findings().is_empty(), "{:#?}", cx.findings());
 
-    models::free(&mut cx, Pointer { base: stack, off: 0 });
+    models::free(
+        &mut cx,
+        Pointer {
+            base: stack,
+            off: 0,
+        },
+    );
     assert_eq!(cx.findings().len(), 1, "{:#?}", cx.findings());
 
     // And a real heap free is silent, or the test above is satisfied by a model that
@@ -304,19 +310,48 @@ fn memcpy_and_memmove_differ_on_overlap() {
     let mut m = Memory::new();
     let mut a = TermArena::new();
     let o = m.alloc(ObjKind::Heap, 32, 8, Span::DUMMY);
-    m.write(Pointer { base: o, off: 0 }, &[1, 2, 3, 4, 5, 6, 7, 8], Span::DUMMY);
+    m.write(
+        Pointer { base: o, off: 0 },
+        &[1, 2, 3, 4, 5, 6, 7, 8],
+        Span::DUMMY,
+    );
     let mut cx = ctx(&mut m, &mut a);
 
     let dst = Pointer { base: o, off: 2 };
     let src = Pointer { base: o, off: 0 };
     models::memcpy(&mut cx, dst, src, 6);
     assert_eq!(cx.findings().len(), 1, "overlap is a memcpy violation");
-
-    models::memmove(&mut cx, dst, src, 6);
-    assert_eq!(cx.findings().len(), 1, "memmove adds none");
+    // The copy still *happens* — reporting is not refusing, and execution continues on a
+    // state whose bytes reflect what the program actually did.
     assert_eq!(
         cx.mem()
             .read(Pointer { base: o, off: 0 }, 8, Span::DUMMY)
+            .value
+            .unwrap(),
+        vec![1, 2, 1, 2, 3, 4, 5, 6]
+    );
+
+    // A **fresh** object for memmove: the copy above already mutated this one, so reusing
+    // it would compare against bytes the first call produced rather than the second.
+    let mut m2 = Memory::new();
+    let mut a2 = TermArena::new();
+    let o2 = m2.alloc(ObjKind::Heap, 32, 8, Span::DUMMY);
+    m2.write(
+        Pointer { base: o2, off: 0 },
+        &[1, 2, 3, 4, 5, 6, 7, 8],
+        Span::DUMMY,
+    );
+    let mut cx2 = ctx(&mut m2, &mut a2);
+    models::memmove(
+        &mut cx2,
+        Pointer { base: o2, off: 2 },
+        Pointer { base: o2, off: 0 },
+        6,
+    );
+    assert!(cx2.findings().is_empty(), "memmove permits overlap");
+    assert_eq!(
+        cx2.mem()
+            .read(Pointer { base: o2, off: 0 }, 8, Span::DUMMY)
             .value
             .unwrap(),
         vec![1, 2, 1, 2, 3, 4, 5, 6],

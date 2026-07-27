@@ -227,3 +227,181 @@ impl ModelRegistry {
         self.models.is_empty()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Executing models (024 §3).
+// ---------------------------------------------------------------------------
+
+use chiero_mem::{Endian, MemFault, Memory, ObjKind, ObjectId, Pointer};
+use chiero_solver::{Term, TermArena};
+use chiero_span::Span;
+
+/// What a model returns. `Havoc` is the explicit "I don't know" — never implicit, because
+/// an implicit one is indistinguishable from a model that got the answer right.
+#[derive(Clone, Debug)]
+pub enum ModelOutcome {
+    Value(Option<Value>),
+    /// Guarded alternatives — `malloc`'s success and failure, for instance.
+    Fork(Vec<(Option<Term>, ModelOutcome)>),
+    /// The call could not be performed and the reason is reportable.
+    Finding(String),
+    Havoc(HavocSpec),
+}
+
+/// Mirrors 023 §1.1: a pointer keeps its object. A model handing back a bare term would
+/// lose provenance at exactly the boundary where it matters most, since `malloc` is where
+/// most heap objects come from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Value {
+    Scalar(Term),
+    Ptr(Pointer),
+}
+
+/// What a model is allowed to touch. Deliberately narrow: a model gets memory, a term
+/// arena, the call's span, and a place to put findings — not the engine's state, which is
+/// what keeps 024's models reusable across the searcher and threading choices of 023.
+#[derive(Debug)]
+pub struct ModelCtx<'a> {
+    mem: &'a mut Memory,
+    arena: &'a mut TermArena,
+    span: Span,
+    endian: Endian,
+    findings: Vec<String>,
+}
+
+impl<'a> ModelCtx<'a> {
+    pub fn new(mem: &'a mut Memory, arena: &'a mut TermArena, span: Span) -> ModelCtx<'a> {
+        ModelCtx {
+            mem,
+            arena,
+            span,
+            // From the target. A model crate that hardcoded an order would produce
+            // silently byte-swapped answers on the other one.
+            endian: Endian::Little,
+            findings: Vec::new(),
+        }
+    }
+
+    pub fn mem(&mut self) -> &mut Memory {
+        self.mem
+    }
+    pub fn arena(&mut self) -> &mut TermArena {
+        self.arena
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+    pub fn endian(&self) -> Endian {
+        self.endian
+    }
+    pub fn findings(&self) -> &[String] {
+        &self.findings
+    }
+    pub fn report(&mut self, what: impl Into<String>) {
+        self.findings.push(what.into());
+    }
+    fn lift(&mut self, faults: &[MemFault]) {
+        for f in faults {
+            self.findings.push(format!("{f:?}"));
+        }
+    }
+}
+
+/// The standard memory models. Each is a plain function so it can be tested without an
+/// engine — 024 §2's "two ways to write a model" is about registration, not about needing
+/// a running interpreter to check `calloc` zeroes.
+pub mod models {
+    use super::*;
+
+    /// 024 contract 1/2. Uninitialized contents, and a `NULL` branch unless the allocator
+    /// cannot fail.
+    pub fn malloc(cx: &mut ModelCtx, size: u64, policy: AllocPolicy) -> ModelOutcome {
+        let at = cx.span();
+        let o = cx.mem().alloc(ObjKind::Heap, size, 16, at);
+        let ok = ModelOutcome::Value(Some(Value::Ptr(Pointer { base: o, off: 0 })));
+        if !policy.may_fail {
+            return ok;
+        }
+        // The failure branch is cheap and most real allocation-failure bugs are
+        // unreachable without it.
+        let null = ModelOutcome::Value(Some(Value::Ptr(Pointer {
+            base: ObjectId::NULL,
+            off: 0,
+        })));
+        ModelOutcome::Fork(vec![(None, ok), (None, null)])
+    }
+
+    /// 024 contract 3/4. Zeroed **and marked initialized**, with the `n * m` overflow
+    /// reported rather than wrapped — a wrap allocates a small object for a request that
+    /// cannot be satisfied.
+    pub fn calloc(cx: &mut ModelCtx, n: u64, m: u64, policy: AllocPolicy) -> ModelOutcome {
+        let Some(size) = n.checked_mul(m) else {
+            let msg = format!("calloc({n}, {m}): size computation overflows");
+            cx.report(msg.clone());
+            return ModelOutcome::Finding(msg);
+        };
+        let at = cx.span();
+        let o = cx.mem().alloc(ObjKind::Heap, size, 16, at);
+        let p = Pointer { base: o, off: 0 };
+        // `set` marks the range initialized, which is the difference from `malloc` and
+        // the reason a correct `calloc` user reports no uninitialized read.
+        let r = cx.mem().set(p, 0, size, at);
+        let faults = r.faults.clone();
+        cx.lift(&faults);
+        let ok = ModelOutcome::Value(Some(Value::Ptr(p)));
+        if !policy.may_fail {
+            return ok;
+        }
+        let null = ModelOutcome::Value(Some(Value::Ptr(Pointer {
+            base: ObjectId::NULL,
+            off: 0,
+        })));
+        ModelOutcome::Fork(vec![(None, ok), (None, null)])
+    }
+
+    /// 024 contract 5. `free(NULL)` is a no-op; freeing anything that did not come from
+    /// the heap is a finding.
+    pub fn free(cx: &mut ModelCtx, p: Pointer) -> ModelOutcome {
+        // No NULL check here: `Memory::free` owns that rule, and a second copy of it is
+        // how `readonly` came to hold on one write path out of three. One place.
+        let at = cx.span();
+        let r = cx.mem().free(p.base, at);
+        let faults = r.faults.clone();
+        cx.lift(&faults);
+        ModelOutcome::Value(None)
+    }
+
+    /// 024 contract 10. Overlap is a finding for `memcpy` and not for `memmove`, and the
+    /// bytes are the same either way — `memmove` copies as if through a temporary.
+    pub fn memcpy(cx: &mut ModelCtx, dst: Pointer, src: Pointer, size: u64) -> ModelOutcome {
+        copy(cx, dst, src, size, chiero_mem::Overlap::Forbidden)
+    }
+
+    pub fn memmove(cx: &mut ModelCtx, dst: Pointer, src: Pointer, size: u64) -> ModelOutcome {
+        copy(cx, dst, src, size, chiero_mem::Overlap::Allowed)
+    }
+
+    fn copy(
+        cx: &mut ModelCtx,
+        dst: Pointer,
+        src: Pointer,
+        size: u64,
+        rule: chiero_mem::Overlap,
+    ) -> ModelOutcome {
+        let at = cx.span();
+        let r = cx.mem().copy(dst, src, size, rule, at);
+        let faults = r.faults.clone();
+        cx.lift(&faults);
+        ModelOutcome::Value(Some(Value::Ptr(dst)))
+    }
+
+    /// The range becomes initialized and reads back as the set byte; nothing outside it
+    /// changes.
+    pub fn memset(cx: &mut ModelCtx, dst: Pointer, byte: u8, size: u64) -> ModelOutcome {
+        let at = cx.span();
+        let r = cx.mem().set(dst, byte, size, at);
+        let faults = r.faults.clone();
+        cx.lift(&faults);
+        ModelOutcome::Value(Some(Value::Ptr(dst)))
+    }
+}
