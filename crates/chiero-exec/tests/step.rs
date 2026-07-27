@@ -1669,3 +1669,166 @@ fn the_exploration_order_is_recorded_and_puts_the_true_branch_first() {
     // is visible in the output rather than hidden by the sort.
     assert_eq!(r.completion_order(), &[0, 1]);
 }
+
+// ---------------------------------------------------------------------------
+// The engine consults the model registry (024 contracts 11, 12; §2.1).
+// ---------------------------------------------------------------------------
+
+/// **024 contract 12.** A module that *defines* `memcpy` uses its own definition, not the
+/// model, and records **no** assumption. A registry that shadowed local definitions would
+/// silently analyse a different program than the one on disk — and it would do so most
+/// often exactly where a project has reimplemented a libc function for a reason.
+#[test]
+fn a_locally_defined_function_wins_over_the_model() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    // A local `memcpy` with a body. The registry has a model for that name.
+    let local = defined(
+        1,
+        "memcpy",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(77))))],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, local)).run(&mut a);
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(77),
+        "the module's own definition ran"
+    );
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        r.states()[0].assumptions().is_empty(),
+        "using a real definition assumes nothing: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
+
+/// **024 §2.1 through the engine.** Dispatching an `Approximate` model degrades the run
+/// and records the model's own reason — so a program calling `scanf` cannot be sealed
+/// (contract 21b). This is the *modeled* path, which is more dangerous than the unmodeled
+/// one because it looks deliberate.
+#[test]
+fn calling_an_approximate_model_degrades_the_run_with_its_reason() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut ext = defined(1, "scanf", vec![], CTy::Int(32));
+    ext.body = Body::Declared;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Approximated);
+    assert!(seal(&r, r.witness()).is_err(), "contract 21b");
+    let note = &r.states()[0].assumptions()[0];
+    assert_eq!(note.kind, AssumptionKind::ModelApproximate);
+    assert!(
+        note.detail.contains("input"),
+        "the model's own reason must reach the report: {note:?}"
+    );
+}
+
+/// An **exact** model does not degrade. Without this the test above is satisfied by an
+/// engine that degrades on every call into the registry, and the `Exact`/`Approximate`
+/// distinction would carry no information at all.
+#[test]
+fn calling_an_exact_model_leaves_the_run_exact() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut ext = defined(1, "memset", vec![], CTy::Void);
+    ext.body = Body::Declared;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states()[0].assumptions());
+    assert!(seal(&r, r.witness()).is_ok());
+}
+
+/// **024 contract 11.** An extern with *no* model still returns a fresh value, sets
+/// `Approximated`, and records the name **exactly once** — a call in a loop must not
+/// stack up one assumption per iteration, or the report drowns the finding it is meant
+/// to explain.
+#[test]
+fn an_unmodeled_extern_is_recorded_exactly_once_per_function() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Call {
+                    dst: Some(ValueId(0)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(2)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut ext = defined(1, "some_unmodeled_thing", vec![], CTy::Int(32));
+    ext.body = Body::Declared;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+    let named: Vec<_> = r.states()[0]
+        .assumptions()
+        .iter()
+        .filter(|x| x.detail.contains("some_unmodeled_thing"))
+        .collect();
+    assert_eq!(named.len(), 1, "three calls, one assumption: {named:#?}");
+    assert_eq!(r.fidelity(), Fidelity::Approximated);
+    // Each call still yields its **own** fresh value; deduplicating the *report* must not
+    // deduplicate the values, or two calls to `rand()` would return the same number.
+    let (v0, v1) = (
+        r.states()[0].local(ValueId(0)),
+        r.states()[0].local(ValueId(1)),
+    );
+    assert!(v0.is_some() && v1.is_some());
+    assert_ne!(v0, v1, "two calls, two symbols");
+}
