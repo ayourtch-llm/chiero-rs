@@ -641,6 +641,87 @@ fn a_nonempty_unreachable_block_is_still_only_a_warning() {
     );
 }
 
+/// A duplicate `BlockId` is a *silently wrong execution*, not a crash: `block()` is a
+/// linear find, so the second block is unreachable and control lands in the first.
+#[test]
+fn duplicate_ids_are_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0]
+        .blocks
+        .push(block(0, vec![], Terminator::Return(None)));
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0].params = vec![
+        Param {
+            value: ValueId(9),
+            ty: CTy::Int(32),
+        },
+        Param {
+            value: ValueId(9),
+            ty: CTy::Int(32),
+        },
+    ];
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+}
+
+/// Rule 7 applies to *declarations*, not only to accesses.
+#[test]
+fn a_badly_aligned_alloca_declaration_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0].allocas.push(AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: 1,
+        align: 3,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    });
+    assert_rejects(&m, VerifyErrorKind::BadAlignment);
+}
+
+/// Rule 13's *second* half: a runtime extent that nothing supplies leaves the object
+/// unsized. Only the AllocaDyn-to-declaration direction was checked.
+#[test]
+fn a_runtime_extent_with_no_allocadyn_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0].allocas.push(AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: DYNAMIC_EXTENT,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    });
+    assert_rejects(&m, VerifyErrorKind::AllocaExtentMismatch);
+}
+
+#[test]
+fn addr_of_an_undeclared_local_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::AddrOfLocal {
+            alloca: AllocaId(42),
+        },
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::UnknownId);
+}
+
 /// Verification must be deterministic (001 §5).
 #[test]
 fn error_order_is_deterministic() {

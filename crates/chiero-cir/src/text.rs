@@ -5,6 +5,7 @@
 //! Silent tolerance here produces tests that pass by not testing anything.
 
 use crate::*;
+use indexmap::IndexMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
@@ -27,6 +28,8 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         raw: String::new(),
         globals,
         funcs,
+        value_names: IndexMap::new(),
+        label_names: IndexMap::new(),
     }
     .module()
 }
@@ -53,6 +56,12 @@ struct Parser<'a> {
     raw: String,
     globals: Vec<String>,
     funcs: Vec<String>,
+    /// Named values and block labels, per function, numbered in order of first
+    /// appearance. 020 §6's own example writes `%len_p` and `bb_ok`, and a fixture
+    /// format humans write should not require them to allocate ids by hand. Printing
+    /// canonicalizes back to `%N`/`bbN`, consistent with printing being canonicalization.
+    value_names: IndexMap<String, u32>,
+    label_names: IndexMap<String, u32>,
 }
 
 /// Split on whitespace and commas, keeping quoted strings intact.
@@ -146,6 +155,38 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `%N` is literal; `%name` is assigned an id on first appearance.
+    fn value_id(&mut self, s: &str) -> Result<ValueId, ParseError> {
+        let n = s.trim_start_matches('%').trim_end_matches(',');
+        if let Ok(v) = n.parse::<u32>() {
+            return Ok(ValueId(v));
+        }
+        if n.is_empty() {
+            return Err(self.perr("empty value name"));
+        }
+        let next = self.value_names.len() as u32;
+        Ok(ValueId(
+            *self.value_names.entry(n.to_string()).or_insert(next),
+        ))
+    }
+
+    fn label_of(&mut self, s: &str) -> Result<BlockId, ParseError> {
+        let n = s.trim_end_matches([',', ':']);
+        if n == "entry" {
+            return Ok(BlockId(0));
+        }
+        if let Some(rest) = n.strip_prefix("bb")
+            && let Ok(v) = rest.parse::<u32>()
+        {
+            return Ok(BlockId(v));
+        }
+        // A symbolic label. Reserve 0 for `entry`, so named blocks start at 1.
+        let next = self.label_names.len() as u32 + 1;
+        Ok(BlockId(
+            *self.label_names.entry(n.to_string()).or_insert(next),
+        ))
+    }
+
     fn global_id(&self, s: &str) -> Result<GlobalId, ParseError> {
         let n = s.trim_start_matches('@');
         self.globals
@@ -194,6 +235,7 @@ impl<'a> Parser<'a> {
         let name: Symbol = joined[5..open].trim().trim_start_matches('@').into();
 
         let mut params = Vec::new();
+        let mut pending_names: IndexMap<String, u32> = IndexMap::new();
         let mut variadic = false;
         let inner = joined[open + 1..close].trim();
         if !inner.is_empty() {
@@ -205,15 +247,20 @@ impl<'a> Parser<'a> {
                 let (v, ty_s) = p
                     .split_once(':')
                     .ok_or_else(|| self.perr("param needs :"))?;
-                params.push(Param {
-                    value: ValueId(
-                        v.trim()
-                            .trim_start_matches('%')
-                            .parse()
-                            .map_err(|_| self.perr("bad param id"))?,
-                    ),
-                    ty: self.ty(ty_s.trim())?,
+                let vname = v.trim().to_string();
+                let ty = self.ty(ty_s.trim())?;
+                // Parameters are the first values in the function, so they must be
+                // interned before the body, or `%v` in the body would get a fresh id.
+                let value = ValueId(match vname.trim_start_matches('%').parse::<u32>() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        let next = pending_names.len() as u32;
+                        *pending_names
+                            .entry(vname.trim_start_matches('%').to_string())
+                            .or_insert(next)
+                    }
                 });
+                params.push(Param { value, ty });
             }
         }
 
@@ -259,6 +306,9 @@ impl<'a> Parser<'a> {
             span: Span::DUMMY,
         };
         if has_body {
+            // Names are function-scoped: `%tmp` in two functions is two values.
+            self.value_names = pending_names;
+            self.label_names.clear();
             self.body(&mut f)?;
         }
         Ok(f)
@@ -323,14 +373,7 @@ impl<'a> Parser<'a> {
                 }
                 terminated = false;
                 let label = head.trim_end_matches(':').to_string();
-                let id = BlockId(if label == "entry" {
-                    0
-                } else {
-                    label
-                        .trim_start_matches("bb")
-                        .parse()
-                        .map_err(|_| self.perr("bad block label"))?
-                });
+                let id = self.label_of(&label)?;
                 if labels.iter().any(|(_, seen)| *seen == id) {
                     return self.err(format!("duplicate block label `{label}`"));
                 }
@@ -381,47 +424,60 @@ impl<'a> Parser<'a> {
     }
 
     fn alloca(&mut self, t: &[String]) -> Result<AllocaDecl, ParseError> {
-        // alloca %N : ty x COUNT align A scope S lifetime L ["name"]
+        // alloca %N : ty x COUNT align A [scope S] [lifetime L] ["name"]
+        //
+        // `scope` and `lifetime` are optional and default to scope 0 / Scope, so a
+        // fixture that does not care about stack lifetime need not say so.
         let get = |i: usize| t.get(i).map(String::as_str).unwrap_or("");
+        let named = get(1).trim_start_matches('%').to_string();
+        let id = AllocaId(match named.parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                let next = self.value_names.len() as u32;
+                *self
+                    .value_names
+                    .entry(format!("alloca:{named}"))
+                    .or_insert(next)
+            }
+        });
+        let find = |kw: &str| {
+            t.iter()
+                .position(|x| x == kw)
+                .and_then(|i| t.get(i + 1))
+                .map(String::as_str)
+        };
         Ok(AllocaDecl {
-            id: AllocaId(
-                get(1)
-                    .trim_start_matches('%')
-                    .parse()
-                    .map_err(|_| self.perr("bad alloca id"))?,
-            ),
+            id,
             ty: self.ty(get(3))?,
             count: get(5).parse().map_err(|_| self.perr("bad alloca count"))?,
             align: get(7).parse().map_err(|_| self.perr("bad alloca align"))?,
-            scope: ScopeId(get(9).parse().map_err(|_| self.perr("bad scope"))?),
-            lifetime: match get(11) {
+            scope: ScopeId(
+                find("scope")
+                    .unwrap_or("0")
+                    .parse()
+                    .map_err(|_| self.perr("bad scope"))?,
+            ),
+            lifetime: match find("lifetime").unwrap_or("scope") {
                 "scope" => Lifetime::Scope,
                 "function" => Lifetime::Function,
                 other => return self.err(format!("unknown lifetime `{other}`")),
             },
-            name: t.get(12).map(|n| n.trim_matches('"').into()),
+            name: t
+                .iter()
+                .find(|x| x.starts_with('"'))
+                .map(|n| n.trim_matches('"').into()),
             span: Span::DUMMY,
         })
     }
 
-    fn label_id(&self, s: &str) -> Result<BlockId, ParseError> {
-        Ok(BlockId(if s == "entry" {
-            0
-        } else {
-            s.trim_start_matches("bb")
-                .trim_end_matches(',')
-                .parse()
-                .map_err(|_| self.perr(&format!("bad block label `{s}`")))?
-        }))
+    fn label_id(&mut self, s: &str) -> Result<BlockId, ParseError> {
+        self.label_of(s)
     }
 
-    fn operand(&self, s: &str) -> Result<Operand, ParseError> {
+    fn operand(&mut self, s: &str) -> Result<Operand, ParseError> {
         let s = s.trim_end_matches(',');
-        if let Some(v) = s.strip_prefix('%') {
-            return Ok(Operand::Value(ValueId(
-                v.parse()
-                    .map_err(|_| self.perr(&format!("bad value `{s}`")))?,
-            )));
+        if s.starts_with('%') {
+            return Ok(Operand::Value(self.value_id(s)?));
         }
         if s == "null" {
             return Ok(Operand::Const(Const::Null));
@@ -552,11 +608,10 @@ impl<'a> Parser<'a> {
 
         // `%N = <rvalue>` or a bare effectful instruction.
         if t.len() > 2 && t[1] == "=" {
-            let dst = ValueId(
-                t[0].trim_start_matches('%')
-                    .parse()
-                    .map_err(|_| self.perr("bad dst"))?,
-            );
+            let dst = {
+                let d = self.tok(t, 0)?.to_string();
+                self.value_id(&d)?
+            };
             let rest = &t[2..];
             if self.tok(rest, 0)? == "call" {
                 let (callee, args) = self.call_parts(rest)?;
@@ -669,7 +724,7 @@ impl<'a> Parser<'a> {
         Ok((off, hi.saturating_sub(off)))
     }
 
-    fn call_parts(&self, t: &[String]) -> Result<(Callee, Vec<Operand>), ParseError> {
+    fn call_parts(&mut self, t: &[String]) -> Result<(Callee, Vec<Operand>), ParseError> {
         let _ = t;
         // Everything from `call` onward on the raw line, so commas survive.
         let joined = match self.raw.find("call ") {
@@ -688,15 +743,19 @@ impl<'a> Parser<'a> {
         let args = if inner.is_empty() {
             Vec::new()
         } else {
-            inner
-                .split(',')
-                .map(|a| self.operand(a.trim()))
-                .collect::<Result<_, _>>()?
+            {
+                let parts: Vec<String> = inner.split(',').map(|a| a.trim().to_string()).collect();
+                let mut v = Vec::with_capacity(parts.len());
+                for a in parts {
+                    v.push(self.operand(&a)?);
+                }
+                v
+            }
         };
         Ok((callee, args))
     }
 
-    fn rvalue(&self, t: &[String]) -> Result<RValue, ParseError> {
+    fn rvalue(&mut self, t: &[String]) -> Result<RValue, ParseError> {
         let g = |i: usize| t.get(i).map(String::as_str).unwrap_or("");
         Ok(match g(0) {
             "load" | "loadvolatile" => RValue::Load {

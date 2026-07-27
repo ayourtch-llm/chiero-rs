@@ -22,6 +22,8 @@ pub enum VerifyErrorKind {
     BadBitRange,
     BadLane,
     AllocaExtentMismatch,
+    DuplicateId,
+    UnknownId,
     /// Rule 3: a *warning*. Unreachable C code exists and is legal.
     UnreachableBlock,
 }
@@ -102,6 +104,7 @@ fn verify_function(f: &Function, out: &mut Vec<VerifyError>) {
         (Body::Defined, false) => {}
     }
 
+    check_structural_identity(f, out);
     check_block_refs(f, out);
     if out.iter().any(|e| e.kind == VerifyErrorKind::UnknownBlock) {
         // Later rules index blocks by id; a dangling reference would make their
@@ -113,6 +116,91 @@ fn verify_function(f: &Function, out: &mut Vec<VerifyError>) {
     check_switch_cases(f, out);
     check_allocas(f, out);
     check_ssa_and_types(f, out);
+}
+
+/// Ids must be unique and resolvable. A duplicate `BlockId` is not a crash but a
+/// silently *wrong* execution: `Function::block()` is a linear find, so the second block
+/// is unreachable and control lands in the first.
+fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
+    let mut seen_blocks: Vec<BlockId> = Vec::new();
+    for b in &f.blocks {
+        if seen_blocks.contains(&b.id) {
+            err(
+                out,
+                f,
+                VerifyErrorKind::DuplicateId,
+                b.span,
+                format!("{:?} is declared more than once", b.id),
+            );
+        }
+        seen_blocks.push(b.id);
+    }
+    let mut seen_allocas: Vec<AllocaId> = Vec::new();
+    for a in &f.allocas {
+        if seen_allocas.contains(&a.id) {
+            err(
+                out,
+                f,
+                VerifyErrorKind::DuplicateId,
+                a.span,
+                format!("{:?} is declared more than once", a.id),
+            );
+        }
+        seen_allocas.push(a.id);
+        // Rule 7 applies to declarations too, not only to accesses.
+        check_align(f, a.align, a.span, out);
+    }
+    let mut seen_params: Vec<ValueId> = Vec::new();
+    for p in &f.params {
+        if seen_params.contains(&p.value) {
+            err(
+                out,
+                f,
+                VerifyErrorKind::DuplicateId,
+                f.span,
+                format!("parameter {:?} appears more than once", p.value),
+            );
+        }
+        seen_params.push(p.value);
+    }
+    // Rule 13's second half: a declaration claiming a runtime extent needs an
+    // `AllocaDyn` to supply it, or nothing ever sizes the object.
+    for a in &f.allocas {
+        if a.count == crate::DYNAMIC_EXTENT {
+            let supplied =
+                f.blocks.iter().flat_map(|b| &b.insts).any(
+                    |i| matches!(&i.kind, InstKind::AllocaDyn { alloca, .. } if *alloca == a.id),
+                );
+            if !supplied {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::AllocaExtentMismatch,
+                    a.span,
+                    format!("{:?} has a runtime extent that no AllocaDyn supplies", a.id),
+                );
+            }
+        }
+    }
+    // `AddrOfLocal` must name a declared alloca.
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let InstKind::Assign {
+                rv: RValue::AddrOfLocal { alloca },
+                ..
+            } = &i.kind
+                && !f.allocas.iter().any(|a| a.id == *alloca)
+            {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::UnknownId,
+                    i.span,
+                    format!("AddrOfLocal names undeclared {alloca:?}"),
+                );
+            }
+        }
+    }
 }
 
 /// Rule 2.

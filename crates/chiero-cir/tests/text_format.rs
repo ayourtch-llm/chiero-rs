@@ -409,3 +409,53 @@ fn a_duplicate_block_label_is_an_error() {
     let src = "func @f() -> void {\nentry:\n  ret\nentry:\n  ret\n}\n";
     assert!(parse(src).is_err());
 }
+
+/// **The normative example from 020 §6 must parse.** It did not: it uses named values
+/// (`%len_p`), named block labels (`bb_ok`) and an alloca without `scope`/`lifetime`,
+/// none of which the parser accepted. A spec whose own worked example is not a valid
+/// fixture is a spec the implementation has quietly diverged from.
+///
+/// Names are canonicalized to `%N`/`bbN` on output, consistent with printing being
+/// canonicalization — the same rule that lets whitespace normalize.
+#[test]
+fn the_spec_worked_example_parses() {
+    let src = r#"target x86_64-unknown-linux-gnu
+
+global @counts : size 32 align 8
+
+func @vec_len_minus_1(%v: ptr) -> i32 {
+  alloca %slot : i32 x 1 align 4 "n"
+entry:
+  .line 12
+  %len_p = ptradd %v, -8i64
+  %len   = load i32, %len_p align 4
+  %n     = sub i32 %len, 1i32
+  store i32 %n -> %slot align 4
+  %c     = cmp slt i32 %n, 0i32
+  br %c, bb_bad, bb_ok
+bb_ok:
+  .line 14
+  ret %n
+bb_bad:
+  .line 15
+  unreachable builtin
+}
+"#;
+    let m = parse(src).unwrap_or_else(|e| panic!("020 §6's example must parse: {e:?}"));
+    assert_eq!(m.funcs.len(), 1);
+    assert_eq!(m.funcs[0].blocks.len(), 3);
+    // Round-trips through its canonical form.
+    let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(m, again);
+}
+
+/// Value names are function-scoped: `%tmp` in two functions is two values.
+#[test]
+fn value_names_are_function_scoped() {
+    let src = "func @a() -> void {\nentry:\n  %t = add i32 1i32, 1i32\n  ret\n}\n\
+               func @b() -> void {\nentry:\n  %t = add i32 2i32, 2i32\n  ret\n}\n";
+    let m = parse(src).expect("parse");
+    assert_eq!(m.funcs.len(), 2);
+    // Both get id 0 in their own function; neither collides with the other.
+    assert_eq!(print(&m), print(&parse(&print(&m)).unwrap()));
+}
