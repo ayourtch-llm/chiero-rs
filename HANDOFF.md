@@ -1457,6 +1457,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    a definite fact chiero modeled exactly; `MemFault::yields_unknown_value` draws the line
    at values chiero *invented*.
 
+   **WAVE 18** (`4054a35` red, `8d5679e` green, 512 tests) — `CopyMem` and `SetMem` were
+   missing too, found by reading what else `exec_inst` does not match on. They are CIR
+   *instructions*: a frontend lowers a struct assignment and an array initializer to them
+   with no `memcpy` in the source, so `s = t;` between structs was degrading to `Unknown`
+   and silently keeping the destination's old bytes. `CopyMem` uses `Overlap::Forbidden`,
+   because 021 contract 22's answer must not depend on which spelling the frontend chose.
+
+   **Still unimplemented in `exec_inst`/`eval`:** `LoadBits`, `StoreBits` (021 §3.1's
+   bit-granular init exists precisely for these), `AddrOfGlobal`, `Shuffle`, and the
+   `Const` families `operand` cannot represent. Worth an audit pass rather than
+   discovering them one at a time — that is how `Load`/`Store` stayed hidden.
+
    **STILL OWED from wave 16:** the engine's use of `reachable_depth` is unpinned (needs a
    stored pointer — now possible, since `Store` exists); a store through NULL produces a
    finding and **execution continues**, where the program would have crashed; `HavocSpec`'s
