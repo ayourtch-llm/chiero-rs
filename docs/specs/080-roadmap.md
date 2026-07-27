@@ -38,9 +38,17 @@ cannot run until M2 lands, so M1 relies on `.cir` fixtures, property tests, and 
 cross-check. This is a second reason to run M1 and M2 concurrently rather than serially.
 
 **Exit:**
-- [020](020-cir.md) contracts 1–30, [021](021-memory-model.md) 1–22,
-  [022](022-solver.md) 1–20, [023](023-execution-engine.md) 1–21,
-  [024](024-environment-models.md) 1–22 all green.
+- **All** numbered contracts of [020](020-cir.md), [021](021-memory-model.md),
+  [022](022-solver.md), [023](023-execution-engine.md) and
+  [024](024-environment-models.md) are green.
+
+  Stated as "all", not as numeric ranges. The ranges in an earlier draft were written
+  before the review waves and never updated, so they excluded precisely the contracts the
+  reviews added — `Opaque` outputs, vector ops, varargs, bit-granular init, provenance
+  round-trips, `CheckerState` forking, `CallReturn`. Every one is `.cir`-fixture-testable
+  core work with no other milestone home, so the fixes were sitting outside every gate.
+  [070 §4](070-testing-and-tdd-protocol.md) now requires gates to name documents rather
+  than ranges.
 - z3 `paranoid` cross-check clean over the `.cir` corpus.
 - The fidelity `trybuild` compile-fail test passes.
 - A hand-written `.cir` program with a deliberate OOB produces a finding with a witness.

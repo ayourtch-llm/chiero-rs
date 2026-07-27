@@ -98,7 +98,15 @@ pub enum Contents {
 }
 ```
 
-Objects start as `Bytes`. Promotion to `Array` happens on exactly one trigger: a write at
+Objects start as `Bytes` — **except** those with a symbolic size, which start as `Array`.
+A `Bytes` object's `data: Vec<u8>` and bit-indexed `init` both need a concrete length, so
+`SizeVal::Sym` has no `Bytes` representation at all. Note this is rare in practice:
+[023 §10](023-execution-engine.md) concretizes symbolic allocation sizes to a solver model
+and records the equality constraint, which also gives §7's bump allocator the concrete
+extent it needs to place the next object. `SizeVal::Sym` survives for the window between
+allocation and concretization, and for objects whose size is never queried.
+
+Promotion to `Array` happens on exactly one trigger: a write at
 a **symbolic offset** that the solver cannot pin to a small set of concrete offsets.
 Reads at a symbolic offset from a `Bytes` object are answered by an if-then-else chain
 when the feasible offset set has ≤ `ite_threshold` (default 16, configurable, recorded in
@@ -282,18 +290,44 @@ Pure `IntToPtr` over an arithmetic term. Under UCSE, `buffer_mem_start` is loade
 lazily-materialized structure and is therefore an unconstrained 64-bit symbol — so without
 help, every VPP node analysis dies at its first buffer access.
 
-An **arena** is a registered striding region: a base value, an element size, a stride, and
-a count.
+An **arena** is a registered striding region. Three sizes, not two, because in VPP they
+genuinely differ:
 
 ```rust
-pub struct Arena { pub base: Term, pub elem_size: u64, pub stride: u64, pub count: SizeVal }
+pub struct Arena {
+    pub base: Term,
+    /// Bytes between consecutive elements. Elements are disjoint, so `elem_size <= pitch`.
+    pub pitch: u64,
+    /// Addressable bytes within an element; `[elem_size, pitch)` is a gap.
+    pub elem_size: u64,
+    /// Bytes per unit of the *index* the program uses, which is not the pitch.
+    pub index_scale: u64,
+    pub count: SizeVal,
+}
 ```
 
-`IntToPtr` of `base + k * stride + d` resolves to element `k` of the arena at offset `d`,
-with `k` symbolic and bounds-checked against `count` — one object per accessed index,
-materialized lazily, rather than a fork over the whole address space. `chiero-vpp`
-registers the buffer pool this way ([060](060-vpp-integration.md)); the mechanism itself
-is target-agnostic and is the general answer for any pool/slab/index-addressed allocator.
+`index_scale` exists because `vlib_buffer_ptr_from_index` computes
+`base + (buffer_index << 6)` — the index unit is a 64-byte cache line — while consecutive
+buffers are `vlib_buffer_alloc_size()` apart, which is
+`round_pow2(ext_hdr + sizeof(vlib_buffer_t) + data_size, VLIB_BUFFER_ALIGN)`, on the order
+of 2.5 KB. Collapsing the two would force a choice between an `elem_size` of 64 — making
+every access to `b->data` an out-of-bounds finding — and overlapping elements, which
+violates §7's disjointness. Both are wrong; the layout simply has two different strides.
+
+Resolution of `IntToPtr(base + n)`:
+
+1. `n` is in index units, so the byte offset from `base` is `n * index_scale`.
+2. Element index `k = (n * index_scale) / pitch`, byte offset within the element
+   `d = (n * index_scale) % pitch`. The decomposition is unique **because `d` is
+   canonicalized to `[0, pitch)`** — without that, `base + k*pitch + d` has many readings
+   for the same address.
+3. `d >= elem_size` lands in the inter-element gap: an OOB finding, not a valid pointer.
+4. `k` is bounds-checked against `count`, and may stay symbolic — one object per accessed
+   index, materialized lazily, rather than a fork over the whole address space.
+
+`chiero-vpp` registers the buffer pool this way ([060](060-vpp-integration.md)); the
+mechanism itself is target-agnostic and is the general answer for any pool, slab or
+index-addressed allocator.
 
 ## 6. Lazy initialization (under-constrained symbolic execution)
 
@@ -477,9 +511,14 @@ API. The API is specified so that swap does not touch callers.
      `UnresolvablePointer` finding, and no read through it is ever reported as in-bounds
      (§5.1 step 4). This is the `vlib_get_buffer` case; getting it wrong analyses the
      wrong memory for an entire function.
-13c. With an arena registered (§5.2), the same `base + (i << 6)` expression resolves to
-     element `i` with `i` still symbolic, bounds-checked against the arena's count, with
-     no fork over unrelated objects.
+13c. With an arena registered (§5.2) using VPP's real geometry — `index_scale` 64,
+     `pitch` = `vlib_buffer_alloc_size()` (~2.5 KB), `elem_size` the buffer's addressable
+     extent — `base + (i << 6)` resolves to element `(i*64)/pitch` at offset
+     `(i*64)%pitch`, with `i` symbolic and bounds-checked against `count`, and no fork
+     over unrelated objects. Accessing `b->data` well past 64 bytes is **in** bounds.
+13d. Elements are disjoint and separated per §7; an offset landing in the
+     `[elem_size, pitch)` gap is exactly one OOB finding, not a valid pointer into the
+     next element.
 14. Two distinct objects never overlap and every pair is separated by ≥ 4096 bytes
     (property test, 10 000 random allocation sequences) — **and** an OOB pointer at
     distance `gap + 1` does not resolve to the neighbouring object (the property that

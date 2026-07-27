@@ -369,13 +369,18 @@ explicit, capped, and recorded:
 | Situation | Policy |
 |---|---|
 | Symbolic pointer base | fork per object, cap `max_resolutions` ([021 §5.1](021-memory-model.md)) |
-| Symbolic memcpy/memset size | bound by object size; if still symbolic, fork on small values, else concretize + `Bounded` |
-| Symbolic allocation size | solver model, add the equality constraint, `Bounded` |
+| Symbolic memcpy/memset size | bound by object size; if still symbolic, fork on small values, else concretize + **`Approximated`** |
+| Symbolic allocation size | solver model, add the equality constraint, **`Approximated`** |
 | Symbolic array index into `Bytes` | ite-chain up to `ite_threshold`, else promote to array theory (no concretization) |
 | Symbolic `Switch` scrutinee | fork per case; `default` gets the negation of all cases |
 
 Every concretization appends an `Assumption` with the constraint that was added, so a
 witness replays deterministically.
+
+These rows say `Approximated`, not `Bounded`, per §7's boundary: keeping one of several
+feasible values is a modeling lie rather than a truncated search, and the stronger claim
+is the false one. An earlier draft said `Bounded` here while §7 said `Approximated` —
+the same drift §7's preamble warns about, reproduced inside one document.
 
 ## 11. Non-goals for v1
 

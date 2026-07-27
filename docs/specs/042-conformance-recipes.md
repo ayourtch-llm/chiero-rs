@@ -231,6 +231,14 @@ reinterpret  $b = $a via <pattern>   // e.g. index round-trip through pool_elt_a
 `reinterpret` is what lets `pool_get(P, e); i = e - P; … e2 = pool_elt_at_index(P, i)`
 keep one identity across the pointer→integer→pointer round trip.
 
+**A tracked entity migrates across reallocation.** [021 §4](021-memory-model.md) models
+`realloc` as allocate-new, copy, free-old, which mints a *new* `ObjectId` — so a naive
+`(ObjectId, range)` identity detaches the moment a vector grows. That is not hypothetical:
+`vec_add1(name, 0)` to NUL-terminate immediately after `unformat "%s"` is a standard VPP
+idiom (`fib_api.c`, `feature.c`, `af_packet_api.c`, `crypto.c`). The engine's realloc model
+therefore carries the tracked entity to the successor object at the copied range, and a
+contract pins it.
+
 ### 4.2.2 `on_all_paths` and abnormal termination
 
 `require on_all_paths { at return: <cond> }` must say what happens on paths that never
@@ -455,7 +463,10 @@ would otherwise be the most tempting place to hard-code VPP knowledge.
 22. Every construct in the grammar round-trips parse→print, and every syntax error
     carries a machine code and a span ([050 §4](050-tool-interface.md) promises
     structured errors, and `validate_recipe` is specified against this grammar).
-23. A recipe finding names its `ConfigId` and march variant. `VLIB_CLI_COMMAND` is
+23. A tracked entity survives reallocation: acquiring a vector, appending to it until it
+    grows, and freeing it produces no "not freed" finding, and the identity reported is
+    the successor object's.
+24. A recipe finding names its `ConfigId` and march variant. `VLIB_CLI_COMMAND` is
     `#ifndef CLIB_MARCH_VARIANT`, so `registered_via VLIB_CLI_COMMAND` matches nothing
     under a march-variant configuration — the sweep must state which configurations it
     covers rather than silently sweeping one.

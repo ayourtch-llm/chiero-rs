@@ -192,6 +192,11 @@ Collected from the specs; all must pass:
 | Tool envelope schema; `proven` only when `Exact` | [050](050-tool-interface.md) 1–2 |
 | VPP parser coverage percentage does not regress | [060](060-vpp-integration.md) 17 |
 
+**Gates name documents, never contract ranges.** A numeric range silently excludes every
+contract added after it was written, which is how the review-wave fixes ended up outside
+[080](080-roadmap.md)'s M1 gate. If a subset is genuinely intended, name the excluded
+contracts and why.
+
 Tracked-metric regressions (tier-1 `Unknown` rate, replay `NotReproduced` rate, parser
 coverage, selection reduction) fail CI on a threshold, because a slow decay in these
 never produces a single obviously-broken commit.
