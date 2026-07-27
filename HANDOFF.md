@@ -1392,6 +1392,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    because the whole struct was the string. This is the small half of 023 §7's `Finding`;
    `witness`, `backtrace` and `PathTrace` need machinery that does not exist yet.
 
+   **Wave G** (`ecb3435` red, `d12023f` green, 494 tests) — **`AddrOfFunc` was a lowering
+   gap**, so taking a function's address degraded the run to `Unknown` *before* the call,
+   and the call then forked over every defined function plus an unresolvable state — the
+   safe answer to a question chiero already had the answer to. It now yields a pointer to
+   a **zero-sized `Function` object** (non-zero would put it in the range search, where a
+   nearby integer would resolve to it), one per `FuncId` because a fresh object each time
+   makes `if (cb == handler)` false against itself. `indirect` resolves the operand before
+   enumerating: three states and `Unknown` became one state and `Exact`, which for VPP's
+   table-driven node dispatch is the difference between analysable and not.
+
+   Also `cb7f3bf`: **024 contract 21c's test was written expecting RED and arrived green**
+   — since the havoc commit both paths reach the same fallback, so they agree by
+   construction rather than by two mechanisms coinciding. Kept, because what it *does* pin
+   is that registering a model cannot remove the invalidation, which is the exact failure
+   this project already hit with `strlen`/`strcpy`. `ModelOutcome::Havoc` from a model is
+   still an unreachable branch; a model choosing its own `HavocSpec` (024 §2.1's `scanf`)
+   is owed.
+
    **STILL OWED from wave 15's review:** the
    symbolic sizes degrade though 024 §3 permits them; `AllocPolicy` is engine-global where
    024 §3 wants it per allocator; `State::findings()` has no direct test; `HavocSpec`'s
