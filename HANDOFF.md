@@ -1508,6 +1508,55 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    integer would see a lie. Same shape as the `container_of` offset trap two waves ago:
    when a value is recoverable by a second route, the first route stops being tested.
 
+   **WAVE 22 — the `Load`/`Store` review reported.** 38 mutants, **20 survived (53%)**;
+   the reviewer then killed 18 of them with new probes and showed the other 2 are no-ops
+   *with a probe rather than an argument*. Nine confirmed defects. Probe files are in
+   `/tmp/probes/` (`*_rev_probe.rs` pass on a clean tree; `*_rev_defect.rs` fail on one).
+
+   **The folds are sound** — 40 000 randomized cases against an independent `u128`
+   reference, plus width bookkeeping, plus a z3 round trip. Big-endian `write_term`/
+   `read_term` also round-trips correctly, contrary to my prior.
+
+   ⚠️ **The most dangerous survivor:** `extract(inner, hi + l2, lo + l2)` mutated to
+   `extract(inner, hi, lo)` — a silently *wrong value* whenever the inner slice's `lo` is
+   non-zero — passed all 510 tests. And the headline claim of wave 17, "a finding is not
+   automatically a degradation", was **unpinned in both directions**: `yields_unknown_value`
+   could return `false` for everything (an uninitialized read then seals a proof, 023 §7
+   rule 4's forbidden case) or `true` for everything, and the suite passed.
+
+   `bae2224` red / `1c154e5` green (520 tests) applied the two worst:
+   **023 contract 23 was unimplementable** — `Store` took its value through `scalar`, which
+   refuses a `Value::Ptr`, so `p->next = q` degraded every run containing it to `Unknown`,
+   blamed the *address*, and manufactured a false uninitialized-read on the reload. That is
+   the shape of essentially every VPP data structure. And **misalignment was reported
+   unconditionally** where 021 §5 step 3 makes it `ub-strict`-only; the check is against the
+   object's *declared* alignment, so every `CLIB_PACKED` header was a false positive — and
+   my own `a_store_is_visible_to_a_later_load` manufactures two and cannot see them.
+
+   **STILL OWED from wave 22, in the reviewer's priority order:**
+   - `MAX_ACCESS_BITS` is not enforced on the *term* API: `read_term` of >16 concrete bytes
+     asserts in the arena, `write_term`'s ground path shifts a `u128` by ≥128. Reachable
+     from the engine by loading a `<4 x i64>` — **two process kills**.
+   - `Engine::run` never calls `chiero_cir::verify`, though 020 §8 says it runs "before
+     execution, **always**". A width-mismatched `Store` panics in `extract`. This is the
+     wave-5 "malformed input panics instead of erroring" class, reopened on a new surface.
+   - A zero-sized `Load` (`CTy::Void`) fabricates a **64-bit** symbol, because `sort_of`
+     falls through to `BitVec(64)` — which also gives a faulting `f32` load the wrong width.
+   - A faulting **loop** floods the findings list (9 byte-identical copies of one bug;
+     256 in a `VLIB_FRAME_SIZE` loop). `RunResult::findings` dedups only on the sequence id;
+     023 §6.1's `(checker, span, object, kind)` key is available — `kind()`/`at()`/`object()`
+     were added for it in wave F — and unused. *Fork* dedup is fine and separately probed.
+   - Execution continues past a definite crash and **later findings are false**:
+     `int x; *(int*)0 = 1; return x;` reports the unreachable uninitialized read.
+   - `models::scanf` applies `.skip(1)` to the *filtered* pointer list, so an unresolvable
+     format argument eats the first real output pointer. Not hypothetical:
+     `AddrOfGlobal`-shaped `scanf("%d", &x)` has exactly this form. It must skip argument
+     *positions*.
+   - `Store`/`Load` ignore the CIR's `align` operand — the very thing that would separate a
+     packed access from a promised-aligned one.
+   - Land the reviewer's survivor probes as pinning tests, `S6` and the
+     `yields_unknown_value` cluster first.
+
    **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `AllocaDyn`; the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
