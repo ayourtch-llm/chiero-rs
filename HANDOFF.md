@@ -1952,6 +1952,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    values pins the meaning. The second half matters — "unchanged everywhere" alone is
    satisfied by the write having been **dropped**.
 
+   **WAVE 40** (`922292c`; 578 tests, **100/161 cited**) — 020 contracts 35 (bitcast
+   preserves total width) and 38 (`AllocaDyn` in a loop makes three *distinct* objects;
+   mutating it to reuse the frame's object kills three tests).
+
+   **Triaged and owed, not approximated:** contract 43 (`Const::Undef` propagates through
+   arithmetic, and a branch on `Undef` forks both ways at `Unknown`) needs an `Undef`
+   *value* the engine does not have — `operand` returns `None`, so it is a lowering gap
+   rather than a propagating value. Contract 41 needs an observable-effect sequence for
+   `Volatile`; 42 needs `IndirectGoto` execution; 44 needs the pass pipeline. Contracts 12
+   and 14–18 are M2's.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
