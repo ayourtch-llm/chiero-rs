@@ -466,3 +466,56 @@ fn fold(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
         BinKind::Eq => b(x.bits() == y.bits()),
     }
 }
+
+/// Why a query could not be decided (022 §2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnknownReason {
+    /// Outside the fragment `solver-lite` may answer `Unsat` over (022 §3.2).
+    Incomplete(&'static str),
+    ResourceLimit,
+    BackendError(String),
+}
+
+/// **Three-valued, always.** Code that matches `Sat`/`Unsat` and treats the remainder as
+/// one of them is a bug; the third arm is mandatory (022 §2).
+#[derive(Clone, Debug)]
+pub enum CheckResult {
+    Sat(Model),
+    Unsat,
+    Unknown(UnknownReason),
+}
+
+pub trait Solver {
+    fn assert(&mut self, t: Term);
+    fn push(&mut self);
+    fn pop(&mut self, n: u32);
+    fn check(&mut self, a: &mut TermArena, assumptions: &[Term]) -> CheckResult;
+}
+
+/// Tier 1: rewriting, an interval + known-bits product domain, deliberately incomplete.
+#[derive(Debug, Default)]
+pub struct SolverLite {
+    asserted: Vec<Term>,
+    scopes: Vec<usize>,
+}
+
+impl SolverLite {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Solver for SolverLite {
+    fn assert(&mut self, _t: Term) {
+        todo!("green")
+    }
+    fn push(&mut self) {
+        todo!("green")
+    }
+    fn pop(&mut self, _n: u32) {
+        todo!("green")
+    }
+    fn check(&mut self, _a: &mut TermArena, _assumptions: &[Term]) -> CheckResult {
+        todo!("green")
+    }
+}
