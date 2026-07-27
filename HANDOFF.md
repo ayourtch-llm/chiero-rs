@@ -1742,10 +1742,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    buffers, so `object` told them apart and `func` stayed droppable — the trap one
    component over. The model key is now pinned in all four.
 
+   **WAVE 29** (`f215789`, `ee45f58`; 556 tests).
+   **`ModelCtx` keeps one list of `(Option<MemFault>, String)`**, not two parallel `Vec`s
+   indexed together — those drift the moment a model reports without a fault, putting a
+   fault's key on someone else's sentence. It held only because no shipped model
+   interleaves, which is a trap for the next author rather than a bug in the current code;
+   the fix makes the *shape* enforce it.
+   **`Const::GlobalAddr`/`FuncAddr` are pointers**, offset included. They were lowering
+   gaps, so `&g` failed in exactly the places it is most ordinary.
+
+   ⚠️ **Two editing traps worth §8:** a two-replacement script asserted on a second anchor
+   `cargo fmt` had reflowed, died before writing, and reported nothing — the edit silently
+   never happened. And an insert anchored on `RValue::AddrOfFunc(FuncId(1))` landed in a
+   *different test* containing the same line. **Anchor on something unique to the target,
+   and verify the edit arrived** — `grep -c` for the new text before running anything.
+
    **STILL OWED from wave 27:**
    - ~~**`strcpy` and `calloc` report the same bug twice**~~ DONE (wave 28). — `cx.report(msg.clone())` *and*
      `ModelOutcome::Finding(msg)`, two `finding_seq` ids, neither keyed.
-   - **`ModelCtx::faults()`'s index correspondence is unenforced.** `dispatch` zips
+   - ~~**`ModelCtx::faults()`'s index correspondence**~~ DONE (wave 29). `dispatch` zips
      `findings()[i]` with `faults()[i]`, but `report()` pushes only to `findings`. It holds
      because no shipped model interleaves; it is a trap for the next model author. Make
      `report` push a `None` fault, or carry pairs.
@@ -1760,8 +1775,8 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      answers from the table the store populated, and its fallback arm accepts a scalar as
      an answer to "is this a null pointer". Reload as `i64` and compare.
    - `scanf`'s `.skip(1)` → `.skip(0)` survives: "the format is not an output" is unpinned.
-   - `Engine::operand` handles only `Const::Int` and `Const::Null`; `GlobalAddr`,
-     `FuncAddr`, `Float`, `Wide`, `Undef` are all lowering gaps.
+   - ~~`Engine::operand` handles only `Const::Int` and `Const::Null`~~ DONE (wave 29) for
+     `GlobalAddr`/`FuncAddr`; `Float`, `Wide` and `Undef` stay gaps deliberately.
 
    **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
