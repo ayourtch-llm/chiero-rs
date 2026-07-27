@@ -2599,6 +2599,37 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    does not exist, so the test would assert against itself. Said in the test's own doc
    comment rather than quietly counted — 070 §4's new rule applies to me too.
 
+   **WAVE 68** (`b5777db`; 688 tests, **133/165 cited**) — 024 contract 7, `strlen` over
+   symbolic bytes, which the code itself had marked owed ("the symbolic fork of §4 step 2
+   is owed"). Without it chiero could not measure a string it had not written, which is
+   most strings in a real program.
+
+   `strlen_symbolic` reads each byte as a **term** and forks one branch per position the
+   NUL could be, guarded by "every earlier byte non-zero ∧ this one zero". A concrete byte
+   is a constant term the arena folds, so §4 step 1's fast path falls out of the same code
+   instead of being a second copy of the walk. The tail branch is an **unterminated-string
+   finding** when the object's end was reached and a **bound** when the scan cap was —
+   §4's rule that steps 3 and 4 must not cancel, since an earlier draft had the cap
+   "constrain a terminator to exist" and thereby assumed away the bug step 4 finds.
+
+   **Three defects it exposed, all in my code:**
+   - **Model fork guards were dropped entirely** (`Some((_, ...))`). Every sibling of a
+     fork carried the same path condition — `malloc`'s two branches were indistinguishable
+     to the solver, and a `strlen` fork would have made four states that all still believed
+     the string could be any length. A sibling now drops *this* state's guard before adding
+     its own; sharing them would make the states mutually contradictory rather than merely
+     unconstrained.
+   - **A value-less branch inherited the previous branch's value**, because siblings are
+     cloned after this state's result is in place. The unterminated branch reported
+     length 0 as its own.
+   - **`ModelOutcome` could not express a bound.** A cap reporting a `Finding` accuses the
+     program of chiero's limit; one saying nothing lets a truncated scan pass as complete.
+     `Bounded(reason)` is neither.
+
+   *Method note:* the fixture failed twice before it measured anything — a declared callee
+   with the wrong parameter count does not verify, and the run reported "the module was
+   never executed". **A fixture that does not verify reports the absence of everything.**
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2676,7 +2707,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **686 tests, 132/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **688 tests, 133/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
