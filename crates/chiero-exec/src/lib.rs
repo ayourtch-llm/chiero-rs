@@ -194,6 +194,10 @@ pub struct Frame {
     /// writes aliasing and bounds wrong in both directions, silently. Recursion has the
     /// same shape: each activation needs its own objects.
     frame_objs: IndexMap<AllocaId, chiero_mem::ObjectId>,
+    /// **Per activation, for the same reason as `locals`.** A `ValueId` is unique only
+    /// *within* a function, so one map per state would let a callee's `%2` inherit the
+    /// caller's provenance — and recursion has the same shape.
+    ptr_vals: IndexMap<ValueId, Pointer>,
 }
 
 #[derive(Clone, Debug)]
@@ -233,9 +237,13 @@ pub struct State {
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
     findings: Vec<(u64, Option<FindingKey>, String)>,
-    /// Where an integer came from, for 021 §7.1's provenance-first `IntToPtr`. Keyed on
-    /// the term, so arithmetic that produces a *different* term correctly loses the
-    /// provenance rather than carrying it somewhere it does not belong.
+    /// Where an address term came from, for a pointer that went through **memory**: the
+    /// bytes are the carrier, and the program itself declared the field to be a pointer.
+    ///
+    /// Keyed by *value*, so it cannot be trusted for `IntToPtr` — an address is a ground
+    /// constant and the arena hash-conses, so two ways of computing one address are the
+    /// same `Term` by construction. That path uses `Frame::ptr_vals`, which follows
+    /// dataflow instead.
     ptr_ints: IndexMap<Term, Pointer>,
 }
 
@@ -305,6 +313,19 @@ impl State {
 
     pub fn provenance_of(&self, t: Term) -> Option<Pointer> {
         self.ptr_ints.get(&t).copied()
+    }
+
+    /// Record that the local `v` holds the address of `p`. Arithmetic writes a *different*
+    /// local with no entry, which is how provenance is lost — the property the value-keyed
+    /// table was documented to have and could not.
+    pub fn remember_value_provenance(&mut self, v: ValueId, p: Pointer) {
+        if let Some(f) = self.stack.last_mut() {
+            f.ptr_vals.insert(v, p);
+        }
+    }
+
+    pub fn value_provenance_of(&self, v: ValueId) -> Option<Pointer> {
+        self.stack.last().and_then(|f| f.ptr_vals.get(&v)).copied()
     }
 
     pub fn findings(&self) -> Vec<&str> {
@@ -673,6 +694,7 @@ impl<'m> Engine<'m> {
                 ret_dst: None,
                 locals: IndexMap::new(),
                 frame_objs,
+                ptr_vals: IndexMap::new(),
             }],
             ret: None,
             edge_counts: IndexMap::new(),
@@ -790,6 +812,19 @@ impl<'m> Engine<'m> {
                 // returning `None` and the local simply stays unbound.
                 if let Some(v) = self.eval(a, s, rv, i.span) {
                     s.set_local(*dst, v);
+                    // **Provenance is recorded here, not in `eval`**, because `eval` does
+                    // not know which local it is filling — and the local is the thing that
+                    // carries the dataflow. `s.set_local` first, so a `PtrToInt` of a
+                    // local onto itself sees the new value.
+                    if let RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: src,
+                        ..
+                    } = rv
+                        && let Some(Value::Ptr(p)) = self.operand(a, s, src)
+                    {
+                        s.remember_value_provenance(*dst, p);
+                    }
                 }
             }
             InstKind::Opaque { dsts, why, .. } => {
@@ -1095,6 +1130,7 @@ impl<'m> Engine<'m> {
             ret_dst: dst,
             locals,
             frame_objs,
+            ptr_vals: IndexMap::new(),
         });
         s.pc = (f.entry, 0);
         s.trace.push((*id, f.entry));
@@ -1450,9 +1486,15 @@ impl<'m> Engine<'m> {
                     let Some(t) = self.scalar(a, s, x) else {
                         return self.lowering_gap(s, span, "IntToPtr of a non-scalar");
                     };
-                    // Provenance **first**. The range search below is the fallback, and
-                    // it is wrong in both directions.
-                    if let Some(p) = s.provenance_of(t) {
+                    // Provenance **first** (021 §7.1), and only the kind that survives
+                    // scrutiny: the *dataflow* record for the operand's own local. The
+                    // value-keyed table cannot be used here — an address is a ground
+                    // constant and the arena hash-conses, so any arithmetic reaching that
+                    // address would launder its way to the object and skip the degrade
+                    // below, which is the one thing this fallback exists to announce.
+                    if let Operand::Value(v) = x
+                        && let Some(p) = s.value_provenance_of(*v)
+                    {
                         return Some(Value::Ptr(p));
                     }
                     let Ok(c) = a.eval_ground(t) else {
@@ -2205,6 +2247,7 @@ impl<'m> Engine<'m> {
             ret_dst: dst,
             locals: IndexMap::new(),
             frame_objs,
+            ptr_vals: IndexMap::new(),
         });
         s.pc = (f.entry, 0);
         s.trace.push((id, f.entry));
