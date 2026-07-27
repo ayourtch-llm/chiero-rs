@@ -90,7 +90,7 @@ impl InitMask {
     pub fn set_range(&mut self, lo_bit: u64, n_bits: u64, to: InitBit) {
         for b in lo_bit..lo_bit + n_bits {
             if let Some(slot) = self.bits.get_mut(b as usize) {
-                *slot = to;
+                *slot = join(*slot, to);
             }
         }
     }
@@ -99,6 +99,21 @@ impl InitMask {
     /// not-definitely: the point of the third state is that it decides neither way.
     pub fn first_not_yes(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
         (lo_bit..lo_bit + n_bits).find(|&b| self.get(b) != InitBit::Yes)
+    }
+}
+
+/// The initialization lattice: `No < Cond < Yes`, joined on write.
+///
+/// A conditional write is `ite(off == k, val, old)`. If `old` is already `Yes`, *both*
+/// branches are initialized, so the result is `Yes` — assigning `Cond` unconditionally
+/// would downgrade definitely-initialized memory and reintroduce the false-positive storm
+/// on `v[i] = x; … use v[i]` that the tri-state exists to prevent. The join is
+/// one-directional: over uninitialized memory a conditional write is still `Cond`.
+fn join(old: InitBit, new: InitBit) -> InitBit {
+    match (old, new) {
+        (InitBit::Yes, _) | (_, InitBit::Yes) => InitBit::Yes,
+        (InitBit::Cond, _) | (_, InitBit::Cond) => InitBit::Cond,
+        _ => InitBit::No,
     }
 }
 
@@ -178,9 +193,11 @@ impl MemObject {
     /// C and one-past-the-end is exactly where a loop's final `p + n` lands. Rejecting it
     /// would report a finding on correct code at every loop exit.
     fn check(&self, off: i64, size: u64) -> Result<usize, AccessError> {
-        let end = off.checked_add(size as i64);
-        let oob = off < 0 || end.is_none_or(|e| e > self.size as i64);
-        if oob {
+        // i128 throughout. `size as i64` is a *wrapping* cast, so any size above 2^63
+        // came out negative, the end landed at or below the offset, and the check passed
+        // — turning `clib_memcpy(d, s, a - b)` with `a < b` into an in-bounds access.
+        let end = off as i128 + size as i128;
+        if off < 0 || end > self.size as i128 {
             return Err(AccessError::OutOfBounds {
                 off,
                 size,
@@ -203,6 +220,7 @@ impl MemObject {
         cond: Cond,
     ) -> Result<(), AccessError> {
         let at = self.check(off, bytes.len() as u64)?;
+        self.check_writable(off)?;
         self.data[at..at + bytes.len()].copy_from_slice(bytes);
         self.init.set_range(
             off as u64 * 8,
@@ -225,6 +243,7 @@ impl MemObject {
 
     /// Assemble `size` bytes into an integer in target byte order.
     pub fn read_int(&self, off: i64, size: u64, e: Endian) -> Result<u128, AccessError> {
+        MemObject::check_int_width(size)?;
         let b = self.read_bytes(off, size)?;
         Ok(match e {
             Endian::Little => b.iter().rev().fold(0u128, |a, &x| (a << 8) | x as u128),
@@ -239,6 +258,7 @@ impl MemObject {
         v: u128,
         e: Endian,
     ) -> Result<(), AccessError> {
+        MemObject::check_int_width(size)?;
         let mut b: Vec<u8> = (0..size).map(|i| (v >> (8 * i)) as u8).collect();
         if e == Endian::Big {
             b.reverse();
@@ -253,6 +273,7 @@ impl MemObject {
     /// independently tracked.
     pub fn write_bits(&mut self, lo_bit: u64, n_bits: u64, v: u128) -> Result<(), AccessError> {
         self.check_bits(lo_bit, n_bits)?;
+        self.check_writable((lo_bit / 8) as i64)?;
         for i in 0..n_bits {
             let bit = lo_bit + i;
             let (byte, sh) = ((bit / 8) as usize, bit % 8);
@@ -281,12 +302,43 @@ impl MemObject {
     }
 
     fn check_bits(&self, lo_bit: u64, n_bits: u64) -> Result<(), AccessError> {
-        if lo_bit + n_bits > self.size * 8 {
+        // The payload bound comes first: `v >> 128` is `v >> 0` when overflow checks are
+        // off, so an over-wide field silently wrote bit 0 of the value into bit 128 of
+        // the object. Refusing is honest; truncating is not.
+        if n_bits > MAX_ACCESS_BITS {
+            return Err(AccessError::BadRange {
+                want_bits: n_bits,
+                max_bits: MAX_ACCESS_BITS,
+            });
+        }
+        // `lo_bit + n_bits` wrapped, the wrapped sum passed, and the indexing panicked.
+        let end = lo_bit as u128 + n_bits as u128;
+        if end > self.size as u128 * 8 {
             return Err(AccessError::OutOfBounds {
                 off: (lo_bit / 8) as i64,
                 size: n_bits.div_ceil(8),
                 obj_size: self.size,
             });
+        }
+        Ok(())
+    }
+
+    /// Same payload bound for the byte-addressed integer API. Above 16 bytes the write
+    /// duplicated the value's low bytes and the read silently narrowed, so the two were
+    /// not inverses and neither said so.
+    fn check_int_width(size: u64) -> Result<(), AccessError> {
+        if size * 8 > MAX_ACCESS_BITS {
+            return Err(AccessError::BadRange {
+                want_bits: size * 8,
+                max_bits: MAX_ACCESS_BITS,
+            });
+        }
+        Ok(())
+    }
+
+    fn check_writable(&self, off: i64) -> Result<(), AccessError> {
+        if self.readonly {
+            return Err(AccessError::ReadOnly { off });
         }
         Ok(())
     }
