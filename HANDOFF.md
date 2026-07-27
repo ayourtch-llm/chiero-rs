@@ -1219,6 +1219,23 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    freshly allocated object whose backing reads as zero, so forgetting the terminator left
    a zero there anyway and looked right. Pre-fill destinations with non-zero bytes.
 
+   **Indirect calls + budgets + replayable trace DONE** (`0bf2d32` red, `c60f988` green,
+   443 tests): 023 contract 10 and §8's full deterministic budget set. An indirect call
+   forks per candidate **plus one unresolvable state** — without it the candidate list is
+   implicitly exhaustive and a pointer from anywhere unseen is never explored. VPP's node
+   dispatch is exactly this shape. `max_states`/`max_forks`/`max_indirect` exist, and the
+   budget in force is part of the result. The trace is `(FuncId, BlockId)`, since bare
+   block ids rendered a caller-plus-callee walk as one function's impossible path.
+
+   *Candidates are currently **every defined function*** — over-approximating is the safe
+   direction and `max_indirect` keeps it affordable. Resolving against the pointer's
+   actual value is **owed**.
+
+   *Three survivors, only one a coverage gap:* one was a **no-op mutation I wrote** (set
+   the status before a `degrade` that still ran); the cap test asserted the cap was
+   *recorded* but not *applied*; and the budget test compared against `Budget::default()`,
+   which an implementation ignoring the run also returns. Both traps, both mine.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
