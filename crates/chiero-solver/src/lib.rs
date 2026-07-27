@@ -335,6 +335,37 @@ impl TermArena {
         self.intern(Node::Extract { a, hi, lo })
     }
 
+    /// Decompose a term into a §3.2 atom, or `None` if it is outside the fragment.
+    ///
+    /// The fragment is a conjunction of comparison/equality atoms. A disjunction, a
+    /// negation, or a bare non-predicate term is outside it — and being outside it means
+    /// `Unknown`, never `Unsat`, because the domain's reasoning is only known sound
+    /// within it.
+    pub fn as_atom(&self, t: Term) -> Option<Atom> {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(k, a, b) if k.is_predicate() => Some(Atom {
+                kind: *k,
+                lhs: *a,
+                rhs: *b,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Recognize `v & mask`, the shape a known-bits fact comes in.
+    pub fn as_var_and_mask(&self, t: Term) -> Option<(VarId, u128)> {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(BinKind::And, a, b) => match (self.var_id(*a), self.as_const(*b)) {
+                (Some(v), Some(m)) => Some((v, m.bits())),
+                _ => match (self.as_const(*a), self.var_id(*b)) {
+                    (Some(m), Some(v)) => Some((v, m.bits())),
+                    _ => None,
+                },
+            },
+            _ => None,
+        }
+    }
+
     /// Evaluate against a **complete** model (022 §3.1).
     ///
     /// Written from the SMT-LIB standard. A missing variable is an error rather than a
@@ -506,16 +537,242 @@ impl SolverLite {
 }
 
 impl Solver for SolverLite {
-    fn assert(&mut self, _t: Term) {
-        todo!("green")
+    fn assert(&mut self, t: Term) {
+        self.asserted.push(t);
     }
+
     fn push(&mut self) {
-        todo!("green")
+        self.scopes.push(self.asserted.len());
     }
-    fn pop(&mut self, _n: u32) {
-        todo!("green")
+
+    fn pop(&mut self, n: u32) {
+        for _ in 0..n {
+            if let Some(mark) = self.scopes.pop() {
+                self.asserted.truncate(mark);
+            }
+        }
     }
-    fn check(&mut self, _a: &mut TermArena, _assumptions: &[Term]) -> CheckResult {
-        todo!("green")
+
+    fn check(&mut self, a: &mut TermArena, assumptions: &[Term]) -> CheckResult {
+        let all: Vec<Term> = self
+            .asserted
+            .iter()
+            .chain(assumptions.iter())
+            .copied()
+            .collect();
+
+        // §3.2: `Unsat` is only permitted over a conjunction of atoms. Anything else —
+        // a disjunction, a nested `Ite`, a non-atomic assertion — leaves the fragment,
+        // and the answer is `Unknown`. A propagator that descended into an `or` and
+        // applied both sides would report a false `Unsat` for a satisfiable formula.
+        let mut atoms = Vec::new();
+        for t in &all {
+            match a.as_atom(*t) {
+                Some(at) => atoms.push(at),
+                None => {
+                    return CheckResult::Unknown(UnknownReason::Incomplete(
+                        "assertion is outside the conjunction-of-atoms fragment",
+                    ));
+                }
+            }
+        }
+
+        let mut dom = Domains::default();
+        match dom.propagate(a, &atoms) {
+            Propagation::Empty => CheckResult::Unsat,
+            Propagation::Unsupported(why) => CheckResult::Unknown(UnknownReason::Incomplete(why)),
+            Propagation::Fixpoint => {
+                // A candidate model is only an answer once it has been evaluated
+                // against every assertion (022 §3.1). Search is allowed to be
+                // incomplete; it is not allowed to be wrong.
+                match dom.candidate(a) {
+                    Some(m)
+                        if all
+                            .iter()
+                            .all(|t| a.eval(&m, *t).map(|v| v.bits() != 0) == Ok(true)) =>
+                    {
+                        CheckResult::Sat(m)
+                    }
+                    _ => CheckResult::Unknown(UnknownReason::Incomplete(
+                        "no candidate model survived validation",
+                    )),
+                }
+            }
+        }
     }
+}
+
+/// An atom in the §3.2 fragment: a comparison or equality between a variable-rooted
+/// expression and a constant, or between two such.
+#[derive(Copy, Clone, Debug)]
+pub struct Atom {
+    pub kind: BinKind,
+    pub lhs: Term,
+    pub rhs: Term,
+}
+
+enum Propagation {
+    Fixpoint,
+    Empty,
+    Unsupported(&'static str),
+}
+
+/// The interval + known-bits product domain, per variable.
+#[derive(Clone, Debug)]
+struct VarDomain {
+    width: u32,
+    /// Unsigned bounds, inclusive.
+    lo: u128,
+    hi: u128,
+    /// Bits known to be zero, and bits known to be one.
+    zeros: u128,
+    ones: u128,
+}
+
+impl VarDomain {
+    fn top(width: u32) -> Self {
+        VarDomain {
+            width,
+            lo: 0,
+            hi: mask(width),
+            zeros: 0,
+            ones: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lo > self.hi || (self.zeros & self.ones) != 0
+    }
+
+    /// Smallest value consistent with both components, or `None` if there is none.
+    fn least(&self) -> Option<u128> {
+        (self.lo..=self.hi).find(|&v| v & self.zeros == 0 && v & self.ones == self.ones)
+    }
+}
+
+#[derive(Default, Debug)]
+struct Domains {
+    vars: IndexMap<VarId, VarDomain>,
+}
+
+impl Domains {
+    fn dom(&mut self, v: VarId, width: u32) -> &mut VarDomain {
+        self.vars.entry(v).or_insert_with(|| VarDomain::top(width))
+    }
+
+    /// Propagate to fixpoint. Every transfer here is **wrap-safe**: a transfer that
+    /// cannot represent a wrapped result widens to ⊤ rather than saturating.
+    ///
+    /// Saturating is the classic false-`Unsat` source. `x >u 250 ∧ y == x+10 ∧ y <u 10`
+    /// is satisfiable at `x = 0xfb` (verified against z3), but a saturating transfer
+    /// computes `x+10 ∈ [255,255]`, intersects with `[0,9]`, and reports empty.
+    fn propagate(&mut self, a: &TermArena, atoms: &[Atom]) -> Propagation {
+        for _ in 0..16 {
+            let mut changed = false;
+            for at in atoms {
+                match self.apply(a, at) {
+                    Ok(c) => changed |= c,
+                    Err(why) => return Propagation::Unsupported(why),
+                }
+            }
+            if self.vars.values().any(|d| d.is_empty()) {
+                return Propagation::Empty;
+            }
+            if !changed {
+                break;
+            }
+        }
+        Propagation::Fixpoint
+    }
+
+    fn apply(&mut self, a: &TermArena, at: &Atom) -> Result<bool, &'static str> {
+        let lc = a.as_const(at.lhs);
+        let rc = a.as_const(at.rhs);
+        let lv = a.var_id(at.lhs);
+        let rv = a.var_id(at.rhs);
+
+        // `v OP const` and `const OP v` are the shapes the domain understands. An atom
+        // over a non-variable, non-constant expression (an addition, a mask) is not
+        // refuted here — it is simply not used to narrow, which is incompleteness
+        // rather than unsoundness.
+        let mut changed = false;
+        match (lv, rc, lc, rv) {
+            (Some(v), Some(k), _, _) => {
+                let w = k.width();
+                let d = self.dom(v, w);
+                changed |= narrow(d, at.kind, k.bits(), false);
+            }
+            (_, _, Some(k), Some(v)) => {
+                let w = k.width();
+                let d = self.dom(v, w);
+                changed |= narrow(d, at.kind, k.bits(), true);
+            }
+            _ => {
+                // `masked == k` where masked is `v & m`: a known-bits fact.
+                if at.kind == BinKind::Eq
+                    && let Some(k) = rc
+                    && let Some((v, m)) = a.as_var_and_mask(at.lhs)
+                {
+                    let w = k.width();
+                    let d = self.dom(v, w);
+                    // Bits selected by the mask are pinned; the rest stay unknown.
+                    let want_ones = k.bits() & m;
+                    let want_zeros = !k.bits() & m & mask(w);
+                    if d.ones | want_ones != d.ones || d.zeros | want_zeros != d.zeros {
+                        d.ones |= want_ones;
+                        d.zeros |= want_zeros;
+                        changed = true;
+                    }
+                    // `k` having a bit set outside the mask is an immediate
+                    // contradiction: `v & m` can never produce it.
+                    if k.bits() & !m & mask(w) != 0 {
+                        d.zeros = mask(w);
+                        d.ones = mask(w);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    /// A candidate assignment: the least value in each variable's domain. Variables that
+    /// were never constrained get 0, so the model is **complete** (022 §2).
+    fn candidate(&self, a: &TermArena) -> Option<Model> {
+        let mut m = Model::new();
+        for (v, d) in &self.vars {
+            m.set(*v, BvConst::new(d.width, d.least()?));
+        }
+        for (i, (_, sort)) in a.vars.iter().enumerate() {
+            let v = VarId(i as u32);
+            if m.get(v).is_none() {
+                m.set(v, BvConst::zero(sort.width()));
+            }
+        }
+        Some(m)
+    }
+}
+
+/// Narrow one variable's domain by `v OP k` (or `k OP v` when `flipped`).
+fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool) -> bool {
+    let (lo0, hi0, z0, o0) = (d.lo, d.hi, d.zeros, d.ones);
+    match (kind, flipped) {
+        (BinKind::Ult, false) => d.hi = d.hi.min(k.saturating_sub(1)),
+        (BinKind::Ult, true) => d.lo = d.lo.max(k.saturating_add(1)),
+        (BinKind::Eq, _) => {
+            d.lo = d.lo.max(k);
+            d.hi = d.hi.min(k);
+            d.ones |= k;
+            d.zeros |= !k & mask(d.width);
+        }
+        // Signed comparison is not modeled by an unsigned interval; leaving it alone is
+        // incompleteness, whereas treating it as unsigned would be unsound.
+        _ => {}
+    }
+    if kind == BinKind::Ult && k == 0 && !flipped {
+        // `v <u 0` is unsatisfiable.
+        d.lo = 1;
+        d.hi = 0;
+    }
+    (d.lo, d.hi, d.zeros, d.ones) != (lo0, hi0, z0, o0)
 }
