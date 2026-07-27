@@ -144,13 +144,13 @@ fn line_directive_populates_gcov_lines() {
 }
 
 #[test]
-fn multiple_line_directives_accumulate_sorted() {
+fn multiple_line_directives_deduplicate_preserving_order() {
     let src = "func @f() -> void {\nentry:\n  .line 30\n  .line 10\n  .line 30\n  ret\n}\n";
     let m = parse(src).unwrap();
     assert_eq!(
         m.funcs[0].blocks[0].gcov_lines.as_slice(),
-        &[10, 30],
-        "distinct and sorted"
+        &[30, 10],
+        "distinct, in source order — sorting breaks the structural round trip"
     );
 }
 
@@ -337,11 +337,11 @@ entry:
   %20 = insertlane %0, 1, 7i32
   %21 = shuffle %0, %20, [0, 5, 2, 7]
   %22 = splat 3i32, 4
-  %23 = undef i64
-  %24 = globaladdr @g, 8
-  %25 = funcaddr @other
-  %26 = wide i256 0x0000000000000000000000000000000000000000000000000000000000000001
-  %27 = fconst f64 0x3ff0000000000000
+  %23 = undef:i64
+  %24 = globaladdr:@g:8
+  %25 = funcaddr:@other
+  %26 = wide:i256:0x0000000000000000000000000000000000000000000000000000000000000001
+  %27 = fconst:f64:0x3ff0000000000000
   %28 = null
   %29 = allocadyn %4 : i8 x %2 align 1
   %30 = call @other(%2)
@@ -711,6 +711,62 @@ fn a_branch_to_an_undefined_label_is_rejected() {
     );
     let e = parse(src).expect_err("must reject a branch to an undefined label");
     assert!(e.message.contains("tgt"), "{}", e.message);
+}
+
+/// Constants must print readably in **every** operand position, not only as a bare
+/// `Use` rvalue. `print_inst` used the module-blind printer, so `undef`, `wide`,
+/// `fconst`, `globaladdr` and `funcaddr` as a store value or call argument printed in a
+/// form the parser rejects — contract 1 broken for a whole class of operand.
+#[test]
+fn constants_print_readably_in_every_operand_position() {
+    let src = concat!(
+        "target x86_64-unknown-linux-gnu\n\n",
+        "global @g : size 8 align 8\n\n",
+        "func @sink(%0: ptr, %1: i64) -> void\n\n",
+        "func @f(%0: ptr) -> void {\n",
+        "entry:\n",
+        "  .line 7\n",
+        "  store i64 undef:i64 -> %0 align 8\n",
+        "  call @sink(globaladdr:@g:0, undef:i64)\n",
+        "  setmem %0, 0i8, 8i64\n",
+        "  ret\n}\n"
+    );
+    let m = parse(src).expect("parse");
+    assert_eq!(print(&m), src, "must round-trip byte-exactly");
+    assert_eq!(m, parse(&print(&m)).expect("reparse"));
+}
+
+/// `gcov_lines` order must survive. The parser sorted unconditionally, so a lowered
+/// module emitting `[30, 10]` reparsed as `[10, 30]` and `parse(print(m)) != m`.
+#[test]
+fn gcov_line_order_is_preserved() {
+    let mut m = Module::default();
+    m.funcs.push(Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![Block {
+            id: BlockId(0),
+            insts: vec![],
+            term: Terminator::Return(None),
+            gcov_lines: [30u32, 10, 20].into_iter().collect(),
+            span: Span::DUMMY,
+        }],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    });
+    let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(
+        again.funcs[0].blocks[0].gcov_lines.as_slice(),
+        &[30, 10, 20],
+        "order must survive; sorting on parse breaks structural round-trip"
+    );
+    assert_eq!(m, again);
 }
 
 /// A duplicated block label is malformed input, not two blocks with one id.

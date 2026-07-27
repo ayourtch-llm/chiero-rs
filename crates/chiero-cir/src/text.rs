@@ -492,7 +492,9 @@ impl<'a> Parser<'a> {
                 if !b.gcov_lines.contains(&l) {
                     b.gcov_lines.push(l);
                 }
-                b.gcov_lines.sort_unstable();
+                // Deduplicate but **preserve order**. Sorting made
+                // `parse(print(m)) != m` for any lowered module whose lines are not
+                // already ascending, which is most of them once blocks are merged.
                 continue;
             }
             if let Some(term) = self.terminator(&t, &mut pending, f.blocks.len())? {
@@ -582,6 +584,53 @@ impl<'a> Parser<'a> {
         }
         if s == "null" {
             return Ok(Operand::Const(Const::Null));
+        }
+        if let Some(t) = s.strip_prefix("undef:") {
+            return Ok(Operand::Const(Const::Undef(self.ty(t)?)));
+        }
+        if let Some(rest) = s.strip_prefix("globaladdr:") {
+            let (n, off) = rest
+                .rsplit_once(':')
+                .ok_or_else(|| self.perr("globaladdr needs :offset"))?;
+            return Ok(Operand::Const(Const::GlobalAddr {
+                g: self.global_id(n)?,
+                off: off.parse().map_err(|_| self.perr("bad offset"))?,
+            }));
+        }
+        if let Some(n) = s.strip_prefix("funcaddr:") {
+            return Ok(Operand::Const(Const::FuncAddr(self.func_id(n)?)));
+        }
+        if let Some(rest) = s.strip_prefix("wide:") {
+            let (w, hex) = rest
+                .split_once(':')
+                .ok_or_else(|| self.perr("wide needs :hex"))?;
+            let bits: u32 = w
+                .trim_start_matches('i')
+                .parse()
+                .map_err(|_| self.perr("bad wide width"))?;
+            let mut words = Vec::new();
+            let mut r = hex.trim_start_matches("0x");
+            while !r.is_empty() {
+                let cut = r.len().saturating_sub(16);
+                let (head, tail) = r.split_at(cut);
+                words.push(u64::from_str_radix(tail, 16).map_err(|_| self.perr("bad limb"))?);
+                r = head;
+            }
+            return Ok(Operand::Const(Const::Wide { bits, words }));
+        }
+        if let Some(rest) = s.strip_prefix("fconst:") {
+            let (k, hex) = rest
+                .split_once(':')
+                .ok_or_else(|| self.perr("fconst needs :bits"))?;
+            let kind = match k {
+                "f32" => FloatKind::F32,
+                "f64" => FloatKind::F64,
+                "f80" => FloatKind::X87_80,
+                o => return Err(self.perr(&format!("unknown float kind `{o}`"))),
+            };
+            let bits = u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+                .map_err(|_| self.perr("bad float bits"))?;
+            return Ok(Operand::Const(Const::Float(kind, bits)));
         }
         if s.starts_with('@') {
             return Ok(Operand::Const(Const::FuncAddr(self.func_id(s)?)));
@@ -1026,7 +1075,16 @@ impl<'a> Parser<'a> {
                 }
             }
             // A bare operand is a `Use`.
-            other if other.starts_with('%') || other == "null" || other.contains('i') => {
+            other
+                if other.starts_with('%')
+                    || other == "null"
+                    || other.starts_with("undef:")
+                    || other.starts_with("globaladdr:")
+                    || other.starts_with("funcaddr:")
+                    || other.starts_with("wide:")
+                    || other.starts_with("fconst:")
+                    || other.contains('i') =>
+            {
                 RValue::Use(self.operand(other)?)
             }
             other => return Err(self.perr(&format!("unknown instruction `{other}`"))),
@@ -1224,9 +1282,9 @@ fn op(o: &Operand) -> String {
 fn opm(m: &Module, o: &Operand) -> String {
     match o {
         Operand::Const(Const::GlobalAddr { g, off }) => {
-            format!("globaladdr {}, {off}", gname(m, *g))
+            format!("globaladdr:{}:{off}", gname(m, *g))
         }
-        Operand::Const(Const::FuncAddr(f)) => format!("funcaddr {}", fname(m, *f)),
+        Operand::Const(Const::FuncAddr(f)) => format!("funcaddr:{}", fname(m, *f)),
         _ => op(o),
     }
 }
@@ -1236,18 +1294,22 @@ fn konst(c: &Const) -> String {
         Const::Int { bits, val } => format!("{val}i{bits}"),
         Const::Wide { bits, words } => {
             let hex: Vec<String> = words.iter().rev().map(|w| format!("{w:016x}")).collect();
-            format!("wide i{bits} 0x{}", hex.join(""))
+            format!("wide:i{bits}:0x{}", hex.join(""))
         }
-        Const::Float(k, bits) => format!("fconst {} 0x{bits:x}", ty(&CTy::Float(*k))),
+        Const::Float(k, bits) => format!("fconst:{}:0x{bits:x}", ty(&CTy::Float(*k))),
         Const::Null => "null".into(),
         // Only reachable for a module-less print; `opm` handles the named forms.
-        Const::GlobalAddr { g, off } => format!("globaladdr @g{}, {off}", g.0),
-        Const::FuncAddr(f) => format!("funcaddr @f{}", f.0),
-        Const::Undef(t) => format!("undef {}", ty(t)),
+        Const::GlobalAddr { g, off } => format!("globaladdr:@g{}:{off}", g.0),
+        Const::FuncAddr(f) => format!("funcaddr:@f{}", f.0),
+        Const::Undef(t) => format!("undef:{}", ty(t)),
     }
 }
 
 fn print_inst(m: &Module, k: &InstKind, o: &mut String) {
+    // The module-aware printer, in *every* operand position. `print_rvalue` used it and
+    // `print_inst` did not, so a constant as a store value or call argument printed in a
+    // form the parser rejects — contract 1 broken for a whole class of operand.
+    let op = |x: &Operand| opm(m, x);
     match k {
         InstKind::Assign { dst, rv } => {
             o.push_str(&format!("%{} = ", dst.0));
