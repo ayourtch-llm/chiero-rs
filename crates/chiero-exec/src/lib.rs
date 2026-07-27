@@ -672,6 +672,11 @@ pub struct Engine<'m> {
     /// `step` returns at most one.
     pending: Vec<State>,
     forks: u32,
+    /// 023 contract 16: the bindings a replay supplies instead of minting symbols, in
+    /// creation order, and how many have been consumed. A replay is the only way to find
+    /// out whether a witness *works*, so it goes through the same `input` seam every
+    /// symbol does rather than a second path that could drift from it.
+    replay: Option<(Witness, usize)>,
 }
 
 impl<'m> Engine<'m> {
@@ -695,7 +700,19 @@ impl<'m> Engine<'m> {
             solver_inits: 0,
             pending: Vec::new(),
             forks: 0,
+            replay: None,
         }
+    }
+
+    /// Run with every symbolic input bound to `w`'s values (023 contract 16).
+    ///
+    /// The bindings are consumed **in creation order**, and each one's origin is checked
+    /// against the site that asks for it: a witness whose inputs come in a different
+    /// order is a witness for a different path, and binding it positionally anyway would
+    /// produce a run that looks like a reproduction and is not.
+    pub fn replaying(mut self, w: Witness) -> Self {
+        self.replay = Some((w, 0));
+        self
     }
 
     pub fn with_solver(mut self, t: SolverTier) -> Self {
@@ -964,9 +981,72 @@ impl<'m> Engine<'m> {
         name: &str,
         origin: InputOrigin,
     ) -> Term {
+        if let Some(t) = self.replayed(a, s, &origin) {
+            return t;
+        }
         let t = a.var(sort, name);
         s.inputs.push((t, origin));
         t
+    }
+
+    /// The next binding, if this run is a replay and the binding belongs to this site.
+    ///
+    /// A mismatch is a **finding**, not a silent fallback to a fresh symbol: the run was
+    /// asked to reproduce something, and a run that quietly stops reproducing while still
+    /// reporting whatever it finds is how a refuted bug and an unrelated one come to look
+    /// the same.
+    fn replayed(&mut self, a: &mut TermArena, s: &mut State, origin: &InputOrigin) -> Option<Term> {
+        let (w, used) = self.replay.as_mut()?;
+        let Some(b) = w.bindings.get(*used) else {
+            let why = format!(
+                "replay diverged: this run wants a {} at {:?} that the witness does not \
+                 have — it has {} binding(s)",
+                origin.label(),
+                origin.span(),
+                w.bindings.len()
+            );
+            self.replay = None;
+            self.finding_seq += 1;
+            let seq = self.finding_seq;
+            let span = origin.span();
+            s.findings.push(StateFinding {
+                id: seq,
+                key: None,
+                message: why.clone(),
+                span,
+            });
+            s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
+            return None;
+        };
+        if &b.origin != origin {
+            let why = format!(
+                "replay diverged: the witness's binding {} is a {} at {:?}, but this run \
+                 wants a {} at {:?}",
+                *used,
+                b.origin.label(),
+                b.origin.span(),
+                origin.label(),
+                origin.span()
+            );
+            let span = origin.span();
+            self.replay = None;
+            self.finding_seq += 1;
+            let seq = self.finding_seq;
+            s.findings.push(StateFinding {
+                id: seq,
+                key: None,
+                message: why.clone(),
+                span,
+            });
+            s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
+            return None;
+        }
+        let (width, value) = (b.width, b.value);
+        *used += 1;
+        // A *constant*, not a variable with an equality on the path: the point of a
+        // replay is that nothing is left to solve, and contract 16's run asks the solver
+        // nothing at all.
+        Some(a.bv(width, value))
     }
 
     /// 023 §9: a concrete assignment for every symbolic input on this path.

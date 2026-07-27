@@ -240,16 +240,10 @@ fn the_report_shows_the_witness() {
     );
 }
 
-/// **Every symbol-minting site is an input, not just `Fresh`.** A witness that omits one
-/// is worse than no witness: it looks complete, and the replay harness built from it
-/// supplies every value but that one, so the bug does not reproduce and reads as refuted.
-/// Two more of the six sites, each with its own origin — the load and the extern return.
-#[test]
-fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
-    let Some(backend) = chiero_solver::SmtLib::discover() else {
-        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
-        return;
-    };
+/// Two inputs, in a fixed order: an uninitialized load at span 50, then an extern return
+/// at span 60, then a null store. Used both to check that every minting site is recorded
+/// and that a replay consumes the bindings in *that* order.
+fn two_input_fault() -> Module {
     let f = Function {
         id: FuncId(0),
         name: "f".into(),
@@ -331,10 +325,23 @@ fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
         body: Body::Declared,
         span: Span::DUMMY,
     };
-    let m = Module {
+    Module {
         funcs: vec![f, ext],
         ..Default::default()
+    }
+}
+
+/// **Every symbol-minting site is an input, not just `Fresh`.** A witness that omits one
+/// is worse than no witness: it looks complete, and the replay harness built from it
+/// supplies every value but that one, so the bug does not reproduce and reads as refuted.
+/// Two more of the six sites, each with its own origin — the load and the extern return.
+#[test]
+fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
     };
+    let m = two_input_fault();
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
     let f = r
@@ -560,5 +567,43 @@ fn a_witness_that_does_not_fit_the_run_is_reported_not_absorbed() {
             .any(|f| f.contains("replay") && f.contains("diverged")),
         "the mismatch is reported: {:#?}",
         r.findings()
+    );
+}
+
+/// **Bindings are consumed in creation order, and the order is checked.** With one input
+/// a replay cursor that never advances is invisible; with two it binds the extern's
+/// return from the load's binding, which is a different program's answer. The origin
+/// check is what turns that into a reported divergence instead of a quiet wrong replay.
+#[test]
+fn a_two_input_witness_replays_in_order() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let m = two_input_fault();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend.clone()).run(&mut a);
+    let original = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the null store is reported");
+    let w = original.witness.clone().expect("witnessed");
+    assert_eq!(w.bindings.len(), 2, "{:?}", w.bindings);
+
+    let mut a2 = TermArena::new();
+    let replay = Engine::new(&m)
+        .with_backend(backend)
+        .replaying(w)
+        .run(&mut a2);
+    assert!(
+        replay.findings().iter().any(|f| *f == original.message),
+        "the same finding, re-reached: {:#?}",
+        replay.findings()
+    );
+    assert!(
+        !replay.findings().iter().any(|f| f.contains("diverged")),
+        "and no divergence: {:#?}",
+        replay.findings()
     );
 }
