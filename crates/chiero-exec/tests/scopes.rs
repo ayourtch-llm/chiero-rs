@@ -291,3 +291,169 @@ fn an_inner_scope_exit_leaves_the_outer_scopes_objects_alone() {
     let r = Engine::new(&m).run(&mut a);
     assert!(r.findings().is_empty(), "{:#?}", r.findings());
 }
+
+/// **021 contract 39's other half: retired at function return.**
+///
+/// ```c
+/// int *g(void) { int local; return &local; }   // classic use-after-return
+/// void f(void) { *g() = 1; }
+/// ```
+/// The frame is popped and its objects were never retired, so the store landed in memory
+/// the callee no longer owns and chiero reported nothing — an `Exact` run over a program
+/// whose whole bug is that the pointer is dead.
+#[test]
+fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
+    let callee = Function {
+        id: FuncId(1),
+        name: "g".into(),
+        params: vec![],
+        ret: CTy::Ptr,
+        variadic: false,
+        allocas: vec![alloca(0, 0, Lifetime::Scope)],
+        blocks: vec![block(
+            0,
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                },
+                50,
+            )],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let caller = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Call {
+                        dst: Some(ValueId(0)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    },
+                    60,
+                ),
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Value(ValueId(0)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    70,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let uas: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("left scope"))
+        .collect();
+    assert_eq!(uas.len(), 1, "exactly one: {:#?}", r.findings());
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "a run that wrote through a dead pointer did not model the program exactly"
+    );
+}
+
+/// And a *live* frame's objects are not retired by an inner call returning. Retiring on
+/// every return rather than the returning frame's own objects would make every callee's
+/// return kill the caller's locals — a use-after-scope on every program with a function
+/// call in it.
+#[test]
+fn a_callers_locals_survive_a_callees_return() {
+    let callee = Function {
+        id: FuncId(1),
+        name: "g".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 0, Lifetime::Scope)],
+        blocks: vec![block(0, vec![], Terminator::Return(Some(i32c(7))))],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let caller = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 0, Lifetime::Scope)],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    10,
+                ),
+                inst(
+                    InstKind::Call {
+                        dst: Some(ValueId(1)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    },
+                    20,
+                ),
+                // The caller's own local, after the callee returned.
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Value(ValueId(0)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    30,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+}
