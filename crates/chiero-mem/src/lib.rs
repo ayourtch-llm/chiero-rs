@@ -163,6 +163,10 @@ pub enum AccessError {
         off: i64,
         bit: u64,
     },
+    /// The range holds a symbolic byte, which a concrete read cannot answer for.
+    SymbolicByte {
+        off: i64,
+    },
     /// An access wider than the payload can represent. Distinct from `OutOfBounds`
     /// because it is a *chiero* limit rather than a program error: the object might be
     /// large enough, and the caller still cannot be answered exactly.
@@ -235,6 +239,14 @@ impl MemObject {
         Some(self.data[at..at + size as usize].to_vec())
     }
 
+    /// The first byte in the range holding a symbolic value, if any.
+    pub fn first_symbolic(&self, off: i64, size: u64) -> Option<u64> {
+        if off < 0 {
+            return None;
+        }
+        (off as u64..off as u64 + size).find(|b| self.sym.contains_key(b))
+    }
+
     /// Bits without the initialization check, so an uninitialized bit read can hand back
     /// a value alongside its fault.
     pub fn raw_bits(&self, lo_bit: u64, n_bits: u64) -> Option<u128> {
@@ -251,8 +263,17 @@ impl MemObject {
     /// Record that a fresh symbol has been invented for this range, so a repeated read
     /// returns the same value and does not report the same defect twice (021 §5).
     pub fn memoize_fresh(&mut self, lo_bit: u64, n_bits: u64) {
-        if self.check_bits(lo_bit, n_bits).is_ok() {
-            self.init.set_range(lo_bit, n_bits, InitBit::Yes);
+        if self.check_bits(lo_bit, n_bits).is_err() {
+            return;
+        }
+        // **Only `No` bits are memoized.** Upgrading a `Cond` bit discharges its guard in
+        // chiero's favour, and it used to happen as a *side effect* of reading a
+        // neighbouring byte — so the read that correctly reported a definite
+        // uninitialized read silently laundered the conditional byte beside it.
+        for b in lo_bit..lo_bit + n_bits {
+            if self.init.get(b) == InitBit::No {
+                self.init.set_exact(b, InitBit::Yes);
+            }
         }
     }
 
@@ -299,6 +320,12 @@ impl MemObject {
         let at = self.check(off, bytes.len() as u64)?;
         self.check_writable(off)?;
         self.data[at..at + bytes.len()].copy_from_slice(bytes);
+        // A concrete write **wins**: leaving the overlay in place made `read_term` return
+        // a stale symbol for a byte whose concrete value had just been replaced — a wrong
+        // value, not a missing finding.
+        for b in off as u64..off as u64 + bytes.len() as u64 {
+            self.sym.remove(&b);
+        }
         self.init.set_range(
             off as u64 * 8,
             bytes.len() as u64 * 8,
@@ -879,6 +906,11 @@ impl Memory {
     pub fn set_readonly(&mut self, id: ObjectId) {
         if let Some(e) = self.entry_mut(id) {
             e.readonly = true;
+            // Mirrored onto the object so *every* write path sees it. Two independent
+            // flags is how contract 21 came to hold for one write path out of three.
+            if let Some(o) = e.obj.as_mut() {
+                o.readonly = true;
+            }
         }
     }
 
@@ -986,6 +1018,16 @@ impl Memory {
             return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
         };
         let obj = e.obj.as_ref().expect("materialized");
+        // A concrete read cannot *answer* for a symbolic byte — the `data` zero behind it
+        // is stale — but the initialization story is still worth telling, so this is an
+        // extra fault rather than a replacement. The caller wants `read_term`.
+        if let Some(b) = obj.first_symbolic(p.off, size) {
+            faults.push(MemFault::SymbolicByte {
+                obj: p.base,
+                off: b as i64,
+                at,
+            });
+        }
         match obj.read_bytes(p.off, size) {
             Ok(v) => AccessResult {
                 value: Some(v),
@@ -1358,6 +1400,13 @@ impl Memory {
                 at,
             });
         }
+        if o.readonly {
+            return AccessResult::fault(MemFault::ReadOnly {
+                obj: p.base,
+                off: p.off,
+                at,
+            });
+        }
         o.sym.insert(p.off as u64, t);
         o.init.set_range(p.off as u64 * 8, 8, InitBit::Yes);
         AccessResult {
@@ -1403,7 +1452,15 @@ impl Memory {
                 at,
             });
         }
-        let mut faults = Vec::new();
+        // 021 §5 step 3 applies to every read path, not just the byte one.
+        let mut faults: Vec<MemFault> = self
+            .align_fault(p.base, p.off, size, at)
+            .into_iter()
+            .collect();
+        let Some(entry) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
+        };
+        let o = entry.obj.as_ref().expect("materialized");
         if let Some(bit) = o.init.first_no(p.off as u64 * 8, size * 8) {
             faults.push(MemFault::Uninitialized {
                 obj: p.base,
@@ -1458,26 +1515,55 @@ impl Memory {
         if let Some(f) = self.state_fault(id, 0, at) {
             return AccessResult::fault(f);
         }
+        if self.entry(id).is_some_and(|e| e.readonly) {
+            return AccessResult::fault(MemFault::ReadOnly {
+                obj: id,
+                off: 0,
+                at,
+            });
+        }
+        // Past the threshold the object promotes — but the write still happens. Promoting
+        // and returning was losing the value entirely and then reporting the bytes it
+        // claimed to have written as definitely uninitialized.
         if candidates.len() > ITE_THRESHOLD {
             self.promote_to_array(a, id);
-            return AccessResult {
-                value: Some(()),
-                faults: vec![],
-            };
         }
         let w = a.width(off);
+        let obj_size = self.entry(id).map_or(0, |e| e.size);
         let Some(e) = self.entry_mut(id) else {
             return AccessResult::fault(MemFault::WildPointer { off: 0, at });
         };
         let Some(o) = e.obj.as_mut() else {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: id,
-                size: 0,
+                size: obj_size,
                 at,
             });
         };
+        let mut faults = Vec::new();
         for &k in candidates {
+            // A candidate past the end **is** the buffer overflow, not a candidate to
+            // skip. Dropping them silently meant a feasible set spilling past the object
+            // produced no finding at all.
             if o.check_only(k as i64, 1).is_err() {
+                faults.push(MemFault::OutOfBounds {
+                    obj: id,
+                    off: k as i64,
+                    size: 1,
+                    obj_size,
+                    at,
+                });
+                continue;
+            }
+            // The guard has to be able to *hold* the candidate. `BvConst` masks, so an
+            // 8-bit offset turned candidate 300 into `off == 44` — writing byte 300
+            // whenever the index was 44, with no complaint.
+            if w < 128 && k >= (1u64 << w.min(63)) {
+                faults.push(MemFault::BadRange {
+                    want_bits: 64 - k.leading_zeros() as u64,
+                    max_bits: w as u64,
+                    at,
+                });
                 continue;
             }
             let old = match o.sym.get(&k) {
@@ -1494,7 +1580,7 @@ impl Memory {
         }
         AccessResult {
             value: Some(()),
-            faults: vec![],
+            faults,
         }
     }
 
@@ -1740,6 +1826,7 @@ fn lift(e: AccessError, obj: ObjectId, at: Span) -> MemFault {
             at,
         },
         AccessError::ReadOnly { off } => MemFault::ReadOnly { obj, off, at },
+        AccessError::SymbolicByte { off } => MemFault::SymbolicByte { obj, off, at },
     }
 }
 

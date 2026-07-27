@@ -227,7 +227,22 @@ fn a_symbolic_offset_write_over_initialized_memory_reports_nothing() {
     let val = a.bv(8, 9);
     m.write_at_symbolic_offset(&mut a, o, off, &[2, 3, 4], val, sp(3));
     assert_eq!(m.init_bit_of(o, 2 * 8), InitBit::Yes);
-    assert!(m.read(ptr(o, 2), 1, sp(4)).faults.is_empty());
+    // The byte now holds a *symbol*, so the byte API reports that it cannot answer — a
+    // separate matter from initialization, which is what this test is about. Nothing
+    // about the write is uninitialized, conditionally or otherwise.
+    let f = m.read(ptr(o, 2), 1, sp(4)).faults;
+    assert!(
+        !f.iter().any(|x| matches!(
+            x,
+            MemFault::Uninitialized { .. } | MemFault::MaybeUninitialized { .. }
+        )),
+        "{f:#?}"
+    );
+    assert!(
+        m.read_term(&mut a, ptr(o, 2), 1, Endian::Little, sp(5))
+            .faults
+            .is_empty()
+    );
 }
 
 /// **021 contract 6, the promotion trigger.** Three feasible offsets keep the object as
