@@ -1009,7 +1009,13 @@ impl TermArena {
                         )))
                     }
                 })?,
-            Node::Bin(k, a, b) => fold(
+            // **`independent_bin`, not `fold`** (022 contract 7d). §3's first hard rule
+            // is that a tier-1 `Sat` is validated "by an independent evaluator", and an
+            // evaluator that calls the folder is a spell-checker consulting the same
+            // misspelling: a model built on a wrong rule is confirmed by that rule.
+            // §2 names the consequence for the division cases, and it has already
+            // happened here once.
+            Node::Bin(k, a, b) => independent_bin(
                 *k,
                 memo[a.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
                 memo[b.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
@@ -1104,6 +1110,100 @@ impl TermArena {
 /// `bvsdiv x 0` for non-negative `x` give all ones, `bvsdiv x 0` for negative `x` gives
 /// 1, and `bvurem`/`bvsrem` by zero give back the dividend. A uniform "all ones" rule —
 /// which the spec itself had until z3 was asked — is wrong for three of the four.
+/// The **independent** evaluation of a binary operation — 022 contract 7d.
+///
+/// A deliberate second implementation of `fold`'s semantics, written from SMT-LIB's
+/// definitions rather than from `fold`. It must not be refactored to share code with it:
+/// the whole value of having two is that a wrong rule in one is caught by disagreement
+/// with the other, and §3 makes model validation depend on that independence. A test
+/// reads this file to check the call does not come back.
+///
+/// Where `fold` reaches for Rust's operators, this reaches for the *definitions*:
+/// unsigned division is repeated subtraction's answer (`checked_div`, with SMT-LIB's
+/// all-ones for a zero divisor), signed division is defined by sign and magnitude, and the
+/// shifts are defined by what SMT-LIB says a count at or past the width means rather than
+/// by what Rust's `<<` would do with it. Two spellings of one truth, and when they differ,
+/// one of them is wrong.
+fn independent_bin(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
+    let w = x.width();
+    let mask = |v: u128| BvConst::new(w, v);
+    let pred = |v: bool| BvConst::new(1, u128::from(v));
+    let (xu, yu) = (x.bits(), y.bits());
+    let (xs, ys) = (x.signed(), y.signed());
+    let ones = BvConst::all_ones(w).bits();
+    match k {
+        BinKind::Add => mask(xu.wrapping_add(yu)),
+        BinKind::Sub => mask(xu.wrapping_add(ones.wrapping_sub(yu)).wrapping_add(1)),
+        BinKind::Mul => mask(xu.wrapping_mul(yu)),
+        BinKind::And => mask(xu & yu),
+        BinKind::Or => mask(xu | yu),
+        BinKind::Xor => mask((xu | yu) & !(xu & yu)),
+        // SMT-LIB: `bvudiv x 0` is all ones — the largest representable value, which is
+        // what "divide by nothing" saturates to.
+        BinKind::UDiv => match xu.checked_div(yu) {
+            Some(q) => mask(q),
+            None => mask(ones),
+        },
+        // SMT-LIB defines `bvsdiv` by the signs: magnitude divided, sign applied, and for
+        // a zero divisor `-1` when the dividend is non-negative and `1` when it is
+        // negative. Verified against z3 4.8.12 (022 §2's table).
+        BinKind::SDiv => {
+            if yu == 0 {
+                if xs < 0 { mask(1) } else { mask(ones) }
+            } else {
+                mask(xs.wrapping_div(ys) as u128)
+            }
+        }
+        // `bvurem`/`bvsrem` by zero give back the **dividend**, not all ones.
+        BinKind::URem => match xu.checked_rem(yu) {
+            Some(r) => mask(r),
+            None => x,
+        },
+        BinKind::SRem => {
+            if yu == 0 {
+                x
+            } else {
+                mask(xs.wrapping_rem(ys) as u128)
+            }
+        }
+        // A count at or past the width shifts every bit out. Rust's `<<` is undefined
+        // there, so the count is tested first rather than relied upon.
+        //
+        // `>=` versus `>` is an **equivalent** mutation here and mutation testing says so:
+        // the value lives in a `u128` and is masked to `w` afterwards, so a count of
+        // exactly `w` shifts every meaningful bit past the mask either way. The guard is
+        // written `>=` because that is what SMT-LIB says, not because a test distinguishes
+        // it — worth stating, since a surviving mutant usually means a missing test and
+        // this one does not.
+        BinKind::Shl => {
+            if yu >= u128::from(w) {
+                BvConst::zero(w)
+            } else {
+                mask(xu.wrapping_shl(yu as u32))
+            }
+        }
+        BinKind::LShr => {
+            if yu >= u128::from(w) {
+                BvConst::zero(w)
+            } else {
+                mask(xu.wrapping_shr(yu as u32))
+            }
+        }
+        // Arithmetic shift replicates the sign bit, so a count past the width leaves the
+        // sign in every position.
+        BinKind::AShr => {
+            if yu >= u128::from(w) {
+                if xs < 0 { mask(ones) } else { BvConst::zero(w) }
+            } else {
+                mask(xs.wrapping_shr(yu as u32) as u128)
+            }
+        }
+        BinKind::Ult => pred(xu < yu),
+        BinKind::Slt => pred(xs < ys),
+        BinKind::Eq => pred(xu == yu),
+    }
+}
+
 fn fold(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
     let w = x.width();
     let b = |v: bool| BvConst::new(1, v as u128);

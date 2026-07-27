@@ -33,12 +33,33 @@ fn the_evaluator_does_not_call_the_folder() {
         .find("fn eval_node(")
         .expect("the evaluator is in this file; if it moved, point this test at it");
     // To the next top-level `fn` at the same indentation — enough to cover the body.
+    // **Brace-balanced**, not "up to the next `fn`". The first version searched for a
+    // following `    fn ` and found none — the next item is `pub fn` — so it took the rest
+    // of the file, which of course contains the folder. A window that is wrong in the
+    // permissive direction fails loudly; one wrong the other way passes silently, and this
+    // one happened to be the first.
     let rest = &src[start..];
-    let end = rest[1..]
-        .find("\n    fn ")
-        .map(|i| i + 1)
-        .unwrap_or(rest.len());
+    let open = rest.find('{').expect("a body");
+    let mut depth = 0i32;
+    let mut end = rest.len();
+    for (i, c) in rest[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
     let body = &rest[..end];
+    assert!(
+        body.len() < rest.len(),
+        "the body was not delimited, so this would scan the whole file"
+    );
     assert!(
         !body.contains("fold("),
         "the independent evaluator calls the constant folder, so a wrong rule in one is \
@@ -52,48 +73,70 @@ fn the_evaluator_does_not_call_the_folder() {
 /// A disagreement here is a bug in exactly one of them, and that is the *point* of having
 /// two: the folder is what builds terms, the evaluator is what validates models, and a
 /// model validated by the same rule that produced it validates nothing.
+///
+/// ⚠️ The first version of this test compared `as_const` against `eval_ground` on a term
+/// built from **constants** — which the arena folds on construction, so the evaluator was
+/// never reached and the test compared the folder with itself. Three deliberate breakages
+/// of the evaluator survived it. The operands must be *variables*, so that folding cannot
+/// happen and evaluation has to.
 #[test]
 fn the_folder_and_the_evaluator_agree_on_every_binary_operation() {
-    // Deterministic pseudo-random operands, weighted toward the cases that bite:
-    // zero, one, all-ones, the signed extremes, and the shift boundary.
+    // Weighted toward the cases that bite: zero, one, all-ones, the signed extremes, and
+    // the shift boundary.
     let interesting: [u128; 10] = [0, 1, 2, 5, 7, 0x7f, 0x80, 0xff, 0xfe, 0x40];
+    let ops: [&str; 16] = [
+        "add", "sub", "mul", "udiv", "sdiv", "urem", "srem", "and", "or", "xor", "shl", "lshr",
+        "ashr", "ult", "slt", "eq",
+    ];
+    let build = |a: &mut TermArena, name: &str, x: Term, y: Term| -> Term {
+        match name {
+            "add" => a.add(x, y),
+            "sub" => a.sub(x, y),
+            "mul" => a.mul(x, y),
+            "udiv" => a.udiv(x, y),
+            "sdiv" => a.sdiv(x, y),
+            "urem" => a.urem(x, y),
+            "srem" => a.srem(x, y),
+            "and" => a.and(x, y),
+            "or" => a.or(x, y),
+            "xor" => a.xor(x, y),
+            "shl" => a.shl(x, y),
+            "lshr" => a.lshr(x, y),
+            "ashr" => a.ashr(x, y),
+            "ult" => a.ult(x, y),
+            "slt" => a.slt(x, y),
+            _ => a.eq(x, y),
+        }
+    };
     let mut disagreements = Vec::new();
     for w in [8u32, 32] {
-        let mask = if w == 128 {
-            u128::MAX
-        } else {
-            (1u128 << w) - 1
-        };
-        for x in interesting {
-            for y in interesting {
+        let mask = (1u128 << w) - 1;
+        // **The width itself, and one either side.** A shift count is only interesting at
+        // the boundary SMT-LIB defines — "at or past the width shifts every bit out" — and
+        // none of the values above equals 8 or 32, so `>=` and `>` were indistinguishable.
+        let mut operands: Vec<u128> = interesting.to_vec();
+        operands.extend([u128::from(w) - 1, u128::from(w), u128::from(w) + 1]);
+        for x in operands.iter().copied() {
+            for y in operands.iter().copied() {
                 let (x, y) = (x & mask, y & mask);
-                let mut a = TermArena::new();
-                let xt = a.bv(w, x);
-                let yt = a.bv(w, y);
-                // Every binary operation the arena builds. `bv` folds on construction,
-                // so `as_const` is the *folder's* answer; `eval_ground` is the
-                // evaluator's.
-                let terms = [
-                    ("add", a.add(xt, yt)),
-                    ("sub", a.sub(xt, yt)),
-                    ("mul", a.mul(xt, yt)),
-                    ("udiv", a.udiv(xt, yt)),
-                    ("sdiv", a.sdiv(xt, yt)),
-                    ("urem", a.urem(xt, yt)),
-                    ("srem", a.srem(xt, yt)),
-                    ("and", a.and(xt, yt)),
-                    ("or", a.or(xt, yt)),
-                    ("xor", a.xor(xt, yt)),
-                    ("shl", a.shl(xt, yt)),
-                    ("lshr", a.lshr(xt, yt)),
-                    ("ashr", a.ashr(xt, yt)),
-                    ("ult", a.ult(xt, yt)),
-                    ("slt", a.slt(xt, yt)),
-                    ("eq", a.eq(xt, yt)),
-                ];
-                for (name, t) in terms {
-                    let folded = a.as_const(t).map(|c| c.bits());
-                    let evaluated = a.eval_ground(t).ok().map(|c| c.bits());
+                for name in ops {
+                    // The folder: constants in, folded on construction.
+                    let mut fa = TermArena::new();
+                    let (fx, fy) = (fa.bv(w, x), fa.bv(w, y));
+                    let ft = build(&mut fa, name, fx, fy);
+                    let folded = fa.as_const(ft).map(|c| c.bits());
+
+                    // The evaluator: *variables* in, so nothing folds, and a model that
+                    // assigns them the same values.
+                    let mut ea = TermArena::new();
+                    let vx = ea.var(Sort::BitVec(w), "x");
+                    let vy = ea.var(Sort::BitVec(w), "y");
+                    let et = build(&mut ea, name, vx, vy);
+                    let mut m = Model::new();
+                    m.set(ea.var_id(vx).unwrap(), BvConst::new(w, x));
+                    m.set(ea.var_id(vy).unwrap(), BvConst::new(w, y));
+                    let evaluated = ea.eval(&m, et).ok().map(|c| c.bits());
+
                     if folded != evaluated {
                         disagreements.push(format!(
                             "{name} at {w} bits on {x:#x}, {y:#x}: folder {folded:?}, \
