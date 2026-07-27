@@ -7381,3 +7381,70 @@ fn the_model_finding_key_distinguishes_all_four_components() {
         "two kinds, one object, one span: {kinds:#?}"
     );
 }
+
+/// **`&global` as a constant operand is a pointer.** `Engine::operand` handled only
+/// `Const::Int` and `Const::Null`, so `Const::GlobalAddr` and `Const::FuncAddr` — the
+/// constant forms of the two `AddrOf` rvalues, which a frontend emits wherever an address
+/// is a compile-time constant — were lowering gaps. `(uintptr_t)&g` written as a constant
+/// operand reported "PtrToInt of a non-pointer". Found by review.
+#[test]
+fn a_constant_address_is_a_pointer_like_any_other() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Use(Operand::Const(Const::GlobalAddr {
+                        g: GlobalId(0),
+                        off: 0,
+                    })),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Use(Operand::Const(Const::FuncAddr(FuncId(1)))),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::AddrOfFunc(FuncId(1)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let other = defined(
+        1,
+        "other",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, other],
+        globals: vec![Global {
+            id: GlobalId(0),
+            name: "counter".into(),
+            size: 4,
+            align: 4,
+            is_const: false,
+            span: Span::DUMMY,
+        }],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    // **The constant and the rvalue name the same object**, which is the property that
+    // matters: a second object for the same global would make `p == &counter` false
+    // against itself.
+    assert_eq!(s.local(ValueId(0)), s.local(ValueId(1)));
+    assert_eq!(s.local(ValueId(2)), s.local(ValueId(3)));
+    assert_ne!(s.local(ValueId(0)), s.local(ValueId(2)));
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", s.assumptions());
+}
