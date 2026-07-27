@@ -752,21 +752,39 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **`vaarg %x : void`** minted a universal type-checking wildcard, disabling rules 5
      and 6 downstream. A gap in the arm added one commit earlier.
 
-   **STILL OWED from wave 8 — judged valid, not yet applied:**
-   - **The error type is the one 021 §5 says cannot work.** §5 states in bold that
+   **WAVE 8 ARCHITECTURAL ITEMS APPLIED** (`58bb7d1` red, `e87699a` green, 247 tests).
+   `AccessResult { value, faults }` replaces `Result` throughout, plus the lifetime layer
+   (`ObjState`, free/double-free/use-after-scope/leaks/realloc), §5's five-step ordering,
+   signed byte offsets in the bit API, and non-materialization of oversized objects.
+   021 contracts 2, 7, 8, 9, 10, 11, 21.
+
+   *Ordering matters twice, and I had one wrong at first:* the state check must precede
+   the contents check (or a use-after-free also reports "uninitialized"), and **bounds
+   must precede alignment** (or a must-OOB access also reports the alignment of an access
+   that never happens).
+
+   *The same-answer trap caught me a third time:* the signed-bit-offset test used
+   `user - 8`, which **evaluates to 0**, so it could not distinguish a signed offset from
+   an ignored one. Standing rule now: **when testing that X is used, pick a case where
+   using X and ignoring X give different answers.** Contract 12c, the one-past-the-end
+   fallback, and this one all failed it.
+
+   **STILL OWED from wave 8:**
+   - ~~**The error type is the one 021 §5 says cannot work.**~~ DONE, see above. Kept for
+     the reasoning: §5 states in bold that
      `Result<Term, MemFault>` cannot express the normal case, because an uninitialized
      read yields a value **and** a finding, and specifies `AccessResult { value, faults }`.
      The crate is `Result<Vec<u8>, AccessError>` throughout: it returns no value on a
      fault and can report only one. **Contracts 7, 26 and 2 are unreachable through this
      API**, and fixing it later is a signature change on every method. Do this before
      building more on top.
-   - **The bit API takes `lo_bit: u64` while the byte API takes `off: i64`** — so a
+   - ~~**The bit API takes `lo_bit: u64` while the byte API takes `off: i64`**~~ DONE. — so a
      `LoadBits` of a bitfield *below* the user pointer is not representable, which is the
      crate's own founding premise. `check_bits` even reports `off: (lo_bit / 8) as i64`,
      acknowledging the signed domain it cannot accept.
    - **Alignment is stored and never checked** (021 §5 step 3: misalignment "is always
      recorded"); `MemObject::new` accepts `align = 0` and non-powers-of-two.
-   - **A large object size aborts the process**: `new` eagerly allocates `size` bytes plus
+   - ~~**A large object size aborts the process**~~ DONE (`MAX_MATERIALIZED_BYTES`).: `new` eagerly allocates `size` bytes plus
      `8 * size` mask bytes, so an unconstrained `clib_mem_alloc(n)` kills the run instead
      of producing a finding. `catch_unwind` cannot contain it.
    - **The init mask costs 8× the object** (`Vec<InitBit>`, 1-byte tag per *bit*), paid
