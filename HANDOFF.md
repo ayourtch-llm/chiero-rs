@@ -2301,6 +2301,38 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    The engine already says so for null dereferences and bad frees. *An assertion about
    fidelity needs a sentence of the spec behind it, not an intuition that bugs are fuzzy.*
 
+   **WAVE 58** (`7e4beac`; 650 tests, 111/161 cited) — **the wave-55 review of witnesses
+   and the renderer reported, and its headline finding was a false statement, not a gap.**
+
+   - **The witness said "no symbolic inputs on this path"** about paths whose whole
+     condition came from symbols `chiero-mem` minted — havoc'd extern pointees, clobbered
+     bytes, materialized uninitialized bytes. `Engine::input`'s doc claimed to be the seam
+     every symbol passes through; three sites in another crate were never in it. Memory
+     records them now. A whole-object havoc is an **array** — no `Binding` carries it — so
+     the witness is *refused with that reason* rather than reported empty.
+   - Consequently a replay cannot supply what memory re-invents, and now **says so**
+     ("replay incomplete: N value(s) … re-invented rather than supplied"). This is a real
+     limit, stated rather than hidden.
+   - **`ModelApproximate` was missing from `is_modeling_lie`**, so contract 12 was false of
+     shipped code: a `scanf` run carries exactly one assumption, the right one, and had
+     none whose kind accounted for its fidelity.
+   - **The replay cursor lived on the `Engine`**, so a forking replay let the first path
+     eat the second's bindings. It is per-state now, and a diverged replay *stops* —
+     before, the sentinel meant "past the end" and the missing-binding branch re-reported
+     the same divergence at every remaining site.
+   - **One degraded sentence blamed the bounds for every cause.** Each fidelity level has
+     its own now; 023 §7's preamble warns against precisely that collapse.
+
+   Ten mutations the 628-test suite accepted are now killed, including the reviewer's
+   worst: widening the `Exact` branch so a **degraded run prints "the search was
+   exhaustive"** — 023 §7 rule 4 verbatim — which contract 14's golden test missed because
+   its only fixture was `Bounded`.
+
+   ⚠️ *Method note:* three of those survivors lived behind fixtures that give the same
+   answer either way — the contract-12 fixture forks *after* its single degradation, so
+   every state carries the same list and "read only state 0" was invisible. **A fixture
+   whose paths agree cannot test a claim about paths.**
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2378,7 +2410,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **642 tests, 110/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **650 tests, 111/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
