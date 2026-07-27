@@ -405,9 +405,9 @@ are complete; verticals are in progress.
 - [x] `030-coverage-gcov.md` — §4.9; formats **empirically verified** against gcc 13.3
 - [x] `031-change-impact.md` — §4.8 steps 1–2; +Cosmetic-change class, completeness lattice
 - [x] `032-test-selection.md` — §4.8 steps 3–6; +"drop only on Exact proof" rule, safety/reduction eval harness
-- [ ] `040-defect-checkers.md` — §4.10 checkers + replay
-- [ ] `041-optimization-analysis.md` — §4.10 optimization **+ cache-line/locality analysis
-      (§4.13c #2): straddling, hot/cold field placement, false sharing, prefetch distance**
+- [x] `040-defect-checkers.md` — §4.10 checkers + replay; **replay is compiled and run under ASan/UBSan and the verdict recorded** (ReplayVerdict) — self-validation loop
+- [x] `041-optimization-analysis.md` — `prove_equivalent` as THE primitive (032 depends on it) + cache-line/locality analysis (§4.13c #2 discharged)
+
 - [x] `042-conformance-recipes.md` — **added mid-flight** (§4.13c #4); recipe DSL,
       two-tier evaluation, mandatory fixtures, LLM propose→adjudicate loop
 - [ ] `050-tool-interface.md` — §4.11 **+ `propose_recipe`/`validate_recipe`/`apply_recipe`**
