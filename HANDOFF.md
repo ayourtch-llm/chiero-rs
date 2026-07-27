@@ -846,10 +846,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    plus an infeasible one, which must write nothing — is what tells a correct chain from
    one that writes the same byte three times.
 
-   **STILL OWED from wave 9:** `AccessCtx`; §5 step 2's may-OOB "continue on the in-bounds
-   branch" — only concrete must-OOB exists, though the test docs describe both;
-   `Repr::Array` records the promotion decision but the array-theory read/write paths are
-   not implemented.
+   **`AccessCtx` + symbolic bounds DONE** (`97d6ee0` red, `5e409da` green, 302 tests):
+   021 §5 step 2's three-way decision — definitely-in (silent), may-be (one finding **with
+   a concrete witness**, continue on the in-bounds branch with the constraint added), and
+   definitely-out (one finding, terminate).
+
+   *Two implementation notes worth not re-deriving:* the OOB condition must be stated
+   **positively** as `limit - 1 <u off`, because `solver-lite`'s fragment (022 §3.2) is
+   comparisons and conjunctions — `not(off <u limit)` falls outside it and comes back
+   `Unknown`, which made the first draft report nothing at all. And a **concrete** offset
+   folds the condition to a literal, which tier 1 also answers `Unknown` for; deciding it
+   by `eval_ground` is exact, free, and what makes the symbolic and concrete paths agree
+   about the same access.
+
+   **`Unknown` is its own outcome.** Adding the in-bounds constraint on an answer the
+   solver never gave would prune the path escalation exists to explore; reporting would
+   invent a finding. Nothing exercised that branch until mutation showed it.
+
+   **STILL OWED:** `Repr::Array` records the promotion decision but the array-theory
+   read/write paths are not implemented; symbolic *base* pointers and the fork sink
+   (§5.1, contracts 16, 17); lazy initialization (§6, contracts 18, 19); arenas (13c, 13d);
+   §7.2's symbolic base addresses and `PointerBitInspection` (17b).
 
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
    offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
