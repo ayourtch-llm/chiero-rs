@@ -676,7 +676,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - ~~**Unordered float predicates are absent from `CmpOp`.**~~ DONE. C's `isnan` idiom
      `x != x` needs one; `FONe` is *ordered* not-equal, **false** for NaN — the opposite
      of C. Was a wrong-answer bug, not a coverage gap.
-   - `InstKind::Opaque` still absent (015 §7 forbids the workarounds); also missing:
+   - ~~`InstKind::Opaque` still absent~~ **DONE** (`2d6698b`, 182 tests): types, verifier
+     rules, textual form `opaque [%v:ty]… writes [addr size]… reads [op]… why <reason>`
+     with mandatory section keywords, and an `rdtsc`-shaped corpus fixture. The verifier
+     now enforces 020 §4.3's "never silently a no-op" — an `Opaque` with no dsts, no
+     writes and no reads is rejected. Contracts 31/32 are the *execution* half and wait
+     on the engine. Spec amended: `UnsupportedConstruct` is `Symbol`, not `&'static str`,
+     because a fixture's text is owned, not static.
+   - ~~Rule 1 tested at 2 of 12 operand positions~~ **DONE** (`46dd8c9`, 184 tests):
+     table-driven over eleven positions incl. contract 40's `AllocaDyn::count`, plus a
+     companion test that a *dominated* use is accepted — without which a verifier stuck
+     at `UseNotDominated` would pass every case. No implementation change was needed.
+   - Still missing from `InstKind`/`RValue`:
      `ShuffleDyn`, `Fresh.why`, `MarkerKind::Assume`, `AccessPath`/`PtrAdd.path`,
      `CopyMem.overlap` (memmove vs memcpy is inexpressible), `Call.conv`,
      `Module.target`/`source_map`, `Body::Modeled`. Conversely `Module::config` and
@@ -687,10 +698,16 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      and VPP whole-program is ~50k functions. 020 §8 claims O(size). Every containment
      test is `Vec::contains`; `successors()` heap-allocates per call inside the dominator
      fixpoint. Fix with `IndexSet`/`IndexMap` and a prebuilt predecessor map.
-   - Rule 1 is applied at 12 operand positions but *tested* at 2. Contract 40 is written
-     specifically about `AllocaDyn::count` and nothing exercises it. Same shape for rules
-     5/6/7/11, each pinned at one call site. `va_list` operands are never pointer-checked
-     at all. One table-driven test per operand position kills ~25 survivors.
+   - Rules 5/6/7/11 are still each pinned at **one call site**, and `va_list` operands
+     are never pointer-checked at all (`vastart 0i32` verifies clean) — 020 §4.4.1 makes
+     the `va_list` a real addressable `MemObject`. Cast shape rules for
+     `PtrToInt`/`IntToPtr`/`FpToUi`/`FpToSi`/`UiToFp`/`SiToFp` are entirely untested.
+
+   **Standing note on mutation testing** (three instances this session): a mutation that
+   **does not compile** reports as "no failing tests" and is indistinguishable from an
+   unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
+   behaviour change — rewrite the arm as a no-op instead. Always check what the mutation
+   actually did before believing a survivor.
    - ~~**The round-trip fixture supplies the identity/default value for nearly every
      scalar field**~~ DONE (`afd29da`, 178 tests): `tests/roundtrip_property.rs` generates
      random modules with a distinct non-default value in every field and asserts
