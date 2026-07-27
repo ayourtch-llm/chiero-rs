@@ -107,10 +107,7 @@ fn two_runs_assign_identical_addresses() {
 fn a_pointer_round_trips_through_an_integer() {
     let mut s = space();
     let o = s.alloc(ObjKind::Heap, 128, 8, Span::DUMMY);
-    let p = Pointer {
-        base: o,
-        off: 16,
-    };
+    let p = Pointer { base: o, off: 16 };
     let n = s.ptr_to_int(p);
     assert_eq!(s.int_to_ptr(n), p, "the round trip must be exact");
 }
@@ -174,6 +171,41 @@ fn provenance_survives_integer_arithmetic() {
     let n = s.int_add(n, 8);
     let n = s.int_add(n, -4);
     assert_eq!(s.int_to_ptr(n), Pointer { base: o, off: 4 });
+
+    // The in-bounds case above cannot tell tag propagation apart from range search —
+    // both answer `(o, 4)` — so it is satisfied by an implementation that drops the tag.
+    // Mutation found exactly that. Arithmetic that lands *outside* the object separates
+    // them: with the tag, provenance is preserved; without it, range search returns the
+    // neighbour or `UNBOUND`, which is the §7.1 bug in miniature.
+    let far = s.alloc(ObjKind::Heap, 128, 8, Span::DUMMY);
+    let delta = (s.addr_of(far).unwrap() - s.addr_of(o).unwrap()) as i64;
+    let n = s.ptr_to_int(Pointer { base: o, off: 0 });
+    let n = s.int_add(n, delta + 16);
+    let n = s.int_add(n, -8);
+    let back = s.int_to_ptr(n);
+    assert_eq!(
+        back,
+        Pointer {
+            base: o,
+            off: delta + 8
+        },
+        "arithmetic must not launder provenance into the neighbouring object"
+    );
+}
+
+/// Range search must include the one-past-the-end address. Every test above that exercises
+/// one-past-the-end uses a *tagged* pointer, which never reaches the fallback — so the
+/// boundary in the fallback itself was untested, and narrowing it to `<` survived.
+#[test]
+fn range_search_includes_one_past_the_end() {
+    let mut s = space();
+    let o = s.alloc(ObjKind::Heap, 128, 8, Span::DUMMY);
+    let end = s.addr_of(o).unwrap() + 128;
+    assert_eq!(
+        s.int_to_ptr(IntVal::Const(end)),
+        Pointer { base: o, off: 128 },
+        "one-past-the-end is a legal C pointer and the fallback must find it"
+    );
 }
 
 /// **021 contract 13: an `IntToPtr` of a constant that matches nothing is `UNBOUND`**,

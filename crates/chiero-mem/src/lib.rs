@@ -274,3 +274,177 @@ impl MemObject {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Concrete addresses and pointer provenance (021 §7, §7.1).
+// ---------------------------------------------------------------------------
+
+/// 021 §7. Objects are separated by this much so an OOB pointer does not land in another
+/// object by accident and `PtrToInt` comparisons behave like a real program.
+///
+/// Chosen for OOB detection, **not** to mimic any real allocator's placement: 021 §7 is
+/// explicit that no analysis may infer locality from these addresses. They are logical,
+/// carry no timing meaning, and model nothing about caches, TLBs, NUMA or DMA.
+pub const GUARD_GAP: u64 = 4096;
+
+/// A pointer: an object identity plus a **signed** offset. Never a bare integer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Pointer {
+    pub base: ObjectId,
+    pub off: i64,
+}
+
+/// An integer that may carry pointer provenance (021 §7.1).
+///
+/// The tag is what makes `uword_to_pointer` round-trips exact, and VPP does them
+/// constantly. Without it, `IntToPtr` has only address-range search, which is wrong in
+/// both directions — see [`AddressSpace::int_to_ptr`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum IntVal {
+    /// A plain integer with no recorded provenance.
+    Const(u64),
+    /// The result of a `PtrToInt`, possibly with intervening arithmetic. `addr` is the
+    /// concrete value the program would see; `from` is where it came from.
+    Tagged { addr: u64, from: Pointer },
+}
+
+impl IntVal {
+    pub fn addr(self) -> u64 {
+        match self {
+            IntVal::Const(a) => a,
+            IntVal::Tagged { addr, .. } => addr,
+        }
+    }
+}
+
+/// Deterministic placement of objects, plus the `PtrToInt`/`IntToPtr` pair.
+#[derive(Clone, Debug, Default)]
+pub struct AddressSpace {
+    /// `(id, addr, size)`, in allocation order.
+    objs: Vec<(ObjectId, u64, u64)>,
+    next_global: u64,
+    next_heap: u64,
+    next_stack: u64,
+    next_lazy: u64,
+    next_id: u32,
+}
+
+impl AddressSpace {
+    pub fn new() -> AddressSpace {
+        AddressSpace {
+            objs: Vec::new(),
+            next_global: 0x0000_1000_0000,
+            next_heap: 0x0000_2000_0000,
+            next_stack: 0x7fff_0000_0000,
+            next_lazy: 0x0000_4000_0000,
+            // 0 is NULL.
+            next_id: 1,
+        }
+    }
+
+    /// Place an object and return its id.
+    ///
+    /// A simple bump per region, seeded identically every run — **no randomization**,
+    /// because determinism is a hard requirement (001 §5, contract 15) and a flaky
+    /// address makes every `PtrToInt`-dependent branch look flaky.
+    pub fn alloc(&mut self, kind: ObjKind, size: u64, align: u64, _span: Span) -> ObjectId {
+        let bump = match kind {
+            ObjKind::Global | ObjKind::Function => &mut self.next_global,
+            ObjKind::Heap | ObjKind::Extern => &mut self.next_heap,
+            ObjKind::Stack | ObjKind::VarArgs => &mut self.next_stack,
+            ObjKind::Lazy => &mut self.next_lazy,
+        };
+        let a = align.max(1);
+        let addr = bump.next_multiple_of(a);
+        // The gap goes *after* the object, so the next allocation cannot abut it.
+        *bump = addr + size + GUARD_GAP;
+        let id = ObjectId(self.next_id);
+        self.next_id += 1;
+        self.objs.push((id, addr, size));
+        id
+    }
+
+    pub fn addr_of(&self, id: ObjectId) -> Option<u64> {
+        self.objs
+            .iter()
+            .find(|(i, _, _)| *i == id)
+            .map(|(_, a, _)| *a)
+    }
+
+    fn size_of(&self, id: ObjectId) -> Option<u64> {
+        self.objs
+            .iter()
+            .find(|(i, _, _)| *i == id)
+            .map(|(_, _, s)| *s)
+    }
+
+    /// 021 §7.1: yields `addr + off` **and records the provenance in the value**.
+    pub fn ptr_to_int(&self, p: Pointer) -> IntVal {
+        let base = self.addr_of(p.base).unwrap_or(0);
+        IntVal::Tagged {
+            addr: base.wrapping_add(p.off as u64),
+            from: p,
+        }
+    }
+
+    /// Integer arithmetic that **carries the tag** (021 contract 12c).
+    ///
+    /// `(T*)((uword)p + 8 - 4)` must resolve to `p`'s object at offset 4. A tag that
+    /// survived only a bare round trip would miss all of it, and VPP does this
+    /// constantly.
+    pub fn int_add(&self, v: IntVal, delta: i64) -> IntVal {
+        match v {
+            IntVal::Const(a) => IntVal::Const(a.wrapping_add(delta as u64)),
+            IntVal::Tagged { addr, from } => IntVal::Tagged {
+                addr: addr.wrapping_add(delta as u64),
+                from: Pointer {
+                    base: from.base,
+                    off: from.off.wrapping_add(delta),
+                },
+            },
+        }
+    }
+
+    /// 021 §7.1. **Provenance first, range search only on a miss.**
+    ///
+    /// Address-range search must never be the primary mechanism, because it is wrong in
+    /// both directions:
+    ///
+    /// - It converts a real bug into a legitimate access. An object out of bounds by more
+    ///   than a guard gap has an address inside an unrelated object, so the search returns
+    ///   a valid in-bounds pointer there and the OOB write becomes a silent, legal-looking
+    ///   write to the wrong object.
+    /// - It reports a bug on conforming code. A page-aligned object of size exactly one
+    ///   gap has its legal one-past-the-end pointer land in the gap, matching nothing.
+    ///
+    /// Guard gaps only bound OOB distances smaller than the gap, so no choice of gap
+    /// fixes either case.
+    pub fn int_to_ptr(&self, v: IntVal) -> Pointer {
+        if let IntVal::Tagged { from, .. } = v {
+            return from;
+        }
+        let a = v.addr();
+        for (id, base, size) in &self.objs {
+            // `<=` on the upper bound: one-past-the-end is a legal C pointer.
+            if a >= *base && a <= base + size {
+                return Pointer {
+                    base: *id,
+                    off: (a - base) as i64,
+                };
+            }
+        }
+        Pointer {
+            base: ObjectId::UNBOUND,
+            off: a as i64,
+        }
+    }
+
+    /// Whether a pointer is within its own object — the check that stays meaningful
+    /// precisely because provenance was not laundered.
+    pub fn in_bounds(&self, p: Pointer, size: u64) -> bool {
+        match self.size_of(p.base) {
+            Some(s) => p.off >= 0 && p.off as u64 + size <= s,
+            None => false,
+        }
+    }
+}
