@@ -667,12 +667,20 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `Symbol = Arc<str>` for now — an interner belongs in `chiero-span` once a second
    crate needs one.
 
-   **Next in `chiero-cir`: the textual `.cir` format** (020 §6) — printer + parser, with
-   the round-trip contracts 1–3. This is the highest-value remaining M1 item because
-   **every core test fixture is a `.cir` file**, so nothing else in M1 can be tested
-   until it exists. Note 020 §6 requires `print(parse(s)) == s` byte-exact for canonical
-   input and a **hard parse error on unknown directives** — silent tolerance in a
-   fixture format produces tests that pass by not testing anything.
+   **Textual `.cir` format DONE** (`ed111fd` red, `38c7b81` green): printer + parser,
+   16 tests, 020 contracts 1–3. Uses **names** (`@counts`) not numeric ids, per 020 §6's
+   example — which required threading the module through printing and a pre-pass over
+   the source for forward references. Printing *is* canonicalization (no separate
+   normalizer). Missing terminators are tracked with an explicit flag rather than
+   defaulting to `Unreachable`, which would silently accept a truncated block that then
+   verifies clean.
+
+   **Next in `chiero-cir`:** the remaining 020 contracts — the optional passes
+   (`mem2reg`, `simplify_cfg`, `const_fold`) with their observational-transparency
+   requirement (§9), and the corpus of `.cir` fixtures under `tests/corpus/cir/` that
+   contracts 1 and 5 quantify over ("every module in the corpus"), which currently has
+   no files. **Then `chiero-solver`**, which is the next crate on M1's critical path and
+   the one with the heaviest validation burden (022 §7).
 
    **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace
    rendering, which 001 §5 says lives here; and 010 contracts 11 (re-lex round trip)
