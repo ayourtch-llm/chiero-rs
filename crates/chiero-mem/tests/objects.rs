@@ -567,3 +567,60 @@ fn a_guardless_conditional_write_neither_initializes_nor_erases() {
         Err(AccessError::Uninitialized { off: 2, bit: 16 })
     );
 }
+
+/// **021 contract 20.** Forking a state with 1000 objects and writing one leaves the other
+/// 999 shared — checked by pointer equality, because that is the only way to see the
+/// difference between sharing and an identical copy.
+///
+/// Forking is the engine's core operation: a symbolic branch in a loop over
+/// `VLIB_FRAME_SIZE` buffers forks hundreds of times, and deep-copying every object at
+/// each fork makes the cost quadratic in a program's memory rather than in its branching.
+/// 021 specifies structural sharing for exactly that reason.
+#[test]
+fn forking_shares_every_object_it_did_not_write() {
+    let mut m = Memory::new();
+    let objs: Vec<_> = (0..1000)
+        .map(|i| {
+            let o = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+            m.set(Pointer { base: o, off: 0 }, i as u8, 8, Span::DUMMY);
+            o
+        })
+        .collect();
+    let mut forked = m.clone();
+    // Write one object in the fork.
+    forked.set(
+        Pointer {
+            base: objs[500],
+            off: 0,
+        },
+        0xFF,
+        8,
+        Span::DUMMY,
+    );
+
+    let shared = objs
+        .iter()
+        .filter(|o| m.shares_storage_with(&forked, **o))
+        .count();
+    assert!(
+        shared >= 999,
+        "999 of 1000 objects are shared after writing one, got {shared}"
+    );
+    assert!(
+        !m.shares_storage_with(&forked, objs[500]),
+        "and the written one is not"
+    );
+    // The original is unchanged, which is what makes the sharing safe rather than aliasing.
+    assert_eq!(
+        m.read(
+            Pointer {
+                base: objs[500],
+                off: 0
+            },
+            1,
+            Span::DUMMY
+        )
+        .value,
+        Some(vec![500u8 as u8])
+    );
+}
