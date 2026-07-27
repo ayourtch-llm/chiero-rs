@@ -2170,31 +2170,57 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    pointer. *Third time in this area that a test passed for a different reason than it
    named; the fix each time was to make the fixture reach the code under test.*
 
+   **WAVE 53** (`8c8c6ec`, `fa71709`, `162a4dc`, `b8412cf`; 614 tests) — the rest of the
+   wave-51 §5.1 list except M8/M9. **D6**: `resolvable_ranges` (freed and out-of-scope
+   objects included) is what the search now uses; `live_ranges` was left alone rather than
+   widened, because "which objects exist" and "which objects may a pointer name" are
+   different questions and one accessor answering both is how this went wrong.
+   **D8**: the search no longer sweeps. Each query asks for *some* value the address can
+   still take, the containing object is found by arithmetic, and the next query excludes
+   it — one query per answer plus one to prove there are no more. A model landing outside
+   every object proves the wild case, and what gets excluded next is the whole surrounding
+   *region*, because ruling out one address at a time never terminates.
+   Step 4 is now read off the path syntactically — if no constraint mentions any variable
+   the address depends on, every value is feasible — so it needs **no solver at all** and
+   is reachable at tier 1 for the first time. Exact in that direction; an address a
+   constraint mentions without narrowing falls through to the enumeration, which reaches
+   step 4 too whenever it runs to unsat.
+   **L2/L3**: extent decides something only at the boundaries, so both are tested — inside
+   (a size of 0 would resolve to nothing) and two past the end (a size of `size+1` would
+   swallow it). The earlier single test was pinned strictly *inside*, where widening the
+   extent changes no answer: the same-answer trap in the fixture, again.
+   **M14** fell out of D8: the wild path now requires a model as witness, where before
+   `Unknown` was enough. **D4** is covered by the one-past-the-end half of L2/L3.
+   **G1**: `>= GUARD_GAP` is satisfied by `GUARD_GAP = 0`; the assertions now name a page,
+   and the constant is pinned once where it is defined.
+
+   ⚠️ *Method note:* `an_unresolvable_pointer_stops_the_path_and_names_its_reason` had a
+   ⚠️ saying step 4 was unreachable at tier 1 and its assertion accepted **either** cause.
+   That note is now stale and the assertion names step 4's own cause. A tolerant assertion
+   left in place after the tolerance is gone is a test that has stopped testing.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
      pointer gets `Approximated` and silently continues on object 1. **Under VPP's >10⁴
      objects, step 4 can never fire** — §5.1's highest-value guarantee unreachable exactly
      where it was written for. Verbatim the failure 021 records against its own draft.
-   - **D6** `live_ranges` filters to `ObjState::Live`, so a use-after-free through a
+   - ~~**D6**~~ DONE (wave 53). `live_ranges` filters to `ObjState::Live`, so a use-after-free through a
      symbolic address reports "unconstrained pointer" and terminates instead of reporting
      the UAF. 021 §4 keeps freed objects *precisely so* the site can be named.
    - ~~**D5**~~ DONE (wave 52). `candidates.is_empty()` is the *opposite* of "every object feasible": an address
      provably in a guard gap is reported as "wholly unconstrained". Third instance of the
      cause-conflation `f29457b` fixed, one branch over.
-   - **D8** the search **is** the per-dereference O(objects) solver sweep §5.1 forbids —
+   - ~~**D8**~~ DONE (wave 53). The search **is** the per-dereference O(objects) solver sweep §5.1 forbids —
      `solver_calls` measured at exactly `n + 3`. The comment claims an arithmetic pre-filter
      that does not exist.
-   - **D4** one-past-the-end becomes an in-bounds write at byte 0 (same root as D1; recheck
-     now that the offset is carried).
-   - Mutation gaps: **L2/L3** — contracts 16 and 17 pass byte-identically with object
-     *extents* set to 0 or size+1, so they never exercise extent at all; **M14** a
-     spurious wild path on a provably-inside address; **M8/M9** step 4's disjunct; **G1**
-     `GUARD_GAP` — its three assertions are **self-referential** (`gap >= GUARD_GAP` with
-     the constant mutated to 0), a same-answer trap in a constant.
+   - ~~**D4**~~ DONE (wave 53). One-past-the-end becomes an in-bounds write at byte 0 (same root as D1).
+   - Mutation gaps: ~~**L2/L3**~~, ~~**M14**~~, ~~**G1**~~ DONE (wave 53). **M8/M9** step 4's
+     disjunct remain — the disjunct itself is gone with the sweep, so what M8/M9 asked for
+     has to be re-read against the model-driven search before it means anything.
 
-   *(earlier §5.1 note)* step 4's own detection (wholly unconstrained: every object *and*
-   nowhere both feasible) is still unreached — the tier-2 tests exercise steps 3 and 5.
+   *(earlier §5.1 note, now superseded by wave 53)* step 4's own detection is reached, at
+   tier 1 and tier 2 both, and asserted by name in three tests.
    Contracts 17b, 18 and 19 need `PointerBitInspection`, lazy materialization and
    `--fork-on-alias`, none of which exist. Contract 17 (`max_resolutions = 2`
    concretizes at `Approximated`) needs the same fixture with a smaller cap. Contracts 17b,
@@ -2250,8 +2276,8 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
-   above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
+   **M1's instruction set is complete**, but M1's *exit* is not — **614 tests, 106/161
+   contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
    the CIR's `align`, which is what a real `ub-strict` mode would need — and note it has
