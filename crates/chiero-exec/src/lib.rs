@@ -336,6 +336,19 @@ impl State {
 
     /// Every live activation's alloca sizes, so a test can see that two frames have two
     /// objects rather than one shared by id.
+    /// Every object this state's memory knows about, retired ones included — so a test
+    /// can see that a scope entered three times made three objects rather than reusing
+    /// one. `frame_objs` cannot answer that: it is keyed by `AllocaId` and holds only the
+    /// newest.
+    pub fn object_ids_for_test(&self) -> Vec<chiero_mem::ObjectId> {
+        self.mem
+            .resolvable_ranges()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .filter(|id| *id != chiero_mem::ObjectId::NULL)
+            .collect()
+    }
+
     pub fn alloca_sizes_for_test(&self) -> Vec<u64> {
         self.stack
             .iter()

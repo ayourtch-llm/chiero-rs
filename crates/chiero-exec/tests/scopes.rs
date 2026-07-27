@@ -457,3 +457,80 @@ fn a_callers_locals_survive_a_callees_return() {
     assert!(r.findings().is_empty(), "{:#?}", r.findings());
     assert_eq!(r.fidelity(), Fidelity::Exact);
 }
+
+/// **021 contract 29.** "An alloca in a loop body executed 3 times yields 3 distinct
+/// `ObjectId`s." The object is the *activation* of the declaration, not the declaration:
+/// one object across iterations makes the previous iteration's contents readable through
+/// this iteration's pointer, and a pointer that escaped one iteration look live in the
+/// next — which is the bug the loop was written to have.
+#[test]
+fn an_alloca_in_a_loop_body_is_a_new_object_each_time_the_scope_opens() {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 1, Lifetime::Scope)],
+        blocks: vec![
+            // head: the loop body's scope opens, a pointer is taken, the scope closes,
+            // and the back edge runs it again. `max_loop_iters` bounds the count.
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                            scope: ScopeId(1),
+                            kind: ScopeKind::Enter,
+                        })),
+                        10,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::AddrOfLocal {
+                                alloca: AllocaId(0),
+                            },
+                        },
+                        20,
+                    ),
+                    inst(
+                        InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                            scope: ScopeId(1),
+                            kind: ScopeKind::Exit,
+                        })),
+                        30,
+                    ),
+                ],
+                Terminator::Goto(BlockId(0)),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    let seen: Vec<_> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.object_ids_for_test())
+        .collect();
+    let mut uniq = seen.clone();
+    uniq.sort_by_key(|o| o.0);
+    uniq.dedup();
+    assert!(
+        uniq.len() >= 3,
+        "three passes through the scope are three objects: {seen:?}"
+    );
+}
