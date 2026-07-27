@@ -5909,3 +5909,57 @@ fn a_definite_out_of_bounds_store_ends_the_path() {
         "the instruction after the write never ran"
     );
 }
+
+/// **A faulting load has the same width as a succeeding one.** `sort_of` falls through to
+/// `BitVec(64)` for anything that is not `Int` or `Ptr`, so a `float` load that faulted
+/// produced a 64-bit symbol where the same load succeeding produces 32 bits — a width that
+/// depends on whether the memory happened to be initialized. Every downstream comparison
+/// against it is then a sort error or a silent truncation. Found by review as the narrow
+/// remainder of the zero-sized-load defect.
+#[test]
+fn a_faulting_load_has_the_width_its_type_declares() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Float(FloatKind::F32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Float(FloatKind::F32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    match r.states()[0].local(ValueId(1)) {
+        Some(Value::Scalar(t)) => assert_eq!(
+            a.width(t),
+            32,
+            "an f32 is 32 bits whether the load answered or not"
+        ),
+        other => panic!("{other:?}"),
+    }
+}
