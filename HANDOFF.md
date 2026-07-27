@@ -2017,6 +2017,19 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `Arc::make_mut` at every mutation site. The test checks **pointer equality**, the only
    way to tell sharing from an identical copy.
 
+   **WAVE 43** (`c358008`; 589 tests, **103/161 cited**) — 021 contracts 26 (two reads of
+   one never-written byte give the *same term* and **one** finding — the memoization
+   `&mut self` on `read` exists for; a fresh symbol per read makes `x == x` unprovable for
+   memory nobody wrote) and 32 (VPP's registration-table shape end to end: a handler stored
+   into a global, loaded, called indirectly, resolving to one `FuncId` with no fork —
+   exercising `Const::FuncAddr`, pointer store/load, and provenance resolution together).
+   Contracts 23 and 31 were already covered and only needed citing; 021 c31 is 020 c37 from
+   the memory side, so one test satisfies both.
+
+   021's remainder is now mostly **021 §5.1 machinery that does not exist**: contracts 16,
+   17, 17b, 18, 19 need symbolic-base resolution, `max_resolutions`, lazy materialization
+   and `--fork-on-alias`. That is the next substantial piece of 021, not a test gap.
+
    **STILL OWED from wave 41:** E5 — every `OpaqueWrite` fixture has exactly one entry, so
    "each declared write is honoured" is untested. Plus the suspicions the review left open:
    a faulting `LoadBits` invents an unconstrained `w`-bit symbol where the field's range is
