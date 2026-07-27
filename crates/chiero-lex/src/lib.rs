@@ -137,6 +137,19 @@ impl LexedFile {
         self.source.get(lo..hi).unwrap_or("")
     }
 
+    /// O(1) indexed spelling lookup for pipeline consumers already walking `tokens()`.
+    /// `text(&token)` accepts detached callers and therefore has to locate the token;
+    /// using it once per token would make preprocessing quadratic (REVIEW-1 finding 13).
+    pub fn text_at(&self, index: usize) -> Option<&str> {
+        let token = self.tokens.get(index)?;
+        if let Some(text) = self.spellings.get(&index) {
+            return Some(text);
+        }
+        let lo = token.span.lo.0.saturating_sub(self.start.0) as usize;
+        let hi = token.span.hi.0.saturating_sub(self.start.0) as usize;
+        self.source.get(lo..hi)
+    }
+
     pub fn symbol_text(&self, symbol: Symbol) -> Option<&str> {
         self.symbols.get(symbol.0 as usize).map(AsRef::as_ref)
     }

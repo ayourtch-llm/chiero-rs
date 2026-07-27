@@ -143,6 +143,62 @@ fn whitespace_spelling_does_not_defeat_guard_detection() {
 }
 
 #[test]
+fn angle_include_uses_configured_search_paths() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("sys/api.h"), "api_token\n".into());
+    let config = Config {
+        include_paths: vec![PathBuf::from("sys")],
+        ..Config::default()
+    };
+    let tu = preprocess_with_loader("main.c", "#include <api.h>\n", config, &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["api_token"]);
+    assert_eq!(files.reads.get(Path::new("sys/api.h")), Some(&1));
+}
+
+#[test]
+fn include_depth_is_bounded_with_a_diagnostic() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("self.h"),
+        "#include \"self.h\"\nbody\n".into(),
+    );
+    let config = Config {
+        max_include_depth: 4,
+        ..Config::default()
+    };
+    let tu = preprocess_with_loader("main.c", "#include \"self.h\"\n", config, &mut files);
+    assert_eq!(files.reads.get(Path::new("self.h")), Some(&4));
+    assert_eq!(
+        tu.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("include depth"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn lexer_diagnostics_are_promoted_only_on_active_lines() {
+    let active = preprocess_str(
+        "active.c",
+        "#if 1\n\"unterminated\n#endif\n",
+        Config::default(),
+    );
+    assert_eq!(active.diagnostics.len(), 1);
+    assert!(active.diagnostics[0].message.contains("unterminated"));
+
+    let inactive = preprocess_str(
+        "inactive.c",
+        "#if 0\n\"unterminated\n#endif\n",
+        Config::default(),
+    );
+    assert!(inactive.diagnostics.is_empty());
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files

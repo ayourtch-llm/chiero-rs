@@ -16,6 +16,10 @@ pub struct Config {
     pub pedantic: bool,
     pub date: String,
     pub time: String,
+    pub iquote_paths: Vec<PathBuf>,
+    pub include_paths: Vec<PathBuf>,
+    pub system_paths: Vec<PathBuf>,
+    pub max_include_depth: usize,
 }
 
 impl Default for Config {
@@ -25,6 +29,10 @@ impl Default for Config {
             pedantic: false,
             date: "Jan 01 1970".into(),
             time: "00:00:00".into(),
+            iquote_paths: Vec::new(),
+            include_paths: Vec::new(),
+            system_paths: Vec::new(),
+            max_include_depth: 200,
         }
     }
 }
@@ -116,106 +124,7 @@ pub fn preprocess_with_loader<L: FileLoader>(
     config: Config,
     loader: &mut L,
 ) -> PreprocessedTu {
-    let mut state = IncludeState::default();
-    let combined = expand_includes(path.as_ref(), src, loader, &mut state);
-    let mut tu = Engine::new(path.as_ref(), &combined, config).run();
-    for (dep_path, dep_src) in state.loaded {
-        let file = tu.source_map.add_file(dep_path, dep_src);
-        tu.deps.push(file);
-    }
-    tu.diagnostics.extend(state.diagnostics);
-    tu
-}
-
-#[derive(Default)]
-struct IncludeState {
-    macros: BTreeMap<String, String>,
-    guards: BTreeMap<PathBuf, String>,
-    once: BTreeSet<PathBuf>,
-    loaded: Vec<(PathBuf, String)>,
-    diagnostics: Vec<Diagnostic>,
-}
-
-fn expand_includes<L: FileLoader>(
-    current: &Path,
-    src: &str,
-    loader: &mut L,
-    state: &mut IncludeState,
-) -> String {
-    let mut output = String::new();
-    for line in src.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("#define ") {
-            let mut parts = rest.trim().splitn(2, char::is_whitespace);
-            if let Some(name) = parts.next() {
-                state
-                    .macros
-                    .insert(name.into(), parts.next().unwrap_or("").trim().into());
-            }
-            output.push_str(line);
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("#undef ") {
-            state.macros.remove(rest.trim());
-            output.push_str(line);
-            continue;
-        }
-        if trimmed.starts_with("#pragma once") {
-            state.once.insert(current.to_path_buf());
-            continue;
-        }
-        let Some(rest) = trimmed.strip_prefix("#include ") else {
-            output.push_str(line);
-            continue;
-        };
-        let mut header = rest.trim();
-        if !header.starts_with('"')
-            && let Some(expanded) = state.macros.get(header)
-        {
-            header = expanded;
-        }
-        let Some(name) = header.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-            state.diagnostics.push(Diagnostic {
-                span: Span::DUMMY,
-                message: format!("invalid computed include: {header}"),
-            });
-            continue;
-        };
-        let parent = current.parent().unwrap_or_else(|| Path::new(""));
-        let resolved = parent.join(name);
-        if state.once.contains(&resolved)
-            || state
-                .guards
-                .get(&resolved)
-                .is_some_and(|guard| state.macros.contains_key(guard))
-        {
-            continue;
-        }
-        match loader.load(&resolved) {
-            Ok(included) => {
-                if let Some(guard) = detect_guard(&included) {
-                    state.guards.insert(resolved.clone(), guard);
-                }
-                if included.lines().any(|line| line.trim() == "#pragma once") {
-                    state.once.insert(resolved.clone());
-                }
-                state.loaded.push((resolved.clone(), included.clone()));
-                output.push_str(&expand_includes(&resolved, &included, loader, state));
-            }
-            Err(error) => state.diagnostics.push(Diagnostic {
-                span: Span::DUMMY,
-                message: format!("cannot include {}: {error}", resolved.display()),
-            }),
-        }
-    }
-    output
-}
-
-fn detect_guard(src: &str) -> Option<String> {
-    let mut directives = src.lines().map(str::trim).filter(|line| !line.is_empty());
-    let guard = directives.next()?.strip_prefix("#ifndef ")?.trim();
-    let defined = directives.next()?.strip_prefix("#define ")?.trim();
-    (guard == defined).then(|| guard.to_owned())
+    Engine::new(path.as_ref(), src, config).run_with_loader(loader)
 }
 
 #[derive(Copy, Clone)]
@@ -225,11 +134,72 @@ struct Conditional {
     taken: bool,
 }
 
+struct MissingLoader;
+
+impl FileLoader for MissingLoader {
+    fn load(&mut self, path: &Path) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no loader configured for {}", path.display()),
+        ))
+    }
+}
+
+fn parse_header_name(tokens: &[Tok]) -> Option<(String, bool)> {
+    if tokens.len() == 1 && matches!(tokens[0].token.kind, PpTokenKind::StringLit { .. }) {
+        return tokens[0]
+            .text
+            .strip_prefix('"')
+            .and_then(|text| text.strip_suffix('"'))
+            .map(|text| (text.to_owned(), true));
+    }
+    if tokens.first().is_some_and(|token| token.text == "<")
+        && tokens.last().is_some_and(|token| token.text == ">")
+    {
+        return Some((
+            tokens[1..tokens.len() - 1]
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect(),
+            false,
+        ));
+    }
+    None
+}
+
+fn detect_guard_tokens(tokens: &[Tok]) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() && lines.len() < 2 {
+        let end = (i + 1..tokens.len())
+            .find(|&index| tokens[index].token.bol)
+            .unwrap_or(tokens.len());
+        lines.push(&tokens[i..end]);
+        i = end;
+    }
+    let first = lines.first()?;
+    let second = lines.get(1)?;
+    if first.first()?.text != "#"
+        || first.get(1)?.text != "ifndef"
+        || second.first()?.text != "#"
+        || second.get(1)?.text != "define"
+    {
+        return None;
+    }
+    let guard = &first.get(2)?.text;
+    (second.get(2)?.text == *guard).then(|| guard.clone())
+}
+
 struct Engine {
     config: Config,
     source_map: SourceMap,
-    file: FileId,
+    lex_session: LexSession,
+    root_path: PathBuf,
     input: Vec<Tok>,
+    deps: Vec<FileId>,
+    lex_diagnostics: BTreeMap<(FileId, u32), Vec<Diagnostic>>,
+    once: BTreeSet<PathBuf>,
+    guards: BTreeMap<PathBuf, String>,
     macros: Vec<StoredMacro>,
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
@@ -240,25 +210,45 @@ impl Engine {
     fn new(path: &Path, src: &str, config: Config) -> Self {
         let mut source_map = SourceMap::new();
         let file = source_map.add_file(path, src);
-        let lexed = LexSession::new().lex(&source_map, file, LexConfig::default());
+        let lex_session = LexSession::new();
+        let lexed = lex_session.lex_cached(&source_map, file, LexConfig::default());
         // 012 contract 10: inactive branches are lexed but not analyzed. Lexer
         // diagnostics cannot be promoted until conditional activity is known.
         let diagnostics = Vec::new();
         let input = lexed
             .tokens()
             .iter()
-            .filter(|token| !matches!(token.kind, PpTokenKind::Eof))
-            .map(|token| Tok {
+            .enumerate()
+            .filter(|(_, token)| !matches!(token.kind, PpTokenKind::Eof))
+            .map(|(index, token)| Tok {
                 token: token.clone(),
-                text: lexed.text(token).to_owned(),
+                text: lexed.text_at(index).unwrap_or("").to_owned(),
                 hide: BTreeSet::new(),
             })
             .collect();
+        let mut lex_diagnostics = BTreeMap::new();
+        for diagnostic in lexed.diagnostics() {
+            let line = source_map
+                .lookup_loc(diagnostic.span.lo)
+                .map_or(0, |loc| loc.line);
+            lex_diagnostics
+                .entry((file, line))
+                .or_insert_with(Vec::new)
+                .push(Diagnostic {
+                    span: diagnostic.span,
+                    message: diagnostic.message.clone(),
+                });
+        }
         let mut engine = Self {
             config,
             source_map,
-            file,
+            lex_session,
+            root_path: path.to_path_buf(),
             input,
+            deps: vec![file],
+            lex_diagnostics,
+            once: BTreeSet::new(),
+            guards: BTreeMap::new(),
             macros: Vec::new(),
             by_name: BTreeMap::new(),
             diagnostics,
@@ -277,15 +267,48 @@ impl Engine {
     }
 
     fn run(mut self) -> PreprocessedTu {
+        let mut loader = MissingLoader;
+        self.finish(&mut loader)
+    }
+
+    fn run_with_loader(mut self, loader: &mut dyn FileLoader) -> PreprocessedTu {
+        self.finish(loader)
+    }
+
+    fn finish(&mut self, loader: &mut dyn FileLoader) -> PreprocessedTu {
+        let input = std::mem::take(&mut self.input);
+        let root_path = self.root_path.clone();
+        let output = self.process_tokens(input, &root_path, 0, loader);
+        let tokens = output.iter().map(|t| t.token.clone()).collect();
+        let spellings = output.into_iter().map(|t| t.text).collect();
+        PreprocessedTu {
+            tokens,
+            source_map: std::mem::take(&mut self.source_map),
+            diagnostics: std::mem::take(&mut self.diagnostics),
+            config: self.config.id,
+            deps: std::mem::take(&mut self.deps),
+            spellings,
+        }
+    }
+
+    fn process_tokens(
+        &mut self,
+        input: Vec<Tok>,
+        path: &Path,
+        depth: usize,
+        loader: &mut dyn FileLoader,
+    ) -> Vec<Tok> {
         let mut output = Vec::new();
         let mut ordinary = Vec::new();
-        let mut conditionals = Vec::new();
+        let mut conditionals: Vec<Conditional> = Vec::new();
         let mut i = 0;
-        while i < self.input.len() {
-            let end = (i + 1..self.input.len())
-                .find(|&j| self.input[j].token.bol)
-                .unwrap_or(self.input.len());
-            let line = self.input[i..end].to_vec();
+        while i < input.len() {
+            let end = (i + 1..input.len())
+                .find(|&j| input[j].token.bol)
+                .unwrap_or(input.len());
+            let line = input[i..end].to_vec();
+            let active = conditionals.last().is_none_or(|frame| frame.active);
+            self.promote_lex_diagnostics(&line, active);
             if line.first().is_some_and(|t| {
                 t.token.bol && matches!(t.token.kind, PpTokenKind::Punct(Punct::Hash))
             }) {
@@ -293,23 +316,153 @@ impl Engine {
                 // physical line. A directive is the only boundary at which an active
                 // ordinary-token chunk must be complete.
                 output.extend(self.expand(std::mem::take(&mut ordinary)));
-                self.directive(&line, &mut conditionals);
-            } else if conditionals.last().is_none_or(|frame| frame.active) {
+                if active && line.get(1).is_some_and(|token| token.text == "include") {
+                    output.extend(self.include(&line, path, depth, loader));
+                } else if active
+                    && line.get(1).is_some_and(|token| token.text == "pragma")
+                    && line.get(2).is_some_and(|token| token.text == "once")
+                {
+                    self.once.insert(path.to_path_buf());
+                } else {
+                    self.directive(&line, &mut conditionals);
+                }
+            } else if active {
                 ordinary.extend(line);
             }
             i = end;
         }
         output.extend(self.expand(ordinary));
-        let tokens = output.iter().map(|t| t.token.clone()).collect();
-        let spellings = output.into_iter().map(|t| t.text).collect();
-        PreprocessedTu {
-            tokens,
-            source_map: self.source_map,
-            diagnostics: self.diagnostics,
-            config: self.config.id,
-            deps: vec![self.file],
-            spellings,
+        output
+    }
+
+    fn promote_lex_diagnostics(&mut self, line: &[Tok], active: bool) {
+        let Some(first) = line.first() else { return };
+        let Some(loc) = self.source_map.lookup_loc(first.token.span.lo) else {
+            return;
+        };
+        if let Some(found) = self.lex_diagnostics.remove(&(loc.file, loc.line))
+            && active
+        {
+            self.diagnostics.extend(found);
         }
+    }
+
+    fn include(
+        &mut self,
+        line: &[Tok],
+        current: &Path,
+        depth: usize,
+        loader: &mut dyn FileLoader,
+    ) -> Vec<Tok> {
+        if depth >= self.config.max_include_depth {
+            self.diagnostics.push(Diagnostic {
+                span: line.first().map_or(Span::DUMMY, |token| token.token.span),
+                message: format!(
+                    "maximum include depth {} exceeded",
+                    self.config.max_include_depth
+                ),
+            });
+            return Vec::new();
+        }
+        let expanded = self.expand(line.get(2..).unwrap_or_default().to_vec());
+        let Some((name, quoted)) = parse_header_name(&expanded) else {
+            self.diagnostics.push(Diagnostic {
+                span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
+                message: "invalid computed include".into(),
+            });
+            return Vec::new();
+        };
+        let mut candidates = Vec::new();
+        if quoted {
+            candidates.push(
+                current
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(&name),
+            );
+            candidates.extend(
+                self.config
+                    .iquote_paths
+                    .iter()
+                    .map(|directory| directory.join(&name)),
+            );
+        }
+        candidates.extend(
+            self.config
+                .include_paths
+                .iter()
+                .map(|directory| directory.join(&name)),
+        );
+        candidates.extend(
+            self.config
+                .system_paths
+                .iter()
+                .map(|directory| directory.join(&name)),
+        );
+        if candidates.is_empty() {
+            candidates.push(PathBuf::from(&name));
+        }
+        let mut last_error = None;
+        for resolved in candidates {
+            if self.once.contains(&resolved)
+                || self
+                    .guards
+                    .get(&resolved)
+                    .is_some_and(|guard| self.by_name.contains_key(guard))
+            {
+                return Vec::new();
+            }
+            match loader.load(&resolved) {
+                Ok(source) => {
+                    let input = self.lex_source(&resolved, &source);
+                    if let Some(guard) = detect_guard_tokens(&input) {
+                        self.guards.insert(resolved.clone(), guard);
+                    }
+                    return self.process_tokens(input, &resolved, depth + 1, loader);
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        self.diagnostics.push(Diagnostic {
+            span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
+            message: format!(
+                "cannot include {name}: {}",
+                last_error.map_or_else(|| "not found".into(), |error| error.to_string())
+            ),
+        });
+        Vec::new()
+    }
+
+    fn lex_source(&mut self, path: &Path, source: &str) -> Vec<Tok> {
+        let file = self.source_map.add_file(path, source);
+        self.deps.push(file);
+        let lexed = self
+            .lex_session
+            .lex_cached(&self.source_map, file, LexConfig::default());
+        for diagnostic in lexed.diagnostics() {
+            let line = self
+                .source_map
+                .lookup_loc(diagnostic.span.lo)
+                .map_or(0, |loc| loc.line);
+            self.lex_diagnostics
+                .entry((file, line))
+                .or_default()
+                .push(Diagnostic {
+                    span: diagnostic.span,
+                    message: diagnostic.message.clone(),
+                });
+        }
+        lexed
+            .tokens()
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| !matches!(token.kind, PpTokenKind::Eof))
+            .map(|(index, token)| Tok {
+                token: token.clone(),
+                text: lexed.text_at(index).unwrap_or("").to_owned(),
+                hide: BTreeSet::new(),
+            })
+            .collect()
     }
 
     fn add_builtin(&mut self, name: &str) {

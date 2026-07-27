@@ -33,6 +33,15 @@
   `#elifdef` forms fell through. `#if` now implements the complete C operator precedence
   table used by integer constant expressions, hexadecimal/octal/binary and character
   constants, short-circuiting, and signed/unsigned 64-bit usual conversions.
+- Findings 8 and 9 reproduced: inactive includes performed IO, header builtins and
+  spelling spans named the includer, and whitespace variants defeated textual guard
+  recognition. Includes are now active directives; every loaded header is its own
+  `SourceFile`, quoted/angle search paths are explicit config, guards are token-based,
+  and recursion is capped with a diagnostic.
+- The live-vs-inactive lexer diagnostic discriminator now passes: the preprocessor
+  promotes lexer diagnostics line-by-line only while the conditional state is active.
+- REVIEW-1 finding 13's quadratic token spelling lookup was removed from the pipeline
+  by adding indexed `LexedFile::text_at`; header lexing now uses the engine's cache.
 
 ## Mutation checks
 
