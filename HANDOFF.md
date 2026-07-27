@@ -2517,6 +2517,29 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    from a slow one*. It kills both the missing counter and trusting tier 2's model
    unvalidated. Contract 15's third cause (a dead process) is still unpinned.
 
+   **WAVE 65** (`c0bc0a3`, `499b67f`; 683 tests, **129/165 cited**).
+
+   **The M2 agent found a defect in my gate**, and it was the right kind: `contract-
+   coverage` scanned only 020–024, so it reported a comfortable number about the half of
+   the work it could see while the frontend was being built in parallel. 010–015 are
+   measured now and printed **separately, never folded into the M1 number** — 080 states
+   M2's exit as *behaviours*, not as "all contracts of these documents", and a gate that
+   invents an exit criterion the roadmap did not state is worse than no measure. Reads
+   `010: 17/19` and zero for 011–015 in this tree; that zero is the useful part, and is
+   what it should say until `m2-frontend` merges.
+
+   **024 contracts 21b and 21e.** 21b is the proof surface in one case: a program that
+   calls `scanf` cannot seal, because a run that read the outside world explored *one
+   story about* the program. 21e pins the default that keeps it usable — an unmodeled
+   extern's havoc leaves bytes **symbolic**, and flipping that default fails four tests
+   (three pre-existing), which is the same storm 021 §6 names, one crate over.
+
+   ⚠️ **Cross-agent dependency found:** 010 contract 19 (per-`ConfigId` expansion sites)
+   cannot be done here. 001 §180 says **`ConfigId` is owned by `chiero-pp`**, which is the
+   M2 agent's crate — and `chiero-span` is *below* it in the layering, so
+   `CookedSite.config` has nowhere to come from yet. Left alone deliberately rather than
+   solved by putting the type in the wrong crate. Worth settling at merge time.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2594,7 +2617,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **681 tests, 127/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **683 tests, 129/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
