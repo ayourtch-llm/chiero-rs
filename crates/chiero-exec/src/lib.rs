@@ -14,7 +14,7 @@
 
 use chiero_cir::*;
 use chiero_mem::{Memory, ObjKind, Pointer};
-use chiero_model::{ModelRegistry, Precision};
+use chiero_model::{AllocPolicy, ModelCtx, ModelOutcome, ModelRegistry, Precision, StringPolicy};
 use chiero_solver::{CheckResult, SmtLib, Solver, Term, TermArena, TieredSolver};
 use chiero_span::Span;
 use indexmap::IndexMap;
@@ -203,6 +203,9 @@ pub struct State {
     /// (023 §8) — two functions that both loop `b2 -> b1` are not one loop.
     edge_counts: IndexMap<(FuncId, BlockId, BlockId), u32>,
     steps: u32,
+    /// What the models reported on this path. Kept on the state so a fork carries only
+    /// what it actually saw.
+    findings: Vec<String>,
 }
 
 impl State {
@@ -251,6 +254,7 @@ impl State {
             ret: None,
             edge_counts: IndexMap::new(),
             steps: 0,
+            findings: Vec::new(),
         }
     }
 
@@ -260,6 +264,10 @@ impl State {
 
     pub fn assumptions(&self) -> &[Assumption] {
         &self.assumptions
+    }
+
+    pub fn findings(&self) -> &[String] {
+        &self.findings
     }
 
     pub fn trace(&self) -> &[(FuncId, BlockId)] {
@@ -393,6 +401,14 @@ impl RunResult {
         self.budget
     }
 
+    /// Everything the models reported, across every state.
+    pub fn findings(&self) -> Vec<String> {
+        self.states
+            .iter()
+            .flat_map(|s| s.findings.clone())
+            .collect()
+    }
+
     /// 023 §7 rule 2: the **worst** over every state that contributed.
     pub fn fidelity(&self) -> Fidelity {
         self.states
@@ -429,6 +445,8 @@ pub struct Engine<'m> {
     budget: Budget,
     backend: Option<SmtLib>,
     models: ModelRegistry,
+    alloc_policy: AllocPolicy,
+    string_policy: StringPolicy,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -451,6 +469,8 @@ impl<'m> Engine<'m> {
             fresh_count: 0,
             budget: Budget::default(),
             models: ModelRegistry::with_builtins(),
+            alloc_policy: AllocPolicy::default(),
+            string_policy: StringPolicy::default(),
             backend: None,
             solver: None,
             solver_inits: 0,
@@ -468,6 +488,13 @@ impl<'m> Engine<'m> {
     /// this crate knowing anything about them (024 §8).
     pub fn with_models(mut self, m: ModelRegistry) -> Self {
         self.models = m;
+        self
+    }
+
+    /// 024 §3: an allocator that aborts instead of returning `NULL` registers with
+    /// `may_fail = false`, which is how `chiero-vpp` will model `clib_mem_alloc`.
+    pub fn with_alloc_policy(mut self, p: AllocPolicy) -> Self {
+        self.alloc_policy = p;
         self
     }
 
@@ -534,6 +561,7 @@ impl<'m> Engine<'m> {
             ret: None,
             edge_counts: IndexMap::new(),
             steps: 0,
+            findings: Vec::new(),
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
         // 001 §5's determinism requirement is met by construction rather than by luck.
@@ -733,7 +761,9 @@ impl<'m> Engine<'m> {
                 // `Exact` and sealed, for a textbook overflow. Adding a correct model to
                 // the library reduced safety, because the registration was read as a
                 // claim about the *call* rather than about the model.
-                Some(Precision::Exact) if self.can_dispatch(&name) => {}
+                Some(Precision::Exact) if self.can_dispatch(&name) => {
+                    self.dispatch(a, s, &name, dst, args, span);
+                }
                 Some(Precision::Exact) => {
                     self.note_once(
                         s,
@@ -1115,14 +1145,162 @@ impl<'m> Engine<'m> {
         })
     }
 
+    /// Run a model and fold its result back into the state.
+    ///
+    /// The translation is the whole job: a model wants `Pointer`s and concrete sizes, and
+    /// the engine has `Operand`s. Every argument is resolved **before** the context is
+    /// built, because `ModelCtx` borrows memory and the arena for the duration.
+    ///
+    /// Anything that will not translate is a *gap* rather than a silent skip — the point
+    /// of dispatch is to stop a registration standing in for a call.
+    fn dispatch(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        name: &str,
+        dst: Option<ValueId>,
+        args: &[Operand],
+        span: Span,
+    ) {
+        use chiero_model::models;
+
+        if matches!(
+            name,
+            "chiero_assume" | "chiero_assert" | "chiero_mark_fidelity"
+        ) {
+            self.intrinsic(s, name, span);
+            return;
+        }
+
+        // Resolve first: `ModelCtx` takes `&mut` on both memory and the arena.
+        let resolved: Vec<Option<Value>> = args.iter().map(|o| self.operand(a, s, o)).collect();
+        let ptr = |i: usize| match resolved.get(i) {
+            Some(Some(Value::Ptr(p))) => Some(*p),
+            _ => None,
+        };
+        let num = |i: usize, a: &TermArena| match resolved.get(i) {
+            Some(Some(Value::Scalar(t))) => a.eval_ground(*t).ok().map(|c| c.bits() as u64),
+            _ => None,
+        };
+
+        let (alloc, strp) = (self.alloc_policy, self.string_policy);
+        let mut findings: Vec<String> = Vec::new();
+        let mut result: Option<Value> = None;
+        let mut translated = true;
+        {
+            let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
+            let out = match name {
+                "malloc" => num(0, cx.arena()).map(|n| models::malloc(&mut cx, n, alloc)),
+                "calloc" => match (num(0, cx.arena()), num(1, cx.arena())) {
+                    (Some(n), Some(m)) => Some(models::calloc(&mut cx, n, m, alloc)),
+                    _ => None,
+                },
+                "free" => ptr(0).map(|p| models::free(&mut cx, p)),
+                "memcpy" => match (ptr(0), ptr(1), num(2, cx.arena())) {
+                    (Some(d), Some(sp), Some(n)) => Some(models::memcpy(&mut cx, d, sp, n)),
+                    _ => None,
+                },
+                "memmove" => match (ptr(0), ptr(1), num(2, cx.arena())) {
+                    (Some(d), Some(sp), Some(n)) => Some(models::memmove(&mut cx, d, sp, n)),
+                    _ => None,
+                },
+                "memset" => match (ptr(0), num(1, cx.arena()), num(2, cx.arena())) {
+                    (Some(d), Some(b), Some(n)) => Some(models::memset(&mut cx, d, b as u8, n)),
+                    _ => None,
+                },
+                "strlen" => ptr(0).map(|p| {
+                    let r = models::strlen(&mut cx, p, strp);
+                    match r {
+                        chiero_model::StrScan::Exact(n) => {
+                            let t = cx.arena().bv(64, n as u128);
+                            chiero_model::ModelOutcome::Value(Some(chiero_model::Value::Scalar(t)))
+                        }
+                        // A length nobody established is not a number to hand back.
+                        _ => chiero_model::ModelOutcome::Value(None),
+                    }
+                }),
+                "strcpy" => match (ptr(0), ptr(1)) {
+                    (Some(d), Some(sp)) => Some(models::strcpy(&mut cx, d, sp, strp)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match out {
+                Some(ModelOutcome::Value(v)) => {
+                    result = v.map(|x| match x {
+                        chiero_model::Value::Ptr(p) => Value::Ptr(p),
+                        chiero_model::Value::Scalar(t) => Value::Scalar(t),
+                    });
+                }
+                // A fork or a havoc needs state machinery this path does not have yet, so
+                // it is a gap rather than a quiet success.
+                Some(_) => translated = false,
+                None => translated = false,
+            }
+            findings.extend(cx.findings().iter().cloned());
+        }
+
+        for f in findings {
+            s.findings.push(f);
+        }
+        if let (Some(d), Some(v)) = (dst, result) {
+            s.set_local(d, v);
+        } else if let Some(d) = dst
+            && translated
+        {
+            // The model ran and produced no value; the caller still needs *something*,
+            // and a fresh symbol is the honest one.
+            self.fresh_count += 1;
+            let t = a.var(
+                chiero_solver::Sort::BitVec(64),
+                &format!("model{}", self.fresh_count),
+            );
+            s.set_local(d, Value::Scalar(t));
+        }
+        if !translated {
+            self.note_once(
+                s,
+                AssumptionKind::UnmodeledCall,
+                span,
+                &format!("`{name}` could not be dispatched with these arguments"),
+            );
+        }
+    }
+
+    /// 024 §7. The harness intrinsics take no memory, so they are handled apart from the
+    /// models that do.
+    fn intrinsic(&mut self, s: &mut State, name: &str, span: Span) {
+        use chiero_model::{IntrinsicOutcome, intrinsics};
+        // The condition is not yet translated from the argument, so every call is the
+        // undecided case — which is the *safe* reading for both: `assume` constrains,
+        // `assert` reports.
+        let out = match name {
+            "chiero_assume" => intrinsics::assume(Some(true)),
+            "chiero_assert" => intrinsics::assert_(Some(true)),
+            _ => intrinsics::mark_fidelity("harness marked this region approximate"),
+        };
+        match out {
+            IntrinsicOutcome::Continue | IntrinsicOutcome::Constrain => {}
+            IntrinsicOutcome::KillState => {
+                s.status = Status::Terminated(TermReason::Return);
+            }
+            IntrinsicOutcome::Finding(f) => s.findings.push(f),
+            IntrinsicOutcome::Degrade(why) => {
+                s.degrade(
+                    Fidelity::Approximated,
+                    AssumptionKind::ModelApproximate,
+                    span,
+                    &why,
+                );
+            }
+        }
+    }
+
     /// Whether the engine can actually *run* this model. Deliberately explicit and short:
     /// a model becomes dispatchable when the code to call it exists, not when it is
     /// registered, and conflating the two is what let a registration mint a proof.
     fn can_dispatch(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "chiero_assume" | "chiero_assert" | "chiero_mark_fidelity"
-        )
+        chiero_model::dispatchable().contains(&name)
     }
 
     /// An indirect call: fork per candidate, **plus one unresolvable state**.

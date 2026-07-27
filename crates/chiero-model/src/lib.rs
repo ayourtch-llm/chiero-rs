@@ -357,35 +357,58 @@ impl<'a> ModelCtx<'a> {
 /// The standard memory models. Each is a plain function so it can be tested without an
 /// engine — 024 §2's "two ways to write a model" is about registration, not about needing
 /// a running interpreter to check `calloc` zeroes.
+/// **The single list of what the engine can actually run.** `can_dispatch` and
+/// `is_implemented` were two hand-written lists that could drift in both directions — a
+/// name dispatchable with nothing behind it, or implemented and unreachable. Having one
+/// makes the link structural instead of a convention.
+pub const DISPATCHABLE: &[&str] = &[
+    "malloc",
+    "calloc",
+    "free",
+    "memcpy",
+    "memmove",
+    "memset",
+    "strlen",
+    "strcpy",
+    "chiero_assume",
+    "chiero_assert",
+    "chiero_mark_fidelity",
+];
+
+pub fn dispatchable() -> &'static [&'static str] {
+    DISPATCHABLE
+}
+
 pub mod models {
     use super::*;
 
     /// Whether a name has an implementation here. The registry uses it so an `Exact`
     /// declaration cannot outrun the code behind it.
     pub fn is_implemented(name: &str) -> bool {
-        matches!(
-            name,
-            "malloc"
-                | "calloc"
-                | "free"
-                | "memcpy"
-                | "memmove"
-                | "memset"
-                | "strlen"
-                | "strcpy"
-                | "__builtin_clz"
-                | "__builtin_ctz"
-                | "__builtin_popcount"
-                | "__builtin_bswap16"
-                | "__builtin_bswap32"
-                | "__builtin_bswap64"
-                | "__builtin_add_overflow"
-                | "__builtin_sub_overflow"
-                | "__builtin_mul_overflow"
-                | "chiero_assume"
-                | "chiero_assert"
-                | "chiero_mark_fidelity"
-        )
+        super::DISPATCHABLE.contains(&name)
+            || matches!(
+                name,
+                "malloc"
+                    | "calloc"
+                    | "free"
+                    | "memcpy"
+                    | "memmove"
+                    | "memset"
+                    | "strlen"
+                    | "strcpy"
+                    | "__builtin_clz"
+                    | "__builtin_ctz"
+                    | "__builtin_popcount"
+                    | "__builtin_bswap16"
+                    | "__builtin_bswap32"
+                    | "__builtin_bswap64"
+                    | "__builtin_add_overflow"
+                    | "__builtin_sub_overflow"
+                    | "__builtin_mul_overflow"
+                    | "chiero_assume"
+                    | "chiero_assert"
+                    | "chiero_mark_fidelity"
+            )
     }
 
     /// 024 contract 1/2. Uninitialized contents, and a `NULL` branch unless the allocator

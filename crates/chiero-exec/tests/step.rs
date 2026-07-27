@@ -2465,17 +2465,19 @@ fn malloc_dispatches_and_returns_a_real_pointer() {
         CTy::Int(32),
     );
     let m = Module {
-        funcs: vec![
-            caller,
-            extern_fn(1, "malloc", vec![CTy::Int(64)], CTy::Ptr),
-        ],
+        funcs: vec![caller, extern_fn(1, "malloc", vec![CTy::Int(64)], CTy::Ptr)],
         ..Default::default()
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m)
         .with_alloc_policy(chiero_model::AllocPolicy { may_fail: false })
         .run(&mut a);
-    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states()[0].assumptions());
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
     match r.states()[0].local(ValueId(0)) {
         Some(Value::Ptr(p)) => {
             assert_ne!(p.base, chiero_mem::ObjectId::NULL);
@@ -2648,6 +2650,9 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
     }
     let r = chiero_model::ModelRegistry::with_builtins();
     for n in chiero_model::dispatchable() {
-        assert!(r.lookup(n).is_some(), "`{n}` is dispatchable but unregistered");
+        assert!(
+            r.lookup(n).is_some(),
+            "`{n}` is dispatchable but unregistered"
+        );
     }
 }
