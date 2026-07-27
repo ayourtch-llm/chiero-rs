@@ -2437,6 +2437,64 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    (return value, store operand, `scalar`) that would otherwise have been defaulted. **A
    new enum variant is a free audit of everywhere the old ones were assumed total.**
 
+   **WAVE 63** (`af00414`, `9c1a7e1`-ish spec; 677 tests, 124/165 cited) — **the wave-60
+   review of the counterexample cache reported, and its worst finding was a 115× slowdown
+   on the case 023 §1 is built around.**
+
+   - **Below tier 1, not above it.** The cache was answering queries *both tiers* would
+     have refused — including assigning a truth value to a non-predicate term, returning
+     `Sat` for something z3 rejects as ill-sorted. §6 puts the caches "below escalation";
+     this is that, one level finer. It also fixed most of the performance problem: a
+     tier-1-decidable query no longer reaches the cache at all (1000 shared-prefix states:
+     **14.7 s → 0.085 s**).
+   - **Bounded** (§6.2 asked and I had skipped it), and candidate *evaluation* capped:
+     sibling states share long prefixes by design, so a shared term puts every cached set
+     in the inverted index — the index that made enumeration cheap does nothing for
+     evaluation. Eviction is wholesale, not LRU, and the comment says why (`CacheSlot` is
+     a positional index; a real LRU needs stable ids).
+   - **Arena identity checked.** §6.2 says caches are per-`TermArena`; `check` takes one
+     per call and every key is a bare `Term` id, so a second arena's `Term(3)` was a
+     different term with the same name — and the subset rules turned an exact-collision
+     hazard into a subset one.
+   - Four accepted mutants killed, including **an eval *error* counted as "satisfied"** (a
+     false `Sat` for an unsatisfiable query — `eval`'s totality is what the whole sat rule
+     rests on) and **`remember` storing only the assumptions** (a false `Unsat` after a
+     `pop`).
+
+   **`spec:` commit — 022 contracts 8, 8b, 11d.** Contract 8 ("byte-identical models … from
+   a warm cache") and contract 12 ("a cached model answers a new query") **cannot both
+   hold**: a model computed for a different query is not the model a fresh solve returns.
+   The two caches now carry different promises — the exact cache is byte-identical, the
+   counterexample cache guarantees the *verdict* with any satisfying assignment — and §6.2
+   states why reproducibility survives (it is a property of *runs*: same query sequence →
+   same answers, which is what a witness replay needs).
+
+   ⚠️ *Method notes:* three fixtures had to be rebuilt **twice** — once because the cache
+   now sits below tier 1 so a tier-1-decidable contradiction never reaches it, once because
+   the *exact* cache answered before the counterexample cache could. **A test that cannot
+   reach the code it names proves nothing, and moving the code under test moves that
+   line.** And the ≥1000-entry fixture failed to defeat "remembers only the last query"
+   purely because `fill` ran *before* the decisive query instead of between it and the
+   lookup — the spec asks for 1000 entries for exactly that mutant, and the fixture handed
+   it a pass.
+
+   **OWED from this review:** contract 15's other two causes (a model that fails
+   independent evaluation, and a dead process) are still unpinned — `backend_errors += 1`
+   can be deleted on the validation path and everything passes. Testing it needs a backend
+   that speaks the session protocol correctly and *lies*; a shell-script attempt hung,
+   because a fake that does not answer every command exactly is indistinguishable from a
+   slow one. Also owed: §6.1's `possibly_infeasible` remains unimplemented — not an
+   unsoundness today (every stored set is a full assertion set, so the superset rule is
+   monotone), and `remember` now carries the comment naming the coupling slicing will
+   create.
+
+   **PARALLEL: M2 frontend dispatched to codex** (pty-4, `--yolo`) in a **separate git
+   worktree** at `/home/ubuntu/rust/chiero-m2`, branch `m2-frontend`, brief in
+   `M2-BRIEF.md` there. It owns `chiero-lex` and `chiero-pp` only; `docs/specs/**` and
+   `chiero-span` are read-only to it (a spec that quietly follows the code stops meaning
+   anything). Its exit gate is 012's `gcc -E`/`clang -E` differential, which is a stronger
+   oracle than anything M1 has. **That branch is reviewed adversarially before it merges.**
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2514,7 +2572,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **675 tests, 124/164
+   **M1's instruction set is complete**, but M1's *exit* is not — **677 tests, 124/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
