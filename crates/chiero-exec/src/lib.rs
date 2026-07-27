@@ -650,7 +650,10 @@ impl<'m> Engine<'m> {
                 solver_calls: 0,
                 backend_spawns: 0,
                 solver_inits: 0,
-                completion_order: Vec::new(),
+                // One state, so one entry: the sibling error path does this and the
+                // normal path returns a permutation of `states()`. An empty vector here
+                // broke that invariant on the new path alone.
+                completion_order: vec![0],
                 budget: self.budget,
                 _seal: Sealed,
             };
@@ -1704,7 +1707,11 @@ impl<'m> Engine<'m> {
         // it goes.
         let faults: Vec<_> = faults
             .iter()
-            .filter(|f| f.kind() != "misaligned")
+            // Matched on the **variant**, not the slug. Renaming the slug in chiero-mem
+            // kept the whole workspace green while restoring the `CLIB_PACKED`
+            // false-positive storm, because the test that guards this greps the same
+            // literal — both sides of the coupling break together.
+            .filter(|f| !matches!(f, chiero_mem::MemFault::Misaligned { .. }))
             .cloned()
             .collect();
         let faults = &faults[..];

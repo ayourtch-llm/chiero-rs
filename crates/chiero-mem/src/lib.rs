@@ -1774,8 +1774,12 @@ impl Memory {
         e: Endian,
         at: Span,
     ) -> AccessResult<()> {
-        // As `read_term`: the ground path shifts a `u128` by `8 * size`, which panics at
-        // sixteen bytes and over.
+        // State first, as in `read_term`, so a chiero limit cannot mask a memory-safety
+        // bug. The width check then guards the ground path, which shifts a `u128` by
+        // `8 * size` and panics at sixteen bytes and over.
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return AccessResult::fault(f);
+        }
         if let Some(f) = too_wide(size, at) {
             return AccessResult::fault(f);
         }
@@ -2216,15 +2220,17 @@ impl Memory {
         e: Endian,
         at: Span,
     ) -> AccessResult<Term> {
-        // **The same limit the byte and bit APIs enforce.** Omitting it here was a
-        // process kill rather than a fault: a concrete read folds its `Concat` chain into
-        // a `BvConst` wider than the arena allows and asserts. `BadRange` is deliberately
-        // distinct from `OutOfBounds` because this is a *chiero* limit — the object may
-        // be large enough and the caller still cannot be answered exactly.
-        if let Some(f) = too_wide(size, at) {
+        // **State before contents** (021 §5), which is why this is not the first check.
+        // `BadRange` is a *chiero* limit; a use-after-free is a fact about the program,
+        // and reporting the limit instead hides the bug. Same lesson as "bounds must
+        // precede alignment", on a new surface.
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
             return AccessResult::fault(f);
         }
-        if let Some(f) = self.state_fault(p.base, p.off, at) {
+        // The limit the byte and bit APIs enforce. Omitting it was a process kill rather
+        // than a fault: a concrete read folds its `Concat` chain into a `BvConst` wider
+        // than the arena allows and asserts.
+        if let Some(f) = too_wide(size, at) {
             return AccessResult::fault(f);
         }
         let obj_size = self.entry(p.base).map_or(0, |x| x.size);
