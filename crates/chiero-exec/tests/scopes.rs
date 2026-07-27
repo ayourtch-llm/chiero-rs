@@ -1,0 +1,293 @@
+//! **Scope markers** — 021 contracts 30 and 39, and the use-after-scope finding.
+//!
+//! Covers: 021 contracts 30 and 39.
+//!
+//! 020 §4.4: "`Scope` markers are **semantic**: they bound the lifetime of stack objects,
+//! which is what makes use-after-scope detectable." `InstKind::Marker(_)` was a no-op, so
+//! `Scope(Exit)` retired nothing, `Lifetime::Function` and `Lifetime::Scope` were
+//! indistinguishable, and a pointer to a dead block read as live memory — the same
+//! confidently-wrong answer as reading uninitialized bytes as zero, with a longer fuse.
+
+use chiero_cir::*;
+use chiero_exec::*;
+use chiero_solver::TermArena;
+use chiero_span::{BytePos, ExpnCtx, Span};
+
+fn i32c(v: i128) -> Operand {
+    Operand::Const(Const::Int { bits: 32, val: v })
+}
+
+fn at(lo: u32) -> Span {
+    Span::new(BytePos(lo), BytePos(lo + 1), ExpnCtx(0))
+}
+
+fn inst(kind: InstKind, lo: u32) -> Inst {
+    Inst { kind, span: at(lo) }
+}
+
+fn block(id: u32, insts: Vec<Inst>, term: Terminator) -> Block {
+    Block {
+        id: BlockId(id),
+        insts,
+        term,
+        gcov_lines: Default::default(),
+        span: Span::DUMMY,
+    }
+}
+
+fn alloca(id: u32, scope: u32, lifetime: Lifetime) -> AllocaDecl {
+    AllocaDecl {
+        id: AllocaId(id),
+        ty: CTy::Int(32),
+        count: 1,
+        align: 4,
+        scope: ScopeId(scope),
+        lifetime,
+        name: None,
+        span: at(1),
+    }
+}
+
+/// ```c
+/// { int inner; p = &inner; }   // scope 1 ends here
+/// *p = 1;                      // use after scope
+/// ```
+/// The alloca belongs to scope 1; the store happens after `Scope(Exit)` of scope 1.
+fn escaping_scope(lifetime: Lifetime) -> Module {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 1, lifetime)],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Enter,
+                    })),
+                    10,
+                ),
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    20,
+                ),
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Exit,
+                    })),
+                    30,
+                ),
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Value(ValueId(0)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    40,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    Module {
+        funcs: vec![f],
+        ..Default::default()
+    }
+}
+
+/// **024 contract 10 / 021 §4.** A stack object accessed after its `Scope(Exit)` marker is
+/// exactly one use-after-scope finding. Exactly one, not one per surviving state: the
+/// report is about the program, and a fork afterwards does not make it two bugs.
+#[test]
+fn a_store_through_a_pointer_to_a_dead_scope_is_one_use_after_scope() {
+    let m = escaping_scope(Lifetime::Scope);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let uas: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("use-after-scope"))
+        .collect();
+    assert_eq!(uas.len(), 1, "exactly one: {:#?}", r.findings());
+    // The finding names the scope's end, which is what a reader needs to see why the
+    // object is dead — 020 §4.4 keeps `scope` on the alloca for exactly this.
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("use-after-scope"))
+        .unwrap();
+    assert_eq!(f.span, at(40), "reported at the access");
+    assert!(
+        f.message.contains("30"),
+        "and names where the scope ended: {}",
+        f.message
+    );
+}
+
+/// **021 contracts 30 and 39.** `alloca()` memory is `Lifetime::Function`: it survives
+/// the `Scope(Exit)` of the block it was allocated in and is retired at function return.
+/// Retiring it with the scope would report use-after-scope on a program that has none —
+/// 020 §4.4 says so in as many words, and the two lifetimes were indistinguishable while
+/// the marker did nothing.
+#[test]
+fn function_lifetime_memory_survives_an_inner_scope_exit() {
+    let m = escaping_scope(Lifetime::Function);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        !r.findings().iter().any(|f| f.contains("use-after-scope")),
+        "`alloca()` memory outlives the block: {:#?}",
+        r.findings()
+    );
+}
+
+/// A scope that ends without anything escaping it reports nothing — the marker retires
+/// memory, it does not accuse the program of using it.
+#[test]
+fn an_ordinary_scope_exit_reports_nothing() {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 1, Lifetime::Scope)],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Enter,
+                    })),
+                    10,
+                ),
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    20,
+                ),
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Value(ValueId(0)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    25,
+                ),
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Exit,
+                    })),
+                    30,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "and nothing was approximated"
+    );
+}
+
+/// **A scope's exit retires only its own objects.** An outer local is still live inside
+/// and after an inner block, and retiring by anything coarser than the alloca's own
+/// `ScopeId` would report a use-after-scope on every function with a nested block.
+#[test]
+fn an_inner_scope_exit_leaves_the_outer_scopes_objects_alone() {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![alloca(0, 0, Lifetime::Scope), alloca(1, 1, Lifetime::Scope)],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    10,
+                ),
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Enter,
+                    })),
+                    20,
+                ),
+                inst(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: ScopeId(1),
+                        kind: ScopeKind::Exit,
+                    })),
+                    30,
+                ),
+                // The *outer* local, after the inner block ended.
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Value(ValueId(0)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    40,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+}
