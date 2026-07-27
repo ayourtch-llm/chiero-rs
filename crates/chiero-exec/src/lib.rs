@@ -181,6 +181,8 @@ pub struct State {
 }
 
 impl State {
+    pub fn object_size_for_test(&self) -> Option<u64> { self.frame_objs.values().next().and_then(|o| self.mem.size_of_pub(*o)) }
+
     pub fn local(&self, v: ValueId) -> Option<Value> {
         self.stack.last()?.locals.get(&v).copied()
     }

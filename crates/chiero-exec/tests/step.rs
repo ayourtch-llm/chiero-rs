@@ -998,3 +998,428 @@ fn a_noreturn_call_terminates_the_state_at_the_call() {
         "the instruction after a noreturn call must not execute"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Wave 12, from the engine review. 12 of 15 mutants had survived.
+// ---------------------------------------------------------------------------
+
+/// **Arithmetic must compute what the operator says.** Only four `BinOp`s were
+/// implemented and the rest fell through to *addition* — at `Fidelity::Exact`, with no
+/// assumption. `5 - 3` came out `8`. The arena already exposes every one of these, so
+/// this was never an honest lowering gap; it was a wrong answer wearing a proof.
+#[test]
+fn every_implemented_binop_computes_its_own_operation() {
+    let cases: Vec<(BinOp, i128, i128, u128)> = vec![
+        (BinOp::Add, 5, 3, 8),
+        (BinOp::Sub, 5, 3, 2),
+        (BinOp::Mul, 5, 3, 15),
+        (BinOp::UDiv, 12, 4, 3),
+        (BinOp::URem, 13, 4, 1),
+        (BinOp::And, 6, 3, 2),
+        (BinOp::Or, 6, 3, 7),
+        (BinOp::Xor, 6, 3, 5),
+        (BinOp::Shl, 1, 4, 16),
+        (BinOp::LShr, 16, 2, 4),
+    ];
+    for (op, x, y, want) in cases {
+        let m = func(
+            vec![block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Bin {
+                        op,
+                        a: i32c(x),
+                        b: i32c(y),
+                        ty: CTy::Int(32),
+                    },
+                })],
+                Terminator::Return(Some(Operand::Value(ValueId(0)))),
+            )],
+            CTy::Int(32),
+        );
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_eq!(
+            r.states[0].return_value_bits(&mut a),
+            Some(want),
+            "{op:?} {x}, {y}"
+        );
+        assert_eq!(r.states[0].fidelity, Fidelity::Exact, "{op:?}");
+    }
+}
+
+/// **Comparisons must not invert.** `Ne` fell through to `Eq`, so every `if (x != y)`
+/// took the opposite branch — silently, at `Exact`. `SLt` is the one VPP-style signed
+/// index checks rest on, and it was `Eq` too.
+#[test]
+fn every_implemented_cmpop_answers_its_own_question() {
+    let cases: Vec<(CmpOp, i128, i128, u128)> = vec![
+        (CmpOp::Eq, 1, 2, 0),
+        (CmpOp::Ne, 1, 2, 1),
+        (CmpOp::ULt, 1, 2, 1),
+        (CmpOp::ULe, 2, 2, 1),
+        (CmpOp::UGt, 1, 2, 0),
+        (CmpOp::UGe, 2, 2, 1),
+        (CmpOp::SLt, -1, 2, 1),
+        (CmpOp::SGt, -1, 2, 0),
+    ];
+    for (op, x, y, want) in cases {
+        let m = func(
+            vec![block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Cmp {
+                        op,
+                        a: i32c(x),
+                        b: i32c(y),
+                        ty: CTy::Int(32),
+                    },
+                })],
+                Terminator::Return(Some(Operand::Value(ValueId(0)))),
+            )],
+            CTy::Int(1),
+        );
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_eq!(
+            r.states[0].return_value_bits(&mut a),
+            Some(want),
+            "{op:?} {x}, {y}"
+        );
+    }
+}
+
+/// **No path ends at `Exact` unless everything on it was modeled.** This is the single
+/// rule behind a family of holes: an unsupported terminator, a `LoweringGap`, a dropped
+/// instruction and an unrepresentable constant each left the run `Exact` with a witness,
+/// so an *unexecuted* program minted a proof — the one thing §7 rule 4 says the crate
+/// must be structurally incapable of.
+#[test]
+fn nothing_unmodeled_can_end_at_exact() {
+    let cases: Vec<(&str, Module)> = vec![
+        (
+            "an unsupported terminator",
+            func(
+                vec![block(
+                    0,
+                    vec![],
+                    Terminator::Switch {
+                        scrut: i32c(1),
+                        ty: CTy::Int(32),
+                        cases: vec![(1, BlockId(0))],
+                        default: BlockId(0),
+                    },
+                )],
+                CTy::Int(32),
+            ),
+        ),
+        (
+            "a lowering gap",
+            func(
+                vec![block(
+                    0,
+                    vec![],
+                    Terminator::Unreachable(UnreachableReason::LoweringGap),
+                )],
+                CTy::Int(32),
+            ),
+        ),
+        (
+            "an unrepresentable constant",
+            func(
+                vec![block(
+                    0,
+                    vec![inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Use(Operand::Const(Const::Float(FloatKind::F64, 0x4000_0000_0000_0000))),
+                    })],
+                    Terminator::Return(Some(i32c(0))),
+                )],
+                CTy::Int(32),
+            ),
+        ),
+        (
+            "a dropped store",
+            func(
+                vec![block(
+                    0,
+                    vec![inst(InstKind::Store {
+                        addr: Operand::Const(Const::Null),
+                        val: i32c(7),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    })],
+                    Terminator::Return(Some(i32c(0))),
+                )],
+                CTy::Int(32),
+            ),
+        ),
+    ];
+    for (what, m) in cases {
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_ne!(r.fidelity(), Fidelity::Exact, "{what} ended at Exact");
+        assert!(r.witness().is_none(), "{what} minted a witness");
+        assert!(
+            r.states.iter().all(|s| s.fidelity == Fidelity::Exact
+                || s.assumptions.iter().any(|x| x.kind.matches(s.fidelity))),
+            "{what}: a degraded state must name a cause of the right kind"
+        );
+    }
+}
+
+/// **A branch the solver *refuted* must not be explored.** The catch-all arm covered
+/// `(No, Unknown)` and `(Unknown, No)` too, and took *both* edges — so one child carried
+/// a path condition the solver had already proved unsatisfiable, and any checker firing
+/// there produces a false finding with an impossible witness. §3 says take a branch the
+/// solver **could not refute**, not one it did.
+#[test]
+fn a_refuted_branch_is_not_explored_even_when_the_other_side_is_unknown() {
+    let mut a = TermArena::new();
+    // b = fresh i1; if (b == 1) { if (b) ... }  — the inner false side is refuted.
+    let m = func(
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(1) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            a: Operand::Value(ValueId(0)),
+                            b: Operand::Const(Const::Int { bits: 1, val: 1 }),
+                            ty: CTy::Int(1),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(3),
+                },
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(0)),
+                    t: BlockId(2),
+                    f: BlockId(4),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(100)))),
+            block(3, vec![], Terminator::Return(Some(i32c(101)))),
+            block(4, vec![], Terminator::Return(Some(i32c(102)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m).run(&mut a);
+    let rets: Vec<_> = r
+        .states
+        .iter()
+        .map(|s| s.return_value_bits(&mut a))
+        .collect();
+    assert!(
+        !rets.contains(&Some(102)),
+        "block 4 needs `b == 1` and `b == 0` at once: {rets:?}"
+    );
+}
+
+/// **A `Goto` to a block that does not exist must terminate, not spin.** `step` returned
+/// `None` without setting a status and the run loop spun forever — no allocation, so not
+/// even the OOM killer would end it. §2's "step is total" was false.
+#[test]
+fn a_branch_to_a_missing_block_terminates_the_state() {
+    let mut a = TermArena::new();
+    let m = func(
+        vec![block(0, vec![], Terminator::Goto(BlockId(99)))],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states.len(), 1);
+    assert!(matches!(r.states[0].status, Status::Errored(_)));
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
+
+/// **An alloca is sized by its element type.** Every one was `count * 8`, so
+/// `char buf[4]` became a 32-byte object and single-byte writes at offsets 4 through 31
+/// produced no fault at all — the memory model eight times too permissive for exactly
+/// the buffers overflows happen in.
+#[test]
+fn an_alloca_is_sized_by_its_element_type() {
+    for (ty, count, want) in [
+        (CTy::Int(8), 4u64, 4u64),
+        (CTy::Int(32), 4, 16),
+        (CTy::Int(64), 4, 32),
+        (CTy::Ptr, 2, 16),
+    ] {
+        let mut m = func(
+            vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+            CTy::Int(32),
+        );
+        m.funcs[0].allocas = vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: ty.clone(),
+            count,
+            align: 1,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }];
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_eq!(
+            r.states[0].object_size_for_test(),
+            Some(want),
+            "{ty:?} x {count}"
+        );
+    }
+}
+
+/// A dynamic extent must not overflow the size computation. `DYNAMIC_EXTENT` is
+/// `u64::MAX`, so `count * elem_size` panicked in debug and wrapped to a *small* object
+/// in release — which is the more dangerous of the two.
+#[test]
+fn a_dynamic_extent_does_not_overflow_the_size_computation() {
+    let mut m = func(
+        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    m.funcs[0].allocas = vec![AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: chiero_cir::DYNAMIC_EXTENT,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    }];
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states.len(), 1, "the run completes rather than panicking");
+    assert_ne!(
+        r.states[0].object_size_for_test(),
+        Some(0),
+        "a wrapped size would be a tiny object that accepts nothing"
+    );
+}
+
+/// **`max_depth` counts instructions**, as §8 documents. It was counted in `take_edge`,
+/// so a single block of any length was unbounded.
+#[test]
+fn max_depth_counts_instructions_not_edges() {
+    let insts: Vec<Inst> = (0..500)
+        .map(|k| {
+            inst(InstKind::Assign {
+                dst: ValueId(k),
+                rv: RValue::Use(i32c(1)),
+            })
+        })
+        .collect();
+    let m = func(
+        vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_depth: 100,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert_eq!(r.states[0].status, Status::Terminated(TermReason::Budget));
+    assert_eq!(r.states[0].fidelity, Fidelity::Bounded);
+}
+
+/// **`feasible` asserts the path condition.** Every solver query the suite made had an
+/// *empty* path, so nothing verified that earlier branch decisions constrain later ones —
+/// which is the whole mechanism by which symbolic execution is not just enumeration.
+#[test]
+fn a_later_branch_sees_the_constraints_of_an_earlier_one() {
+    let Some(backend) = z3_or_skip("a_later_branch_sees_the_constraints_of_an_earlier_one")
+    else {
+        return;
+    };
+    let mut a = TermArena::new();
+    // x = fresh; if (x <u 5) { if (x <u 5) A else B } else C
+    // The inner false side is refuted by the outer true constraint.
+    let m = func(
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            a: Operand::Value(ValueId(0)),
+                            b: i32c(5),
+                            ty: CTy::Int(32),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(4),
+                },
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(2),
+                    f: BlockId(3),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(10)))),
+            block(3, vec![], Terminator::Return(Some(i32c(11)))),
+            block(4, vec![], Terminator::Return(Some(i32c(12)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let rets: Vec<_> = r
+        .states
+        .iter()
+        .map(|s| s.return_value_bits(&mut a))
+        .collect();
+    assert!(
+        !rets.contains(&Some(11)),
+        "the inner false branch contradicts the outer true one: {rets:?}"
+    );
+    assert_eq!(rets.len(), 2, "{rets:?}");
+}
+
+/// **One backend process per run** (022 §4). A fresh `TieredSolver` per query spawned one
+/// process per escalation and discarded the cache every time, so its hit rate was
+/// structurally zero — and §1.1's argument that sibling states hit the caches constantly
+/// was describing something that could not happen.
+#[test]
+fn a_run_uses_one_backend_process_for_all_its_queries() {
+    let Some(backend) = z3_or_skip("a_run_uses_one_backend_process_for_all_its_queries") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let m = undecidable_branch_module();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert!(r.solver_calls > 0, "this program does escalate");
+    assert_eq!(
+        r.backend_spawns, 1,
+        "022 §4 wants one process for the whole run, not one per query"
+    );
+}
