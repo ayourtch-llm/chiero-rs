@@ -6149,3 +6149,74 @@ fn provenance_cannot_be_laundered_through_arithmetic() {
         s.assumptions()
     );
 }
+
+/// **A model's fault in a loop is one finding too.** `03d7539`'s dedup key only reached
+/// faults raised through `report_faults` — `Store`, `Load`, `*Bits`. Everything routed
+/// through a *model* went through `ModelCtx::lift`, which stringified the `MemFault` and
+/// threw the struct away, so the engine had nothing to key on and fell back to fork
+/// identity. `free`, `memcpy`, `memset`, `strcpy`, `calloc` — most of the bug classes this
+/// tool exists for — still flooded. Found by review.
+#[test]
+fn a_models_fault_in_a_loop_is_one_finding() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(1),
+                        },
+                    }),
+                ],
+                Terminator::Goto(BlockId(1)),
+            ),
+            block(
+                1,
+                // `memcpy` into a four-byte destination from a sixteen-byte source: one
+                // out-of-bounds report, however many times the loop runs.
+                vec![inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Value(ValueId(1)),
+                        Operand::Const(Const::Int { bits: 64, val: 16 }),
+                    ],
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(
+                1,
+                "memcpy",
+                vec![CTy::Ptr, CTy::Ptr, CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let oob: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("out-of-bounds"))
+        .collect();
+    assert_eq!(oob.len(), 1, "{:#?}", r.findings());
+}
