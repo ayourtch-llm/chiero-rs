@@ -5,6 +5,7 @@
 //! Silent tolerance here produces tests that pass by not testing anything.
 
 use crate::*;
+use chiero_span::{BytePos, ExpnCtx};
 use indexmap::IndexMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         tok_hi: std::cell::Cell::new(0),
         tok_base: std::cell::Cell::new(0),
         whole_line: std::cell::Cell::new(false),
+        cur_span: Span::DUMMY,
         name_base: 0,
         label_base: 0,
     }
@@ -93,6 +95,9 @@ struct Parser<'a> {
     /// Set by parsers that read the raw line instead of tokens (calls), for which the
     /// high-water mark under-counts.
     whole_line: std::cell::Cell<bool>,
+    /// Span carried by the line most recently returned from `next_line`, recovered
+    /// from its trailing comment before the comment is stripped.
+    cur_span: Span,
     name_base: u32,
     /// One past the largest literal `bbN`, likewise for labels.
     label_base: u32,
@@ -133,6 +138,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Next non-blank line's tokens, consuming it.
+    ///
     fn next_line(&mut self) -> Option<Vec<String>> {
         while self.at < self.lines.len() {
             let raw = self.lines[self.at];
@@ -140,6 +146,7 @@ impl<'a> Parser<'a> {
             let body = raw.split(';').next().unwrap_or("").trim();
             if !body.is_empty() {
                 self.raw = body.to_string();
+                self.cur_span = parse_span_note(raw);
                 return Some(toks(body));
             }
         }
@@ -185,7 +192,7 @@ impl<'a> Parser<'a> {
                 .parse()
                 .map_err(|_| self.perr("bad align"))?,
             is_const,
-            span: Span::DUMMY,
+            span: self.cur_span,
         })
     }
 
@@ -395,7 +402,7 @@ impl<'a> Parser<'a> {
             } else {
                 Body::Declared
             },
-            span: Span::DUMMY,
+            span: self.cur_span,
         };
         if has_body {
             // Names are function-scoped: `%tmp` in two functions is two values, and an
@@ -500,7 +507,7 @@ impl<'a> Parser<'a> {
                     insts: Vec::new(),
                     term: Terminator::Unreachable(UnreachableReason::LoweringGap),
                     gcov_lines: Default::default(),
-                    span: Span::DUMMY,
+                    span: self.cur_span,
                 });
                 continue;
             }
@@ -532,6 +539,9 @@ impl<'a> Parser<'a> {
             self.tok_hi.set(0);
             self.tok_base.set(0);
             self.whole_line.set(false);
+            // Captured before `inst()` runs: `call_parts` re-reads the raw line and
+            // several arms consume further lines, either of which moves `cur_span`.
+            let inst_span = self.cur_span;
             let inst = self.inst(&t)?;
             // 020 §6: unknown input is a hard parse error. The rule was enforced for
             // mnemonics but not operands — every arm indexes fixed token positions and
@@ -545,7 +555,7 @@ impl<'a> Parser<'a> {
             }
             b.insts.push(Inst {
                 kind: inst,
-                span: Span::DUMMY,
+                span: inst_span,
             });
         }
 
@@ -1199,11 +1209,12 @@ pub fn print(m: &Module) -> String {
     o.push_str("target x86_64-unknown-linux-gnu\n");
     for g in &m.globals {
         o.push_str(&format!(
-            "\nglobal {}@{} : size {} align {}\n",
+            "\nglobal {}@{} : size {} align {}{}\n",
             if g.is_const { "const " } else { "" },
             g.name,
             g.size,
-            g.align
+            g.align,
+            span_note(g.span)
         ));
     }
     for f in &m.funcs {
@@ -1242,6 +1253,7 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         }
     }
     o.push_str(&format!("func @{}({}) -> {}", f.name, plist, ty(&f.ret)));
+    let fspan = span_note(f.span);
     // Attributes, in a fixed order so printing stays canonical.
     if f.attrs.noreturn {
         o.push_str(" noreturn");
@@ -1256,10 +1268,11 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         o.push_str(&format!(" march \"{v}\""));
     }
     if f.body == Body::Declared {
+        o.push_str(&fspan);
         o.push('\n');
         return;
     }
-    o.push_str(" {\n");
+    o.push_str(&format!(" {{{fspan}\n"));
     // `entry` is only implicit when it is block 0. Hardcoding `BlockId(0)` on parse
     // meant a module whose entry was elsewhere silently started at a different block
     // after a round trip.
@@ -1285,13 +1298,14 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         o.push('\n');
     }
     for b in &f.blocks {
-        o.push_str(&format!("{}:\n", block_label(f, b.id)));
+        o.push_str(&format!("{}:{}\n", block_label(f, b.id), span_note(b.span)));
         for line in &b.gcov_lines {
             o.push_str(&format!("  .line {line}\n"));
         }
         for i in &b.insts {
             o.push_str("  ");
             print_inst(m, &i.kind, o);
+            o.push_str(&span_note(i.span));
             o.push('\n');
         }
         o.push_str("  ");
@@ -1307,6 +1321,38 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
 /// aliased: a function whose entry is `BlockId(3)` alongside a sibling `BlockId(0)`
 /// reparsed into two blocks both numbered 0, because the parser maps `entry` to
 /// `BlockId(0)`. Keying the label on the id removes the ambiguity.
+/// A span, as the reversible raw triple (020 §6). `Span::DUMMY` prints as nothing, so
+/// hand-written fixtures stay clean and the corpus does not grow a comment per line.
+fn parse_span_note(raw: &str) -> Span {
+    let Some((_, c)) = raw.split_once(';') else {
+        return Span::DUMMY;
+    };
+    let Some(rest) = c.trim().strip_prefix("span ") else {
+        return Span::DUMMY;
+    };
+    let mut it = rest.trim().split(':');
+    let (Some(lo), Some(hi), Some(ctx)) = (it.next(), it.next(), it.next()) else {
+        return Span::DUMMY;
+    };
+    match (lo.parse(), hi.parse(), ctx.parse()) {
+        (Ok(lo), Ok(hi), Ok(ctx)) => Span {
+            lo: BytePos(lo),
+            hi: BytePos(hi),
+            ctx: ExpnCtx(ctx),
+        },
+        // A comment that merely starts with `span` is still just a comment.
+        _ => Span::DUMMY,
+    }
+}
+
+fn span_note(sp: Span) -> String {
+    if sp == Span::DUMMY {
+        String::new()
+    } else {
+        format!(" ; span {}:{}:{}", sp.lo.0, sp.hi.0, sp.ctx.0)
+    }
+}
+
 fn block_label(_f: &Function, id: BlockId) -> String {
     if id.0 == 0 {
         "entry".to_string()

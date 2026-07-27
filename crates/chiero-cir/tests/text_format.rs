@@ -958,7 +958,6 @@ fn named_parameters_do_not_collide_with_numeric_body_values() {
 /// instrument can actually observe the field.
 #[test]
 fn spans_survive_a_round_trip() {
-    use chiero_cir::*;
     use chiero_span::{BytePos, ExpnCtx, Span};
     let sp = |lo: u32, hi: u32, ctx: u32| Span {
         lo: BytePos(lo),
