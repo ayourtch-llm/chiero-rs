@@ -1106,8 +1106,11 @@ impl Solver for TieredSolver {
                 }
             }
             _ => {
-                if self.paranoid && self.backend.is_some() {
-                    if let Some(t2) = self.ask_backend(a, &all) {
+                if self.paranoid
+                    && self.backend.is_some()
+                    && let Some(t2) = self.ask_backend(a, &all)
+                {
+                    {
                         let agree = matches!(
                             (&tier1, &t2),
                             (CheckResult::Sat(_), CheckResult::Sat(_))

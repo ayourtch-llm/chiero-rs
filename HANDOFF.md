@@ -804,7 +804,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    every `Unsat`, plus a guard that ≥50 `Unsat`s were seen) is what makes the `Unsat`
    half trustworthy without z3. Three cases were also cross-checked against z3 directly.
 
-   **Next in `chiero-solver`:** the SMT-LIB2 subprocess backend (022 §4) — a long-lived
+   **SMT-LIB2 backend + `TieredSolver` DONE** (`2649a75` red, `ced2f93` green): runtime
+   discovery, SMT-LIB2 serialization, model parsing, escalation on `Unknown`, `paranoid`
+   cross-check (200 random queries, zero disagreements against real z3), and the exact
+   cache keyed on the **pair** of assertion and assumption ids. 28 solver tests.
+   **Verified both ways** — with z3 present, and under `env -i PATH=/empty`, where the
+   four tier-2 tests print why they skipped rather than reporting success (contract 2).
+
+   Two things worth carrying forward. Tier 2's model is validated by our own evaluator,
+   so a bad external answer becomes `Unknown(BackendError)` rather than being trusted for
+   being external. And the cache stores the **model** alongside the verdict — caching
+   only the verdict meant a cached `Sat` re-derived its model via the backend, so the
+   cache existed and saved nothing; the contract-20 backend-call counter caught it.
+
+   **STILL OWED in `chiero-solver`:** the process is spawned **per query**. 022 §4
+   requires a long-lived `z3 -in -smt2` with real incremental `push`/`pop` and a watchdog
+   that kills, restarts and **replays the assertion stack** (contract 14) — startup
+   dominates short queries, so per-query spawning makes tier 2 useless at scale. Also
+   owed: independence slicing and the counterexample cache (022 §6.2) with the
+   `possibly_infeasible` guard, `--dump-queries`, and the contract-18 differential
+   campaign over random terms.
+
+   *(superseded)* the SMT-LIB2 subprocess backend (022 §4) — a long-lived
    `z3 -in -smt2` process with `push`/`pop` replay after a watchdog kill; `TieredSolver`
    with escalation on `Unknown` and the `paranoid` cross-check; and the three caches of
    §6.2 with the `possibly_infeasible` guard on slicing. Note 022 contract 2 requires the
