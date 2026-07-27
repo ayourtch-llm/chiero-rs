@@ -4728,3 +4728,200 @@ fn copy_mem_forbids_overlap() {
         r.findings()
     );
 }
+
+/// **An audit of `exec_inst`/`eval` rather than one discovery at a time.** `Load`/`Store`
+/// stayed hidden behind a uniform `memset` workaround, so this enumerates the CIR and
+/// checks what the engine can actually perform. `Un`, `Cast` and `Select` were all
+/// missing: a unary minus, an integer cast and a ternary are in almost every C function
+/// written, and each was a `LoweringGap` to `Unknown`.
+///
+/// One program, so the assertion is on the *values*: a run that degrades anywhere is
+/// caught by the fidelity check, and a wrong value by the arithmetic.
+#[test]
+fn the_scalar_operations_are_all_performed() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                // -5 as i32
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Un {
+                        op: UnOp::Neg,
+                        a: i32c(5),
+                        ty: CTy::Int(32),
+                    },
+                }),
+                // Sign-extended to 64: still -5, which zero-extension gets wrong.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::SExt,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Int(32),
+                        to: CTy::Int(64),
+                    },
+                }),
+                // ~0u32 truncated to 8 bits is 0xFF.
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Un {
+                        op: UnOp::Not,
+                        a: Operand::Const(Const::Int { bits: 32, val: 0 }),
+                        ty: CTy::Int(32),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Cast {
+                        kind: CastKind::Trunc,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(32),
+                        to: CTy::Int(8),
+                    },
+                }),
+                // Zero-extending that 0xFF back to 32 is 255, not -1.
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::ZExt,
+                        a: Operand::Value(ValueId(3)),
+                        from: CTy::Int(8),
+                        to: CTy::Int(32),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cmp {
+                        op: CmpOp::SLt,
+                        ty: CTy::Int(64),
+                        a: Operand::Value(ValueId(1)),
+                        b: Operand::Const(Const::Int { bits: 64, val: 0 }),
+                    },
+                }),
+                // The condition is true, so this is 255 — and the *false* arm is a value
+                // the true arm could not be confused with.
+                inst(InstKind::Assign {
+                    dst: ValueId(6),
+                    rv: RValue::Select {
+                        cond: Operand::Value(ValueId(5)),
+                        t: Operand::Value(ValueId(4)),
+                        f: i32c(9),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(6)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    let bits = |v: u32, a: &mut TermArena| match s.local(ValueId(v)) {
+        Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(bits(0, &mut a), Some(0xFFFF_FFFB), "-5 in 32 bits");
+    assert_eq!(
+        bits(1, &mut a),
+        Some(0xFFFF_FFFF_FFFF_FFFB),
+        "sign-extended, not zero-extended"
+    );
+    assert_eq!(bits(3, &mut a), Some(0xFF));
+    assert_eq!(
+        bits(4, &mut a),
+        Some(255),
+        "zero-extended, not sign-extended"
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(255));
+}
+
+/// **A global has an address.** `AddrOfGlobal` was a lowering gap, so any function
+/// touching a file-scope variable degraded to `Unknown` before doing anything — and VPP
+/// is full of them. Two globals must be two objects, and a `const` one must refuse writes
+/// (021 §4), which is also what keeps a havoc from destroying a string literal.
+#[test]
+fn a_global_has_its_own_object_and_const_means_readonly() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::AddrOfGlobal { g: GlobalId(1) },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(2)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        globals: vec![
+            Global {
+                id: GlobalId(0),
+                name: "counter".into(),
+                size: 4,
+                align: 4,
+                is_const: false,
+                span: Span::DUMMY,
+            },
+            Global {
+                id: GlobalId(1),
+                name: "message".into(),
+                size: 8,
+                align: 4,
+                is_const: true,
+                span: Span::DUMMY,
+            },
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert_eq!(
+        s.local(ValueId(0)),
+        s.local(ValueId(1)),
+        "one object per global"
+    );
+    assert_ne!(
+        s.local(ValueId(0)),
+        s.local(ValueId(2)),
+        "and two globals are two objects"
+    );
+    assert!(
+        r.findings().iter().any(|f| f.contains("write-to-readonly")),
+        "a `const` global refuses the write: {:#?}",
+        r.findings()
+    );
+}
