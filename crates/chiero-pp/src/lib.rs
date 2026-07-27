@@ -278,6 +278,7 @@ impl Engine {
 
     fn run(mut self) -> PreprocessedTu {
         let mut output = Vec::new();
+        let mut ordinary = Vec::new();
         let mut conditionals = Vec::new();
         let mut i = 0;
         while i < self.input.len() {
@@ -288,12 +289,17 @@ impl Engine {
             if line.first().is_some_and(|t| {
                 t.token.bol && matches!(t.token.kind, PpTokenKind::Punct(Punct::Hash))
             }) {
+                // C11 §6.10.3 ¶10 operates on the preprocessing-token stream, not a
+                // physical line. A directive is the only boundary at which an active
+                // ordinary-token chunk must be complete.
+                output.extend(self.expand(std::mem::take(&mut ordinary)));
                 self.directive(&line, &mut conditionals);
             } else if conditionals.last().is_none_or(|frame| frame.active) {
-                output.extend(self.expand(line));
+                ordinary.extend(line);
             }
             i = end;
         }
+        output.extend(self.expand(ordinary));
         let tokens = output.iter().map(|t| t.token.clone()).collect();
         let spellings = output.into_iter().map(|t| t.text).collect();
         PreprocessedTu {
@@ -540,7 +546,7 @@ impl Engine {
                         Vec::new(),
                         ExpnKind::ObjectLike,
                     );
-                    let replacement = def
+                    let mut replacement: Vec<_> = def
                         .body
                         .iter()
                         .cloned()
@@ -551,8 +557,12 @@ impl Engine {
                             body
                         })
                         .collect();
+                    // C11 §6.10.3.4 ¶1: rescan the replacement list *together with all
+                    // subsequent source tokens*. This is what lets `#define A B` turn
+                    // `A(1)` into an invocation of function-like `B`.
+                    replacement.extend_from_slice(&input[i + 1..]);
                     output.extend(self.expand(replacement));
-                    i += 1;
+                    return output;
                 }
                 MacroKind::FunctionLike { .. } => {
                     if !input
@@ -568,9 +578,10 @@ impl Engine {
                         i += 1;
                         continue;
                     };
-                    let replacement = self.expand_function(token, &input[close], &def, args);
+                    let mut replacement = self.expand_function(token, &input[close], &def, args);
+                    replacement.extend_from_slice(&input[close + 1..]);
                     output.extend(self.expand(replacement));
-                    i = close + 1;
+                    return output;
                 }
             }
         }

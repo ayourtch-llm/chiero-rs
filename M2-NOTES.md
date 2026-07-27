@@ -22,6 +22,14 @@
 - A representative macro/conditional/builtin fixture is compared token-for-token with
   both `gcc -E -P` and `clang -E -P`; all three agree.
 
+## REVIEW-1
+
+- Findings 1 and 2 reproduced exactly: expansion was line-bounded, and `A(1)` with
+  object-like `A -> B` stopped at `B(1)`. Expansion now buffers active ordinary tokens
+  until a directive boundary and rescans replacements together with the source suffix.
+- The suggested nested-parenthesis, taken-`#else`, and evaluated-`#elif` discriminators
+  already passed before implementation changes; they are now permanent regression tests.
+
 ## Mutation checks
 
 - Disabling pp-number exponent-sign absorption made the contract-1 fixture tokenize
