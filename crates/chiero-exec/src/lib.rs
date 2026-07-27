@@ -133,6 +133,10 @@ pub struct Budget {
     pub max_loop_iters: u32,
     /// Per `FuncId` in the active stack (023 §5).
     pub max_recursion_depth: u32,
+    pub max_states: u32,
+    pub max_forks: u32,
+    /// Candidates explored at one indirect call site (023 §5).
+    pub max_indirect: u32,
 }
 
 impl Default for Budget {
@@ -141,6 +145,9 @@ impl Default for Budget {
             max_depth: 10_000,
             max_loop_iters: 8,
             max_recursion_depth: 32,
+            max_states: 10_000,
+            max_forks: 10_000,
+            max_indirect: 16,
         }
     }
 }
@@ -182,7 +189,10 @@ pub struct State {
     pub status: Status,
     /// 023 §1: the block sequence, for replay and so exploration order is observable at
     /// all. Sorting the result by id erased it from the output entirely.
-    trace: Vec<BlockId>,
+    /// **`(FuncId, BlockId)`**, because a trace of bare block ids reads as one function
+    /// walking a path it never took — a caller in `b0` calling a callee that goes
+    /// `b0 -> b1` renders as `main: 0 -> 1`, and cannot be replayed.
+    trace: Vec<(FuncId, BlockId)>,
     /// **An explicit stack, not host recursion.** 023 contract 9 requires the
     /// interpreter's own stack usage to be O(1) in program recursion depth, and this is
     /// what delivers it — along with honest `Span` backtraces and a recursion bound that
@@ -252,7 +262,7 @@ impl State {
         &self.assumptions
     }
 
-    pub fn trace(&self) -> &[BlockId] {
+    pub fn trace(&self) -> &[(FuncId, BlockId)] {
         &self.trace
     }
 
@@ -357,6 +367,9 @@ pub struct RunResult {
     /// The order states *finished*, so a change of searcher is visible in the output
     /// rather than hidden by sorting.
     completion_order: Vec<u32>,
+    /// 023 §8: reported whether or not it was hit, so a reader can tell
+    /// `Exact`-with-generous-bounds from `Exact`-with-trivial-bounds.
+    budget: Budget,
     _seal: Sealed,
 }
 
@@ -374,6 +387,10 @@ impl RunResult {
 
     pub fn completion_order(&self) -> &[u32] {
         &self.completion_order
+    }
+
+    pub fn budget(&self) -> Budget {
+        self.budget
     }
 
     /// 023 §7 rule 2: the **worst** over every state that contributed.
@@ -418,6 +435,10 @@ pub struct Engine<'m> {
     /// describing something that could not happen.
     solver: Option<TieredSolver>,
     solver_inits: u64,
+    /// States created mid-instruction — an indirect call makes several at once, and
+    /// `step` returns at most one.
+    pending: Vec<State>,
+    forks: u32,
 }
 
 impl<'m> Engine<'m> {
@@ -433,6 +454,8 @@ impl<'m> Engine<'m> {
             backend: None,
             solver: None,
             solver_inits: 0,
+            pending: Vec::new(),
+            forks: 0,
         }
     }
 
@@ -472,6 +495,7 @@ impl<'m> Engine<'m> {
                 backend_spawns: 0,
                 solver_inits: 0,
                 completion_order: vec![0],
+                budget: self.budget,
                 _seal: Sealed,
             };
         };
@@ -499,7 +523,7 @@ impl<'m> Engine<'m> {
             fidelity: Fidelity::Exact,
             assumptions: Vec::new(),
             status: Status::Running,
-            trace: vec![f.entry],
+            trace: vec![(f.id, f.entry)],
             stack: vec![Frame {
                 func: f.id,
                 ret_to: None,
@@ -517,10 +541,37 @@ impl<'m> Engine<'m> {
         let mut done = Vec::new();
         while let Some(mut s) = work.pop() {
             while s.status == Status::Running {
-                if let Some(forked) = self.step(a, &mut s) {
+                let forked = self.step(a, &mut s);
+                // An indirect call creates several siblings at once, which `step` cannot
+                // return.
+                let mut new: Vec<State> = self.pending.drain(..).collect();
+                new.extend(forked);
+                for f in new {
+                    self.forks += 1;
+                    if self.forks > self.budget.max_forks {
+                        // The *unexplored* sibling is dropped, and the state that
+                        // survives says so — silently truncating would report "no bug
+                        // found" over paths nobody walked.
+                        s.degrade(
+                            Fidelity::Bounded,
+                            AssumptionKind::BudgetHit,
+                            Span::DUMMY,
+                            &format!("max_forks ({}) reached", self.budget.max_forks),
+                        );
+                        continue;
+                    }
                     // The sibling goes on the stack; this state carries on, which is what
                     // makes the true branch complete first.
-                    work.push(forked);
+                    work.push(f);
+                }
+                if done.len() + work.len() > self.budget.max_states as usize {
+                    s.status = Status::Terminated(TermReason::Budget);
+                    s.degrade(
+                        Fidelity::Bounded,
+                        AssumptionKind::BudgetHit,
+                        Span::DUMMY,
+                        &format!("max_states ({}) reached", self.budget.max_states),
+                    );
                 }
             }
             done.push(s);
@@ -537,6 +588,7 @@ impl<'m> Engine<'m> {
             backend_spawns,
             solver_inits: self.solver_inits,
             completion_order,
+            budget: self.budget,
             _seal: Sealed,
         }
     }
@@ -630,14 +682,14 @@ impl<'m> Engine<'m> {
         args: &[Operand],
         span: Span,
     ) {
-        let Callee::Direct(id) = callee else {
-            s.degrade(
-                Fidelity::Unknown,
-                AssumptionKind::NoInformation,
-                span,
-                "indirect call resolution is not implemented",
-            );
-            return;
+        let id = match callee {
+            Callee::Direct(id) => id,
+            // 023 §5. VPP's node dispatch is indirect calls through registration tables,
+            // so this is the ordinary path rather than an exotic one.
+            Callee::Indirect(_) => {
+                self.indirect(a, s, dst, span);
+                return;
+            }
         };
         let Some(f) = self.module.funcs.iter().find(|f| f.id == *id) else {
             s.status = Status::Errored("call to an unknown function".into());
@@ -748,6 +800,7 @@ impl<'m> Engine<'m> {
             frame_objs,
         });
         s.pc = (f.entry, 0);
+        s.trace.push((*id, f.entry));
         // `step` increments the index after this returns, which would skip the callee's
         // first instruction — so back it off by one.
         s.pc.1 = usize::MAX;
@@ -852,7 +905,8 @@ impl<'m> Engine<'m> {
             }
         }
         s.pc = (to, 0);
-        s.trace.push(to);
+        let fid = s.func();
+        s.trace.push((fid, to));
         None
     }
 
@@ -1044,6 +1098,83 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// An indirect call: fork per candidate, **plus one unresolvable state**.
+    ///
+    /// The extra state is not bookkeeping. Without it the candidate list is implicitly
+    /// claimed exhaustive, so a function pointer that came from anywhere chiero has not
+    /// looked is never explored — and the run still reports on the "complete" set.
+    ///
+    /// Candidates are every defined function whose signature could be called here. A
+    /// real resolution against the pointer's value is owed; over-approximating is the
+    /// safe direction, and the cap is what keeps it affordable.
+    fn indirect(&mut self, _a: &mut TermArena, s: &mut State, dst: Option<ValueId>, span: Span) {
+        let all: Vec<FuncId> = self
+            .module
+            .funcs
+            .iter()
+            .filter(|f| f.body == Body::Defined && f.id != s.func())
+            .map(|f| f.id)
+            .collect();
+        let cap = self.budget.max_indirect as usize;
+        let capped = all.len() > cap;
+        let candidates: Vec<FuncId> = all.into_iter().take(cap).collect();
+        if capped {
+            s.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                span,
+                &format!("max_indirect ({cap}) reached; further callees were not explored"),
+            );
+        }
+        // Each candidate is a sibling state; *this* one becomes the unresolvable branch,
+        // so it is always present however the forks are capped.
+        for id in candidates {
+            let mut sib = s.clone();
+            sib.id = self.new_id();
+            self.direct_into(&mut sib, id, dst, span);
+            self.pending.push(sib);
+        }
+        s.degrade(
+            Fidelity::Unknown,
+            AssumptionKind::NoInformation,
+            span,
+            "unresolvable callee: the pointer may name a function chiero has not seen",
+        );
+        s.status = Status::Terminated(TermReason::Return);
+    }
+
+    /// Push a frame for `id` on an already-cloned state. Shares the body of `call`'s
+    /// direct path so an indirect candidate is executed exactly like a direct call.
+    fn direct_into(&mut self, s: &mut State, id: FuncId, dst: Option<ValueId>, span: Span) {
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == id) else {
+            s.status = Status::Errored("call to an unknown function".into());
+            return;
+        };
+        let mut frame_objs = IndexMap::new();
+        for d in &f.allocas.clone() {
+            let elem = size_of_cty(&d.ty);
+            let bytes = if d.count == chiero_cir::DYNAMIC_EXTENT {
+                0
+            } else {
+                d.count.saturating_mul(elem)
+            };
+            let obj = s.mem.alloc(ObjKind::Stack, bytes, d.align, d.span);
+            frame_objs.insert(d.id, obj);
+        }
+        let ret_to = Some((s.func(), s.pc.0, s.pc.1 + 1));
+        s.stack.push(Frame {
+            func: id,
+            ret_to,
+            ret_dst: dst,
+            locals: IndexMap::new(),
+            frame_objs,
+        });
+        s.pc = (f.entry, 0);
+        s.trace.push((id, f.entry));
+        s.pc.1 = usize::MAX;
+        let _ = span;
     }
 
     /// Degrade, recording the reason **once**. A call in a loop must not stack up one

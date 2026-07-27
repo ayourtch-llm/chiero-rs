@@ -1661,10 +1661,13 @@ fn the_exploration_order_is_recorded_and_puts_the_true_branch_first() {
     // The trace records blocks in the order they were entered, per state.
     assert_eq!(
         r.states()[0].trace(),
-        &[BlockId(0), BlockId(1)],
+        &[(FuncId(0), BlockId(0)), (FuncId(0), BlockId(1))],
         "the true branch is explored first"
     );
-    assert_eq!(r.states()[1].trace(), &[BlockId(0), BlockId(2)]);
+    assert_eq!(
+        r.states()[1].trace(),
+        &[(FuncId(0), BlockId(0)), (FuncId(0), BlockId(2))]
+    );
     // And the order in which states *completed* is recorded too, so a change of searcher
     // is visible in the output rather than hidden by the sort.
     assert_eq!(r.completion_order(), &[0, 1]);
@@ -1907,7 +1910,7 @@ fn a_defined_noreturn_function_still_executes_its_body() {
         "the body contains a lowering gap, which the run must see"
     );
     assert!(
-        r.states()[0].trace().contains(&BlockId(0)),
+        r.states()[0].trace().iter().any(|(f, _)| *f == FuncId(1)),
         "the callee's body was entered"
     );
 }
@@ -2169,15 +2172,17 @@ fn an_indirect_call_forks_per_candidate_plus_one_unresolvable() {
         .map(|s| s.return_value_bits(&mut a))
         .collect();
     for want in [11u128, 22, 33] {
-        assert!(rets.contains(&Some(want)), "candidate {want} missing: {rets:?}");
+        assert!(
+            rets.contains(&Some(want)),
+            "candidate {want} missing: {rets:?}"
+        );
     }
     // The unresolvable state is reported, not silently dropped.
     assert!(
-        r.states()
+        r.states().iter().any(|s| s
+            .assumptions()
             .iter()
-            .any(|s| s.assumptions()
-                .iter()
-                .any(|x| x.detail.contains("unresolvable"))),
+            .any(|x| x.detail.contains("unresolvable"))),
         "the callee may point somewhere chiero does not know about"
     );
     assert_ne!(r.fidelity(), Fidelity::Exact, "that state knows nothing");
@@ -2228,17 +2233,23 @@ fn the_indirect_cap_is_bounded_and_recorded() {
         })
         .run(&mut a);
     assert!(
-        r.states()
+        r.states().iter().any(|s| s
+            .assumptions()
             .iter()
-            .any(|s| s.assumptions()
-                .iter()
-                .any(|x| x.kind == AssumptionKind::BudgetHit
-                    && x.detail.contains("max_indirect"))),
+            .any(|x| x.kind == AssumptionKind::BudgetHit && x.detail.contains("max_indirect"))),
         "the cap must be recorded: {:#?}",
         r.states()
             .iter()
             .flat_map(|s| s.assumptions())
             .collect::<Vec<_>>()
+    );
+    // Recording the cap is not the same as **applying** it: four candidates under a cap
+    // of two must produce two forks plus the unresolvable state, not four plus one.
+    assert_eq!(
+        r.states().len(),
+        3,
+        "two candidates and one unresolvable: {:?}",
+        r.states().iter().map(|s| s.id.0).collect::<Vec<_>>()
     );
 }
 
@@ -2260,11 +2271,21 @@ fn every_deterministic_budget_is_present_and_reported() {
         vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
         CTy::Int(32),
     );
+    // A **non-default** budget, or the assertion is satisfied by a `budget()` that
+    // returns the default and ignores what the run actually used.
+    let used = Budget {
+        max_depth: 7,
+        max_loop_iters: 5,
+        max_recursion_depth: 3,
+        max_states: 11,
+        max_forks: 13,
+        max_indirect: 2,
+    };
     let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    let r = Engine::new(&m).with_budget(used).run(&mut a);
     assert_eq!(
         r.budget(),
-        Budget::default(),
+        used,
         "the bounds in force are part of the result, hit or not"
     );
 }
@@ -2298,11 +2319,10 @@ fn the_fork_cap_bounds_a_run_and_is_recorded() {
         })
         .run(&mut a);
     assert!(
-        r.states()
+        r.states().iter().any(|s| s
+            .assumptions()
             .iter()
-            .any(|s| s.assumptions()
-                .iter()
-                .any(|x| x.detail.contains("max_forks"))),
+            .any(|x| x.detail.contains("max_forks"))),
         "the cap must be recorded rather than silently truncating exploration"
     );
     assert_ne!(r.fidelity(), Fidelity::Exact);
