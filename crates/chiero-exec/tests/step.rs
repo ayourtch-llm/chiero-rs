@@ -2614,7 +2614,7 @@ fn free_of_a_stack_object_is_found_through_the_engine() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert!(
-        r.findings().iter().any(|f| f.contains("BadFree")),
+        r.findings().iter().any(|f| f.contains("bad-free")),
         "freeing a stack object is a finding: {:#?}",
         r.findings()
     );
@@ -3469,7 +3469,7 @@ fn one_bad_free_is_one_finding_however_many_states_survive() {
     let bad: Vec<_> = r
         .findings()
         .into_iter()
-        .filter(|f| f.contains("BadFree"))
+        .filter(|f| f.contains("bad-free"))
         .collect();
     assert_eq!(bad.len(), 1, "{:#?}", r.findings());
 }

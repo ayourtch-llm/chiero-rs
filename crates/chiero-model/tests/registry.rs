@@ -859,7 +859,7 @@ fn strlen_on_freed_memory_reports_the_use_after_free() {
         StringPolicy::default(),
     );
     assert!(
-        cx.findings().iter().any(|f| f.contains("UseAfterFree")),
+        cx.findings().iter().any(|f| f.contains("use-after-free")),
         "{:#?}",
         cx.findings()
     );

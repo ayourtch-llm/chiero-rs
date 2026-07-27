@@ -1085,3 +1085,52 @@ fn a_c_string_is_only_read_when_all_of_it_is_there() {
          the string's end"
     );
 }
+
+/// **A finding is a sentence, and it carries a key.** 001 §1 puts an LLM at the other end
+/// of these, and `Uninitialized { obj: ObjectId(2), off: 0, bit: 0, at: Span { lo:
+/// BytePos(0), … } }` makes a reader decode chiero's internals to learn that byte 0 was
+/// never written. 023 §6.1 also deduplicates on `(checker, span, object, kind)`, and a
+/// `{:?}` dump has no kind in it that anything downstream can key on — the whole struct is
+/// the string.
+#[test]
+fn a_memory_fault_renders_as_a_sentence_and_exposes_its_key() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 4, 4, sp(1));
+    let f = m
+        .read(ptr(o, 0), 4, sp(2))
+        .faults
+        .into_iter()
+        .find(|f| f.kind() == "uninitialized-read")
+        .expect("an uninitialized read faults");
+    assert_eq!(f.kind(), "uninitialized-read");
+    assert_eq!(f.object(), Some(o));
+    assert_eq!(f.at(), sp(2));
+    let text = f.to_string();
+    assert!(text.starts_with("uninitialized-read: "), "{text}");
+    assert!(
+        text.contains("never written"),
+        "it says what is wrong, not what the struct holds: {text}"
+    );
+    assert!(
+        !text.contains("BytePos"),
+        "no internals in the product: {text}"
+    );
+
+    // A fault with no object says so rather than inventing one — that absence *is* the
+    // finding for a wild pointer.
+    let wild = m
+        .read(
+            Pointer {
+                base: ObjectId::UNBOUND,
+                off: 999,
+            },
+            1,
+            sp(3),
+        )
+        .faults
+        .into_iter()
+        .next()
+        .expect("a wild pointer faults");
+    assert_eq!(wild.object(), None);
+    assert_eq!(wild.kind(), "wild-pointer");
+}

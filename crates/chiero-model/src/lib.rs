@@ -356,9 +356,13 @@ impl<'a> ModelCtx<'a> {
     pub fn report(&mut self, what: impl Into<String>) {
         self.findings.push(what.into());
     }
+    /// Memory faults become findings **as sentences**. `{:?}` put chiero's internal
+    /// struct shape in the product: 001 §1 has an LLM at the other end of these, and a
+    /// reader should not have to decode `Uninitialized { obj: ObjectId(2), off: 0, bit: 0,
+    /// at: Span { lo: BytePos(0), … } }` to learn that byte 0 was never written.
     fn lift(&mut self, faults: &[MemFault]) {
         for f in faults {
-            self.findings.push(format!("{f:?}"));
+            self.findings.push(f.to_string());
         }
     }
 }

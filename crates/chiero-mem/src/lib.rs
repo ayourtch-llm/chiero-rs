@@ -938,6 +938,165 @@ pub enum MemFault {
     },
 }
 
+impl MemFault {
+    /// A stable slug for the *kind* of fault. 023 §6.1 deduplicates findings on
+    /// `(checker, span, object, kind)`, and a `{:?}` dump has no kind in it that anything
+    /// downstream can key on — the whole struct is the string.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MemFault::OutOfBounds { .. } => "out-of-bounds",
+            MemFault::Uninitialized { .. } => "uninitialized-read",
+            MemFault::MaybeUninitialized { .. } => "maybe-uninitialized-read",
+            MemFault::Misaligned { .. } => "misaligned",
+            MemFault::UseAfterFree { .. } => "use-after-free",
+            MemFault::DoubleFree { .. } => "double-free",
+            MemFault::UseAfterScope { .. } => "use-after-scope",
+            MemFault::ReadOnly { .. } => "write-to-readonly",
+            MemFault::BadRange { .. } => "unsupported-access-width",
+            MemFault::AllocationTooLarge { .. } => "allocation-too-large",
+            MemFault::NullDeref { .. } => "null-dereference",
+            MemFault::WildPointer { .. } => "wild-pointer",
+            MemFault::SymbolicByte { .. } => "symbolic-byte",
+            MemFault::OutOfBoundsMaybe { .. } => "may-be-out-of-bounds",
+            MemFault::OverlappingCopy { .. } => "overlapping-copy",
+            MemFault::BadFree { .. } => "bad-free",
+        }
+    }
+
+    /// Where the access was. The second component of 023 §6.1's dedup key.
+    pub fn at(&self) -> Span {
+        match self {
+            MemFault::OutOfBounds { at, .. }
+            | MemFault::Uninitialized { at, .. }
+            | MemFault::MaybeUninitialized { at, .. }
+            | MemFault::Misaligned { at, .. }
+            | MemFault::UseAfterFree { at, .. }
+            | MemFault::DoubleFree { at, .. }
+            | MemFault::UseAfterScope { at, .. }
+            | MemFault::ReadOnly { at, .. }
+            | MemFault::BadRange { at, .. }
+            | MemFault::AllocationTooLarge { at, .. }
+            | MemFault::NullDeref { at, .. }
+            | MemFault::WildPointer { at, .. }
+            | MemFault::SymbolicByte { at, .. }
+            | MemFault::OutOfBoundsMaybe { at, .. }
+            | MemFault::OverlappingCopy { at, .. }
+            | MemFault::BadFree { at, .. } => *at,
+        }
+    }
+
+    /// Which object, where there is one. `NullDeref`, `WildPointer` and `BadRange` have
+    /// none by construction — that absence is the finding.
+    pub fn object(&self) -> Option<ObjectId> {
+        match self {
+            MemFault::OutOfBounds { obj, .. }
+            | MemFault::Uninitialized { obj, .. }
+            | MemFault::MaybeUninitialized { obj, .. }
+            | MemFault::Misaligned { obj, .. }
+            | MemFault::UseAfterFree { obj, .. }
+            | MemFault::DoubleFree { obj, .. }
+            | MemFault::UseAfterScope { obj, .. }
+            | MemFault::ReadOnly { obj, .. }
+            | MemFault::AllocationTooLarge { obj, .. }
+            | MemFault::SymbolicByte { obj, .. }
+            | MemFault::OutOfBoundsMaybe { obj, .. }
+            | MemFault::OverlappingCopy { obj, .. }
+            | MemFault::BadFree { obj, .. } => Some(*obj),
+            MemFault::BadRange { .. }
+            | MemFault::NullDeref { .. }
+            | MemFault::WildPointer { .. } => None,
+        }
+    }
+}
+
+/// A sentence, not a struct dump. The findings a run produces are the product — 001 §1
+/// puts an LLM at the other end of them — and `Uninitialized { obj: ObjectId(2), off: 0,
+/// bit: 0, at: Span { lo: BytePos(0), … } }` makes a reader decode chiero's internals to
+/// learn that byte 0 was never written.
+impl std::fmt::Display for MemFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: ", self.kind())?;
+        match self {
+            MemFault::OutOfBounds {
+                obj,
+                off,
+                size,
+                obj_size,
+                ..
+            } => write!(
+                f,
+                "{size}-byte access at offset {off} of {obj:?}, which is {obj_size} bytes"
+            ),
+            MemFault::Uninitialized { obj, off, bit, .. } => write!(
+                f,
+                "read at offset {off} of {obj:?} touches bit {bit}, which was never written"
+            ),
+            MemFault::MaybeUninitialized { obj, off, bit, .. } => write!(
+                f,
+                "read at offset {off} of {obj:?} touches bit {bit}, written only under a                  guard the engine has not discharged"
+            ),
+            MemFault::Misaligned { obj, off, want, .. } => write!(
+                f,
+                "access at offset {off} of {obj:?} wants {want}-byte alignment"
+            ),
+            MemFault::UseAfterFree { obj, .. } => {
+                write!(f, "{obj:?} was freed before this access")
+            }
+            MemFault::DoubleFree { obj, .. } => write!(f, "{obj:?} was already freed"),
+            MemFault::UseAfterScope { obj, .. } => {
+                write!(f, "{obj:?} left scope before this access")
+            }
+            MemFault::ReadOnly { obj, off, .. } => {
+                write!(f, "write at offset {off} of read-only {obj:?}")
+            }
+            MemFault::BadRange {
+                want_bits,
+                max_bits,
+                ..
+            } => write!(
+                f,
+                "{want_bits}-bit access exceeds the {max_bits}-bit limit chiero can carry"
+            ),
+            MemFault::AllocationTooLarge { obj, size, .. } => write!(
+                f,
+                "{obj:?} at {size} bytes is past the {MAX_MATERIALIZED_BYTES}-byte limit,                  so it is not materialized and every access to it faults"
+            ),
+            MemFault::NullDeref { off, .. } => write!(f, "access at offset {off} of NULL"),
+            MemFault::WildPointer { off, .. } => write!(
+                f,
+                "access through a pointer at address {off} matching no known object"
+            ),
+            MemFault::SymbolicByte { obj, off, .. } => write!(
+                f,
+                "byte {off} of {obj:?} holds a symbolic value, which a concrete read                  cannot answer for"
+            ),
+            MemFault::OutOfBoundsMaybe {
+                obj,
+                size,
+                obj_size,
+                witness,
+                ..
+            } => write!(
+                f,
+                "{size}-byte access of {obj:?} ({obj_size} bytes) may be out of bounds —                  offset {witness} is"
+            ),
+            MemFault::OverlappingCopy {
+                obj,
+                dst,
+                src,
+                size,
+                ..
+            } => write!(
+                f,
+                "{size}-byte copy within {obj:?} from {src} to {dst} overlaps, which                  `memcpy` forbids"
+            ),
+            MemFault::BadFree { obj, kind, .. } => {
+                write!(f, "free of {obj:?}, which is {kind:?} memory, not heap")
+            }
+        }
+    }
+}
+
 /// **Faults alongside a value, not instead of one** (021 §5).
 ///
 /// `Result<_, MemFault>` cannot express the normal case: an uninitialized read yields a
