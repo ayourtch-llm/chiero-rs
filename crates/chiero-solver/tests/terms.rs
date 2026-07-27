@@ -512,3 +512,39 @@ fn an_unshared_term_is_emitted_without_bindings() {
     assert!(!text.contains("let "), "nothing is shared here: {text}");
     assert_eq!(text, "(bvult v0_x (_ bv5 8))");
 }
+
+/// **`vars_of` is still recursive**, and it runs on every term immediately before
+/// `to_smtlib` — so a query that now *serializes* fine aborts the process while
+/// collecting its declarations. `postorder` was made iterative and this was not.
+///
+/// The suite's existing chains stop at 2000, below the cliff; the promoted init array of
+/// a modest object is an order of magnitude past it.
+#[test]
+fn collecting_variables_over_a_long_chain_does_not_overflow_the_stack() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(64), "x");
+    let mut t = x;
+    for i in 0..50_000u128 {
+        let c = a.bv(64, i % 97 + 1);
+        t = a.add(t, c);
+    }
+    let mut vs = Vec::new();
+    a.vars_of(t, &mut vs);
+    assert_eq!(vs.len(), 1);
+}
+
+/// The evaluator has the same shape and is on the model-validation path, so a `Sat` over
+/// a deep term would abort rather than validate.
+#[test]
+fn evaluating_a_long_chain_does_not_overflow_the_stack() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(64), "x");
+    let mut t = x;
+    for _ in 0..50_000u128 {
+        let c = a.bv(64, 1);
+        t = a.add(t, c);
+    }
+    let mut m = Model::new();
+    m.set(a.var_id(x).unwrap(), BvConst::new(64, 0));
+    assert_eq!(a.eval(&m, t).unwrap().bits(), 50_000);
+}

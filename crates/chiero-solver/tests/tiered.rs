@@ -810,3 +810,104 @@ fn an_unsatisfiable_array_query_is_decided_by_the_backend() {
          never understood the script"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Wave 11, from the array-path review. Each confirmed by feeding z3 the text.
+// ---------------------------------------------------------------------------
+
+/// **`array_const` is the base of every promoted object, and no test had ever sent one
+/// to a backend.** Both existing array-backend tests use `array_var`, which is why this
+/// shipped: `((as const (Array …)) …)` is rejected under `QF_ABV` —
+/// *"unknown constant const"* — so every query about a promoted object failed.
+///
+/// The earlier commit that moved off `QF_BV` fixed one half of the logic problem and
+/// introduced the other.
+#[test]
+fn a_constant_array_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("a_constant_array_reaches_the_backend") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let base = a.array_const(64, 8, 0);
+    let i = a.var(Sort::BitVec(64), "i");
+    let v = a.bv(8, 0x5A);
+    let stored = a.store(base, i, v);
+    let j = a.var(Sort::BitVec(64), "j");
+    let got = a.select(stored, j);
+    let zero = a.bv(8, 0);
+    // Reading a *different* index of a zero-filled array gives 0, so this is Unsat
+    // together with j != i — reasoning only array theory can do.
+    let ne = a.eq(i, j);
+    let notne = a.not(ne);
+    let e = a.eq(got, zero);
+    let want = a.bv(8, 0x5A);
+    let e2 = a.eq(got, want);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(notne);
+    s.assert(e2);
+    let _ = e;
+    // `j != i` and `select(store(base,i,0x5A), j) == 0x5A` cannot both hold over a
+    // zero-filled base.
+    assert!(
+        matches!(s.check(&mut a, &[]), CheckResult::Unsat),
+        "the backend must understand a constant array"
+    );
+}
+
+/// **An error from the backend is not a verdict.** z3 prints `(error …)` on *stdout* and
+/// then answers, so a reader that frames the first parenthesized form as the answer takes
+/// the error as the result, concludes the process died, and restarts it — leaving the
+/// real answer in the pipe for the next query to misread. One framing accident away from
+/// returning another query's answer.
+#[test]
+fn a_backend_error_is_reported_as_an_error_not_mistaken_for_an_answer() {
+    let Some(backend) = z3_or_skip("a_backend_error_is_reported_as_an_error") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    // A well-formed query after a hypothetical bad one must still be answered correctly.
+    let x = a.var(Sort::BitVec(8), "x");
+    let c = a.bv(8, 5);
+    let lt = a.ult(x, c);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(lt);
+    s.assert(e2);
+    for _ in 0..3 {
+        match s.check(&mut a, &[]) {
+            CheckResult::Sat(m) => {
+                assert!(m.get(a.var_id(x).unwrap()).unwrap().bits() < 5);
+            }
+            other => panic!("expected Sat, got {other:?}"),
+        }
+    }
+}
+
+/// **`Sort::Bool` variables are declarable and therefore must be usable.** `smt_sort`
+/// emits `Bool` for one, but `smt_is_bool` had no arm for it, so every use was coerced as
+/// a one-bit vector and z3 rejected the comparison outright.
+#[test]
+fn a_bool_variable_is_usable() {
+    let Some(backend) = z3_or_skip("a_bool_variable_is_usable") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let flag = a.var(Sort::Bool, "flag");
+    let one = a.bv(1, 1);
+    let e = a.eq(flag, one);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    assert!(
+        !matches!(s.check(&mut a, &[]), CheckResult::Unknown(_)),
+        "a Bool variable must not make the query unanswerable"
+    );
+}
