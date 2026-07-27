@@ -383,5 +383,18 @@ it gets the heaviest validation in the project:
     standalone reproduces chiero's answer.
 18. Random differential campaign of 10 000 terms: zero definite-answer disagreements with
     z3; the tier-1 `Unknown` rate is recorded and does not regress by more than 2 points.
-19. `x / 0` evaluates to all-ones and produces no solver error (totality).
+19a. `bvudiv x 0` is all ones, for every `x` — the folder and the independent evaluator
+     agree, and both agree with z3 when it is installed.
+19b. `bvsdiv x 0` is all ones for `x >=s 0` and **`1`** for `x <s 0`. One rule for both
+     signs is wrong for half the inputs.
+19c. `bvurem x 0` and `bvsrem x 0` are **the dividend**, not all-ones.
+19d. None of the above produces a solver error, and no term carries partiality (§2):
+     division is total, and UB is 020 §4.1's business, not the solver's.
+
+*(An earlier draft numbered these as one contract reading "`x / 0` evaluates to all-ones",
+which §2's own table contradicts in three of the four cases — the table was corrected
+against z3 4.8.12 and the contract list was not. §2 already promised "contracts 19a–19d
+pin each case separately"; this is that promise kept. The uniform rule is uniquely
+dangerous here because the folder and the evaluator would share the error, so model
+validation would confirm it.)*
 20. Solving the same path condition twice makes exactly one backend call (exact cache).
