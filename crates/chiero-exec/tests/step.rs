@@ -4373,3 +4373,187 @@ fn a_symbolic_ptr_add_offset_is_a_gap() {
         "no fabricated pointer was handed out"
     );
 }
+
+/// **`Load` and `Store` were not implemented at all.** Every fixture in this suite writes
+/// memory through `memset`, because there was no other way — which is exactly why nobody
+/// noticed: the workaround was uniform enough to look like a style. A C program that
+/// assigns through a pointer and reads it back is the most ordinary thing there is, and
+/// it was a `LoweringGap` to `Unknown`.
+#[test]
+fn a_store_is_visible_to_a_later_load() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0x01020304,
+                    }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(0x01020304));
+}
+
+/// **A load of memory nobody wrote is a finding, not a zero.** 021 §3.1 names reading
+/// uninitialized bytes as zero the single most common way a symbolic executor produces
+/// confidently wrong results, and a freshly-implemented `Load` is exactly where that
+/// mistake gets made — the backing store really does read as zero.
+#[test]
+fn a_load_of_unwritten_memory_reports_rather_than_reading_zero() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("uninitialized-read")),
+        "{:#?}",
+        r.findings()
+    );
+    assert_ne!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(0),
+        "a fresh symbol, not the backing store's zero"
+    );
+}
+
+/// **A store carries a symbolic value through memory.** Writing the concrete bytes behind
+/// a symbol — or refusing the store — would make `x = f(); *p = x; y = *p;` lose the
+/// relationship between `y` and `f()`, and every constraint derived from it.
+#[test]
+fn a_symbolic_store_reads_back_as_the_same_unknown() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                // `x - y` is zero exactly when the store round-tripped the *same* symbol.
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Value(ValueId(1)),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(3)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(0),
+        "the value that came back is the value that went in"
+    );
+}
