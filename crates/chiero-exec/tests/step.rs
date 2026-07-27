@@ -8,7 +8,8 @@
 //! a bare term would leave only one way to recover the base — searching the address space
 //! — and 021 §7 puts guard gaps between objects *precisely so* an out-of-bounds pointer
 //! resolves to no object. Round-tripping a pointer through a term therefore converts a
-//! detectable OOB into `UNBOUND`, and 021 contract 3 becomes unimplementable.
+//! detectable OOB into `UNBOUND`, and contract 3 of 021 becomes unimplementable.
+//! (Deliberately not written as a citation: nothing here tests it.)
 //!
 //! **A branch the solver could not decide is taken anyway.** Dropping it would let "no
 //! bug found" mean "the solver timed out", which §7 forbids — and the resulting fidelity

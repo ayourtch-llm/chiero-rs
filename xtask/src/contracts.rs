@@ -43,13 +43,35 @@ impl Coverage {
 /// Numbered contracts live under a `## Testable contracts` heading and start a line as
 /// `12.` or `21c.` — the shape every spec in this set uses.
 fn contracts_in(text: &str) -> Vec<String> {
-    // The heading is numbered — "## 10. Testable contracts" — so match the tail, not a
-    // fixed string. Matching the whole heading silently found nothing and reported full
-    // coverage of an empty set, which is the most misleading answer a gate can give.
-    let Some(start) = text.find("Testable contracts") else {
+    // The **heading**, not the first mention. `text.find("Testable contracts")` matched a
+    // cross-reference in §1 and absorbed every numbered list before the real section — one
+    // editorial sentence moved the denominator from 44 to 60. Anchor on a line that starts
+    // with `#` and ends with the phrase.
+    let Some(start) = text
+        .lines()
+        .scan(0usize, |off, l| {
+            let at = *off;
+            *off += l.len() + 1;
+            Some((at, l))
+        })
+        .find(|(_, l)| l.starts_with('#') && l.trim_end().ends_with("Testable contracts"))
+        .map(|(at, _)| at)
+    else {
         return Vec::new();
     };
-    let body = &text[start..];
+    // **And stop at the next top-level heading.** Slicing to end of file made an appendix
+    // with a numbered list into phantom contracts — three of which collided with real ids
+    // 1-3 and were counted as *cited*. 020 already has `###` subsections inside this
+    // block, so only `##` ends it.
+    let rest = &text[start..];
+    let body = match rest
+        .match_indices("\n## ")
+        .find(|(i, _)| *i > 0)
+        .map(|(i, _)| i)
+    {
+        Some(end) => &rest[..end],
+        None => rest,
+    };
     let mut out = Vec::new();
     for line in body.lines() {
         let Some(dot) = line.find('.') else { continue };
@@ -98,6 +120,20 @@ pub fn measure(root: &Path) -> std::io::Result<Coverage> {
     let mut sources = Vec::new();
     collect_rs(&root.join("crates"), &mut sources)?;
     collect_rs(&root.join("xtask"), &mut sources)?;
+    // **This file cites contracts as syntax examples in its own doc comments**, and
+    // counted them: `023 contract 10`, `023 contract 13a` and `020 contracts 19 and 20`
+    // were covered by the scanner describing itself. A measuring instrument must not be
+    // part of what it measures.
+    sources.retain(|p| !p.ends_with("contracts.rs"));
+    // **Only tests and gates count.** Prose in `src/` mentioning a contract is not a test
+    // of it: `024 contract 22` was "covered" by a doc comment about deduplication that
+    // happened to list it, and `021 contract 3` by a sentence explaining why it is
+    // *unimplementable*. Both are entirely untested. `xtask/` stays because gates like
+    // `check-proof-surface` genuinely enforce contracts.
+    sources.retain(|p| {
+        p.components().any(|c| c.as_os_str() == "tests")
+            || p.components().any(|c| c.as_os_str() == "xtask")
+    });
     for f in sources {
         let text = std::fs::read_to_string(&f)?;
         for cap in cite_ids(&text) {
@@ -118,12 +154,13 @@ fn cite_ids(text: &str) -> Vec<String> {
     let mut i = 0;
     while let Some(pos) = find(&bytes[i..], pat) {
         let at = i + pos;
-        // Three digits immediately before the marker. Sliced on **bytes**, not `&str`,
-        // because a spec comment three bytes earlier may be mid-`§` — the specs are full
-        // of them, and `&text[at - 3..at]` panics there.
+        // The document number, which is not always immediately before the marker:
+        // `024 §4, contracts 6-9` is a real form in this tree and was missed entirely,
+        // reporting a section header's contracts as uncited. Scan back over a short run of
+        // section/punctuation characters to the three digits.
         if at >= 3 {
-            let doc = std::str::from_utf8(&bytes[at - 3..at]).unwrap_or("");
-            if doc.len() == 3 && doc.chars().all(|c| c.is_ascii_digit()) {
+            let doc = doc_before(bytes, at);
+            if let Some(doc) = doc {
                 let mut rest = &text[at + pat.len()..];
                 rest = rest.strip_prefix('s').unwrap_or(rest);
                 // A run of ids joined by `, ` or ` and `, so a sentence about two
@@ -140,8 +177,46 @@ fn cite_ids(text: &str) -> Vec<String> {
                         break;
                     }
                     out.push(format!("{doc}:{id}"));
+                    // A range — `contracts 6-9`, `contracts 1–3` — cites every id in it.
+                    // Both forms are already in the tree and both were dropping all but
+                    // the first, so real coverage read as missing.
+                    let after = &r[id.len()..];
+                    if let Some(tail) = after
+                        .strip_prefix('-')
+                        .or_else(|| after.strip_prefix('\u{2013}'))
+                        && let Ok(lo) = id.parse::<u32>()
+                    {
+                        let hi: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        if let Ok(hi) = hi.parse::<u32>()
+                            && hi > lo
+                            && hi - lo < 64
+                        {
+                            for k in (lo + 1)..=hi {
+                                out.push(format!("{doc}:{k}"));
+                            }
+                            rest = &tail[hi.to_string().len()..];
+                            if !(rest.starts_with(", ") || rest.starts_with(" and ")) {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
                     rest = &r[id.len()..];
-                    if !(rest.starts_with(", ") || rest.starts_with(" and ")) {
+                    // Only continue into another *contract* id. `024 contract 8 and 023
+                    // §7` parsed the `023` as a second contract of 024 — a phantom that
+                    // was harmless only because "023" != "23". A continuation followed by
+                    // a document reference is not a continuation.
+                    let next = rest
+                        .strip_prefix(", ")
+                        .or_else(|| rest.strip_prefix(" and "))
+                        .unwrap_or("");
+                    let looks_like_a_doc = next.len() >= 4
+                        && next[..3].chars().all(|c| c.is_ascii_digit())
+                        && !next[3..4]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_digit());
+                    if next.is_empty() || looks_like_a_doc {
                         break;
                     }
                 }
@@ -150,6 +225,34 @@ fn cite_ids(text: &str) -> Vec<String> {
         i = at + pat.len();
     }
     out
+}
+
+/// The `NNN` a citation belongs to, allowing a short `§4,`-style interlude between it and
+/// the word `contract`. Bytes, not `&str`: a `§` three bytes back is not a char boundary.
+fn doc_before(bytes: &[u8], at: usize) -> Option<String> {
+    let mut end = at;
+    // Skip back over at most a dozen bytes of section reference and punctuation.
+    let lo = at.saturating_sub(12);
+    while end > lo {
+        let c = bytes[end - 1];
+        if c.is_ascii_digit() && end >= 3 {
+            let start = end - 3;
+            let d = std::str::from_utf8(&bytes[start..end]).ok()?;
+            if d.len() == 3 && d.chars().all(|c| c.is_ascii_digit()) {
+                // Not part of a longer number.
+                if start == 0 || !bytes[start - 1].is_ascii_digit() {
+                    return Some(d.to_string());
+                }
+            }
+            return None;
+        }
+        if matches!(c, b',' | b';' | b' ') || !c.is_ascii() {
+            end -= 1;
+            continue;
+        }
+        return None;
+    }
+    None
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
