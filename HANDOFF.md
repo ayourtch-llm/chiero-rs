@@ -1262,11 +1262,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    not the bound; and every `strlen` fixture used offset 0, so reading from the object base
    rather than the pointer was invisible.
 
-   **STILL OWED from this review:** `models::*` are still not *called* by the engine for
-   anything but the three intrinsics — real dispatch (arg translation, `ModelOutcome`
-   handling) is the next slice, and `can_dispatch` is what must grow; `is_implemented` is a
-   hand-maintained list the registry does not consult (deriving both from one dispatch
-   table would make the link structural); `longjmp` continues silently where contract 20
+   **REAL DISPATCH DONE** (`8780466` red, `00050c3` green, 465 tests). `malloc`, `calloc`,
+   `free`, `memcpy`, `memmove`, `memset`, `strlen`, `strcpy` run for real and their
+   findings reach the run — **024 contract 9's `strcpy` overflow is *found*** where two
+   commits ago it sealed a proof. `malloc` hands back a `Value::Ptr` (023 §1.1). Arguments
+   are resolved **before** `ModelCtx` is built, since it borrows memory and the arena.
+   An untranslatable argument list, a `Fork`, or a `Havoc` is a **gap**, not a silent skip.
+   `DISPATCHABLE` is now one list feeding both `can_dispatch` and `is_implemented`, checked
+   both ways against the registry.
+
+   **STILL OWED from this review:** `ModelOutcome::Fork` and `Havoc` are not handled by
+   dispatch (so `malloc`'s NULL branch needs `may_fail: false` to run); the intrinsics do
+   not yet translate their *condition* argument, so every call takes the safe reading; `longjmp` continues silently where contract 20
    wants `Unknown` + terminate (`ModelOutcome` has no `Terminate`); `HavocSpec` is inert
    and `fidelity_effect` ignores `self`, making contract 21c's test vacuous;
    `ModelCtx::lift` emits `{:?}` dumps rather than spanned findings; `malloc` returns
