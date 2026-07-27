@@ -607,7 +607,7 @@ impl<'a> Parser<'a> {
                 .iter()
                 .find(|x| x.starts_with('"'))
                 .map(|n| n.trim_matches('"').into()),
-            span: Span::DUMMY,
+            span: self.cur_span,
         })
     }
 
@@ -1295,6 +1295,7 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         if let Some(n) = &a.name {
             o.push_str(&format!(" \"{n}\""));
         }
+        o.push_str(&span_note(a.span));
         o.push('\n');
     }
     for b in &f.blocks {
