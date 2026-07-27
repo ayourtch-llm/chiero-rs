@@ -712,10 +712,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    Storing the third state is only half of it — if a read accepts `Cond`, the model
    behaves exactly like the two-state mask §3.1 rejects.
 
+   **Address space + provenance DONE** (`dc80b82` red, `ae6a38b` green, 209 tests):
+   contracts 12, 12b, 12c, 13, 14, 15. Per-region deterministic bump allocation with
+   guard gaps, and `IntToPtr` consulting recorded provenance **before** address-range
+   search. Range search alone is wrong in both directions (§7.1) and no choice of gap
+   fixes either case, since gaps only bound OOB distances smaller than the gap.
+
+   *Two mutation escapes, both the same mistake in my tests:* **a test whose two candidate
+   implementations give the same answer cannot tell them apart.** Contract 12c's
+   arithmetic landed inside the object, where tag propagation and range search agree, so
+   dropping the tag survived; and every one-past-the-end test used a *tagged* pointer, so
+   the `<=` boundary in the fallback was never reached. Both now have a case where the two
+   designs differ.
+
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
-   offsets; lifetime plus the free/scope/leak findings (contracts 8–11); concrete address
-   assignment with guard gaps (14, 15); provenance through `IntToPtr` (12, 12b, 12c, 13);
-   arenas (13c, 13d); lazy initialization (18, 19); symbolic-base forking (16, 17).
+   offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
+   13d); lazy initialization (18, 19); symbolic-base forking (16, 17); §7.2's symbolic
+   base addresses and the `PointerBitInspection` event (17b) — note §7.2 requires object
+   bases to be **symbolic**, constrained only by alignment and disjointness, with the
+   concrete address kept as the witness value; the current `AddressSpace` provides the
+   witness half only.
 
    **`chiero-cir` verifier gaps CLOSED** (`7036e35` red, `09ae8fd` green): `va_list`
    operands are pointer-checked — `vastart 0i32` used to verify clean while 020 §4.4.1
