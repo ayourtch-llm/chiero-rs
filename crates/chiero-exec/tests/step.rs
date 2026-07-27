@@ -7808,3 +7808,560 @@ fn every_way_of_erroring_degrades_the_state() {
         );
     }
 }
+
+/// **020 contract 37, the case the whole design exists for.** A callee takes `va_list *`
+/// and advances the *caller's* iteration state — `format_function_t` is
+/// `u8 *(u8 *s, va_list *args)` and there are 2552 of them in VPP. The cursor crosses the
+/// boundary because it lives in the object's bytes, but the *argument values* were read
+/// from `stack.last()`, which is the callee's frame — empty, because the callee is not
+/// variadic. So every `va_arg` was "past the end" and the whole format infrastructure
+/// degraded to `Unknown`.
+///
+/// My commit message for the varargs work said engine-side state "cannot express that at
+/// all" and then kept the argument area as engine-side per-frame state. Found by review.
+#[test]
+fn a_callee_advances_the_callers_va_list() {
+    // int take_one(va_list *ap) { return va_arg(*ap, int); }
+    let mut take_one = defined(
+        2,
+        "take_one",
+        vec![block(
+            0,
+            vec![inst(InstKind::VaArg {
+                dst: ValueId(1),
+                list: Operand::Value(ValueId(0)),
+                ty: CTy::Int(32),
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    take_one.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Ptr,
+    }];
+    // int outer(int n, ...) { va_start; a = take_one(&ap); b = va_arg(ap,int); return a-b; }
+    let mut outer = defined(
+        1,
+        "outer",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::VaStart {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(2)),
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![Operand::Value(ValueId(1))],
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(3),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaEnd {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Value(ValueId(3)),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(4)))),
+        )],
+        CTy::Int(32),
+    );
+    outer.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+    outer.variadic = true;
+    outer.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 24)
+    }];
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int { bits: 32, val: 2 }),
+                    Operand::Const(Const::Int { bits: 32, val: 50 }),
+                    Operand::Const(Const::Int { bits: 32, val: 8 }),
+                ],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, outer, take_one],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(42),
+        "the callee consumed 50 and left 8 for the caller"
+    );
+}
+
+/// **A vararg the engine cannot represent is a hole, not an absence.** `filter_map`
+/// compacted the argument area, so a `printf("%f %d", 1.5, 42)` — floats being a
+/// documented gap in `operand` — silently handed the *next* argument back for the `%d`,
+/// at `Fidelity::Exact` with no finding. That is the confidently-wrong shape this engine
+/// refuses everywhere else, on the wrong side of a `filter_map`. Found by review.
+#[test]
+fn an_unrepresentable_vararg_does_not_shift_the_ones_after_it() {
+    let mut pick = defined(
+        1,
+        "pick",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::VaStart {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(2),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Float(FloatKind::F64),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(3),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(3)))),
+        )],
+        CTy::Int(32),
+    );
+    pick.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+    pick.variadic = true;
+    pick.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 24)
+    }];
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int { bits: 32, val: 3 }),
+                    Operand::Const(Const::Float(FloatKind::F64, 0x3FF8_0000_0000_0000)),
+                    Operand::Const(Const::Int { bits: 32, val: 42 }),
+                    Operand::Const(Const::Int { bits: 32, val: 7 }),
+                ],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, pick],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    // The float is a gap, so the run is not exact — but the *second* argument must never
+    // come back as the third.
+    assert_ne!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(7),
+        "the arguments after the gap did not shift down"
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
+
+/// **`va_arg`'s declared type decides the width.** It handed the caller's `Value` back
+/// verbatim, so a 64-bit argument read as `int` produced a 64-bit value in a local the
+/// verifier believes is `i32` — and comparing it against an `i32` **panicked the engine**
+/// on a width assertion. A verified module must not kill the process; that is wave 5's
+/// class one layer down. Found by review.
+#[test]
+fn va_arg_narrows_to_its_declared_type() {
+    let mut f = defined(
+        1,
+        "take",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::VaStart {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(2),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Cmp {
+                        op: CmpOp::Eq,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Const(Const::Int { bits: 32, val: 7 }),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    f.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+    f.variadic = true;
+    f.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 24)
+    }];
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    Operand::Const(Const::Int {
+                        bits: 64,
+                        val: 0x1_0000_0007,
+                    }),
+                ],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    // The point is that this returns at all.
+    let r = Engine::new(&m).run(&mut a);
+    let s = r.states().iter().find(|s| s.local(ValueId(2)).is_some());
+    if let Some(s) = s {
+        match s.local(ValueId(2)) {
+            Some(Value::Scalar(t)) => assert_eq!(a.width(t), 32, "narrowed to `int`"),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// **A shuffle's lane count comes from the operand, not from the mask.** 020 rule 12 says
+/// the mask indices are `< 2 * lanes`, and the verifier reads `lanes` from the operand's
+/// declared `CTy::Vector` — nothing requires `mask.len() == lanes`. That is
+/// `__builtin_shufflevector` semantics, where the mask length is the *result* length. The
+/// engine used `mask.len()` for three things it is not: the element width divisor, the
+/// a/b split, and the recorded lane width. A widening shuffle read nibbles and never
+/// touched `b`; a narrowing one returned the wrong width. Both at `Fidelity::Exact`.
+/// Found by review.
+#[test]
+fn a_widening_shuffle_reads_whole_lanes_from_both_operands() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Splat {
+                        elem: Operand::Const(Const::Int { bits: 8, val: 0x11 }),
+                        lanes: 4,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Splat {
+                        elem: Operand::Const(Const::Int { bits: 8, val: 0x22 }),
+                        lanes: 4,
+                    },
+                }),
+                // Eight lanes out of two four-lane operands: indices 0..3 are `a`'s and
+                // 4..7 are `b`'s.
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Shuffle {
+                        a: Operand::Value(ValueId(0)),
+                        b: Operand::Value(ValueId(1)),
+                        mask: vec![0, 1, 2, 3, 4, 5, 6, 7],
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(2)),
+                        lane: 7,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(2)),
+                        lane: 0,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    match s.local(ValueId(2)) {
+        Some(Value::Scalar(t)) => {
+            assert_eq!(a.width(t), 64, "eight 8-bit lanes");
+            assert_eq!(
+                a.eval_ground(t).ok().map(|c| c.bits()),
+                Some(0x2222_2222_1111_1111)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let bits = |v: u32, a: &mut TermArena| match s.local(ValueId(v)) {
+        Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(bits(3, &mut a), Some(0x22), "the top lane came from b");
+    assert_eq!(bits(4, &mut a), Some(0x11));
+}
+
+/// **A lane is not always eight bits.** Every value in
+/// `the_vector_operations_move_lanes_where_they_belong` is a byte, so hard-coding a lane
+/// width of 8 survives the whole suite — the "recorded, not derived" claim was unpinned
+/// against the simplest wrong implementation. One non-8-bit vector closes it. Found by
+/// review, and the trap is in the fixture as usual.
+#[test]
+fn a_sixteen_bit_lane_is_sixteen_bits() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Splat {
+                        elem: Operand::Const(Const::Int {
+                            bits: 16,
+                            val: 0xBEEF,
+                        }),
+                        lanes: 2,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::InsertLane {
+                        v: Operand::Value(ValueId(0)),
+                        lane: 1,
+                        val: Operand::Const(Const::Int {
+                            bits: 16,
+                            val: 0x1234,
+                        }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(1)),
+                        lane: 0,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(1)),
+                        lane: 1,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    let bits = |v: u32, a: &mut TermArena| match s.local(ValueId(v)) {
+        Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(bits(1, &mut a), Some(0x1234_BEEF));
+    assert_eq!(
+        bits(2, &mut a),
+        Some(0xBEEF),
+        "lane 0 is the low sixteen bits"
+    );
+    assert_eq!(bits(3, &mut a), Some(0x1234));
+}
+
+/// **`va_copy` duplicates the iteration state and the two advance independently.** There
+/// was no `va_copy` test at all, so 020 contract 36's second half was unpinned in three
+/// directions at once — a no-op copy, a zero-length copy and a backwards copy all
+/// survived. Found by review.
+#[test]
+fn va_copy_advances_independently_of_its_source() {
+    let mut f = defined(
+        1,
+        "take",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::VaStart {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                // a consumes one, then b copies from a and consumes two more; a's own
+                // next read must be the *second* argument, not the fourth.
+                inst(InstKind::VaArg {
+                    dst: ValueId(3),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaCopy {
+                    dst: Operand::Value(ValueId(2)),
+                    src: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(4),
+                    list: Operand::Value(ValueId(2)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(5),
+                    list: Operand::Value(ValueId(2)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(6),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(6)))),
+        )],
+        CTy::Int(32),
+    );
+    f.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+    f.variadic = true;
+    f.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Int(8), 24)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(8), 24)
+        },
+    ];
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int { bits: 32, val: 4 }),
+                    Operand::Const(Const::Int { bits: 32, val: 11 }),
+                    Operand::Const(Const::Int { bits: 32, val: 8 }),
+                    Operand::Const(Const::Int { bits: 32, val: 33 }),
+                    Operand::Const(Const::Int { bits: 32, val: 44 }),
+                ],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(8),
+        "a's second read is the second argument, whatever b did"
+    );
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+}
