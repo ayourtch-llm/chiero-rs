@@ -5963,3 +5963,69 @@ fn a_faulting_load_has_the_width_its_type_declares() {
         other => panic!("{other:?}"),
     }
 }
+
+/// **An errored state is not an exact state.** None of the `Status::Errored` sites calls
+/// `degrade`, so `State::fidelity()` answers `Exact` for a state that hit a construct the
+/// engine cannot execute. `RunResult::fidelity` covers for it by special-casing the status
+/// — one untested line standing between "the engine gave up" and "chiero proved this has
+/// no bugs". The review's mutation removed that line and `seal` returned PROVEN for a C
+/// function containing a `switch`.
+#[test]
+fn an_errored_state_is_not_exact_on_its_own() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![],
+            Terminator::Switch {
+                scrut: i32c(1),
+                ty: CTy::Int(32),
+                cases: vec![(1, BlockId(9))],
+                default: BlockId(9),
+            },
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert!(matches!(s.status, Status::Errored(_)), "{:?}", s.status);
+    assert_ne!(
+        s.fidelity(),
+        Fidelity::Exact,
+        "the *state* says so, not only the run"
+    );
+    assert!(
+        s.assumptions().iter().any(|x| x.kind.matches(s.fidelity())),
+        "and names a cause of the right kind: {:#?}",
+        s.assumptions()
+    );
+    assert!(seal(&r, r.witness()).is_err());
+}
+
+/// **A chiero limit must not mask a memory-safety bug.** `too_wide` ran before the state
+/// and null checks, so a 32-byte load through a freed or null pointer reported
+/// "unsupported-access-width" and *not* the use-after-free. 021 §5 orders state before
+/// contents, and this project already recorded the same lesson once — "bounds must precede
+/// alignment, or a must-OOB access also reports the alignment of an access that never
+/// happens". vppinfra uses `u8x32`/`u8x64` throughout. Found by review, whose mutation
+/// swapping the two blocks survived the whole suite *and fixed the behaviour*.
+#[test]
+fn a_width_limit_does_not_mask_a_use_after_free() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = chiero_mem::Memory::new();
+    let o = m.alloc(chiero_mem::ObjKind::Heap, 64, 32, Span::DUMMY);
+    m.free(o, Span::DUMMY);
+    let p = chiero_mem::Pointer { base: o, off: 0 };
+    let r = m.read_term(&mut a, p, 32, chiero_mem::Endian::Little, Span::DUMMY);
+    assert!(
+        r.faults.iter().any(|f| f.kind() == "use-after-free"),
+        "the bug, not chiero's limit: {:#?}",
+        r.faults
+    );
+}
