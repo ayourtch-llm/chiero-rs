@@ -487,3 +487,78 @@ fn an_out_of_bounds_write_is_reported_with_a_witness() {
         r.findings()
     );
 }
+
+/// **023 contract 16.** "Replaying a `Witness` through the engine with all inputs
+/// concretized re-reaches the same `Finding` at the same `Span`."
+///
+/// This is the test that makes every other witness assertion mean something. A witness
+/// can name the right inputs, at the right widths, with values that satisfy the path
+/// condition, and still not reproduce the bug — if the values are read in a different
+/// order, or an input the engine mints was never recorded, the replay walks a different
+/// path and finds nothing. Nothing short of running it again detects that.
+#[test]
+fn replaying_a_witness_re_reaches_the_same_finding_at_the_same_span() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let m = guarded_fault();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend.clone()).run(&mut a);
+    let original = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the null store is reported");
+    let w = original.witness.clone().expect("witnessed");
+
+    // The replay is *concrete*: with every input pinned there is nothing left to fork on.
+    let mut a2 = TermArena::new();
+    let replay = Engine::new(&m)
+        .with_backend(backend)
+        .replaying(w)
+        .run(&mut a2);
+    let again = replay
+        .reports()
+        .into_iter()
+        .find(|f| f.message == original.message)
+        .unwrap_or_else(|| panic!("the same finding, re-reached: {:#?}", replay.findings()));
+    assert_eq!(again.span, original.span, "at the same span");
+    assert_eq!(
+        replay.states().len(),
+        1,
+        "every input is concrete, so there is one path: {:#?}",
+        replay.states().len()
+    );
+    // And the replay consulted no solver about the branch it took — the condition is
+    // ground once the input is bound, which is the whole point of concretizing.
+    assert_eq!(replay.solver_calls, 0, "a concrete replay asks nothing");
+}
+
+/// A witness replayed against a *different* program is not a witness for it. The engine
+/// says so rather than quietly binding the values positionally and reporting whatever it
+/// then finds — a replay that silently drifts is how a refuted bug and an unrelated one
+/// come to look the same.
+#[test]
+fn a_witness_that_does_not_fit_the_run_is_reported_not_absorbed() {
+    let m = guarded_fault();
+    let mut a = TermArena::new();
+    // A witness whose single binding claims to come from a site this module does not
+    // have an input at.
+    let bogus = Witness {
+        bindings: vec![Binding {
+            origin: InputOrigin::Load { span: at(999) },
+            width: 32,
+            value: 11,
+            pinned: true,
+        }],
+    };
+    let r = Engine::new(&m).replaying(bogus).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("replay") && f.contains("diverged")),
+        "the mismatch is reported: {:#?}",
+        r.findings()
+    );
+}
