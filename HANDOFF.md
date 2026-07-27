@@ -1619,6 +1619,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    out-of-bounds read *disappear* behind an uninitialized read — the worst outcome a
    deduplicator can produce. All four components now fail a mutation individually.
 
+   **WAVE 25 — the rest of wave 23's list** (`49cd4e3`, `8dd6687`; 543 tests).
+   **C2**: `NULL` is address zero. `addr_of(ObjectId::NULL)` can never answer because ids
+   start at 1, so `p->next = NULL` was a lowering gap and the reload invented an
+   uninitialized-read about memory the program had just written. ⚠️ The lesson is narrow
+   and general: **a fix verified on one constructor of a value is not verified on the
+   others** — `Const::Null` takes a different path through `operand` than `Value::Ptr`,
+   and the pointer-store commit had only exercised the latter.
+   **C8**: an argument `scanf` cannot resolve degrades to `Unknown` and names itself,
+   instead of silently meaning "no buffer" — a model that knows *less* than it claims is
+   worse than no model, the same lesson `strlen`/`strcpy` taught in wave 14.
+   **Mutant E**: the `MAX_ACCESS_BITS` boundary is pinned on both sides; `>` versus `>=`
+   decides whether a 16-byte `__int128`/SSE access is answered or refused.
+   **C7** has a test at two error sites; the remaining `Status::Errored` assignments still
+   do not call `degrade` themselves.
+
    **STILL OWED from wave 23, highest first:**
    - ~~**C3 provenance laundering**~~ DONE (wave 24). `ptr_ints` is keyed on the term, and
      addresses are ground `bv(64, …)` constants that the arena hash-conses — so **term
@@ -1654,12 +1669,12 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - ~~**C5**~~ DONE (wave 24). The key merged distinct findings: `object()` is `None` for `NullDeref`/
      `WildPointer`/`BadRange`, and there is no *function* component, so two functions
      sharing `Span::DUMMY` collapse. Merging is the dangerous direction.
-   - **C2** `p->next = NULL` is still dropped — `addr_of(ObjectId::NULL)` is `None` because
+   - ~~**C2**~~ DONE (wave 25). `p->next = NULL` was dropped — `addr_of(ObjectId::NULL)` is `None` because
      ids start at 1 — and manufactures the same false uninitialized-read the pointer-store
      fix was meant to end. Wider class: `operand` handles only `Value`, `Const::Int` and
      `Const::Null`.
-   - **C8** a `None` at a `scanf` output position silently means "no buffer".
-   - Mutant **E**: the `MAX_ACCESS_BITS` boundary is untested — a 16-byte `__int128`/SSE
+   - ~~**C8**~~ DONE (wave 25).
+   - ~~Mutant **E**~~ DONE (wave 25). The `MAX_ACCESS_BITS` boundary was untested — a 16-byte `__int128`/SSE
      access is `Exact` today and `>=` would make it a fault.
    - Mutant **Y**: dropping `lowering_gap` on an untranslatable store leaves fidelity
      `Exact` and **seals PROVEN** over a discarded write.
