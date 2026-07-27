@@ -1068,3 +1068,64 @@ fn a_symbolic_write_does_not_downgrade_the_definite_bits_of_a_mixed_byte() {
         );
     }
 }
+
+/// **021 §3: an uninitialized read yields a fresh *symbol*, never zero.**
+///
+/// The spec names silently reading zero as "the single most common way a symbolic
+/// executor produces confidently wrong results", and `read_term` was returning the
+/// concrete `0` sitting behind the uninitialized byte. A checker downstream would then
+/// reason about a value nobody wrote, and reason about it *confidently*.
+///
+/// Minting the symbol and memoizing it are the same act: contract 26 wants the repeated
+/// read to give the same term, and §3 wants the term to be a symbol.
+#[test]
+fn an_uninitialized_read_yields_a_fresh_symbol_not_zero() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let r = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(2));
+    let t = r.value.expect("a value comes back alongside the fault");
+    assert!(
+        a.eval_ground(t).is_err(),
+        "a never-written word must not evaluate to a constant"
+    );
+    let mut vars = Vec::new();
+    a.vars_of(t, &mut vars);
+    assert_eq!(vars.len(), 4, "one fresh symbol per never-written byte");
+
+    // Contract 26: the same term on a repeat read, and no second finding.
+    let again = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3));
+    assert_eq!(again.value.unwrap(), t, "the fresh symbol is memoized");
+    assert!(again.faults.is_empty());
+}
+
+/// Two *different* uninitialized bytes get two different symbols, or a model could not
+/// assign them independently and every uninitialized buffer would read as a constant
+/// pattern.
+#[test]
+fn distinct_uninitialized_bytes_get_distinct_symbols() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let b0 = m.read_term(&mut a, ptr(o, 0), 1, Endian::Little, sp(2)).value.unwrap();
+    let b1 = m.read_term(&mut a, ptr(o, 1), 1, Endian::Little, sp(3)).value.unwrap();
+    assert_ne!(b0, b1);
+    let mut v0 = Vec::new();
+    let mut v1 = Vec::new();
+    a.vars_of(b0, &mut v0);
+    a.vars_of(b1, &mut v1);
+    assert_ne!(v0, v1);
+}
+
+/// A byte that *was* written reads back as its value, not as a symbol — otherwise the
+/// tests above are satisfied by a model that symbolizes everything, and every concrete
+/// computation would become a solver query.
+#[test]
+fn an_initialized_read_is_still_concrete() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
+    let t = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3)).value.unwrap();
+    assert_eq!(a.eval_ground(t).unwrap().bits(), 0x0403_0201);
+}

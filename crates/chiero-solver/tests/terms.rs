@@ -548,3 +548,60 @@ fn evaluating_a_long_chain_does_not_overflow_the_stack() {
     m.set(a.var_id(x).unwrap(), BvConst::new(64, 0));
     assert_eq!(a.eval(&m, t).unwrap().bits(), 50_000);
 }
+
+/// **Every `let`-bound name in an emission is distinct.**
+///
+/// The sharing tests all assert through the arena's own evaluator, which never reads the
+/// emitted text — so a name scheme that *shadows* (`s{i % 2}`, say) passes every one of
+/// them while making the script denote a different term. The only tests that parse the
+/// output need z3 and skip without it, which is the configuration 022's never-link-z3
+/// posture makes normal.
+///
+/// Checking the names directly needs no solver and pins the property exactly.
+#[test]
+fn every_let_bound_name_in_an_emission_is_distinct() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    // A DAG with genuine sharing at several levels.
+    let s = a.add(x, y);
+    let p = a.mul(x, y);
+    let q = a.add(s, p);
+    let r = a.mul(q, s);
+    let t = a.add(r, p);
+    let text = a.to_smtlib(t);
+
+    let mut names = Vec::new();
+    for part in text.split("(let ((").skip(1) {
+        let name = part.split_whitespace().next().unwrap_or("").to_string();
+        assert!(
+            !names.contains(&name),
+            "`{name}` is bound twice, so the inner binding shadows the outer one \
+             and every reference below it means something else:\n{text}"
+        );
+        names.push(name);
+    }
+    assert!(names.len() >= 3, "this DAG should share several nodes: {text}");
+}
+
+/// `children()` is what the post-order walks, so a missing child is a subterm that is
+/// never bound and gets expanded inline — reintroducing both the blowup and the
+/// recursion. `Store`'s index and value are the ones that matter, since a promoted init
+/// array is a chain of them.
+#[test]
+fn every_child_of_a_store_is_reachable_from_the_walk() {
+    let mut a = TermArena::new();
+    let base = a.array_const(64, 8, 0);
+    let i = a.var(Sort::BitVec(64), "i");
+    let v = a.var(Sort::BitVec(8), "v");
+    let s = a.store(base, i, v);
+    let j = a.var(Sort::BitVec(64), "j");
+    let got = a.select(s, j);
+    let mut vars = Vec::new();
+    a.vars_of(got, &mut vars);
+    assert_eq!(
+        vars.len(),
+        3,
+        "the index and value of a store are children, or they go undeclared: {vars:?}"
+    );
+}
