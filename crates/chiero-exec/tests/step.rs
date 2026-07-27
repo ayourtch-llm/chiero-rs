@@ -718,3 +718,283 @@ fn a_long_forward_path_is_not_mistaken_for_a_loop() {
         r.states[0].assumptions
     );
 }
+
+// ---------------------------------------------------------------------------
+// Calls, recursion, and the model boundary (023 §5, contracts 8 and 9).
+// ---------------------------------------------------------------------------
+
+fn two_funcs(f0: Function, f1: Function) -> Module {
+    Module {
+        funcs: vec![f0, f1],
+        ..Default::default()
+    }
+}
+
+fn defined(id: u32, name: &str, blocks: Vec<Block>, ret: CTy) -> Function {
+    Function {
+        id: FuncId(id),
+        name: name.into(),
+        params: vec![],
+        ret,
+        variadic: false,
+        allocas: vec![],
+        blocks,
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    }
+}
+
+/// **023 §5: a direct call pushes a frame; there is no inlining.**
+///
+/// An explicit call stack is what keeps `Span` backtraces honest and makes recursion
+/// bounding a counter rather than a heuristic — inlining would make both guesswork.
+#[test]
+fn a_direct_call_runs_the_callee_and_returns_its_value() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let callee = defined(
+        1,
+        "answer",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(42))))],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
+    assert_eq!(r.states.len(), 1, "{:#?}", r.states);
+    assert_eq!(r.states[0].return_value_bits(&mut a), Some(42));
+    assert_eq!(r.states[0].fidelity, Fidelity::Exact);
+}
+
+/// A callee's locals are its own. Without a real frame the callee would overwrite the
+/// caller's `%0` and the caller would return the wrong value — silently, since both are
+/// well-typed.
+#[test]
+fn a_callees_locals_do_not_overwrite_the_callers() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Use(i32c(7)),
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    // The callee assigns *its* %0 a different value.
+    let callee = defined(
+        1,
+        "clobber",
+        vec![block(
+            0,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Use(i32c(99)),
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
+    assert_eq!(
+        r.states[0].return_value_bits(&mut a),
+        Some(7),
+        "the caller's %0 survives the call"
+    );
+}
+
+/// **023 contract 8.** A call to an unmodeled extern returns a fresh value, degrades to
+/// `Approximated`, and records the function name. **Silently returning 0 is forbidden** —
+/// it is the same "confidently wrong" failure as reading uninitialized memory as zero,
+/// one level up.
+#[test]
+fn an_unmodeled_extern_returns_a_fresh_value_and_says_so() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let mut ext = defined(1, "getenv", vec![], CTy::Int(32));
+    ext.body = Body::Declared;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+    assert_eq!(r.states.len(), 1);
+    let s = &r.states[0];
+    assert_eq!(
+        s.return_value_bits(&mut a),
+        None,
+        "a fresh symbol, not a concrete zero"
+    );
+    assert_eq!(s.fidelity, Fidelity::Approximated);
+    assert_eq!(s.assumptions.len(), 1, "{:#?}", s.assumptions);
+    assert_eq!(s.assumptions[0].kind, AssumptionKind::UnmodeledCall);
+    assert!(
+        s.assumptions[0].detail.contains("getenv"),
+        "the finding must name the function: {:#?}",
+        s.assumptions[0]
+    );
+}
+
+/// **023 contract 9.** Recursion past `max_recursion_depth` terminates that state as
+/// `Bounded` **and does not overflow the interpreter's own stack** — the interpreter's
+/// stack usage must be O(1) in program recursion depth, which an explicit frame stack
+/// gives for free and a recursive `step` would not.
+#[test]
+fn unbounded_recursion_is_bounded_without_overflowing_the_interpreter() {
+    // f() { return f(); }  — infinite recursion.
+    let f = defined(
+        0,
+        "f",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(0)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&Module {
+        funcs: vec![f],
+        ..Default::default()
+    })
+    .with_budget(Budget {
+        max_recursion_depth: 32,
+        ..Budget::default()
+    })
+    .run(&mut a);
+    assert_eq!(r.states.len(), 1);
+    assert_eq!(r.states[0].status, Status::Terminated(TermReason::Budget));
+    assert_eq!(r.states[0].fidelity, Fidelity::Bounded);
+    assert!(
+        r.states[0]
+            .assumptions
+            .iter()
+            .any(|x| x.kind == AssumptionKind::BudgetHit && x.detail.contains("recursion")),
+        "{:#?}",
+        r.states[0].assumptions
+    );
+}
+
+/// Recursion *within* the bound completes normally, or an engine that bounded every call
+/// would pass the test above and report `Bounded` on every program with a function call
+/// in it.
+#[test]
+fn recursion_within_the_bound_completes() {
+    // f(): if false { f() } else { return 5 }  — one level, decided concretely.
+    let f = defined(
+        0,
+        "f",
+        vec![
+            block(
+                0,
+                vec![],
+                Terminator::Br {
+                    cond: Operand::Const(Const::Int { bits: 1, val: 0 }),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Call {
+                    dst: Some(ValueId(0)),
+                    callee: Callee::Direct(FuncId(0)),
+                    args: vec![],
+                })],
+                Terminator::Return(Some(Operand::Value(ValueId(0)))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(5)))),
+        ],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&Module {
+        funcs: vec![f],
+        ..Default::default()
+    })
+    .run(&mut a);
+    assert_eq!(r.states[0].return_value_bits(&mut a), Some(5));
+    assert_eq!(r.states[0].fidelity, Fidelity::Exact);
+}
+
+/// `FnAttrs::noreturn` terminates the state at the call (023 §5). Continuing past
+/// `exit()` or `abort()` would explore code that cannot run and report findings in it.
+#[test]
+fn a_noreturn_call_terminates_the_state_at_the_call() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+                // Unreachable: `abort` does not return.
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Use(i32c(1)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut ext = defined(1, "abort", vec![], CTy::Void);
+    ext.body = Body::Declared;
+    ext.attrs.noreturn = true;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+    assert_eq!(r.states.len(), 1);
+    assert!(matches!(r.states[0].status, Status::Terminated(_)));
+    assert_eq!(
+        r.states[0].return_value_bits(&mut a),
+        None,
+        "the state ended at the call, so nothing was returned"
+    );
+    assert!(
+        r.states[0].local(ValueId(0)).is_none(),
+        "the instruction after a noreturn call must not execute"
+    );
+}
