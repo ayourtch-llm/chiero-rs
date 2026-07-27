@@ -56,9 +56,14 @@ pub enum Endian {
 pub enum InitBit {
     No,
     Yes,
-    /// Initialized iff a guard holds. The guard lives with the state's terms; this
-    /// crate's concrete core only needs to know the status is not decided.
-    Cond,
+    /// Initialized **iff the carried guard holds** (021 §3.1 writes this as
+    /// `Cond(Term)`).
+    ///
+    /// The term is not decoration. Without it `MaybeUninitialized` is a report the
+    /// engine can only accept or reject wholesale — the two outcomes §3.1 rejects — and
+    /// promotion cannot build the init array, whose whole mapping is `No → 0`,
+    /// `Yes → 1`, `Cond(t) → ite(t, 1, 0)`. `Term` is `Copy`, so this costs nothing.
+    Cond(Term),
 }
 
 /// Whether a write is unconditional or guarded.
@@ -123,7 +128,7 @@ impl InitMask {
     /// discharge against the path condition. 021 contract 6b turns on exactly this —
     /// a read at a conditionally-written offset must not report a *definite* finding.
     pub fn first_cond(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
-        (lo_bit..lo_bit + n_bits).find(|&b| self.get(b) == InitBit::Cond)
+        (lo_bit..lo_bit + n_bits).find(|&b| matches!(self.get(b), InitBit::Cond(_)))
     }
 }
 
@@ -137,7 +142,9 @@ impl InitMask {
 fn join(old: InitBit, new: InitBit) -> InitBit {
     match (old, new) {
         (InitBit::Yes, _) | (_, InitBit::Yes) => InitBit::Yes,
-        (InitBit::Cond, _) | (_, InitBit::Cond) => InitBit::Cond,
+        // The incoming guard wins over an older one: a later conditional write is the
+        // more recent word on whether the byte was written.
+        (_, InitBit::Cond(t)) | (InitBit::Cond(t), _) => InitBit::Cond(t),
         _ => InitBit::No,
     }
 }
@@ -249,6 +256,17 @@ impl MemObject {
 
     /// Bits without the initialization check, so an uninitialized bit read can hand back
     /// a value alongside its fault.
+    /// One concrete byte, ignoring initialization. For promotion, which copies the
+    /// object's whole state verbatim.
+    pub fn raw_byte(&self, b: u64) -> u8 {
+        self.data.get(b as usize).copied().unwrap_or(0)
+    }
+
+    /// The symbolic byte at `b`, if the overlay holds one.
+    pub fn sym_at(&self, b: u64) -> Option<Term> {
+        self.sym.get(&b).copied()
+    }
+
     pub fn raw_bits(&self, lo_bit: u64, n_bits: u64) -> Option<u128> {
         self.check_bits(lo_bit, n_bits).ok()?;
         let mut v = 0u128;
@@ -306,7 +324,7 @@ impl MemObject {
     }
 
     pub fn write_bytes(&mut self, off: i64, bytes: &[u8]) -> Result<(), AccessError> {
-        self.write_bytes_cond(off, bytes, Cond::Always)
+        self.write_bytes_cond(off, bytes, Cond::Always, None)
     }
 
     /// A conditional write marks the touched bits `Cond` rather than `Yes` — see
@@ -316,6 +334,7 @@ impl MemObject {
         off: i64,
         bytes: &[u8],
         cond: Cond,
+        guard: Option<Term>,
     ) -> Result<(), AccessError> {
         let at = self.check(off, bytes.len() as u64)?;
         self.check_writable(off)?;
@@ -329,9 +348,12 @@ impl MemObject {
         self.init.set_range(
             off as u64 * 8,
             bytes.len() as u64 * 8,
-            match cond {
-                Cond::Always => InitBit::Yes,
-                Cond::Symbolic => InitBit::Cond,
+            match (cond, guard) {
+                (Cond::Always, _) => InitBit::Yes,
+                (Cond::Symbolic, Some(g)) => InitBit::Cond(g),
+                // A conditional write with no guard cannot be represented honestly, and
+                // the safe direction is "nobody definitely wrote this".
+                (Cond::Symbolic, None) => InitBit::No,
             },
         );
         Ok(())
@@ -811,6 +833,19 @@ pub struct Leak {
 }
 
 /// 021 §3. Objects start as `Bytes`; promotion is one-way within a state.
+/// A promoted object's contents: SMT arrays for the bytes and for initialization
+/// (021 §3, §3.1).
+///
+/// The init array is **bit-indexed**, matching `InitMask`, so `LoadBits` keeps the same
+/// resolution after promotion that it had before. Promotion maps `No → 0`, `Yes → 1`,
+/// `Cond(t) → ite(t, 1, 0)` — which is exactly why `InitBit` has to carry its guard.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ArrayContents {
+    pub data: Term,
+    pub init: Term,
+    pub idx_bits: u32,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Repr {
     /// Concrete bytes, a bit-indexed init mask, and a sparse overlay of symbolic bytes
@@ -833,6 +868,8 @@ pub const ITE_THRESHOLD: usize = 16;
 struct Entry {
     obj: Option<MemObject>,
     repr: Repr,
+    /// Present exactly when `repr == Repr::Array`.
+    arr: Option<ArrayContents>,
     kind: ObjKind,
     size: u64,
     align: u64,
@@ -879,6 +916,7 @@ impl Memory {
             Entry {
                 obj,
                 repr: Repr::Bytes,
+                arr: None,
                 kind,
                 size,
                 align,
@@ -1003,6 +1041,18 @@ impl Memory {
         let Some(e) = self.entry(p.base) else {
             return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
         };
+        // A promoted object's contents live in its arrays, and the `Bytes` view beneath
+        // is frozen at the moment of promotion. Answering from it would be the drift this
+        // representation exists to avoid, and the byte API has no arena with which to
+        // consult the arrays — so it says it cannot serve this object. The caller wants
+        // `read_term` and `init_bit_via`.
+        if e.repr == Repr::Array {
+            return AccessResult::fault(MemFault::SymbolicByte {
+                obj: p.base,
+                off: p.off,
+                at,
+            });
+        }
         let obj = e.obj.as_ref().expect("materialized");
         // 021 §5's order is state, **bounds**, alignment, init. Bounds first is not
         // cosmetic: a concrete must-OOB access does not happen, so reporting its
@@ -1376,6 +1426,29 @@ impl Memory {
             .map_or(InitBit::No, |o| o.init_bit(bit))
     }
 
+    /// The same question against a promoted object's init array, which requires an arena
+    /// to fold the select. A `Bytes` object answers from the mask.
+    pub fn init_bit_via(&self, a: &mut TermArena, id: ObjectId, bit: u64) -> InitBit {
+        let Some(e) = self.entry(id) else {
+            return InitBit::No;
+        };
+        let Some(arr) = e.arr else {
+            return self.init_bit_of(id, bit);
+        };
+        let i = a.bv(arr.idx_bits, bit as u128);
+        let got = a.select(arr.init, i);
+        // Folded to a literal? Then the guard collapsed, which 021 §3.1 says it does
+        // "whenever its guard folds to a constant".
+        match a.eval_ground(got) {
+            Ok(v) if v.bits() == 1 => InitBit::Yes,
+            Ok(_) => InitBit::No,
+            Err(_) => {
+                let one = a.bv(1, 1);
+                InitBit::Cond(a.eq(got, one))
+            }
+        }
+    }
+
     /// Place a symbolic byte at a concrete offset (021 §3's `sym` overlay).
     pub fn write_sym_byte(&mut self, p: Pointer, t: Term, at: Span) -> AccessResult<()> {
         if let Some(f) = self.state_fault(p.base, p.off, at) {
@@ -1457,18 +1530,27 @@ impl Memory {
             .align_fault(p.base, p.off, size, at)
             .into_iter()
             .collect();
-        let Some(entry) = self.entry(p.base) else {
-            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
-        };
-        let o = entry.obj.as_ref().expect("materialized");
-        if let Some(bit) = o.init.first_no(p.off as u64 * 8, size * 8) {
+        // Initialization comes from whichever representation is live. A promoted object's
+        // mask is frozen, so consulting it would report the state as of promotion rather
+        // than the state now.
+        let range = p.off as u64 * 8..p.off as u64 * 8 + size * 8;
+        let mut first_no = None;
+        let mut first_cond = None;
+        for bit in range {
+            match self.init_bit_via(a, p.base, bit) {
+                InitBit::No if first_no.is_none() => first_no = Some(bit),
+                InitBit::Cond(_) if first_cond.is_none() => first_cond = Some(bit),
+                _ => {}
+            }
+        }
+        if let Some(bit) = first_no {
             faults.push(MemFault::Uninitialized {
                 obj: p.base,
                 off: p.off,
                 bit,
                 at,
             });
-        } else if let Some(bit) = o.init.first_cond(p.off as u64 * 8, size * 8) {
+        } else if let Some(bit) = first_cond {
             faults.push(MemFault::MaybeUninitialized {
                 obj: p.base,
                 off: p.off,
@@ -1482,11 +1564,25 @@ impl Memory {
             Endian::Little => (0..size).rev().map(|i| p.off as u64 + i).collect(),
             Endian::Big => (0..size).map(|i| p.off as u64 + i).collect(),
         };
+        let arr = self.entry(p.base).and_then(|e| e.arr);
+        let Some(entry) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
+        };
+        let o = entry.obj.as_ref().expect("materialized");
         let mut t: Option<Term> = None;
         for b in idx {
-            let byte = match o.sym.get(&b) {
-                Some(x) => *x,
-                None => a.bv(8, o.data[b as usize] as u128),
+            // A promoted object answers from its array; the `Bytes` view underneath is
+            // frozen at the moment of promotion and must not be consulted again, or the
+            // two representations drift.
+            let byte = match arr {
+                Some(arr) => {
+                    let i = a.bv(arr.idx_bits, b as u128);
+                    a.select(arr.data, i)
+                }
+                None => match o.sym.get(&b) {
+                    Some(x) => *x,
+                    None => a.bv(8, o.data[b as usize] as u128),
+                },
             };
             t = Some(match t {
                 None => byte,
@@ -1533,6 +1629,7 @@ impl Memory {
         let Some(e) = self.entry_mut(id) else {
             return AccessResult::fault(MemFault::WildPointer { off: 0, at });
         };
+        let mut arr = e.arr;
         let Some(o) = e.obj.as_mut() else {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: id,
@@ -1566,17 +1663,49 @@ impl Memory {
                 });
                 continue;
             }
-            let old = match o.sym.get(&k) {
-                Some(x) => *x,
-                None => a.bv(8, o.data[k as usize] as u128),
+            let old = match arr {
+                Some(arr) => {
+                    let i = a.bv(arr.idx_bits, k as u128);
+                    a.select(arr.data, i)
+                }
+                None => match o.sym.get(&k) {
+                    Some(x) => *x,
+                    None => a.bv(8, o.data[k as usize] as u128),
+                },
             };
             let kc = a.bv(w, k as u128);
             let cond = a.eq(off, kc);
-            o.sym.insert(k, a.ite(cond, val, old));
+            let new_v = a.ite(cond, val, old);
+            match arr.as_mut() {
+                Some(arr) => {
+                    let i = a.bv(arr.idx_bits, k as u128);
+                    arr.data = a.store(arr.data, i, new_v);
+                    let one = a.bv(1, 1);
+                    // The init array gets the same `Cond(t) → ite(t, 1, 0)` mapping
+                    // promotion used, joined against what was already there.
+                    for bit in k * 8..k * 8 + 8 {
+                        let bi = a.bv(arr.idx_bits, bit as u128);
+                        let prev = a.select(arr.init, bi);
+                        let now = a.ite(cond, one, prev);
+                        arr.init = a.store(arr.init, bi, now);
+                    }
+                }
+                None => {
+                    o.sym.insert(k, new_v);
+                }
+            }
             // The join is what keeps a conditional write from *downgrading* memory that
             // was already definitely initialized: both branches of the `ite` are then
-            // initialized, so the result is `Yes`.
-            o.init.set_range(k * 8, 8, InitBit::Cond);
+            // initialized, so the result is `Yes`. The guard travels with the bit, so the
+            // engine has something to discharge and promotion has something to map.
+            if arr.is_none() {
+                o.init.set_range(k * 8, 8, InitBit::Cond(cond));
+            }
+        }
+        if let Some(arr) = arr
+            && let Some(e) = self.entry_mut(id)
+        {
+            e.arr = Some(arr);
         }
         AccessResult {
             value: Some(()),
@@ -1591,9 +1720,52 @@ impl Memory {
     /// form is a promise about how *future* symbolic-offset accesses are answered, and
     /// contract 6 requires the `(value, initialization-status)` pair to survive the
     /// change unaltered.
-    pub fn promote_to_array(&mut self, _a: &mut TermArena, id: ObjectId) {
+    pub fn promote_to_array(&mut self, a: &mut TermArena, id: ObjectId) {
+        // One-way: an object already promoted keeps the contents it has, or a second
+        // promotion would rebuild the arrays from the stale `Bytes` view and silently
+        // discard everything written since.
+        if self.entry(id).is_some_and(|e| e.repr == Repr::Array) {
+            return;
+        }
+        let Some(e) = self.entry(id) else { return };
+        let size = e.size;
+        let Some(o) = e.obj.as_ref() else { return };
+        let idx_bits = 64u32;
+        let mut data = a.array_const(idx_bits, 8, 0);
+        let mut init = a.array_const(idx_bits, 1, 0);
+        let (bytes, syms, bits): (Vec<_>, Vec<_>, Vec<_>) = (
+            (0..size).map(|b| o.raw_byte(b)).collect(),
+            (0..size).map(|b| o.sym_at(b)).collect(),
+            (0..size * 8).map(|b| o.init_bit(b)).collect(),
+        );
+        for b in 0..size {
+            let v = match syms[b as usize] {
+                Some(t) => t,
+                None => a.bv(8, bytes[b as usize] as u128),
+            };
+            let i = a.bv(idx_bits, b as u128);
+            data = a.store(data, i, v);
+        }
+        for bit in 0..size * 8 {
+            // `No → 0`, `Yes → 1`, `Cond(t) → ite(t, 1, 0)` — 021 §3.1's mapping, which
+            // is what makes the two paths agree rather than merely coexist.
+            let one = a.bv(1, 1);
+            let zero = a.bv(1, 0);
+            let v = match bits[bit as usize] {
+                InitBit::No => zero,
+                InitBit::Yes => one,
+                InitBit::Cond(t) => a.ite(t, one, zero),
+            };
+            let i = a.bv(idx_bits, bit as u128);
+            init = a.store(init, i, v);
+        }
         if let Some(e) = self.entry_mut(id) {
             e.repr = Repr::Array;
+            e.arr = Some(ArrayContents {
+                data,
+                init,
+                idx_bits,
+            });
         }
     }
 

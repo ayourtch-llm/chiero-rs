@@ -145,9 +145,17 @@ fn initialization_is_tracked_per_bit_not_per_byte() {
 /// ubiquitous. 021 §3.1 requires the distinction to exist at all.
 #[test]
 fn a_conditionally_written_byte_is_neither_initialized_nor_not() {
+    let mut arena = chiero_solver::TermArena::new();
+    let gv = arena.var(chiero_solver::Sort::BitVec(8), "g");
+    let gk = arena.bv(8, 1);
+    let guard = arena.eq(gv, gk);
     let mut o = obj(8);
-    o.write_bytes_cond(0, &[7], Cond::Symbolic).unwrap();
-    assert_eq!(o.init_bit(0), InitBit::Cond, "not Yes, and not No");
+    o.write_bytes_cond(0, &[7], Cond::Symbolic, Some(guard))
+        .unwrap();
+    assert!(
+        matches!(o.init_bit(0), InitBit::Cond(_)),
+        "not Yes, and not No"
+    );
     assert_eq!(o.init_bit(8), InitBit::No, "byte 1 is untouched");
 }
 
@@ -162,8 +170,13 @@ fn a_conditionally_written_byte_is_neither_initialized_nor_not() {
 /// with the guard left for the engine to discharge against the path condition.
 #[test]
 fn reading_through_a_conditionally_written_byte_is_conditionally_reported() {
+    let mut arena = chiero_solver::TermArena::new();
+    let gv = arena.var(chiero_solver::Sort::BitVec(8), "g");
+    let gk = arena.bv(8, 1);
+    let guard = arena.eq(gv, gk);
     let mut o = obj(8);
-    o.write_bytes_cond(0, &[7], Cond::Symbolic).unwrap();
+    o.write_bytes_cond(0, &[7], Cond::Symbolic, Some(guard))
+        .unwrap();
     assert!(
         matches!(
             o.read_bytes(0, 1),
@@ -241,7 +254,10 @@ fn a_size_underflow_is_out_of_bounds_not_something_milder() {
         other => panic!("a wrapped size must be out of bounds, got {other:?}"),
     }
     let mut o = obj(16);
-    assert!(matches!(o.write_bytes_cond(0, &[0], Cond::Always), Ok(())));
+    assert!(matches!(
+        o.write_bytes_cond(0, &[0], Cond::Always, None),
+        Ok(())
+    ));
     assert!(matches!(
         o.read_bytes(8, u64::MAX / 2),
         Err(AccessError::OutOfBounds { .. })
@@ -258,9 +274,14 @@ fn a_size_underflow_is_out_of_bounds_not_something_milder() {
 /// guarded write.
 #[test]
 fn a_conditional_write_over_initialized_memory_stays_initialized() {
+    let mut arena = chiero_solver::TermArena::new();
+    let gv = arena.var(chiero_solver::Sort::BitVec(8), "g");
+    let gk = arena.bv(8, 1);
+    let guard = arena.eq(gv, gk);
     let mut o = obj(8);
     o.write_bytes(0, &[0; 8]).unwrap(); // memset
-    o.write_bytes_cond(0, &[1], Cond::Symbolic).unwrap(); // v[i] = x
+    o.write_bytes_cond(0, &[1], Cond::Symbolic, Some(guard))
+        .unwrap(); // v[i] = x
     assert_eq!(
         o.init_bit(0),
         InitBit::Yes,
@@ -274,9 +295,14 @@ fn a_conditional_write_over_initialized_memory_stays_initialized() {
 /// uninitialized read.
 #[test]
 fn a_conditional_write_over_uninitialized_memory_is_still_conditional() {
+    let mut arena = chiero_solver::TermArena::new();
+    let gv = arena.var(chiero_solver::Sort::BitVec(8), "g");
+    let gk = arena.bv(8, 1);
+    let guard = arena.eq(gv, gk);
     let mut o = obj(8);
-    o.write_bytes_cond(0, &[1], Cond::Symbolic).unwrap();
-    assert_eq!(o.init_bit(0), InitBit::Cond);
+    o.write_bytes_cond(0, &[1], Cond::Symbolic, Some(guard))
+        .unwrap();
+    assert!(matches!(o.init_bit(0), InitBit::Cond(_)));
 }
 
 /// **Bitfields wider than the value type corrupt memory silently.** Rust masks shift

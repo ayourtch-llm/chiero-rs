@@ -105,7 +105,10 @@ fn a_symbolic_offset_write_leaves_candidates_conditional() {
     );
 
     for k in [2u64, 3, 4] {
-        assert_eq!(m.init_bit_of(o, k * 8), InitBit::Cond, "byte {k}");
+        assert!(
+            matches!(m.init_bit_of(o, k * 8), InitBit::Cond(_)),
+            "byte {k}"
+        );
     }
     assert_eq!(
         m.init_bit_of(o, 0),
@@ -267,44 +270,6 @@ fn a_large_feasible_set_promotes_to_array_theory() {
     );
 }
 
-/// **Promotion preserves the `(value, initialization-status)` pair**, not merely the
-/// value. Contract 6 says so explicitly, because comparing values alone leaves exactly
-/// the disagreement the tri-state exists to prevent untested — the two paths could agree
-/// on every byte and still disagree about whether anyone wrote it.
-#[test]
-fn promotion_preserves_value_and_initialization_together() {
-    let mut a = TermArena::new();
-    let mut m = Memory::new();
-    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
-    m.write(ptr(o, 0), &[7, 8], sp(2));
-    let off = a.var(Sort::BitVec(16), "off");
-    let val = a.bv(8, 5);
-    m.write_at_symbolic_offset(&mut a, o, off, &[4], val, sp(3));
-
-    let before: Vec<(Option<Vec<u8>>, InitBit)> = (0..8u64)
-        .map(|b| {
-            (
-                m.read(ptr(o, b as i64), 1, sp(4)).value,
-                m.init_bit_of(o, b * 8),
-            )
-        })
-        .collect();
-    m.promote_to_array(&mut a, o);
-    assert!(!m.is_bytes(o));
-    let after: Vec<(Option<Vec<u8>>, InitBit)> = (0..8u64)
-        .map(|b| {
-            (
-                m.read(ptr(o, b as i64), 1, sp(5)).value,
-                m.init_bit_of(o, b * 8),
-            )
-        })
-        .collect();
-    assert_eq!(
-        before, after,
-        "promotion changed what the object says about itself"
-    );
-}
-
 /// Promotion is **one-way within a state** (021 §3). A representation that oscillated
 /// would make cost unpredictable and results order-dependent.
 #[test]
@@ -315,9 +280,14 @@ fn promotion_is_one_way() {
     m.promote_to_array(&mut a, o);
     assert!(!m.is_bytes(o));
     // An ordinary concrete write does not demote it back.
-    m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
-    assert!(!m.is_bytes(o));
-    assert_eq!(m.read(ptr(o, 0), 4, sp(3)).value.unwrap(), vec![1, 2, 3, 4]);
+    // The byte API cannot serve a promoted object — it has no arena with which to read
+    // the arrays, and answering from the frozen `Bytes` view is the drift promotion
+    // exists to avoid.
+    assert!(matches!(
+        m.read(ptr(o, 0), 4, sp(2)).faults[..],
+        [MemFault::SymbolicByte { .. }]
+    ));
+    assert!(!m.is_bytes(o), "an ordinary access does not demote it back");
 }
 
 /// The threshold is a **documented constant**, not a heuristic. An object that promoted
@@ -353,12 +323,14 @@ fn a_write_past_the_threshold_still_writes() {
 
     for k in 0..17u64 {
         assert_ne!(
-            m.init_bit_of(o, k * 8),
+            m.init_bit_via(&mut a, o, k * 8),
             InitBit::No,
             "byte {k} was written and must not read as never-touched"
         );
+        // The object is promoted, so the *term* API is the one that can answer — the
+        // byte API has no arena with which to consult the arrays.
         assert!(
-            !m.read(ptr(o, k as i64), 1, sp(3))
+            !m.read_term(&mut a, ptr(o, k as i64), 1, Endian::Little, sp(3))
                 .faults
                 .iter()
                 .any(|f| matches!(f, MemFault::Uninitialized { .. })),
@@ -405,7 +377,7 @@ fn memoizing_an_uninitialized_read_does_not_upgrade_a_conditional_neighbour() {
     let off = a.var(Sort::BitVec(8), "off");
     let val = a.bv(8, 1);
     m.write_at_symbolic_offset(&mut a, o, off, &[0], val, sp(2));
-    assert_eq!(m.init_bit_of(o, 0), InitBit::Cond);
+    assert!(matches!(m.init_bit_of(o, 0), InitBit::Cond(_)));
 
     // Byte 1 was never written; reading both reports it and must leave byte 0 alone.
     let r = m.read(ptr(o, 0), 2, sp(3));
@@ -415,9 +387,8 @@ fn memoizing_an_uninitialized_read_does_not_upgrade_a_conditional_neighbour() {
             .any(|f| matches!(f, MemFault::Uninitialized { .. })),
         "byte 1 is a definite uninitialized read"
     );
-    assert_eq!(
-        m.init_bit_of(o, 0),
-        InitBit::Cond,
+    assert!(
+        matches!(m.init_bit_of(o, 0), InitBit::Cond(_)),
         "byte 0's guard must survive a read of its neighbour"
     );
 }
@@ -512,7 +483,7 @@ fn candidates_outside_the_object_are_reported() {
         r.faults
     );
     // The in-bounds candidates still land.
-    assert_eq!(m.init_bit_of(o, 6 * 8), InitBit::Cond);
+    assert!(matches!(m.init_bit_of(o, 6 * 8), InitBit::Cond(_)));
 }
 
 /// **The candidate constant must be built wide enough to hold the candidate.** It used
@@ -670,8 +641,7 @@ fn two_conditional_writes_carry_different_guards() {
     let val = a.bv(8, 1);
     m.write_at_symbolic_offset(&mut a, o, i, &[2], val, sp(2));
     m.write_at_symbolic_offset(&mut a, o, j, &[3], val, sp(3));
-    let (InitBit::Cond(g2), InitBit::Cond(g3)) =
-        (m.init_bit_of(o, 2 * 8), m.init_bit_of(o, 3 * 8))
+    let (InitBit::Cond(g2), InitBit::Cond(g3)) = (m.init_bit_of(o, 2 * 8), m.init_bit_of(o, 3 * 8))
     else {
         panic!("both bytes should be guarded")
     };
@@ -713,8 +683,8 @@ fn the_bytes_path_and_the_array_path_agree_on_value_and_initialization() {
         // Initialization status must agree, and `Cond` must agree *as a condition*, not
         // merely as a tag: both guards are evaluated under the same models.
         let (ib, ia) = (
-            m.init_bit_of(via_bytes, k * 8),
-            m.init_bit_of(via_array, k * 8),
+            m.init_bit_via(&mut a, via_bytes, k * 8),
+            m.init_bit_via(&mut a, via_array, k * 8),
         );
         match (ib, ia) {
             (InitBit::Cond(gb), InitBit::Cond(ga)) => {
@@ -769,12 +739,97 @@ fn promotion_preserves_value_and_initialization_without_reading_first() {
     // `init_bit_of` is a pure observation; `read` is not.
     let before: Vec<InitBit> = (0..16u64).map(|b| m.init_bit_of(o, b * 8)).collect();
     m.promote_to_array(&mut a, o);
-    let after: Vec<InitBit> = (0..16u64).map(|b| m.init_bit_of(o, b * 8)).collect();
-    assert_eq!(before, after, "promotion altered the initialization mask");
+    let after: Vec<InitBit> = (0..16u64)
+        .map(|b| m.init_bit_via(&mut a, o, b * 8))
+        .collect();
+    let ov = a.var_id(off).unwrap();
+    for (b, (x, y)) in before.iter().zip(after.iter()).enumerate() {
+        match (x, y) {
+            // Guards are compared **semantically**, not by term identity: the array path
+            // states the same condition as `select(init, bit) == 1`, which is a different
+            // term saying the same thing. Comparing identity would fail on a correct
+            // implementation and pass on one that merely reused the term.
+            (InitBit::Cond(gx), InitBit::Cond(gy)) => {
+                for probe in 0..16u128 {
+                    let mut model = Model::new();
+                    model.set(ov, BvConst::new(8, probe));
+                    assert_eq!(
+                        a.eval(&model, *gx).unwrap().bits(),
+                        a.eval(&model, *gy).unwrap().bits(),
+                        "byte {b}: guards disagree at off = {probe}"
+                    );
+                }
+            }
+            _ => assert_eq!(x, y, "byte {b}: promotion altered the mask"),
+        }
+    }
     assert!(
-        before.iter().any(|b| *b == InitBit::No),
+        before.contains(&InitBit::No),
         "the fixture must contain a never-written byte, or this proves nothing"
     );
     assert!(before.iter().any(|b| matches!(b, InitBit::Cond(_))));
-    assert!(before.iter().any(|b| *b == InitBit::Yes));
+    assert!(before.contains(&InitBit::Yes));
+}
+
+/// **Promotion carries the symbolic overlay across.** Every promotion test so far
+/// promoted an object whose bytes were all concrete, so dropping the overlay entirely
+/// passed them — and dropping it silently replaces every symbolic byte with whatever
+/// stale concrete value sat underneath.
+#[test]
+fn promotion_carries_symbolic_bytes_across() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 0), &[0xEE; 16], sp(2));
+    let x = a.var(Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(o, 3), x, sp(3));
+
+    m.promote_to_array(&mut a, o);
+    let t = m
+        .read_term(&mut a, ptr(o, 3), 1, Endian::Little, sp(4))
+        .value
+        .unwrap();
+    let mut model = Model::new();
+    model.set(a.var_id(x).unwrap(), BvConst::new(8, 0x77));
+    assert_eq!(
+        a.eval(&model, t).unwrap().bits(),
+        0x77,
+        "the symbolic byte became its stale concrete shadow"
+    );
+    // And a concrete neighbour still reads as itself.
+    let n = m
+        .read_term(&mut a, ptr(o, 4), 1, Endian::Little, sp(5))
+        .value
+        .unwrap();
+    assert_eq!(a.eval_ground(n).unwrap().bits(), 0xEE);
+}
+
+/// **One-way means a second promotion is a no-op, not a rebuild.** Rebuilding the arrays
+/// from the `Bytes` view — which is frozen at the first promotion — would discard
+/// everything written since, silently. The existing test only checked that the flag
+/// stayed set, which a rebuild also does.
+#[test]
+fn a_second_promotion_does_not_rebuild_from_the_frozen_bytes() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 0), &[0xEE; 16], sp(2));
+    m.promote_to_array(&mut a, o);
+
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0x5A);
+    m.write_at_symbolic_offset(&mut a, o, off, &[6], val, sp(3));
+    m.promote_to_array(&mut a, o); // must change nothing
+
+    let t = m
+        .read_term(&mut a, ptr(o, 6), 1, Endian::Little, sp(4))
+        .value
+        .unwrap();
+    let mut model = Model::new();
+    model.set(a.var_id(off).unwrap(), BvConst::new(8, 6));
+    assert_eq!(
+        a.eval(&model, t).unwrap().bits(),
+        0x5A,
+        "the second promotion rebuilt from the frozen Bytes view and lost the write"
+    );
 }
