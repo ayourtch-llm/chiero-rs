@@ -56,6 +56,8 @@
   was ignored, `_Pragma` leaked, and `#include_next` was rejected. Target predefines and
   conservative feature queries now exist; `#line`, `#error`, `#warning`, `_Pragma`, and
   search-position-aware `#include_next` have dedicated handling.
+- Configured command-line-style object macros now lex arbitrary replacement lists,
+  participate in `#if`, carry synthesized provenance, and obey later `#undef`.
 
 ## Mutation checks
 

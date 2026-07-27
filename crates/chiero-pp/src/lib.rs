@@ -287,6 +287,9 @@ impl Engine {
         for name in ["__has_include", "__has_attribute", "__has_builtin"] {
             engine.add_predefined_query(name);
         }
+        for (name, value) in engine.config.defines.clone() {
+            engine.add_config_object(&name, &value);
+        }
         engine
     }
 
@@ -560,6 +563,48 @@ impl Engine {
             },
             name: name.into(),
             params: vec!["query".into()],
+            variadic_name: None,
+            std_variadic: false,
+            body,
+        });
+        self.by_name.insert(name.into(), index);
+    }
+
+    fn add_config_object(&mut self, name: &str, value: &str) {
+        let mut temporary = SourceMap::new();
+        let file = temporary.add_file("<command-line>", value);
+        let lexed = self.lex_session.lex(&temporary, file, LexConfig::default());
+        let body: Vec<_> = lexed
+            .tokens()
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| !matches!(token.kind, PpTokenKind::Eof))
+            .map(|(index, token)| Tok {
+                token: PpToken {
+                    kind: token.kind.clone(),
+                    span: Span::DUMMY,
+                    leading_space: token.leading_space,
+                    bol: token.bol,
+                },
+                text: lexed.text_at(index).unwrap_or("").to_owned(),
+                hide: BTreeSet::new(),
+            })
+            .collect();
+        let id = self
+            .source_map
+            .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
+        let index = self.macros.len();
+        self.macros.push(StoredMacro {
+            def: MacroDef {
+                id,
+                name: Symbol(index as u32),
+                kind: MacroKind::ObjectLike,
+                body: body.iter().map(|token| token.token.clone()).collect(),
+                def_span: Span::DUMMY,
+                undef_span: None,
+            },
+            name: name.into(),
+            params: Vec::new(),
             variadic_name: None,
             std_variadic: false,
             body,
