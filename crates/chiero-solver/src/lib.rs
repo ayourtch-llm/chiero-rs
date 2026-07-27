@@ -780,6 +780,10 @@ impl TermArena {
     /// are not interchangeable in `ite`, `not`, or anywhere else the backend type-checks.
     fn smt_is_bool(&self, t: Term) -> bool {
         match &self.nodes[t.0 as usize] {
+            // A `Bool` variable is declared as `Bool`, so it must be *treated* as one —
+            // otherwise every use is coerced to a one-bit vector and the backend rejects
+            // the comparison.
+            Node::Var(_, Sort::Bool) => true,
             Node::Bin(BinKind::And | BinKind::Or | BinKind::Xor, a, b) => {
                 self.smt_is_bool(*a) || self.smt_is_bool(*b)
             }
@@ -791,7 +795,30 @@ impl TermArena {
     }
 
     /// Every variable a term mentions, in declaration order.
+    /// Iterative, for the same reason `postorder` is: a deep term aborts the process
+    /// otherwise, and this runs on *every* term immediately before serialization — so
+    /// making only the serializer iterative moved the failure rather than removing it.
     pub fn vars_of(&self, t: Term, out: &mut Vec<VarId>) {
+        let mut seen: Vec<bool> = vec![false; self.nodes.len()];
+        let mut stack = vec![t];
+        while let Some(n) = stack.pop() {
+            if seen[n.0 as usize] {
+                continue;
+            }
+            seen[n.0 as usize] = true;
+            if let Node::Var(v, _) = &self.nodes[n.0 as usize]
+                && !out.contains(v)
+            {
+                out.push(*v);
+            }
+            for c in self.children(n) {
+                stack.push(c);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn vars_of_recursive(&self, t: Term, out: &mut Vec<VarId>) {
         match &self.nodes[t.0 as usize] {
             Node::Var(v, _) => {
                 if !out.contains(v) {
@@ -855,7 +882,40 @@ impl TermArena {
     /// Written from the SMT-LIB standard. A missing variable is an error rather than a
     /// default: a default would let a wrong model validate, which is the one thing this
     /// function exists to prevent.
+    /// Iterative over the DAG, memoized. The recursive form aborted on a deep term, and
+    /// this is on the **model-validation** path — so a `Sat` over a deep term would kill
+    /// the process instead of validating, which is the one thing 022 §3 rests on.
     pub fn eval(&self, m: &Model, t: Term) -> Result<BvConst, EvalError> {
+        let mut memo: Vec<Option<BvConst>> = vec![None; self.nodes.len()];
+        for n in self.postorder(t) {
+            // Array-sorted nodes have no scalar value of their own, and evaluating them
+            // bottom-up would fail the whole term. `Select` walks the store chain itself,
+            // reading the memo for each index and value.
+            if self.is_array_sorted(n) {
+                continue;
+            }
+            let v = self.eval_node(m, n, &memo)?;
+            memo[n.0 as usize] = Some(v);
+        }
+        memo[t.0 as usize].ok_or_else(|| EvalError("term did not evaluate".into()))
+    }
+
+    fn is_array_sorted(&self, t: Term) -> bool {
+        matches!(
+            self.nodes[t.0 as usize],
+            Node::ArrayConst { .. } | Node::Store { .. } | Node::Var(_, Sort::Array { .. })
+        )
+    }
+
+    /// One node, with children already in `memo`.
+    /// One node, with every child already in `memo` — so this is depth-1 and the pass
+    /// above it is what walks the DAG.
+    fn eval_node(
+        &self,
+        m: &Model,
+        t: Term,
+        memo: &[Option<BvConst>],
+    ) -> Result<BvConst, EvalError> {
         Ok(match &self.nodes[t.0 as usize] {
             Node::Const(c) => *c,
             Node::Var(v, s) => m
@@ -872,13 +932,17 @@ impl TermArena {
                         )))
                     }
                 })?,
-            Node::Bin(k, a, b) => fold(*k, self.eval(m, *a)?, self.eval(m, *b)?),
+            Node::Bin(k, a, b) => fold(
+                *k,
+                memo[a.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
+                memo[b.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
+            ),
             Node::Not(a) => {
-                let v = self.eval(m, *a)?;
+                let v = memo[a.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?;
                 BvConst::new(v.width(), !v.bits())
             }
             Node::Extend { a, to, signed } => {
-                let v = self.eval(m, *a)?;
+                let v = memo[a.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?;
                 if *signed {
                     BvConst::new(*to, v.signed() as u128)
                 } else {
@@ -886,24 +950,33 @@ impl TermArena {
                 }
             }
             Node::Extract { a, hi, lo } => {
-                let v = self.eval(m, *a)?;
+                let v = memo[a.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?;
                 BvConst::new(hi - lo + 1, v.bits() >> lo)
             }
             // The evaluator resolves a select by walking the store chain under the
             // model, which is what makes a promoted object's contents checkable without
             // a backend — the same independence 022 §3 rests the whole Sat story on.
             Node::Select { a, i } => {
-                let want = self.eval(m, *i)?;
+                let want =
+                    memo[i.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?;
                 let mut cur = *a;
                 loop {
                     match &self.nodes[cur.0 as usize] {
                         Node::Store { a, i, v } => {
-                            if self.eval(m, *i)?.bits() == want.bits() {
-                                break self.eval(m, *v)?;
+                            if memo[i.0 as usize]
+                                .ok_or_else(|| EvalError("unevaluated child".into()))?
+                                .bits()
+                                == want.bits()
+                            {
+                                break memo[v.0 as usize]
+                                    .ok_or_else(|| EvalError("unevaluated child".into()))?;
                             }
                             cur = *a;
                         }
-                        Node::ArrayConst { val, .. } => break self.eval(m, *val)?,
+                        Node::ArrayConst { val, .. } => {
+                            break memo[val.0 as usize]
+                                .ok_or_else(|| EvalError("unevaluated child".into()))?;
+                        }
                         // An array *variable* has no model here; 022 §2's evaluator is
                         // total over bit-vectors, and arrays are the honest exception.
                         _ => {
@@ -919,14 +992,21 @@ impl TermArena {
                 return Err(EvalError("array-sorted term has no scalar value".into()));
             }
             Node::Concat { hi, lo } => {
-                let (x, y) = (self.eval(m, *hi)?, self.eval(m, *lo)?);
+                let (x, y) = (
+                    memo[hi.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
+                    memo[lo.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?,
+                );
                 BvConst::new(x.width() + y.width(), (x.bits() << y.width()) | y.bits())
             }
             Node::Ite { c, t, f } => {
-                if self.eval(m, *c)?.bits() != 0 {
-                    self.eval(m, *t)?
+                if memo[c.0 as usize]
+                    .ok_or_else(|| EvalError("unevaluated child".into()))?
+                    .bits()
+                    != 0
+                {
+                    memo[t.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?
                 } else {
-                    self.eval(m, *f)?
+                    memo[f.0 as usize].ok_or_else(|| EvalError("unevaluated child".into()))?
                 }
             }
         })
@@ -1369,12 +1449,12 @@ impl Session {
             child,
             declared: Vec::new(),
         };
-        // **`QF_ABV`, not `QF_BV`.** 021 §3 promotes an object to array theory, and
-        // `QF_BV` excludes arrays outright — z3 rejects the whole script, which surfaces
-        // as "backend gave no usable answer" and looks like a solver problem rather than
-        // a logic that does not admit the terms being sent. The extra theory costs
-        // nothing on queries that never mention an array.
-        s.send("(set-logic QF_ABV)\n(set-option :produce-models true)\n")?;
+        // **`ALL`.** The logic has to admit every term the arena can build, and each
+        // narrower choice has excluded something in turn: `QF_BV` rejected arrays
+        // outright, and `QF_ABV` accepts `Array` but still rejects `as const` — which is
+        // the *base* of every promoted object, so all of array theory was unusable.
+        // Naming a narrow logic buys nothing here and has now cost two rounds.
+        s.send("(set-logic ALL)\n(set-option :produce-models true)\n")?;
         Some(s)
     }
 
@@ -1390,6 +1470,27 @@ impl Session {
     /// A long-lived process means output must be framed rather than read to EOF, and
     /// parenthesis balance is the framing SMT-LIB2 gives us.
     fn read_answer(&mut self) -> Option<String> {
+        // **An `(error …)` is not a verdict.** z3 prints it on *stdout* and then answers,
+        // so framing the first parenthesized form as the result takes the error as the
+        // answer, concludes the process died, and restarts it — leaving the real answer in
+        // the pipe for the next query to misread. Errors are skipped and the read
+        // continues, so the desync cannot happen.
+        //
+        // No emission currently produces an error, so no test reaches this — mutation
+        // confirms it. It stays anyway: this exact desync happened when `as const` was
+        // rejected under `QF_ABV`, and the next malformed emission should degrade to a
+        // clean error rather than to another query's answer. Deleting a guard because the
+        // bug it caught is currently fixed is how the bug comes back worse.
+        loop {
+            let form = self.read_form()?;
+            if form.trim_start().starts_with("(error") {
+                continue;
+            }
+            return Some(form);
+        }
+    }
+
+    fn read_form(&mut self) -> Option<String> {
         use std::io::Read;
         let out = self.child.stdout.as_mut()?;
         let mut buf = Vec::new();

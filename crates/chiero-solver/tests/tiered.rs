@@ -754,9 +754,17 @@ fn array_terms_reach_the_backend() {
     let sq = a.bv(8, 49);
     let e2 = a.eq(p, sq);
 
+    // `i == 3` is asserted rather than hoped for. Without it the backend may satisfy the
+    // query through the array's *own contents* instead of through the store — a perfectly
+    // good model that `Model` cannot represent, so validation fails and the answer is
+    // `Unknown`. The earlier version of this test passed by luck.
+    let three = a.bv(64, 3);
+    let pin = a.eq(i, three);
+
     let mut s = TieredSolver::with_backend(backend);
     s.assert(e);
     s.assert(e2);
+    s.assert(pin);
     // `Sat` **with a validated model**, which is possible here even though `Model` has no
     // representation for an array: the model pins `i`, so the evaluator resolves the
     // select by walking the store chain and never needs the array's own value. 022's rule
