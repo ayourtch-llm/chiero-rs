@@ -48,6 +48,52 @@ fn func(blocks: Vec<Block>, ret: CTy) -> Module {
     }
 }
 
+/// A module whose entry function calls a declared-but-undefined `name` — which is how
+/// CIR spells an extern, modeled (`scanf`) or not.
+fn calling(id: u32, name: &str) -> Module {
+    let caller = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(
+            0,
+            vec![Inst {
+                kind: InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(id)),
+                    args: vec![],
+                },
+                span: Span::DUMMY,
+            }],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let ext = Function {
+        id: FuncId(id),
+        name: name.into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    Module {
+        funcs: vec![caller, ext],
+        ..Default::default()
+    }
+}
+
 /// A loop cut by `max_loop_iters`: the run finds nothing and is `Bounded`.
 fn bounded_run(a: &mut TermArena) -> (Module, Budget) {
     let m = func(
@@ -325,4 +371,225 @@ fn one_degradation_before_a_fork_is_reported_once() {
         .matches("could not produce the program's value")
         .count();
     assert_eq!(printed, 1, "printed once, not once per descendant:\n{text}");
+}
+
+/// **The proof-shaped sentence belongs to `Exact` alone.** Review's worst surviving
+/// mutant widened the condition to `Exact || Approximated || Unknown`, and a degraded run
+/// then printed "the search was exhaustive… and none of them was reached" — 023 §7 rule 4
+/// verbatim, which contract 14's golden test never caught because its only fixture is
+/// `Bounded`. Each level now says what actually happened, which is also §7's preamble:
+/// "a cap that was hit is `Bounded`; discarding values is `Approximated`."
+#[test]
+fn each_fidelity_level_gives_its_own_reason_and_only_exact_sounds_conclusive() {
+    // `Approximated`: an approximate model ran. No bound was reached.
+    let mut a = TermArena::new();
+    let m = calling(1, "scanf");
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Approximated, "{:#?}", r.findings());
+    let text = render(&r);
+    assert!(
+        !text.contains("exhaustive"),
+        "an approximated run did not search exhaustively: {text}"
+    );
+    assert!(
+        !text.contains("a bound was reached"),
+        "and no bound was reached — that is the Bounded sentence: {text}"
+    );
+    assert!(
+        text.contains("approximately") || text.contains("discarded"),
+        "it says what did happen: {text}"
+    );
+
+    // `Unknown`: an empty module, which ran nothing at all.
+    let mut a = TermArena::new();
+    let r = Engine::new(&Module::default()).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
+    let text = render(&r);
+    assert!(
+        !text.contains("exhaustive") && !text.contains("a bound was reached"),
+        "nothing was searched and no bound was reached: {text}"
+    );
+    assert!(
+        text.contains("says nothing about the program"),
+        "and it says so: {text}"
+    );
+}
+
+/// **023 contract 12's other half — "whose *kind* matches the recorded cause".** A state
+/// worse than `Exact` must carry an assumption whose kind accounts for that level; a
+/// dummy assumption must not satisfy the check. Review found `ModelApproximate` missing
+/// from the kinds that account for `Approximated`, so a `scanf` run — one assumption,
+/// exactly the right one — satisfied the contract with **zero** qualifying assumptions.
+#[test]
+fn every_degraded_state_has_an_assumption_whose_kind_accounts_for_its_fidelity() {
+    let mut a = TermArena::new();
+    // Three programs, three different causes: a hit bound, an approximate model, and an
+    // unmodeled call. One fixture would pin one kind.
+    let (m, b) = bounded_run(&mut a);
+    let runs = vec![
+        Engine::new(&m).with_budget(b).run(&mut a),
+        {
+            let m2 = calling(1, "scanf");
+            let mut a2 = TermArena::new();
+            Engine::new(&m2).run(&mut a2)
+        },
+        {
+            let m3 = calling(1, "no_such_function");
+            let mut a3 = TermArena::new();
+            Engine::new(&m3).run(&mut a3)
+        },
+    ];
+    let mut levels = Vec::new();
+    for r in &runs {
+        let text = render(r);
+        for s in r.states() {
+            if s.fidelity() == Fidelity::Exact {
+                continue;
+            }
+            levels.push(s.fidelity());
+            let accounting: Vec<_> = s
+                .assumptions()
+                .iter()
+                .filter(|x| x.kind.matches(s.fidelity()))
+                .collect();
+            assert!(
+                !accounting.is_empty(),
+                "{:?} with no assumption whose kind accounts for it: {:#?}",
+                s.fidelity(),
+                s.assumptions()
+            );
+            // …and contract 12's first half, on the same states: the text is in the report.
+            for x in accounting {
+                assert!(
+                    text.contains(&x.detail),
+                    "{:?} missing from:\n{text}",
+                    x.detail
+                );
+            }
+        }
+    }
+    levels.sort_by_key(|f| format!("{f:?}"));
+    levels.dedup();
+    assert!(
+        levels.len() >= 2,
+        "the fixtures must reach more than one degraded level, or one kind is pinned and \
+         the rest are not: {levels:?}"
+    );
+}
+
+/// **Every state's assumptions, not the first one's.** Review's `take(1)` mutation
+/// survived because the only contract-12 fixture forks *after* its single degradation, so
+/// all its states carry the same list — the same-answer trap, in a fixture. A run where
+/// one path degrades and another does not is what tells the two apart.
+#[test]
+fn assumptions_from_every_path_reach_the_report() {
+    let ext = |id: u32, name: &str| Function {
+        id: FuncId(id),
+        name: name.into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(1) },
+                    },
+                    span: Span::DUMMY,
+                }],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(0)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            // Both paths meet something with no model, but **different** somethings: two
+            // assumptions of the same kind with different texts. Deduplicating on the
+            // kind alone drops one, and the reader loses a whole unmodeled function.
+            block(
+                1,
+                vec![Inst {
+                    kind: InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![],
+                    },
+                    span: Span::DUMMY,
+                }],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            // …and the other meets something with no model.
+            block(
+                2,
+                vec![Inst {
+                    kind: InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    },
+                    span: Span::DUMMY,
+                }],
+                Terminator::Return(Some(i32c(0))),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, ext(1, "no_such_function"), ext(2, "another_missing_one")],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.states().len() > 1, "the fixture must fork");
+    let text0 = render(&r);
+    assert!(
+        text0.contains("no_such_function") && text0.contains("another_missing_one"),
+        "both unmodeled functions are named, not one per kind: {text0}"
+    );
+    let text = render(&r);
+    let all: Vec<_> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    assert!(!all.is_empty(), "and one path must degrade");
+    for detail in &all {
+        assert!(
+            text.contains(detail),
+            "missing from the report: {detail}\n{text}"
+        );
+    }
+    // **Each state carries a detail the other does not**, which is what makes the loop
+    // above about every state rather than about state 0 by luck.
+    let per_state: Vec<Vec<String>> = r
+        .states()
+        .iter()
+        .map(|s| s.assumptions().iter().map(|x| x.detail.clone()).collect())
+        .collect();
+    assert!(
+        per_state
+            .iter()
+            .any(|xs| xs.iter().any(|x| !per_state[0].contains(x))),
+        "reading state 0 alone would pass on this fixture: {per_state:?}"
+    );
 }

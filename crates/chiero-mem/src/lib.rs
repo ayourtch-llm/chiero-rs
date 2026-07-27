@@ -679,6 +679,21 @@ impl IntVal {
     }
 }
 
+/// A symbol `Memory` invented, and what it stands for.
+///
+/// `array` marks the whole-object havoc arrays: an assignment for one of those is not a
+/// number, so a witness cannot bind it the way it binds a scalar — and saying so is the
+/// point. Claiming a path has no inputs when it has an unbindable one is the failure this
+/// record exists to prevent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintedSymbol {
+    pub term: chiero_solver::Term,
+    pub obj: ObjectId,
+    pub at: Span,
+    pub why: &'static str,
+    pub array: bool,
+}
+
 /// Deterministic placement of objects, plus the `PtrToInt`/`IntToPtr` pair.
 #[derive(Clone, Debug, Default)]
 pub struct AddressSpace {
@@ -1338,6 +1353,14 @@ struct Entry {
 #[derive(Clone, Debug, Default)]
 pub struct Memory {
     space: AddressSpace,
+    /// **Every symbol this memory has minted**, in creation order (023 §9).
+    ///
+    /// Memory mints symbols the engine never sees — havoc'd extern pointees, clobbered
+    /// bytes, lazily-materialized contents — and 023 §9 lists "lazily-materialized object
+    /// contents" among the things a witness must bind. Without this record the engine
+    /// reported "no symbolic inputs on this path" for a path whose whole condition was
+    /// built from them, which is not a gap in the witness but a false statement in it.
+    minted: Vec<MintedSymbol>,
     entries: Vec<(ObjectId, Entry)>,
     /// Names the arrays a havoc installs. Per-`Memory` and monotone, so two havocs are
     /// two unrelated unknowns and a re-run produces the same names (001 §5).
@@ -1349,6 +1372,7 @@ impl Memory {
         Memory {
             space: AddressSpace::new(),
             entries: Vec::new(),
+            minted: Vec::new(),
             havoc_seq: 0,
         }
     }
@@ -1867,6 +1891,12 @@ impl Memory {
         self.space.objs.iter().map(|(i, a, _)| (*i, *a)).collect()
     }
 
+    /// Every symbol this memory invented, in creation order — 023 §9's
+    /// "lazily-materialized object contents", plus havoc.
+    pub fn minted_symbols(&self) -> &[MintedSymbol] {
+        &self.minted
+    }
+
     /// Every object a *pointer* may resolve to, **including freed and out-of-scope ones**.
     ///
     /// 021 §4 keeps those entries precisely so a use-after-free can name its site, and the
@@ -2200,6 +2230,13 @@ impl Memory {
                     self.havoc_seq += 1;
                     let name = format!("clobber{}", self.havoc_seq);
                     let t = a.var(chiero_solver::Sort::BitVec(8), &name);
+                    self.minted.push(MintedSymbol {
+                        term: t,
+                        obj: q.base,
+                        at,
+                        why: "a byte clobbered by opaque code",
+                        array: false,
+                    });
                     let r = self.write_sym_byte(q, t, at);
                     faults.extend(r.faults);
                     if r.value.is_none() {
@@ -2275,6 +2312,13 @@ impl Memory {
             HavocFill::Symbolic => {
                 self.havoc_seq += 1;
                 let data = a.array_var(64, 8, &format!("havoc{}", self.havoc_seq));
+                self.minted.push(MintedSymbol {
+                    term: data,
+                    obj: id,
+                    at,
+                    why: "the contents of an object written by code with no model",
+                    array: true,
+                });
                 let init = a.array_const(64, 1, 1);
                 if let Some(e) = self.entry_mut(id) {
                     e.repr = Repr::Array;
@@ -3055,6 +3099,13 @@ impl Memory {
                 chiero_solver::Sort::BitVec(8),
                 &format!("uninit_{}_{k}", id.0),
             );
+            self.minted.push(MintedSymbol {
+                term: t,
+                obj: id,
+                at: self.entry(id).map_or(Span::DUMMY, |e| e.origin),
+                why: "a lazily-materialized byte",
+                array: false,
+            });
             match self.entry(id).and_then(|e| e.arr) {
                 Some(mut arr) => {
                     let i = a.bv(arr.idx_bits, k as u128);

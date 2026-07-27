@@ -75,7 +75,15 @@ impl AssumptionKind {
     fn is_modeling_lie(self) -> bool {
         matches!(
             self,
-            AssumptionKind::OpaqueCode | AssumptionKind::UnmodeledCall
+            // **`ModelApproximate` belongs here**, and its absence made contract 12 false
+            // of shipped code: `scanf` degrades a run to `Approximated` with exactly one
+            // assumption, whose kind then accounted for nothing. 024 §2.1 calls the
+            // modeled-imprecise path *more* dangerous than the unmodeled one because it
+            // looks deliberate — so of the three it is the one that must not be missing.
+            // Found by review.
+            AssumptionKind::OpaqueCode
+                | AssumptionKind::UnmodeledCall
+                | AssumptionKind::ModelApproximate
         )
     }
 
@@ -300,6 +308,9 @@ pub struct State {
     /// witness is an assignment to exactly these, so a symbol minted without landing here
     /// is a value the replay harness would leave to chance.
     inputs: Vec<(Term, InputOrigin)>,
+    /// How many of a replay's bindings this path has consumed. **Per state**, because a
+    /// replay can fork and a run-wide cursor lets one path eat another's bindings.
+    replay_used: usize,
     /// Filled once, when the state finishes: the engine still has the arena and the
     /// solver there, and `RunResult` has neither.
     witness: Option<Witness>,
@@ -377,6 +388,7 @@ impl State {
             steps: 0,
             findings: Vec::new(),
             inputs: Vec::new(),
+            replay_used: 0,
             witness: None,
             unwitnessed: None,
             ptr_ints: IndexMap::new(),
@@ -689,7 +701,7 @@ pub struct Engine<'m> {
     /// creation order, and how many have been consumed. A replay is the only way to find
     /// out whether a witness *works*, so it goes through the same `input` seam every
     /// symbol does rather than a second path that could drift from it.
-    replay: Option<(Witness, usize)>,
+    replay: Option<Witness>,
 }
 
 impl<'m> Engine<'m> {
@@ -724,7 +736,7 @@ impl<'m> Engine<'m> {
     /// order is a witness for a different path, and binding it positionally anyway would
     /// produce a run that looks like a reproduction and is not.
     pub fn replaying(mut self, w: Witness) -> Self {
-        self.replay = Some((w, 0));
+        self.replay = Some(w);
         self
     }
 
@@ -825,6 +837,7 @@ impl<'m> Engine<'m> {
                 steps: 0,
                 findings: Vec::new(),
                 inputs: Vec::new(),
+                replay_used: 0,
                 witness: None,
                 unwitnessed: None,
                 ptr_ints: IndexMap::new(),
@@ -902,6 +915,7 @@ impl<'m> Engine<'m> {
             steps: 0,
             findings: Vec::new(),
             inputs: entry_inputs,
+            replay_used: 0,
             witness: None,
             unwitnessed: None,
             ptr_ints: IndexMap::new(),
@@ -1009,8 +1023,20 @@ impl<'m> Engine<'m> {
     /// reporting whatever it finds is how a refuted bug and an unrelated one come to look
     /// the same.
     fn replayed(&mut self, a: &mut TermArena, s: &mut State, origin: &InputOrigin) -> Option<Term> {
-        let (w, used) = self.replay.as_mut()?;
-        let Some(b) = w.bindings.get(*used) else {
+        // **The cursor is the state's, not the run's.** A replay can still fork — an
+        // unmodeled call, a symbolic base — and one cursor on the engine let the
+        // first-explored path eat the bindings belonging to the second, silently whenever
+        // the two sites' origins happened to match. Found by review.
+        let w = self.replay.as_ref()?;
+        // **Once diverged, this path is done replaying.** Reporting the same problem
+        // again at every remaining site turns one problem into a list and buries it;
+        // the sentinel says "abandoned", where before it only said "past the end", which
+        // the missing-binding branch then reported as a fresh divergence.
+        if s.replay_used == usize::MAX {
+            return None;
+        }
+        let used = s.replay_used;
+        let Some(b) = w.bindings.get(used) else {
             let why = format!(
                 "replay diverged: this run wants a {} at {:?} that the witness does not \
                  have — it has {} binding(s)",
@@ -1018,7 +1044,7 @@ impl<'m> Engine<'m> {
                 origin.span(),
                 w.bindings.len()
             );
-            self.replay = None;
+            s.replay_used = usize::MAX;
             self.finding_seq += 1;
             let seq = self.finding_seq;
             let span = origin.span();
@@ -1035,14 +1061,14 @@ impl<'m> Engine<'m> {
             let why = format!(
                 "replay diverged: the witness's binding {} is a {} at {:?}, but this run \
                  wants a {} at {:?}",
-                *used,
+                used,
                 b.origin.label(),
                 b.origin.span(),
                 origin.label(),
                 origin.span()
             );
             let span = origin.span();
-            self.replay = None;
+            s.replay_used = usize::MAX;
             self.finding_seq += 1;
             let seq = self.finding_seq;
             s.findings.push(StateFinding {
@@ -1055,7 +1081,7 @@ impl<'m> Engine<'m> {
             return None;
         }
         let (width, value) = (b.width, b.value);
-        *used += 1;
+        s.replay_used += 1;
         // A *constant*, not a variable with an equality on the path: the point of a
         // replay is that nothing is left to solve, and contract 16's run asks the solver
         // nothing at all.
@@ -1069,13 +1095,70 @@ impl<'m> Engine<'m> {
     /// therefore replays through every finding on the way. Doing it per finding would
     /// cost a query each and answer the same question.
     fn attach_witness(&mut self, a: &mut TermArena, s: &mut State) {
+        // **A replay that re-invented memory did not replay it.** The witness records
+        // memory's symbols (023 §9), but `Memory` mints them itself and nothing routes a
+        // binding back in, so those bytes come out fresh on the second run. Saying so is
+        // the difference between a known limit and a reproduction that quietly is not
+        // one — contract 16 asks for "all inputs concretized", and these are not.
+        if self.replay.is_some() && !s.mem.minted_symbols().is_empty() {
+            let n = s.mem.minted_symbols().len();
+            self.finding_seq += 1;
+            let msg = format!(
+                "replay incomplete: {n} value(s) invented by memory on this path were \
+                 re-invented rather than supplied by the witness"
+            );
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: None,
+                message: msg.clone(),
+                span: Span::DUMMY,
+            });
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                Span::DUMMY,
+                &msg,
+            );
+        }
         if s.findings.is_empty() {
+            return;
+        }
+        // **Memory's symbols are inputs too** (023 §9: "lazily-materialized object
+        // contents"). The engine does not see them being minted, so they are collected
+        // here from the memory that made them. Without this the witness said "no symbolic
+        // inputs on this path" about a path whose whole condition was built from havoc'd
+        // bytes — not a gap in the witness but a false statement in it. Found by review.
+        let mut extra: Vec<(Term, InputOrigin)> = Vec::new();
+        let mut unbindable: Option<String> = None;
+        for m in s.mem.minted_symbols() {
+            if m.array {
+                // A whole-object havoc is an *array*; an assignment for it is not a
+                // number, so no `Binding` can carry it. Saying so is the point — the
+                // alternative is a witness that looks complete and replays into a
+                // different program.
+                unbindable = Some(format!(
+                    "this path reads {} ({:?}), whose value is a whole array rather than \
+                     a number, and a witness binds numbers",
+                    m.why, m.obj
+                ));
+            } else {
+                extra.push((
+                    m.term,
+                    InputOrigin::Memory {
+                        why: m.why,
+                        span: m.at,
+                    },
+                ));
+            }
+        }
+        if let Some(why) = unbindable {
+            s.unwitnessed = Some(why);
             return;
         }
         // **No inputs is a complete answer, not a failed one.** Reporting `None` here
         // would claim a failure that did not happen — and it would cost a solver call to
         // claim it.
-        if s.inputs.is_empty() {
+        if s.inputs.is_empty() && extra.is_empty() {
             s.witness = Some(Witness::empty());
             return;
         }
@@ -1089,16 +1172,26 @@ impl<'m> Engine<'m> {
                 );
                 return;
             }
+            // **Which of the two it is matters.** A backend that returned a model
+            // chiero could not verify is chiero's problem, and blaming the path's
+            // decidability for it sends a reader to strengthen a program that is already
+            // decidable. Found by review.
             CheckResult::Unknown(why) => {
-                s.unwitnessed = Some(format!(
-                    "the solver could not decide this path's condition, so no input \
-                     assignment could be extracted: {why:?}"
-                ));
+                s.unwitnessed = Some(match &why {
+                    chiero_solver::UnknownReason::BackendError(e) => format!(
+                        "no input assignment could be extracted: the backend answered but \
+                         chiero could not use the model ({e})"
+                    ),
+                    other => format!(
+                        "the solver could not decide this path's condition, so no input \
+                         assignment could be extracted: {other:?}"
+                    ),
+                });
                 return;
             }
         };
         let mut bindings = Vec::new();
-        for (t, origin) in s.inputs.clone() {
+        for (t, origin) in s.inputs.clone().into_iter().chain(extra) {
             let width = a.width(t);
             // **`pinned` is the honest part.** A model need not assign a variable the
             // path never mentions; binding it to zero and presenting that as the

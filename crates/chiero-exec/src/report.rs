@@ -27,20 +27,35 @@ pub fn render(r: &RunResult) -> String {
         // **The only sentence in chiero that a reader may act on as an absence.** Its two
         // forms differ by exactly what §7 rule 4 makes them differ by, and neither claims
         // the program is correct.
-        if f == Fidelity::Exact {
-            let _ = writeln!(
+        // **Each level gets its own reason.** 023 §7's preamble warns against collapsing
+        // them — "a cap that was hit is `Bounded`; discarding values is `Approximated`" —
+        // and one sentence for all three pointed a reader at bounds that were not the
+        // reason, on runs where nothing was cut short at all. Found by review.
+        let _ = match f {
+            Fidelity::Exact => writeln!(
                 out,
                 "no bugs found: the search was exhaustive within the bounds below, and \
                  none of them was reached."
-            );
-        } else {
-            let _ = writeln!(
+            ),
+            Fidelity::Bounded => writeln!(
                 out,
                 "no bugs found within the bounds below. This is not a proof that none \
-                 exist — the search was cut short, and everything it did not reach is \
-                 unexamined."
-            );
-        }
+                 exist — a bound was reached, and everything past it is unexamined."
+            ),
+            Fidelity::Approximated => writeln!(
+                out,
+                "no bugs found, but not within an exact model of the program. This is not \
+                 a proof that none exist — values were discarded or code was modeled \
+                 approximately, so parts of what ran were not the program. See the \
+                 assumptions below."
+            ),
+            Fidelity::Unknown => writeln!(
+                out,
+                "no bugs found, and this says nothing about the program. Something on the \
+                 way was not understood at all, so an absence of findings here is an \
+                 absence of analysis. See the assumptions below."
+            ),
+        };
     } else {
         let n = findings.len();
         let _ = writeln!(out, "{n} finding{}:", if n == 1 { "" } else { "s" });

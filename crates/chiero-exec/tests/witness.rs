@@ -548,7 +548,8 @@ fn replaying_a_witness_re_reaches_the_same_finding_at_the_same_span() {
 /// come to look the same.
 #[test]
 fn a_witness_that_does_not_fit_the_run_is_reported_not_absorbed() {
-    let m = guarded_fault();
+    // Two inputs, so there **is** a second site to mis-report at.
+    let m = two_input_fault();
     let mut a = TermArena::new();
     // A witness whose single binding claims to come from a site this module does not
     // have an input at.
@@ -561,13 +562,20 @@ fn a_witness_that_does_not_fit_the_run_is_reported_not_absorbed() {
         }],
     };
     let r = Engine::new(&m).replaying(bogus).run(&mut a);
+    let diverged: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("replay") && f.contains("diverged"))
+        .collect();
     assert!(
-        r.findings()
-            .iter()
-            .any(|f| f.contains("replay") && f.contains("diverged")),
+        !diverged.is_empty(),
         "the mismatch is reported: {:#?}",
         r.findings()
     );
+    // **And it is reported once.** This fixture asks for two inputs; a replay that
+    // diverges and keeps consuming reports the same problem again at every remaining
+    // site, turning one problem into a list and burying it.
+    assert_eq!(diverged.len(), 1, "{diverged:#?}");
 }
 
 /// **Bindings are consumed in creation order, and the order is checked.** With one input
@@ -589,7 +597,25 @@ fn a_two_input_witness_replays_in_order() {
         .find(|f| f.message.contains("null"))
         .expect("the null store is reported");
     let w = original.witness.clone().expect("witnessed");
-    assert_eq!(w.bindings.len(), 2, "{:?}", w.bindings);
+    // The two the engine minted come first, in creation order; the four bytes *memory*
+    // invented for the uninitialized load follow. 023 §9 lists "lazily-materialized
+    // object contents" among what a witness binds, and leaving them out was a witness
+    // that said the path had two inputs when it had six.
+    assert!(
+        matches!(w.bindings[0].origin, InputOrigin::Load { .. })
+            && matches!(w.bindings[1].origin, InputOrigin::ExternReturn { .. }),
+        "{:?}",
+        w.bindings
+    );
+    assert_eq!(
+        w.bindings
+            .iter()
+            .filter(|b| matches!(b.origin, InputOrigin::Memory { .. }))
+            .count(),
+        4,
+        "one per byte of the uninitialized `int`: {:?}",
+        w.bindings
+    );
 
     let mut a2 = TermArena::new();
     let replay = Engine::new(&m)
@@ -605,5 +631,415 @@ fn a_two_input_witness_replays_in_order() {
         !replay.findings().iter().any(|f| f.contains("diverged")),
         "and no divergence: {:#?}",
         replay.findings()
+    );
+    // **And the replay says what it could not supply.** Memory mints its own symbols and
+    // nothing routes a binding back into it, so those four bytes came out fresh on the
+    // second run. A replay that quietly is not a reproduction is worse than one that
+    // says so.
+    assert!(
+        replay
+            .findings()
+            .iter()
+            .any(|f| f.contains("replay incomplete")),
+        "{:#?}",
+        replay.findings()
+    );
+}
+
+/// **Every path's findings are witnessed, and each carries its own path's fidelity.**
+///
+/// Review found both unpinned: attaching a witness only to the first-explored state left
+/// contract 15 satisfied on one path out of many, and `Finding::fidelity` could be
+/// hardcoded to `Exact` with every test still green — so a report could show a finding
+/// from a degraded path as if the path had been modeled exactly.
+#[test]
+fn findings_on_every_path_are_witnessed_and_carry_that_paths_fidelity() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    // `if (x > 10) *(int*)0 = 1; else <unmodeled call>; *(int*)0 = 2;` — a fault on the
+    // first path, and a fault on the second reached only after a degradation.
+    let ext = Function {
+        id: FuncId(1),
+        name: "no_such_function".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        10,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Cmp {
+                                op: CmpOp::SGt,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(10),
+                            },
+                        },
+                        20,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(
+                    InstKind::Store {
+                        addr: Operand::Const(Const::Null),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    30,
+                )],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(
+                2,
+                vec![
+                    inst(
+                        InstKind::Call {
+                            dst: None,
+                            callee: Callee::Direct(FuncId(1)),
+                            args: vec![],
+                        },
+                        40,
+                    ),
+                    inst(
+                        InstKind::Store {
+                            addr: Operand::Const(Const::Null),
+                            val: i32c(2),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                        50,
+                    ),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, ext],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let reports = r.reports();
+    assert!(
+        reports.len() >= 2,
+        "both paths fault, so both report: {:#?}",
+        r.findings()
+    );
+    for f in &reports {
+        assert!(
+            f.witness.is_some() || f.unwitnessed.is_some(),
+            "contract 15 is about every finding, not the first path's: {f:?}"
+        );
+    }
+    // The two findings come from paths of different fidelity, and each says its own.
+    let mut levels: Vec<_> = reports.iter().map(|f| f.fidelity).collect();
+    levels.sort_by_key(|f| format!("{f:?}"));
+    levels.dedup();
+    assert!(
+        levels.len() >= 2,
+        "one path is exact and the other degraded; the findings must not both claim one \
+         of those: {:#?}",
+        reports
+            .iter()
+            .map(|f| (&f.message, f.fidelity))
+            .collect::<Vec<_>>()
+    );
+    // And the rendered report shows each finding's own level.
+    let text = render(&r);
+    for f in &reports {
+        assert!(
+            text.contains(&format!("{:?}", f.fidelity)),
+            "the report shows {:?}: {text}",
+            f.fidelity
+        );
+    }
+}
+
+/// **An entry parameter is an input** — the first thing 023 §9 lists, and nothing
+/// witnessed a program with one until review pointed it out.
+#[test]
+fn a_scalar_parameter_is_bound_by_the_witness() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Int(32),
+        }],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![inst(
+                    InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::SGt,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(0)),
+                            b: i32c(10),
+                        },
+                    },
+                    20,
+                )],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(
+                    InstKind::Store {
+                        addr: Operand::Const(Const::Null),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    30,
+                )],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the guarded null store is reported");
+    let w = f.witness.expect("witnessed");
+    let b = w
+        .bindings
+        .iter()
+        .find(|b| matches!(b.origin, InputOrigin::Param { .. }))
+        .unwrap_or_else(|| panic!("the parameter is an input: {:?}", w.bindings));
+    assert_eq!(b.width, 32);
+    assert!(
+        (b.value as i32) > 10,
+        "and is bound to a value that reaches the fault: {b:?}"
+    );
+    assert!(
+        render(&r).contains("parameter"),
+        "the report names it as a parameter"
+    );
+}
+
+/// **An input the path never constrains is marked as such.** The model need not assign a
+/// variable the query does not mention, and binding it to zero while calling it the
+/// solver's answer tells a reader the bug needs a value it does not — the module doc says
+/// this is the thing a witness must not do, and review found nothing checking it.
+#[test]
+fn an_input_the_path_does_not_constrain_is_not_reported_as_pinned() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        10,
+                    ),
+                    // A second input nothing ever looks at: the fault does not need it,
+                    // so no value of it is *the* value.
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(9),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        15,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Cmp {
+                                op: CmpOp::SGt,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(10),
+                            },
+                        },
+                        20,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(
+                    InstKind::Store {
+                        addr: Operand::Const(Const::Null),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    30,
+                )],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the guarded null store is reported");
+    let w = f.witness.expect("witnessed");
+    let unused = w
+        .bindings
+        .iter()
+        .find(|b| b.origin.span() == at(15))
+        .unwrap_or_else(|| panic!("the second input is still an input: {:?}", w.bindings));
+    assert!(
+        !unused.pinned,
+        "nothing on the path mentions it, so no value is the value: {unused:?}"
+    );
+    let needed = w
+        .bindings
+        .iter()
+        .find(|b| b.origin.span() == at(10))
+        .unwrap();
+    assert!(needed.pinned, "and the one the guard reads is: {needed:?}");
+    assert!(
+        render(&r).contains("any value replays"),
+        "the report says which is which: {}",
+        render(&r)
+    );
+}
+
+/// **The origin check is not a span compare, and a diverged replay stops.**
+///
+/// Two bindings whose *spans* are right and whose kinds are not: a `Load` where the run
+/// wants the extern's return. Reducing the check to spans lets a binding from a different
+/// kind of site satisfy the request silently, which is precisely the mis-binding the
+/// check exists to catch — macro-expanded code repeats spans constantly.
+///
+/// And once the replay has diverged it stops consuming: reporting the same divergence
+/// once per remaining input turns one problem into a list.
+#[test]
+fn a_wrong_kind_at_the_right_span_diverges_once() {
+    let m = two_input_fault();
+    let mut a = TermArena::new();
+    let w = Witness {
+        bindings: vec![
+            Binding {
+                origin: InputOrigin::Load { span: at(50) },
+                width: 32,
+                value: 0,
+                pinned: true,
+            },
+            // Right span, wrong kind: span 60 is the extern call, not a load.
+            Binding {
+                origin: InputOrigin::Load { span: at(60) },
+                width: 32,
+                value: 0,
+                pinned: true,
+            },
+        ],
+    };
+    let r = Engine::new(&m).replaying(w).run(&mut a);
+    let diverged: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("diverged"))
+        .collect();
+    assert_eq!(
+        diverged.len(),
+        1,
+        "one divergence, reported once: {:#?}",
+        r.findings()
+    );
+    assert!(
+        diverged[0].contains("extern") && diverged[0].contains("load"),
+        "and it names both sides: {}",
+        diverged[0]
     );
 }
