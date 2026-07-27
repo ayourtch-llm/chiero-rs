@@ -9592,6 +9592,118 @@ fn an_unresolvable_pointer_stops_the_path_and_names_its_reason() {
     );
 }
 
+/// **021 contract 16, with a solver that can answer.** A symbolic base constrained by a
+/// real path condition forks into one state per candidate **plus one wild state**. This is
+/// §5.1 step 3, and it needs tier 2: `solver-lite`'s §3.2 fragment does not decide
+/// `addr ∈ [base, base+size]` over a variable, which is why the previous test can only
+/// reach `SolverUnknown`.
+///
+/// 022 contract 2 requires the suite to run with z3 **absent**, so this skips with a
+/// printed reason rather than failing — a skipped test that says why is honest; one that
+/// passes silently is not.
+#[test]
+fn a_constrained_symbolic_base_forks_per_candidate_plus_one_wild() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(3),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(1)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        alloca(0, CTy::Int(8), 8),
+        alloca(1, CTy::Int(8), 8),
+        alloca(2, CTy::Int(8), 8),
+        alloca(3, CTy::Int(8), 8),
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let resolved: Vec<_> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(4)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        resolved.len() >= 2,
+        "the base resolved to several objects: {resolved:?} findings={:#?}",
+        r.findings()
+    );
+    // **The wild state is present**, or the candidate list is implicitly exhaustive and an
+    // address outside every object is never explored.
+    assert!(
+        resolved.contains(&chiero_mem::ObjectId::UNBOUND),
+        "one state says the pointer may be nowhere: {resolved:?}"
+    );
+    // Distinct objects, not one repeated.
+    let mut uniq = resolved.clone();
+    uniq.sort_by_key(|o| o.0);
+    uniq.dedup();
+    assert_eq!(uniq.len(), resolved.len(), "{resolved:?}");
+}
+
 /// **021 §5.1: "the solver could not tell" is not "the program said nothing".** A base
 /// constrained by a real path condition — a branch on `addr < &d` — is not resolvable by
 /// `solver-lite`, whose §3.2 fragment does not cover this shape. That must be reported as
