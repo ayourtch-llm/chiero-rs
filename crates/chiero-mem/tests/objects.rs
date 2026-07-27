@@ -474,3 +474,52 @@ fn the_reserved_object_ids_are_what_the_spec_says() {
     assert_eq!(ObjectId::NULL, ObjectId(0));
     assert_ne!(ObjectId::UNBOUND, ObjectId::NULL);
 }
+
+/// **The cap has to be a size chiero can actually materialize.** `MAX_MATERIALIZED_BYTES`
+/// was 1 GiB and the init mask held one `InitBit` — eight bytes — *per bit*, so an object
+/// at exactly the cap asked the host for 64 GiB of mask and aborted the process. The
+/// guard was checking the program's number, not chiero's cost.
+///
+/// A test that allocates *under* the cap cannot see this; the boundary is the whole
+/// point, so this allocates exactly at it and then uses the object.
+#[test]
+fn an_object_at_the_cap_can_be_built_and_used() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, MAX_MATERIALIZED_BYTES, 16, Span::DUMMY);
+    let p = Pointer { base: o, off: 0 };
+    let r = m.set(p, 7, MAX_MATERIALIZED_BYTES, Span::DUMMY);
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    // The last byte, not the first: a mask that ran short would still answer for byte 0.
+    let last = Pointer {
+        base: o,
+        off: (MAX_MATERIALIZED_BYTES - 1) as i64,
+    };
+    let r = m.read(last, 1, Span::DUMMY);
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(r.value, Some(vec![7]));
+}
+
+/// The mask's three states survive a compact representation. `Cond` is sparse and `Yes`
+/// is a bitset, so the interesting case is the *interaction*: an unconditional write over
+/// a conditional one wins, and a conditional write over an unconditional one does not
+/// downgrade it (021 §3.1's join).
+#[test]
+fn the_compact_mask_keeps_the_three_states_apart() {
+    let mut a = chiero_solver::TermArena::new();
+    let g = a.var(chiero_solver::Sort::Bool, "g");
+    let mut mask = InitMask::new(4);
+    mask.set_range(0, 8, InitBit::Cond(g));
+    mask.set_range(8, 8, InitBit::Yes);
+    assert_eq!(mask.get(3), InitBit::Cond(g));
+    assert_eq!(mask.get(9), InitBit::Yes);
+    assert_eq!(mask.get(20), InitBit::No);
+    // Yes over Cond: definite.
+    mask.set_range(0, 8, InitBit::Yes);
+    assert_eq!(mask.get(3), InitBit::Yes);
+    // Cond over Yes: still definite — the false-positive storm the tri-state prevents.
+    mask.set_range(8, 8, InitBit::Cond(g));
+    assert_eq!(mask.get(9), InitBit::Yes);
+    assert_eq!(mask.first_no(0, 16), None);
+    assert_eq!(mask.first_no(0, 32), Some(16));
+    assert_eq!(mask.first_cond(0, 32), None);
+}
