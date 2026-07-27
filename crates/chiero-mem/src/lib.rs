@@ -1988,9 +1988,53 @@ impl Memory {
         fill: HavocFill,
         at: Span,
     ) -> bool {
+        self.havoc_range_reporting(a, p, size, fill, at).value == Some(size)
+    }
+
+    /// As `havoc_range`, but says **how many bytes it managed** and carries the faults it
+    /// hit. A bare `bool` could not distinguish "nothing happened" from "half happened",
+    /// and it discarded the `OutOfBounds` from a declared clobber running past the end —
+    /// so inline asm claiming to write sixteen bytes of an eight-byte buffer was an
+    /// overflow chiero detected and did not report.
+    pub fn havoc_range_reporting(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        size: u64,
+        fill: HavocFill,
+        at: Span,
+    ) -> AccessResult<u64> {
+        let refuse = |f: MemFault| AccessResult {
+            value: Some(0),
+            faults: vec![f],
+        };
         if self.entry(p.base).is_none() || p.off < 0 {
-            return false;
+            return refuse(MemFault::WildPointer { off: p.off, at });
         }
+        // **The same refusals `havoc_object` makes.** They were on the `Symbolic` path
+        // only, and by accident — `write_sym_byte` happens to check — so `Uninitialized`
+        // mutated read-only and freed objects, and on a promoted one reported success
+        // while changing nothing, which 020 §4.3 forbids.
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return refuse(f);
+        }
+        let e = self.entry(p.base).expect("checked");
+        if e.readonly {
+            return refuse(MemFault::ReadOnly {
+                obj: p.base,
+                off: p.off,
+                at,
+            });
+        }
+        if e.repr != Repr::Bytes || e.obj.is_none() {
+            return refuse(MemFault::SymbolicByte {
+                obj: p.base,
+                off: p.off,
+                at,
+            });
+        }
+        let mut faults = Vec::new();
+        let mut done = 0u64;
         for i in 0..size {
             let q = Pointer {
                 base: p.base,
@@ -1999,16 +2043,29 @@ impl Memory {
             match fill {
                 HavocFill::Symbolic => {
                     self.havoc_seq += 1;
-                    let t = a.var(
-                        chiero_solver::Sort::BitVec(8),
-                        &format!("clobber{}", self.havoc_seq),
-                    );
+                    let name = format!("clobber{}", self.havoc_seq);
+                    let t = a.var(chiero_solver::Sort::BitVec(8), &name);
                     let r = self.write_sym_byte(q, t, at);
+                    faults.extend(r.faults);
                     if r.value.is_none() {
-                        return false;
+                        break;
                     }
                 }
                 HavocFill::Uninitialized => {
+                    let ok = self
+                        .entry(p.base)
+                        .and_then(|e| e.obj.as_ref())
+                        .is_some_and(|o| o.check_only(q.off, 1).is_ok());
+                    if !ok {
+                        faults.push(MemFault::OutOfBounds {
+                            obj: p.base,
+                            off: q.off,
+                            size: 1,
+                            obj_size: self.size_of_pub(p.base).unwrap_or(0),
+                            at,
+                        });
+                        break;
+                    }
                     if let Some(e) = self.entry_mut(p.base)
                         && let Some(o) = e.obj.as_mut()
                     {
@@ -2017,8 +2074,12 @@ impl Memory {
                     }
                 }
             }
+            done += 1;
         }
-        true
+        AccessResult {
+            value: Some(done),
+            faults,
+        }
     }
 
     /// Invalidate one object's contents. `Symbolic` replaces them with an unconstrained

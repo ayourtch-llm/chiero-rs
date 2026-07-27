@@ -9239,3 +9239,53 @@ fn a_bitcast_preserves_total_width() {
         );
     }
 }
+
+/// **An `Opaque` that declares a clobber wider than the object reports the overflow.** The
+/// faults from the byte writes were discarded, so inline asm announcing it writes sixteen
+/// bytes of an eight-byte buffer was a buffer overflow chiero *detected and did not
+/// report* — it only degraded fidelity, which reads as "chiero was unsure" rather than
+/// "your program is wrong". Found by review.
+#[test]
+fn an_opaque_write_past_the_end_is_a_finding() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Opaque {
+                    dsts: vec![],
+                    writes: vec![OpaqueWrite {
+                        addr: Operand::Value(ValueId(0)),
+                        size: Operand::Const(Const::Int { bits: 64, val: 16 }),
+                    }],
+                    reads: vec![],
+                    why: OpaqueReason::InlineAsm,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 8)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("out-of-bounds")),
+        "the program declared the overflow itself: {:#?}",
+        r.findings()
+    );
+}

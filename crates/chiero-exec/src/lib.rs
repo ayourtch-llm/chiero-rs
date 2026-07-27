@@ -925,9 +925,19 @@ impl<'m> Engine<'m> {
                     // `Symbolic`, as for an unmodeled call: the code wrote *something*,
                     // and `Uninitialized` would fire on every buffer it legitimately
                     // filled.
-                    let hit = s.mem.havoc_range(a, p, n, HavocFill::Symbolic, i.span);
-                    if !hit {
-                        self.lowering_gap(s, i.span, "an opaque write outside any object");
+                    // **The faults are the point.** A declared clobber wider than the
+                    // object is a buffer overflow the program announced, and discarding
+                    // the fault made it one chiero detected and did not report.
+                    let r = s
+                        .mem
+                        .havoc_range_reporting(a, p, n, HavocFill::Symbolic, i.span);
+                    self.report_faults(s, &r.faults, i.span);
+                    if r.value != Some(n) {
+                        self.lowering_gap(
+                            s,
+                            i.span,
+                            "an opaque write chiero could not perform in full",
+                        );
                     }
                 }
                 s.degrade(
