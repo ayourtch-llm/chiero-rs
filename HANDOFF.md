@@ -2051,7 +2051,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    collection-of-one trap on a byte range). And `check_bits` filtered on `bit_width()`,
    which `Float` and `Vector` both answer, so `LoadBits { unit: f32 }` verified clean.
 
-   **STILL OWED from wave 44:** `shares_storage_with` answers `false` for two forks of an
+   **WAVE 45** (`ffb63c1`; 599 tests) — wave 44's five gaps closed. One was a **decision,
+   not a fix**: `shares_storage_with` conflated "not shared" with "nothing to share" for an
+   object past `MAX_MATERIALIZED_BYTES`, and neither answer was pinned. There is no storage,
+   so a fork cannot have copied it — it counts as shared, and the alternative would show a
+   phantom copy in any accounting built on it. Also pinned: a refused bit write leaves the
+   object *exactly* as it was (a partly-landed range would upgrade init bits to `Yes` and
+   turn a real uninitialized-read defect into a clean read); `HavocFill::Uninitialized`'s
+   **success** path; and that a refusal carries its faults, without which a clobber of
+   `const` memory producing **no finding** would ship green. `SymbolicByte` now says
+   "concrete *access*", since refused writes raise it too.
+
+   *(wave 44's list, now resolved)* `shares_storage_with` answers `false` for two forks of an
    *unmaterialized* object — "not shared" conflated with "nothing to share", and neither
    answer is pinned; `write_bits`' atomicity (a refusal leaving the object unmodified) is
    correct and unpinned; `havoc_range`'s `Uninitialized` **success** path has no test, only
