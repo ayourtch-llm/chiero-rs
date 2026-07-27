@@ -10340,3 +10340,72 @@ fn a_resolved_pointer_keeps_the_offset_it_was_given() {
         "the address was pinned four bytes into the object: {offs:?}"
     );
 }
+
+/// **021 §5.1 steps 4 and 5 stay distinct however many objects exist.** The `over_cap`
+/// return ran *before* step 4's test, so with `max_resolutions = 8` and nine or more live
+/// objects a wholly unconstrained pointer filled the candidate list, broke out, and was
+/// reported `Approximated` — silently continuing on whichever object came first.
+///
+/// Under VPP's stated >10⁴ objects step 4 could therefore never fire, which makes §5.1's
+/// highest-value guarantee unreachable in exactly the setting it was written for. It is
+/// also verbatim the failure 021 records against its own earlier draft. Found by review.
+#[test]
+fn step_four_still_fires_when_there_are_more_objects_than_the_cap() {
+    // **Tier 2, or this passes for the wrong reason.** With `solver-lite` every range
+    // query is `Unknown`, so the run takes the `SolverUnknown` branch — which also gives
+    // `Unknown` fidelity and no pointer, and would let the over-cap defect through.
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut insts = vec![];
+    for i in 0..12u32 {
+        insts.push(inst(InstKind::Assign {
+            dst: ValueId(i),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(i),
+            },
+        }));
+    }
+    insts.push(inst(InstKind::Assign {
+        dst: ValueId(20),
+        rv: RValue::Fresh { ty: CTy::Int(64) },
+    }));
+    insts.push(inst(InstKind::Assign {
+        dst: ValueId(21),
+        rv: RValue::Cast {
+            kind: CastKind::IntToPtr,
+            a: Operand::Value(ValueId(20)),
+            from: CTy::Int(64),
+            to: CTy::Ptr,
+        },
+    }));
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    caller.allocas = (0..12).map(|i| alloca(i, CTy::Int(8), 8)).collect();
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Unknown,
+        "twelve objects does not turn 'knew nothing' into 'looked and picked one': {:#?}",
+        r.states()[0].assumptions()
+    );
+    assert!(
+        r.states()[0].local(ValueId(21)).is_none(),
+        "no pointer was manufactured"
+    );
+    assert!(
+        !r.findings().is_empty(),
+        "and it says so: {:#?}",
+        r.findings()
+    );
+}
