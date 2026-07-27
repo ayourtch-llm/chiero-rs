@@ -2126,6 +2126,23 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `RunResult`; 14 a renderer; 15, 16 and 21 a `Witness` type; 17 threading; 19, 20 and 22
    the checker framework; 24 the `CallReturn` event.
 
+   **WAVE 50** (`ef07a22`; 605 tests) — ⚠️ **the resolved states carried no constraint at
+   all.** §5.1 step 3 says "fork one state per object **with the corresponding
+   constraint**"; the fork produced different `Pointer`s and added nothing to the path, so
+   a state resolved to `ObjectId(2)` went on to take a branch requiring the address to be
+   `ObjectId(1)`'s base. *A false positive carrying a witness that looks replayable is worse
+   than a missed bug — it survives review.* Each candidate now asserts
+   `addr ∈ [base, base+size]`; the wild state asserts the negation of all of them, which is
+   what makes the fork **exhaustive** rather than merely plural.
+
+   I found this myself, from the spec's wording, while the review of the same code was
+   running. **Reading the contract sentence by sentence catches what a passing test does
+   not.**
+
+   *Verified in one half only, and said so in the commit:* the siblings' constraints fail a
+   mutation; the constraint on the state that **continues** does not, because in this
+   fixture that state is the wild one. Correct by construction, unpinned, recorded.
+
    **STILL OWED on §5.1:** step 4's own detection (wholly unconstrained: every object *and*
    nowhere both feasible) is still unreached — the tier-2 tests exercise steps 3 and 5.
    Contracts 17b, 18 and 19 need `PointerBitInspection`, lazy materialization and
