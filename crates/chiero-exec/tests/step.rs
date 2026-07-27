@@ -2104,3 +2104,248 @@ fn call_arguments_are_bound_to_the_callees_parameters() {
     assert_eq!(r.states()[0].return_value_bits(&mut a), Some(42));
     assert_eq!(r.fidelity(), Fidelity::Exact);
 }
+
+// ---------------------------------------------------------------------------
+// Indirect calls, and the budgets contract 18 needs (023 §5, §8).
+// ---------------------------------------------------------------------------
+
+/// **023 contract 10.** An indirect call resolvable to *n* functions forks into `n + 1`
+/// states — one per candidate plus one reported "unresolvable callee".
+///
+/// VPP's node dispatch is indirect calls through registration tables, so §5 calls this
+/// path load-bearing rather than exotic. The extra state matters as much as the
+/// candidates: dropping it would silently claim the list is exhaustive, and a function
+/// pointer that came from anywhere else would simply not be explored.
+#[test]
+fn an_indirect_call_forks_per_candidate_plus_one_unresolvable() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Ptr },
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    let a1 = defined(
+        1,
+        "one",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(11))))],
+        CTy::Int(32),
+    );
+    let a2 = defined(
+        2,
+        "two",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(22))))],
+        CTy::Int(32),
+    );
+    let a3 = defined(
+        3,
+        "three",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(33))))],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, a1, a2, a3],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 4, "three candidates plus unresolvable");
+    let rets: Vec<_> = r
+        .states()
+        .iter()
+        .map(|s| s.return_value_bits(&mut a))
+        .collect();
+    for want in [11u128, 22, 33] {
+        assert!(rets.contains(&Some(want)), "candidate {want} missing: {rets:?}");
+    }
+    // The unresolvable state is reported, not silently dropped.
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| s.assumptions()
+                .iter()
+                .any(|x| x.detail.contains("unresolvable"))),
+        "the callee may point somewhere chiero does not know about"
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact, "that state knows nothing");
+}
+
+/// **023 contract 10's cap.** With `max_indirect = 2` the same call yields `Bounded` and
+/// records the cap. A cap that silently truncated would report "no bug found" over a
+/// dispatch table it had only partly explored.
+#[test]
+fn the_indirect_cap_is_bounded_and_recorded() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Ptr },
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mk = |i: u32| {
+        defined(
+            i,
+            &format!("f{i}"),
+            vec![block(0, vec![], Terminator::Return(Some(i32c(i as i128))))],
+            CTy::Int(32),
+        )
+    };
+    let m = Module {
+        funcs: vec![caller, mk(1), mk(2), mk(3), mk(4)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_indirect: 2,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| s.assumptions()
+                .iter()
+                .any(|x| x.kind == AssumptionKind::BudgetHit
+                    && x.detail.contains("max_indirect"))),
+        "the cap must be recorded: {:#?}",
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **023 §8's remaining deterministic budgets**, without which contract 18 cannot be
+/// written. Every budget is reported whether or not it was hit, so a reader can tell
+/// `Exact`-with-generous-bounds from `Exact`-with-trivial-bounds — which are very
+/// different claims wearing the same word.
+#[test]
+fn every_deterministic_budget_is_present_and_reported() {
+    let b = Budget::default();
+    assert!(b.max_depth > 0);
+    assert!(b.max_loop_iters > 0);
+    assert!(b.max_recursion_depth > 0);
+    assert!(b.max_states > 0);
+    assert!(b.max_forks > 0);
+    assert!(b.max_indirect > 0);
+
+    let m = func(
+        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.budget(),
+        Budget::default(),
+        "the bounds in force are part of the result, hit or not"
+    );
+}
+
+/// `max_forks` bounds a run that would otherwise fork without limit, and says so.
+#[test]
+fn the_fork_cap_bounds_a_run_and_is_recorded() {
+    let mut a = TermArena::new();
+    // Four sequential symbolic branches: 16 paths without a cap.
+    let mut blocks = Vec::new();
+    for i in 0..4u32 {
+        blocks.push(block(
+            i,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(i),
+                rv: RValue::Fresh { ty: CTy::Int(1) },
+            })],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(i)),
+                t: BlockId(i + 1),
+                f: BlockId(i + 1),
+            },
+        ));
+    }
+    blocks.push(block(4, vec![], Terminator::Return(Some(i32c(0)))));
+    let m = func(blocks, CTy::Int(32));
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_forks: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| s.assumptions()
+                .iter()
+                .any(|x| x.detail.contains("max_forks"))),
+        "the cap must be recorded rather than silently truncating exploration"
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
+
+/// **023 §1's `PathTrace` must be replayable**, which means naming the function as well
+/// as the block. A trace of bare block ids reads as one function walking a path it never
+/// took: a caller sitting in `b0` that calls a callee going `b0 -> b1` looks like
+/// `main: 0 -> 1`.
+#[test]
+fn the_trace_records_which_function_each_block_belongs_to() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let callee = defined(
+        1,
+        "callee",
+        vec![
+            block(0, vec![], Terminator::Goto(BlockId(1))),
+            block(1, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
+    let t = r.states()[0].trace();
+    assert!(
+        t.iter().any(|(f, _)| *f == FuncId(1)),
+        "the callee's blocks must be attributed to the callee: {t:?}"
+    );
+    assert!(
+        t.iter().any(|(f, _)| *f == FuncId(0)),
+        "and the caller's to the caller: {t:?}"
+    );
+}
