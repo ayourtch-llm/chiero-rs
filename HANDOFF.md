@@ -817,11 +817,19 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    only the verdict meant a cached `Sat` re-derived its model via the backend, so the
    cache existed and saved nothing; the contract-20 backend-call counter caught it.
 
-   **STILL OWED in `chiero-solver`:** the process is spawned **per query**. 022 §4
-   requires a long-lived `z3 -in -smt2` with real incremental `push`/`pop` and a watchdog
-   that kills, restarts and **replays the assertion stack** (contract 14) — startup
-   dominates short queries, so per-query spawning makes tier 2 useless at scale. Also
-   owed: independence slicing and the counterexample cache (022 §6.2) with the
+   **Long-lived session DONE** (`5ca6db4` red, `7774b6c` green): one process per run,
+   incremental `push`/`pop`, output framed by paren balance (a live process never closes
+   stdout), per-session variable declarations, and restart-and-replay on death —
+   022 contract 14. `backend_spawns` is a tracked stat so a regression to per-query
+   spawning is visible immediately.
+
+   *Two lessons from that work, both found by mutation and not by passing tests:* the
+   replay test initially used constraints **tier 1 decides**, so the backend was never
+   consulted after the kill and the restart path was never exercised; and
+   `kill_backend_for_test` initially dropped the *session*, which only tests
+   "spawn when none exists" rather than the real failure of a process dying mid-query.
+
+   **STILL OWED in `chiero-solver`:** independence slicing and the counterexample cache (022 §6.2) with the
    `possibly_infeasible` guard, `--dump-queries`, and the contract-18 differential
    campaign over random terms.
 
