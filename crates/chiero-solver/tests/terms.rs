@@ -303,4 +303,3 @@ fn a_constant_condition_folds_the_ite_away() {
     let c = a.concat(x, y);
     assert_eq!(c, a.bv(16, 0xABCD));
 }
-

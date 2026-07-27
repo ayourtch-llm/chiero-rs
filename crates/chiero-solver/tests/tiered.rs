@@ -348,7 +348,10 @@ fn concat_and_ite_reach_the_backend() {
     let e = a.eq(c, target);
     // Multiplication forces escalation past tier 1.
     let p = a.mul(x, y);
-    let prod = a.bv(8, 0x0F);
+    // 0xAB * 0xCD mod 256 = 0xEF. Getting this wrong the first time was itself a
+    // useful signal: the backend returned Unsat, which means it *was* honouring the
+    // concat rather than ignoring it.
+    let prod = a.bv(8, 0xEF);
     let e2 = a.eq(p, prod);
 
     let mut t = TieredSolver::with_backend(backend);
@@ -359,6 +362,155 @@ fn concat_and_ite_reach_the_backend() {
             let xv = m.get(a.var_id(x).unwrap()).unwrap().bits();
             let yv = m.get(a.var_id(y).unwrap()).unwrap().bits();
             assert_eq!((xv, yv), (0xAB, 0xCD), "the backend must honour the concat");
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// A variable that appears **only** in an `ite` condition must still be declared to the
+/// backend. `vars_of` drives the declaration list, so missing the condition arm produces
+/// a query referring to an undeclared symbol — and mutation showed nothing exercised it,
+/// because every earlier `ite` test used a condition variable that also appeared
+/// elsewhere in the query.
+#[test]
+fn a_variable_only_in_an_ite_condition_is_still_declared() {
+    let Some(backend) = z3_or_skip("a_variable_only_in_an_ite_condition_is_still_declared") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let sel = a.var(Sort::BitVec(8), "sel");
+    let y = a.var(Sort::BitVec(8), "y");
+    let k = a.bv(8, 3);
+    let cond = a.eq(sel, k);
+    let (t, f) = (a.bv(8, 10), a.bv(8, 20));
+    let picked = a.ite(cond, t, f);
+    let want = a.bv(8, 10);
+    let e = a.eq(picked, want);
+    // Force escalation so the query actually reaches the backend.
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(
+                m.get(a.var_id(sel).unwrap()).unwrap().bits(),
+                3,
+                "the ite forced sel == 3, so the model must say so"
+            );
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// The tier-1 evaluator must agree: `vars_of` is also what tells `solver-lite` which
+/// variables it is reasoning about.
+#[test]
+fn an_ite_condition_variable_is_collected() {
+    let mut a = TermArena::new();
+    let sel = a.var(Sort::BitVec(8), "sel");
+    let k = a.bv(8, 3);
+    let cond = a.eq(sel, k);
+    let (t, f) = (a.bv(8, 10), a.bv(8, 20));
+    let picked = a.ite(cond, t, f);
+    let mut vs = Vec::new();
+    a.vars_of(picked, &mut vs);
+    assert!(
+        vs.contains(&a.var_id(sel).unwrap()),
+        "the condition's variable must be collected, got {vs:?}"
+    );
+}
+
+/// **A disjunction of comparisons must reach the backend intact.**
+///
+/// The arena gives predicates width 1, so `or` over two of them built a *bitvector*
+/// `bvor` — and `(bvor (bvult …) (bvult …))` is a sort error the backend rejects. This
+/// was reachable from any query containing a disjunction of comparisons, which is most of
+/// them; it went unnoticed because 022 contract 7c's disjunction test is answered by
+/// tier 1 as `Unknown` and never gets that far.
+#[test]
+fn a_disjunction_of_comparisons_survives_translation() {
+    let Some(backend) = z3_or_skip("a_disjunction_of_comparisons_survives_translation") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let (c5, c200) = (a.bv(8, 5), a.bv(8, 200));
+    let lo = a.ult(x, c5);
+    let hi = a.ult(c200, x);
+    let either = a.or(lo, hi);
+    // A multiplication forces escalation, so the disjunction really is translated.
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(either);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            let xv = m.get(a.var_id(x).unwrap()).unwrap().bits();
+            assert!(
+                !(5..=200).contains(&xv),
+                "the disjunction must bind x, got {xv}"
+            );
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// An `ite` whose branches are identical folds away. 022 §2 makes folding an *invariant*
+/// rather than a pass, so a term that cannot depend on its condition must not carry one
+/// to the backend.
+#[test]
+fn an_ite_with_identical_branches_folds() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let k = a.bv(8, 3);
+    let cond = a.eq(x, k);
+    let v = a.bv(32, 7);
+    assert_eq!(a.ite(cond, v, v), v);
+}
+
+/// The `Bool`/bitvector distinction must not collapse the other way either: `and` over
+/// two *arithmetic* terms is `bvand`, and emitting the boolean connective there is the
+/// same sort error in mirror image. Nothing exercised this, so declaring every operation
+/// `Bool` passed the suite.
+#[test]
+fn a_bitwise_and_of_computed_values_survives_translation() {
+    let Some(backend) = z3_or_skip("a_bitwise_and_of_computed_values_survives_translation") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let one = a.bv(8, 1);
+    let sx = a.add(x, one);
+    let sy = a.add(y, one);
+    let masked = a.and(sx, sy);
+    let want = a.bv(8, 0);
+    let e = a.eq(masked, want);
+    // Force escalation past tier 1.
+    let p = a.mul(x, y);
+    let sq = a.bv(8, 12);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            let xv = m.get(a.var_id(x).unwrap()).unwrap().bits() as u8;
+            let yv = m.get(a.var_id(y).unwrap()).unwrap().bits() as u8;
+            assert_eq!(
+                xv.wrapping_add(1) & yv.wrapping_add(1),
+                0,
+                "the backend must read this as a bitvector and"
+            );
         }
         other => panic!("expected Sat, got {other:?}"),
     }

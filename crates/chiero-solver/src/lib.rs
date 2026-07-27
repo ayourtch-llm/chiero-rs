@@ -128,8 +128,31 @@ enum Node {
     Var(VarId, Sort),
     Bin(BinKind, Term, Term),
     Not(Term),
-    Extend { a: Term, to: u32, signed: bool },
-    Extract { a: Term, hi: u32, lo: u32 },
+    Extend {
+        a: Term,
+        to: u32,
+        signed: bool,
+    },
+    Extract {
+        a: Term,
+        hi: u32,
+        lo: u32,
+    },
+    /// SMT-LIB `concat`: the **first** argument occupies the high bits. 021 contract 5
+    /// depends on this — a four-byte read with two concrete and two symbolic bytes is a
+    /// `Concat`, not a promotion to array theory.
+    Concat {
+        hi: Term,
+        lo: Term,
+    },
+    /// `ite` over a one-bit condition. 021 §3.1's conditional write is
+    /// `ite(off == k, val, old)` per candidate byte; without this term `InitBit::Cond` is
+    /// a marker with no guard behind it.
+    Ite {
+        c: Term,
+        t: Term,
+        f: Term,
+    },
 }
 
 /// A complete assignment. Every declared variable has a value (022 §2), which is what
@@ -223,7 +246,38 @@ impl TermArena {
             Node::Not(a) => self.width(*a),
             Node::Extend { to, .. } => *to,
             Node::Extract { hi, lo, .. } => hi - lo + 1,
+            Node::Concat { hi, lo } => self.width(*hi) + self.width(*lo),
+            Node::Ite { t, .. } => self.width(*t),
         }
+    }
+
+    /// SMT-LIB `concat`, folding when both sides are constant.
+    pub fn concat(&mut self, hi: Term, lo: Term) -> Term {
+        if let (Some(x), Some(y)) = (self.as_const(hi), self.as_const(lo)) {
+            let w = x.width() + y.width();
+            let v = (x.bits() << y.width()) | y.bits();
+            return self.bv(w, v);
+        }
+        self.intern(Node::Concat { hi, lo })
+    }
+
+    /// `ite`, folding a constant condition outright so a guard the solver already decided
+    /// costs nothing downstream (022 §2 folds at construction for exactly this reason).
+    pub fn ite(&mut self, c: Term, t: Term, f: Term) -> Term {
+        assert_eq!(self.width(c), 1, "an ite condition is one bit");
+        assert_eq!(
+            self.width(t),
+            self.width(f),
+            "both ite branches must have the same width"
+        );
+        if let Some(k) = self.as_const(c) {
+            return if k.bits() != 0 { t } else { f };
+        }
+        // Both branches identical: the condition cannot matter.
+        if t == f {
+            return t;
+        }
+        self.intern(Node::Ite { c, t, f })
     }
 
     /// Build a binary node, folding constants and normalizing commutative operands.
@@ -354,6 +408,8 @@ impl TermArena {
                 }
             }
             Node::Var(v, _) => smt_name(v, &self.vars[v.0 as usize].0),
+            // Same distinction: `not` over a `Bool`, `bvnot` over a vector.
+            Node::Not(a) if self.smt_is_bool(*a) => format!("(not {})", self.to_smtlib(*a)),
             Node::Not(a) => format!("(bvnot {})", self.to_smtlib(*a)),
             Node::Extend { a, to, signed } => {
                 let by = to - self.width(*a);
@@ -366,6 +422,37 @@ impl TermArena {
             }
             Node::Extract { a, hi, lo } => {
                 format!("((_ extract {hi} {lo}) {})", self.to_smtlib(*a))
+            }
+            Node::Concat { hi, lo } => {
+                format!("(concat {} {})", self.to_smtlib(*hi), self.to_smtlib(*lo))
+            }
+            Node::Ite { c, t, f } => {
+                // A predicate is width-1 in the arena but **`Bool` in SMT-LIB**, so it is
+                // already a legal `ite` condition; a genuine one-bit *vector* has to be
+                // compared against `#b1`. Emitting one form for both is a sort error the
+                // backend rejects outright.
+                let cond = if self.smt_is_bool(*c) {
+                    self.to_smtlib(*c)
+                } else {
+                    format!("(= {} #b1)", self.to_smtlib(*c))
+                };
+                format!("(ite {cond} {} {})", self.to_smtlib(*t), self.to_smtlib(*f))
+            }
+            // `and`/`or`/`xor` over two `Bool`s are the *boolean* connectives, not the
+            // bitvector ones. `(bvor (bvult …) (bvult …))` is a sort error the backend
+            // rejects outright — and it was reachable from any query containing a
+            // disjunction of comparisons, which is most of them.
+            Node::Bin(k, a, b)
+                if matches!(k, BinKind::And | BinKind::Or | BinKind::Xor)
+                    && self.smt_is_bool(*a)
+                    && self.smt_is_bool(*b) =>
+            {
+                let op = match k {
+                    BinKind::And => "and",
+                    BinKind::Or => "or",
+                    _ => "xor",
+                };
+                format!("({op} {} {})", self.to_smtlib(*a), self.to_smtlib(*b))
             }
             Node::Bin(k, a, b) => {
                 let (x, y) = (self.to_smtlib(*a), self.to_smtlib(*b));
@@ -391,6 +478,22 @@ impl TermArena {
         }
     }
 
+    /// Whether this term translates to an SMT-LIB **`Bool`** rather than a bit-vector.
+    ///
+    /// The arena gives predicates width 1, which is convenient for evaluation and wrong
+    /// for translation: `(= x y)` is a `Bool` and `#b1` is a one-bit vector, and the two
+    /// are not interchangeable in `ite`, `not`, or anywhere else the backend type-checks.
+    fn smt_is_bool(&self, t: Term) -> bool {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(BinKind::And | BinKind::Or | BinKind::Xor, a, b) => {
+                self.smt_is_bool(*a) && self.smt_is_bool(*b)
+            }
+            Node::Bin(k, _, _) => k.is_predicate(),
+            Node::Not(a) => self.smt_is_bool(*a),
+            _ => false,
+        }
+    }
+
     /// Every variable a term mentions, in declaration order.
     pub fn vars_of(&self, t: Term, out: &mut Vec<VarId>) {
         match &self.nodes[t.0 as usize] {
@@ -403,9 +506,14 @@ impl TermArena {
             Node::Not(a) | Node::Extend { a, .. } | Node::Extract { a, .. } => {
                 self.vars_of(*a, out)
             }
-            Node::Bin(_, a, b) => {
+            Node::Bin(_, a, b) | Node::Concat { hi: a, lo: b } => {
                 self.vars_of(*a, out);
                 self.vars_of(*b, out);
+            }
+            Node::Ite { c, t, f } => {
+                self.vars_of(*c, out);
+                self.vars_of(*t, out);
+                self.vars_of(*f, out);
             }
         }
     }
@@ -479,6 +587,17 @@ impl TermArena {
             Node::Extract { a, hi, lo } => {
                 let v = self.eval(m, *a)?;
                 BvConst::new(hi - lo + 1, v.bits() >> lo)
+            }
+            Node::Concat { hi, lo } => {
+                let (x, y) = (self.eval(m, *hi)?, self.eval(m, *lo)?);
+                BvConst::new(x.width() + y.width(), (x.bits() << y.width()) | y.bits())
+            }
+            Node::Ite { c, t, f } => {
+                if self.eval(m, *c)?.bits() != 0 {
+                    self.eval(m, *t)?
+                } else {
+                    self.eval(m, *f)?
+                }
             }
         })
     }
