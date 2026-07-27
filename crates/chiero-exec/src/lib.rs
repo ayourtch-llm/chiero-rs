@@ -1941,6 +1941,7 @@ impl<'m> Engine<'m> {
         let mut forks: Vec<Option<Value>> = Vec::new();
         let mut terminate: Option<String> = None;
         let mut havoc: Option<HavocSpec> = None;
+        let mut unresolved_args = false;
         let mut translated = true;
         {
             let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
@@ -1983,6 +1984,18 @@ impl<'m> Engine<'m> {
                 }),
                 "longjmp" => Some(models::longjmp(&mut cx)),
                 "scanf" => {
+                    // An argument chiero could not translate is not the absence of an
+                    // output buffer. Saying nothing here means a buffer the callee writes
+                    // keeps its old contents and every later read of it is confidently
+                    // wrong — the failure `havoc_args` exists to prevent, arrived at from
+                    // the inside.
+                    if resolved
+                        .iter()
+                        .skip(1)
+                        .any(|v| !matches!(v, Some(Value::Ptr(_))))
+                    {
+                        unresolved_args = true;
+                    }
                     // **Positional**, with a hole where an argument was not a pointer.
                     // Filtering first renumbered the arguments under the model's feet.
                     let ps: Vec<Option<Pointer>> = resolved
@@ -2100,6 +2113,17 @@ impl<'m> Engine<'m> {
         }
         if let Some(spec) = havoc {
             self.apply_havoc(a, s, name, &spec, span);
+        }
+        if unresolved_args {
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                &format!(
+                    "`{name}`: an output argument could not be resolved to a pointer, so \
+                     whatever it points at was left untouched and may be stale"
+                ),
+            );
         }
         if let Some(why) = terminate {
             s.status = Status::Terminated(TermReason::Unsupported);
