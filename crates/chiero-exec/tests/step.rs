@@ -11064,13 +11064,214 @@ fn a_mentioned_but_unnarrowed_pointer_still_reaches_step_four() {
         "x != 0xDEAD still leaves every object and nowhere feasible: {:#?}",
         r.findings()
     );
+    // **On the assumptions, not the findings.** `degrade` records this text and never
+    // touches `findings`, so asserting its absence over `findings()` could not fail —
+    // it passed while the exact condition it named was true. Found by review.
     assert!(
-        !r.findings().iter().any(|f| f.contains("not enumerated")),
-        "the search must terminate, not run out of queries: {:#?}",
-        r.findings()
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .all(|x| !x.detail.contains("not enumerated")),
+        "the search must terminate, not run out of queries"
     );
     assert!(
         r.states().iter().all(|s| s.local(ValueId(2)).is_none()),
         "step 5 would hand back a pointer"
     );
+}
+
+/// **The term's own structure constrains the value, even when the path says nothing.**
+///
+/// `char buf[32]; unsigned char i; p = &buf[i];` — the address is `&buf + zext_64(i)`, no
+/// path constraint mentions `i`, and it is still confined to one object plus a guard gap.
+/// Reading "the path does not mention it" as §5.1 step 4 reported an *unresolvable
+/// pointer* here and **stopped the path**, leaving everything after `p = &buf[i]`
+/// unexplored while blaming the program for saying nothing. Found by review.
+#[test]
+fn an_address_bounded_by_its_own_arithmetic_is_not_wholly_unconstrained() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut f = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+                // An 8-bit index: 256 values, all of them within one object plus its gap.
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Fresh { ty: CTy::Int(8) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Cast {
+                        kind: CastKind::ZExt,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(8),
+                        to: CTy::Int(64),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Bin {
+                        op: BinOp::Add,
+                        ty: CTy::Int(64),
+                        a: Operand::Value(ValueId(1)),
+                        b: Operand::Value(ValueId(3)),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(4)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    f.allocas = (0..3).map(|i| alloca(i, CTy::Int(8), 32)).collect();
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert!(
+        !r.findings()
+            .iter()
+            .any(|f| f.contains("value is unconstrained")),
+        "the index is 8 bits wide; that is information: {:#?}",
+        r.findings()
+    );
+    let bases: Vec<_> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(5)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bases.iter().any(|b| *b != chiero_mem::ObjectId::UNBOUND),
+        "it resolves to the object it indexes: {bases:?}"
+    );
+}
+
+/// **Step 4 survives the object count, on a path the syntactic test cannot see.**
+///
+/// `x != 0xDEAD` mentions `x`, so the bare-variable shortcut does not fire and the
+/// enumeration decides — and at 40 objects the enumeration always ends *cut*. An earlier
+/// version concretized there and reported `Approximated`, which is wave 52's regression
+/// returning: at VPP's object counts step 4 became unreachable exactly where §5.1 was
+/// written for. Found by review.
+#[test]
+fn a_cut_enumeration_of_an_unnarrowed_pointer_is_still_step_four() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    for nobj in [3u32, 40] {
+        let mut f = defined(
+            0,
+            "main",
+            vec![
+                block(
+                    0,
+                    vec![
+                        inst(InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(64) },
+                        }),
+                        inst(InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Eq,
+                                ty: CTy::Int(64),
+                                a: Operand::Value(ValueId(0)),
+                                b: Operand::Const(Const::Int {
+                                    bits: 64,
+                                    val: 0xDEAD,
+                                }),
+                            },
+                        }),
+                    ],
+                    Terminator::Br {
+                        cond: Operand::Value(ValueId(1)),
+                        t: BlockId(1),
+                        f: BlockId(2),
+                    },
+                ),
+                block(1, vec![], Terminator::Return(Some(i32c(1)))),
+                block(
+                    2,
+                    vec![inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Cast {
+                            kind: CastKind::IntToPtr,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Int(64),
+                            to: CTy::Ptr,
+                        },
+                    })],
+                    Terminator::Return(Some(i32c(0))),
+                ),
+            ],
+            CTy::Int(32),
+        );
+        f.allocas = (0..nobj).map(|i| alloca(i, CTy::Int(8), 32)).collect();
+        let m = Module {
+            funcs: vec![f],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).with_backend(backend.clone()).run(&mut a);
+        assert!(
+            r.findings()
+                .iter()
+                .any(|f| f.contains("value is unconstrained")),
+            "step 4 at {nobj} objects: {:#?}",
+            r.findings()
+        );
+        assert!(
+            r.states().iter().all(|s| s.local(ValueId(2)).is_none()),
+            "step 5 would hand back a pointer into one arbitrary object, at {nobj} objects"
+        );
+        // **The assumption, not the finding.** The "not enumerated" text is recorded by
+        // `degrade`, which never touches `findings` — an earlier version asserted its
+        // absence over `findings()` and could not fail. Found by review.
+        assert!(
+            r.states()
+                .iter()
+                .flat_map(|s| s.assumptions())
+                .all(|x| !x.detail.contains("concretized to one")),
+            "and nothing was concretized at {nobj} objects: {:#?}",
+            r.states()
+                .iter()
+                .flat_map(|s| s.assumptions())
+                .map(|x| &x.detail)
+                .collect::<Vec<_>>()
+        );
+    }
 }

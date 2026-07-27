@@ -2374,6 +2374,53 @@ impl<'m> Engine<'m> {
     /// **Steps 4 and 5 must stay distinct.** 021 records that an earlier draft merged
     /// them, so an unconstrained pointer was concretized to an arbitrary object and the run
     /// said `Bounded` — which reads as "we looked and bounded it" when nothing was known.
+    /// Whether some object is **provably not** nameable by this address (021 §5.1).
+    ///
+    /// Told apart from step 4 this way because the alternative — asking whether *every*
+    /// object is feasible — is the per-dereference O(objects) sweep §5.1 forbids, and one
+    /// object the address cannot reach is already enough to know the solver has more than
+    /// "no information at all". At most `cap` objects are probed, so a program with 10⁴
+    /// of them costs the same as one with ten.
+    ///
+    /// `false` when nothing was ruled out, which includes "the probes were inconclusive".
+    /// That leans toward step 4, and §5.1 says which way to lean: step 5 concretizes and
+    /// *continues*, so its mistake is a whole function analysed against the wrong memory,
+    /// while step 4's is stopping a path early.
+    fn some_object_ruled_out(
+        &mut self,
+        a: &mut TermArena,
+        s: &State,
+        addr: Term,
+        ranges: &[(chiero_mem::ObjectId, u64, u64)],
+        candidates: &[chiero_mem::ObjectId],
+        cap: usize,
+    ) -> bool {
+        let mut probed = 0;
+        for (id, base, size) in ranges.iter().copied() {
+            if probed >= cap {
+                break;
+            }
+            // A candidate is known feasible already; probing it would spend a query to
+            // learn nothing.
+            if candidates.contains(&id) {
+                continue;
+            }
+            probed += 1;
+            let lo = a.bv(64, base as u128);
+            let hi = a.bv(64, base.wrapping_add(size) as u128);
+            let below = a.ult(addr, lo);
+            let in_lo = a.not(below);
+            let lt_hi = a.ult(addr, hi);
+            let eq_hi = a.eq(addr, hi);
+            let in_hi = a.or(lt_hi, eq_hi);
+            let inside = a.and(in_lo, in_hi);
+            if matches!(self.feasible(a, s, inside), Feas::No) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// 021 §5.1 step 4: the value is unconstrained, so the path ends here.
     ///
     /// **Not** step 5 — concretizing an unconstrained pointer to some object and
@@ -2438,21 +2485,23 @@ impl<'m> Engine<'m> {
             a.and(in_lo, in_hi)
         };
 
-        // **"Wholly unconstrained" is a syntactic property.** Discovering it by asking
-        // whether every object is feasible is the sweep itself, and it is the one case
-        // §5.1 most wants distinguished (step 4, not step 5). If no constraint on the
-        // path mentions any variable the address depends on, every value it could take is
-        // feasible — decided here with no queries at all. The converse is not exact: an
-        // address a constraint *mentions* but does not narrow falls through to the
-        // enumeration below, which reaches step 4 too whenever it completes.
-        let mut addr_vars = Vec::new();
-        a.vars_of(addr, &mut addr_vars);
-        let unconstrained = !addr_vars.is_empty()
-            && s.path.iter().all(|c| {
+        // **A bare variable no constraint mentions can take any value at all.** That is
+        // §5.1 step 4 read off the path, with no queries — and asking whether every
+        // object is feasible instead is the sweep itself.
+        //
+        // ⚠️ The variable check is not decoration. An earlier version asked only that no
+        // path constraint mention the address's variables, and reported step 4 for
+        // `&buf[i]` with an 8-bit `i`: `zext_64(i) + &buf` is mentioned nowhere on the
+        // path and is still confined to one object plus a guard gap. **The term's own
+        // structure constrains the value**, so "the path says nothing" is not "nothing is
+        // known" for anything but a variable. Found by review.
+        let unconstrained = a.var_id(addr).is_some_and(|v| {
+            s.path.iter().all(|c| {
                 let mut cv = Vec::new();
                 a.vars_of(*c, &mut cv);
-                !cv.iter().any(|v| addr_vars.contains(v))
-            });
+                !cv.contains(&v)
+            })
+        });
         if unconstrained && !ranges.is_empty() {
             self.unresolvable_pointer(s, span);
             return None;
@@ -2516,64 +2565,19 @@ impl<'m> Engine<'m> {
         }
         let exhausted = !complete && !over_cap && !undecided;
 
-        // **Step 4 is decided before step 5**, because "every object *and* nowhere" is a
-        // statement about the program and the cap is a statement about chiero. Testing the
-        // cap first let the number of objects decide which one a reader was told. The
-        // enumeration only licenses this when it ran to unsat: short of that, "the ones I
-        // found" is not "the ones there are".
+        // **The solver gave up part-way through.** Whatever was found is a *subset* of
+        // what the address can name, so the fork below would not be exhaustive: objects
+        // nobody enumerated get no state, and the wild sibling is the negation of every
+        // range rather than of the ones that were checked. Reporting that as `Bounded`
+        // says "we explored a subset correctly" about an exploration that skipped part of
+        // the program, so the path ends at `SolverUnknown` instead — a statement about
+        // chiero, which is what it is. Found by review; before, only an enumeration that
+        // gave up *immediately* was caught.
         //
-        // `complete` is an invariant here rather than an observable branch, and mutation
-        // testing says so — removing it fails nothing. It cannot be reached by a *cut*
-        // enumeration: the address space holds `2n+1` regions for `n` objects and the
-        // round bound is `2*cap+4`, so running out of rounds needs `n >= cap+2`, and an
-        // address that can name that many objects trips the cap first, leaving
-        // `candidates.len() < ranges.len()`. What it does rule out is a solver that gives
-        // up *after* every object has been named: that is `SolverUnknown`, a statement
-        // about chiero, and reporting it as step 4 would blame the program for it.
-        if complete && can_be_wild && candidates.len() == ranges.len() && !ranges.is_empty() {
-            self.unresolvable_pointer(s, span);
-            return None;
-        }
-        if exhausted {
-            // Not step 4 and not quite step 5: the address can be pinned down, but not
-            // within the query budget this resolution is allowed. Saying which is the
-            // difference between a reader strengthening the program and raising a limit.
-            s.degrade(
-                Fidelity::Approximated,
-                AssumptionKind::OpaqueCode,
-                span,
-                &format!(
-                    "a symbolic pointer's object set was not enumerated within {rounds} \
-                     queries, so it was concretized to one"
-                ),
-            );
-            return Some(Value::Ptr(Pointer {
-                base: candidates.first().copied()?,
-                off: 0,
-            }));
-        }
-        if over_cap {
-            // Step 5: concretize, and say the exploration was cut rather than that the
-            // pointer was pinned.
-            s.degrade(
-                Fidelity::Approximated,
-                AssumptionKind::OpaqueCode,
-                span,
-                &format!(
-                    "a symbolic pointer could refer to more than max_resolutions ({cap}) \
-                     objects, so it was concretized to one"
-                ),
-            );
-            let first = candidates.first().copied()?;
-            return Some(Value::Ptr(Pointer {
-                base: first,
-                off: 0,
-            }));
-        }
-        if undecided && candidates.is_empty() {
-            // 023 §7's `SolverUnknown` cause, not §5.1 step 4. The fidelity is the same
-            // and the reason is not, and only the reason tells a reader whether to
-            // strengthen the program or the solver.
+        // 023 §7's `SolverUnknown` cause, not §5.1 step 4: the fidelity is the same and
+        // the reason is not, and only the reason tells a reader whether to strengthen the
+        // program or the solver.
+        if undecided {
             self.finding_seq += 1;
             s.findings.push(StateFinding {
                 id: self.finding_seq,
@@ -2591,6 +2595,71 @@ impl<'m> Engine<'m> {
             );
             s.status = Status::Terminated(TermReason::Unsupported);
             return None;
+        }
+
+        // **Step 4 is decided before step 5**, because "every object *and* nowhere" is a
+        // statement about the program and the cap is a statement about chiero. Testing the
+        // cap first let the number of objects decide which one a reader was told.
+        //
+        // A *cut* enumeration — over the cap, or out of rounds — that also proved the
+        // address can be outside every object is step 4 as well. Telling "every object and
+        // nowhere" from "more than `max_resolutions` objects and nowhere" costs one query
+        // per object, which is the sweep §5.1 forbids; and of the two, step 4 is the
+        // honest side. §5.1's own argument says why: step 5 concretizes and *continues*,
+        // so getting this backwards means the rest of the function reads and writes the
+        // wrong memory, while over-reporting step 4 only stops early.
+        //
+        // ⚠️ An earlier version concretized here, which reverted wave 52: at VPP's object
+        // counts the enumeration always ends cut, so step 4 became unreachable exactly
+        // where §5.1 was written for. Found by review.
+        let cut = over_cap || exhausted;
+        let step_four = can_be_wild
+            && !ranges.is_empty()
+            && if cut {
+                // The enumeration did not finish, so "every object" cannot be read off
+                // `candidates`. **One counterexample settles it**: an object the address
+                // provably cannot be in means the solver knows something, which is step 5.
+                // Probing at most `cap` of them keeps the cost tied to the cap rather than
+                // to the object count — 021 contract 17's own case is settled in two.
+                !self.some_object_ruled_out(a, s, addr, &ranges, &candidates, cap)
+            } else {
+                candidates.len() == ranges.len()
+            };
+        if step_four {
+            self.unresolvable_pointer(s, span);
+            return None;
+        }
+        if cut {
+            // Step 5. The address is confined to objects — the wild case was never
+            // proved — and there are more of them than the resolution is allowed to
+            // explore, so one is kept and the run says the exploration was cut rather
+            // than that the pointer was pinned.
+            let why = if over_cap {
+                format!(
+                    "a symbolic pointer could refer to more than max_resolutions ({cap}) \
+                     objects, so it was concretized to one"
+                )
+            } else {
+                format!(
+                    "a symbolic pointer's object set was not enumerated within {rounds} \
+                     queries, so it was concretized to one"
+                )
+            };
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::OpaqueCode,
+                span,
+                &why,
+            );
+            let first = candidates.first().copied()?;
+            // **The offset comes from the address here too.** Handing back byte 0 of the
+            // chosen object is the wave-51 D4 bug in a branch that had not been looked at.
+            let off = s
+                .mem
+                .addr_of(first)
+                .and_then(|base| self.pinned_offset(a, s, addr, base))
+                .unwrap_or(0);
+            return Some(Value::Ptr(Pointer { base: first, off }));
         }
         if candidates.is_empty() && can_be_wild {
             // 021 §7.1's own scenario: an address provably in a guard gap belongs to no

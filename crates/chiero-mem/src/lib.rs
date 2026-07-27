@@ -1883,7 +1883,11 @@ impl Memory {
     pub fn wild_region_around(&self, a: u64) -> (u64, u64) {
         let (mut lo, mut hi) = (0u64, u64::MAX);
         for (_, base, size) in self.resolvable_ranges() {
-            let top = base.saturating_add(size);
+            // **`wrapping_add`, matching the containment test the caller used.** With
+            // `saturating_add` the two disagreed exactly when `base + size` overflows,
+            // which is the one case that reaches the inside-an-object branch below — an
+            // address the caller called wild and this called owned. Found by review.
+            let top = base.wrapping_add(size);
             if top < a {
                 lo = lo.max(top.saturating_add(1));
             } else if base > a {
