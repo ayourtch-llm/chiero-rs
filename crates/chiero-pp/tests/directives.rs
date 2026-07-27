@@ -83,6 +83,66 @@ fn include_guards_and_pragma_once_avoid_second_read() {
 }
 
 #[test]
+fn inactive_include_does_not_touch_the_loader() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("never.h"), "should_not_be_read\n".into());
+    let tu = preprocess_with_loader(
+        "main.c",
+        "#if 0\n#include \"never.h\"\n#endif\nlive\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert!(files.reads.is_empty(), "inactive include performed IO");
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["live"]);
+}
+
+#[test]
+fn included_builtins_and_spans_name_the_header() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("inc/header.h"),
+        "__FILE__ __LINE__ header_token\n".into(),
+    );
+    let tu = preprocess_with_loader(
+        "inc/main.c",
+        "#include \"header.h\"\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(
+        tu.token_texts().collect::<Vec<_>>(),
+        ["\"inc/header.h\"", "1", "header_token"]
+    );
+    let loc = tu.source_map.spelling_loc(tu.tokens[2].span).unwrap();
+    assert_eq!(
+        tu.source_map.file(loc.file).path(),
+        Path::new("inc/header.h")
+    );
+}
+
+#[test]
+fn whitespace_spelling_does_not_defeat_guard_detection() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("tabs.h"),
+        "#ifndef\tTABS_H\n#define\tTABS_H\nonce\n#endif\n".into(),
+    );
+    let tu = preprocess_with_loader(
+        "main.c",
+        "#include \"tabs.h\"\n#include \"tabs.h\"\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(files.reads.get(Path::new("tabs.h")), Some(&1));
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["once"]);
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files
