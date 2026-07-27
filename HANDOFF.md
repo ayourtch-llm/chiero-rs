@@ -1554,12 +1554,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      lost its `object_size_for_test` assertion, because a `DYNAMIC_EXTENT` alloca with no
      `AllocaDyn` is now correctly rejected before frame setup. Restore that half when
      `AllocaDyn` lands. The `yields_unknown_value` cluster is pinned in both directions.
-   - A zero-sized `Load` (`CTy::Void`) fabricates a **64-bit** symbol, because `sort_of`
-     falls through to `BitVec(64)` — which also gives a faulting `f32` load the wrong width.
-   - A faulting **loop** floods the findings list (9 byte-identical copies of one bug;
-     256 in a `VLIB_FRAME_SIZE` loop). `RunResult::findings` dedups only on the sequence id;
-     023 §6.1's `(checker, span, object, kind)` key is available — `kind()`/`at()`/`object()`
-     were added for it in wave F — and unused. *Fork* dedup is fine and separately probed.
+   - ~~A zero-sized `Load` fabricates a 64-bit symbol~~ and ~~a faulting loop floods the
+     findings list~~ **DONE** (`03d7539`, 529 tests). Findings now carry
+     `FindingKey { kind, span, object }` and `RunResult::findings` dedups on it; the
+     sequence id recognises the copies a **fork** makes and cannot recognise the copies a
+     **loop** makes. Model reports are bare strings with nothing to key on, so they keep
+     the fork identity — 023 §6.1's full key stays 040's to apply. ⚠️ Mutation added the
+     load-bearing test: dropping the *object* component survived, and **merging is the
+     dangerous direction** — a duplicate is noise, a dropped finding is a missed bug, and a
+     hand-written fixture has `Span::DUMMY` everywhere so the key collapses without it.
+   - `sort_of` still falls through to `BitVec(64)` for a *faulting* `f32` load, which is a
+     narrower version of the same defect.
    - Execution continues past a definite crash and **later findings are false**:
      `int x; *(int*)0 = 1; return x;` reports the unreachable uninitialized read.
    - `models::scanf` applies `.skip(1)` to the *filtered* pointer list, so an unresolvable
