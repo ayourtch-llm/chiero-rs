@@ -7698,3 +7698,113 @@ fn the_vector_operations_move_lanes_where_they_belong() {
         "mask 4 crosses into b's lane 0"
     );
 }
+
+/// **Every way of erroring degrades the state itself.** None of the `Status::Errored`
+/// assignments called `degrade`, so `State::fidelity()` answered `Exact` for a state that
+/// had given up — and only one line in `RunResult::fidelity`, which special-cases the
+/// status, stood between that and a PROVEN seal. The review's mutation removed that line
+/// and `seal` returned PROVEN. One untested line is not a place to keep the project's
+/// central guarantee. Found by review.
+#[test]
+fn every_way_of_erroring_degrades_the_state() {
+    // Each of these reaches a different `Status::Errored` site.
+    let unknown_callee = Module {
+        funcs: vec![defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(7)),
+                    args: vec![],
+                })],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        )],
+        ..Default::default()
+    };
+    // **The targets exist**, so `verify` passes and the only thing that can go wrong is
+    // the terminator being unimplemented. An earlier version branched to a missing block,
+    // which `verify` rejects — so the run errored on the *verification* path and the
+    // engine's own site was never reached.
+    let unsupported_term = Module {
+        funcs: vec![defined(
+            0,
+            "main",
+            vec![
+                block(
+                    0,
+                    vec![],
+                    Terminator::Switch {
+                        scrut: i32c(1),
+                        ty: CTy::Int(32),
+                        cases: vec![(1, BlockId(1))],
+                        default: BlockId(1),
+                    },
+                ),
+                block(1, vec![], Terminator::Return(Some(i32c(0)))),
+            ],
+            CTy::Int(32),
+        )],
+        ..Default::default()
+    };
+    let bad_branch = Module {
+        funcs: vec![defined(
+            0,
+            "main",
+            vec![
+                block(
+                    0,
+                    vec![inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    })],
+                    Terminator::Br {
+                        cond: Operand::Value(ValueId(0)),
+                        t: BlockId(1),
+                        f: BlockId(1),
+                    },
+                ),
+                block(1, vec![], Terminator::Return(Some(i32c(0)))),
+            ],
+            CTy::Int(32),
+        )],
+        ..Default::default()
+    };
+    for (what, m) in [
+        ("an unknown callee", unknown_callee),
+        ("an unsupported terminator", unsupported_term),
+        ("a non-scalar branch condition", bad_branch),
+    ] {
+        let mut m = m;
+        m.funcs[0].allocas = vec![AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Ptr, 1)
+        }];
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        let s = &r.states()[0];
+        // **No escape hatch.** An earlier version skipped cases that did not error, and
+        // every one of them was being rejected by `verify` instead — so the loop body
+        // never ran and the test asserted nothing at all.
+        assert!(
+            matches!(s.status, Status::Errored(_)),
+            "{what}: expected this to error, got {:?}",
+            s.status
+        );
+        assert_ne!(
+            s.fidelity(),
+            Fidelity::Exact,
+            "{what}: the state itself must say so"
+        );
+        assert!(
+            s.assumptions().iter().any(|x| x.kind.matches(s.fidelity())),
+            "{what}: and name a cause of the right kind: {:#?}",
+            s.assumptions()
+        );
+    }
+}

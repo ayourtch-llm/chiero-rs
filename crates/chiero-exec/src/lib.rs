@@ -321,6 +321,15 @@ impl State {
         self.fidelity
     }
 
+    /// The state gave up. **Sets the status and degrades together**, because they are one
+    /// fact: `RunResult::fidelity` special-cases `Errored` so a run containing one cannot
+    /// mint a proof, and resting the project's central guarantee on that single line meant
+    /// `State::fidelity()` on its own answered `Exact` for a state that had stopped.
+    fn give_up(&mut self, why: String, span: Span) {
+        self.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
+        self.status = Status::Errored(why);
+    }
+
     pub fn assumptions(&self) -> &[Assumption] {
         &self.assumptions
     }
@@ -829,14 +838,15 @@ impl<'m> Engine<'m> {
     fn step(&mut self, a: &mut TermArena, s: &mut State) -> Option<State> {
         let cur = s.func();
         let Some(f) = self.module.funcs.iter().find(|f| f.id == cur) else {
-            s.status = Status::Errored(format!("no such function {cur:?}"));
+            s.give_up(format!("no such function {cur:?}"), Span::DUMMY);
             return None;
         };
         // **`step` is total** (023 §2). Returning `None` here without setting a status
         // left the run loop spinning forever — no allocation, so not even the OOM killer
         // would end it.
         let Some(b) = f.blocks.iter().find(|b| b.id == s.pc.0) else {
-            s.status = Status::Errored(format!("no such block {:?}", s.pc.0));
+            let why = format!("no such block {:?}", s.pc.0);
+            s.give_up(why, Span::DUMMY);
             return None;
         };
         if s.pc.1 < b.insts.len() {
@@ -1123,7 +1133,7 @@ impl<'m> Engine<'m> {
             }
         };
         let Some(f) = self.module.funcs.iter().find(|f| f.id == *id) else {
-            s.status = Status::Errored("call to an unknown function".into());
+            s.give_up("call to an unknown function".into(), span);
             return;
         };
         let (noreturn, body, name, ret_ty) = (
@@ -1373,7 +1383,7 @@ impl<'m> Engine<'m> {
                 None
             }
             _ => {
-                s.status = Status::Errored("unsupported terminator".into());
+                s.give_up("unsupported terminator".into(), Span::DUMMY);
                 None
             }
         }
@@ -1432,7 +1442,7 @@ impl<'m> Engine<'m> {
         bf: BlockId,
     ) -> Option<State> {
         let Some(Value::Scalar(c)) = self.operand(a, s, cond) else {
-            s.status = Status::Errored("branch condition is not a scalar".into());
+            s.give_up("branch condition is not a scalar".into(), Span::DUMMY);
             return None;
         };
         // §3 step 4: a constant condition makes **no solver call**. This fast path carries
@@ -1466,7 +1476,7 @@ impl<'m> Engine<'m> {
             (Feas::No, Feas::No) => {
                 // Both infeasible: the path condition is already unsatisfiable, which §3
                 // calls a bug in chiero rather than a finding.
-                s.status = Status::Errored("both branches infeasible".into());
+                s.give_up("both branches infeasible".into(), Span::DUMMY);
                 None
             }
             // One side refuted, the other undecided: explore **only** the undecided one.
@@ -2583,7 +2593,7 @@ impl<'m> Engine<'m> {
     /// direct path so an indirect candidate is executed exactly like a direct call.
     fn direct_into(&mut self, s: &mut State, id: FuncId, dst: Option<ValueId>, span: Span) {
         let Some(f) = self.module.funcs.iter().find(|f| f.id == id) else {
-            s.status = Status::Errored("call to an unknown function".into());
+            s.give_up("call to an unknown function".into(), span);
             return;
         };
         let mut frame_objs = IndexMap::new();
