@@ -1127,6 +1127,17 @@ impl Memory {
         }
     }
 
+    /// A byte-wise write: no alignment requirement, because `memcpy` and friends move
+    /// bytes and C imposes none on them. The scalar rule — an N-byte access wants N-byte
+    /// alignment — is about scalar loads and stores, and applying it here makes every
+    /// `strcpy` into a `char` buffer a false positive.
+    pub fn write_bytewise(&mut self, p: Pointer, bytes: &[u8], at: Span) -> AccessResult<()> {
+        let mut r = self.write(p, bytes, at);
+        r.faults
+            .retain(|f| !matches!(f, MemFault::Misaligned { .. }));
+        r
+    }
+
     pub fn write(&mut self, p: Pointer, bytes: &[u8], at: Span) -> AccessResult<()> {
         if let Some(f) = self.state_fault(p.base, p.off, at) {
             return AccessResult::fault(f);
@@ -1353,7 +1364,7 @@ impl Memory {
         }
         // `bytes` was snapshotted before any write, which is exactly the temporary
         // `memmove` is defined in terms of.
-        let w = self.write(dst, &bytes, at);
+        let w = self.write_bytewise(dst, &bytes, at);
         faults.extend(w.faults);
         if w.value.is_none() {
             return AccessResult {
@@ -1378,7 +1389,7 @@ impl Memory {
     /// 021 contract 28: the range becomes initialized and reads back as the set byte.
     pub fn set(&mut self, dst: Pointer, byte: u8, size: u64, at: Span) -> AccessResult<()> {
         let bytes = vec![byte; size as usize];
-        self.write(dst, &bytes, at)
+        self.write_bytewise(dst, &bytes, at)
     }
 
     /// The source side of a `copy`: state, bounds and alignment as usual, but **no
@@ -1395,6 +1406,7 @@ impl Memory {
         size: u64,
         at: Span,
     ) -> AccessResult<(Vec<u8>, Vec<InitBit>)> {
+        // Byte-wise, so no alignment fault here either.
         if let Some(f) = self.state_fault(p.base, p.off, at) {
             return AccessResult::fault(f);
         }

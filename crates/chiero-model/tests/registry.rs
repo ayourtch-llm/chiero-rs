@@ -514,7 +514,11 @@ fn strlen_over_concrete_bytes_is_a_plain_answer() {
     let o = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
     m.write(Pointer { base: o, off: 0 }, b"abc\0", Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    match models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default()) {
+    match models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy::default(),
+    ) {
         StrScan::Exact(n) => assert_eq!(n, 3),
         other => panic!("expected a definite length, got {other:?}"),
     }
@@ -532,7 +536,11 @@ fn an_unterminated_string_is_an_out_of_bounds_finding() {
     let o = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
     m.write(Pointer { base: o, off: 0 }, b"abcd", Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    let r = models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy::default(),
+    );
     assert!(
         matches!(r, StrScan::Unterminated { .. }),
         "no NUL in the object, got {r:?}"
@@ -632,6 +640,10 @@ fn a_strcpy_that_fits_copies_the_string_and_its_terminator() {
     let dst = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
     let src = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
     m.write(Pointer { base: src, off: 0 }, b"abc\0", Span::DUMMY);
+    // **Pre-filled with non-zero bytes.** A freshly allocated object's backing reads as
+    // zero, so a `strcpy` that forgot the terminator would leave a zero there anyway and
+    // look correct — the same-answer trap, with the fixture supplying the right answer.
+    m.write(Pointer { base: dst, off: 0 }, &[0xFF; 8], Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
     models::strcpy(
         &mut cx,
@@ -642,10 +654,35 @@ fn a_strcpy_that_fits_copies_the_string_and_its_terminator() {
     assert!(cx.findings().is_empty(), "{:#?}", cx.findings());
     assert_eq!(
         cx.mem()
-            .read(Pointer { base: dst, off: 0 }, 4, Span::DUMMY)
+            .read(Pointer { base: dst, off: 0 }, 5, Span::DUMMY)
             .value
             .unwrap(),
-        b"abc\0".to_vec(),
-        "the NUL is part of the string"
+        vec![b'a', b'b', b'c', 0, 0xFF],
+        "the NUL is copied, and nothing past it is"
     );
+}
+
+/// The destination bound is `strlen + 1`, exactly. A buffer of `strlen` bytes is one
+/// short — that off-by-one *is* the classic overflow — and one of `strlen + 1` fits.
+#[test]
+fn the_destination_must_hold_the_terminator_too() {
+    for (size, expect_finding) in [(3u64, true), (4, false)] {
+        let mut m = Memory::new();
+        let mut a = TermArena::new();
+        let dst = m.alloc(ObjKind::Heap, size, 1, Span::DUMMY);
+        let src = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+        m.write(Pointer { base: src, off: 0 }, b"abc\0", Span::DUMMY);
+        let mut cx = ctx(&mut m, &mut a);
+        models::strcpy(
+            &mut cx,
+            Pointer { base: dst, off: 0 },
+            Pointer { base: src, off: 0 },
+            StringPolicy::default(),
+        );
+        assert_eq!(
+            !cx.findings().is_empty(),
+            expect_finding,
+            "\"abc\" needs 4 bytes; a {size}-byte destination"
+        );
+    }
 }

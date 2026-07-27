@@ -96,6 +96,34 @@ impl HavocSpec {
     }
 }
 
+/// 024 §4. `max_scan` bounds the walk; it is **not** an assumption that a terminator
+/// exists within it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StringPolicy {
+    pub max_scan: u64,
+}
+
+impl Default for StringPolicy {
+    fn default() -> StringPolicy {
+        StringPolicy { max_scan: 256 }
+    }
+}
+
+/// The outcome of a string walk. Three outcomes, not two, because §4 is explicit that
+/// "the object ended" and "I stopped looking" are different claims — collapsing them is
+/// how the cap comes to assume away the bug the OOB check exists to find.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StrScan {
+    /// A NUL was found at this offset from the start.
+    Exact(u64),
+    /// The object ended with no NUL: an out-of-bounds read, and 024 §4 calls this the
+    /// most valuable thing these models catch.
+    Unterminated { scanned: u64 },
+    /// `max_scan` was reached first. **No constraint is added** — nothing is known about
+    /// the rest of the object, and claiming a bug there would be inventing one.
+    CapReached { scanned: u64 },
+}
+
 /// 024 contract 1/2. Allocation failure is a real path; pruning it silently hides a bug
 /// class, so it is explored by default and suppressing it is a deliberate setting.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -174,6 +202,8 @@ impl ModelRegistry {
             ModelEntry::exact("memcpy"),
             ModelEntry::exact("memmove"),
             ModelEntry::exact("memset"),
+            ModelEntry::exact("strlen"),
+            ModelEntry::exact("strcpy"),
             ModelEntry::approximate("scanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("fscanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("read", "syscall result is outside the program"),
@@ -323,7 +353,7 @@ pub mod models {
     pub fn is_implemented(name: &str) -> bool {
         matches!(
             name,
-            "malloc" | "calloc" | "free" | "memcpy" | "memmove" | "memset"
+            "malloc" | "calloc" | "free" | "memcpy" | "memmove" | "memset" | "strlen" | "strcpy"
         )
     }
 
@@ -404,6 +434,89 @@ pub mod models {
     ) -> ModelOutcome {
         let at = cx.span();
         let r = cx.mem().copy(dst, src, size, rule, at);
+        let faults = r.faults.clone();
+        cx.lift(&faults);
+        ModelOutcome::Value(Some(Value::Ptr(dst)))
+    }
+
+    /// 024 §4. Walk forward to the NUL, bounded by `min(max_scan, object size)`.
+    ///
+    /// The two bounds mean different things and must not be conflated: the **object's**
+    /// end is a bug in the program, the **cap** is a limit on chiero. An earlier draft of
+    /// the spec had the cap constrain a terminator to exist, which assumes away the
+    /// unterminated-string bug whenever the object is smaller than the cap.
+    pub fn strlen(cx: &mut ModelCtx, p: Pointer, policy: StringPolicy) -> StrScan {
+        let at = cx.span();
+        let size = cx.mem().size_of_pub(p.base).unwrap_or(0);
+        let from = p.off.max(0) as u64;
+        let room = size.saturating_sub(from);
+        for i in 0..room.min(policy.max_scan) {
+            let off = p.off + i as i64;
+            let r = cx.mem().read(Pointer { base: p.base, off }, 1, at);
+            match r.value.as_deref() {
+                Some([0]) => return StrScan::Exact(i),
+                Some(_) => {}
+                // A byte that cannot be read concretely stops the concrete walk; the
+                // symbolic fork of §4 step 2 is owed.
+                None => {
+                    cx.report(format!(
+                        "strlen: byte {i} is not concretely readable; symbolic scan is not \
+                         implemented"
+                    ));
+                    return StrScan::CapReached { scanned: i };
+                }
+            }
+        }
+        if room <= policy.max_scan {
+            cx.report(format!(
+                "strlen: unterminated string — {room} bytes scanned to the end of the \
+                 object with no NUL"
+            ));
+            StrScan::Unterminated { scanned: room }
+        } else {
+            cx.report(format!(
+                "strlen: max_string_scan ({}) reached; the rest of the object was not \
+                 examined",
+                policy.max_scan
+            ));
+            StrScan::CapReached {
+                scanned: policy.max_scan,
+            }
+        }
+    }
+
+    /// 024 contract 9. The same walk plus a bounds check on the destination, which is
+    /// where the classic overflows are.
+    pub fn strcpy(
+        cx: &mut ModelCtx,
+        dst: Pointer,
+        src: Pointer,
+        policy: StringPolicy,
+    ) -> ModelOutcome {
+        let n = match strlen(cx, src, policy) {
+            StrScan::Exact(n) => n,
+            // Nothing to copy that we can vouch for; `strlen` already reported why.
+            other => return ModelOutcome::Finding(format!("strcpy: source scan gave {other:?}")),
+        };
+        // The terminator is part of the string, so the destination needs `n + 1`.
+        let need = n + 1;
+        let have = cx
+            .mem()
+            .size_of_pub(dst.base)
+            .unwrap_or(0)
+            .saturating_sub(dst.off.max(0) as u64);
+        if need > have {
+            let msg = format!(
+                "strcpy: destination holds {have} bytes and the source needs {need} \
+                 including the terminator"
+            );
+            cx.report(msg.clone());
+            return ModelOutcome::Finding(msg);
+        }
+        let at = cx.span();
+        let r = cx
+            .mem()
+            .copy(dst, src, need, chiero_mem::Overlap::Forbidden, at);
         let faults = r.faults.clone();
         cx.lift(&faults);
         ModelOutcome::Value(Some(Value::Ptr(dst)))

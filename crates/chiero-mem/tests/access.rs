@@ -943,3 +943,37 @@ fn globals_and_live_stack_objects_are_roots_without_being_declared() {
     assert_eq!(leaks.len(), 1, "{leaks:#?}");
     assert_eq!(leaks[0].obj, held_by_local);
 }
+
+/// **A byte-wise copy has no alignment requirement.** `memcpy`, `memmove`, `memset` and
+/// `strcpy` move bytes; C imposes no alignment on them, and the scalar rule — an N-byte
+/// access wants N-byte alignment — is about *scalar* loads and stores.
+///
+/// Applying it to a copy makes every `strcpy` into a `char` buffer a false positive, which
+/// is both the commonest string operation there is and the one these models exist to
+/// check.
+#[test]
+fn a_byte_wise_copy_is_not_subject_to_the_scalar_alignment_rule() {
+    let mut m = Memory::new();
+    let dst = m.alloc(ObjKind::Heap, 8, 1, sp(1));
+    let src = m.alloc(ObjKind::Heap, 8, 1, sp(2));
+    m.write(ptr(src, 0), &[1, 2, 3, 4], sp(3));
+    for r in [
+        m.copy(ptr(dst, 0), ptr(src, 0), 4, Overlap::Forbidden, sp(4))
+            .faults,
+        m.set(ptr(dst, 1), 0, 4, sp(5)).faults,
+    ] {
+        assert!(
+            !r.iter().any(|f| matches!(f, MemFault::Misaligned { .. })),
+            "a byte-wise operation has no alignment requirement: {r:#?}"
+        );
+    }
+    // A *scalar* access at the same place still does, or the fix has removed the rule
+    // rather than scoped it.
+    assert!(
+        m.read(ptr(dst, 1), 4, sp(6))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Misaligned { .. })),
+        "the scalar rule still applies to a scalar access"
+    );
+}
