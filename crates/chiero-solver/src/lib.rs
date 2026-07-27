@@ -6,6 +6,12 @@
 
 use indexmap::IndexMap;
 
+/// The widest bit-vector a `BvConst` payload can hold.
+///
+/// 020 permits `Int(512)` for AVX-512, so this is a real boundary rather than a
+/// theoretical one — `Const::Wide` is where wider values eventually live.
+pub const MAX_BV_BITS: u32 = 128;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Sort {
     Bool,
@@ -32,7 +38,10 @@ impl BvConst {
     /// Truncates to `width`, so a `BvConst` is always canonical and two constants
     /// denoting the same value are `Eq` — which hash-consing relies on.
     pub fn new(width: u32, bits: u128) -> Self {
-        assert!(width > 0 && width <= 128, "width {width} out of range");
+        assert!(
+            width > 0 && width <= MAX_BV_BITS,
+            "width {width} out of range"
+        );
         BvConst {
             width,
             bits: bits & mask(width),
@@ -261,6 +270,16 @@ impl TermArena {
     }
 
     /// SMT-LIB `concat`, folding when both sides are constant.
+    /// `concat`, or `None` if the result would exceed the payload width.
+    ///
+    /// `BvConst` is 128 bits, so a 17-byte assembly either tripped the width assert
+    /// inside the caller or built the term and deferred the panic to evaluation.
+    /// Refusing is the honest answer; 020 permits `Int(512)` and the eventual home for
+    /// wider values is `Const::Wide`.
+    pub fn try_concat(&mut self, hi: Term, lo: Term) -> Option<Term> {
+        (self.width(hi) + self.width(lo) <= MAX_BV_BITS).then(|| self.concat(hi, lo))
+    }
+
     pub fn concat(&mut self, hi: Term, lo: Term) -> Term {
         if let (Some(x), Some(y)) = (self.as_const(hi), self.as_const(lo)) {
             let w = x.width() + y.width();
@@ -405,20 +424,27 @@ impl TermArena {
     pub fn to_smtlib(&self, t: Term) -> String {
         match &self.nodes[t.0 as usize] {
             Node::Const(c) => {
-                if c.width() == 1 {
-                    // A one-bit constant in predicate position is a Bool.
-                    if c.bits() == 0 {
-                        "false".into()
-                    } else {
-                        "true".into()
-                    }
-                } else {
-                    format!("(_ bv{} {})", c.bits(), c.width())
-                }
+                // **Always a bitvector.** Guessing that every width-1 constant is a
+                // `Bool` produced `(= v0_flag true)` for a one-bit *variable*,
+                // `(concat true v0_b)` inside a concat, and `(ite … true false)` where a
+                // one-bit vector was wanted — three sort errors from one guess. A one-bit
+                // bitvector is what `LoadBits` of a `u32 flag:1` yields, so the case is
+                // ordinary, not exotic. Coercion now happens where the *context* knows
+                // which sort it needs.
+                { format!("(_ bv{} {})", c.bits(), c.width()) }
             }
             Node::Var(v, _) => smt_name(v, &self.vars[v.0 as usize].0),
             // Same distinction: `not` over a `Bool`, `bvnot` over a vector.
             Node::Not(a) if self.smt_is_bool(*a) => format!("(not {})", self.to_smtlib(*a)),
+            Node::Extend { a, to, signed } if self.smt_is_bool(*a) => {
+                let by = to - 1;
+                let op = if *signed {
+                    "sign_extend"
+                } else {
+                    "zero_extend"
+                };
+                format!("((_ {op} {by}) {})", self.smt_bv(*a))
+            }
             Node::Not(a) => format!("(bvnot {})", self.to_smtlib(*a)),
             Node::Extend { a, to, signed } => {
                 let by = to - self.width(*a);
@@ -433,38 +459,55 @@ impl TermArena {
                 format!("((_ extract {hi} {lo}) {})", self.to_smtlib(*a))
             }
             Node::Concat { hi, lo } => {
-                format!("(concat {} {})", self.to_smtlib(*hi), self.to_smtlib(*lo))
+                format!("(concat {} {})", self.smt_bv(*hi), self.smt_bv(*lo))
             }
             Node::Ite { c, t, f } => {
                 // A predicate is width-1 in the arena but **`Bool` in SMT-LIB**, so it is
                 // already a legal `ite` condition; a genuine one-bit *vector* has to be
                 // compared against `#b1`. Emitting one form for both is a sort error the
                 // backend rejects outright.
-                let cond = if self.smt_is_bool(*c) {
-                    self.to_smtlib(*c)
+                // The branches keep whatever sort they already have, but they must
+                // agree with each other — a `Bool` branch beside a vector branch is the
+                // same sort error one level down.
+                let bool_branches = self.smt_is_bool(*t) && self.smt_is_bool(*f);
+                let (tb, fb) = if bool_branches {
+                    (self.to_smtlib(*t), self.to_smtlib(*f))
                 } else {
-                    format!("(= {} #b1)", self.to_smtlib(*c))
+                    (self.smt_bv(*t), self.smt_bv(*f))
                 };
-                format!("(ite {cond} {} {})", self.to_smtlib(*t), self.to_smtlib(*f))
+                format!("(ite {} {tb} {fb})", self.smt_bool(*c))
             }
             // `and`/`or`/`xor` over two `Bool`s are the *boolean* connectives, not the
             // bitvector ones. `(bvor (bvult …) (bvult …))` is a sort error the backend
             // rejects outright — and it was reachable from any query containing a
             // disjunction of comparisons, which is most of them.
-            Node::Bin(k, a, b)
-                if matches!(k, BinKind::And | BinKind::Or | BinKind::Xor)
-                    && self.smt_is_bool(*a)
-                    && self.smt_is_bool(*b) =>
-            {
+            // A connective is boolean only when **both** sides already are. A mixed
+            // pair — one predicate, one one-bit vector — was falling through to `bvand`
+            // over a `Bool`, so the vector side is coerced up instead.
+            Node::Bin(k, a, b) if matches!(k, BinKind::And | BinKind::Or | BinKind::Xor) => {
                 let op = match k {
                     BinKind::And => "and",
                     BinKind::Or => "or",
                     _ => "xor",
                 };
-                format!("({op} {} {})", self.to_smtlib(*a), self.to_smtlib(*b))
+                if self.smt_is_bool(*a) || self.smt_is_bool(*b) {
+                    format!("({op} {} {})", self.smt_bool(*a), self.smt_bool(*b))
+                } else {
+                    let bv = match k {
+                        BinKind::And => "bvand",
+                        BinKind::Or => "bvor",
+                        _ => "bvxor",
+                    };
+                    format!("({bv} {} {})", self.to_smtlib(*a), self.to_smtlib(*b))
+                }
             }
             Node::Bin(k, a, b) => {
-                let (x, y) = (self.to_smtlib(*a), self.to_smtlib(*b));
+                let (x, y) = if *k == BinKind::Eq && self.smt_is_bool(*a) && self.smt_is_bool(*b) {
+                    // `=` is sort-polymorphic, so two Bools compare directly.
+                    (self.to_smtlib(*a), self.to_smtlib(*b))
+                } else {
+                    (self.smt_bv(*a), self.smt_bv(*b))
+                };
                 let op = match k {
                     BinKind::Add => "bvadd",
                     BinKind::Mul => "bvmul",
@@ -487,6 +530,24 @@ impl TermArena {
         }
     }
 
+    /// Render `t` where a `Bool` is required, coercing a one-bit vector if need be.
+    fn smt_bool(&self, t: Term) -> String {
+        if self.smt_is_bool(t) {
+            self.to_smtlib(t)
+        } else {
+            format!("(= {} #b1)", self.to_smtlib(t))
+        }
+    }
+
+    /// Render `t` where a bit-vector is required, coercing a `Bool` if need be.
+    fn smt_bv(&self, t: Term) -> String {
+        if self.smt_is_bool(t) {
+            format!("(ite {} #b1 #b0)", self.to_smtlib(t))
+        } else {
+            self.to_smtlib(t)
+        }
+    }
+
     /// Whether this term translates to an SMT-LIB **`Bool`** rather than a bit-vector.
     ///
     /// The arena gives predicates width 1, which is convenient for evaluation and wrong
@@ -495,8 +556,9 @@ impl TermArena {
     fn smt_is_bool(&self, t: Term) -> bool {
         match &self.nodes[t.0 as usize] {
             Node::Bin(BinKind::And | BinKind::Or | BinKind::Xor, a, b) => {
-                self.smt_is_bool(*a) && self.smt_is_bool(*b)
+                self.smt_is_bool(*a) || self.smt_is_bool(*b)
             }
+            Node::Ite { t, f, .. } => self.smt_is_bool(*t) && self.smt_is_bool(*f),
             Node::Bin(k, _, _) => k.is_predicate(),
             Node::Not(a) => self.smt_is_bool(*a),
             _ => false,

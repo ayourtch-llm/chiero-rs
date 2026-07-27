@@ -695,3 +695,39 @@ fn concat_beyond_the_payload_width_is_refused_not_panicked() {
         "past the limit, refusing beats panicking"
     );
 }
+
+/// A **predicate** concatenated with a vector needs the coercion the constant case does
+/// not. `bv(1, 1)` is already emitted as `#b1`, so a concat of constants cannot tell a
+/// coercing implementation from a non-coercing one — the same-answer trap in the solver.
+#[test]
+fn a_predicate_concatenated_with_a_vector_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("a_predicate_concatenated_with_a_vector") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let b = a.var(Sort::BitVec(8), "b");
+    let c5 = a.bv(8, 5);
+    let lt = a.ult(x, c5); // a Bool in SMT-LIB, width 1 in the arena
+    let joined = a.concat(lt, b);
+    let want = a.bv(9, 0b1_0110_0101);
+    let e = a.eq(joined, want);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert!(
+                m.get(a.var_id(x).unwrap()).unwrap().bits() < 5,
+                "the high bit was set, so the predicate must hold"
+            );
+            assert_eq!(m.get(a.var_id(b).unwrap()).unwrap().bits(), 0b0110_0101);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
