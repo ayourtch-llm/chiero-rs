@@ -646,34 +646,33 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `global const @x` was invisible to `scan_names`, desyncing id spaces so `addrglobal`
    silently resolved to the *wrong* global.
 
+   **Wave-6 debt: 4 of 9 discharged** in `e60d05c` and `cc3d64c` — the tautological
+   variant guard, `Function::entry` round-tripping (and its vacuous test), named/numeric
+   id collision, and undefined-label aliasing. **Each fix was mutation-tested before
+   being claimed**, which caught that two of them were initially unpinned: reverting
+   `name_base` and the undefined-label check still passed the whole suite because no test
+   exercised either.
+
    **STILL OWED from wave 6 — ranked, all verified by the reviewer:**
-   - **`Function::entry` is never round-tripped** (`text.rs` hardcodes `BlockId(0)`), and
-     `a_nonzero_entry_block_does_not_alias` is **vacuous** — both sides come from `parse`,
-     so `entry` is always 0 and the old buggy `block_label` survives mutation. A
-     hand-built module with `entry: BlockId(3)` reparses starting at a different block.
-   - **An undefined forward-referenced label silently aliases an existing `bbN`** —
-     `label_of` numbers symbolic labels in the same space as literal ones, so `br %c, tgt`
-     with no `tgt:` becomes `bb1` and rule 2 cannot catch it.
-   - **Mixing named and numeric values collides**: `value_id` hands out
-     `value_names.len()`, which counts only *named* values, so `%1` and a later `%b` get
-     the same id. 020 §6 explicitly permits the mix.
    - **`verify` is function-local** — it never sees the `Module`, so duplicate
      `GlobalId`/`FuncId`, duplicate function *names*, dangling `Callee::Direct`/
      `AddrOfGlobal`/`AddrOfFunc`, and **call arity** are all unchecked.
    - **Constants in non-rvalue operand positions print unparseably** — `print_inst` uses
      `op()` not `opm()`, so `undef`/`wide`/`fconst`/`globaladdr`/`funcaddr` as a store
      value or call argument round-trip to a parse error.
-   - **`every_variant_is_accounted_for` is a tautology** (`assert!(true)`), covers only 3
-     of ~10 enums, and its compile-fail claim is false — the *library* fails to build
-     first. **This is the mechanism relied on to stop gaps recurring, and it does not
-     work.** Rewrite: walk `parse(src)` collecting the discriminants actually reached and
-     assert the set equals the full variant list.
    - `gcov_lines` order is not preserved (`[30,10]` reparses as `[10,30]`), so
      `parse(print(m)) != m` for any unsorted lowered module.
    - Rules 5/6 are implemented but thinly tested (~15 surviving mutations); `Cmp`/`Un`
      widths, select condition, switch scrutinee, and most `require_ptr` sites are unpinned.
    - `Terminator::successors()` dropping the switch `default` survives — that would make
      every default target unreachable for rule 3.
+
+   **Method note, now standing:** *mutation-test every fix before claiming it.* Revert
+   the fix on a scratch copy and confirm a test fails. Twice this round a fix was correct
+   but unpinned, and six edits this session silently no-opped because `cargo fmt` had
+   reformatted the anchor text between reading and patching — one of which a compile
+   error did **not** catch, because the old code was still valid. Prefer line-range
+   replacement with an assertion on the anchor, and always verify the edit landed.
 
    **Wave 7 (QUEUED):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
