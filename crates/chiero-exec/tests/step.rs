@@ -6910,7 +6910,7 @@ fn provenance_crosses_a_return() {
             ],
             Terminator::Return(Some(i32c(0))),
         )],
-        CTy::Int(64),
+        CTy::Int(32),
     );
     caller.allocas = vec![];
     let mut callee = defined(

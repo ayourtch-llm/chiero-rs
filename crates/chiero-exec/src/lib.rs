@@ -1187,6 +1187,7 @@ impl<'m> Engine<'m> {
     fn exec_term(&mut self, a: &mut TermArena, s: &mut State, t: &Terminator) -> Option<State> {
         match t {
             Terminator::Return(v) => {
+                let val_operand = v.clone();
                 let val = match v {
                     None => None,
                     Some(o) => match self.operand(a, s, o) {
@@ -1211,6 +1212,17 @@ impl<'m> Engine<'m> {
                     }
                     if let (Some(d), Some(x)) = (f.ret_dst, val) {
                         s.set_local(d, x);
+                        // **A return is a dataflow edge.** The callee's frame is going
+                        // away, so provenance it computed has to come across with the
+                        // value or an honest `(uintptr_t)` round trip through a helper
+                        // degrades — which is the dominant index-to-pointer idiom, not a
+                        // corner. Only the returned local's entry travels; the rest of
+                        // the callee's table dies with the frame, as it should.
+                        if let Some(Operand::Value(rv)) = val_operand
+                            && let Some(p) = f.ptr_vals.get(&rv).copied()
+                        {
+                            s.remember_value_provenance(d, p);
+                        }
                     }
                 } else {
                     s.ret = val;
