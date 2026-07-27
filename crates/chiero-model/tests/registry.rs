@@ -1063,3 +1063,30 @@ fn scanf_havocs_its_output_pointers_and_not_its_format() {
     // common case and `Uninitialized` would fire on every buffer `scanf` filled.
     assert_eq!(spec.init, HavocInit::Symbolic);
 }
+
+/// **A model reports a bug once.** `strcpy` and `calloc` both do
+/// `cx.report(msg.clone()); return ModelOutcome::Finding(msg)`, so the same sentence
+/// travels two independent routes into the run — `cx.findings()` and the outcome — and
+/// arrives twice with two distinct ids, which no deduplication can merge. Found by review.
+#[test]
+fn a_model_that_gives_up_reports_once() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let dst = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
+    let src = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.write(Pointer { base: src, off: 0 }, b"0123456789\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::strcpy(
+        &mut cx,
+        Pointer { base: dst, off: 0 },
+        Pointer { base: src, off: 0 },
+        StringPolicy::default(),
+    );
+    let reported = cx.findings().len();
+    let carried = matches!(out, ModelOutcome::Finding(_));
+    assert!(
+        !(reported > 0 && carried),
+        "the message travelled both routes: {} in findings, and in the outcome",
+        reported
+    );
+}
