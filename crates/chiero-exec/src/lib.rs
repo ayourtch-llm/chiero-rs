@@ -14,7 +14,7 @@
 
 use chiero_cir::*;
 use chiero_mem::{Memory, ObjKind, Pointer};
-use chiero_solver::{CheckResult, Solver, SolverLite, Term, TermArena};
+use chiero_solver::{CheckResult, SmtLib, Solver, Term, TermArena, TieredSolver};
 use chiero_span::Span;
 use indexmap::IndexMap;
 
@@ -101,7 +101,28 @@ pub enum Status {
 pub enum TermReason {
     Return,
     Unreachable,
+    /// 023 §8: a *documented* budget was exceeded. Findings on this state are real;
+    /// absence of findings proves nothing beyond the bound.
     Budget,
+}
+
+/// 023 §8. Only the deterministic budgets are here; `wall_clock` is a non-deterministic
+/// abort that §8.1 keeps out of anything that gates output, because 001 §5 requires
+/// byte-identical results and a timeout is not reproducible.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Budget {
+    pub max_depth: u32,
+    /// Per **back edge**, not per syntactic loop — CIR has none (020 §1).
+    pub max_loop_iters: u32,
+}
+
+impl Default for Budget {
+    fn default() -> Budget {
+        Budget {
+            max_depth: 10_000,
+            max_loop_iters: 8,
+        }
+    }
 }
 
 /// Which solver tiers a run may use. `LiteOnly` exists so a test can force the
@@ -125,6 +146,9 @@ pub struct State {
     locals: IndexMap<ValueId, Value>,
     ret: Option<Value>,
     frame_objs: IndexMap<AllocaId, chiero_mem::ObjectId>,
+    /// How often each back edge has been taken on *this* path.
+    edge_counts: IndexMap<(BlockId, BlockId), u32>,
+    steps: u32,
 }
 
 impl State {
@@ -223,6 +247,8 @@ pub struct Engine<'m> {
     next_state: u32,
     solver_calls: u64,
     fresh_count: u32,
+    budget: Budget,
+    backend: Option<SmtLib>,
 }
 
 impl<'m> Engine<'m> {
@@ -233,11 +259,25 @@ impl<'m> Engine<'m> {
             next_state: 0,
             solver_calls: 0,
             fresh_count: 0,
+            budget: Budget::default(),
+            backend: None,
         }
     }
 
     pub fn with_solver(mut self, t: SolverTier) -> Self {
         self.tier = t;
+        self
+    }
+
+    pub fn with_budget(mut self, b: Budget) -> Self {
+        self.budget = b;
+        self
+    }
+
+    /// Attach a tier-2 backend. Without one every branch tier 1 cannot decide degrades
+    /// the run to `Unknown` — honest, but nearly useless on ordinary code.
+    pub fn with_backend(mut self, b: SmtLib) -> Self {
+        self.backend = Some(b);
         self
     }
 
@@ -260,6 +300,8 @@ impl<'m> Engine<'m> {
             locals: IndexMap::new(),
             ret: None,
             frame_objs,
+            edge_counts: IndexMap::new(),
+            steps: 0,
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
         // 001 §5's determinism requirement is met by construction rather than by luck.
@@ -336,10 +378,7 @@ impl<'m> Engine<'m> {
                 s.status = Status::Terminated(TermReason::Return);
                 None
             }
-            Terminator::Goto(b) => {
-                s.pc = (*b, 0);
-                None
-            }
+            Terminator::Goto(b) => self.take_edge(s, *b),
             Terminator::Br { cond, t: bt, f: bf } => self.branch(a, s, cond, *bt, *bf),
             Terminator::Unreachable(_) => {
                 s.status = Status::Terminated(TermReason::Unreachable);
@@ -350,6 +389,43 @@ impl<'m> Engine<'m> {
                 None
             }
         }
+    }
+
+    /// Move to `to`, counting the edge. 023 §8: the bound is per **back edge**, and CIR
+    /// has no loops (020 §1) — an edge to a block already on this path is the back edge,
+    /// which needs no dominator analysis to recognize at run time.
+    fn take_edge(&mut self, s: &mut State, to: BlockId) -> Option<State> {
+        let from = s.pc.0;
+        s.steps += 1;
+        if s.steps > self.budget.max_depth {
+            s.status = Status::Terminated(TermReason::Budget);
+            s.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                Span::DUMMY,
+                "max_depth reached",
+            );
+            return None;
+        }
+        if to.0 <= from.0 {
+            let n = s.edge_counts.entry((from, to)).or_insert(0);
+            *n += 1;
+            if *n > self.budget.max_loop_iters {
+                s.status = Status::Terminated(TermReason::Budget);
+                s.degrade(
+                    Fidelity::Bounded,
+                    AssumptionKind::BudgetHit,
+                    Span::DUMMY,
+                    &format!(
+                        "max_loop_iters ({}) reached on the back edge {:?} -> {:?}",
+                        self.budget.max_loop_iters, from, to
+                    ),
+                );
+                return None;
+            }
+        }
+        s.pc = (to, 0);
+        None
     }
 
     fn branch(
@@ -367,8 +443,7 @@ impl<'m> Engine<'m> {
         // §3 step 4: a constant condition makes **no solver call**. This fast path carries
         // most of the traffic and must exist before any benchmark is believed.
         if let Ok(v) = a.eval_ground(c) {
-            s.pc = if v.bits() != 0 { (bt, 0) } else { (bf, 0) };
-            return None;
+            return self.take_edge(s, if v.bits() != 0 { bt } else { bf });
         }
         let neg = negate(a, c);
         let t_ok = self.feasible(a, s, c);
@@ -379,20 +454,18 @@ impl<'m> Engine<'m> {
         match (t_ok, f_ok) {
             (Feas::Yes, Feas::Yes) => {
                 s.path.push(c);
-                s.pc = (bt, 0);
+                self.take_edge(s, bt);
                 sibling.path.push(neg);
-                sibling.pc = (bf, 0);
+                self.take_edge(&mut sibling, bf);
                 Some(sibling)
             }
             (Feas::Yes, Feas::No) => {
                 s.path.push(c);
-                s.pc = (bt, 0);
-                None
+                self.take_edge(s, bt)
             }
             (Feas::No, Feas::Yes) => {
                 s.path.push(neg);
-                s.pc = (bf, 0);
-                None
+                self.take_edge(s, bf)
             }
             (Feas::No, Feas::No) => {
                 // Both infeasible: the path condition is already unsatisfiable, which §3
@@ -406,7 +479,7 @@ impl<'m> Engine<'m> {
             // does not know whether the path exists.
             _ => {
                 s.path.push(c);
-                s.pc = (bt, 0);
+                self.take_edge(s, bt);
                 s.degrade(
                     Fidelity::Unknown,
                     AssumptionKind::SolverUnknown,
@@ -414,7 +487,7 @@ impl<'m> Engine<'m> {
                     "solver could not decide a branch; both sides explored",
                 );
                 sibling.path.push(neg);
-                sibling.pc = (bf, 0);
+                self.take_edge(&mut sibling, bf);
                 sibling.degrade(
                     Fidelity::Unknown,
                     AssumptionKind::SolverUnknown,
@@ -429,11 +502,17 @@ impl<'m> Engine<'m> {
     fn feasible(&mut self, a: &mut TermArena, s: &State, t: Term) -> Feas {
         self.solver_calls += 1;
         let _ = self.tier;
-        let mut lite = SolverLite::new();
+        // A fresh solver per query is wasteful and will be replaced by a per-state
+        // incremental stack; correctness first, and the backend process itself is
+        // long-lived (022 §4) so the cost is the assertion replay, not a spawn.
+        let mut solver = match self.backend.clone() {
+            Some(b) => TieredSolver::with_backend(b),
+            None => TieredSolver::new(),
+        };
         for p in &s.path {
-            lite.assert(*p);
+            solver.assert(*p);
         }
-        match lite.check(a, &[t]) {
+        match solver.check(a, &[t]) {
             CheckResult::Sat(_) => Feas::Yes,
             CheckResult::Unsat => Feas::No,
             CheckResult::Unknown(_) => Feas::Unknown,

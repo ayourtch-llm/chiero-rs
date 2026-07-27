@@ -535,20 +535,22 @@ fn undecidable_branch_module() -> Module {
 fn a_loop_is_bounded_per_back_edge_and_the_run_says_so() {
     let mut a = TermArena::new();
     // entry: goto head
-    // head:  %c = fresh i1; br %c, body, exit
+    // head:  br true, body, exit
     // body:  goto head          <- the back edge
     // exit:  ret 0
+    //
+    // The condition is **constant**, so the solver is never consulted and the only thing
+    // that can stop this run is the bound. A symbolic condition would be `Unknown` under
+    // tier 1 alone, and `Unknown` dominates `Bounded` — the test would then be about the
+    // solver rather than about the budget.
     let m = func(
         vec![
             block(0, vec![], Terminator::Goto(BlockId(1))),
             block(
                 1,
-                vec![inst(InstKind::Assign {
-                    dst: ValueId(0),
-                    rv: RValue::Fresh { ty: CTy::Int(1) },
-                })],
+                vec![],
                 Terminator::Br {
-                    cond: Operand::Value(ValueId(0)),
+                    cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
                     t: BlockId(2),
                     f: BlockId(3),
                 },
@@ -566,7 +568,9 @@ fn a_loop_is_bounded_per_back_edge_and_the_run_says_so() {
         .run(&mut a);
 
     assert!(
-        r.states.iter().any(|s| s.status == Status::Terminated(TermReason::Budget)),
+        r.states
+            .iter()
+            .any(|s| s.status == Status::Terminated(TermReason::Budget)),
         "some state must be cut by the bound: {:#?}",
         r.states.iter().map(|s| &s.status).collect::<Vec<_>>()
     );
@@ -584,8 +588,7 @@ fn a_loop_is_bounded_per_back_edge_and_the_run_says_so() {
         assert!(
             s.assumptions
                 .iter()
-                .any(|x| x.kind == AssumptionKind::BudgetHit
-                    && x.detail.contains("back edge")),
+                .any(|x| x.kind == AssumptionKind::BudgetHit && x.detail.contains("back edge")),
             "the assumption must name the back edge: {:#?}",
             s.assumptions
         );
@@ -626,7 +629,12 @@ fn a_loop_that_terminates_within_the_bound_stays_exact() {
             ..Budget::default()
         })
         .run(&mut a);
-    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states[0].assumptions);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states[0].assumptions
+    );
     assert!(r.witness().is_some());
 }
 
@@ -666,4 +674,47 @@ fn two_runs_of_one_program_are_identical() {
         (ids, rets, r.fidelity())
     };
     assert_eq!(build(), build());
+}
+
+/// **A long straight path is not a loop.** Counting every edge as a back edge would bound
+/// any function with more blocks than `max_loop_iters` — and would report `Bounded` on
+/// code that was explored completely, which §7 rule 4 makes into a false "not proven".
+///
+/// The current back-edge test is `to <= from` on block ids, which is a heuristic: 023 §8
+/// specifies dominator analysis, and an irreducible CFG or a lowering that numbers blocks
+/// out of order will fool it. That gap is recorded rather than papered over.
+///
+/// Counting *every* edge instead is very nearly equivalent, and deliberately not chased:
+/// counts are per edge, so a straight path never repeats one, and inside a loop the back
+/// edge already bounds the forward edge at the same count. The observable difference is
+/// at most one iteration. A test contrived to catch it would pin an accident of the
+/// heuristic rather than anything the spec asks for — the real fix is dominator
+/// analysis, which is owed.
+#[test]
+fn a_long_forward_path_is_not_mistaken_for_a_loop() {
+    let mut a = TermArena::new();
+    let mut blocks = Vec::new();
+    for i in 0..8u32 {
+        blocks.push(block(i, vec![], Terminator::Goto(BlockId(i + 1))));
+    }
+    blocks.push(block(8, vec![], Terminator::Return(Some(i32c(0)))));
+    let m = func(blocks, CTy::Int(32));
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 2,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert_eq!(r.states.len(), 1);
+    assert_eq!(
+        r.states[0].status,
+        Status::Terminated(TermReason::Return),
+        "eight forward edges are not eight loop iterations"
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states[0].assumptions
+    );
 }

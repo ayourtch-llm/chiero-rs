@@ -1305,7 +1305,7 @@ fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool) -> bool {
 ///
 /// A subprocess, not FFI, is the whole point: chiero never links a solver, builds with
 /// `--no-default-features`, and runs when none is installed. Discovery is a runtime fact.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SmtLib {
     path: std::path::PathBuf,
 }
