@@ -2575,6 +2575,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    That asymmetry is why 080 says M1's oracles are weaker "rather than discovering" it —
    and it is worth remembering when M1 work *feels* well-tested.
 
+   **WAVE 67** (`48890a7`, `3d3e700`; 686 tests, **132/165 cited**) — pinning the three
+   contracts I amended in wave 63 and did not test. *Amending a contract and not checking
+   it is the same "spec says, nobody checks" pattern this project keeps finding in its own
+   work, and it is worse when the amendment was mine.*
+
+   - **8**: same query, cold and from an exact-cache hit → byte-identical model, asserted
+     both as map equality and as identical rendering (a golden test sees the second). Two
+     independent runs agree, on tier 1 and on a backend query.
+   - **8b**: a counterexample hit keeps the verdict and may change the assignment — *both*
+     halves, because "may differ" is not a licence to be wrong: the returned model is still
+     evaluated against every constraint of the query it answers. The fixture arranges for
+     the cached model to be the **larger** one, so the difference is real.
+   - **11d**: the consumer is `Engine::feasible`, which turns an answer into a fork
+     decision *and* a degradation — so the test asks one nonlinear question twice on a path
+     and asserts the run stays `Exact` with no assumptions, plus that the solver was
+     reached more than once or it proves nothing about caching.
+
+   `Model` had **no equality at all** until contract 8 was written — a contract about
+   identical models, and nothing in the workspace could compare two.
+
+   Contract 8's fifth way ("with slicing disabled") is *not* claimed: independence slicing
+   does not exist, so the test would assert against itself. Said in the test's own doc
+   comment rather than quietly counted — 070 §4's new rule applies to me too.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2652,7 +2676,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **683 tests, 129/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **686 tests, 132/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
