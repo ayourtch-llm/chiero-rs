@@ -1533,10 +1533,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    object's *declared* alignment, so every `CLIB_PACKED` header was a false positive — and
    my own `a_store_is_visible_to_a_later_load` manufactures two and cannot see them.
 
+   **Wave 22 continued** (`8f60485` red, `4bd2a6f` green; `55a622d`, 524 tests):
+   `MAX_ACCESS_BITS` is enforced on the term API through one shared `too_wide` — a free
+   function, not a method, so the two callers cannot drift, which is exactly how the term
+   path came to be the only one without the check. The `extract`-of-`extract` fold is
+   pinned, and **that test took two goes**: the first version built its operand with
+   `a.bv(...)`, so the constant fold fired on the inner extract and the mutation survived
+   the test written specifically to kill it. Same-answer trap in the fixture, again — a
+   fold test needs a *variable* and a model. `models::scanf` now takes
+   `&[Option<Pointer>]` indexed by argument **position**; handing it a filtered list
+   renumbered the arguments under its feet.
+
    **STILL OWED from wave 22, in the reviewer's priority order:**
-   - `MAX_ACCESS_BITS` is not enforced on the *term* API: `read_term` of >16 concrete bytes
-     asserts in the arena, `write_term`'s ground path shifts a `u128` by ≥128. Reachable
-     from the engine by loading a `<4 x i64>` — **two process kills**.
    - `Engine::run` never calls `chiero_cir::verify`, though 020 §8 says it runs "before
      execution, **always**". A width-mismatched `Store` panics in `extract`. This is the
      wave-5 "malformed input panics instead of erroring" class, reopened on a new surface.
