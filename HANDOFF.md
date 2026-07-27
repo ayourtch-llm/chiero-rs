@@ -2143,7 +2143,46 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    mutation; the constraint on the state that **continues** does not, because in this
    fixture that state is the wild one. Correct by construction, unpinned, recorded.
 
-   **STILL OWED on §5.1:** step 4's own detection (wholly unconstrained: every object *and*
+   **WAVE 51 — the §5.1 review.** Eight confirmed defects, **65% escape rate** on
+   `resolve_symbolic_base`. It independently confirmed D2 (no constraints), which wave 50
+   had already fixed. Two applied (`7f1aa0d`; 606 tests):
+
+   ⚠️ **D1 — the resolution discarded the offset.** Every pointer was
+   `Pointer { base, off: 0 }`, so `d[i] = 0xAA` wrote `d[0]` for every `i` and a pinned
+   `addr == &d + 4` landed at byte 0. `pinned_offset` takes a model and then asks whether
+   **any other** offset is feasible — *a model alone names one of many, and using it
+   fabricates a position the program never chose.*
+   **D7 — siblings reported `Exact` with no assumptions**, because the degrade ran only on
+   the continuing state. 023 §7 attaches fidelity to *paths*.
+
+   *Fixed and not pinned, recorded not claimed:* the sibling offset assignment and
+   `pinned_offset`'s feasibility guard both survive mutation — correct by construction,
+   no fixture separates them.
+
+   **STILL OWED from wave 51, in the reviewer's priority order:**
+   - **D3** steps 4 and 5 merge whenever live objects exceed the cap: `over_cap` returns
+     *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
+     pointer gets `Approximated` and silently continues on object 1. **Under VPP's >10⁴
+     objects, step 4 can never fire** — §5.1's highest-value guarantee unreachable exactly
+     where it was written for. Verbatim the failure 021 records against its own draft.
+   - **D6** `live_ranges` filters to `ObjState::Live`, so a use-after-free through a
+     symbolic address reports "unconstrained pointer" and terminates instead of reporting
+     the UAF. 021 §4 keeps freed objects *precisely so* the site can be named.
+   - **D5** `candidates.is_empty()` is the *opposite* of "every object feasible": an address
+     provably in a guard gap is reported as "wholly unconstrained". Third instance of the
+     cause-conflation `f29457b` fixed, one branch over.
+   - **D8** the search **is** the per-dereference O(objects) solver sweep §5.1 forbids —
+     `solver_calls` measured at exactly `n + 3`. The comment claims an arithmetic pre-filter
+     that does not exist.
+   - **D4** one-past-the-end becomes an in-bounds write at byte 0 (same root as D1; recheck
+     now that the offset is carried).
+   - Mutation gaps: **L2/L3** — contracts 16 and 17 pass byte-identically with object
+     *extents* set to 0 or size+1, so they never exercise extent at all; **M14** a
+     spurious wild path on a provably-inside address; **M8/M9** step 4's disjunct; **G1**
+     `GUARD_GAP` — its three assertions are **self-referential** (`gap >= GUARD_GAP` with
+     the constant mutated to 0), a same-answer trap in a constant.
+
+   *(earlier §5.1 note)* step 4's own detection (wholly unconstrained: every object *and*
    nowhere both feasible) is still unreached — the tier-2 tests exercise steps 3 and 5.
    Contracts 17b, 18 and 19 need `PointerBitInspection`, lazy materialization and
    `--fork-on-alias`, none of which exist. Contract 17 (`max_resolutions = 2`
