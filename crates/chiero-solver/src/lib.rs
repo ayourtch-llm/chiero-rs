@@ -335,6 +335,81 @@ impl TermArena {
         self.intern(Node::Extract { a, hi, lo })
     }
 
+    /// Render a term as SMT-LIB2.
+    ///
+    /// The serialization is a first-class artifact: 022 §4 requires `--dump-queries`, and
+    /// a disagreement with the backend is reported by handing over the exact script.
+    pub fn to_smtlib(&self, t: Term) -> String {
+        match &self.nodes[t.0 as usize] {
+            Node::Const(c) => {
+                if c.width() == 1 {
+                    // A one-bit constant in predicate position is a Bool.
+                    if c.bits() == 0 {
+                        "false".into()
+                    } else {
+                        "true".into()
+                    }
+                } else {
+                    format!("(_ bv{} {})", c.bits(), c.width())
+                }
+            }
+            Node::Var(v, _) => smt_name(v, &self.vars[v.0 as usize].0),
+            Node::Not(a) => format!("(bvnot {})", self.to_smtlib(*a)),
+            Node::Extend { a, to, signed } => {
+                let by = to - self.width(*a);
+                let op = if *signed {
+                    "sign_extend"
+                } else {
+                    "zero_extend"
+                };
+                format!("((_ {op} {by}) {})", self.to_smtlib(*a))
+            }
+            Node::Extract { a, hi, lo } => {
+                format!("((_ extract {hi} {lo}) {})", self.to_smtlib(*a))
+            }
+            Node::Bin(k, a, b) => {
+                let (x, y) = (self.to_smtlib(*a), self.to_smtlib(*b));
+                let op = match k {
+                    BinKind::Add => "bvadd",
+                    BinKind::Mul => "bvmul",
+                    BinKind::And => "bvand",
+                    BinKind::Or => "bvor",
+                    BinKind::Xor => "bvxor",
+                    BinKind::UDiv => "bvudiv",
+                    BinKind::SDiv => "bvsdiv",
+                    BinKind::URem => "bvurem",
+                    BinKind::SRem => "bvsrem",
+                    BinKind::Shl => "bvshl",
+                    BinKind::LShr => "bvlshr",
+                    BinKind::AShr => "bvashr",
+                    BinKind::Ult => "bvult",
+                    BinKind::Slt => "bvslt",
+                    BinKind::Eq => "=",
+                };
+                format!("({op} {x} {y})")
+            }
+        }
+    }
+
+    /// Every variable a term mentions, in declaration order.
+    pub fn vars_of(&self, t: Term, out: &mut Vec<VarId>) {
+        match &self.nodes[t.0 as usize] {
+            Node::Var(v, _) => {
+                if !out.contains(v) {
+                    out.push(*v);
+                }
+            }
+            Node::Const(_) => {}
+            Node::Not(a) | Node::Extend { a, .. } | Node::Extract { a, .. } => {
+                self.vars_of(*a, out)
+            }
+            Node::Bin(_, a, b) => {
+                self.vars_of(*a, out);
+                self.vars_of(*b, out);
+            }
+        }
+    }
+
     /// Decompose a term into a §3.2 atom, or `None` if it is outside the fragment.
     ///
     /// The fragment is a conjunction of comparison/equality atoms. A disjunction, a
@@ -788,12 +863,122 @@ pub struct SmtLib {
 
 impl SmtLib {
     /// `$CHIERO_SMT_SOLVER`, then z3, cvc5, bitwuzla on `PATH`.
+    ///
+    /// Discovery is a **runtime** fact. A Cargo feature cannot be conditionally enabled
+    /// at runtime, so the backend is compiled in and simply finds nothing when no solver
+    /// is installed — which is what lets the whole suite run without one (022 contract 2).
     pub fn discover() -> Option<SmtLib> {
-        todo!("green")
+        let candidates: Vec<String> = match std::env::var("CHIERO_SMT_SOLVER") {
+            Ok(v) if !v.is_empty() => vec![v],
+            _ => ["z3", "cvc5", "bitwuzla"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        };
+        for c in candidates {
+            let path = std::path::PathBuf::from(&c);
+            let found = if path.is_absolute() {
+                path.exists().then_some(path)
+            } else {
+                std::env::var_os("PATH").and_then(|p| {
+                    std::env::split_paths(&p)
+                        .map(|d| d.join(&c))
+                        .find(|f| f.is_file())
+                })
+            };
+            if let Some(p) = found {
+                return Some(SmtLib { path: p });
+            }
+        }
+        None
+    }
+
+    /// Emit SMT-LIB2 for one query and read the answer back.
+    ///
+    /// The process is spawned per query for now. 022 §4 requires a **long-lived** process
+    /// with real incremental `push`/`pop`, because startup dominates short queries; that
+    /// is the next step and is recorded as owed rather than claimed here.
+    fn run(&self, a: &TermArena, terms: &[Term], vars: &[VarId]) -> Option<(bool, Model)> {
+        use std::io::Write;
+        let mut script = String::from("(set-logic QF_BV)\n");
+        for v in vars {
+            let (name, sort) = &a.vars[v.0 as usize];
+            script.push_str(&format!(
+                "(declare-const {} (_ BitVec {}))\n",
+                smt_name(v, name),
+                sort.width()
+            ));
+        }
+        for t in terms {
+            script.push_str(&format!("(assert {})\n", a.to_smtlib(*t)));
+        }
+        script.push_str("(check-sat)\n(get-model)\n");
+
+        let mut child = std::process::Command::new(&self.path)
+            .args(["-in", "-smt2"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        child.stdin.as_mut()?.write_all(script.as_bytes()).ok()?;
+        drop(child.stdin.take());
+        let out = child.wait_with_output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let first = text.lines().next()?.trim();
+        match first {
+            "unsat" => Some((false, Model::new())),
+            "sat" => Some((true, parse_model(a, &text, vars))),
+            // Anything else — `unknown`, a parse error, garbage — is not an answer.
+            _ => None,
+        }
     }
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
+}
+
+/// A name z3 will accept, unique per variable.
+fn smt_name(v: &VarId, name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("v{}_{safe}", v.0)
+}
+
+/// Read `(define-fun vN_x () (_ BitVec W) #x…)` back into a `Model`.
+fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
+    let mut m = Model::new();
+    for v in vars {
+        let (name, sort) = &a.vars[v.0 as usize];
+        let key = smt_name(v, name);
+        let val = text
+            .split(&format!("define-fun {key} "))
+            .nth(1)
+            .and_then(|rest| {
+                let body = rest.split(')').next_back().unwrap_or("");
+                let tok = rest
+                    .split_whitespace()
+                    .find(|t| t.starts_with("#x") || t.starts_with("#b"))
+                    .or(Some(body))?;
+                if let Some(h) = tok.strip_prefix("#x") {
+                    u128::from_str_radix(h.trim_end_matches(')'), 16).ok()
+                } else {
+                    tok.strip_prefix("#b")
+                        .and_then(|b| u128::from_str_radix(b.trim_end_matches(')'), 2).ok())
+                }
+            })
+            .unwrap_or(0);
+        m.set(*v, BvConst::new(sort.width(), val));
+    }
+    m
 }
 
 #[derive(Clone, Debug, Default)]
@@ -811,35 +996,144 @@ pub struct TieredSolver {
     backend: Option<SmtLib>,
     paranoid: bool,
     stats: SolverStats,
-    cache: IndexMap<(Vec<u32>, Vec<u32>), bool>,
+    /// `Some(model)` = Sat, `None` = Unsat. The model is cached alongside the answer:
+    /// caching only the verdict meant a cached `Sat` still had to re-derive a model,
+    /// which sent the query straight back to the backend and defeated the cache.
+    cache: IndexMap<(Vec<u32>, Vec<u32>), Option<Model>>,
 }
 
 impl TieredSolver {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_backend(_b: SmtLib) -> Self {
-        todo!("green")
+
+    pub fn with_backend(b: SmtLib) -> Self {
+        TieredSolver {
+            backend: Some(b),
+            ..Default::default()
+        }
     }
-    pub fn set_paranoid(&mut self, _on: bool) {
-        todo!("green")
+
+    /// Send every tier-1 answer to tier 2 as well and assert agreement (022 §6).
+    /// Too slow for production, mandatory in CI.
+    pub fn set_paranoid(&mut self, on: bool) {
+        self.paranoid = on;
     }
+
     pub fn stats(&self) -> &SolverStats {
         &self.stats
+    }
+
+    fn ask_backend(&mut self, a: &TermArena, all: &[Term]) -> Option<CheckResult> {
+        let b = self.backend.as_ref()?;
+        let mut vars = Vec::new();
+        for t in all {
+            a.vars_of(*t, &mut vars);
+        }
+        let r = b.run(a, all, &vars);
+        self.stats.backend_calls += 1;
+        match r {
+            Some((true, m)) => {
+                // Tier 2's answer is **not exempt from validation**. A backend returning
+                // a wrong model would otherwise be trusted purely for being external.
+                if all
+                    .iter()
+                    .all(|t| a.eval(&m, *t).map(|v| v.bits() != 0) == Ok(true))
+                {
+                    Some(CheckResult::Sat(m))
+                } else {
+                    Some(CheckResult::Unknown(UnknownReason::BackendError(
+                        "backend model failed independent evaluation".into(),
+                    )))
+                }
+            }
+            Some((false, _)) => Some(CheckResult::Unsat),
+            None => Some(CheckResult::Unknown(UnknownReason::BackendError(
+                "backend gave no usable answer".into(),
+            ))),
+        }
     }
 }
 
 impl Solver for TieredSolver {
-    fn assert(&mut self, _t: Term) {
-        todo!("green")
+    fn assert(&mut self, t: Term) {
+        self.asserted.push(t);
     }
+
     fn push(&mut self) {
-        todo!("green")
+        self.scopes.push(self.asserted.len());
     }
-    fn pop(&mut self, _n: u32) {
-        todo!("green")
+
+    fn pop(&mut self, n: u32) {
+        for _ in 0..n {
+            if let Some(mark) = self.scopes.pop() {
+                self.asserted.truncate(mark);
+            }
+        }
     }
-    fn check(&mut self, _a: &mut TermArena, _assumptions: &[Term]) -> CheckResult {
-        todo!("green")
+
+    fn check(&mut self, a: &mut TermArena, assumptions: &[Term]) -> CheckResult {
+        let all: Vec<Term> = self.asserted.iter().chain(assumptions).copied().collect();
+
+        // The cache key is the **pair** of sorted assertion and assumption ids. Omitting
+        // the assumptions makes `check([c])` and `check([¬c])` collide on one assertion
+        // stack and return each other's answers — silent and catastrophic (022 §6.2).
+        let mut ak: Vec<u32> = self.asserted.iter().map(|t| t.0).collect();
+        let mut uk: Vec<u32> = assumptions.iter().map(|t| t.0).collect();
+        ak.sort_unstable();
+        uk.sort_unstable();
+        let key = (ak, uk);
+
+        if let Some(hit) = self.cache.get(&key) {
+            return match hit {
+                Some(m) => CheckResult::Sat(m.clone()),
+                None => CheckResult::Unsat,
+            };
+        }
+
+        let mut lite = SolverLite::new();
+        for t in &all {
+            lite.assert(*t);
+        }
+        let tier1 = lite.check(a, &[]);
+
+        let decided = match &tier1 {
+            CheckResult::Unknown(_) => {
+                self.stats.tier1_unknown += 1;
+                match self.ask_backend(a, &all) {
+                    Some(r) => r,
+                    None => tier1,
+                }
+            }
+            _ => {
+                if self.paranoid && self.backend.is_some() {
+                    if let Some(t2) = self.ask_backend(a, &all) {
+                        let agree = matches!(
+                            (&tier1, &t2),
+                            (CheckResult::Sat(_), CheckResult::Sat(_))
+                                | (CheckResult::Unsat, CheckResult::Unsat)
+                                | (_, CheckResult::Unknown(_))
+                        );
+                        assert!(agree, "paranoid: tier 1 said {tier1:?}, tier 2 said {t2:?}");
+                    }
+                }
+                tier1
+            }
+        };
+
+        // **`Unknown` is never cached.** A tier-1 `Unknown` cached above escalation would
+        // stop tier 2 ever being consulted for any sibling state sharing that prefix, and
+        // `Unknown(Timeout)` is a fact about the clock rather than the formula.
+        match &decided {
+            CheckResult::Sat(m) => {
+                self.cache.insert(key, Some(m.clone()));
+            }
+            CheckResult::Unsat => {
+                self.cache.insert(key, None);
+            }
+            CheckResult::Unknown(_) => {}
+        }
+        self.stats.cache_entries = self.cache.len();
+        decided
     }
 }
