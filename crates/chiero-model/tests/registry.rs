@@ -176,7 +176,7 @@ use chiero_solver::TermArena;
 use chiero_span::Span;
 
 fn ctx<'a>(m: &'a mut Memory, a: &'a mut TermArena) -> ModelCtx<'a> {
-    ModelCtx::new(m, a, Span::DUMMY)
+    ModelCtx::new(m, a, Span::DUMMY, Endian::Little)
 }
 
 /// **024 contract 1.** `malloc(16)` produces one `Heap` object of size 16 with all bytes
@@ -389,4 +389,110 @@ fn the_model_context_carries_the_target_byte_order() {
     let mut a = TermArena::new();
     let cx = ctx(&mut m, &mut a);
     assert_eq!(cx.endian(), Endian::Little, "the default target is x86-64");
+}
+
+/// **A model registered `Exact` must actually exist.** `realloc`, `strlen`, `strcpy` and
+/// friends were registered exact while nothing implemented them — so `fidelity_effect()`
+/// said "dispatching this degrades nothing" about a function that cannot be dispatched at
+/// all. That is the confidently-wrong shape this crate's own doc rails against, pointed
+/// the wrong way.
+#[test]
+fn every_exact_model_is_actually_implemented() {
+    let r = ModelRegistry::with_builtins();
+    for e in r.entries() {
+        if e.precision == Precision::Exact {
+            assert!(
+                models::is_implemented(&e.name),
+                "`{}` claims Exact precision but has no implementation; \
+                 a declaration that cannot run must not claim faithfulness",
+                e.name
+            );
+        }
+    }
+}
+
+/// **The byte order comes from the target.** The field was hardcoded under a comment
+/// saying it was not, and the test asserted the same constant — so both candidate
+/// implementations gave the same answer and neither the code nor the test could tell
+/// them apart.
+#[test]
+fn the_byte_order_follows_the_target_rather_than_a_constant() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let le = ModelCtx::new(&mut m, &mut a, Span::DUMMY, Endian::Little);
+    assert_eq!(le.endian(), Endian::Little);
+    drop(le);
+    let be = ModelCtx::new(&mut m, &mut a, Span::DUMMY, Endian::Big);
+    assert_eq!(
+        be.endian(),
+        Endian::Big,
+        "a hardcoded order would answer Little here"
+    );
+}
+
+/// **024 contract 19 is a prefix rule, not a list of four names.** The spec's own check is
+/// `grep -rE 'vec_|pool_|clib_|vlib_'`, and matching four exact tokens let `clib_warning`,
+/// `vec_add1`, `pool_put` and `vlib_main_t` all pass. The walk is recursive too: a
+/// subdirectory read as clean.
+#[test]
+fn no_vpp_prefix_appears_anywhere_in_the_crate_source() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).expect("readable").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).expect("this crate's sources are utf-8");
+            for (n, line) in text.lines().enumerate() {
+                for tok in line.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                    if ["vec_", "pool_", "clib_", "vlib_"]
+                        .iter()
+                        .any(|pre| tok.starts_with(pre))
+                    {
+                        out.push(format!("{}:{}: {tok}", p.display(), n + 1));
+                    }
+                }
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut hits = Vec::new();
+    walk(&src, &mut hits);
+    assert!(hits.is_empty(), "VPP identifiers in chiero-model: {hits:#?}");
+}
+
+/// `replace` on a name nobody registered is an error, not a silent insert — otherwise a
+/// typo in an override registers a *second* model under the wrong name and the intended
+/// one keeps its old behaviour.
+#[test]
+fn replacing_an_unregistered_name_is_an_error() {
+    let mut r = ModelRegistry::with_builtins();
+    let before = r.len();
+    match r.replace(ModelEntry::exact("no_such_function")) {
+        Err(ModelError::NotFound(n)) => assert_eq!(&*n, "no_such_function"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+    assert_eq!(r.len(), before);
+}
+
+/// `malloc` returns **heap** memory. Contract 5 makes freeing a non-heap object a
+/// finding, so an allocator that produced a stack object would turn every correct
+/// `free(malloc(n))` into a false positive — and the size and initialization assertions
+/// are both blind to the kind.
+#[test]
+fn malloc_returns_heap_memory_so_freeing_it_is_not_a_finding() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::malloc(&mut cx, 16, AllocPolicy { may_fail: false });
+    let ModelOutcome::Value(Some(Value::Ptr(p))) = out else {
+        panic!("expected a pointer")
+    };
+    models::free(&mut cx, p);
+    assert!(
+        cx.findings().is_empty(),
+        "freeing what malloc returned is correct C: {:#?}",
+        cx.findings()
+    );
 }

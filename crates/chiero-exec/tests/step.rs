@@ -1837,3 +1837,276 @@ fn an_unmodeled_extern_is_recorded_exactly_once_per_function() {
     assert!(v0.is_some() && v1.is_some());
     assert_ne!(v0, v1, "two calls, two symbols");
 }
+
+// ---------------------------------------------------------------------------
+// Wave 13, from the registry/call review.
+// ---------------------------------------------------------------------------
+
+/// **A `Return` whose operand cannot be evaluated must not end at `Exact`.** Every other
+/// consumer of `operand` routes `None` through the lowering-gap rule; this one dropped it
+/// silently, so `ret %0` with `%0` never assigned — or `ret 2.0f64`, which `operand`
+/// cannot represent — minted a proof. It is the same family
+/// `nothing_unmodeled_can_end_at_exact` was written to close, one position further along.
+#[test]
+fn a_return_of_an_unevaluable_operand_degrades() {
+    for (what, ret) in [
+        ("an unassigned value", Operand::Value(ValueId(9))),
+        (
+            "an unrepresentable constant",
+            Operand::Const(Const::Float(FloatKind::F64, 0x4000_0000_0000_0000)),
+        ),
+    ] {
+        let m = func(
+            vec![block(0, vec![], Terminator::Return(Some(ret)))],
+            CTy::Int(32),
+        );
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_ne!(r.fidelity(), Fidelity::Exact, "returning {what}");
+        assert!(seal(&r, r.witness()).is_err(), "returning {what} sealed");
+    }
+}
+
+/// **A `noreturn` function with a body still runs it.** 023 §5's "noreturn terminates the
+/// state at the call" is about the call not returning, not about discarding a body that
+/// exists — and `__attribute__((noreturn)) void die(…) { …; abort(); }` is ordinary C.
+/// Skipping it made every bug inside such a function invisible while the run still sealed.
+#[test]
+fn a_defined_noreturn_function_still_executes_its_body() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut die = defined(
+        1,
+        "die",
+        vec![block(
+            0,
+            vec![],
+            Terminator::Unreachable(UnreachableReason::LoweringGap),
+        )],
+        CTy::Void,
+    );
+    die.attrs.noreturn = true;
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, die)).run(&mut a);
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "the body contains a lowering gap, which the run must see"
+    );
+    assert!(
+        r.states()[0].trace().contains(&BlockId(0)),
+        "the callee's body was entered"
+    );
+}
+
+/// **Allocas are per activation.** `AllocaId` is unique only *within* a function, so
+/// `AllocaId(0)` in every function is normal — and one map per state made a callee's
+/// 100-byte local *be* the caller's 4-byte object. Writes alias and bounds are wrong in
+/// both directions, silently, at `Exact`. 023 §1 puts `frame_objs` on the `Frame` for
+/// exactly this reason.
+#[test]
+fn each_activation_materializes_its_own_allocas() {
+    let caller = {
+        let mut f = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Call {
+                        dst: Some(ValueId(1)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    }),
+                ],
+                Terminator::Return(Some(Operand::Value(ValueId(1)))),
+            )],
+            CTy::Int(32),
+        );
+        f.allocas = vec![alloca(0, CTy::Int(8), 4)];
+        f
+    };
+    let callee = {
+        let mut f = defined(
+            1,
+            "callee",
+            vec![block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        f.allocas = vec![alloca(0, CTy::Int(8), 100)];
+        f
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, callee)).run(&mut a);
+    let sizes = r.states()[0].alloca_sizes_for_test();
+    assert_eq!(
+        sizes.len(),
+        2,
+        "two activations, two objects — not one shared by AllocaId: {sizes:?}"
+    );
+    assert!(sizes.contains(&4) && sizes.contains(&100), "{sizes:?}");
+}
+
+fn alloca(id: u32, ty: CTy, count: u64) -> AllocaDecl {
+    AllocaDecl {
+        id: AllocaId(id),
+        ty,
+        count,
+        align: 1,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    }
+}
+
+/// **Loop budgets are per `(function, back edge)`** (023 §8). One map keyed on block ids
+/// alone made two functions that both loop `b2 -> b1` share a counter — a false "not found
+/// within a bound" on a program that is comfortably inside it, and a lost proof.
+#[test]
+fn two_functions_with_the_same_block_numbers_do_not_share_a_loop_budget() {
+    // Each function loops its back edge three times, under a bound of five.
+    let mk = |id: u32, name: &str, call: Option<FuncId>| {
+        let mut b0 = vec![];
+        if let Some(c) = call {
+            b0.push(inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(c),
+                args: vec![],
+            }));
+        }
+        defined(
+            id,
+            name,
+            vec![
+                block(0, b0, Terminator::Goto(BlockId(1))),
+                block(
+                    1,
+                    vec![],
+                    Terminator::Br {
+                        cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
+                        t: BlockId(2),
+                        f: BlockId(3),
+                    },
+                ),
+                block(2, vec![], Terminator::Goto(BlockId(1))),
+                block(3, vec![], Terminator::Return(Some(i32c(0)))),
+            ],
+            CTy::Int(32),
+        )
+    };
+    let mut a = TermArena::new();
+    let budget = Budget {
+        max_loop_iters: 3,
+        ..Budget::default()
+    };
+    // Solo: the bound is hit once, in this function.
+    let solo = Engine::new(&Module {
+        funcs: vec![mk(0, "solo", None)],
+        ..Default::default()
+    })
+    .with_budget(budget)
+    .run(&mut a);
+    let solo_note = solo.states()[0]
+        .assumptions()
+        .iter()
+        .filter(|x| x.kind == AssumptionKind::BudgetHit)
+        .count();
+    assert_eq!(solo_note, 1);
+
+    // Paired: the callee's loop must get its own counter, not inherit the caller's.
+    let paired = Engine::new(&Module {
+        funcs: vec![mk(0, "outer", Some(FuncId(1))), mk(1, "inner", None)],
+        ..Default::default()
+    })
+    .with_budget(budget)
+    .run(&mut a);
+    assert!(
+        paired.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("inner")),
+        "the budget note must name the function whose loop was cut: {:#?}",
+        paired.states()[0].assumptions()
+    );
+}
+
+/// **A module with no functions is not a crash.** `funcs[0]` panicked, and
+/// `Module::default()` is what three of the four proof-surface probes construct.
+#[test]
+fn an_empty_module_is_an_error_not_a_panic() {
+    let m = Module::default();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 1);
+    assert!(matches!(r.states()[0].status, Status::Errored(_)));
+    assert!(seal(&r, r.witness()).is_err());
+}
+
+/// **Call arguments reach the callee.** They were accepted and discarded, so
+/// `int id(int x) { return x; }` called with 42 returned nothing — silently, because the
+/// dropped return was itself silent.
+#[test]
+fn call_arguments_are_bound_to_the_callees_parameters() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![i32c(42)],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let mut id = defined(
+        1,
+        "id",
+        vec![block(
+            0,
+            vec![],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    id.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&two_funcs(caller, id)).run(&mut a);
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(42));
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+}
