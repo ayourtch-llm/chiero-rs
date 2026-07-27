@@ -292,6 +292,14 @@ pub enum ModelOutcome {
     /// The call could not be performed and the reason is reportable.
     Finding(String),
     Havoc(HavocSpec),
+    /// The model reached a **bound it chose**, not a fact about the program: 024 §4 step
+    /// 3's `max_string_scan`, for instance. `Fidelity::Bounded` with the reason.
+    ///
+    /// Distinct from `Finding`, which reports something about the *program*, and from
+    /// `Value(None)`, which says nothing at all. A cap that reported a finding would
+    /// accuse the program of chiero's limit; one that said nothing would let a truncated
+    /// scan pass as a complete one.
+    Bounded(String),
     /// The call does not return, and chiero cannot follow where it went. 024 contract 20:
     /// `longjmp` must terminate the state at `Unknown`, never continue it. A `Finding`
     /// would report the same words and leave execution walking down a path the program
@@ -351,6 +359,12 @@ impl<'a> ModelCtx<'a> {
     }
     pub fn arena(&mut self) -> &mut TermArena {
         self.arena
+    }
+    /// Both at once. `Memory::read_term` takes an arena, and two `&mut self` accessors
+    /// cannot be live together — a model that needs a byte *as a term* has no other way
+    /// to ask for one.
+    pub fn mem_and_arena(&mut self) -> (&mut Memory, &mut TermArena) {
+        (self.mem, self.arena)
     }
     pub fn span(&self) -> Span {
         self.span
@@ -604,6 +618,108 @@ pub mod models {
                 scanned: policy.max_scan,
             }
         }
+    }
+
+    /// 024 §4 and contract 7: `strlen` over **symbolic** bytes.
+    ///
+    /// Step 1 walks while the byte is provably non-zero. At the first byte that *may* be
+    /// zero, step 2 forks: one branch per position where the NUL could be, each guarded by
+    /// "every earlier byte is non-zero **and** this one is zero". The branch where no byte
+    /// is zero is step 4's unterminated string — an out-of-bounds read, "a real bug class
+    /// and the most valuable thing these models catch".
+    ///
+    /// **Steps 3 and 4 must not cancel.** The scan is bounded by
+    /// `min(max_string_scan, object size)`; reaching the *object's* end is always the OOB
+    /// finding, and reaching the *scan cap* first adds **no constraint** — an earlier spec
+    /// draft had the cap "constrain a terminator to exist within the bound", which assumes
+    /// away exactly the bug step 4 exists to find whenever the object is smaller than the
+    /// cap. So the last branch is a finding when the object ended, and a plain
+    /// no-value branch when the cap did.
+    pub fn strlen_symbolic(cx: &mut ModelCtx, p: Pointer, policy: StringPolicy) -> ModelOutcome {
+        let at = cx.span();
+        let size = cx.mem().size_of_pub(p.base).unwrap_or(0);
+        let Ok(from) = u64::try_from(p.off) else {
+            return ModelOutcome::Finding(format!(
+                "strlen: pointer is {} bytes before the object",
+                -p.off
+            ));
+        };
+        let room = size.saturating_sub(from);
+        let limit = room.min(policy.max_scan);
+        if limit == 0 {
+            return ModelOutcome::Finding("strlen: no readable bytes at this pointer".to_string());
+        }
+
+        // Every byte as a term, so a guard can talk about it. A concrete byte is a
+        // constant term, which the arena folds — the fast path of step 1 falls out of
+        // that rather than being a separate code path.
+        let endian = cx.endian();
+        let mut bytes = Vec::new();
+        for i in 0..limit {
+            let q = Pointer {
+                base: p.base,
+                off: p.off + i as i64,
+            };
+            let r = {
+                let (mem, arena) = cx.mem_and_arena();
+                mem.read_term(arena, q, 1, endian, at)
+            };
+            let faults = r.faults.clone();
+            cx.lift(&faults);
+            match r.value {
+                Some(t) if faults.is_empty() => bytes.push(t),
+                // A byte chiero cannot read at all is not a byte it can constrain.
+                _ => {
+                    return ModelOutcome::Finding(format!(
+                        "strlen: byte {i} could not be read, so no length was established"
+                    ));
+                }
+            }
+        }
+
+        let zero = cx.arena().bv(8, 0);
+        let mut branches: Vec<(Option<Term>, ModelOutcome)> = Vec::new();
+        // `nonzero_prefix` accumulates "every byte before this one is non-zero".
+        let mut nonzero_prefix: Option<Term> = None;
+        for (i, b) in bytes.iter().copied().enumerate() {
+            let is_zero = cx.arena().eq(b, zero);
+            let guard = match nonzero_prefix {
+                Some(pre) => cx.arena().and(pre, is_zero),
+                None => is_zero,
+            };
+            let len = cx.arena().bv(64, i as u128);
+            branches.push((Some(guard), ModelOutcome::Value(Some(Value::Scalar(len)))));
+            let nz = cx.arena().not(is_zero);
+            nonzero_prefix = Some(match nonzero_prefix {
+                Some(pre) => cx.arena().and(pre, nz),
+                None => nz,
+            });
+        }
+
+        // The tail: no byte was zero.
+        let all_nonzero = nonzero_prefix;
+        if limit == room {
+            branches.push((
+                all_nonzero,
+                ModelOutcome::Finding(format!(
+                    "strlen: unterminated string — {room} bytes scanned to the end of the \
+                     object with no NUL"
+                )),
+            ));
+        } else {
+            // The cap, not the object's end: nothing is known past here, and saying
+            // anything about it — including that a terminator exists — would be inventing
+            // it. The branch carries its constraint and no value.
+            branches.push((
+                all_nonzero,
+                ModelOutcome::Bounded(format!(
+                    "strlen: max_string_scan ({}) reached before the object ended; the \
+                     rest was not examined and nothing is claimed about it",
+                    policy.max_scan
+                )),
+            ));
+        }
+        ModelOutcome::Fork(branches)
     }
 
     /// 024 contract 9. The same walk plus a bounds check on the destination, which is

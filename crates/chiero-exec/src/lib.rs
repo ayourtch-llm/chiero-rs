@@ -121,6 +121,13 @@ pub enum EffectKind {
     VolatileStore,
 }
 
+/// What a model-fork branch carries besides its value: a report about the program, or a
+/// bound chiero chose. See `ModelOutcome`.
+enum BranchNote {
+    Finding(String),
+    Bounded(String),
+}
+
 /// A defined-but-undefined-behaviour operation, as 020 §4.1 wants it recorded.
 ///
 /// §4.1's separation: "defined IR semantics, UB reported as findings". The *value* is
@@ -538,6 +545,14 @@ impl State {
         }
     }
 
+    /// Unbind a local. A model-fork branch that produced no value must not inherit the
+    /// value the branch before it produced — see the sibling loop in `call_model`.
+    fn clear_local(&mut self, v: ValueId) {
+        if let Some(f) = self.stack.last_mut() {
+            f.locals.shift_remove(&v);
+        }
+    }
+
     fn func(&self) -> FuncId {
         self.stack.last().map_or(FuncId(0), |f| f.func)
     }
@@ -774,6 +789,7 @@ pub struct Engine<'m> {
     models: ModelRegistry,
     alloc_policy: AllocPolicy,
     string_policy: StringPolicy,
+    entry_param_bytes: u64,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -807,6 +823,7 @@ impl<'m> Engine<'m> {
             models: ModelRegistry::with_builtins(),
             alloc_policy: AllocPolicy::default(),
             string_policy: StringPolicy::default(),
+            entry_param_bytes: ENTRY_PARAM_BYTES,
             backend: None,
             solver: None,
             solver_inits: 0,
@@ -824,6 +841,23 @@ impl<'m> Engine<'m> {
     /// produce a run that looks like a reproduction and is not.
     pub fn replaying(mut self, w: Witness) -> Self {
         self.replay = Some(w);
+        self
+    }
+
+    /// How big an object an entry function's pointer parameter points at.
+    ///
+    /// The default is [`ENTRY_PARAM_BYTES`], a bound chiero chose because the caller is
+    /// outside the analysis. A test that is *about* the size — a string scan against the
+    /// object's end — has to be able to say it, and 024 §4's rule ties the scan to
+    /// `min(max_string_scan, object size)`, so both halves must be settable.
+    pub fn with_entry_param_bytes(mut self, n: u64) -> Self {
+        self.entry_param_bytes = n;
+        self
+    }
+
+    /// 024 §4's `max_string_scan` and friends.
+    pub fn with_string_policy(mut self, p: StringPolicy) -> Self {
+        self.string_policy = p;
         self
     }
 
@@ -964,7 +998,7 @@ impl<'m> Engine<'m> {
                 // Sized by the budget rather than by a guess about the callee: the object
                 // exists so accesses have somewhere to land, and its extent is a bound
                 // chiero chose, so an access past it is reported as such.
-                let obj = mem.alloc(ObjKind::Lazy, ENTRY_PARAM_BYTES, 16, f.span);
+                let obj = mem.alloc(ObjKind::Lazy, self.entry_param_bytes, 16, f.span);
                 // **021 §6: "fully symbolic and fully initialized".** The caller filled
                 // this buffer; chiero does not know *what with*, which is not the same as
                 // nobody having written it. Leaving the bytes uninitialized turned every
@@ -3629,9 +3663,14 @@ impl<'m> Engine<'m> {
         };
 
         let (alloc, strp) = (self.alloc_policy, self.string_policy);
+        /// A model fork's branches: the guard, the value, and a report the branch *is*.
+        type Branch = (Option<Term>, Option<Value>, Option<BranchNote>);
+        let mut forks: Vec<Branch> = Vec::new();
+        let mut mine_guard: Option<Term> = None;
+        let mut branch_findings: Vec<String> = Vec::new();
+        let mut branch_bounds: Vec<String> = Vec::new();
         let mut keyed: Vec<(Option<chiero_mem::MemFault>, String)> = Vec::new();
         let mut result: Option<Value> = None;
-        let mut forks: Vec<Option<Value>> = Vec::new();
         let mut terminate: Option<String> = None;
         let mut havoc: Option<HavocSpec> = None;
         let mut unresolved_args = false;
@@ -3664,6 +3703,14 @@ impl<'m> Engine<'m> {
                         chiero_model::StrScan::Exact(n) => {
                             let t = cx.arena().bv(64, n as u128);
                             chiero_model::ModelOutcome::Value(Some(chiero_model::Value::Scalar(t)))
+                        }
+                        // **The symbolic case is a fork, not a shrug** (024 §4 step 2).
+                        // The concrete walk stops at the first byte it cannot read as a
+                        // number; that is where the interesting strings start, not where
+                        // the analysis should. `CapReached { scanned: 0 }` here means the
+                        // scan never got going, which is exactly the symbolic case.
+                        chiero_model::StrScan::CapReached { scanned: 0 } => {
+                            models::strlen_symbolic(&mut cx, p, strp)
                         }
                         // A length nobody established is not a number to hand back —
                         // and `Value(None)` was not the way to say so. It left
@@ -3715,24 +3762,53 @@ impl<'m> Engine<'m> {
                 // *default*. Each alternative after the first becomes a sibling state;
                 // this one takes the first, so exploration order stays deterministic.
                 Some(ModelOutcome::Fork(branches)) => {
+                    // **The guard travels with the branch.** It was dropped — every
+                    // sibling of a model fork carried the *same* path condition, so a
+                    // `strlen` fork produced four states that all still believed the
+                    // string could be any length, and a later `if (len == 2)` took both
+                    // sides in every one of them. `malloc`'s two branches were
+                    // indistinguishable to the solver for the same reason.
                     let mut it = branches.into_iter();
                     match it.next() {
-                        Some((_, ModelOutcome::Value(v))) => {
+                        Some((g, ModelOutcome::Value(v))) => {
                             result = v.map(lift_value);
+                            mine_guard = g;
+                        }
+                        Some((g, ModelOutcome::Bounded(why))) => {
+                            mine_guard = g;
+                            branch_bounds.push(why);
+                        }
+                        Some((g, ModelOutcome::Finding(msg))) => {
+                            // A branch that *is* the report — 024 §4 step 4's
+                            // unterminated string. It constrains this state like any
+                            // other branch and reports; it is not a lowering gap.
+                            mine_guard = g;
+                            branch_findings.push(msg);
                         }
                         _ => translated = false,
                     }
-                    for (_, alt) in it {
-                        if let ModelOutcome::Value(v) = alt {
-                            forks.push(v.map(lift_value));
-                        } else {
-                            translated = false;
+                    for (g, alt) in it {
+                        match alt {
+                            ModelOutcome::Value(v) => forks.push((g, v.map(lift_value), None)),
+                            ModelOutcome::Finding(msg) => {
+                                forks.push((g, None, Some(BranchNote::Finding(msg))))
+                            }
+                            ModelOutcome::Bounded(why) => {
+                                forks.push((g, None, Some(BranchNote::Bounded(why))))
+                            }
+                            _ => translated = false,
                         }
                     }
                 }
                 // The payload is the *whole point* of `Finding`; matching only `Value`
                 // dropped it. It is still a gap — the call did not produce a value — so
                 // `translated` stays false and the assumption is recorded too.
+                Some(ModelOutcome::Bounded(why)) => {
+                    // Deferred: `cx` holds `&mut s.mem` for the whole dispatch, so the
+                    // degradation is applied after it is dropped, like every other arm.
+                    branch_bounds.push(why);
+                    translated = false;
+                }
                 Some(ModelOutcome::Finding(msg)) => {
                     // **Keyed by the call site.** A model giving up has no `MemFault`
                     // behind it, but the *call* is what identifies the bug: one `strcpy`
@@ -3823,11 +3899,56 @@ impl<'m> Engine<'m> {
         }
         // Siblings are created *after* this state's own result is in place, so each
         // carries the same history and differs only in what the model returned.
-        for v in forks {
+        if let Some(g) = mine_guard {
+            s.path.push(g);
+        }
+        for why in branch_bounds {
+            s.degrade(Fidelity::Bounded, AssumptionKind::BudgetHit, span, &why);
+        }
+        for msg in branch_findings {
+            self.finding_seq += 1;
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: None,
+                message: msg,
+                span,
+            });
+        }
+        for (guard, v, report) in forks {
             let mut sib = s.clone();
             sib.id = self.new_id();
-            if let (Some(d), Some(x)) = (dst, v) {
-                sib.set_local(d, x);
+            // **This state's own guard is not the sibling's.** Cloning after pushing it
+            // would put the first branch's constraint on every other branch, which is
+            // worse than no guard at all: the states would be mutually contradictory.
+            if let Some(g) = mine_guard {
+                sib.path.pop_if(|last| *last == g);
+            }
+            if let Some(g) = guard {
+                sib.path.push(g);
+            }
+            match report {
+                Some(BranchNote::Finding(msg)) => {
+                    self.finding_seq += 1;
+                    sib.findings.push(StateFinding {
+                        id: self.finding_seq,
+                        key: None,
+                        message: msg,
+                        span,
+                    });
+                }
+                Some(BranchNote::Bounded(why)) => {
+                    sib.degrade(Fidelity::Bounded, AssumptionKind::BudgetHit, span, &why);
+                }
+                None => {}
+            }
+            match (dst, v) {
+                (Some(d), Some(x)) => sib.set_local(d, x),
+                // **A branch with no value must not inherit one.** The sibling is cloned
+                // after this state's result is in place, so a value-less branch — the
+                // unterminated string, the scan cap — kept the *first* branch's length
+                // and reported it as its own.
+                (Some(d), None) => sib.clear_local(d),
+                _ => {}
             }
             // Past the call, for the same reason as `indirect`: a sibling that still
             // pointed *at* the call re-dispatched it and forked again, forever.
