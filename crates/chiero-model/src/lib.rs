@@ -46,7 +46,9 @@ pub enum ModelError {
 /// What a model invalidates when it cannot say more (024 §2.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HavocSpec {
-    pub objects: Vec<u32>,
+    /// 024 §2.1's own field type. `Vec<u32>` here meant a caller could pass anything and
+    /// a reader could not tell what the numbers were.
+    pub objects: Vec<ObjectId>,
     /// Follow pointers stored *inside* those objects, this many deep.
     pub reachable_depth: u32,
     pub init: HavocInit,
@@ -387,6 +389,7 @@ pub const DISPATCHABLE: &[&str] = &[
     "chiero_assert",
     "chiero_mark_fidelity",
     "longjmp",
+    "scanf",
 ];
 
 pub fn dispatchable() -> &'static [&'static str] {
@@ -428,6 +431,7 @@ pub mod models {
                 | "chiero_assert"
                 | "chiero_mark_fidelity"
                 | "longjmp"
+                | "scanf"
         )
     }
 
@@ -633,6 +637,23 @@ pub mod models {
 
     /// The range becomes initialized and reads back as the set byte; nothing outside it
     /// changes.
+    /// 024 §2.1's own example of a model that **chooses** to havoc. `scanf` writes
+    /// through every pointer it is handed and nothing about what it writes is knowable —
+    /// but it does **not** write through its format string, and that is the whole reason
+    /// a model beats the default fallback here. The fallback invalidates every pointer
+    /// argument, which for `scanf(fmt, &x)` throws away a `const char *` the callee only
+    /// reads, and with it any later finding about that string.
+    ///
+    /// The format is not *parsed*: `%n` writes through an argument and a mismatched
+    /// conversion writes the wrong width, so counting conversions would be a claim
+    /// chiero cannot back. Every pointer after the first is an output.
+    pub fn scanf(_cx: &mut ModelCtx, args: &[Pointer]) -> ModelOutcome {
+        ModelOutcome::Havoc(HavocSpec {
+            objects: args.iter().skip(1).map(|p| p.base).collect(),
+            ..HavocSpec::unmodeled_extern()
+        })
+    }
+
     /// 024 contract 20. Non-local control flow: the state ends here.
     ///
     /// There is nothing to model — the point is that continuing is *wrong*, not that the

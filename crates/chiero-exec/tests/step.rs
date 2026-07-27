@@ -2715,7 +2715,7 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
     // `true` unconditionally passed the loop above — every assertion in it was satisfied
     // by a function that says yes to everything. These are registered models chiero has
     // *no* implementation for, which is exactly what the flag exists to distinguish.
-    for n in ["scanf", "printf", "sqrt", "read", "not_a_function_at_all"] {
+    for n in ["printf", "sqrt", "read", "ioctl", "not_a_function_at_all"] {
         assert!(
             !chiero_model::models::is_implemented(n),
             "`{n}` has no implementation here and must not claim one"
@@ -2781,6 +2781,11 @@ fn every_dispatchable_name_is_actually_performed_by_the_engine() {
         ("chiero_assert", vec![CTy::Int(32)], vec![i32v(1)]),
         ("chiero_mark_fidelity", vec![CTy::Ptr], vec![p1.clone()]),
         ("longjmp", vec![], vec![]),
+        (
+            "scanf",
+            vec![CTy::Ptr, CTy::Ptr],
+            vec![p1.clone(), p0.clone()],
+        ),
     ];
     let names: Vec<&str> = cases.iter().map(|(n, _, _)| *n).collect();
     for n in chiero_model::dispatchable() {
@@ -3740,19 +3745,14 @@ fn an_externs_fresh_value_has_the_declared_width() {
 /// **024 contract 21c.** A havoc degrades identically whether it came from the default
 /// unmodeled-extern fallback or from a registered model.
 ///
-/// **This was written expecting RED and arrived green**, which is worth recording rather
-/// than quietly keeping: since the previous commit *both* paths reach the same
-/// `havoc_args` fallback, so they agree by construction rather than by two mechanisms
-/// coinciding. What it genuinely pins is that registering an approximate model does not
-/// *remove* the invalidation — the failure mode this project already hit once, when
-/// registering `strlen` and `strcpy` removed the degradation their calls had been causing.
-/// The `assert_ne!` is what makes it non-vacuous: with the havoc off, both sides still
-/// agree and that assertion still fails.
+/// The two mechanisms are genuinely different now: `scanf` returns its own `HavocSpec`
+/// naming only the pointers it writes through, while the fallback knows nothing and
+/// invalidates every pointer argument. The **fidelity effect** must still match, which is
+/// what the contract actually says — a model that knows more must not be punished for it.
 ///
-/// The half it does not reach is `ModelOutcome::Havoc` returned *by a model*, which
-/// `dispatch` still treats as an untranslatable gap. No model produces one today, so the
-/// branch is unreachable rather than wrong; a model that chooses its own `HavocSpec` —
-/// `scanf` writing through every pointer it is handed is 024 §2.1's example — is owed.
+/// An earlier version of this test compared the *bytes* as well and passed for the wrong
+/// reason: both sides reached the same fallback, so they agreed by construction rather
+/// than by two mechanisms coinciding.
 #[test]
 fn a_registered_models_havoc_degrades_like_the_default_one() {
     let build = |callee: &str| {
@@ -3823,12 +3823,20 @@ fn a_registered_models_havoc_degrades_like_the_default_one() {
         f_modeled, f_unmodeled,
         "a havoc degrades the same wherever it came from"
     );
-    assert_ne!(
+    // The *object sets* differ on purpose and the fidelity does not — which is exactly
+    // what 21c says. `scanf`'s only pointer here is its format string, which it reads,
+    // so the model invalidates nothing while the fallback invalidates the buffer. A
+    // model that knows more must not be punished for it.
+    assert_eq!(
         b_modeled,
         Some(vec![120u8; 4]),
-        "the registered model invalidated the buffer too"
+        "the format string is read, not written"
     );
-    assert_eq!(b_modeled, b_unmodeled, "and to the same effect");
+    assert_ne!(
+        b_unmodeled,
+        Some(vec![120u8; 4]),
+        "the fallback, knowing nothing, invalidates it"
+    );
 }
 
 /// **`AddrOfFunc` was a lowering gap, so an indirect call was never resolvable.** Taking a
@@ -3946,4 +3954,119 @@ fn a_functions_address_is_the_same_pointer_every_time() {
     // And two *different* functions are different pointers, or the first assertion is
     // satisfied by handing out one object for everything.
     assert_ne!(s.local(ValueId(0)), s.local(ValueId(2)));
+}
+
+/// **A registered model's havoc is narrower than the fallback's, and that is the point.**
+/// The default invalidates every pointer argument; `scanf(fmt, &x)` only writes through
+/// `&x`, so throwing away `fmt` loses a string the callee merely read — and with it any
+/// later finding about that string.
+///
+/// This is also what finally makes 024 contract 21c compare two mechanisms rather than one
+/// fallback against itself: the fidelity effect must still be identical even though the
+/// object sets differ.
+#[test]
+fn scanf_invalidates_what_it_writes_and_leaves_its_format_alone() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                // Both buffers hold known bytes before the call.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0xAB,
+                        }),
+                        Operand::Const(Const::Int { bits: 64, val: 4 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(1)),
+                        Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0xCD,
+                        }),
+                        Operand::Const(Const::Int { bits: 64, val: 4 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(2)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 4)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "scanf", vec![CTy::Ptr, CTy::Ptr], CTy::Int(32)),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    let obj = |v: u32| match s.local(ValueId(v)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = s.mem.clone();
+    assert_eq!(
+        mem.read(
+            chiero_mem::Pointer {
+                base: obj(0),
+                off: 0
+            },
+            4,
+            Span::DUMMY
+        )
+        .value,
+        Some(vec![0xAB; 4]),
+        "the format string is read, not written"
+    );
+    assert_ne!(
+        mem.read(
+            chiero_mem::Pointer {
+                base: obj(1),
+                off: 0
+            },
+            4,
+            Span::DUMMY
+        )
+        .value,
+        Some(vec![0xCD; 4]),
+        "the output pointer is invalidated"
+    );
+    // 024 contract 21c: same fidelity effect as the default havoc, different object set.
+    assert_eq!(r.fidelity(), Fidelity::Approximated);
 }

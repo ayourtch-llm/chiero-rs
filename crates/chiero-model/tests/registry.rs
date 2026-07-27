@@ -1030,3 +1030,33 @@ fn strcpy_measures_destination_room_from_the_pointer_not_the_base() {
         cx.findings()
     );
 }
+
+/// **024 §2.1's own example of a model that chooses to havoc.** `scanf` writes through
+/// every pointer it is handed and nothing about *what* it writes is knowable — but it does
+/// **not** write through its format string, and that distinction is the whole reason a
+/// model beats the default fallback here. The fallback invalidates every pointer argument,
+/// which for `scanf(fmt, &x)` throws away a `const char *` the callee only reads.
+///
+/// Reaching this at all needed `ModelOutcome::Havoc` to be a shape `dispatch` can perform:
+/// contract 21c compares a registered model's havoc against the default one, and until
+/// something produced a `Havoc` the branch was unreachable rather than merely untested.
+#[test]
+fn scanf_havocs_its_output_pointers_and_not_its_format() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let fmt = m.alloc(ObjKind::Global, 4, 1, Span::DUMMY);
+    let out = m.alloc(ObjKind::Stack, 4, 4, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let spec = match models::scanf(
+        &mut cx,
+        &[Pointer { base: fmt, off: 0 }, Pointer { base: out, off: 0 }],
+    ) {
+        ModelOutcome::Havoc(s) => s,
+        other => panic!("scanf havocs: {other:?}"),
+    };
+    assert_eq!(spec.objects, vec![out], "the format is read, not written");
+    let _ = fmt;
+    // 024 §2.1: `Symbolic`, because a callee that wrote something meaningful is the
+    // common case and `Uninitialized` would fire on every buffer `scanf` filled.
+    assert_eq!(spec.init, HavocInit::Symbolic);
+}

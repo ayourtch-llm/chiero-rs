@@ -785,6 +785,10 @@ impl<'m> Engine<'m> {
             match self.models.lookup(&name).map(|e| e.precision.clone()) {
                 // 024 §2.1: dispatching an approximate model degrades *mechanically*, and
                 // the model's own reason travels into the report.
+                // 024 §2.1: dispatching an approximate model degrades *and* runs it.
+                // Recording the reason and then doing nothing was strictly worse than
+                // having no model at all, since the fallback at least invalidates the
+                // buffers — and a model knows which ones it actually writes through.
                 Some(Precision::Approximate(why)) => {
                     self.note_once(
                         s,
@@ -792,7 +796,21 @@ impl<'m> Engine<'m> {
                         span,
                         &format!("`{name}` is modeled approximately: {why}"),
                     );
-                    self.havoc_args(a, s, &name, args, span);
+                    if self.can_dispatch(&name) {
+                        self.dispatch(
+                            a,
+                            s,
+                            DispatchCall {
+                                name: &name,
+                                dst,
+                                args,
+                                ret_ty: &ret_ty,
+                                span,
+                            },
+                        );
+                    } else {
+                        self.havoc_args(a, s, &name, args, span);
+                    }
                 }
                 // **An exact model is only faithful if it actually runs.** Reading the
                 // precision and recording nothing made a registered name *more* trusted
@@ -1278,19 +1296,42 @@ impl<'m> Engine<'m> {
         if objs.is_empty() {
             return;
         }
+        let spec = HavocSpec {
+            objects: objs,
+            ..spec
+        };
+        self.apply_havoc(a, s, name, &spec, span);
+    }
+
+    /// Perform a `HavocSpec`, whichever produced it. 024 §2.1 requires the fidelity effect
+    /// to be identical for the default fallback and for a model that chose to havoc, and
+    /// the only way to be sure of that is for both to go through here.
+    fn apply_havoc(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        name: &str,
+        spec: &HavocSpec,
+        span: Span,
+    ) {
+        if spec.objects.is_empty() {
+            return;
+        }
         let fill = match spec.init {
             HavocInit::Symbolic => HavocFill::Symbolic,
             HavocInit::Uninitialized => HavocFill::Uninitialized,
         };
-        let hit = s.mem.havoc(a, &objs, spec.reachable_depth, fill, span);
-        // 024 contract 21c: the havoc's *own* reason, so a reader can tell "chiero threw
-        // away what it knew about these objects" from "the model was imprecise".
+        let hit = s
+            .mem
+            .havoc(a, &spec.objects, spec.reachable_depth, fill, span);
+        // The havoc's *own* reason, so a reader can tell "chiero threw away what it knew
+        // about these objects" from "the model was imprecise".
         self.note_once(
             s,
             AssumptionKind::ModelApproximate,
             span,
             &format!(
-                "`{name}` was not performed, so {} — {} object(s) invalidated",
+                "`{name}`: {} — {} object(s) invalidated",
                 spec.describe(),
                 hit.len()
             ),
@@ -1339,6 +1380,7 @@ impl<'m> Engine<'m> {
         let mut result: Option<Value> = None;
         let mut forks: Vec<Option<Value>> = Vec::new();
         let mut terminate: Option<String> = None;
+        let mut havoc: Option<HavocSpec> = None;
         let mut translated = true;
         {
             let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
@@ -1380,6 +1422,16 @@ impl<'m> Engine<'m> {
                     }
                 }),
                 "longjmp" => Some(models::longjmp(&mut cx)),
+                "scanf" => {
+                    let ps: Vec<Pointer> = resolved
+                        .iter()
+                        .filter_map(|v| match v {
+                            Some(Value::Ptr(p)) => Some(*p),
+                            _ => None,
+                        })
+                        .collect();
+                    Some(models::scanf(&mut cx, &ps))
+                }
                 "strcpy" => match (ptr(0), ptr(1)) {
                     (Some(d), Some(sp)) => Some(models::strcpy(&mut cx, d, sp, strp)),
                     _ => None,
@@ -1422,7 +1474,16 @@ impl<'m> Engine<'m> {
                 Some(ModelOutcome::Terminate(why)) => {
                     terminate = Some(why);
                 }
-                Some(_) => translated = false,
+                // 024 contract 21c. A model that chose its own `HavocSpec` knows more
+                // than the fallback does — which objects it actually writes through —
+                // and the fidelity effect is identical either way.
+                Some(ModelOutcome::Havoc(spec)) => {
+                    havoc = Some(spec);
+                }
+                // **No catch-all.** Every `ModelOutcome` variant is handled, so adding
+                // one is a compile error here rather than a silent `translated = false`
+                // — which is how `Finding`'s payload was dropped and how `Havoc` was
+                // swallowed, both found by review rather than by the compiler.
                 None => translated = false,
             }
             findings.extend(cx.findings().iter().cloned());
@@ -1458,6 +1519,9 @@ impl<'m> Engine<'m> {
             // pointed *at* the call re-dispatched it and forked again, forever.
             sib.pc.1 = sib.pc.1.wrapping_add(1);
             self.pending.push(sib);
+        }
+        if let Some(spec) = havoc {
+            self.apply_havoc(a, s, name, &spec, span);
         }
         if let Some(why) = terminate {
             s.status = Status::Terminated(TermReason::Unsupported);
