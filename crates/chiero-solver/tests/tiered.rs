@@ -757,8 +757,56 @@ fn array_terms_reach_the_backend() {
     let mut s = TieredSolver::with_backend(backend);
     s.assert(e);
     s.assert(e2);
+    // `Sat` **with a validated model**, which is possible here even though `Model` has no
+    // representation for an array: the model pins `i`, so the evaluator resolves the
+    // select by walking the store chain and never needs the array's own value. 022's rule
+    // that every `Sat` is independently validated therefore still holds.
+    //
+    // A query whose answer genuinely depends on an *unconstrained* array element cannot
+    // be validated and comes back `Unknown` — see the `Unsat` test below for the case
+    // that pins the script being well-formed regardless.
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(m.get(a.var_id(i).unwrap()).unwrap().bits(), 3);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// **An `Unsat` array query proves the script is well-formed.**
+///
+/// The `Sat` direction cannot: an unvalidatable model and a *malformed script* both come
+/// back `Unknown`, so that test alone cannot tell a correct emission from one z3 rejects
+/// — emitting `(_ BitVec 0)` for the array sort passed it. `Unsat` needs no model, so it
+/// is reachable, and a backend that could not parse the script could never produce it.
+#[test]
+fn an_unsatisfiable_array_query_is_decided_by_the_backend() {
+    let Some(backend) = z3_or_skip("an_unsatisfiable_array_query_is_decided_by_the_backend") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let mem = a.array_var(64, 8, "mem");
+    let i = a.var(Sort::BitVec(64), "i");
+    // Two reads of the same index over the same array. Hash-consing makes them the same
+    // term, so they cannot hold two values — but that is array reasoning, outside tier
+    // 1's fragment, so the question really does reach the backend.
+    let got = a.select(mem, i);
+    let five = a.bv(8, 5);
+    let seven = a.bv(8, 7);
+    let e = a.eq(got, five);
+    let e3 = a.eq(got, seven);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e3);
+    s.assert(e2);
     assert!(
-        matches!(s.check(&mut a, &[]), CheckResult::Sat(_)),
-        "the backend must accept select/store over a declared array"
+        matches!(s.check(&mut a, &[]), CheckResult::Unsat),
+        "read-over-write says this is unsatisfiable; anything else means the backend \
+         never understood the script"
     );
 }

@@ -335,8 +335,10 @@ fn a_select_at_a_different_index_reads_through_the_store() {
     let v = a.bv(8, 0x5A);
     let stored = a.store(base, i, v);
     let m = Model::new();
-    assert_eq!(a.eval(&m, a.select(stored, j)).unwrap().bits(), 0xEE);
-    assert_eq!(a.eval(&m, a.select(stored, i)).unwrap().bits(), 0x5A);
+    let at_j = a.select(stored, j);
+    let at_i = a.select(stored, i);
+    assert_eq!(a.eval(&m, at_j).unwrap().bits(), 0xEE);
+    assert_eq!(a.eval(&m, at_i).unwrap().bits(), 0x5A);
 }
 
 /// Stores layer: the most recent one at an index wins, and earlier ones at other indices
@@ -352,8 +354,10 @@ fn later_stores_shadow_earlier_ones_only_at_the_same_index() {
     let s = a.store(s, j, v2);
     let s = a.store(s, i, v3);
     let m = Model::new();
-    assert_eq!(a.eval(&m, a.select(s, i)).unwrap().bits(), 33);
-    assert_eq!(a.eval(&m, a.select(s, j)).unwrap().bits(), 22);
+    let at_i = a.select(s, i);
+    let at_j = a.select(s, j);
+    assert_eq!(a.eval(&m, at_i).unwrap().bits(), 33);
+    assert_eq!(a.eval(&m, at_j).unwrap().bits(), 22);
 }
 
 /// A select at a **symbolic** index cannot fold, and must not pretend to. Folding it to
@@ -378,4 +382,22 @@ fn a_select_at_a_symbolic_index_does_not_fold() {
     assert_eq!(a.eval(&m, got).unwrap().bits(), 0x5A);
     m.set(a.var_id(j).unwrap(), BvConst::new(64, 4));
     assert_eq!(a.eval(&m, got).unwrap().bits(), 0xEE);
+}
+
+/// A select over a store at the **same** term folds, even when the index is symbolic.
+/// Hash-consing makes identity decidable at construction, and `v[i] = x; use v[i]` is the
+/// commonest shape there is — handing it to the solver would be work nobody needs.
+#[test]
+fn a_select_over_a_store_at_the_same_symbolic_index_folds() {
+    let mut a = TermArena::new();
+    let mem = a.array_var(64, 8, "mem");
+    let i = a.var(Sort::BitVec(64), "i");
+    let v = a.bv(8, 0x5A);
+    let s = a.store(mem, i, v);
+    assert_eq!(a.select(s, i), v, "identity is decidable without a solver");
+    // A *different* symbolic index is not, and must not fold.
+    let j = a.var(Sort::BitVec(64), "j");
+    let other = a.select(s, j);
+    assert_ne!(other, v);
+    assert!(a.eval_ground(other).is_err());
 }

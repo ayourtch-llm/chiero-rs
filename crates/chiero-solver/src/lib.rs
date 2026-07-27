@@ -16,11 +16,20 @@ pub const MAX_BV_BITS: u32 = 128;
 pub enum Sort {
     Bool,
     BitVec(u32),
+    /// `(Array (_ BitVec idx) (_ BitVec elem))` — the representation 021 §3 promotes a
+    /// memory object to when a symbolic offset cannot be pinned to a small set.
+    Array {
+        idx: u32,
+        elem: u32,
+    },
 }
 
 impl Sort {
+    /// The width of a *value* of this sort. An array has no scalar width; asking for one
+    /// is a bug in the caller, so it is 0 rather than a plausible-looking number.
     pub fn width(self) -> u32 {
         match self {
+            Sort::Array { .. } => 0,
             Sort::Bool => 1,
             Sort::BitVec(w) => w,
         }
@@ -162,6 +171,21 @@ enum Node {
         t: Term,
         f: Term,
     },
+    /// An array whose every index holds the same value — the base a promoted object
+    /// starts from (021 §3).
+    ArrayConst {
+        idx: u32,
+        val: Term,
+    },
+    Select {
+        a: Term,
+        i: Term,
+    },
+    Store {
+        a: Term,
+        i: Term,
+        v: Term,
+    },
 }
 
 /// A complete assignment. Every declared variable has a value (022 §2), which is what
@@ -266,7 +290,67 @@ impl TermArena {
             Node::Extract { hi, lo, .. } => hi - lo + 1,
             Node::Concat { hi, lo } => self.width(*hi) + self.width(*lo),
             Node::Ite { t, .. } => self.width(*t),
+            // An array is not a scalar; only `Select` yields a width.
+            Node::ArrayConst { .. } | Node::Store { .. } => 0,
+            Node::Select { a, .. } => self.elem_width(*a),
         }
+    }
+
+    /// The element width of an array-sorted term.
+    fn elem_width(&self, t: Term) -> u32 {
+        match &self.nodes[t.0 as usize] {
+            Node::Var(_, Sort::Array { elem, .. }) => *elem,
+            Node::ArrayConst { val, .. } => self.width(*val),
+            Node::Store { a, .. } => self.elem_width(*a),
+            _ => 0,
+        }
+    }
+
+    /// A fresh array variable, `(Array (_ BitVec idx) (_ BitVec elem))`.
+    pub fn array_var(&mut self, idx: u32, elem: u32, name: &str) -> Term {
+        self.var(Sort::Array { idx, elem }, name)
+    }
+
+    /// An array whose every index holds `val`.
+    pub fn array_const(&mut self, idx: u32, elem: u32, val: u128) -> Term {
+        let v = self.bv(elem, val);
+        self.intern(Node::ArrayConst { idx, val: v })
+    }
+
+    pub fn store(&mut self, a: Term, i: Term, v: Term) -> Term {
+        self.intern(Node::Store { a, i, v })
+    }
+
+    /// `select`, folding only when the index comparison is **decidable at construction**.
+    ///
+    /// Folding a symbolic index to the underlying array's default would silently decide
+    /// `i == j`, which is exactly the question promotion exists to hand to the solver.
+    pub fn select(&mut self, arr: Term, i: Term) -> Term {
+        let mut cur = arr;
+        loop {
+            match self.nodes[cur.0 as usize] {
+                Node::Store { a, i: si, v } => {
+                    // Syntactic identity is sound and free: terms are hash-consed, so
+                    // `si == i` means the *same* index, symbolic or not. Without it,
+                    // `v[i] = x; use v[i]` — the commonest shape there is — hands the
+                    // solver a question it does not need.
+                    if si == i {
+                        return v;
+                    }
+                    match (self.as_const(si), self.as_const(i)) {
+                        (Some(x), Some(y)) if x.bits() == y.bits() => return v,
+                        // Both concrete and different: this store is irrelevant, read on.
+                        (Some(_), Some(_)) => cur = a,
+                        // Either side symbolic: the answer depends on a comparison the
+                        // solver owns.
+                        _ => break,
+                    }
+                }
+                Node::ArrayConst { val, .. } => return val,
+                _ => break,
+            }
+        }
+        self.intern(Node::Select { a: cur, i })
     }
 
     /// SMT-LIB `concat`, folding when both sides are constant.
@@ -461,6 +545,24 @@ impl TermArena {
             Node::Concat { hi, lo } => {
                 format!("(concat {} {})", self.smt_bv(*hi), self.smt_bv(*lo))
             }
+            Node::ArrayConst { idx, val } => {
+                // `as const` needs the full sort annotation, since the element sort is
+                // not inferable from the value alone in every SMT-LIB dialect.
+                format!(
+                    "((as const (Array (_ BitVec {idx}) (_ BitVec {}))) {})",
+                    self.width(*val),
+                    self.to_smtlib(*val)
+                )
+            }
+            Node::Select { a, i } => {
+                format!("(select {} {})", self.to_smtlib(*a), self.to_smtlib(*i))
+            }
+            Node::Store { a, i, v } => format!(
+                "(store {} {} {})",
+                self.to_smtlib(*a),
+                self.to_smtlib(*i),
+                self.smt_bv(*v)
+            ),
             Node::Ite { c, t, f } => {
                 // A predicate is width-1 in the arena but **`Bool` in SMT-LIB**, so it is
                 // already a legal `ite` condition; a genuine one-bit *vector* has to be
@@ -581,10 +683,15 @@ impl TermArena {
                 self.vars_of(*a, out);
                 self.vars_of(*b, out);
             }
-            Node::Ite { c, t, f } => {
+            Node::Ite { c, t, f } | Node::Store { a: c, i: t, v: f } => {
                 self.vars_of(*c, out);
                 self.vars_of(*t, out);
                 self.vars_of(*f, out);
+            }
+            Node::ArrayConst { val, .. } => self.vars_of(*val, out),
+            Node::Select { a, i } => {
+                self.vars_of(*a, out);
+                self.vars_of(*i, out);
             }
         }
     }
@@ -658,6 +765,35 @@ impl TermArena {
             Node::Extract { a, hi, lo } => {
                 let v = self.eval(m, *a)?;
                 BvConst::new(hi - lo + 1, v.bits() >> lo)
+            }
+            // The evaluator resolves a select by walking the store chain under the
+            // model, which is what makes a promoted object's contents checkable without
+            // a backend — the same independence 022 §3 rests the whole Sat story on.
+            Node::Select { a, i } => {
+                let want = self.eval(m, *i)?;
+                let mut cur = *a;
+                loop {
+                    match &self.nodes[cur.0 as usize] {
+                        Node::Store { a, i, v } => {
+                            if self.eval(m, *i)?.bits() == want.bits() {
+                                break self.eval(m, *v)?;
+                            }
+                            cur = *a;
+                        }
+                        Node::ArrayConst { val, .. } => break self.eval(m, *val)?,
+                        // An array *variable* has no model here; 022 §2's evaluator is
+                        // total over bit-vectors, and arrays are the honest exception.
+                        _ => {
+                            return Err(EvalError(
+                                "array variable is unassigned in this model".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            // Array-sorted terms have no scalar value of their own.
+            Node::ArrayConst { .. } | Node::Store { .. } => {
+                return Err(EvalError("array-sorted term has no scalar value".into()));
             }
             Node::Concat { hi, lo } => {
                 let (x, y) = (self.eval(m, *hi)?, self.eval(m, *lo)?);
@@ -1110,7 +1246,12 @@ impl Session {
             child,
             declared: Vec::new(),
         };
-        s.send("(set-logic QF_BV)\n(set-option :produce-models true)\n")?;
+        // **`QF_ABV`, not `QF_BV`.** 021 §3 promotes an object to array theory, and
+        // `QF_BV` excludes arrays outright — z3 rejects the whole script, which surfaces
+        // as "backend gave no usable answer" and looks like a solver problem rather than
+        // a logic that does not admit the terms being sent. The extra theory costs
+        // nothing on queries that never mention an array.
+        s.send("(set-logic QF_ABV)\n(set-option :produce-models true)\n")?;
         Some(s)
     }
 
@@ -1166,6 +1307,17 @@ impl Drop for Session {
 }
 
 /// A name z3 will accept, unique per variable.
+/// A sort in SMT-LIB syntax. An array is not a bit-vector of width 0, which is what
+/// `Sort::width()` reports for one — a declaration built from it emitted `(_ BitVec 0)`
+/// and the backend refused the whole script.
+fn smt_sort(s: Sort) -> String {
+    match s {
+        Sort::Bool => "Bool".into(),
+        Sort::BitVec(w) => format!("(_ BitVec {w})"),
+        Sort::Array { idx, elem } => format!("(Array (_ BitVec {idx}) (_ BitVec {elem}))"),
+    }
+}
+
 fn smt_name(v: &VarId, name: &str) -> String {
     let safe: String = name
         .chars()
@@ -1185,6 +1337,16 @@ fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
     let mut m = Model::new();
     for v in vars {
         let (name, sort) = &a.vars[v.0 as usize];
+        // Array-sorted variables have no bit-vector value to read back, and `BvConst`
+        // asserts a non-zero width — so without this the model builder would panic.
+        //
+        // Currently unreachable: an array query cannot be validated, so it returns
+        // `Unknown` before a model is ever requested. It stays as the guard for when
+        // `Model` learns arrays, and mutation cannot distinguish it precisely *because*
+        // the path in front of it is closed.
+        if matches!(sort, Sort::Array { .. }) {
+            continue;
+        }
         let key = smt_name(v, name);
         let val = text
             .split(&format!("define-fun {key} "))
@@ -1319,9 +1481,9 @@ impl TieredSolver {
             if !s.declared.contains(v) {
                 let (name, sort) = &a.vars[v.0 as usize];
                 decls.push_str(&format!(
-                    "(declare-const {} (_ BitVec {}))\n",
+                    "(declare-const {} {})\n",
                     smt_name(v, name),
-                    sort.width()
+                    smt_sort(*sort)
                 ));
                 s.declared.push(*v);
             }
