@@ -1256,3 +1256,43 @@ fn the_widest_access_chiero_carries_is_answered_and_one_more_is_not() {
         r.faults
     );
 }
+
+/// **021 contract 26.** Two reads of the same never-written byte return **the same term**
+/// and produce exactly **one** uninitialized-read finding, not two. This is the
+/// memoization requirement that `&mut self` on `read` exists for: a fresh symbol per read
+/// would make `x == x` unprovable for memory nobody wrote, and a finding per read would
+/// bury the bug under its own repetitions.
+#[test]
+fn two_reads_of_one_uninitialized_byte_agree_and_report_once() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+
+    let first = m.read_term(&mut a, ptr(o, 0), 1, chiero_mem::Endian::Little, sp(2));
+    let second = m.read_term(&mut a, ptr(o, 0), 1, chiero_mem::Endian::Little, sp(3));
+    assert_eq!(
+        first.value, second.value,
+        "the same byte reads back as the same unknown"
+    );
+    assert!(
+        first.value.is_some(),
+        "and a value comes back at all: {:#?}",
+        first.faults
+    );
+    // Exactly one finding across both reads — the second is the *same* bug seen again.
+    let firsts = first
+        .faults
+        .iter()
+        .filter(|f| f.kind() == "uninitialized-read")
+        .count();
+    let seconds = second
+        .faults
+        .iter()
+        .filter(|f| f.kind() == "uninitialized-read")
+        .count();
+    assert_eq!(
+        (firsts, seconds),
+        (1, 0),
+        "reported once, on the read that discovered it"
+    );
+}

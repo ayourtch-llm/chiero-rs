@@ -7810,7 +7810,12 @@ fn every_way_of_erroring_degrades_the_state() {
     }
 }
 
-/// **020 contract 37, the case the whole design exists for.** A callee takes `va_list *`
+/// **020 contract 37 and 021 contract 31, the case the whole design exists for.**
+/// A `va_list` object round-trips through `VaStart`/`VaArg`/`VaEnd` and is **addressable**:
+/// taking its address and passing it to another function that advances it is visible to the
+/// caller.
+///
+/// The original note: A callee takes `va_list *`
 /// and advances the *caller's* iteration state — `format_function_t` is
 /// `u8 *(u8 *s, va_list *args)` and there are 2552 of them in VPP. The cursor crosses the
 /// boundary because it lives in the object's bytes, but the *argument values* were read
@@ -8751,7 +8756,7 @@ fn a_signed_bitfield_sign_extends_and_an_unsigned_one_does_not() {
     }
 }
 
-/// **020 contracts 24 and 25.** `struct { u32 a:3; u32 b:5; }` — writing only `a` and
+/// **020 contracts 24 and 25, and 021 contract 23.** `struct { u32 a:3; u32 b:5; }` — writing only `a` and
 /// reading `a` produces no uninitialized-read finding, while reading `b` produces exactly
 /// one. 020 names this as *the* contract byte-granular initialization cannot satisfy: both
 /// fields live in the same byte, so a per-byte mask must answer wrongly for one of them.
@@ -9421,4 +9426,91 @@ fn an_opaque_honours_every_declared_write_and_still_produces_its_value() {
             read.faults
         );
     }
+}
+
+/// **021 contract 32.** A function-pointer value stored to a global, loaded back, and
+/// called indirectly resolves to exactly **one** `FuncId` with **no fork** — the
+/// `ObjKind::Function` contract. This is VPP's registration-table shape end to end: a
+/// handler is written into a table at init, read back at dispatch, and called.
+///
+/// Without it the call forks over every defined function plus an unresolvable state, so a
+/// table-driven dispatch becomes unanalysable exactly where it matters most.
+#[test]
+fn a_function_pointer_through_a_global_resolves_without_forking() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+                }),
+                // The table entry is written at "init"...
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::FuncAddr(FuncId(1))),
+                    ty: CTy::Ptr,
+                    align: 8,
+                    vol: Volatility::Normal,
+                }),
+                // ...and read back at "dispatch".
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Ptr,
+                        align: 8,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(2)),
+                    callee: Callee::Indirect(Operand::Value(ValueId(1))),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(2)))),
+        )],
+        CTy::Int(32),
+    );
+    let handler = defined(
+        1,
+        "handler",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(42))))],
+        CTy::Int(32),
+    );
+    let decoy = defined(
+        2,
+        "decoy",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(7))))],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, handler, decoy],
+        globals: vec![Global {
+            id: GlobalId(0),
+            name: "table".into(),
+            size: 8,
+            align: 8,
+            is_const: false,
+            span: Span::DUMMY,
+        }],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 1, "no fork: the pointer is known");
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(42),
+        "and it is the handler, not the decoy"
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
 }
