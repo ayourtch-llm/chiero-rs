@@ -10042,3 +10042,148 @@ fn exceeding_max_states_keeps_the_findings_it_already_had() {
         r.states()[0].assumptions()
     );
 }
+
+/// **021 §5.1 step 3: the forked states carry mutually exclusive constraints.** The spec
+/// says "fork one state per object **with the corresponding constraint**", and the
+/// disjunction of those constraints must be implied by the original. Forking with different
+/// `Pointer`s and *no* path constraint leaves every state believing the address could still
+/// be anywhere — so a later branch on the address can take a side that is only possible if
+/// the pointer were a different object, and both the finding and its witness are then about
+/// a program state that cannot occur.
+///
+/// I wrote the fork without constraints and flagged it before the review reported; this is
+/// the test.
+#[test]
+fn each_resolved_state_constrains_the_address_to_its_object() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(2),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(1)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cast {
+                            kind: CastKind::IntToPtr,
+                            a: Operand::Value(ValueId(2)),
+                            from: CTy::Int(64),
+                            to: CTy::Ptr,
+                        },
+                    }),
+                    // Now ask about the *address* again. In a state resolved to object A,
+                    // "the address is object B's base" must be infeasible — that is what
+                    // "mutually exclusive" means, and without a constraint both sides of
+                    // this branch are explored in every state.
+                    inst(InstKind::Assign {
+                        dst: ValueId(5),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(6),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(5)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(7),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(6)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(7)),
+                    t: BlockId(3),
+                    f: BlockId(4),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+            block(3, vec![], Terminator::Return(Some(i32c(2)))),
+            block(4, vec![], Terminator::Return(Some(i32c(3)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        alloca(0, CTy::Int(8), 8),
+        alloca(1, CTy::Int(8), 8),
+        alloca(2, CTy::Int(8), 8),
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    // A state resolved to an object *other* than alloca 0 must not also reach block 3,
+    // where the address equals alloca 0's base.
+    for s in r.states() {
+        let Some(Value::Ptr(p)) = s.local(ValueId(4)) else {
+            continue;
+        };
+        let reached_eq_block = s.trace().iter().any(|(_, b)| *b == BlockId(3));
+        if reached_eq_block {
+            let base0 = match s.local(ValueId(5)) {
+                Some(Value::Ptr(q)) => q.base,
+                _ => continue,
+            };
+            assert!(
+                p.base == base0 || p.base == chiero_mem::ObjectId::UNBOUND,
+                "a state resolved to {:?} took the branch that requires the address to be \
+                 {:?} — the resolution constrained nothing",
+                p.base,
+                base0
+            );
+        }
+    }
+}
