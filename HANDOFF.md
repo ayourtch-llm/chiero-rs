@@ -2071,7 +2071,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    turns a `SymbolicByte` from a refused **write** into a finding whose text says a
    concrete *read* cannot answer.
 
-   **Next piece of 021, scoped but not started: §5.1 symbolic base pointers.** Contracts
+   **WAVE 46 — 021 §5.1 STARTED** (`0e92c9e`; 600 tests). `IntToPtr` of an unpinned term
+   resolves instead of refusing. `Memory::live_ranges` exposes the ranges; the engine
+   filters arithmetically and asks the solver only about survivors, because §5.1 forbids a
+   per-dereference O(objects) solver sweep — the interval tree is the optimisation, the
+   filter is the semantics. `Budget::max_resolutions` (default 8) joins the budget set.
+
+   **Steps 4 and 5 are distinct and step 4 is pinned**: wholly unconstrained → `Unknown`,
+   an `UnresolvablePointer` finding, path **stops**, and *no pointer produced* — the last
+   part is what distinguishes it from step 5's concretization.
+
+   ⚠️ **My first test for this had the wrong premise and the code was right.** I wrote
+   contract 16's fixture with an unconstrained `Fresh` value and expected four states; that
+   is step 4, not step 3. **Lesson: when a new test fails, check whether the fixture
+   exercises the case the contract names** — I nearly "fixed" correct behaviour.
+
+   **STILL OWED on §5.1:** contract 16 (a base *constrained* to three of several objects
+   forking into 3 + 1) needs a fixture that puts a real constraint on the address — e.g. a
+   `Br` on `ult(addr, PtrToInt(&last))` so the path condition excludes some objects. The
+   fork machinery is implemented and unexercised. Contract 17 (`max_resolutions = 2`
+   concretizes at `Approximated`) needs the same fixture with a smaller cap. Contracts 17b,
+   18, 19 need `PointerBitInspection`, lazy materialization and `--fork-on-alias`, none of
+   which exist.
+
+   *(scoping note, now superseded)* Contracts
    16, 17, 17b, 18, 19 all depend on it. The spec's five steps, in order: provenance or a
    registered arena short-circuits the search; otherwise ask the solver which objects the
    value can fall in, capped at `max_resolutions` (8); one → continue; several → **fork per
