@@ -1826,6 +1826,43 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    Also judged stale: the review's claim that removing `RunResult::fidelity`'s special case
    survives. Four tests kill it now; it was true at the commit it was written against.
 
+   **WAVE 33 — the varargs/vector review** (`454cb8c` red, `b669109` green; 565 tests).
+   36 mutants, 12 survived; **four wrong answers at `Fidelity::Exact`** and one process
+   kill. All applied.
+
+   ⚠️ **The worst was mine to have caught.** 020 contract 37 — a callee advancing the
+   caller's `va_list` through `va_list *`, which is the *stated reason* the list lives in
+   memory and covers 2552 sites in VPP — did not work. The cursor crossed the boundary; the
+   argument values did not, because `va_arg` asked `stack.last()`, the callee's frame, which
+   is empty for a non-variadic `format_function_t`. My commit message said engine-side state
+   "cannot express that at all" and then left the argument area as engine-side state. The
+   fix puts the **owning frame index in the object's second word**, which 020 §4.4.1's ABI
+   layout has room for. *Lesson: when a commit message names the reason a design exists,
+   test that reason.*
+
+   Also: `filter_map` **dropped** an unrepresentable vararg instead of holding a hole, so a
+   `%f` shifted every later argument — `Exact`, no finding; `va_arg` ignored its declared
+   type, putting a 64-bit term in an `i32` local and **panicking the solver** on comparison;
+   and `Shuffle` took its lane count from `mask.len()`, which is the *result* length, so a
+   widening shuffle read nibbles and never touched `b`.
+
+   Two fixture defects of mine, both the usual shape: every value in the vector test was a
+   byte, so hard-coding a lane width of 8 survived; and there was **no `va_copy` test at
+   all**, leaving contract 36 unpinned in three directions.
+
+   **Judged and not applied:** the reviewer's three no-op classifications (`Splat` concat
+   order is genuinely symmetric; `if f.variadic` is unreachable because `verify` enforces
+   the arity; `ExtractLane`'s bounds check is behind verifier rule 12) — each came with a
+   probe, and each holds.
+
+   **STILL OWED from wave 33:** `ModelOutcome::Finding` is still pushed unkeyed, so a model
+   that *gives up* inside a loop reports once per iteration — the shape fixed for `lift`ed
+   faults but not for this path; `ShuffleDyn` is declared in 020 §4 and absent from
+   `chiero_cir::RValue`, so "eval is exhaustive" is exhaustive over a smaller enum than the
+   spec's; and `InsertLane` derives its width from the inserted element while `ExtractLane`
+   refuses to guess — an asymmetry the reviewer could not turn into a defect but which
+   contradicts the commit's own rule.
+
    **M1's instruction set is complete.** Still owed on the engine: `Store`/`Load` ignore
    the CIR's `align`, which is what a real `ub-strict` mode would need — and note it has
    **no observable effect today**, because `report_faults` filters `Misaligned` out
