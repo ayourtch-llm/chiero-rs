@@ -4637,7 +4637,18 @@ fn copy_mem_and_set_mem_move_bytes() {
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(8), 8), alloca(1, CTy::Int(8), 8)];
+    // Eight-aligned so the *verification* read is not itself misaligned — the fill and
+    // the copy are byte-wise and impose no alignment, but reading eight bytes back does.
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Int(8), 8)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(8), 8)
+        },
+    ];
     let m = Module {
         funcs: vec![caller],
         ..Default::default()

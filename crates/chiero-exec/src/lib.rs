@@ -743,6 +743,39 @@ impl<'m> Engine<'m> {
                 let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
                 self.report_faults(s, &r.faults, i.span);
             }
+            // `CopyMem` is `memcpy`, deliberately: 021 contract 22's overlap rule must
+            // not depend on whether the frontend spelled a struct assignment as an
+            // instruction or as a call.
+            InstKind::CopyMem {
+                dst,
+                src,
+                size,
+                align,
+            } => {
+                let _ = align;
+                let (Some(Value::Ptr(d)), Some(Value::Ptr(sp)), Some(n)) = (
+                    self.operand(a, s, dst),
+                    self.operand(a, s, src),
+                    self.concrete_size(a, s, size),
+                ) else {
+                    self.lowering_gap(s, i.span, "a copy with an untranslatable operand");
+                    return;
+                };
+                let r = s.mem.copy(d, sp, n, chiero_mem::Overlap::Forbidden, i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
+            InstKind::SetMem { dst, byte, size } => {
+                let (Some(Value::Ptr(d)), Some(b), Some(n)) = (
+                    self.operand(a, s, dst),
+                    self.concrete_size(a, s, byte),
+                    self.concrete_size(a, s, size),
+                ) else {
+                    self.lowering_gap(s, i.span, "a fill with an untranslatable operand");
+                    return;
+                };
+                let r = s.mem.set(d, b as u8, n, i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
             InstKind::Marker(_) => {}
             other => {
                 self.lowering_gap(s, i.span, &format!("{other:?}"));
@@ -1323,6 +1356,15 @@ impl<'m> Engine<'m> {
             .iter()
             .find(|(_, v)| **v == o)
             .map(|(k, _)| *k)
+    }
+
+    /// A concrete operand value, or `None`. A symbolic size is 023 §10's territory and is
+    /// owed; guessing one would move or resize a real write.
+    fn concrete_size(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> Option<u64> {
+        match self.operand(a, s, o) {
+            Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits() as u64),
+            _ => None,
+        }
     }
 
     /// Memory faults from an instruction become findings and degrade, the same way a
