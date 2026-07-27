@@ -2348,6 +2348,44 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    Whichever crate eventually prints a run must call `render` rather than write its own
    sentence — §7 rule 4 does not follow it there by itself.
 
+   **WAVE 60** (`4740826`, `9a89f8a`, `51998d3`; 661 tests, **120/164 cited**) — solver
+   work: 022 contracts 15, 19a–19d, 10, 11 and 12.
+
+   `spec:` first — the numbered contract 19 still said "`x / 0` evaluates to all-ones",
+   which §2's own table contradicts in three of four cases (`bvsdiv -5 0` is 1;
+   `bvurem`/`bvsrem` by zero are the *dividend*). §2 already promised "contracts 19a–19d
+   pin each case separately"; the list was never updated. Split as promised, then tested
+   folded, evaluated, and against z3 — the three-way check is §2's own argument, since the
+   folder and the independent evaluator would share a wrong rule and the evaluator would
+   then *validate* a model built on it.
+
+   `SolverStats::backend_errors` and `SmtLib::at` (contract 15): a backend answering
+   unparseably is otherwise invisible — every query comes back `Unknown`, every consumer
+   degrades honestly, and a run that decided *nothing* reads as a run over a hard program.
+
+   **The counterexample cache** (contracts 10–12) with §6's inverted index. The absent
+   rule is the point: the subset of an `Unsat` set is where a wrong direction would be
+   "silent and catastrophic", so only the superset direction is a rule. A candidate model
+   is *evaluated* against the query before it answers it — returning one unchecked invents
+   satisfying assignments for unsatisfiable queries.
+
+   ⚠️ *Method notes, three from one file:*
+   1. The first cache fixtures used **linear** constraints, which tier 1 decides — so
+      `backend_calls` stayed at zero whether a cache existed or not and three tests passed
+      against no cache at all. **A cache test needs queries the cache is the only way to
+      avoid paying for.**
+   2. `TermArena::var` mints a fresh `VarId` per call, so `x0 == 0 ∧ x0 == 1` built from
+      two `var(…, "x0")` calls is two variables and satisfiable. The fixture failed for
+      that reason rather than the one it was written for.
+   3. Filling the cache with 1000 *backend* queries took 94 s; the contracts need 1000
+      distinct **entries**, not 1000 hard ones.
+
+   And one existing test had to change: the new cache legitimately answers the query that
+   `a_killed_backend_is_restarted_and_the_stack_replayed` used to force a restart with, so
+   it failed against a solver that restarts perfectly well. It now excludes the model
+   already in hand. *A test that measures a mechanism by "did the backend get asked" is
+   coupled to every future reason not to ask it.*
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2425,7 +2463,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **651 tests, 112/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **661 tests, 120/164
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
