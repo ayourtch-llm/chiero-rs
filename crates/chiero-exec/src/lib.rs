@@ -471,6 +471,8 @@ pub struct Engine<'m> {
     finding_seq: u64,
     /// One `Function` object per `FuncId`, so two `&f` are the same pointer.
     func_objs: IndexMap<FuncId, ObjectId>,
+    /// One object per file-scope variable, allocated on first use.
+    global_objs: IndexMap<GlobalId, ObjectId>,
     budget: Budget,
     backend: Option<SmtLib>,
     models: ModelRegistry,
@@ -498,6 +500,7 @@ impl<'m> Engine<'m> {
             fresh_count: 0,
             finding_seq: 0,
             func_objs: IndexMap::new(),
+            global_objs: IndexMap::new(),
             budget: Budget::default(),
             models: ModelRegistry::with_builtins(),
             alloc_policy: AllocPolicy::default(),
@@ -1269,6 +1272,75 @@ impl<'m> Engine<'m> {
                     }
                 }
             }
+            RValue::Un { op, a: x, ty } => {
+                let Some(xv) = self.scalar(a, s, x) else {
+                    return self.lowering_gap(s, span, "a non-scalar unary operand");
+                };
+                let _ = ty;
+                match op {
+                    UnOp::Neg => {
+                        // Two's complement, at the operand's own width: `0 - x`, so the
+                        // wrap is the machine's rather than a special case.
+                        let z = a.bv(a.width(xv), 0);
+                        Value::Scalar(a.sub(z, xv))
+                    }
+                    UnOp::Not => Value::Scalar(a.not(xv)),
+                    // 023 §7: floating point is approximated, and a negation chiero
+                    // cannot perform is a gap rather than a guess at the sign bit.
+                    UnOp::FNeg => return self.lowering_gap(s, span, "FNeg"),
+                }
+            }
+            // Integer casts only. A cast is in almost every C function, and getting the
+            // *sign* wrong is silent: `(long)(int)-1` is `-1`, and zero-extending it
+            // gives 4294967295 with nothing to say so.
+            RValue::Cast {
+                kind,
+                a: x,
+                from,
+                to,
+            } => {
+                let Some(xv) = self.scalar(a, s, x) else {
+                    // `PtrToInt` on a pointer is 021 §7.1's business and is owed; it is
+                    // not a scalar operand, so it lands here rather than being guessed.
+                    return self.lowering_gap(s, span, &format!("{kind:?} of a non-scalar"));
+                };
+                let (fw, tw) = (bits_of_cty(from), bits_of_cty(to));
+                let (Some(fw), Some(tw)) = (fw, tw) else {
+                    return self.lowering_gap(
+                        s,
+                        span,
+                        &format!("{kind:?} between {from:?} and {to:?}"),
+                    );
+                };
+                match kind {
+                    CastKind::Trunc if tw <= fw => Value::Scalar(a.extract(xv, tw - 1, 0)),
+                    CastKind::ZExt if tw >= fw => Value::Scalar(a.zext(xv, tw)),
+                    CastKind::SExt if tw >= fw => Value::Scalar(a.sext(xv, tw)),
+                    // A `Bitcast` between equal widths is the identity on bits, which is
+                    // exactly what 021 §3 means by "bytes are bytes".
+                    CastKind::Bitcast if tw == fw => Value::Scalar(xv),
+                    other => {
+                        return self.lowering_gap(s, span, &format!("{other:?} {fw} -> {tw}"));
+                    }
+                }
+            }
+            RValue::Select { cond, t, f } => {
+                let (Some(c), Some(tv), Some(fv)) = (
+                    self.scalar(a, s, cond),
+                    self.scalar(a, s, t),
+                    self.scalar(a, s, f),
+                ) else {
+                    return self.lowering_gap(s, span, "a non-scalar select operand");
+                };
+                // **Not a fork.** `?:` evaluates one arm and yields a value; forking here
+                // would double the state count for every conditional expression in the
+                // program and change nothing about what is explored.
+                Value::Scalar(a.ite(c, tv, fv))
+            }
+            RValue::AddrOfGlobal { g } => {
+                let base = self.global_object(s, *g);
+                Value::Ptr(Pointer { base, off: 0 })
+            }
             RValue::Fresh { ty } => {
                 // Named per state and per position, so two `Fresh` values are two
                 // symbols and repeating one is not.
@@ -1330,6 +1402,28 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// The object for a file-scope variable, allocated on first use. One per `GlobalId`,
+    /// since `&counter` twice is one address — and a `const` global is `readonly`, which
+    /// is what makes a write to it a finding and what keeps a havoc off a string literal.
+    fn global_object(&mut self, s: &mut State, g: GlobalId) -> ObjectId {
+        if let Some(o) = self.global_objs.get(&g) {
+            return *o;
+        }
+        let decl = self.module.globals.iter().find(|d| d.id == g).cloned();
+        let (size, align, is_const, span) = match &decl {
+            Some(d) => (d.size, d.align, d.is_const, d.span),
+            // A global the module never declared: zero-sized, so every access to it
+            // faults rather than reading bytes chiero invented.
+            None => (0, 1, false, Span::DUMMY),
+        };
+        let o = s.mem.alloc(ObjKind::Global, size, align, span);
+        if is_const {
+            s.mem.set_readonly(o);
+        }
+        self.global_objs.insert(g, o);
+        o
     }
 
     /// The object standing for `id`'s code. Zero-sized: nothing reads a function's bytes,
@@ -1953,6 +2047,17 @@ fn size_of_cty(t: &CTy) -> u64 {
         CTy::Float(FloatKind::X87_80) => 16,
         CTy::Ptr => 8,
         CTy::Vector { elem, lanes } => size_of_cty(elem) * *lanes as u64,
+    }
+}
+
+/// The **bit** width of an integer-ish type. `None` for anything a bit-vector cast cannot
+/// express — floats and vectors are 023 §7's approximated territory, and returning a
+/// plausible width for them would silently reinterpret a `double` as an integer.
+fn bits_of_cty(t: &CTy) -> Option<u32> {
+    match t {
+        CTy::Int(b) => Some(*b),
+        CTy::Ptr => Some(64),
+        _ => None,
     }
 }
 
