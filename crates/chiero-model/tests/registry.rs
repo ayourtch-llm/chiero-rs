@@ -499,3 +499,153 @@ fn malloc_returns_heap_memory_so_freeing_it_is_not_a_finding() {
         cx.findings()
     );
 }
+
+// ---------------------------------------------------------------------------
+// String models (024 §4, contracts 6-9).
+// ---------------------------------------------------------------------------
+
+/// **024 contract 6.** `strlen` over the concrete bytes `"abc\0"` returns 3 with no
+/// forking. The concrete fast path carries almost all real traffic, and a model that
+/// forked here would make every string in a program a branch point.
+#[test]
+fn strlen_over_concrete_bytes_is_a_plain_answer() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, b"abc\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    match models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default()) {
+        StrScan::Exact(n) => assert_eq!(n, 3),
+        other => panic!("expected a definite length, got {other:?}"),
+    }
+    assert!(cx.findings().is_empty());
+}
+
+/// **024 §4 step 4, and the most valuable thing these models catch.** Running off the end
+/// of the object is an **OOB finding**, not a silent stop: an unterminated string is a
+/// real bug class, and a model that just stopped at the boundary would report nothing at
+/// all for it.
+#[test]
+fn an_unterminated_string_is_an_out_of_bounds_finding() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, b"abcd", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    assert!(
+        matches!(r, StrScan::Unterminated { .. }),
+        "no NUL in the object, got {r:?}"
+    );
+    assert_eq!(cx.findings().len(), 1, "{:#?}", cx.findings());
+    assert!(cx.findings()[0].contains("unterminated"));
+}
+
+/// **024 contract 8, and §4's warning about steps 3 and 4 cancelling each other.**
+///
+/// The scan is bounded by `min(max_string_scan, object size)`. Reaching the **object's**
+/// end is always an OOB finding; reaching the **cap** first adds no constraint and gives
+/// `Bounded`. An earlier draft of the spec had the cap "constrain a terminator to exist
+/// within the bound", which assumes away exactly the unterminated-string bug step 4
+/// exists to find whenever the object is smaller than the cap.
+#[test]
+fn the_scan_cap_bounds_without_assuming_a_terminator_exists() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 1000, 1, Span::DUMMY);
+    m.set(Pointer { base: o, off: 0 }, b'x', 1000, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy { max_scan: 256 },
+    );
+    match r {
+        StrScan::CapReached { scanned } => assert_eq!(scanned, 256),
+        other => panic!("expected the cap, got {other:?}"),
+    }
+    // **No unterminated finding**: the scan stopped early, so nothing is known about the
+    // rest of the object — claiming a bug there would be inventing one.
+    assert!(
+        !cx.findings().iter().any(|f| f.contains("unterminated")),
+        "the cap says 'I stopped looking', not 'there is no NUL': {:#?}",
+        cx.findings()
+    );
+    assert_eq!(cx.findings().len(), 1);
+    assert!(cx.findings()[0].contains("max_string_scan"));
+}
+
+/// The other half of that rule: when the object is **smaller** than the cap, its end wins
+/// and the unterminated finding still fires. This is the case the earlier draft got
+/// wrong, so it needs its own test rather than being implied by the two above.
+#[test]
+fn an_object_smaller_than_the_cap_still_reports_unterminated() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+    m.set(Pointer { base: o, off: 0 }, b'x', 8, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy { max_scan: 256 },
+    );
+    assert!(
+        matches!(r, StrScan::Unterminated { .. }),
+        "the object ends before the cap, so its end decides: {r:?}"
+    );
+    assert!(cx.findings()[0].contains("unterminated"));
+}
+
+/// **024 contract 9.** `strcpy` into a 4-byte destination from a 10-byte source is
+/// exactly one OOB finding, reported **at the destination**. This is the classic overflow
+/// and the reason these models exist at all.
+#[test]
+fn strcpy_into_a_short_destination_is_one_finding() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let dst = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
+    let src = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.write(Pointer { base: src, off: 0 }, b"0123456789\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    models::strcpy(
+        &mut cx,
+        Pointer { base: dst, off: 0 },
+        Pointer { base: src, off: 0 },
+        StringPolicy::default(),
+    );
+    assert_eq!(cx.findings().len(), 1, "{:#?}", cx.findings());
+    assert!(
+        cx.findings()[0].contains("destination"),
+        "the finding is about the destination, not the source: {}",
+        cx.findings()[0]
+    );
+}
+
+/// A `strcpy` that fits copies the bytes **including the terminator** and reports
+/// nothing. Without this the test above is satisfied by a model that reports every
+/// `strcpy`, and the copy itself could be doing anything.
+#[test]
+fn a_strcpy_that_fits_copies_the_string_and_its_terminator() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let dst = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+    let src = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
+    m.write(Pointer { base: src, off: 0 }, b"abc\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    models::strcpy(
+        &mut cx,
+        Pointer { base: dst, off: 0 },
+        Pointer { base: src, off: 0 },
+        StringPolicy::default(),
+    );
+    assert!(cx.findings().is_empty(), "{:#?}", cx.findings());
+    assert_eq!(
+        cx.mem()
+            .read(Pointer { base: dst, off: 0 }, 4, Span::DUMMY)
+            .value
+            .unwrap(),
+        b"abc\0".to_vec(),
+        "the NUL is part of the string"
+    );
+}
