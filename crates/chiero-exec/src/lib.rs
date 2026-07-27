@@ -1920,6 +1920,7 @@ impl<'m> Engine<'m> {
 
         let (alloc, strp) = (self.alloc_policy, self.string_policy);
         let mut findings: Vec<String> = Vec::new();
+        let mut keyed: Vec<(Option<chiero_mem::MemFault>, String)> = Vec::new();
         let mut result: Option<Value> = None;
         let mut forks: Vec<Option<Value>> = Vec::new();
         let mut terminate: Option<String> = None;
@@ -2031,14 +2032,27 @@ impl<'m> Engine<'m> {
                 // swallowed, both found by review rather than by the compiler.
                 None => translated = false,
             }
-            findings.extend(cx.findings().iter().cloned());
+            // The faults come with their text, in the same order, so a model's report
+            // gets 023 §6.1's key exactly as a `Store`'s does. A report the model made
+            // itself — a string with no fault behind it — keeps the fork identity.
+            let lifted = cx.faults().to_vec();
+            for (i, f) in cx.findings().iter().enumerate() {
+                keyed.push((lifted.get(i).cloned(), f.clone()));
+            }
         }
 
         for f in findings {
             self.finding_seq += 1;
-            // A model's report is a string with no structure to key on, so it keeps the
-            // fork identity. 023 §6.1's full key is 040's to apply.
             s.findings.push((self.finding_seq, None, f));
+        }
+        for (fault, text) in keyed {
+            self.finding_seq += 1;
+            let key = fault.map(|f| FindingKey {
+                kind: f.kind(),
+                span: f.at(),
+                object: f.object(),
+            });
+            s.findings.push((self.finding_seq, key, text));
         }
         if let (Some(d), Some(v)) = (dst, result) {
             s.set_local(d, v);

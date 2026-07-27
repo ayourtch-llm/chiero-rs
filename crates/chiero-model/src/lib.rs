@@ -319,6 +319,8 @@ pub struct ModelCtx<'a> {
     span: Span,
     endian: Endian,
     findings: Vec<String>,
+    /// The `MemFault` behind each lifted finding, so the engine can build 023 §6.1's key.
+    faults: Vec<MemFault>,
 }
 
 impl<'a> ModelCtx<'a> {
@@ -337,6 +339,7 @@ impl<'a> ModelCtx<'a> {
             span,
             endian,
             findings: Vec::new(),
+            faults: Vec::new(),
         }
     }
 
@@ -365,7 +368,18 @@ impl<'a> ModelCtx<'a> {
     fn lift(&mut self, faults: &[MemFault]) {
         for f in faults {
             self.findings.push(f.to_string());
+            // **The fault travels with its text.** Stringifying and dropping the struct
+            // left the engine nothing to deduplicate on, so one `memcpy` bug inside a loop
+            // became one finding per iteration — while the same bug raised by a `Store`
+            // was deduplicated correctly. 023 §6.1's key is built from the fault.
+            self.faults.push(f.clone());
         }
+    }
+
+    /// The memory faults behind `findings`, in the same order. Empty for a report the
+    /// model made itself with `report`, which has no fault to key on.
+    pub fn faults(&self) -> &[MemFault] {
+        &self.faults
     }
 }
 
