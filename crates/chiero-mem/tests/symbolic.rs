@@ -1407,3 +1407,103 @@ fn a_havoc_follows_stored_pointers_to_the_declared_depth() {
         "and invalidates it"
     );
 }
+
+/// **D1: a havoc must not rewrite a read-only object.** `write`, `write_bits` and
+/// `write_sym_at_off` all refuse; `havoc_object` did not, and since `Symbolic` promotes,
+/// the object came back *unreadable* rather than merely modified. A callee that writes
+/// through a `const char *` is UB, so invalidating there discards information the standard
+/// guarantees — `printf("count=%d\n", n)` would destroy the literal. Found by review.
+#[test]
+fn a_havoc_leaves_readonly_objects_alone() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Global, 8, 1, sp(1));
+    m.write(ptr(o, 0), b"hello\0", sp(2));
+    m.set_readonly(o);
+    let reached = m.havoc(&mut a, &[o], 0, HavocFill::Symbolic, sp(3));
+    assert!(reached.objects.is_empty(), "nothing was invalidated");
+    let r = m.read(ptr(o, 0), 6, sp(4));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(r.value, Some(b"hello\0".to_vec()));
+}
+
+/// **D6: the reached set names what was actually invalidated.** `havoc` pushed to it
+/// before deciding to skip, so `free(p); unknown(p);` reported "1 object(s) invalidated"
+/// having invalidated none — and `NULL` and `UNBOUND` were counted too. A count that
+/// includes skips is worse than no count: it reads as coverage.
+#[test]
+fn the_reached_set_excludes_what_the_havoc_skipped() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let live = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let dead = m.alloc(ObjKind::Heap, 8, 8, sp(2));
+    m.free(dead, sp(3));
+    let reached = m.havoc(
+        &mut a,
+        &[ObjectId::NULL, ObjectId::UNBOUND, dead, live],
+        0,
+        HavocFill::Symbolic,
+        sp(4),
+    );
+    assert_eq!(reached.objects, vec![live]);
+}
+
+/// **D5: the pointer scan's cap is reported, not silent.** `HAVOC_SCAN_BYTES` bounds the
+/// walk, and `havoc` returned only the reached set — so an object with a pointer past the
+/// cap kept a stale pointee and nothing said so. The doc claimed the return value carried
+/// this; it did not. A cap nobody hears about reads as "followed everything".
+#[test]
+fn a_truncated_pointer_scan_says_so() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let inner = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let big = m.alloc(ObjKind::Heap, HAVOC_SCAN_BYTES + 16, 8, sp(2));
+    m.set(ptr(big, 0), 0, HAVOC_SCAN_BYTES + 16, sp(3));
+    let addr = m.addr_of(inner).expect("placed");
+    m.write(
+        ptr(big, HAVOC_SCAN_BYTES as i64 + 8),
+        &addr.to_le_bytes(),
+        sp(4),
+    );
+    let reached = m.havoc(&mut a, &[big], 1, HavocFill::Uninitialized, sp(5));
+    assert!(
+        !reached.objects.contains(&inner),
+        "the pointee is past the cap"
+    );
+    assert!(
+        reached.truncated,
+        "and the caller is told the walk was cut short"
+    );
+
+    // A scan that fits is not reported as truncated, or the flag says nothing.
+    let small = m.alloc(ObjKind::Heap, 16, 8, sp(6));
+    m.set(ptr(small, 0), 0, 16, sp(7));
+    let reached = m.havoc(&mut a, &[small], 1, HavocFill::Uninitialized, sp(8));
+    assert!(!reached.truncated);
+}
+
+/// **D4: a second havoc of the same object cannot follow its pointers.** `Symbolic`
+/// promotes, and a promoted object has no byte view to scan — so `f(&s); g(&s);` left
+/// `*s.q` valid after `g`, and nothing said the depth had collapsed. Silent loss of
+/// reachability is the same failure as the silent cap.
+#[test]
+fn a_havoc_that_cannot_follow_pointers_reports_it() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let inner = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let outer = m.alloc(ObjKind::Heap, 8, 8, sp(2));
+    m.set(ptr(inner, 0), 0xCD, 8, sp(3));
+    let addr = m.addr_of(inner).expect("placed");
+    m.write(ptr(outer, 0), &addr.to_le_bytes(), sp(4));
+
+    let first = m.havoc(&mut a, &[outer], 1, HavocFill::Symbolic, sp(5));
+    assert!(first.objects.contains(&inner));
+    assert!(!first.truncated);
+
+    let second = m.havoc(&mut a, &[outer], 1, HavocFill::Symbolic, sp(6));
+    assert!(
+        second.truncated,
+        "the bytes it would have scanned are gone, and that is not the same as \
+         'there was nothing there'"
+    );
+}

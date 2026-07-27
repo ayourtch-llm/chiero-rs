@@ -4070,3 +4070,156 @@ fn scanf_invalidates_what_it_writes_and_leaves_its_format_alone() {
     // 024 contract 21c: same fidelity effect as the default havoc, different object set.
     assert_eq!(r.fidelity(), Fidelity::Approximated);
 }
+
+/// **D2: a call the engine could not perform still invalidates.** `can_dispatch` is a
+/// *name*-level check, so a call that passes it and then fails per-call translation
+/// recorded an assumption and havoc'd nothing. `char buf[8]; memset(buf,'x',8);
+/// memcpy(buf, src, n);` with a non-constant `n` left chiero believing `buf` was eight
+/// `'x'` bytes — and the sharpest case is `strcpy`'s overflow arm, which reports the
+/// overflow *and* keeps believing the destination is intact. Found by review.
+#[test]
+fn a_dispatchable_call_that_could_not_be_performed_still_invalidates() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 32, val: 120 }),
+                        Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    ],
+                }),
+                // A symbolic size: `memcpy` is dispatchable by name and untranslatable
+                // for this call.
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Fresh { ty: CTy::Int(64) },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Value(ValueId(1)),
+                        Operand::Value(ValueId(2)),
+                    ],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8), alloca(1, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(
+                1,
+                "memcpy",
+                vec![CTy::Ptr, CTy::Ptr, CTy::Int(64)],
+                CTy::Ptr,
+            ),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = r.states()[0].mem.clone();
+    assert_ne!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY)
+            .value,
+        Some(vec![120u8; 4]),
+        "the call was not performed, so what it might have written is unknown"
+    );
+}
+
+/// **D7 / M30: a `PtrAdd` offset is not always 64 bits.** My own note called
+/// `c.bits()` vs `c.signed()` a no-op mutation because at 64 bits they agree — but nothing
+/// makes the offset 64-bit; 020 §8 rule 6 constrains only the *base*. At 32 bits, `-4`
+/// read through `bits()` is `4294967292`. The relevant C is `p + (int)-offsetof(S,m)`,
+/// which is `container_of` — 020 contract 28 names it.
+///
+/// And an offset wider than a pointer is a **gap**, not a truncation: `2^64 + 4` became
+/// `+4`, turning a wildly out-of-bounds walk into an in-bounds one with no assumption and
+/// no degradation, so `seal` would mint a proof over it. Found by review.
+#[test]
+fn ptr_add_reads_narrow_offsets_as_signed_and_refuses_wide_ones() {
+    let build = |bits: u32, val: i128| {
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::PtrAdd {
+                            base: Operand::Value(ValueId(0)),
+                            off: Operand::Const(Const::Int { bits, val }),
+                        },
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+        Module {
+            funcs: vec![caller],
+            ..Default::default()
+        }
+    };
+    // A 32-bit `-4` steps back four bytes, not four billion forward.
+    let m = build(32, -4);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    match r.states()[0].local(ValueId(1)) {
+        Some(Value::Ptr(p)) => assert_eq!(p.off, -4),
+        other => panic!("{other:?}"),
+    }
+
+    // A 128-bit offset is more than a pointer can hold; truncating it is a fabricated
+    // address, so it is a gap.
+    let m = build(128, (1i128 << 64) + 4);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+}
