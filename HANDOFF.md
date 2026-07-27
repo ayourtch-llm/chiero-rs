@@ -2651,6 +2651,35 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    their path conditions, which is soundness-critical, and it is being checked against
    `strlen` compiled with gcc as an oracle.
 
+   **WAVE 70** (`580bd3e`; 693 tests, **137/165 cited**) — 022 contract 7d, and it was RED
+   for a real reason: **`eval_node` called `fold`**, so §3's "independent evaluator" was
+   the constant folder under another name, and a model built on a wrong rule was validated
+   by that rule. §2 predicts the consequence in as many words, and it had already happened
+   here — `bvsdiv -5 0` is `1`, the spec said all-ones, the folder implemented all-ones,
+   the evaluator agreed, and **z3 found it because z3 was the only oracle not sharing the
+   code**.
+
+   `independent_bin` is now a deliberate second implementation from SMT-LIB's definitions:
+   subtraction as two's-complement addition, division via `checked_div` with the zero cases
+   spelled out, shifts guarded by what the standard says about a count at or past the
+   width. It must not be refactored to share code, and a test reads the source to check
+   the call has not come back.
+
+   ⚠️ **Two traps, both mine, both caught only by mutation:**
+   1. The differential compared `as_const` with `eval_ground` over terms built from
+      **constants** — which the arena folds on construction, so the evaluator was never
+      reached and *the test compared the folder with itself*. Three deliberate breakages of
+      the evaluator survived it. Operands must be **variables** with a model.
+   2. The mechanical check sliced the source "to the next `    fn `", found none (the next
+      item is `pub fn`), and scanned the rest of the file — which contains the folder. It
+      failed loudly, which is the direction to be wrong in; the window is brace-balanced
+      now and asserts it terminated.
+
+   A third mutation — the shift boundary `>=` → `>` — **survives and is equivalent**: the
+   value is masked to width afterwards, so a count of exactly `w` clears it either way.
+   Recorded in the code, because a surviving mutant usually means a missing test and this
+   one does not.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2728,7 +2757,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **690 tests, 136/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **693 tests, 137/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
