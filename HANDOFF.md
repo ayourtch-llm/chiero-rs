@@ -635,10 +635,47 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    drops); call arity and dangling `FuncId`/`GlobalId` checks; the optional passes (020
    §9); and `cargo xtask fmt-corpus`, which `tests/corpus.rs` names but does not exist.
 
-   **Wave 6 (QUEUED — nothing cached):**
-   - **Re-review `chiero-cir` after this round**, with the mutation brief. The last pass
-     had a 45% escape rate and the fixes were extensive; wave 4 showed that re-reviewing
-     fixes finds more.
+   **Wave 6 — `chiero-cir` re-review COMPLETE, criticals applied in `87a1b2a`.**
+   151 mutations, **54 survived (36%**, down from 45%) — but the escapes clustered in the
+   code the previous round *added*, which is precisely the value of re-reviewing fixes.
+   The reviewer re-broke every earlier fix and confirmed all hold.
+
+   Two wrong-answer bugs fixed: named allocas were unreferenceable and
+   `store … -> %slot` minted an undefined value (so 020 §6's example parsed into a module
+   that **did not verify**, invisible because the test never called `verify`); and
+   `global const @x` was invisible to `scan_names`, desyncing id spaces so `addrglobal`
+   silently resolved to the *wrong* global.
+
+   **STILL OWED from wave 6 — ranked, all verified by the reviewer:**
+   - **`Function::entry` is never round-tripped** (`text.rs` hardcodes `BlockId(0)`), and
+     `a_nonzero_entry_block_does_not_alias` is **vacuous** — both sides come from `parse`,
+     so `entry` is always 0 and the old buggy `block_label` survives mutation. A
+     hand-built module with `entry: BlockId(3)` reparses starting at a different block.
+   - **An undefined forward-referenced label silently aliases an existing `bbN`** —
+     `label_of` numbers symbolic labels in the same space as literal ones, so `br %c, tgt`
+     with no `tgt:` becomes `bb1` and rule 2 cannot catch it.
+   - **Mixing named and numeric values collides**: `value_id` hands out
+     `value_names.len()`, which counts only *named* values, so `%1` and a later `%b` get
+     the same id. 020 §6 explicitly permits the mix.
+   - **`verify` is function-local** — it never sees the `Module`, so duplicate
+     `GlobalId`/`FuncId`, duplicate function *names*, dangling `Callee::Direct`/
+     `AddrOfGlobal`/`AddrOfFunc`, and **call arity** are all unchecked.
+   - **Constants in non-rvalue operand positions print unparseably** — `print_inst` uses
+     `op()` not `opm()`, so `undef`/`wide`/`fconst`/`globaladdr`/`funcaddr` as a store
+     value or call argument round-trip to a parse error.
+   - **`every_variant_is_accounted_for` is a tautology** (`assert!(true)`), covers only 3
+     of ~10 enums, and its compile-fail claim is false — the *library* fails to build
+     first. **This is the mechanism relied on to stop gaps recurring, and it does not
+     work.** Rewrite: walk `parse(src)` collecting the discriminants actually reached and
+     assert the set equals the full variant list.
+   - `gcov_lines` order is not preserved (`[30,10]` reparses as `[10,30]`), so
+     `parse(print(m)) != m` for any unsorted lowered module.
+   - Rules 5/6 are implemented but thinly tested (~15 surviving mutations); `Cmp`/`Un`
+     widths, select condition, switch scrutinee, and most `require_ptr` sites are unpinned.
+   - `Terminator::successors()` dropping the switch `default` survives — that would make
+     every default target unreachable for rule 3.
+
+   **Wave 7 (QUEUED):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -666,9 +703,10 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      020 contracts 1 and 5 — which quantify over "every module in the corpus" — pass
      vacuously today.** That is the sixth vacuity and it is already known; the corpus is
      owed.
-   - **`chiero-solver`** once `solver-lite` exists — the term arena and evaluator are in
-     (`de3f33a`, 11 tests) but the solver proper is not. Brief it with the mutation
-     method and point it at 022 §3's soundness rules.
+   - **`chiero-solver`** — `solver-lite` now exists (20 tests). Brief with the mutation
+     method and point it at 022 §3's soundness rules: can a mutation make `Unsat`
+     reachable outside the `as_atom` fragment? does contract 7b's enumeration actually
+     bite? is the wrap-safety claim pinned, or only the one verified case?
    - **A third `chiero-span` pass** only if the others stop finding things; the trend is
      still strongly positive.
 
