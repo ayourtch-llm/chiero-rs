@@ -10200,3 +10200,112 @@ fn each_resolved_state_constrains_the_address_to_its_object() {
         }
     }
 }
+
+/// **021 §5.1: a resolved pointer keeps its offset.** Every pointer the resolution produced
+/// was `Pointer { base, off: 0 }` — the address term was thrown away — so `d[i] = 0xAA`
+/// with a symbolic `i` wrote `d[0]` for *every* value of `i`, with no finding and
+/// `Bounded` fidelity, which reads as "explored a subset correctly".
+///
+/// That is the `v[i] = x` idiom, and 021 §3.1 specifies `ite(off == k, val, old)` for
+/// exactly this case — machinery §5.1 bypassed by never producing a symbolic offset. A
+/// pinned *constant* offset is wrong the same way: with the path forcing `addr == &d + 4`,
+/// the store landed at `d[0]`. Found by review.
+#[test]
+fn a_resolved_pointer_keeps_the_offset_it_was_given() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    // addr = &d + 4, built so the folder cannot collapse it to a constant
+                    // pointer: it goes through a fresh value pinned by a path condition.
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Bin {
+                            op: BinOp::Add,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(1)),
+                            b: Operand::Const(Const::Int { bits: 64, val: 4 }),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(3)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(4)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 8)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let offs: Vec<_> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(5)) {
+            Some(Value::Ptr(p)) if p.base != chiero_mem::ObjectId::UNBOUND => Some(p.off),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        offs.contains(&4),
+        "the address was pinned four bytes into the object: {offs:?}"
+    );
+}
