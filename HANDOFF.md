@@ -1797,11 +1797,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - ~~`Engine::operand` handles only `Const::Int` and `Const::Null`~~ DONE (wave 29) for
      `GlobalAddr`/`FuncAddr`; `Float`, `Wide` and `Undef` stay gaps deliberately.
 
-   **Still unimplemented, in rough priority order:** the five vector `RValue`s
-   (`Shuffle`, `InsertLane`, `ExtractLane`, `Splat`) — `exec_inst` is exhaustive but `eval`
-   is not; `Store`/`Load` still ignore the CIR's `align`, which is what a real `ub-strict`
-   mode would need; the `Status::Errored` sites that do not `degrade` themselves. Then
-   **M2 onward in 080 — the frontend — which has not started.**
+   **WAVE 31** (`4990d4e`; 558 tests) — the **vector operations**. A vector is a
+   bit-vector of `lanes * width` bits, little-endian by lane (021 §3 for SIMD), so every
+   operation is slicing and concatenation. ⚠️ **The lane width is recorded, not derived**:
+   `ExtractLane`/`InsertLane` carry no element type and a total width cannot say how it
+   divides — 32 bits is four `u8` lanes or two `u16`. My first attempt inferred it from
+   the lane index and read the whole vector for lane 0. It now travels with the local like
+   provenance; a vector arriving any other way is a gap rather than a guess.
+
+   **`eval` has no catch-all either now.** Both matches are exhaustive, so the next
+   missing instruction or rvalue is a compile error.
+
+   *Two more same-answer traps in my own fixture, both caught by mutation:* the shuffle's
+   second operand was the same splat as the first, so lane 0 of each held the same byte;
+   and the recorded lane width was unpinned until an `ExtractLane` read it back.
+
+   **M1's instruction set is now complete.** Still owed on the engine: `Store`/`Load`
+   ignore the CIR's `align`, which is what a real `ub-strict` mode would need; the
+   `Status::Errored` sites that do not `degrade` themselves. Then **M2 onward in 080 — the
+   frontend — which has not started.**
 
    *(superseded list)* the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
