@@ -6,6 +6,7 @@
 
 use chiero_cir::text::{parse, print};
 use chiero_cir::*;
+use std::collections::BTreeSet;
 
 /// A canonical module in textual form. Round-tripping this byte-exactly is contract 2.
 const CANONICAL: &str = r#"target x86_64-unknown-linux-gnu
@@ -301,75 +302,309 @@ entry:
     assert_eq!(print(&m), src);
 }
 
-/// Every enum variant must survive the round trip. This is a `match` rather than a list
-/// so that **adding a variant fails to compile here** until it is considered — the
-/// alternative is a fixture that silently stops covering new constructs.
-#[test]
-fn every_variant_is_accounted_for() {
-    fn ty_covered(t: &CTy) -> bool {
-        match t {
-            CTy::Void | CTy::Int(_) | CTy::Float(_) | CTy::Ptr | CTy::Vector { .. } => true,
-        }
-    }
-    fn konst_covered(c: &Const) -> bool {
-        match c {
-            Const::Int { .. }
-            | Const::Wide { .. }
-            | Const::Float(..)
-            | Const::Null
-            | Const::GlobalAddr { .. }
-            | Const::FuncAddr(_)
-            | Const::Undef(_) => true,
-        }
-    }
-    fn term_covered(t: &Terminator) -> bool {
-        match t {
-            Terminator::Goto(_)
-            | Terminator::Br { .. }
-            | Terminator::Switch { .. }
-            | Terminator::Return(_)
-            | Terminator::IndirectGoto { .. }
-            | Terminator::Unreachable(_) => true,
-        }
-    }
-    assert!(ty_covered(&CTy::Void) && konst_covered(&Const::Null));
-    assert!(term_covered(&Terminator::Return(None)));
+/// A fixture reaching **every** variant the coverage test enumerates. If a variant is
+/// added to the library, that test fails until this fixture exercises it.
+const FULL_COVERAGE_FIXTURE: &str = r#"target x86_64-unknown-linux-gnu
 
-    // The constructs the previous fixture omitted, all of which printed but did not
-    // parse back.
-    let src = r#"target x86_64-unknown-linux-gnu
+global const @ro : size 4 align 4
 
 global @g : size 8 align 8
 
-func @other() -> void
+func @other(%0: i32, ...) -> i32 noreturn pure order_sensitive march "avx2"
 
-func @gaps(%0: <4xi32>, %1: ptr) -> void {
+func @cover(%0: <4xi32>, %1: ptr, %2: i32) -> void {
+  alloca %3 : i32 x 4 align 4 scope 0 lifetime scope "buf"
+  alloca %4 : i8 x 1 align 1 scope 1 lifetime function "dyn"
 entry:
-  .line 6
-  %2 = extractlane %0, 3
-  %3 = insertlane %0, 1, 7i32
-  %4 = shuffle %0, %0, [0, 5, 2, 7]
-  %5 = splat 3i32, 4
-  %6 = undef i64
-  %7 = ptrdiff 4 %1, %1
-  %8 = bitcast <4xi32> %0 to i128
-  %9 = fresh f64
-  %10 = globaladdr @g, 8
-  %11 = funcaddr @other
-  %12 = wide i256 0x00000000000000000000000000000000000000000000000000000000deadbeef
-  %13 = fconst f64 0x3ff0000000000000
-  .label "retry"
+  .line 11
+  .scope enter 0
+  %5 = addrlocal %3
+  %6 = addrglobal @g
+  %7 = addrfunc @other
+  %8 = load i32, %5 align 4
+  %9 = loadvolatile i32, %5 align 4
+  %10 = loadbits i32, %5 bits 3..8 signed align 4
+  %11 = add i32 %8, %2
+  %12 = ptrdiff 4 %1, %1
+  %13 = neg i32 %11
+  %14 = cmp slt i32 %13, 0i32
+  %15 = zext i32 %14 to i64
+  %16 = select %14, %11, %13
+  %17 = ptradd %1, -8i64
+  %18 = fresh i32
+  %19 = extractlane %0, 2
+  %20 = insertlane %0, 1, 7i32
+  %21 = shuffle %0, %20, [0, 5, 2, 7]
+  %22 = splat 3i32, 4
+  %23 = undef i64
+  %24 = globaladdr @g, 8
+  %25 = funcaddr @other
+  %26 = wide i256 0x0000000000000000000000000000000000000000000000000000000000000001
+  %27 = fconst f64 0x3ff0000000000000
+  %28 = null
+  %29 = allocadyn %4 : i8 x %2 align 1
+  %30 = call @other(%2)
+  %31 = vaarg %1, i32
+  store i32 %11 -> %5 align 4
+  storevolatile i32 %11 -> %5 align 4
+  storebits i32 %11 -> %5 bits 3..8 align 4
+  copymem %5 -> %1, 40i64 align 8
+  setmem %5, 0i8, 16i64
   vastart %1
   vacopy %1 -> %1
   vaend %1
-  %14 = vaarg %1, i32
+  .seqpoint
+  .label "retry"
+  .scope exit 0
+  br %14, bb1, bb2
+bb1:
+  .line 47
+  switch i32 %11, [1 -> bb2, 2 -> bb3], default bb3
+bb2:
+  .line 49
+  indirectgoto %1, [bb3]
+bb3:
+  .line 51
+  goto bb4
+bb4:
+  .line 53
   unreachable builtin
 }
+
+func @ret_void() -> void {
+entry:
+  .line 58
+  ret
+}
 "#;
+
+/// Every enum variant must survive the round trip.
+///
+/// The previous version of this test was a **tautology**: every arm of its `match`
+/// returned `true` and the assertions reduced to `assert!(true)`. It covered three of
+/// roughly ten enums, and its "adding a variant fails to compile here" claim was false —
+/// the *library* fails to build first, because the printer is already exhaustive. It was
+/// the mechanism relied on to stop coverage gaps recurring, and it guarded nothing.
+///
+/// This version walks a parsed module, collects the discriminant of every node actually
+/// reached, and asserts the set equals the full variant list. A variant absent from the
+/// fixture now fails here rather than silently going untested.
+#[test]
+fn every_variant_is_accounted_for() {
+    let src = FULL_COVERAGE_FIXTURE;
     let m = parse(src).expect("parse");
     assert_eq!(print(&m), src, "every construct must survive byte-exactly");
-    let again = parse(&print(&m)).expect("reparse");
-    assert_eq!(m, again);
+    assert_eq!(m, parse(&print(&m)).expect("reparse"));
+
+    let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+    for g in &m.globals {
+        seen.insert(if g.is_const {
+            "Global::const"
+        } else {
+            "Global::mut"
+        });
+    }
+    for f in &m.funcs {
+        seen.insert(match f.body {
+            Body::Defined => "Body::Defined",
+            Body::Declared => "Body::Declared",
+        });
+        if f.variadic {
+            seen.insert("variadic");
+        }
+        for a in &f.allocas {
+            seen.insert(match a.lifetime {
+                Lifetime::Scope => "Lifetime::Scope",
+                Lifetime::Function => "Lifetime::Function",
+            });
+        }
+        for b in &f.blocks {
+            seen.insert(term_name(&b.term));
+            for i in &b.insts {
+                seen.insert(inst_name(&i.kind));
+                if let InstKind::Assign { rv, .. } = &i.kind {
+                    seen.insert(rvalue_name(rv));
+                    collect_operands(rv, &mut seen);
+                }
+                if let InstKind::Marker(mk) = &i.kind {
+                    seen.insert(marker_name(mk));
+                }
+            }
+        }
+    }
+
+    // The full variant lists. Adding a variant to the library and not to a fixture now
+    // fails *here*, which is the guard the old version claimed to provide.
+    let required: BTreeSet<&'static str> = ALL_INST_NAMES
+        .iter()
+        .chain(ALL_RVALUE_NAMES)
+        .chain(ALL_TERM_NAMES)
+        .chain(ALL_MARKER_NAMES)
+        .chain(ALL_CONST_NAMES)
+        .copied()
+        .collect();
+    let missing: Vec<_> = required.difference(&seen).collect();
+    assert!(
+        missing.is_empty(),
+        "no fixture exercises these variants: {missing:?}"
+    );
+}
+
+const ALL_INST_NAMES: &[&str] = &[
+    "Assign",
+    "Store",
+    "StoreBits",
+    "CopyMem",
+    "SetMem",
+    "Call",
+    "AllocaDyn",
+    "VaArg",
+    "VaStart",
+    "VaCopy",
+    "VaEnd",
+    "Marker",
+];
+const ALL_RVALUE_NAMES: &[&str] = &[
+    "Use",
+    "Load",
+    "LoadBits",
+    "Bin",
+    "Un",
+    "Cmp",
+    "Cast",
+    "Select",
+    "PtrAdd",
+    "AddrOfLocal",
+    "AddrOfGlobal",
+    "AddrOfFunc",
+    "Shuffle",
+    "InsertLane",
+    "ExtractLane",
+    "Splat",
+    "Fresh",
+];
+const ALL_TERM_NAMES: &[&str] = &[
+    "Goto",
+    "Br",
+    "Switch",
+    "Return",
+    "IndirectGoto",
+    "Unreachable",
+];
+const ALL_MARKER_NAMES: &[&str] = &["Marker::SeqPoint", "Marker::Scope", "Marker::Label"];
+const ALL_CONST_NAMES: &[&str] = &[
+    "Const::Int",
+    "Const::Wide",
+    "Const::Float",
+    "Const::Null",
+    "Const::GlobalAddr",
+    "Const::FuncAddr",
+    "Const::Undef",
+];
+
+fn inst_name(k: &InstKind) -> &'static str {
+    match k {
+        InstKind::Assign { .. } => "Assign",
+        InstKind::Store { .. } => "Store",
+        InstKind::StoreBits { .. } => "StoreBits",
+        InstKind::CopyMem { .. } => "CopyMem",
+        InstKind::SetMem { .. } => "SetMem",
+        InstKind::Call { .. } => "Call",
+        InstKind::AllocaDyn { .. } => "AllocaDyn",
+        InstKind::VaArg { .. } => "VaArg",
+        InstKind::VaStart { .. } => "VaStart",
+        InstKind::VaCopy { .. } => "VaCopy",
+        InstKind::VaEnd { .. } => "VaEnd",
+        InstKind::Marker(_) => "Marker",
+    }
+}
+
+fn rvalue_name(rv: &RValue) -> &'static str {
+    match rv {
+        RValue::Use(_) => "Use",
+        RValue::Load { .. } => "Load",
+        RValue::LoadBits { .. } => "LoadBits",
+        RValue::Bin { .. } => "Bin",
+        RValue::Un { .. } => "Un",
+        RValue::Cmp { .. } => "Cmp",
+        RValue::Cast { .. } => "Cast",
+        RValue::Select { .. } => "Select",
+        RValue::PtrAdd { .. } => "PtrAdd",
+        RValue::AddrOfLocal { .. } => "AddrOfLocal",
+        RValue::AddrOfGlobal { .. } => "AddrOfGlobal",
+        RValue::AddrOfFunc(_) => "AddrOfFunc",
+        RValue::Shuffle { .. } => "Shuffle",
+        RValue::InsertLane { .. } => "InsertLane",
+        RValue::ExtractLane { .. } => "ExtractLane",
+        RValue::Splat { .. } => "Splat",
+        RValue::Fresh { .. } => "Fresh",
+    }
+}
+
+fn term_name(t: &Terminator) -> &'static str {
+    match t {
+        Terminator::Goto(_) => "Goto",
+        Terminator::Br { .. } => "Br",
+        Terminator::Switch { .. } => "Switch",
+        Terminator::Return(_) => "Return",
+        Terminator::IndirectGoto { .. } => "IndirectGoto",
+        Terminator::Unreachable(_) => "Unreachable",
+    }
+}
+
+fn marker_name(m: &MarkerKind) -> &'static str {
+    match m {
+        MarkerKind::Line(_) => "Marker::Line",
+        MarkerKind::SeqPoint => "Marker::SeqPoint",
+        MarkerKind::Scope(_) => "Marker::Scope",
+        MarkerKind::Label(_) => "Marker::Label",
+    }
+}
+
+fn const_name(c: &Const) -> &'static str {
+    match c {
+        Const::Int { .. } => "Const::Int",
+        Const::Wide { .. } => "Const::Wide",
+        Const::Float(..) => "Const::Float",
+        Const::Null => "Const::Null",
+        Const::GlobalAddr { .. } => "Const::GlobalAddr",
+        Const::FuncAddr(_) => "Const::FuncAddr",
+        Const::Undef(_) => "Const::Undef",
+    }
+}
+
+fn note_operand(o: &Operand, seen: &mut BTreeSet<&'static str>) {
+    if let Operand::Const(c) = o {
+        seen.insert(const_name(c));
+    }
+}
+
+fn collect_operands(rv: &RValue, seen: &mut BTreeSet<&'static str>) {
+    match rv {
+        RValue::Use(o) | RValue::ExtractLane { v: o, .. } | RValue::Splat { elem: o, .. } => {
+            note_operand(o, seen)
+        }
+        RValue::Load { addr, .. } | RValue::LoadBits { addr, .. } => note_operand(addr, seen),
+        RValue::Bin { a, b, .. } | RValue::Cmp { a, b, .. } | RValue::Shuffle { a, b, .. } => {
+            note_operand(a, seen);
+            note_operand(b, seen);
+        }
+        RValue::Un { a, .. } | RValue::Cast { a, .. } => note_operand(a, seen),
+        RValue::Select { cond, t, f } => {
+            note_operand(cond, seen);
+            note_operand(t, seen);
+            note_operand(f, seen);
+        }
+        RValue::PtrAdd { base, off } => {
+            note_operand(base, seen);
+            note_operand(off, seen);
+        }
+        RValue::InsertLane { v, val, .. } => {
+            note_operand(v, seen);
+            note_operand(val, seen);
+        }
+        _ => {}
+    }
 }
 
 /// Every `UnreachableReason` is distinct on the round trip. 020 §5 gives `LoweringGap`
