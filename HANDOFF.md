@@ -1702,6 +1702,51 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    as `a_dynamic_extent_multiplies_the_element_size` — the computation now lives in
    `AllocaDyn`, so it is observable again.
 
+   **WAVE 27 — the provenance/dedup review.** 20 mutants, **8 survived (40%)**, all
+   classified with probes. Nine confirmed defects plus two out-of-scope, and it **refuted**
+   my own worry: a stale `ptr_vals` from a reassigned `ValueId` is unreachable, because
+   `verify` raises `ValueAssignedTwice` and `run` refuses the module — 020 §1.3's claim
+   that `ValueId`s are single-assignment temporaries is accurate. Refuted *by probe*, which
+   is the standard this project now holds itself to.
+
+   Applied (`3dc9d35`, `aa1555c`, `8ae563b`; 550 tests):
+   ⚠️ **Dead code made a module unexecutable, and that was my bug.** Wiring verification
+   into `run` gated on `!errs.is_empty()` rather than `is_error()`; 020 rule 3 makes
+   `UnreachableBlock` a warning, and wave 7 fixed the dominance lattice precisely so a live
+   join after dead code would work. The gate meant to stop chiero analysing unchecked
+   programs stopped it analysing correct ones — the worse failure, because silent refusal
+   looks like a clean run to anything counting findings.
+   **Address zero is `NULL`**, not `UNBOUND`: `*(int *)0 = 1` reported a *wild pointer*,
+   which carries `Unknown`, where `NullDeref` is a definite finding.
+   **Provenance crosses a return** — closing the laundering hole had taken the honest case
+   with it, and index-to-pointer helpers are the dominant VPP idiom. My commit message
+   recorded the laundering case degrading and said nothing about this one.
+   **An entry function's parameters are bound** to a fresh `Extern` object (pointer) or a
+   fresh symbol (scalar). They were absent, so `void f(int *out) { *out = 7; }` analysed on
+   its own wrote nothing — a whole-program tool is used on a library exactly this way.
+   `ENTRY_PARAM_BYTES` is documented as *a bound chiero chose*.
+
+   **STILL OWED from wave 27:**
+   - **`strcpy` and `calloc` report the same bug twice** — `cx.report(msg.clone())` *and*
+     `ModelOutcome::Finding(msg)`, two `finding_seq` ids, neither keyed.
+   - **`ModelCtx::faults()`'s index correspondence is unenforced.** `dispatch` zips
+     `findings()[i]` with `faults()[i]`, but `report()` pushes only to `findings`. It holds
+     because no shipped model interleaves; it is a trap for the next model author. Make
+     `report` push a `None` fault, or carry pairs.
+   - **The *model* finding key is unpinned in all four components** — `4a7b806`'s claim
+     covers `report_faults` only. Four merge probes exist in the review.
+   - **A `memset`/`calloc`-zeroed pointer field reloads as a scalar**, so
+     `n = calloc(...); n->next->x = 1;` reports nothing. Zero recall on a canonical bug
+     class; `store NULL; load` works only because `address_term` seeds `ptr_ints`.
+   - **`NULL`-ness is path-order-dependent** for the same reason — an unrelated earlier
+     `q = NULL` changes how a zero word reads back. Fix belongs in `Load`/`int_to_ptr`.
+   - `storing_a_null_pointer_lands_like_any_other` is a **same-answer trap**: its check
+     answers from the table the store populated, and its fallback arm accepts a scalar as
+     an answer to "is this a null pointer". Reload as `i64` and compare.
+   - `scanf`'s `.skip(1)` → `.skip(0)` survives: "the format is not an output" is unpinned.
+   - `Engine::operand` handles only `Const::Int` and `Const::Null`; `GlobalAddr`,
+     `FuncAddr`, `Float`, `Wide`, `Undef` are all lowering gaps.
+
    **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
