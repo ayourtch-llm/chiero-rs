@@ -588,6 +588,14 @@ impl AddressSpace {
 /// model, which can hand back anything the constraints allow.
 pub const MAX_MATERIALIZED_BYTES: u64 = 1 << 30;
 
+/// 020 §4: `memcpy` forbids overlap, `memmove` permits it. Collapsing the two loses a
+/// real bug in one direction and invents one in the other.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Overlap {
+    Forbidden,
+    Allowed,
+}
+
 /// 021 §4. Objects are **never deleted**; only this changes.
 ///
 /// Keeping a freed object is what lets a dangling access name which object ended and
@@ -667,6 +675,14 @@ pub enum MemFault {
         off: i64,
         at: Span,
     },
+    /// 021 contract 22: a `memcpy` whose ranges overlap.
+    OverlappingCopy {
+        obj: ObjectId,
+        dst: i64,
+        src: i64,
+        size: u64,
+        at: Span,
+    },
     /// `free()` of something that did not come from the heap.
     BadFree {
         obj: ObjectId,
@@ -711,8 +727,14 @@ struct Entry {
     state: ObjState,
     readonly: bool,
     origin: Span,
-    /// Objects this one holds pointers to, for reachability (021 §4's leak rule).
-    points_to: Vec<ObjectId>,
+    /// Pointers this object holds, **keyed by slot offset** (021 §4's leak rule).
+    ///
+    /// Keyed, not appended: `p->next = q` when `p->next` already pointed somewhere must
+    /// *drop* the old edge, or the old target stays reachable forever and leaks go
+    /// systematically under-reported after any pointer store.
+    points_to: Vec<(i64, ObjectId)>,
+    /// An explicitly declared root — the return value, say. Globals and live stack
+    /// objects are roots without being declared (021 §4).
     root: bool,
 }
 
@@ -780,9 +802,14 @@ impl Memory {
         }
     }
 
-    pub fn point_at(&mut self, from: ObjectId, to: ObjectId) {
+    /// Record that `from`'s pointer slot at `slot` holds a pointer to `to`, replacing
+    /// whatever that slot held before.
+    pub fn set_pointer(&mut self, from: ObjectId, slot: i64, to: ObjectId) {
         if let Some(e) = self.entry_mut(from) {
-            e.points_to.push(to);
+            match e.points_to.iter_mut().find(|(s, _)| *s == slot) {
+                Some(x) => x.1 = to,
+                None => e.points_to.push((slot, to)),
+            }
         }
     }
 
@@ -1077,6 +1104,110 @@ impl Memory {
         }
     }
 
+    /// 021 contract 22. `Overlap::Forbidden` is `memcpy`; `Overlap::Allowed` is
+    /// `memmove` and copies as if through a temporary.
+    pub fn copy(
+        &mut self,
+        dst: Pointer,
+        src: Pointer,
+        size: u64,
+        overlap: Overlap,
+        at: Span,
+    ) -> AccessResult<()> {
+        // Both ends run the same five steps; the source is read and the destination
+        // written, so a copy out of freed memory is a use-after-free like any other.
+        let read = self.read_raw(src, size, at);
+        let mut faults = read.faults;
+        let Some((bytes, init)) = read.value else {
+            return AccessResult {
+                value: None,
+                faults,
+            };
+        };
+        if overlap == Overlap::Forbidden
+            && dst.base == src.base
+            && ranges_overlap(dst.off, src.off, size)
+        {
+            faults.push(MemFault::OverlappingCopy {
+                obj: dst.base,
+                dst: dst.off,
+                src: src.off,
+                size,
+                at,
+            });
+        }
+        // `bytes` was snapshotted before any write, which is exactly the temporary
+        // `memmove` is defined in terms of.
+        let w = self.write(dst, &bytes, at);
+        faults.extend(w.faults);
+        if w.value.is_none() {
+            return AccessResult {
+                value: None,
+                faults,
+            };
+        }
+        // The **pair** carries across, not just the bytes: marking the destination
+        // initialized would launder an uninitialized source.
+        if dst.off >= 0
+            && let Some(e) = self.entry_mut(dst.base)
+            && let Some(o) = e.obj.as_mut()
+        {
+            o.restore_init(dst.off as u64 * 8, &init);
+        }
+        AccessResult {
+            value: Some(()),
+            faults,
+        }
+    }
+
+    /// 021 contract 28: the range becomes initialized and reads back as the set byte.
+    pub fn set(&mut self, dst: Pointer, byte: u8, size: u64, at: Span) -> AccessResult<()> {
+        let bytes = vec![byte; size as usize];
+        self.write(dst, &bytes, at)
+    }
+
+    /// The source side of a `copy`: state, bounds and alignment as usual, but **no
+    /// uninitialized-read fault and no memoization**.
+    ///
+    /// A copy moves bytes without using them. `memcpy` of a partially-filled struct is
+    /// ubiquitous and correct, so reporting there is a false-positive storm — and
+    /// memoizing would mark the source initialized, defeating the propagation this
+    /// function exists for. The finding belongs at the eventual *use* of the destination,
+    /// which is why the status is carried rather than consumed.
+    fn read_raw(
+        &mut self,
+        p: Pointer,
+        size: u64,
+        at: Span,
+    ) -> AccessResult<(Vec<u8>, Vec<InitBit>)> {
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        let Some(e) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
+        };
+        let obj = e.obj.as_ref().expect("materialized");
+        let Some(bytes) = obj.raw_bytes(p.off, size) else {
+            return AccessResult::fault(MemFault::OutOfBounds {
+                obj: p.base,
+                off: p.off,
+                size,
+                obj_size: e.size,
+                at,
+            });
+        };
+        let init = (0..size * 8)
+            .map(|b| obj.init_bit(p.off as u64 * 8 + b))
+            .collect::<Vec<_>>();
+        AccessResult {
+            value: Some((bytes, init)),
+            faults: vec![],
+        }
+    }
+
     /// **021 §5's justification for `&mut self` on `read`.**
     ///
     /// A read of never-written memory invents a fresh symbol; memoizing it is what makes
@@ -1172,7 +1303,7 @@ impl Memory {
             e.root = root;
         }
         for (_, e) in self.entries.iter_mut() {
-            for t in e.points_to.iter_mut() {
+            for (_, t) in e.points_to.iter_mut() {
                 if *t == old {
                     *t = new;
                 }
@@ -1220,10 +1351,17 @@ impl Memory {
     /// malloc/free pair — and neither is a stack object, or every return reports every
     /// local.
     pub fn leaks(&self) -> Vec<Leak> {
+        // **Roots are derived, not declared** (021 §4): globals, and any *live* stack
+        // object. Requiring the caller to mark them by hand made every heap object held
+        // only by a live local read as a leak. `root` remains for what cannot be derived
+        // — the return value.
         let mut reachable: Vec<ObjectId> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.root)
+            // Liveness is *not* rechecked here: the walk below propagates only through
+            // live objects, so an out-of-scope frame is already a dead end. Testing it in
+            // both places was redundant, and mutation showed the redundant half was dead.
+            .filter(|(_, e)| e.root || matches!(e.kind, ObjKind::Global | ObjKind::Stack))
             .map(|(i, _)| *i)
             .collect();
         let mut i = 0;
@@ -1234,7 +1372,7 @@ impl Memory {
             // to live memory, and walking through a freed container hid the commonest
             // leak shape there is: free the head, forget the children.
             if let Some(e) = self.entry(cur).filter(|e| e.state == ObjState::Live) {
-                for &t in &e.points_to {
+                for &(_, t) in &e.points_to {
                     if !reachable.contains(&t) {
                         reachable.push(t);
                     }
@@ -1257,6 +1395,11 @@ impl Memory {
 /// A signed byte offset plus an unsigned bit offset within it. `None` when the byte
 /// offset is negative, which the object-relative bit index cannot represent — the caller
 /// turns that into an out-of-bounds fault rather than wrapping.
+fn ranges_overlap(a: i64, b: i64, size: u64) -> bool {
+    let n = size as i64;
+    a < b + n && b < a + n
+}
+
 fn abs_bit(off: i64, lo_bit: u64) -> Option<u64> {
     // Checked, in i128. The byte API went to i128 two commits ago and the bit API did
     // not follow, so `off * 8 + lo_bit` wrapped and a wildly out-of-bounds pointer became

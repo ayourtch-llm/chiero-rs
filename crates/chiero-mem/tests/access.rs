@@ -288,7 +288,7 @@ fn an_unreachable_heap_object_is_a_leak_and_a_stored_one_is_not() {
     let kept = m.alloc(ObjKind::Heap, 32, 8, sp(101));
     let g = m.alloc(ObjKind::Global, 8, 8, sp(1));
     m.set_root(g);
-    m.point_at(g, kept);
+    m.set_pointer(g, 0, kept);
 
     let leaks = m.leaks();
     assert_eq!(leaks.len(), 1, "{leaks:#?}");
@@ -305,9 +305,9 @@ fn reachability_through_a_chain_is_not_a_leak() {
     let head = m.alloc(ObjKind::Heap, 32, 8, sp(100));
     let mid = m.alloc(ObjKind::Heap, 32, 8, sp(101));
     let tail = m.alloc(ObjKind::Heap, 32, 8, sp(102));
-    m.point_at(g, head);
-    m.point_at(head, mid);
-    m.point_at(mid, tail);
+    m.set_pointer(g, 8, head);
+    m.set_pointer(head, 0, mid);
+    m.set_pointer(mid, 0, tail);
     assert!(m.leaks().is_empty(), "{:#?}", m.leaks());
 }
 
@@ -330,8 +330,8 @@ fn an_unreachable_cycle_is_leaked_once_per_object() {
     let mut m = Memory::new();
     let a = m.alloc(ObjKind::Heap, 32, 8, sp(100));
     let b = m.alloc(ObjKind::Heap, 32, 8, sp(101));
-    m.point_at(a, b);
-    m.point_at(b, a);
+    m.set_pointer(a, 0, b);
+    m.set_pointer(b, 0, a);
     assert_eq!(m.leaks().len(), 2, "{:#?}", m.leaks());
 }
 
@@ -465,8 +465,8 @@ fn realloc_does_not_leak_the_object_it_replaces() {
     m.set_root(g);
     let v = m.alloc(ObjKind::Heap, 16, 8, sp(2));
     let inner = m.alloc(ObjKind::Heap, 16, 8, sp(3));
-    m.point_at(g, v);
-    m.point_at(v, inner);
+    m.set_pointer(g, 16, v);
+    m.set_pointer(v, 0, inner);
     let nv = m.realloc(v, 32, sp(4)).value.unwrap();
     let leaks = m.leaks();
     assert!(
@@ -491,8 +491,8 @@ fn a_payload_reachable_only_through_a_freed_container_is_a_leak() {
     m.set_root(g);
     let container = m.alloc(ObjKind::Heap, 16, 8, sp(2));
     let payload = m.alloc(ObjKind::Heap, 16, 8, sp(3));
-    m.point_at(g, container);
-    m.point_at(container, payload);
+    m.set_pointer(g, 24, container);
+    m.set_pointer(container, 0, payload);
     m.free(container, sp(4));
     let leaks = m.leaks();
     assert_eq!(leaks.len(), 1, "{leaks:#?}");
@@ -772,6 +772,46 @@ fn a_non_overlapping_copy_is_never_a_finding() {
     assert_eq!(m.read(ptr(b, 0), 8, sp(5)).value.unwrap(), vec![9; 8]);
 }
 
+/// Two non-overlapping ranges **within one object** are legal `memcpy`. Both earlier
+/// overlap tests used two different objects, where the same-object guard short-circuits —
+/// so removing the range check entirely survived them, and every `memcpy` inside a struct
+/// would have been reported.
+#[test]
+fn a_non_overlapping_copy_within_one_object_is_not_a_finding() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
+    let r = m.copy(ptr(o, 16), ptr(o, 0), 4, Overlap::Forbidden, sp(3));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(
+        m.read(ptr(o, 16), 4, sp(4)).value.unwrap(),
+        vec![1, 2, 3, 4]
+    );
+}
+
+/// Exactly adjacent ranges do not overlap. `a < b + n` is the right comparison and
+/// `a <= b + n` is the classic off-by-one — it turns `memcpy(p + 4, p, 4)`, which is
+/// correct and common, into a finding.
+#[test]
+fn exactly_adjacent_ranges_do_not_overlap() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
+    let r = m.copy(ptr(o, 4), ptr(o, 0), 4, Overlap::Forbidden, sp(3));
+    assert!(
+        r.faults.is_empty(),
+        "adjacent is not overlapping: {:#?}",
+        r.faults
+    );
+    // One byte closer and it does overlap.
+    let bad = m.copy(ptr(o, 3), ptr(o, 0), 4, Overlap::Forbidden, sp(4));
+    assert!(
+        bad.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::OverlappingCopy { .. }))
+    );
+}
+
 /// A copy carries the **initialization status** across, not just the bytes. Marking the
 /// destination initialized would launder an uninitialized source — the same defect
 /// `realloc` had, in the operation C programs actually reach for.
@@ -781,7 +821,11 @@ fn a_copy_carries_initialization_status_across() {
     let a = m.alloc(ObjKind::Heap, 32, 8, sp(1));
     let b = m.alloc(ObjKind::Heap, 32, 8, sp(2));
     m.write(ptr(a, 4), &[1, 2, 3, 4], sp(3)); // 0..4 never written
-    assert!(m.copy(ptr(b, 0), ptr(a, 0), 8, Overlap::Allowed, sp(4)).faults.is_empty());
+    assert!(
+        m.copy(ptr(b, 0), ptr(a, 0), 8, Overlap::Allowed, sp(4))
+            .faults
+            .is_empty()
+    );
     assert!(
         m.read(ptr(b, 0), 4, sp(5))
             .faults
@@ -847,12 +891,20 @@ fn overwriting_a_pointer_slot_drops_the_old_edge() {
     let first = m.alloc(ObjKind::Heap, 16, 8, sp(2));
     let second = m.alloc(ObjKind::Heap, 16, 8, sp(3));
     m.set_pointer(g, 0, first);
-    assert_eq!(m.leaks().len(), 1, "second is unreachable: {:#?}", m.leaks());
+    assert_eq!(
+        m.leaks().len(),
+        1,
+        "second is unreachable: {:#?}",
+        m.leaks()
+    );
     // `g->slot0 = second` — `first` is now unreachable.
     m.set_pointer(g, 0, second);
     let leaks = m.leaks();
     assert_eq!(leaks.len(), 1, "{leaks:#?}");
-    assert_eq!(leaks[0].obj, first, "the overwritten target is the leak now");
+    assert_eq!(
+        leaks[0].obj, first,
+        "the overwritten target is the leak now"
+    );
 }
 
 /// Two different slots hold two different edges, or the fix above degenerates into "one
