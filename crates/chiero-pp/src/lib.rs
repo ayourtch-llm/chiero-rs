@@ -941,11 +941,7 @@ impl Engine {
                     token.token.span.ctx,
                     None,
                     token.token.span,
-                    Span::new(
-                        token.token.span.lo,
-                        input[i + 3].token.span.hi,
-                        token.token.span.ctx,
-                    ),
+                    span_from_ends(token.token.span, input[i + 3].token.span),
                     Vec::new(),
                     ExpnKind::Pragma,
                 );
@@ -1124,7 +1120,7 @@ impl Engine {
             call.token.span.ctx,
             Some(def.def.id),
             call.token.span,
-            Span::new(call.token.span.lo, close.token.span.hi, call.token.span.ctx),
+            span_from_ends(call.token.span, close.token.span),
             arg_spans,
             ExpnKind::FunctionLike,
         );
@@ -1324,11 +1320,22 @@ fn is_builtin(name: &str) -> bool {
 }
 
 fn extent(tokens: &[Tok]) -> Option<Span> {
-    Some(Span::new(
-        tokens.first()?.token.span.lo,
-        tokens.last()?.token.span.hi,
-        tokens.first()?.token.span.ctx,
+    Some(span_from_ends(
+        tokens.first()?.token.span,
+        tokens.last()?.token.span,
     ))
+}
+
+fn span_from_ends(first: Span, last: Span) -> Span {
+    if first.lo <= last.hi {
+        Span::new(first.lo, last.hi, first.ctx)
+    } else {
+        // A macro-generated invocation can draw its first and last token from
+        // definitions laid out in the opposite global-source order. There is no honest
+        // contiguous envelope; retain the first spelling span instead of fabricating an
+        // inverted/cross-file range.
+        Span::new(first.lo, first.hi, first.ctx)
+    }
 }
 
 fn needs_preexpansion(body: &[Tok], parameter: &str) -> bool {

@@ -29,6 +29,7 @@ fn required_vppinfra_headers_preprocess_without_panicking() {
         let config = Config {
             include_paths: vec![root.to_path_buf()],
             system_paths: vec![
+                PathBuf::from("/usr/lib/gcc/x86_64-linux-gnu/13/include"),
                 PathBuf::from("/usr/local/include"),
                 PathBuf::from("/usr/include/x86_64-linux-gnu"),
                 PathBuf::from("/usr/include"),
@@ -39,6 +40,11 @@ fn required_vppinfra_headers_preprocess_without_panicking() {
         assert!(
             tu.deps.len() > 1,
             "{name} did not resolve any dependency headers"
+        );
+        assert!(
+            tu.diagnostics.is_empty(),
+            "{name} diagnostics: {:?}",
+            tu.diagnostics
         );
         diagnostic_counts.push((name, tu.diagnostics.len()));
     }

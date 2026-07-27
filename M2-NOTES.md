@@ -65,6 +65,13 @@
   lexer session, so only lexer-unit tests could hit the cache. `PreprocessorSession` now
   shares one per-worker interner/cache across real TU preprocessing; its pipeline test
   observes one miss followed by one hit.
+- A reconstructed 20-case REVIEW-1 torture matrix now matches both GCC 13.3 and Clang
+  18 token-for-token under `-std=gnu11`; the compilers agree on every case.
+- Direct non-ignored preprocessing of `clib.h`, `vec.h`, `pool.h`, and `bitmap.h` now
+  completes with zero diagnostics using VPP, GCC-internal, and system include paths.
+  This campaign exposed and fixed a macro-generated argument whose spelling endpoints
+  were in reverse global-source order; such a sequence now retains an honest component
+  span instead of constructing an inverted or cross-file envelope.
 
 ## Mutation checks
 
