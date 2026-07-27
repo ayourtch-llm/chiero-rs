@@ -6,6 +6,7 @@
 
 use chiero_cir::text::{parse, print};
 use chiero_cir::*;
+use chiero_span::Span;
 use std::collections::BTreeSet;
 
 /// A canonical module in textual form. Round-tripping this byte-exactly is contract 2.
@@ -629,13 +630,87 @@ fn unreachable_reasons_are_distinct() {
 /// so a sibling `BlockId(0)` reparsed into two blocks both numbered 0.
 #[test]
 fn a_nonzero_entry_block_does_not_alias() {
-    let src = "func @f() -> void {\nbb3:\n  goto bb0\nbb0:\n  ret\n}\n";
-    let m = parse(src).expect("parse");
-    let ids: Vec<_> = m.funcs[0].blocks.iter().map(|b| b.id).collect();
-    assert_eq!(ids.len(), 2);
-    assert_ne!(ids[0], ids[1], "block ids must stay distinct");
+    // Built by hand, **not** parsed. The previous version parsed its input, so both
+    // sides had `entry == BlockId(0)` and the test could not distinguish the correct
+    // implementation from the buggy one it was written to pin.
+    let mut m = Module::default();
+    m.funcs.push(Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            Block {
+                id: BlockId(3),
+                insts: vec![],
+                term: Terminator::Goto(BlockId(0)),
+                gcov_lines: Default::default(),
+                span: Span::DUMMY,
+            },
+            Block {
+                id: BlockId(0),
+                insts: vec![],
+                term: Terminator::Return(None),
+                gcov_lines: Default::default(),
+                span: Span::DUMMY,
+            },
+        ],
+        entry: BlockId(3),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    });
+
     let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(
+        again.funcs[0].entry,
+        BlockId(3),
+        "the program must still start at the same block"
+    );
     assert_eq!(m, again);
+}
+
+/// Mixing named and numeric values must not collide. 020 §6 permits the mix, and
+/// handing named values ids from a counter that only counts *named* ones made `%1` and
+/// a later `%b` the same value — silently a different program than the text says.
+#[test]
+fn named_and_numeric_values_do_not_collide() {
+    let src = concat!(
+        "func @f(%0: i32, %1: i32) -> i32 {\n",
+        "entry:\n",
+        "  %named = add i32 %0, %1\n",
+        "  %other = add i32 %named, %1\n",
+        "  ret %other\n}\n"
+    );
+    let m = parse(src).expect("parse");
+    let f = &m.funcs[0];
+    let mut ids: Vec<u32> = f.params.iter().map(|p| p.value.0).collect();
+    for i in &f.blocks[0].insts {
+        if let InstKind::Assign { dst, .. } = &i.kind {
+            ids.push(dst.0);
+        }
+    }
+    let unique: BTreeSet<_> = ids.iter().copied().collect();
+    assert_eq!(unique.len(), ids.len(), "ids must be distinct: {ids:?}");
+    let errs: Vec<_> = verify(&m).into_iter().filter(|e| e.is_error()).collect();
+    assert!(errs.is_empty(), "{errs:#?}");
+}
+
+/// A branch to a label that is never defined must be an error, not a fabricated id that
+/// happens to alias a real block. Rule 2 cannot catch it, because the id exists.
+#[test]
+fn a_branch_to_an_undefined_label_is_rejected() {
+    let src = concat!(
+        "func @f(%0: i1) -> void {\n",
+        "entry:\n",
+        "  br %0, tgt, bb2\n",
+        "bb1:\n  ret\n",
+        "bb2:\n  goto bb1\n}\n"
+    );
+    let e = parse(src).expect_err("must reject a branch to an undefined label");
+    assert!(e.message.contains("tgt"), "{}", e.message);
 }
 
 /// A duplicated block label is malformed input, not two blocks with one id.

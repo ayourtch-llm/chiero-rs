@@ -31,6 +31,8 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         value_names: IndexMap::new(),
         alloca_names: IndexMap::new(),
         label_names: IndexMap::new(),
+        name_base: 0,
+        label_base: 0,
     }
     .module()
 }
@@ -78,6 +80,11 @@ struct Parser<'a> {
     /// minted a fresh, never-defined value instead. 020 §6's own example hit both.
     alloca_names: IndexMap<String, u32>,
     label_names: IndexMap<String, u32>,
+    /// One past the largest literal `%N` in the current function, so named values
+    /// cannot collide with numeric ones.
+    name_base: u32,
+    /// One past the largest literal `bbN`, likewise for labels.
+    label_base: u32,
 }
 
 /// Split on whitespace and commas, keeping quoted strings intact.
@@ -180,7 +187,10 @@ impl<'a> Parser<'a> {
         if n.is_empty() {
             return Err(self.perr("empty value name"));
         }
-        let next = self.value_names.len() as u32;
+        // Named ids start above every literal `%N` in the function. A counter over
+        // *named* values alone made `%1` and a later `%b` the same id — silently a
+        // different program than the text says. 020 §6 permits mixing the two forms.
+        let next = self.name_base + self.value_names.len() as u32;
         Ok(ValueId(
             *self.value_names.entry(n.to_string()).or_insert(next),
         ))
@@ -201,6 +211,38 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Look ahead over the current function body for the largest literal `%N` and
+    /// `bbN`, returning one past each. Named ids are allocated above them.
+    fn scan_literal_ids(&self) -> (u32, u32) {
+        let (mut v, mut b) = (0u32, 1u32);
+        let mut depth = 0i32;
+        for line in &self.lines[self.at..] {
+            let l = line.split(';').next().unwrap_or("").trim();
+            if l == "}" {
+                depth -= 1;
+                if depth < 0 {
+                    break;
+                }
+            }
+            if l.ends_with('{') {
+                depth += 1;
+            }
+            for tok in l.split(|c: char| !(c.is_alphanumeric() || c == '%' || c == '_')) {
+                if let Some(n) = tok.strip_prefix('%')
+                    && let Ok(k) = n.parse::<u32>()
+                {
+                    v = v.max(k + 1);
+                }
+                if let Some(n) = tok.strip_prefix("bb")
+                    && let Ok(k) = n.parse::<u32>()
+                {
+                    b = b.max(k + 1);
+                }
+            }
+        }
+        (v, b)
+    }
+
     fn label_of(&mut self, s: &str) -> Result<BlockId, ParseError> {
         let n = s.trim_end_matches([',', ':']);
         if n == "entry" {
@@ -212,7 +254,10 @@ impl<'a> Parser<'a> {
             return Ok(BlockId(v));
         }
         // A symbolic label. Reserve 0 for `entry`, so named blocks start at 1.
-        let next = self.label_names.len() as u32 + 1;
+        // Allocated above every literal `bbN` in the function, or a branch to an
+        // *undefined* label fabricates an in-range id that aliases a real block —
+        // and rule 2 cannot catch it, because the id exists.
+        let next = self.label_base + self.label_names.len() as u32;
         Ok(BlockId(
             *self.label_names.entry(n.to_string()).or_insert(next),
         ))
@@ -342,6 +387,15 @@ impl<'a> Parser<'a> {
             self.value_names = pending_names;
             self.alloca_names.clear();
             self.label_names.clear();
+            let (vb, lb) = self.scan_literal_ids();
+            self.name_base = vb.max(
+                self.value_names
+                    .values()
+                    .copied()
+                    .max()
+                    .map_or(0, |m| m + 1),
+            );
+            self.label_base = lb;
             self.body(&mut f)?;
         }
         Ok(f)
@@ -395,6 +449,11 @@ impl<'a> Parser<'a> {
                     return self.err("block has no terminator");
                 }
                 break;
+            }
+            if head == ".entry" {
+                let l = self.tok(&t, 1)?.to_string();
+                f.entry = self.label_of(&l)?;
+                continue;
             }
             if head == "alloca" {
                 f.allocas.push(self.alloca(&t)?);
@@ -452,6 +511,14 @@ impl<'a> Parser<'a> {
 
         if f.blocks.is_empty() {
             return self.err("function body has no blocks");
+        }
+        // A symbolic label that was branched to but never defined would otherwise
+        // survive as a fabricated id pointing at nothing.
+        let defined: Vec<BlockId> = f.blocks.iter().map(|b| b.id).collect();
+        for (name, id) in &self.label_names {
+            if !defined.contains(&BlockId(*id)) {
+                return self.err(format!("branch to undefined label `{name}`"));
+            }
         }
         Ok(())
     }
@@ -1074,6 +1141,12 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         return;
     }
     o.push_str(" {\n");
+    // `entry` is only implicit when it is block 0. Hardcoding `BlockId(0)` on parse
+    // meant a module whose entry was elsewhere silently started at a different block
+    // after a round trip.
+    if f.entry.0 != 0 {
+        o.push_str(&format!("  .entry {}\n", block_label(f, f.entry)));
+    }
     for a in &f.allocas {
         o.push_str(&format!(
             "  alloca %{} : {} x {} align {} scope {} lifetime {}",
