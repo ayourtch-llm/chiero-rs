@@ -6962,3 +6962,54 @@ fn provenance_crosses_a_return() {
         s.assumptions()
     );
 }
+
+/// **A parameter chiero never bound is not an unresolvable argument.** `void read_num(int
+/// *out) { scanf("%d", out); }` analysed as the entry function has no binding for `out` —
+/// `run` starts the entry frame with empty locals — so the `unresolved_args` check I added
+/// fires and degrades a perfectly ordinary function to `Unknown`. Every VPP function taking
+/// an output pointer hits it when analysed in isolation. Found by review.
+///
+/// The fix is the root cause, not the check: an entry parameter gets a **fresh object** of
+/// unknown contents, which is what "this function is called from somewhere chiero has not
+/// seen" actually means.
+#[test]
+fn an_entry_parameter_is_an_object_not_a_hole() {
+    let mut f = defined(
+        0,
+        "read_num",
+        vec![block(
+            0,
+            vec![inst(InstKind::Store {
+                addr: Operand::Value(ValueId(0)),
+                val: Operand::Const(Const::Int { bits: 32, val: 7 }),
+                ty: CTy::Int(32),
+                align: 4,
+                vol: Volatility::Normal,
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    f.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Ptr,
+    }];
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert!(
+        matches!(s.local(ValueId(0)), Some(Value::Ptr(_))),
+        "the parameter is a pointer to something: {:?}",
+        s.local(ValueId(0))
+    );
+    // The store lands, so nothing downstream reasons about a write that did not happen.
+    assert!(
+        !r.findings().iter().any(|f| f.contains("out-of-bounds")),
+        "{:#?}",
+        r.findings()
+    );
+}
