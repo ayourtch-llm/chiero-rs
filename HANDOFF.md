@@ -1583,6 +1583,52 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - Land the reviewer's survivor probes as pinning tests, `S6` and the
      `yields_unknown_value` cluster first.
 
+   **WAVE 23 — the verification/dedup review.** 34 mutants, **12 survived (35%)**, all 12
+   classified with a probe: 9 real gaps, 3 no-ops. Nine confirmed defects. Probes in
+   `/tmp/review-v2/crates/chiero-exec/tests/probe.rs`.
+
+   Applied (`d7b1829`, 534 tests, on top of `b9aafc1`'s `sort_of` fix):
+   **C1** `too_wide` ran *before* the state check, so a 32-byte load through a freed
+   pointer reported "unsupported-access-width" instead of the use-after-free — the
+   reviewer's mutation swapping the blocks survived the suite *and fixed the behaviour*.
+   **C9** the misalignment filter compared `kind()` to `"misaligned"`, and the test
+   guarding it greps the same literal, so renaming the slug kept the workspace green while
+   restoring the `CLIB_PACKED` storm. ⚠️ **New failure mode: a test coupled to the
+   implementation by the same string it checks.** **C6** `completion_order` was empty on
+   the verify-failure path.
+
+   **STILL OWED from wave 23, highest first:**
+   - **C3 provenance laundering seals a PROVEN.** `ptr_ints` is keyed on the term, and
+     addresses are ground `bv(64, …)` constants that the arena hash-conses — so **term
+     identity is value identity** and any integer expression evaluating to a recorded
+     address gets that object back, bypassing the `Unknown` degrade exactly when it should
+     fire. Both doc comments claim the opposite. `address_term` made the table far denser
+     by adding every pointer *store* to it.
+   - **C7** no `Status::Errored` site calls `degrade`, so `State::fidelity()` is `Exact`
+     for a state that gave up; only one untested line in `RunResult::fidelity` prevents a
+     PROVEN seal. (One path is now pinned; the other six sites are not.)
+   - **C4** `ModelCtx::lift` stringifies the `MemFault` and discards the struct, so
+     `key: None` — every model-reported fault (`free`, `memcpy`, `memset`, `strcpy`,
+     `calloc`) still floods a loop with N copies. `lift` has the fault in hand.
+   - **C5** the key merges distinct findings: `object()` is `None` for `NullDeref`/
+     `WildPointer`/`BadRange`, and there is no *function* component, so two functions
+     sharing `Span::DUMMY` collapse. Merging is the dangerous direction.
+   - **C2** `p->next = NULL` is still dropped — `addr_of(ObjectId::NULL)` is `None` because
+     ids start at 1 — and manufactures the same false uninitialized-read the pointer-store
+     fix was meant to end. Wider class: `operand` handles only `Value`, `Const::Int` and
+     `Const::Null`.
+   - **C8** a `None` at a `scanf` output position silently means "no buffer".
+   - Mutant **E**: the `MAX_ACCESS_BITS` boundary is untested — a 16-byte `__int128`/SSE
+     access is `Exact` today and `>=` would make it a fault.
+   - Mutant **Y**: dropping `lowering_gap` on an untranslatable store leaves fidelity
+     `Exact` and **seals PROVEN** over a discarded write.
+   - `Store`/`Load` still ignore the CIR's `align`, which is what a real `ub-strict` mode
+     would need.
+
+   ⚠️ **A methodology trap the reviewer hit and §8 should carry:** restoring a `.bak` over
+   a mutant gives the file an *older* mtime, so cargo considers it up to date and the next
+   run silently tests the mutant. `touch` after every revert.
+
    **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `AllocaDyn`; the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
