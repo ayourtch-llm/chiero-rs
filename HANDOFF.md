@@ -826,10 +826,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    predicate and the reachability walk, so the predicate's half was unreachable. Removing
    it was the fix; a test would have pinned redundancy.
 
+   **Symbolic layer DONE** (`7c4f753` red, `3cc1683` green, 294 tests): contracts 5, 6, 6b.
+   `sym` overlay, `read_term` assembling `Concat` over mixed concrete/symbolic bytes,
+   `write_at_symbolic_offset` building `ite(off == k, val, old)` per candidate, and
+   `ITE_THRESHOLD`-driven promotion. **`InitBit::Cond` is finally reachable** — it had been
+   a state with no way to enter it.
+
+   **A spec-driven correction to my own earlier work:** I had `Cond` reporting as a
+   *definite* uninitialized read. **Contract 6b says the opposite**, and §3.1 explains why
+   both obvious answers are wrong — forcing `Cond` to "yes" loses real uninitialized reads,
+   forcing it to "no" is the false-positive storm on `v[i] = x; … use v[i]`. A third state
+   needs a third **outcome**: `MemFault::MaybeUninitialized`, carrying the guard for the
+   engine to discharge. That read returns a value and deliberately does **not** memoize —
+   memoizing would silently discharge the guard in chiero's favour.
+
+   *One survivor worth remembering:* building every candidate's guard as `off == 0` passed
+   every test, because they all checked the *initialization* effect of a symbolic-offset
+   write and none checked the **value**. Evaluating the term under each feasible offset —
+   plus an infeasible one, which must write nothing — is what tells a correct chain from
+   one that writes the same byte three times.
+
    **STILL OWED from wave 9:** `AccessCtx`; §5 step 2's may-OOB "continue on the in-bounds
    branch" — only concrete must-OOB exists, though the test docs describe both;
-   `InitBit::Cond` is unreachable through the `Memory` API (it needs symbolic-offset
-   writes, which is the next slice).
+   `Repr::Array` records the promotion decision but the array-theory read/write paths are
+   not implemented.
 
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
    offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
