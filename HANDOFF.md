@@ -1726,21 +1726,37 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    its own wrote nothing — a whole-program tool is used on a library exactly this way.
    `ENTRY_PARAM_BYTES` is documented as *a bound chiero chose*.
 
+   **WAVE 28** (`75496e7`, `784a190`, and the key test; 554 tests).
+   **A zeroed pointer field is a null pointer.** A `CTy::Ptr` load now falls back to the
+   address when there is no recorded provenance — `calloc`/`memset`/`.bss` bytes were never
+   in that table, so `n->next->x = 1` on a zeroed struct reported *nothing*. Zero resolves
+   to `NULL` at no fidelity cost; any other address degrades, since 021 §7.1 calls the
+   search wrong in both directions. This also removed the path-order dependence, where an
+   unrelated earlier `q = NULL` decided how a zero word read back.
+   **A model reports a bug once.** `strcpy`/`calloc` did `report` *and*
+   `ModelOutcome::Finding`, two routes, two ids, unmergeable. `report` is now documented as
+   "noticed and continued past"; giving up is the outcome's job.
+   ⚠️ **Two same-answer traps of my own, both found by review or by mutation:** the null-
+   store test answered from the table the store populated *and* accepted a `Scalar(0)` as
+   an answer to "is this a null pointer"; and my first `func` fixture used two different
+   buffers, so `object` told them apart and `func` stayed droppable — the trap one
+   component over. The model key is now pinned in all four.
+
    **STILL OWED from wave 27:**
-   - **`strcpy` and `calloc` report the same bug twice** — `cx.report(msg.clone())` *and*
+   - ~~**`strcpy` and `calloc` report the same bug twice**~~ DONE (wave 28). — `cx.report(msg.clone())` *and*
      `ModelOutcome::Finding(msg)`, two `finding_seq` ids, neither keyed.
    - **`ModelCtx::faults()`'s index correspondence is unenforced.** `dispatch` zips
      `findings()[i]` with `faults()[i]`, but `report()` pushes only to `findings`. It holds
      because no shipped model interleaves; it is a trap for the next model author. Make
      `report` push a `None` fault, or carry pairs.
-   - **The *model* finding key is unpinned in all four components** — `4a7b806`'s claim
+   - ~~**The *model* finding key is unpinned**~~ DONE (wave 28). — `4a7b806`'s claim
      covers `report_faults` only. Four merge probes exist in the review.
-   - **A `memset`/`calloc`-zeroed pointer field reloads as a scalar**, so
+   - ~~**A zeroed pointer field reloads as a scalar**~~ DONE (wave 28)., so
      `n = calloc(...); n->next->x = 1;` reports nothing. Zero recall on a canonical bug
      class; `store NULL; load` works only because `address_term` seeds `ptr_ints`.
-   - **`NULL`-ness is path-order-dependent** for the same reason — an unrelated earlier
+   - ~~**`NULL`-ness is path-order-dependent**~~ DONE (wave 28). for the same reason — an unrelated earlier
      `q = NULL` changes how a zero word reads back. Fix belongs in `Load`/`int_to_ptr`.
-   - `storing_a_null_pointer_lands_like_any_other` is a **same-answer trap**: its check
+   - ~~`storing_a_null_pointer_lands_like_any_other` same-answer trap~~ DONE (wave 28).: its check
      answers from the table the store populated, and its fallback arm accepts a scalar as
      an answer to "is this a null pointer". Reload as `i64` and compare.
    - `scanf`'s `.skip(1)` → `.skip(0)` survives: "the format is not an output" is unpinned.
