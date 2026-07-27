@@ -92,13 +92,14 @@ useful, and it makes its own test suite pure constraint-solving.
 | `chiero-diff` | Diff parsing, byte-range → entity mapping, impact closure |
 | `chiero-select` | Coverage ∩ impact, symbolic refinement, ranking, justification records |
 | `chiero-check` | Concrete `Checker` implementations, report types, `chiero-replay` harness emission |
-| `chiero-opt` | Optimization opportunity detection, `prove_equivalent`, proof obligations |
+| `chiero-opt` | Optimization opportunity detection, `prove_equivalent`, proof obligations, cache-line/locality analysis |
+| `chiero-recipe` | The conformance-recipe language, loader, fixture harness, and two-tier evaluator ([042](042-conformance-recipes.md)). Ships **no recipes** — VPP's live in `chiero-vpp` as data |
 
 ### Surfaces
 
 | Crate | Owns |
 |---|---|
-| `chiero-vpp` | `compile_commands.json` ingest, vppinfra models, multiarch handling, `foreach_*` idiom support |
+| `chiero-vpp` | `compile_commands.json` ingest, vppinfra models, multiarch handling, `foreach_*` idiom support, and the VPP `.recipe` catalogue |
 | `chiero-tool` | MCP server + JSON-RPC: the LLM-facing surface |
 | `chiero-cli` | The `chiero` binary |
 
@@ -137,7 +138,10 @@ test red, and vice versa.
 5. **`chiero-span` depends on nothing** outside the standard library and small utility
    crates.
 6. Verticals do not depend on each other except: `chiero-select` → `chiero-gcov`,
-   `chiero-diff`; `chiero-opt` → `chiero-check` (for report types).
+   `chiero-diff`; `chiero-opt` → `chiero-check` (for report types); `chiero-recipe` →
+   `chiero-check` (for report types).
+7. `chiero-recipe` and `chiero-diff` may depend on frontend crates (they need the typed
+   AST); no other vertical may. The core still may not.
 
 ## 5. Cross-cutting conventions
 
@@ -172,7 +176,7 @@ chiero-rs/
 │   ├── chiero-span/ chiero-lex/ chiero-pp/ chiero-ast/ chiero-parse/
 │   ├── chiero-sema/ chiero-lower/ chiero-cir/ chiero-solver/ chiero-mem/
 │   ├── chiero-model/ chiero-exec/ chiero-gcov/ chiero-diff/ chiero-select/
-│   ├── chiero-check/ chiero-opt/ chiero-vpp/ chiero-tool/ chiero-cli/
+│   ├── chiero-check/ chiero-opt/ chiero-recipe/ chiero-vpp/ chiero-tool/ chiero-cli/
 ├── tests/corpus/           shared C and .cir fixtures
 ├── tests/differential/     gcc-vs-chiero harness
 └── xtask/                  dependency-rule checks, corpus regen, benchmarks
@@ -183,7 +187,7 @@ Version numbers are unified across the workspace and bumped together.
 ## 7. Testable contracts
 
 1. `cargo metadata` yields a dependency graph with no cycles.
-2. No crate in `crates/` other than `chiero-{gcov,diff,select,check,opt,vpp,tool,cli}`
+2. No crate in `crates/` other than `chiero-{gcov,diff,select,check,opt,recipe,vpp,tool,cli}`
    depends on a vertical crate.
 3. `chiero-cir`'s transitive dependency set contains none of `chiero-ast`,
    `chiero-parse`, `chiero-sema`, `chiero-lower`.

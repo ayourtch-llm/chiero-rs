@@ -328,6 +328,28 @@ re-open them, but do keep them satisfied as later specs are written.
    explorer. Hard rule: any result touching a `Shared` object is capped at `Bounded`.
    v2 hooks: IR needs no change, state is already the scheduling unit, `Searcher` already
    abstracts order, and the `Sharing` lattice is exactly DPOR's input.
+4. **"We should be able to mechanically check that a function is used according to a
+   prescribed ritual — e.g. the CLI parsing ritual — so maybe a module that ingests
+   recipes and checks adherence."**
+   Accepted as a **new capability vertical**: **042-conformance-recipes.md** + a new crate
+   **`chiero-recipe`** (spec count now **24**; 001 §2/§4/§6 updated, new dep rule 7 lets
+   `chiero-recipe`/`chiero-diff` use frontend crates for the typed AST).
+   Measured motivation: `VLIB_CLI_COMMAND` 1187 sites/358 files, `clib_error_return` 3350,
+   `unformat_line_input` 407 vs `unformat_free` 537, `pool_get`/`pool_put` 635/548,
+   `vec_free` 3034. Worked example in the spec is `plugins/memif/cli.c`, where
+   `vec_free(socket_filename)` is hand-repeated on **five** return paths.
+   Design decisions locked: **two-tier evaluation** (tier-1 structural AST sweep over the
+   whole repo → candidate set → tier-2 symbolic execution on candidates only; this is the
+   only way it scales to 1552 .c files, and unescalated candidates force `Bounded`);
+   C-flavoured `.recipe` DSL with `$metavars`, typestate blocks, `on_all_paths`
+   obligations, and **explicit `via macro` / `expanded` matching modes**;
+   **fixtures are mandatory — a recipe without a passing `good` and a failing `bad`
+   fixture fails to LOAD**, which is what stops rule rot and stops an LLM shipping a rule
+   that matches nothing and reports "compliant"; baseline + `chiero:allow(reason:)` with
+   a *required* reason for adoption; **no severity-downgrade knob**. `chiero-recipe`
+   contains zero VPP content — the catalogue is `.recipe` data in `chiero-vpp`.
+   This is also the cleanest instance of §4.11's "LLM proposes, chiero adjudicates", so
+   **050 owes `propose_recipe`/`validate_recipe`/`apply_recipe`**.
 
 ### 4.13 Testing strategy
 
@@ -361,8 +383,9 @@ chiero-rs/
 
 ## 7. Spec set — status
 
-Planned **23** documents in `docs/specs/` (025 was added mid-flight, see §4.13c).
-**Written so far: 14 (frontend + symbolic-core blocks complete).**
+Planned **24** documents in `docs/specs/` (025 and 042 were added mid-flight in response
+to user review — see §4.13c). **Written so far: 16.** Frontend and symbolic-core blocks
+are complete; verticals are in progress.
 
 - [x] `README.md` — index + reading order + status
 - [x] `000-overview.md` — goals, 4 capabilities, design commitments, non-goals, glossary
@@ -379,13 +402,15 @@ Planned **23** documents in `docs/specs/` (025 was added mid-flight, see §4.13c
 - [x] `024-environment-models.md` — libc/builtins registry, harness intrinsics
 - [x] `025-concurrency-and-threading.md` — **added mid-flight** (§4.13c #3); ThreadCtx +
       discipline checker + declared blind spot + v2 hooks
-- [ ] `030-coverage-gcov.md` — §4.9
+- [x] `030-coverage-gcov.md` — §4.9; formats **empirically verified** against gcc 13.3
 - [ ] `031-change-impact.md` — §4.8 steps 1–2
 - [ ] `032-test-selection.md` — §4.8 steps 3–6
 - [ ] `040-defect-checkers.md` — §4.10 checkers + replay
 - [ ] `041-optimization-analysis.md` — §4.10 optimization **+ cache-line/locality analysis
       (§4.13c #2): straddling, hot/cold field placement, false sharing, prefetch distance**
-- [ ] `050-tool-interface.md` — §4.11
+- [x] `042-conformance-recipes.md` — **added mid-flight** (§4.13c #4); recipe DSL,
+      two-tier evaluation, mandatory fixtures, LLM propose→adjudicate loop
+- [ ] `050-tool-interface.md` — §4.11 **+ `propose_recipe`/`validate_recipe`/`apply_recipe`**
 - [ ] `060-vpp-integration.md` — §4.12
 - [ ] `070-testing-and-tdd-protocol.md` — §4.13 + the red/green/review loop (§8)
 - [ ] `080-roadmap.md` — milestones + exit criteria
@@ -412,11 +437,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-**You are here:** frontend **and symbolic-core** spec blocks done and committed
-(14 of 23). **9 specs remain.**
+**You are here:** frontend + symbolic-core blocks done; verticals in progress
+(**16 of 24** written: 030 and 042 done). **8 specs remain.**
 
-1. **Write the remaining 9 specs** in §7 order. Next up is the verticals block:
-   `030-coverage-gcov`, `031-change-impact`, `032-test-selection`, `040-defect-checkers`,
+1. **Write the remaining 8 specs** in §7 order. Next up, finishing the verticals block:
+   `031-change-impact`, `032-test-selection`, `040-defect-checkers`,
    `041-optimization-analysis`. Then `050`/`060`, then `070`/`080`.
    Cross-references the core block already promises and the verticals MUST honor:
    - `041` owes the **cache-line/locality analysis** (§4.13c #2) — 014 §1 already added
@@ -424,9 +449,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
    - `040` owes the `union-pun` checker (off by default) and the order-dependence checker
      (020 §7), and the concurrency findings list in 025 §3 is `chiero-check`'s to
      implement — but the checker must stay target-agnostic (025 contract 14/15).
-   - `030` must use `SourceMap::expansion_loc`, never `spelling_loc` (020 §3 `gcov_lines`).
-   - `070` owes the `trybuild` compile-fail test for the fidelity token (023 contract 13)
-     and the differential harness that makes 023 contract 21 real.
+   - `050` owes `propose_recipe`/`validate_recipe`/`apply_recipe` (§4.13c #4).
+   - `060` owes the VPP `.recipe` catalogue as **data** (042 §4.3 lists the intended
+     rules) and the vppinfra lock/thread models that 025 §3 depends on.
+   - `070` owes the `trybuild` compile-fail test for the fidelity token (023 contract 13),
+     the differential harness that makes 023 contract 21 real, and the recipe-fixture
+     gate (042 contract 4).
+   - `080`'s milestones must now account for two added verticals (025's discipline
+     checker, 042's recipe engine). Suggested placement: recipe engine is an *early*
+     vertical — its tier-1 sweep needs only the frontend, delivers value across all of
+     VPP without the engine being mature, and is the best early demo of the LLM
+     propose→adjudicate loop.
+
+**Empirically verified while writing 030 — do not re-derive (§4.1's premise is now a
+measured fact, not a claim):** with gcc 13.3, a macro defined in a header and expanded in
+a `.c` gets **no coverage record at all** for the macro-body line — not a zero count, no
+entry — while a `static inline` function in the *same header* does get its own file and
+line counts. So the boundary is exactly: coverage follows the **expansion site** for
+macros and the **definition site** for functions. 030 contract 2 pins this as a
+regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*33B`
+(= gcc 13.3), a **shared stamp u32 that is the staleness key**, gcov JSON
+`format_version: "1"` with the schema in 030 §3, output file is `<objstem>.gcov.json.gz`
+(NOT `<src>.gcov.json.gz`), and JSON `branches[]` entries carry only
+`{count, throw, fallthrough}` — **no target block**, which is precisely why the native
+`.gcno` path is required for arc-level work.
 2. Every spec ends with `## Testable contracts` — numbered, checkable. These become the
    RED tests. Style: dense, decisive, concrete Rust sketches, no filler.
 3. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at block boundaries

@@ -45,6 +45,7 @@ spec is amended in the same commit as the deviation.
 | [032](032-test-selection.md) | Test selection | Impact closure ∩ coverage, symbolic refinement |
 | [040](040-defect-checkers.md) | Defect checkers | Logic errors, with replayable counterexamples |
 | [041](041-optimization-analysis.md) | Optimization analysis | Provable rewrite opportunities, plus cache-line/locality analysis |
+| [042](042-conformance-recipes.md) | Conformance recipes | Declarative usage-pattern rules checked across the codebase |
 | [050](050-tool-interface.md) | Tool interface | The LLM-facing surface, incl. `prove_equivalent` |
 | [060](060-vpp-integration.md) | VPP integration | compile_commands, vppinfra models, multiarch |
 
