@@ -9932,3 +9932,113 @@ fn an_undecided_pointer_blames_the_solver_not_the_program() {
         r.states()[0].assumptions()
     );
 }
+
+/// **023 contract 18.** Exceeding `max_states` terminates the run cleanly with `Bounded`,
+/// **reporting the findings already collected** — no data loss, no panic.
+///
+/// The findings half is the point. A budget that discarded what it had found would make
+/// "no bugs found" mean two different things depending on whether the bound was hit, which
+/// is exactly what 023 §7's `Bounded` exists to keep apart: the findings are real, and only
+/// their *absence* is bounded.
+#[test]
+fn exceeding_max_states_keeps_the_findings_it_already_had() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    // A real bug, found before the budget bites.
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Value(ValueId(0))],
+                    }),
+                ],
+                Terminator::Goto(BlockId(1)),
+            ),
+            // Then fork forever: each iteration branches on a fresh symbol.
+            block(
+                1,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(1)),
+                            b: i32c(7),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_states: 4,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    // No panic, and the run ends by its own decision.
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| matches!(s.status, Status::Terminated(TermReason::Budget))),
+        "the bound stopped it: {:#?}",
+        r.states().iter().map(|s| &s.status).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Bounded,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    // **And the bug found before the bound is still reported.**
+    assert!(
+        r.findings().iter().any(|f| f.contains("bad-free")),
+        "findings collected before the budget survive it: {:#?}",
+        r.findings()
+    );
+    // **It is `max_states` that stopped it**, not some other budget reached later. Without
+    // this the assertions above hold for any bound at all — `max_forks` and `max_depth`
+    // would also end the run `Bounded` with the finding intact, so removing the
+    // `max_states` check entirely survived.
+    assert!(
+        r.states().len() <= 4,
+        "the state count respected max_states = 4: {}",
+        r.states().len()
+    );
+    assert!(
+        r.states().iter().any(|s| s
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("max_states"))),
+        "and the bound it names is that one: {:#?}",
+        r.states()[0].assumptions()
+    );
+}

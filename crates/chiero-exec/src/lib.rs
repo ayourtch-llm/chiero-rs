@@ -803,6 +803,24 @@ impl<'m> Engine<'m> {
                         );
                         continue;
                     }
+                    // **The bound is checked before the push, not after.** Checking
+                    // afterwards let a step that produced several siblings overshoot —
+                    // `max_states = 4` ended with six — so the number a caller set was not
+                    // the number it got, and a budget that is not a bound cannot be
+                    // reported as one.
+                    // `done` + `work` + **the state running right now** is the live
+                    // count; pushing adds one more. Forgetting `s` itself is how the bound
+                    // still overshot by one after the first fix.
+                    let live = done.len() + work.len() + 1;
+                    if live + 1 > self.budget.max_states as usize {
+                        s.degrade(
+                            Fidelity::Bounded,
+                            AssumptionKind::BudgetHit,
+                            Span::DUMMY,
+                            &format!("max_states ({}) reached", self.budget.max_states),
+                        );
+                        continue;
+                    }
                     // The sibling goes on the stack; this state carries on, which is what
                     // makes the true branch complete first.
                     work.push(f);
