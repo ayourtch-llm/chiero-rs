@@ -2656,3 +2656,136 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
         );
     }
 }
+
+/// **024 contract 1's default.** `malloc` forks into success and `NULL`, and both states
+/// run. Allocation failure is a real path; §3 says most real allocation-failure bugs are
+/// unreachable without it, and it is the *default* — so the engine dropping the fork on
+/// the floor and degrading was the common case, not an edge.
+#[test]
+fn malloc_forks_the_run_into_success_and_failure() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![Operand::Const(Const::Int { bits: 64, val: 16 })],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "malloc", vec![CTy::Int(64)], CTy::Ptr)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 2, "success and NULL");
+    let bases: Vec<_> = r
+        .states()
+        .iter()
+        .map(|s| match s.local(ValueId(0)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bases.contains(&Some(chiero_mem::ObjectId::NULL)),
+        "one path gets NULL: {bases:?}"
+    );
+    assert!(
+        bases.iter().any(|b| *b != Some(chiero_mem::ObjectId::NULL) && b.is_some()),
+        "and one gets an object: {bases:?}"
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "a fork is not an approximation: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
+
+/// **024 contract 15.** `chiero_assert(0)` is a finding. The intrinsic ignored its
+/// argument and hardcoded "true", so every assertion in a harness passed — which is
+/// §7's named way to make a test suite vacuous, arrived at from the other direction.
+#[test]
+fn chiero_assert_reads_its_condition() {
+    for (cond, want_finding) in [(0i128, true), (1, false)] {
+        let caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Const(Const::Int {
+                        bits: 32,
+                        val: cond,
+                    })],
+                })],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        let m = Module {
+            funcs: vec![
+                caller,
+                extern_fn(1, "chiero_assert", vec![CTy::Int(32)], CTy::Void),
+            ],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_eq!(
+            !r.findings().is_empty(),
+            want_finding,
+            "chiero_assert({cond}): {:#?}",
+            r.findings()
+        );
+    }
+}
+
+/// **024 contract 16.** `chiero_assume(0)` kills the state with **no** finding — it says
+/// "this path cannot happen", which is about the harness rather than the program.
+#[test]
+fn chiero_assume_of_a_contradiction_kills_the_state_silently() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Const(Const::Int { bits: 32, val: 0 })],
+                }),
+                // Never reached.
+                inst(InstKind::Assign {
+                    dst: ValueId(9),
+                    rv: RValue::Use(i32c(1)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "chiero_assume", vec![CTy::Int(32)], CTy::Void),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+    assert!(
+        r.states()[0].local(ValueId(9)).is_none(),
+        "the state died at the assume"
+    );
+}
