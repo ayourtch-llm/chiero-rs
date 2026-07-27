@@ -1033,9 +1033,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    arrival" without checking — one was failing and I had read only the first lines of the
    output. **Read the whole result before calling a test a pinning test.**
 
-   **STILL OWED (021 §3):** no `SizeVal::Sym`; no symbolic-offset *read* API, so
-   `ITE_THRESHOLD` is write-only; no unpinned symbolic store (`idx_bits` hardcoded 64,
-   unrelated to `width(off)`); init-array index width should track `TargetConfig` per §3.1.
+   **Symbolic reads + unpinned stores DONE** (`f2a9b54` red, `7d46ba9` green, 377 tests).
+   `ITE_THRESHOLD` now governs both directions per 021 §3; `store_at` is one `store` at a
+   symbolic index with no enumeration; offsets are coerced to the array's canonical index
+   width at the boundary.
+
+   **A mutation on this work exposed a defect in my own earlier fix.** Making
+   `read_answer` *skip* an `(error …)` and read the next form was wrong: z3 prints the
+   error and then answers anyway, so skipping accepts that answer — turning a malformed
+   script into a **confident verdict**, worse than the desync it replaced because nothing
+   looks wrong. A mis-sorted array index sailed through as `sat`. An error now drains the
+   following form and reports the query as failed.
+
+   *Also:* the width test was vacuous in its first draft — reading at the *same* term as
+   the store folds the select by identity, so no array reached the backend. Use a second
+   symbolic index. And the ite chain's build order is genuinely **equivalent** (the
+   unguarded fallback is unreachable when candidates are the feasible set), so it is
+   documented rather than tested.
+
+   **STILL OWED (021 §3):** no `SizeVal::Sym`; init-array index width should track
+   `TargetConfig` per §3.1 rather than being a fixed 64.
 
    **Original wave-11 findings, for reference:**
    - **Every byte-level write to a promoted object is silently discarded.** `read` refuses
