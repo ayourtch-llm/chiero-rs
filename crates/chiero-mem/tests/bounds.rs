@@ -49,8 +49,16 @@ fn a_provably_in_bounds_symbolic_offset_is_not_reported() {
     cx.assume(bound);
 
     let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(3));
-    assert!(r.faults.is_empty(), "i < 10 in a 64-byte object: {:#?}", r.faults);
-    assert_eq!(cx.path().len(), 1, "nothing was added to a fact already known");
+    assert!(
+        r.faults.is_empty(),
+        "i < 10 in a 64-byte object: {:#?}",
+        r.faults
+    );
+    assert_eq!(
+        cx.path().len(),
+        1,
+        "nothing was added to a fact already known"
+    );
 }
 
 /// **The may-OOB case: report, then continue on the in-bounds branch.**
@@ -173,8 +181,15 @@ fn a_symbolic_access_into_freed_memory_is_a_use_after_free() {
     let i = a.var(Sort::BitVec(64), "i");
     let mut cx = AccessCtx::new();
     let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(3));
-    assert!(matches!(r.faults[..], [MemFault::UseAfterFree { .. }]), "{:#?}", r.faults);
-    assert!(cx.path().is_empty(), "a dead object raises no bounds constraint");
+    assert!(
+        matches!(r.faults[..], [MemFault::UseAfterFree { .. }]),
+        "{:#?}",
+        r.faults
+    );
+    assert!(
+        cx.path().is_empty(),
+        "a dead object raises no bounds constraint"
+    );
 }
 
 /// A concrete offset expressed as a symbolic term is decided without ambiguity, so
@@ -190,7 +205,11 @@ fn a_constant_offset_term_agrees_with_the_concrete_path() {
     let mut cx = AccessCtx::new();
 
     let inside = a.bv(64, 8);
-    assert!(m.read_sym(&mut cx, &mut a, o, inside, 4, sp(3)).faults.is_empty());
+    assert!(
+        m.read_sym(&mut cx, &mut a, o, inside, 4, sp(3))
+            .faults
+            .is_empty()
+    );
 
     let outside = a.bv(64, 62);
     let r = m.read_sym(&mut cx, &mut a, o, outside, 4, sp(4));
@@ -198,5 +217,37 @@ fn a_constant_offset_term_agrees_with_the_concrete_path() {
         matches!(r.faults[..], [MemFault::OutOfBounds { .. }]),
         "62 + 4 > 64 is definite, not a maybe: {:#?}",
         r.faults
+    );
+}
+
+/// **When tier 1 cannot decide, nothing is claimed and nothing is assumed.**
+///
+/// `solver-lite` is deliberately incomplete (022 §3) and multiplication is outside its
+/// fragment, so the bounds question comes back `Unknown`. Adding the in-bounds constraint
+/// anyway would prune the very path escalation exists to explore — chiero would assume
+/// the access safe on the strength of an answer the solver never gave. Reporting a
+/// finding anyway would invent one. `Unknown` is its own outcome, and neither.
+#[test]
+fn an_undecidable_bounds_question_neither_claims_nor_assumes() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0, 64, sp(2));
+
+    let i = a.var(Sort::BitVec(64), "i");
+    let j = a.var(Sort::BitVec(64), "j");
+    let off = a.mul(i, j);
+
+    let mut cx = AccessCtx::new();
+    let r = m.read_sym(&mut cx, &mut a, o, off, 4, sp(3));
+    assert!(
+        r.faults.is_empty(),
+        "an undecided question is not a finding: {:#?}",
+        r.faults
+    );
+    assert!(
+        cx.path().is_empty(),
+        "and it is not licence to assume the access safe: {:?}",
+        cx.path()
     );
 }

@@ -169,6 +169,15 @@ impl Model {
     pub fn set(&mut self, v: VarId, c: BvConst) {
         self.values.insert(v, c);
     }
+    /// Any assigned value, as a signed integer.
+    ///
+    /// For a witness the *identity* of the variable does not matter — what a reader needs
+    /// is a concrete number to plug in. A model with no variables at all has none, which
+    /// the caller must handle rather than fabricate.
+    pub fn any_value_i64(&self) -> Option<i64> {
+        self.values.values().next().map(|c| c.signed() as i64)
+    }
+
     pub fn get(&self, v: VarId) -> Option<BvConst> {
         self.values.get(&v).copied()
     }

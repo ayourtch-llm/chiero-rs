@@ -9,7 +9,7 @@
 //! initialization mask. Symbolic offsets, `Contents::Array` promotion, lifetime and
 //! provenance build on it.
 
-use chiero_solver::{Term, TermArena};
+use chiero_solver::{CheckResult, Solver, SolverLite, Term, TermArena};
 use chiero_span::Span;
 use std::collections::BTreeMap;
 
@@ -716,6 +716,18 @@ pub enum MemFault {
     /// bug, different cause, `Fidelity::Unknown` rather than a definite finding.
     WildPointer {
         off: i64,
+        at: Span,
+    },
+    /// 021 §5 step 2: the access **may** be out of bounds. Distinct from `OutOfBounds`,
+    /// which is definite — this one continues on the in-bounds branch, and a reader
+    /// needs to know the difference between "this is wrong" and "this can be wrong".
+    OutOfBoundsMaybe {
+        obj: ObjectId,
+        size: u64,
+        obj_size: u64,
+        /// A concrete offset that is actually out of bounds. "Some value of `i` is out
+        /// of bounds" is not a bug report anyone can act on.
+        witness: i64,
         at: Span,
     },
     /// 021 contract 22: a `memcpy` whose ranges overlap.
@@ -1718,5 +1730,225 @@ fn lift(e: AccessError, obj: ObjectId, at: Span) -> MemFault {
             at,
         },
         AccessError::ReadOnly { off } => MemFault::ReadOnly { obj, off, at },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Symbolic bounds checking (021 §5 step 2).
+// ---------------------------------------------------------------------------
+
+/// The engine's side of an access: a solver and the path condition.
+///
+/// 021 §5 is explicit that this cannot be folded into `Memory`. Bounds checking *adds a
+/// constraint to the path condition*, and symbolic-base resolution forks states — both
+/// are the engine's business, not the heap's. Keeping them apart is also what lets the
+/// concrete-offset API stay solver-free, which is the path nearly every VPP access takes.
+#[derive(Debug, Default)]
+pub struct AccessCtx {
+    solver: SolverLite,
+    path: Vec<Term>,
+}
+
+impl AccessCtx {
+    pub fn new() -> AccessCtx {
+        AccessCtx::default()
+    }
+
+    /// Add to the path condition. **Conjunction, never substitution** — an access that
+    /// learns something must not discard what the path already knew, or every state it
+    /// touches is silently widened.
+    pub fn assume(&mut self, t: Term) {
+        self.solver.assert(t);
+        self.path.push(t);
+    }
+
+    pub fn path(&self) -> &[Term] {
+        &self.path
+    }
+
+    /// Whether `t` can hold under the current path condition.
+    fn feasible(&mut self, a: &mut TermArena, t: Term) -> Feasibility {
+        // A concrete offset folds the condition to a literal at construction (022 §2), and
+        // a literal is not something to ask a solver about — `solver-lite` answers
+        // `Unknown` for one, which would turn every *concrete* access routed through this
+        // path into a non-answer. Deciding it here is both exact and free, and it is what
+        // makes the symbolic path agree with the concrete one on the same access.
+        if let Ok(v) = a.eval_ground(t) {
+            return if v.bits() != 0 {
+                Feasibility::Yes(None)
+            } else {
+                Feasibility::No
+            };
+        }
+        match self.solver.check(a, &[t]) {
+            CheckResult::Sat(m) => Feasibility::Yes(m.any_value_i64()),
+            CheckResult::Unsat => Feasibility::No,
+            // Tier 1 is deliberately incomplete (022 §3), and `Unknown` must never be
+            // read as either answer. Treating it as "no" would prune a real path;
+            // treating it as "yes" would invent a finding. It is its own outcome.
+            CheckResult::Unknown(_) => Feasibility::Unknown,
+        }
+    }
+}
+
+enum Feasibility {
+    Yes(Option<i64>),
+    No,
+    Unknown,
+}
+
+impl Memory {
+    /// Read `size` bytes at a **symbolic** offset within `id` (021 §5 step 2).
+    pub fn read_sym(
+        &mut self,
+        cx: &mut AccessCtx,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        size: u64,
+        at: Span,
+    ) -> AccessResult<Vec<u8>> {
+        match self.bounds_decision(cx, a, id, off, size, at) {
+            Err(r) => AccessResult {
+                value: None,
+                faults: r,
+            },
+            Ok((faults, witness)) => {
+                let mut r = self.read(
+                    Pointer {
+                        base: id,
+                        off: witness,
+                    },
+                    size,
+                    at,
+                );
+                r.faults.splice(0..0, faults);
+                r
+            }
+        }
+    }
+
+    /// Write one symbolic byte at a symbolic offset, bounds-checked the same way.
+    ///
+    /// The write half is the more dangerous one to leave unchecked: a wild write corrupts
+    /// state the analysis then reasons about, so the finding arrives too late to explain
+    /// anything.
+    pub fn write_sym(
+        &mut self,
+        cx: &mut AccessCtx,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        val: Term,
+        at: Span,
+    ) -> AccessResult<()> {
+        match self.bounds_decision(cx, a, id, off, 1, at) {
+            Err(r) => AccessResult {
+                value: None,
+                faults: r,
+            },
+            Ok((mut faults, witness)) => {
+                let w = self.write_sym_byte(
+                    Pointer {
+                        base: id,
+                        off: witness,
+                    },
+                    val,
+                    at,
+                );
+                faults.extend(w.faults);
+                AccessResult {
+                    value: w.value,
+                    faults,
+                }
+            }
+        }
+    }
+
+    /// The three-way decision of 021 §5 step 2.
+    ///
+    /// `Err` means the access does not happen: the state check failed, or the access is
+    /// out of bounds under *every* model so there is no in-bounds branch to continue on.
+    /// `Ok` carries the faults to report and a concrete in-bounds offset to proceed at.
+    #[allow(clippy::type_complexity)]
+    fn bounds_decision(
+        &mut self,
+        cx: &mut AccessCtx,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        size: u64,
+        at: Span,
+    ) -> Result<(Vec<MemFault>, i64), Vec<MemFault>> {
+        // Step 1 first, and without consulting the solver: a dead object's contents are
+        // not the issue, so there is no bounds question to ask.
+        if let Some(f) = self.state_fault(id, 0, at) {
+            return Err(vec![f]);
+        }
+        let obj_size = self.entry(id).map_or(0, |e| e.size);
+        let w = a.width(off);
+        let limit = obj_size.saturating_sub(size.saturating_sub(1));
+        if limit == 0 {
+            // Nothing fits: every offset is out of bounds under every model.
+            return Err(vec![MemFault::OutOfBounds {
+                obj: id,
+                off: 0,
+                size,
+                obj_size,
+                at,
+            }]);
+        }
+        let lim = a.bv(w, limit as u128);
+        // `off <u limit` is in bounds; `limit - 1 <u off` is its complement. Both are
+        // stated **positively** rather than as `not(...)`, because `solver-lite`'s
+        // fragment (022 §3.2) is comparisons and conjunctions — a negated comparison
+        // falls outside it and comes back `Unknown`, which would turn every bounds
+        // question into an escalation.
+        //
+        // Unsigned comparison covers the negative case too: a negative offset is a huge
+        // unsigned value. That is why the model's *offsets* are signed and its *checks*
+        // are not.
+        let in_bounds = a.ult(off, lim);
+        let lim_minus_1 = a.bv(w, (limit - 1) as u128);
+        let oob = a.ult(lim_minus_1, off);
+
+        let can_be_oob = cx.feasible(a, oob);
+        let can_be_ok = cx.feasible(a, in_bounds);
+
+        match (can_be_ok, can_be_oob) {
+            // Definitely in bounds: nothing to report, nothing to add.
+            (_, Feasibility::No) => Ok((vec![], 0)),
+            // Definitely out of bounds: report and terminate. Continuing here would carry
+            // an unsatisfiable path condition, which 023 §3 calls a chiero bug.
+            (Feasibility::No, _) => Err(vec![MemFault::OutOfBounds {
+                obj: id,
+                off: 0,
+                size,
+                obj_size,
+                at,
+            }]),
+            // May be out of bounds: report with a witness, then **continue on the
+            // in-bounds branch** with the constraint added. Killing the state instead
+            // would let one early OOB hide everything downstream of it.
+            (_, Feasibility::Yes(witness)) => {
+                cx.assume(in_bounds);
+                Ok((
+                    vec![MemFault::OutOfBoundsMaybe {
+                        obj: id,
+                        size,
+                        obj_size,
+                        witness: witness.unwrap_or(limit as i64),
+                        at,
+                    }],
+                    0,
+                ))
+            }
+            // Tier 1 could not decide. **No constraint is added**: assuming the access
+            // in bounds on the strength of an answer the solver did not give would prune
+            // the very path the escalation exists to explore. Escalation is the engine's
+            // to perform (022 §4); the honest interim answer is to proceed and claim
+            // nothing.
+            (_, Feasibility::Unknown) => Ok((vec![], 0)),
+        }
     }
 }
