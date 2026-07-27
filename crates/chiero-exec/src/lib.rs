@@ -1104,6 +1104,36 @@ impl<'m> Engine<'m> {
         s.witness = Some(Witness { bindings });
     }
 
+    /// Retire this activation's `Lifetime::Scope` objects belonging to `scope` (021 §4).
+    ///
+    /// **Only this activation's, and only this scope's.** `AllocaId` is unique within a
+    /// function, so retiring across frames would kill a caller's local on a callee's
+    /// block exit; and retiring by anything coarser than the alloca's own `ScopeId` would
+    /// report a use-after-scope on every function with a nested block.
+    ///
+    /// `Lifetime::Function` — `alloca()` — is left alone. 020 §4.4 says why in as many
+    /// words: "scope lifetime would retire `alloca()` memory early and report
+    /// use-after-scope" on a program that has none. That is 021 contracts 30 and 39.
+    fn exit_scope(&mut self, s: &mut State, scope: ScopeId, at: Span) {
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == s.func()) else {
+            return;
+        };
+        let dying: Vec<chiero_mem::ObjectId> = f
+            .allocas
+            .iter()
+            .filter(|d| d.scope == scope && d.lifetime == Lifetime::Scope)
+            .filter_map(|d| {
+                s.stack
+                    .last()
+                    .and_then(|fr| fr.frame_objs.get(&d.id))
+                    .copied()
+            })
+            .collect();
+        for id in dying {
+            s.mem.exit_scope(id, at);
+        }
+    }
+
     fn new_id(&mut self) -> StateId {
         let id = StateId(self.next_state);
         self.next_state += 1;
@@ -1465,6 +1495,12 @@ impl<'m> Engine<'m> {
             // function for doing the right thing.
             InstKind::VaEnd { list } => {
                 let _ = self.operand(a, s, list);
+            }
+            // **`Scope` markers are semantic** (020 §4.4): they bound the lifetime of
+            // stack objects, "which is what makes use-after-scope detectable". The other
+            // marker kinds are reporting-only and do nothing here.
+            InstKind::Marker(MarkerKind::Scope(ev)) if ev.kind == ScopeKind::Exit => {
+                self.exit_scope(s, ev.scope, i.span);
             }
             InstKind::Marker(_) => {} // **No catch-all.** Every `InstKind` is handled, so adding one is a compile
                                       // error rather than a silent `LoweringGap` — which is how `Load`, `Store`,

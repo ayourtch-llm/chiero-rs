@@ -1174,13 +1174,29 @@ impl std::fmt::Display for MemFault {
                 f,
                 "access at offset {off} of {obj:?} wants {want}-byte alignment"
             ),
-            MemFault::UseAfterFree { obj, .. } => {
-                write!(f, "{obj:?} was freed before this access")
-            }
-            MemFault::DoubleFree { obj, .. } => write!(f, "{obj:?} was already freed"),
-            MemFault::UseAfterScope { obj, .. } => {
-                write!(f, "{obj:?} left scope before this access")
-            }
+            // **Both spans, not just the access.** 024 contracts 8 and 10 ask these to
+            // name where the object died as well as where it was touched: "freed
+            // earlier" sends a reader looking, and the engine has known the answer all
+            // along — the fault has carried it since it was defined.
+            MemFault::UseAfterFree { obj, freed_at, .. } => write!(
+                f,
+                "{obj:?} was freed at bytes {}..{} before this access",
+                freed_at.lo.0, freed_at.hi.0
+            ),
+            MemFault::DoubleFree { obj, freed_at, .. } => write!(
+                f,
+                "{obj:?} was already freed at bytes {}..{}",
+                freed_at.lo.0, freed_at.hi.0
+            ),
+            MemFault::UseAfterScope {
+                obj,
+                scope_ended_at,
+                ..
+            } => write!(
+                f,
+                "{obj:?} left scope at bytes {}..{}, before this access",
+                scope_ended_at.lo.0, scope_ended_at.hi.0
+            ),
             MemFault::ReadOnly { obj, off, .. } => {
                 write!(f, "write at offset {off} of read-only {obj:?}")
             }
