@@ -1168,7 +1168,7 @@ impl<'m> Engine<'m> {
             name,
             "chiero_assume" | "chiero_assert" | "chiero_mark_fidelity"
         ) {
-            self.intrinsic(s, name, span);
+            self.intrinsic(a, s, name, args, span);
             return;
         }
 
@@ -1186,6 +1186,7 @@ impl<'m> Engine<'m> {
         let (alloc, strp) = (self.alloc_policy, self.string_policy);
         let mut findings: Vec<String> = Vec::new();
         let mut result: Option<Value> = None;
+        let mut forks: Vec<Option<Value>> = Vec::new();
         let mut translated = true;
         {
             let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
@@ -1227,13 +1228,27 @@ impl<'m> Engine<'m> {
             };
             match out {
                 Some(ModelOutcome::Value(v)) => {
-                    result = v.map(|x| match x {
-                        chiero_model::Value::Ptr(p) => Value::Ptr(p),
-                        chiero_model::Value::Scalar(t) => Value::Scalar(t),
-                    });
+                    result = v.map(lift_value);
                 }
-                // A fork or a havoc needs state machinery this path does not have yet, so
-                // it is a gap rather than a quiet success.
+                // 024 contract 1: `malloc`'s `NULL` branch is a real path, and the
+                // *default*. Each alternative after the first becomes a sibling state;
+                // this one takes the first, so exploration order stays deterministic.
+                Some(ModelOutcome::Fork(branches)) => {
+                    let mut it = branches.into_iter();
+                    match it.next() {
+                        Some((_, ModelOutcome::Value(v))) => {
+                            result = v.map(lift_value);
+                        }
+                        _ => translated = false,
+                    }
+                    for (_, alt) in it {
+                        if let ModelOutcome::Value(v) = alt {
+                            forks.push(v.map(lift_value));
+                        } else {
+                            translated = false;
+                        }
+                    }
+                }
                 Some(_) => translated = false,
                 None => translated = false,
             }
@@ -1257,6 +1272,19 @@ impl<'m> Engine<'m> {
             );
             s.set_local(d, Value::Scalar(t));
         }
+        // Siblings are created *after* this state's own result is in place, so each
+        // carries the same history and differs only in what the model returned.
+        for v in forks {
+            let mut sib = s.clone();
+            sib.id = self.new_id();
+            if let (Some(d), Some(x)) = (dst, v) {
+                sib.set_local(d, x);
+            }
+            // Past the call, for the same reason as `indirect`: a sibling that still
+            // pointed *at* the call re-dispatched it and forked again, forever.
+            sib.pc.1 = sib.pc.1.wrapping_add(1);
+            self.pending.push(sib);
+        }
         if !translated {
             self.note_once(
                 s,
@@ -1269,14 +1297,26 @@ impl<'m> Engine<'m> {
 
     /// 024 §7. The harness intrinsics take no memory, so they are handled apart from the
     /// models that do.
-    fn intrinsic(&mut self, s: &mut State, name: &str, span: Span) {
+    fn intrinsic(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) {
         use chiero_model::{IntrinsicOutcome, intrinsics};
-        // The condition is not yet translated from the argument, so every call is the
-        // undecided case — which is the *safe* reading for both: `assume` constrains,
-        // `assert` reports.
+        // `None` means the condition could not be decided here, which the two intrinsics
+        // treat differently on purpose: `assume` constrains, `assert` reports. Hardcoding
+        // "true" was the safe reading for `assume` and the *unsafe* one for `assert` —
+        // every assertion in a harness passed.
+        let cond = args.first().and_then(|o| match self.operand(a, s, o) {
+            Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits() != 0),
+            _ => None,
+        });
         let out = match name {
-            "chiero_assume" => intrinsics::assume(Some(true)),
-            "chiero_assert" => intrinsics::assert_(Some(true)),
+            "chiero_assume" => intrinsics::assume(cond),
+            "chiero_assert" => intrinsics::assert_(cond),
             _ => intrinsics::mark_fidelity("harness marked this region approximate"),
         };
         match out {
@@ -1337,6 +1377,11 @@ impl<'m> Engine<'m> {
             let mut sib = s.clone();
             sib.id = self.new_id();
             self.direct_into(&mut sib, id, dst, span);
+            // A sibling is stepped straight from the work list, so it never passes
+            // through `step`'s post-call increment — it has to arrive already advanced.
+            // Without this the callee's entry block skipped to its terminator, which no
+            // test could see while every candidate's entry block was empty.
+            sib.pc.1 = sib.pc.1.wrapping_add(1);
             self.pending.push(sib);
         }
         s.degrade(
@@ -1435,6 +1480,13 @@ enum Feas {
     Yes,
     No,
     Unknown,
+}
+
+fn lift_value(v: chiero_model::Value) -> Value {
+    match v {
+        chiero_model::Value::Ptr(p) => Value::Ptr(p),
+        chiero_model::Value::Scalar(t) => Value::Scalar(t),
+    }
 }
 
 fn negate(a: &mut TermArena, t: Term) -> Term {

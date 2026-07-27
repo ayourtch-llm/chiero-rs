@@ -2697,7 +2697,9 @@ fn malloc_forks_the_run_into_success_and_failure() {
         "one path gets NULL: {bases:?}"
     );
     assert!(
-        bases.iter().any(|b| *b != Some(chiero_mem::ObjectId::NULL) && b.is_some()),
+        bases
+            .iter()
+            .any(|b| *b != Some(chiero_mem::ObjectId::NULL) && b.is_some()),
         "and one gets an object: {bases:?}"
     );
     assert_eq!(
@@ -2787,5 +2789,67 @@ fn chiero_assume_of_a_contradiction_kills_the_state_silently() {
     assert!(
         r.states()[0].local(ValueId(9)).is_none(),
         "the state died at the assume"
+    );
+}
+
+/// **023 contract 10, the part the fork-count test could not see.** Every candidate in
+/// `an_indirect_call_forks_per_candidate_plus_one_unresolvable` has an *empty* entry
+/// block, so a sibling that skipped straight to the terminator returned the same value as
+/// one that executed the body — the same-answer trap, in the fixture rather than the
+/// assertion. Give the callee an instruction and the two stop agreeing.
+#[test]
+fn an_indirect_candidate_executes_its_entry_block() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Ptr },
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    let callee = defined(
+        1,
+        "computes",
+        vec![block(
+            0,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(5),
+                rv: RValue::Bin {
+                    op: BinOp::Add,
+                    ty: CTy::Int(32),
+                    a: i32c(40),
+                    b: i32c(2),
+                },
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(5)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let rets: Vec<_> = r
+        .states()
+        .iter()
+        .map(|s| s.return_value_bits(&mut a))
+        .collect();
+    assert!(
+        rets.contains(&Some(42)),
+        "the candidate's body ran: {rets:?}"
     );
 }
