@@ -1375,10 +1375,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    unmodeled call now havocs its buffer, so leaving gcc's preferred spelling unmodeled
    would make the most common calls in an optimized TU the biggest holes.
 
+   **Wave E** (`6ce7190` red, `ba42e60` green, 490 tests) — **024 contract 20**:
+   `ModelOutcome::Terminate` is a new variant rather than a `Finding`, because a finding
+   reports the same words and leaves execution walking down a path the program does not
+   have. `longjmp` ends the state at `TermReason::Unsupported` + `Fidelity::Unknown`, and
+   is registered **`Exact`** — which reads backwards for a moment and is right: `Exact`
+   describes the *model's* faithfulness, and ending the path is a faithful account. The
+   dispatch fallback also uses the declared return type; hardcoding `BitVec(64)` made the
+   sort *worse* by dispatching a model than by not having one. All three drift tests fired
+   while `longjmp` was half-added — the first time they have caught anything.
+
+   **Wave F** (`ceb65b9`, 491 tests) — findings render as **sentences**. `lift` emitted
+   `{:?}`, so the product contained `Uninitialized { obj: ObjectId(2), off: 0, bit: 0, at:
+   Span { lo: BytePos(0), … } }`. `MemFault` now has `kind()`/`at()`/`object()`, three of
+   the four components of 023 §6.1's dedup key — a `{:?}` dump gave nothing to key on
+   because the whole struct was the string. This is the small half of 023 §7's `Finding`;
+   `witness`, `backtrace` and `PathTrace` need machinery that does not exist yet.
+
    **STILL OWED from wave 15's review:** the
-   `model{n}` fresh value is always `BitVec(64)` regardless of return type; symbolic sizes
-   degrade though 024 §3 permits them; `AllocPolicy` is engine-global where 024 §3 wants it
-   per allocator; `State::findings()` has no direct test.
+   symbolic sizes degrade though 024 §3 permits them; `AllocPolicy` is engine-global where
+   024 §3 wants it per allocator; `State::findings()` has no direct test; `HavocSpec`'s
+   `ranges` field is unused and `ModelOutcome::Havoc` is still a gap in `dispatch`
+   (contract 21c is only reachable through the *unmodeled* path today).
 
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
