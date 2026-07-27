@@ -3830,3 +3830,66 @@ fn a_registered_models_havoc_degrades_like_the_default_one() {
     );
     assert_eq!(b_modeled, b_unmodeled, "and to the same effect");
 }
+
+/// **`AddrOfFunc` was a lowering gap, so an indirect call was never resolvable.** Taking a
+/// function's address degraded the run to `Unknown` before the call even happened, and the
+/// call itself then forked over *every* defined function plus an unresolvable state —
+/// which is the safe answer to a question chiero already had the answer to.
+///
+/// 023 contract 10 keeps the unresolvable state for a pointer chiero cannot resolve. A
+/// pointer it *can* resolve is a different case: one candidate, no unresolvable sibling,
+/// and `Exact`. VPP's node dispatch goes through registration tables, so both cases are
+/// real, and conflating them makes every table-driven call unanalysable.
+#[test]
+fn a_function_pointer_with_a_known_target_resolves_to_one_callee() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfFunc(FuncId(1)),
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                    args: vec![],
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    let target = defined(
+        1,
+        "target",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(42))))],
+        CTy::Int(32),
+    );
+    let decoy = defined(
+        2,
+        "decoy",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(7))))],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, target, decoy],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.states().len(),
+        1,
+        "the pointer is known; there is nothing to fork over"
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(42));
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "a resolved call is not a guess: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
