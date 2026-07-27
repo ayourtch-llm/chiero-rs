@@ -4,7 +4,8 @@
 
 - 011 contracts 1–14: implemented and tested. The 50 MB throughput assertion is an
   explicit ignored release-mode performance gate; it passed on the reference machine.
-- 012 contracts 1–19: pending.
+- 012 contracts 1–9, 15, 18, 19: implemented and tested.
+- 012 contracts 10–14, 16, 17: pending directives, includes, and corpus work.
 
 ## Findings
 
@@ -20,3 +21,5 @@
   `0x1e+2` into three non-EOF tokens; `pp_numbers_are_single_tokens` failed.
 - Disabling cache lookup made the pointer-identity assertion in the contract-13 test
   fail before its timing assertion.
+- Substituting raw arguments at ordinary parameter uses changed `xstr(__LINE__)` to
+  `"__LINE__"`; the contract-4 test expected `"3"` and failed.
