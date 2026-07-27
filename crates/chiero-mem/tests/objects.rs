@@ -624,3 +624,60 @@ fn forking_shares_every_object_it_did_not_write() {
         Some(vec![(500u32 % 256) as u8])
     );
 }
+
+/// **A refused write must not cost a copy.** `Arc::make_mut` ran *before* the bounds,
+/// read-only and symbolic checks, so an operation that changes nothing cloned the whole
+/// object — and the shipped test only ever asserted sharing after a *successful* write, so
+/// nothing saw it.
+///
+/// This lands on the path the bit-API fix created: every `StoreBits` into a symbolic byte
+/// is now refused, and each refusal cloned. `h->ver = 4` inside a loop over packet headers
+/// is the shape 020 contract 25's own commit message named, so the cost was quadratic in
+/// the program's memory again — on the operation contract 20 exists to make cheap, undone
+/// by the commit that reported it. Found by review.
+#[test]
+fn a_refused_write_keeps_the_storage_shared() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let objs: Vec<_> = (0..64)
+        .map(|_| {
+            let o = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+            let x = a.var(chiero_solver::Sort::BitVec(8), "hdr");
+            m.write_sym_byte(Pointer { base: o, off: 0 }, x, Span::DUMMY);
+            o
+        })
+        .collect();
+    let mut forked = m.clone();
+    for o in &objs {
+        // Refused: the byte is symbolic, so the bit write cannot be represented.
+        let r = forked.write_bits(Pointer { base: *o, off: 0 }, 0, 4, 0b0100, Span::DUMMY);
+        assert!(!r.faults.is_empty(), "the premise: this write is refused");
+    }
+    let shared = objs
+        .iter()
+        .filter(|o| m.shares_storage_with(&forked, **o))
+        .count();
+    assert_eq!(
+        shared,
+        objs.len(),
+        "the fork changed nothing, so it still shares everything"
+    );
+}
+
+/// **A read keeps the storage shared**, except where it genuinely changes state.
+/// Memoizing an uninitialized read is a real mutation — 021 contract 26 requires the
+/// second read to agree with the first — so that one is expected to break sharing. A read
+/// of *written* bytes must not.
+#[test]
+fn a_plain_read_does_not_break_sharing() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+    m.set(Pointer { base: o, off: 0 }, 7, 8, Span::DUMMY);
+    let mut forked = m.clone();
+    let r = forked.read(Pointer { base: o, off: 0 }, 8, Span::DUMMY);
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert!(
+        m.shares_storage_with(&forked, o),
+        "reading written bytes changes nothing"
+    );
+}
