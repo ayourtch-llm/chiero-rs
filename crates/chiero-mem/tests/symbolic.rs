@@ -1587,9 +1587,18 @@ fn a_bit_write_into_a_symbolic_byte_is_not_silently_lost() {
     m.write_sym_byte(ptr(o, 0), x, sp(2));
 
     // `s.a = 0b101` over bits 0..3 of a byte whose value is unknown.
+    // **The write is refused**, not half-applied. A bit-granular write into a symbolic
+    // byte cannot be represented — 021 §3.1's `Cond` machinery is what would allow it and
+    // does not reach the bit API — so claiming success and changing nothing is the one
+    // outcome that must not happen.
     let w = m.write_bits(ptr(o, 0), 0, 3, 0b101, sp(3));
-    // Either the write lands and the byte stops being wholly symbolic, or it is refused —
-    // what it must not do is claim success and change nothing.
+    assert!(
+        w.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the write says it could not be performed: {:#?}",
+        w.faults
+    );
     let landed = w.faults.is_empty();
 
     // Reading the *neighbouring* field must never hand back a definite value for bits that

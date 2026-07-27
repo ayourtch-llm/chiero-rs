@@ -529,6 +529,15 @@ impl MemObject {
     pub fn write_bits(&mut self, lo_bit: u64, n_bits: u64, v: u128) -> Result<(), AccessError> {
         self.check_bits(lo_bit, n_bits)?;
         self.check_writable((lo_bit / 8) as i64)?;
+        // **The bit API and the overlay have to agree.** Writing only `data` left the
+        // symbolic byte in place, so the write vanished and the *neighbouring* bitfield
+        // read back as a definite constant — a proof about bits chiero knew nothing
+        // about. A bit-granular write into a symbolic byte cannot be represented, so it
+        // refuses rather than half-happening; 021 §3.1's `Cond` machinery is what would
+        // let it, and it does not reach here.
+        if let Some(b) = self.first_symbolic_bit_byte(lo_bit, n_bits) {
+            return Err(AccessError::SymbolicByte { off: b as i64 });
+        }
         for i in 0..n_bits {
             let bit = lo_bit + i;
             let (byte, sh) = ((bit / 8) as usize, bit % 8);
@@ -539,7 +548,21 @@ impl MemObject {
         Ok(())
     }
 
+    /// The first byte in a bit range that holds a symbolic value. Shared by the bit read
+    /// and write so the two cannot disagree about which bytes are knowable — which is how
+    /// the write came to vanish while the read answered confidently.
+    fn first_symbolic_bit_byte(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
+        if n_bits == 0 {
+            return None;
+        }
+        let last = lo_bit.checked_add(n_bits - 1)? / 8;
+        (lo_bit / 8..=last).find(|b| self.sym.contains_key(b))
+    }
+
     pub fn read_bits(&self, lo_bit: u64, n_bits: u64) -> Result<u128, AccessError> {
+        // **`check_bits` first**, or the byte range below overflows on a wrapping request
+        // — which an existing test covers, and which is why bounds precede everything
+        // else throughout this file.
         self.check_bits(lo_bit, n_bits)?;
         if let Some(bit) = self.init.first_no(lo_bit, n_bits) {
             return Err(AccessError::Uninitialized {
@@ -552,6 +575,13 @@ impl MemObject {
                 off: (lo_bit / 8) as i64,
                 bit,
             });
+        }
+        // **After the initialization checks**, matching the byte path: whether a byte
+        // was written is a different question from what is in it, and 021 §3.1's
+        // conditional case has to keep reporting `MaybeUninitialized` rather than being
+        // pre-empted. Only then does a symbol make the value unanswerable.
+        if let Some(b) = self.first_symbolic_bit_byte(lo_bit, n_bits) {
+            return Err(AccessError::SymbolicByte { off: b as i64 });
         }
         let mut v = 0u128;
         for i in 0..n_bits {
