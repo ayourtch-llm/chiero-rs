@@ -138,7 +138,10 @@ fn the_crate_contains_no_vpp_knowledge() {
             }
         }
     }
-    assert!(hits.is_empty(), "VPP identifiers in chiero-model: {hits:#?}");
+    assert!(
+        hits.is_empty(),
+        "VPP identifiers in chiero-model: {hits:#?}"
+    );
 }
 
 /// A model that is not registered is not found, and looking one up must not invent an
