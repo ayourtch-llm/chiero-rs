@@ -1749,6 +1749,28 @@ impl<'m> Engine<'m> {
                 // nothing about what it computed.
                 if s.stack.len() > 1 {
                     let f = s.stack.pop().expect("checked");
+                    // **The activation's objects die with it** (021 contract 39): every
+                    // one of them, `Lifetime::Function` included — that lifetime survives
+                    // an inner `Scope(Exit)` and ends *here*. Without this a returned
+                    // pointer to a local read as live memory and the run stayed `Exact`
+                    // over a program whose whole bug is that the pointer is dead.
+                    //
+                    // The popped frame's own map, not the state's objects: retiring
+                    // anything wider would kill the caller's locals on every return.
+                    //
+                    // The block's span, since `Terminator` carries none: it is the
+                    // closest thing to "where the activation ended" the CIR offers, and
+                    // a report has to name somewhere a reader can look.
+                    let at = self
+                        .module
+                        .funcs
+                        .iter()
+                        .find(|g| g.id == f.func)
+                        .and_then(|g| g.blocks.iter().find(|b| b.id == s.pc.0))
+                        .map_or(Span::DUMMY, |b| b.span);
+                    for id in f.frame_objs.values().copied() {
+                        s.mem.exit_scope(id, at);
+                    }
                     if let Some((_, b, i)) = f.ret_to {
                         s.pc = (b, i);
                     }

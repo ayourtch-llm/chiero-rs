@@ -376,11 +376,11 @@ fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
         .filter(|f| f.contains("left scope"))
         .collect();
     assert_eq!(uas.len(), 1, "exactly one: {:#?}", r.findings());
-    assert_ne!(
-        r.fidelity(),
-        Fidelity::Exact,
-        "a run that wrote through a dead pointer did not model the program exactly"
-    );
+    // **And the run stays `Exact`.** A write through a pointer to a dead frame is a
+    // definite fact about the program, modeled exactly; degrading here would claim
+    // chiero was unsure when it was not. 023 §7 rule 3 keeps degradations meaning
+    // something, and the engine already says so for null dereferences and bad frees.
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.findings());
 }
 
 /// And a *live* frame's objects are not retired by an inner call returning. Retiring on
