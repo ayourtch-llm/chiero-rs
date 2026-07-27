@@ -99,6 +99,12 @@ struct FindingKey {
     kind: &'static str,
     span: Span,
     object: Option<chiero_mem::ObjectId>,
+    /// **Where the access was, not just what it touched.** Three fault kinds —
+    /// `NullDeref`, `WildPointer`, `BadRange` — have no object by construction, and a
+    /// hand-written module has `Span::DUMMY` everywhere, so without this the key is
+    /// identical for every one of them and two distinct bugs merge. A real frontend gives
+    /// them distinct spans; the key must not depend on that to be correct.
+    func: FuncId,
 }
 
 /// 023 §7 rule 3: every degradation names its cause. "Approximated with no reason" is a
@@ -1763,6 +1769,7 @@ impl<'m> Engine<'m> {
                 kind: f.kind(),
                 span: f.at(),
                 object: f.object(),
+                func: s.func(),
             };
             s.findings
                 .push((self.finding_seq, Some(key), f.to_string()));
@@ -2051,6 +2058,7 @@ impl<'m> Engine<'m> {
                 kind: f.kind(),
                 span: f.at(),
                 object: f.object(),
+                func: s.func(),
             });
             s.findings.push((self.finding_seq, key, text));
         }

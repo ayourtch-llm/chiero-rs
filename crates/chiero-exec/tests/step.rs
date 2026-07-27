@@ -19,12 +19,22 @@
 use chiero_cir::*;
 use chiero_exec::*;
 use chiero_solver::{Sort, TermArena};
-use chiero_span::Span;
+use chiero_span::{BytePos, ExpnCtx, Span};
 
 fn inst(kind: InstKind) -> Inst {
     Inst {
         kind,
         span: Span::DUMMY,
+    }
+}
+
+/// An instruction with a *distinct* span. Almost every fixture here uses `Span::DUMMY`,
+/// which is why the finding key's `span` component was unpinned: with one span everywhere,
+/// dropping it from the key changes nothing.
+fn inst_at(kind: InstKind, lo: u32) -> Inst {
+    Inst {
+        kind,
+        span: Span::new(BytePos(lo), BytePos(lo + 1), ExpnCtx(0)),
     }
 }
 
@@ -6298,4 +6308,148 @@ fn objectless_faults_in_two_functions_do_not_merge() {
         .filter(|f| f.contains("unsupported-access-width"))
         .collect();
     assert_eq!(wide.len(), 2, "two functions, two reports: {:#?}", wide);
+}
+
+/// **The `span` component of the finding key, pinned.** Two identical faults on the same
+/// object in the same function, at *different* source locations, are two bugs. Nearly
+/// every fixture in this file uses `Span::DUMMY`, so dropping `span` from the key changed
+/// nothing and the mutation survived — the fixture, not the assertion, was the gap.
+#[test]
+fn the_same_fault_at_two_places_is_two_findings() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst_at(
+                    InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Load {
+                            addr: Operand::Value(ValueId(0)),
+                            ty: CTy::Vector {
+                                elem: Box::new(CTy::Int(64)),
+                                lanes: 4,
+                            },
+                            align: 32,
+                            vol: Volatility::Normal,
+                        },
+                    },
+                    10,
+                ),
+                inst_at(
+                    InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Load {
+                            addr: Operand::Value(ValueId(0)),
+                            ty: CTy::Vector {
+                                elem: Box::new(CTy::Int(64)),
+                                lanes: 4,
+                            },
+                            align: 32,
+                            vol: Volatility::Normal,
+                        },
+                    },
+                    20,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 32,
+        ..alloca(0, CTy::Int(8), 32)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let wide: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("unsupported-access-width"))
+        .collect();
+    assert_eq!(wide.len(), 2, "two places, two reports: {:#?}", wide);
+}
+
+/// **The `kind` component, pinned.** Two *different* faults on the same object at the same
+/// place are two bugs, and collapsing `kind` made the second disappear behind the first —
+/// a dropped finding, which is the failure mode deduplication must never produce.
+#[test]
+fn two_kinds_of_fault_on_one_object_are_two_findings() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // Nobody wrote these bytes: an uninitialized read.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                // Past the end of the same object: a different bug entirely.
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 32 }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(2)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("uninitialized-read")),
+        "{:#?}",
+        r.findings()
+    );
+    assert!(
+        r.findings().iter().any(|f| f.contains("out-of-bounds")),
+        "the second bug did not vanish behind the first: {:#?}",
+        r.findings()
+    );
 }
