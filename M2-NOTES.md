@@ -58,6 +58,9 @@
   search-position-aware `#include_next` have dedicated handling.
 - Configured command-line-style object macros now lex arbitrary replacement lists,
   participate in `#if`, carry synthesized provenance, and obey later `#undef`.
+- The unbounded expansion robustness claim reproduced in a subprocess: a 20,000-link
+  acyclic macro chain died with `SIGABRT`. Expansion now stops at a configurable depth
+  with a diagnostic, and the same child exits normally.
 
 ## Mutation checks
 

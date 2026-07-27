@@ -20,6 +20,7 @@ pub struct Config {
     pub include_paths: Vec<PathBuf>,
     pub system_paths: Vec<PathBuf>,
     pub max_include_depth: usize,
+    pub max_macro_expansion_depth: usize,
     /// Command-line-style object macros, applied after target predefines.
     pub defines: Vec<(String, String)>,
 }
@@ -35,6 +36,7 @@ impl Default for Config {
             include_paths: Vec::new(),
             system_paths: Vec::new(),
             max_include_depth: 200,
+            max_macro_expansion_depth: 256,
             defines: Vec::new(),
         }
     }
@@ -215,6 +217,7 @@ struct Engine {
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
     counter: u64,
+    expansion_depth: usize,
 }
 
 impl Engine {
@@ -265,6 +268,7 @@ impl Engine {
             by_name: BTreeMap::new(),
             diagnostics,
             counter: 0,
+            expansion_depth: 0,
         };
         for builtin in [
             "__LINE__",
@@ -867,6 +871,23 @@ impl Engine {
     }
 
     fn expand(&mut self, input: Vec<Tok>) -> Vec<Tok> {
+        if self.expansion_depth >= self.config.max_macro_expansion_depth {
+            self.diagnostics.push(Diagnostic {
+                span: input.first().map_or(Span::DUMMY, |token| token.token.span),
+                message: format!(
+                    "maximum macro expansion depth {} exceeded",
+                    self.config.max_macro_expansion_depth
+                ),
+            });
+            return input;
+        }
+        self.expansion_depth += 1;
+        let output = self.expand_inner(input);
+        self.expansion_depth -= 1;
+        output
+    }
+
+    fn expand_inner(&mut self, input: Vec<Tok>) -> Vec<Tok> {
         let mut output = Vec::new();
         let mut i = 0;
         while i < input.len() {
