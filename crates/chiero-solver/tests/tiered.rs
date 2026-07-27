@@ -731,3 +731,34 @@ fn a_predicate_concatenated_with_a_vector_reaches_the_backend() {
         other => panic!("expected Sat, got {other:?}"),
     }
 }
+
+/// Array terms must reach the backend, or promotion buys a representation no solver ever
+/// sees. `(Array (_ BitVec 64) (_ BitVec 8))` with `select`/`store` is standard SMT-LIB.
+#[test]
+fn array_terms_reach_the_backend() {
+    let Some(backend) = z3_or_skip("array_terms_reach_the_backend") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let mem = a.array_var(64, 8, "mem");
+    let i = a.var(Sort::BitVec(64), "i");
+    let v = a.bv(8, 0x5A);
+    let stored = a.store(mem, i, v);
+    let j = a.bv(64, 3);
+    let got = a.select(stored, j);
+    let want = a.bv(8, 0x5A);
+    let e = a.eq(got, want);
+    // Force escalation past tier 1.
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    assert!(
+        matches!(s.check(&mut a, &[]), CheckResult::Sat(_)),
+        "the backend must accept select/store over a declared array"
+    );
+}

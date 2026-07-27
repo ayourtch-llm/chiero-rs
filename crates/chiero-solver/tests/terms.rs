@@ -303,3 +303,79 @@ fn a_constant_condition_folds_the_ite_away() {
     let c = a.concat(x, y);
     assert_eq!(c, a.bv(16, 0xABCD));
 }
+
+// ---------------------------------------------------------------------------
+// Array theory — the representation 021 §3 promotes to.
+// ---------------------------------------------------------------------------
+
+/// `select(store(a, i, v), i)` is `v`. The read-over-write axiom, and the reason array
+/// theory can represent a memory object at all.
+#[test]
+fn a_select_over_a_matching_store_returns_the_stored_value() {
+    let mut a = TermArena::new();
+    let arr = a.array_var(64, 8, "mem");
+    let i = a.bv(64, 7);
+    let v = a.bv(8, 0x5A);
+    let stored = a.store(arr, i, v);
+    let got = a.select(stored, i);
+    assert_eq!(a.width(got), 8);
+    let m = Model::new();
+    assert_eq!(a.eval(&m, got).unwrap().bits(), 0x5A);
+}
+
+/// `select(store(a, i, v), j)` with `i != j` reads through to the underlying array. This
+/// is the half that makes a store *local*: without it every write would clobber the whole
+/// object and promotion would lose everything but the last byte.
+#[test]
+fn a_select_at_a_different_index_reads_through_the_store() {
+    let mut a = TermArena::new();
+    let base = a.array_const(64, 8, 0xEE);
+    let i = a.bv(64, 7);
+    let j = a.bv(64, 9);
+    let v = a.bv(8, 0x5A);
+    let stored = a.store(base, i, v);
+    let m = Model::new();
+    assert_eq!(a.eval(&m, a.select(stored, j)).unwrap().bits(), 0xEE);
+    assert_eq!(a.eval(&m, a.select(stored, i)).unwrap().bits(), 0x5A);
+}
+
+/// Stores layer: the most recent one at an index wins, and earlier ones at other indices
+/// survive. An implementation that kept only the last store would pass the two tests
+/// above and lose every byte but one.
+#[test]
+fn later_stores_shadow_earlier_ones_only_at_the_same_index() {
+    let mut a = TermArena::new();
+    let base = a.array_const(64, 8, 0);
+    let (i, j) = (a.bv(64, 1), a.bv(64, 2));
+    let (v1, v2, v3) = (a.bv(8, 11), a.bv(8, 22), a.bv(8, 33));
+    let s = a.store(base, i, v1);
+    let s = a.store(s, j, v2);
+    let s = a.store(s, i, v3);
+    let m = Model::new();
+    assert_eq!(a.eval(&m, a.select(s, i)).unwrap().bits(), 33);
+    assert_eq!(a.eval(&m, a.select(s, j)).unwrap().bits(), 22);
+}
+
+/// A select at a **symbolic** index cannot fold, and must not pretend to. Folding it to
+/// the constant array's default would silently answer a question the solver has to.
+#[test]
+fn a_select_at_a_symbolic_index_does_not_fold() {
+    let mut a = TermArena::new();
+    let base = a.array_const(64, 8, 0xEE);
+    let i = a.var(Sort::BitVec(64), "i");
+    let v = a.bv(8, 0x5A);
+    let s = a.store(base, i, v);
+    let j = a.var(Sort::BitVec(64), "j");
+    let got = a.select(s, j);
+    assert!(
+        a.eval_ground(got).is_err(),
+        "the value depends on whether i == j, which is the solver's question"
+    );
+    // Under a model that makes them equal, it is the stored value.
+    let mut m = Model::new();
+    m.set(a.var_id(i).unwrap(), BvConst::new(64, 3));
+    m.set(a.var_id(j).unwrap(), BvConst::new(64, 3));
+    assert_eq!(a.eval(&m, got).unwrap().bits(), 0x5A);
+    m.set(a.var_id(j).unwrap(), BvConst::new(64, 4));
+    assert_eq!(a.eval(&m, got).unwrap().bits(), 0xEE);
+}
