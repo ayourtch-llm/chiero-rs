@@ -718,6 +718,16 @@ pub enum MemFault {
         off: i64,
         at: Span,
     },
+    /// A concrete read touched a byte that holds a *symbolic* value.
+    ///
+    /// The byte API cannot answer, and inventing a concrete zero is what 021 §3 names as
+    /// the single most common way a symbolic executor produces confidently wrong results.
+    /// The caller wants `read_term`.
+    SymbolicByte {
+        obj: ObjectId,
+        off: i64,
+        at: Span,
+    },
     /// 021 §5 step 2: the access **may** be out of bounds. Distinct from `OutOfBounds`,
     /// which is definite — this one continues on the in-bounds branch, and a reader
     /// needs to know the difference between "this is wrong" and "this can be wrong".
