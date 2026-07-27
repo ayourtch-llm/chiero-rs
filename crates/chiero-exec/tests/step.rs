@@ -6516,14 +6516,26 @@ fn storing_a_null_pointer_lands_like_any_other() {
         "{:#?}",
         r.states()[0].assumptions()
     );
-    // And it reads back as the null pointer, not as some other object.
+    // **Read back through an independent path.** The pointer check answers from the very
+    // table the store populated, so it agrees with *whatever* address the engine chose —
+    // and its old fallback arm accepted a `Scalar(0)` as an answer to "is this a null
+    // pointer", which is not an answer at all. Reloading the same eight bytes as an
+    // integer asks the memory model instead. Found by review as a same-answer trap.
     match r.states()[0].local(ValueId(1)) {
         Some(Value::Ptr(p)) => assert_eq!(p.base, chiero_mem::ObjectId::NULL),
-        Some(Value::Scalar(t)) => {
-            assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(0))
-        }
-        other => panic!("{other:?}"),
+        other => panic!("a null *pointer*, not {other:?}"),
     }
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = r.states()[0].mem.clone();
+    assert_eq!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY)
+            .value,
+        Some(vec![0u8; 8]),
+        "and the bytes really are zero"
+    );
 }
 
 /// **An errored state is not an exact state, at any of the sites that can error.** None of

@@ -1505,12 +1505,33 @@ impl<'m> Engine<'m> {
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
                 self.report_faults(s, &r.faults, span);
                 match r.value.filter(|_| !unusable(&r.faults)) {
-                    // A pointer-typed load comes back as a **pointer**, through the same
-                    // provenance table `IntToPtr` uses — the bits alone cannot say which
-                    // object they name, and `ObjectId` is what every later check is about.
+                    // A pointer-typed load comes back as a **pointer**. The recorded
+                    // provenance first — the bits alone cannot say which object they name
+                    // — and then the address, because bytes written by `calloc`, `memset`
+                    // or a `.bss` global were never in that table and reloading them as a
+                    // scalar made `n->next->x = 1` on a zeroed struct report nothing.
                     Some(t) if *ty == CTy::Ptr => match s.provenance_of(t) {
                         Some(q) => Value::Ptr(q),
-                        None => Value::Scalar(t),
+                        None => match a.eval_ground(t) {
+                            Ok(c) => {
+                                let q = s.mem.object_containing(c.bits() as u64);
+                                // Zero is unambiguously null, so that costs nothing. Any
+                                // other address was *found*, and 021 §7.1 calls that
+                                // search wrong in both directions.
+                                if q.base != chiero_mem::ObjectId::NULL {
+                                    s.degrade(
+                                        Fidelity::Unknown,
+                                        AssumptionKind::NoInformation,
+                                        span,
+                                        "a pointer loaded from memory was resolved by \
+                                         address, which is wrong if a different object \
+                                         now occupies it",
+                                    );
+                                }
+                                Value::Ptr(q)
+                            }
+                            Err(_) => Value::Scalar(t),
+                        },
                     },
                     Some(t) => Value::Scalar(t),
                     None => {
