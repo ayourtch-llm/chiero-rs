@@ -619,18 +619,24 @@ fn every_child_of_a_store_is_reachable_from_the_walk() {
 #[test]
 fn extract_of_extract_shifts_by_the_inner_lo() {
     let mut a = TermArena::new();
-    let x = a.bv(32, 0xDEAD_BEEF);
+    // **A variable, not a constant.** The first version of this test used
+    // `a.bv(32, 0xDEADBEEF)`, so the constant fold fired on the inner `extract` and the
+    // extract-of-extract path never ran — the mutation survived the test written to kill
+    // it. The same-answer trap, in the fixture, again.
+    let x = a.var(Sort::BitVec(32), "x");
     let mid = a.extract(x, 23, 8);
     let low = a.extract(mid, 7, 0);
     assert_eq!(a.width(low), 8);
+    let mut model = Model::new();
+    model.set(a.var_id(x).unwrap(), BvConst::new(32, 0xDEAD_BEEF));
     assert_eq!(
-        a.eval_ground(low).unwrap().bits(),
+        a.eval(&model, low).unwrap().bits(),
         0xBE,
         "the inner slice starts at bit 8, so this is 0xBE and not 0xEF"
     );
     // And it does not nest: a byte-wise round trip would grow one level per operation.
     let deeper = a.extract(low, 3, 0);
-    assert_eq!(a.eval_ground(deeper).unwrap().bits(), 0xE);
+    assert_eq!(a.eval(&model, deeper).unwrap().bits(), 0xE);
     assert!(
         !a.to_smtlib(deeper).contains("((_ extract 3 0) ((_ extract"),
         "one extract, not a chain: {}",

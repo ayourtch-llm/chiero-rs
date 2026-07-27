@@ -5329,3 +5329,64 @@ fn misalignment_is_not_a_finding_by_default() {
         r.findings()
     );
 }
+
+/// **A wide load must not kill the process.** `<4 x i64>` is thirty-two bytes — an AVX
+/// vector VPP uses — and the term API had no width limit, so the arena asserted. Reaching
+/// it needed nothing exotic: a load out of `memset`-initialized memory. An abort is not
+/// something a caller can contain, which is why 021 keeps `BadRange` distinct from
+/// `OutOfBounds`: the object is big enough and chiero still cannot answer.
+#[test]
+fn a_load_wider_than_chiero_can_carry_faults_rather_than_aborting() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 32, val: 7 }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 32 }),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Vector {
+                            elem: Box::new(CTy::Int(64)),
+                            lanes: 4,
+                        },
+                        align: 32,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 32,
+        ..alloca(0, CTy::Int(8), 32)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("unsupported-access-width")),
+        "{:#?}",
+        r.findings()
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}

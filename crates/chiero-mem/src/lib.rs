@@ -807,6 +807,18 @@ pub struct Havocked {
 /// "followed everything", which is why `havoc` returns whether it was hit.
 pub const HAVOC_SCAN_BYTES: u64 = 1 << 16;
 
+/// The shared `MAX_ACCESS_BITS` check for the term API. A free function rather than a
+/// method so `read_term` and `write_term` cannot drift — which is how the term path came
+/// to be the only one without it.
+fn too_wide(size: u64, at: Span) -> Option<MemFault> {
+    let want = size.saturating_mul(8);
+    (want > MAX_ACCESS_BITS).then_some(MemFault::BadRange {
+        want_bits: want,
+        max_bits: MAX_ACCESS_BITS,
+        at,
+    })
+}
+
 /// What a byte-wise read hands back: the bytes, their per-bit initialization, and the
 /// symbolic overlay. All three travel together — carrying the bytes without the overlay
 /// is what turned a `memcpy` of a symbolic field into a fabricated constant.
@@ -1737,6 +1749,11 @@ impl Memory {
         e: Endian,
         at: Span,
     ) -> AccessResult<()> {
+        // As `read_term`: the ground path shifts a `u128` by `8 * size`, which panics at
+        // sixteen bytes and over.
+        if let Some(f) = too_wide(size, at) {
+            return AccessResult::fault(f);
+        }
         if let Ok(c) = a.eval_ground(t) {
             let v = c.bits();
             let mut bytes: Vec<u8> = (0..size).map(|i| (v >> (8 * i)) as u8).collect();
@@ -2174,6 +2191,14 @@ impl Memory {
         e: Endian,
         at: Span,
     ) -> AccessResult<Term> {
+        // **The same limit the byte and bit APIs enforce.** Omitting it here was a
+        // process kill rather than a fault: a concrete read folds its `Concat` chain into
+        // a `BvConst` wider than the arena allows and asserts. `BadRange` is deliberately
+        // distinct from `OutOfBounds` because this is a *chiero* limit — the object may
+        // be large enough and the caller still cannot be answered exactly.
+        if let Some(f) = too_wide(size, at) {
+            return AccessResult::fault(f);
+        }
         if let Some(f) = self.state_fault(p.base, p.off, at) {
             return AccessResult::fault(f);
         }
