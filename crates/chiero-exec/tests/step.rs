@@ -8504,15 +8504,12 @@ fn division_by_zero_follows_the_table_and_execution_continues() {
             s.local(ValueId(1)).is_some(),
             "{op:?}: the instruction after the division ran"
         );
-        // **And the solver agrees with the engine about the same term** (022 §1). This is
-        // the half that stops the two conventions drifting apart: a table the engine
-        // implements alone is a table only the engine believes.
-        match s.local(ValueId(0)) {
-            Some(Value::Scalar(t)) => {
-                assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(want))
-            }
-            other => panic!("{other:?}"),
-        }
+        // **This is where the solver-agreement half used to be, and it was vacuous.**
+        // Both operands are constants, so `TermArena::bin` folds at construction and the
+        // local is already a `Node::Const`; `return_value_bits` *is* `eval_ground`, the
+        // same call written out by hand. Mutation proved it: deleting the assertion lost
+        // nothing. Contract 9's drift check needs a term the folder cannot collapse, so it
+        // is a separate test below with a symbolic operand — found by review.
     }
 }
 
@@ -9288,4 +9285,43 @@ fn an_opaque_write_past_the_end_is_a_finding() {
         "the program declared the overflow itself: {:#?}",
         r.findings()
     );
+}
+
+/// **020 contract 9's second half, for real.** The contract requires each division result
+/// to agree with *the solver's* evaluation of the same term, so the IR and solver
+/// conventions cannot drift. Doing that over constant operands proves nothing: `bin` folds
+/// at construction, so there is one value computed once and read back twice.
+///
+/// Here the dividend is symbolic and constrained by a path condition, so the term survives
+/// as a live `Node::Bin` and `eval` must *interpret* it — a genuinely separate execution of
+/// the same table. Found by review, which showed the constant version could be deleted with
+/// no test failing.
+#[test]
+fn the_solver_evaluates_division_by_zero_the_same_way_the_engine_does() {
+    let mut a = TermArena::new();
+    // `x` symbolic, pinned to -5 by a model rather than by folding.
+    let x = a.var(chiero_solver::Sort::BitVec(32), "x");
+    let zero = a.bv(32, 0);
+    let cases: [(&str, chiero_solver::Term, u128); 4] = [
+        ("udiv", a.udiv(x, zero), u32::MAX as u128),
+        ("sdiv", a.sdiv(x, zero), 1),
+        ("urem", a.urem(x, zero), (-5i32) as u32 as u128),
+        ("srem", a.srem(x, zero), (-5i32) as u32 as u128),
+    ];
+    let mut model = chiero_solver::Model::new();
+    model.set(
+        a.var_id(x).expect("a variable"),
+        chiero_solver::BvConst::new(32, (-5i32) as u32 as u128),
+    );
+    for (what, t, want) in cases {
+        assert!(
+            a.eval_ground(t).is_err(),
+            "{what}: the term must not be folded, or this proves nothing"
+        );
+        assert_eq!(
+            a.eval(&model, t).expect("evaluable under the model").bits(),
+            want,
+            "{what} of -5 by zero"
+        );
+    }
 }

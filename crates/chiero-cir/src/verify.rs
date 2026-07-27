@@ -819,7 +819,13 @@ fn check_bits(f: &Function, unit: &CTy, bits: BitRange, span: Span, out: &mut Ve
         );
         return;
     };
-    if bits.width == 0 || bits.off + bits.width > w {
+    // **Checked addition.** `BitRange { off: u32::MAX, width: 4 }` panicked in debug and
+    // *wrapped* in release — `u32::MAX + 4` is 2, so `2 > 32` is false and `verify`
+    // **accepted** a malformed range, which then reached the engine's bit API. The text
+    // parser cannot produce it (`width` is a saturating difference), so this is reachable
+    // only from a programmatically built module — which is what `chiero-lower` will be.
+    let end = bits.off.checked_add(bits.width);
+    if bits.width == 0 || end.is_none_or(|e| e > w) {
         err(
             out,
             f,
@@ -828,7 +834,9 @@ fn check_bits(f: &Function, unit: &CTy, bits: BitRange, span: Span, out: &mut Ve
             format!(
                 "bit range {}..{} does not fit in {w} bits",
                 bits.off,
-                bits.off + bits.width
+                // The *message* overflowed too, which is how the fix to the condition
+                // moved the panic three lines down rather than removing it.
+                end.map_or_else(|| "overflow".to_string(), |e| e.to_string())
             ),
         );
     }

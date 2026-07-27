@@ -1676,7 +1676,17 @@ fn the_constant_mask_shuffle_exists_and_the_dynamic_one_is_owed() {
 /// load in particular yields a zero-width term, which the arena has no representation for.
 #[test]
 fn verify_rejects_a_bit_range_that_does_not_fit_its_unit() {
-    for (off, width, why) in [(30u32, 4u32, "past the end"), (0, 0, "zero width")] {
+    // **Both call sites**, and the *accept* side too. The first version built only a
+    // `LoadBits`, so deleting `check_bits` at the `StoreBits` site survived — the wave-7
+    // clustering failure again, one rule with two call sites and one of them tested. And
+    // nothing pinned that a **full-width** bitfield is accepted, so `> w` → `>= w`
+    // survived: a one-character slip would reject legal CIR for `unsigned x : 32`.
+    for (off, width, why) in [
+        (30u32, 4u32, "past the end"),
+        (0, 0, "zero width"),
+        (0, 32, "full width, which is legal"),
+    ] {
+        let expect_error = width != 32;
         let mut m = valid_module();
         m.funcs[0].allocas = vec![AllocaDecl {
             id: AllocaId(0),
@@ -1710,9 +1720,75 @@ fn verify_rejects_a_bit_range_that_does_not_fit_its_unit() {
                 },
             }),
         );
-        assert!(
+        assert_eq!(
             verify(&m).iter().any(|e| e.kind.is_error()),
-            "{why}: off {off} width {width} must be rejected"
+            expect_error,
+            "{why}: off {off} width {width}"
+        );
+
+        // The same range through a `StoreBits`, which is a second call site of the same
+        // rule and was entirely unchecked.
+        let mut m2 = m.clone();
+        m2.funcs[0].blocks[0].insts[1] = inst(InstKind::StoreBits {
+            addr: Operand::Value(ValueId(5)),
+            val: i32c(1),
+            unit: CTy::Int(32),
+            bits: BitRange { off, width },
+            align: 4,
+        });
+        assert_eq!(
+            verify(&m2).iter().any(|e| e.kind.is_error()),
+            expect_error,
+            "{why} (StoreBits): off {off} width {width}"
         );
     }
+}
+
+/// **A `BitRange` whose `off + width` overflows is rejected, not accepted.** It panicked in
+/// debug and wrapped in release — `u32::MAX + 4` is 2, so `2 > 32` was false and `verify`
+/// **accepted** a malformed range that then reached the engine's bit API. Wave 5 recorded
+/// "20 malformed inputs panicked instead of erroring" as a fixed class in this crate; this
+/// is one that got away, and the release behaviour is the worse half. Found by review.
+#[test]
+fn a_bit_range_whose_end_overflows_is_rejected() {
+    let mut m = valid_module();
+    m.funcs[0].allocas = vec![AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: 1,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    }];
+    m.funcs[0].blocks[0].insts.insert(
+        0,
+        inst(InstKind::Assign {
+            dst: ValueId(5),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(0),
+            },
+        }),
+    );
+    m.funcs[0].blocks[0].insts.insert(
+        1,
+        inst(InstKind::Assign {
+            dst: ValueId(6),
+            rv: RValue::LoadBits {
+                addr: Operand::Value(ValueId(5)),
+                unit: CTy::Int(32),
+                bits: BitRange {
+                    off: u32::MAX,
+                    width: 4,
+                },
+                signed: false,
+                align: 4,
+            },
+        }),
+    );
+    assert!(
+        verify(&m).iter().any(|e| e.kind.is_error()),
+        "an overflowing range is malformed, not permitted"
+    );
 }
