@@ -2159,8 +2159,19 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `pinned_offset`'s feasibility guard both survive mutation — correct by construction,
    no fixture separates them.
 
+   **WAVE 52** (`7f1aa0d` and follow-ups; 608 tests) — D3 and D5 fixed. Feasible objects
+   are **counted past the cap** rather than the scan stopping at it, and step 4 is decided
+   **before** step 5: "every object *and* nowhere" is about the *program*, the cap is about
+   *chiero*, and testing the cap first let the object count decide which one a reader was
+   told. A guard-gap address is a **wild pointer**, not "unconstrained".
+
+   ⚠️ **The D3 test passed before I added a tier-2 backend** — `solver-lite` answers
+   `Unknown`, so the run took the `SolverUnknown` branch, which also gives `Unknown` and no
+   pointer. *Third time in this area that a test passed for a different reason than it
+   named; the fix each time was to make the fixture reach the code under test.*
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
-   - **D3** steps 4 and 5 merge whenever live objects exceed the cap: `over_cap` returns
+   - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
      pointer gets `Approximated` and silently continues on object 1. **Under VPP's >10⁴
      objects, step 4 can never fire** — §5.1's highest-value guarantee unreachable exactly
@@ -2168,7 +2179,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **D6** `live_ranges` filters to `ObjState::Live`, so a use-after-free through a
      symbolic address reports "unconstrained pointer" and terminates instead of reporting
      the UAF. 021 §4 keeps freed objects *precisely so* the site can be named.
-   - **D5** `candidates.is_empty()` is the *opposite* of "every object feasible": an address
+   - ~~**D5**~~ DONE (wave 52). `candidates.is_empty()` is the *opposite* of "every object feasible": an address
      provably in a guard gap is reported as "wholly unconstrained". Third instance of the
      cause-conflation `f29457b` fixed, one branch over.
    - **D8** the search **is** the per-dereference O(objects) solver sweep §5.1 forbids —
