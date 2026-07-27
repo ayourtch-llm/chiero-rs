@@ -16,7 +16,7 @@ impl ExpnCtx {
     pub const ROOT: ExpnCtx = ExpnCtx(0);
 
     pub fn is_root(self) -> bool {
-        todo!("green")
+        self == Self::ROOT
     }
 }
 
@@ -34,25 +34,33 @@ pub struct Span {
 impl Span {
     /// The span of something with no source location — hand-written `.cir` fixtures,
     /// synthesized nodes (020 §6).
-    pub const DUMMY: Span = Span { lo: BytePos(0), hi: BytePos(0), ctx: ExpnCtx::ROOT };
+    pub const DUMMY: Span = Span {
+        lo: BytePos(0),
+        hi: BytePos(0),
+        ctx: ExpnCtx::ROOT,
+    };
 
-    pub fn new(_lo: BytePos, _hi: BytePos, _ctx: ExpnCtx) -> Span {
-        todo!("green")
+    /// `lo` is inclusive, `hi` exclusive. Debug-asserts `lo <= hi`; an inverted span
+    /// is a frontend bug, and silently normalizing one would hide it.
+    pub fn new(lo: BytePos, hi: BytePos, ctx: ExpnCtx) -> Span {
+        debug_assert!(lo <= hi, "inverted span: {lo:?}..{hi:?}");
+        Span { lo, hi, ctx }
     }
 
     pub fn len(self) -> u32 {
-        todo!("green")
+        self.hi.0.saturating_sub(self.lo.0)
     }
 
     pub fn is_empty(self) -> bool {
-        todo!("green")
+        self.lo >= self.hi
     }
 
-    pub fn contains(self, _pos: BytePos) -> bool {
-        todo!("green")
+    /// Half-open: `lo` is contained, `hi` is not.
+    pub fn contains(self, pos: BytePos) -> bool {
+        self.lo <= pos && pos < self.hi
     }
 
     pub fn is_dummy(self) -> bool {
-        todo!("green")
+        self == Self::DUMMY
     }
 }

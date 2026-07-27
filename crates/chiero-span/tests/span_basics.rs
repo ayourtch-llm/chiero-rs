@@ -14,7 +14,11 @@ use chiero_span::{BytePos, ExpnCtx, Span};
 /// invisible at runtime and expensive at scale, so it is pinned mechanically.
 #[test]
 fn span_is_twelve_bytes_and_copy() {
-    assert_eq!(std::mem::size_of::<Span>(), 12, "Span must stay 12 bytes (010 §2)");
+    assert_eq!(
+        std::mem::size_of::<Span>(),
+        12,
+        "Span must stay 12 bytes (010 §2)"
+    );
     assert_eq!(std::mem::align_of::<Span>(), 4);
 
     // `Copy` is asserted by using a span after moving it; this fails to compile
