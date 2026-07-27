@@ -811,14 +811,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    **The fix is always cross-checking through an independent path**, not adding another
    assertion on the same one.
 
-   **STILL OWED from wave 9** (judged valid, not applied): `AccessCtx`, `copy`, `set`
-   (contracts 22, 28); §5 step 2's may-OOB "continue on the in-bounds branch" — only
-   concrete must-OOB exists, though the test docs describe both; `InitBit::Cond` is
-   unreachable through the `Memory` API; §4's leak roots ("globals, the return value, or
-   any live stack object") are not *derived* — the caller must `set_root` by hand, so a
-   heap object held only by a live stack local reads as a leak; and `point_at` is
-   append-only, so an overwritten pointer field can never drop an edge, systematically
-   under-reporting leaks after any pointer store.
+   **Wave-9 leftovers APPLIED** (`e7652af` red, `d4e331e` green, 284 tests): `copy`/`set`
+   (contracts 22, 28), slot-keyed pointer edges, and derived leak roots. `copy`'s source
+   read deliberately does **not** report an uninitialized read or memoize — a copy moves
+   bytes without using them, `memcpy` of a partially-filled struct is ubiquitous and
+   correct, and memoizing would defeat the status propagation. The finding belongs at the
+   eventual *use*.
+
+   *Two more same-answer escapes:* both overlap tests used two **different** objects,
+   where the same-object guard short-circuits, so deleting the range check survived; and
+   no test used exactly adjacent ranges, so the `<` vs `<=` off-by-one survived —
+   `memcpy(p + 4, p, 4)` is correct and common and would have become a finding.
+   *A third survivor was not a coverage gap:* liveness was checked in both the root
+   predicate and the reachability walk, so the predicate's half was unreachable. Removing
+   it was the fix; a test would have pinned redundancy.
+
+   **STILL OWED from wave 9:** `AccessCtx`; §5 step 2's may-OOB "continue on the in-bounds
+   branch" — only concrete must-OOB exists, though the test docs describe both;
+   `InitBit::Cond` is unreachable through the `Memory` API (it needs symbolic-offset
+   writes, which is the next slice).
 
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
    offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
