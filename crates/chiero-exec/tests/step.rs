@@ -7565,3 +7565,115 @@ fn va_arg_reads_the_variadic_arguments_in_order() {
         "50 then 8, in that order"
     );
 }
+
+/// **The vector operations, so `eval` is exhaustive like `exec_inst`.** vppinfra is built
+/// on `u8x16`/`u32x4` and friends — `vec_len`, the hash lookups, the packet classifiers —
+/// so a lowering gap here degrades most of the code this tool targets.
+///
+/// A vector is a bit-vector of `lanes * width` bits, little-endian by lane, which is what
+/// 021 §3's "bytes are bytes" means for SIMD: lane 0 occupies the low bits, exactly as a
+/// load of the same memory would see it.
+#[test]
+fn the_vector_operations_move_lanes_where_they_belong() {
+    let v4 = || CTy::Vector {
+        elem: Box::new(CTy::Int(8)),
+        lanes: 4,
+    };
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                // Four lanes of 0xAB.
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Splat {
+                        elem: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
+                        lanes: 4,
+                    },
+                }),
+                // Lane 2 becomes 0x01, so an implementation that wrote lane 0, or that
+                // indexed from the high end, gives a different answer.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::InsertLane {
+                        v: Operand::Value(ValueId(0)),
+                        lane: 2,
+                        val: Operand::Const(Const::Int { bits: 8, val: 0x01 }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(1)),
+                        lane: 2,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(1)),
+                        lane: 0,
+                    },
+                }),
+                // A shuffle picking lane 2 of `a` and lane 0 of `b`; indices past `lanes`
+                // address the second operand (020 rule 12).
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Shuffle {
+                        a: Operand::Value(ValueId(1)),
+                        b: Operand::Value(ValueId(0)),
+                        mask: vec![2, 4, 2, 4],
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(4)),
+                        lane: 0,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(6),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(4)),
+                        lane: 1,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    let bits = |v: u32, a: &mut TermArena| match s.local(ValueId(v)) {
+        Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(bits(0, &mut a), Some(0xABAB_ABAB), "splat fills every lane");
+    assert_eq!(bits(2, &mut a), Some(0x01), "the lane that was written");
+    assert_eq!(
+        bits(3, &mut a),
+        Some(0xAB),
+        "and its neighbour is untouched"
+    );
+    assert_eq!(bits(5, &mut a), Some(0x01), "mask 2 takes a's lane 2");
+    assert_eq!(
+        bits(6, &mut a),
+        Some(0xAB),
+        "mask 4 crosses into b's lane 0"
+    );
+}
