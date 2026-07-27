@@ -7,24 +7,36 @@
 
 use chiero_span::{BytePos, ExpnCtx, ExpnKind, MacroId, SourceMap, Span, TokenOrigin};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A counting allocator, so 010 contract 9 ("`expansion_loc` never allocates") is a
-/// real measurement rather than a comment. It is installed for this test binary only.
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
+/// real measurement rather than a comment. Installed for this test binary only.
+///
+/// The counter is **thread-local**. `cargo test` runs tests in parallel on one process,
+/// so a process-global counter measures every other test's allocations too and the
+/// assertion becomes flaky nonsense — which is exactly what a first, global version of
+/// this did.
 struct Counting;
+
+thread_local! {
+    static ALLOCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn bump() {
+    // `try_with`: the TLS may be destroyed during thread teardown, and allocating then
+    // must not panic.
+    let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        bump();
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        bump();
         unsafe { System.realloc(p, l, n) }
     }
 }
@@ -33,7 +45,7 @@ unsafe impl GlobalAlloc for Counting {
 static A: Counting = Counting;
 
 fn alloc_count() -> usize {
-    ALLOCS.load(Ordering::Relaxed)
+    ALLOCS.try_with(|c| c.get()).unwrap_or(0)
 }
 
 /// Builds the 010 §3.2 fixture:

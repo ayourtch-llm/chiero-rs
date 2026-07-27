@@ -476,16 +476,41 @@ impl GlobalInterner {
         Self::default()
     }
 
-    pub fn intern_file(&mut self, _path: &Path) -> GlobalFileId {
-        todo!("green")
+    /// Intern by canonicalized path, so one header is one id across all 1552 TUs.
+    pub fn intern_file(&mut self, path: &Path) -> GlobalFileId {
+        let key = path.to_path_buf();
+        if let Some(&id) = self.files.get(&key) {
+            return id;
+        }
+        let id = GlobalFileId(self.paths.len() as u32);
+        self.paths.push(key.clone());
+        self.files.insert(key, id);
+        id
     }
 
-    pub fn path(&self, _id: GlobalFileId) -> &Path {
-        todo!("green")
+    pub fn path(&self, id: GlobalFileId) -> &Path {
+        &self.paths[id.0 as usize]
     }
 
-    pub fn lookup_macro(&self, _file: &str, _name: &str) -> Option<MacroEntity> {
-        todo!("green")
+    /// Identity is `(defining file, name, definition line)` — matching
+    /// `Entity::Macro` in [031 §1], and keeping a redefinition of the same name at a
+    /// different line distinct.
+    fn intern_macro(&mut self, file: GlobalFileId, name: &str, line: u32) -> MacroEntity {
+        let key = (file, Arc::<str>::from(name), line);
+        if let Some(&e) = self.macros.get(&key) {
+            return e;
+        }
+        let e = MacroEntity(self.macros.len() as u32);
+        self.macros.insert(key, e);
+        e
+    }
+
+    pub fn lookup_macro(&self, file: &str, name: &str) -> Option<MacroEntity> {
+        let fid = *self.files.get(Path::new(file))?;
+        self.macros
+            .iter()
+            .find(|((f, n, _), _)| *f == fid && &**n == name)
+            .map(|(_, &e)| e)
     }
 
     pub fn macro_count(&self) -> usize {
@@ -498,13 +523,48 @@ impl CookedExpansionIndex {
         Self::default()
     }
 
-    /// Resolve every expansion site in `sm` to `(global file, line)` **before** the
-    /// per-TU tables are dropped, and merge them into the whole-tree index.
-    pub fn cook_tu(&mut self, _interner: &mut GlobalInterner, _sm: &SourceMap) {
-        todo!("green")
+    /// Resolve every expansion in `sm` to `(global file, line)` **before** the per-TU
+    /// tables are dropped, and merge into the whole-tree index.
+    ///
+    /// This eager resolution is the whole point of §6.2: `ExpnCtx` and `MacroId` are
+    /// indices into `sm`, so retaining them and resolving later would dangle.
+    pub fn cook_tu(&mut self, interner: &mut GlobalInterner, sm: &SourceMap) {
+        // Intern every macro, so a defined-but-unused macro still gets an identity.
+        let mut entity_of: Vec<Option<MacroEntity>> = Vec::new();
+        for (i, m) in sm.macros.iter().enumerate() {
+            let e = sm.lookup_loc(m.def_span.lo).map(|loc| {
+                let gf = interner.intern_file(sm.file(loc.file).path());
+                interner.intern_macro(gf, &m.name, loc.line)
+            });
+            debug_assert_eq!(i, entity_of.len());
+            entity_of.push(e);
+            if let Some(e) = e {
+                self.sites.entry(e).or_default();
+            }
+        }
+
+        for (i, expn) in sm.expansions.iter().enumerate() {
+            let ctx = ExpnCtx(i as u32 + 1);
+            let Some(mid) = expn.macro_id else { continue };
+            let Some(Some(entity)) = entity_of.get(mid.0 as usize).copied() else {
+                continue;
+            };
+            // `expansion_loc` of the call site is the line gcov attributes to — the
+            // outermost `.c` line, even when this expansion is nested inside another.
+            let probe = Span::new(expn.call_site.lo, expn.call_site.hi, ctx);
+            let Some(loc) = sm.expansion_loc(probe) else {
+                continue;
+            };
+            let gf = interner.intern_file(sm.file(loc.file).path());
+            self.sites.entry(entity).or_default().push(CookedSite {
+                file: gf,
+                line: loc.line,
+                depth: sm.expansion_backtrace(probe).len().saturating_sub(1) as u32,
+            });
+        }
     }
 
-    pub fn sites(&self, _m: MacroEntity) -> impl Iterator<Item = &CookedSite> + '_ {
-        std::iter::empty()
+    pub fn sites(&self, m: MacroEntity) -> impl Iterator<Item = &CookedSite> + '_ {
+        self.sites.get(&m).into_iter().flatten()
     }
 }
