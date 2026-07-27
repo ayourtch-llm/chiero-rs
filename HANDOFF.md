@@ -2244,6 +2244,42 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    of its own test and replayed too. *A replay test with one input tests almost nothing
    about ordering.*
 
+   **WAVE 56** (`a26c484`, `54654e4`; 636 tests) — the **wave-53 adversarial review of
+   §5.1 reported, and it was right about three soundness bugs I had just introduced.**
+   Every claim was re-derived here before acting; the reviewer's fixtures reproduce each.
+
+   - **The syntactic step-4 test was unsound.** It asked only that no path constraint
+     mention the address's variables. `char buf[32]; unsigned char i; p = &buf[i]` mentions
+     `i` nowhere on the path and is still confined to one object plus a guard gap — *the
+     term's own structure constrains the value.* chiero reported an unresolvable pointer
+     and **stopped the path**. It now requires a **bare variable**, which is the only shape
+     where "the path says nothing" is "nothing is known". My commit message had claimed
+     "exact in that direction"; it was exact only for a bare variable, and nothing checked
+     that.
+   - **A cut enumeration concretized, reverting wave 52.** At 40 objects the enumeration
+     always ends cut, so step 4 was again unreachable exactly where §5.1 was written for.
+     Now: cut + wild-feasible is step 4 *unless* some object is provably not nameable —
+     one counterexample settles it, at most `cap` probes, walking the list from **both
+     ends** because a bounding constraint rules out objects at one end of the space.
+   - **An `Unknown` mid-enumeration produced a non-exhaustive fork claiming `Bounded`.**
+     Only an immediate give-up was caught. Any `undecided` now ends the path at
+     `SolverUnknown`.
+   - Plus: the concretize branch handed back **byte 0** (D4, in a branch nobody had looked
+     at); `wild_region_around` used `saturating_add` where its caller used `wrapping_add`;
+     and a symbolic address pinned to **zero** resolved to `UNBOUND` rather than `NULL`, so
+     a null dereference through a symbolic value reported a wild pointer with `Unknown`
+     where `NullDeref` is definite.
+
+   ⚠️ **Two method notes, both expensive:**
+   1. *An assertion over the wrong collection cannot fail.* "The search must terminate"
+      checked `findings()` for text that `degrade` writes to `assumptions`. It passed while
+      the exact condition it named was true. **Check which collection the text goes to.**
+   2. *`wild_region_around` had no direct test* — the engine's fixtures pin the address, so
+      the first model lands inside an object and the region logic never runs. Three
+      one-address mutations passed the whole 614-test suite, two of them swallowing the
+      legal one-past-the-end pointer 021 §7.1 names by hand. **A helper reached only
+      through a happy path is untested however many tests call into it.**
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2321,7 +2357,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **628 tests, 109/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **636 tests, 109/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
