@@ -104,16 +104,44 @@ impl SourceFile {
         &self.src
     }
     pub fn byte_len(&self) -> u32 {
-        todo!("green")
+        self.src.len() as u32
     }
+
     pub fn is_empty(&self) -> bool {
-        todo!("green")
+        self.src.is_empty()
     }
+
+    /// Exclusive end of this file's range in the global space.
     pub fn end_pos(&self) -> BytePos {
-        todo!("green")
+        BytePos(self.start_pos.0 + self.byte_len())
     }
+
     pub fn line_count(&self) -> u32 {
-        todo!("green")
+        self.line_starts.len() as u32
+    }
+
+    /// 1-based line containing the file-relative byte offset `off`.
+    fn line_of_offset(&self, off: u32) -> u32 {
+        // The count of line starts at or before `off` is exactly the 1-based line.
+        self.line_starts.partition_point(|s| s.0 <= off) as u32
+    }
+
+    /// Byte offset of the start of each line. An empty file has zero lines; a file
+    /// with no trailing newline still has its final line recorded.
+    fn compute_line_starts(src: &str) -> Vec<BytePos> {
+        if src.is_empty() {
+            return Vec::new();
+        }
+        let mut starts = vec![BytePos(0)];
+        let bytes = src.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            // Only `\n` begins a line. `\r` belongs to the preceding line, so CRLF
+            // does not create a phantom line. A trailing newline does not either.
+            if b == b'\n' && i + 1 < bytes.len() {
+                starts.push(BytePos(i as u32 + 1));
+            }
+        }
+        starts
     }
 }
 
@@ -129,23 +157,71 @@ impl SourceMap {
         Self::default()
     }
 
-    pub fn add_file(&mut self, _path: impl Into<PathBuf>, _src: impl Into<Arc<str>>) -> FileId {
-        todo!("green")
+    /// Append a file to the global space. The same path may be added more than once —
+    /// the preprocessor reads a header under several configurations, and merging them
+    /// would make one configuration's spans point into another's text.
+    pub fn add_file(&mut self, path: impl Into<PathBuf>, src: impl Into<Arc<str>>) -> FileId {
+        let src: Arc<str> = src.into();
+        let id = FileId(self.files.len() as u32);
+        let start_pos = self.files.last().map_or(BytePos(0), |f| f.end_pos());
+        let line_starts = SourceFile::compute_line_starts(&src);
+        self.files.push(SourceFile {
+            id,
+            path: path.into(),
+            src,
+            start_pos,
+            line_starts,
+        });
+        id
     }
 
-    pub fn file(&self, _id: FileId) -> &SourceFile {
-        todo!("green")
+    pub fn file(&self, id: FileId) -> &SourceFile {
+        &self.files[id.0 as usize]
     }
+
     pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
         self.files.iter()
     }
-    pub fn lookup_file(&self, _pos: BytePos) -> Option<FileId> {
-        todo!("green")
+
+    /// O(log n) in the number of files.
+    ///
+    /// Empty files claim no positions. `partition_point` already lands on the *last*
+    /// file whose start is at or before `pos`, and a run of empty files shares its
+    /// start with the non-empty file that follows, so no backward walk is needed —
+    /// the single containment check below is sufficient.
+    pub fn lookup_file(&self, pos: BytePos) -> Option<FileId> {
+        let i = self
+            .files
+            .partition_point(|f| f.start_pos <= pos)
+            .checked_sub(1)?;
+        let f = &self.files[i];
+        (pos < f.end_pos()).then_some(f.id)
     }
-    pub fn lookup_loc(&self, _pos: BytePos) -> Option<Loc> {
-        todo!("green")
+
+    pub fn lookup_loc(&self, pos: BytePos) -> Option<Loc> {
+        let id = self.lookup_file(pos)?;
+        let f = self.file(id);
+        let off = pos.0 - f.start_pos.0;
+        let line = f.line_of_offset(off);
+        let line_start = f.line_starts[line as usize - 1].0;
+        Some(Loc {
+            file: id,
+            line,
+            col: off - line_start + 1,
+            pos,
+        })
     }
-    pub fn span_text(&self, _sp: Span) -> Option<&str> {
-        todo!("green")
+
+    /// `None` when the span is out of range or straddles a file boundary — splicing
+    /// bytes from two files would be worse than refusing.
+    pub fn span_text(&self, sp: Span) -> Option<&str> {
+        let id = self.lookup_file(sp.lo)?;
+        let f = self.file(id);
+        if sp.hi > f.end_pos() {
+            return None;
+        }
+        let lo = (sp.lo.0 - f.start_pos.0) as usize;
+        let hi = (sp.hi.0 - f.start_pos.0) as usize;
+        f.src.get(lo..hi)
     }
 }
