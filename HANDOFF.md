@@ -1478,9 +1478,22 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    count for every conditional expression while exploring nothing new. A `const` global is
    `readonly`, which is also what keeps a havoc off a string literal.
 
-   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `LoadBits` and
-   `StoreBits` (021 §3.1's bit-granular init exists precisely for these, and it is
-   currently untested from the engine side); `AllocaDyn`; the four `Va*` (010 measured
+   **WAVE 20** (`1a22ce9` red, `341b3d7` green, 516 tests) — `LoadBits`/`StoreBits`, so
+   021 §3.1's bit-granular init mask is finally reachable from the engine. A store of bits
+   4..7 leaves bits 0..3 of the same byte uninitialized and reading them is a finding,
+   which is the half a byte-rounded mask cannot express. A signed bitfield sign-extends to
+   its unit; a *symbolic* bitfield store is a gap, since `InitBit::Cond` does not reach
+   the bit API.
+
+   ⚠️ **The general rule it exposed:** 021 §5 hands back faults *alongside* a value, and
+   for an uninitialized read that value is the **backing store's zero** — the exact answer
+   021 §3.1 names as the most common way a symbolic executor is confidently wrong. `Load`
+   and `LoadBits` now discard a value whose access reported a `yields_unknown_value` fault.
+   `Load` was safe only by accident (`read_term` returns `None`); `read_bits` returns
+   `Some(0)`, and the first version of that commit returned the zero. **Any future reader
+   of an `AccessResult` has to make the same check** — the type permits the mistake.
+
+   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `AllocaDyn`; the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
    not a scalar operand.
