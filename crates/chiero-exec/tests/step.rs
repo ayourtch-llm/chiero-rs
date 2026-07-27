@@ -5469,3 +5469,134 @@ fn scanf_skips_a_position_not_a_resolved_pointer() {
         "the output buffer is still invalidated"
     );
 }
+
+/// **020 §8: verification runs before execution, always, including on hand-written
+/// fixtures.** `Engine::run` never called it, so a module violating rule 5 — a `Store`
+/// whose value is narrower than its `ty` — reached `a.extract` and **panicked**. This is
+/// the wave-5 "malformed input panics instead of erroring" class, reopened on a new
+/// surface. Found by review.
+///
+/// A rejected module produces a state that says why; a panic is not something a caller
+/// can contain, and chiero is meant to be called as a tool.
+#[test]
+fn a_module_that_fails_verification_is_not_executed() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(64),
+                    align: 8,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut caller = caller;
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(64), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.states()
+            .iter()
+            .any(|s| matches!(s.status, Status::Errored(_))),
+        "the module is rejected, not run: {:#?}",
+        r.states().iter().map(|s| &s.status).collect::<Vec<_>>()
+    );
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
+
+/// **023 §7 rule 4's forbidden case, pinned in both directions.** Wave 17's headline claim
+/// — "a finding is not automatically a degradation" — rested entirely on
+/// `yields_unknown_value`, and the review showed it could return `false` for everything or
+/// `true` for everything with all 510 tests passing. `false` for everything is the bad one:
+/// an uninitialized read then seals a **proof**.
+#[test]
+fn an_invented_value_forbids_a_proof_and_a_definite_fault_does_not() {
+    let build = |init: bool| {
+        let mut insts = vec![inst(InstKind::Assign {
+            dst: ValueId(0),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(0),
+            },
+        })];
+        if init {
+            // A definite fault with nothing invented: a free of stack memory. The run
+            // reports it and stays exact, because chiero modeled it faithfully.
+            insts.push(inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![Operand::Value(ValueId(0))],
+            }));
+        } else {
+            // An invented value: nobody wrote these bytes.
+            insts.push(inst(InstKind::Assign {
+                dst: ValueId(1),
+                rv: RValue::Load {
+                    addr: Operand::Value(ValueId(0)),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                },
+            }));
+        }
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![AllocaDecl {
+            align: 4,
+            ..alloca(0, CTy::Int(32), 1)
+        }];
+        Module {
+            funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
+            ..Default::default()
+        }
+    };
+
+    let m = build(false);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Unknown,
+        "an invented value is not a proof"
+    );
+    assert!(seal(&r, r.witness()).is_err());
+
+    let m = build(true);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("bad-free")),
+        "{:#?}",
+        r.findings()
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "a definite fact chiero modeled exactly: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
