@@ -469,6 +469,8 @@ pub struct Engine<'m> {
     fresh_count: u32,
     /// Identity for a model report, so the copies a fork makes are recognised as one.
     finding_seq: u64,
+    /// One `Function` object per `FuncId`, so two `&f` are the same pointer.
+    func_objs: IndexMap<FuncId, ObjectId>,
     budget: Budget,
     backend: Option<SmtLib>,
     models: ModelRegistry,
@@ -495,6 +497,7 @@ impl<'m> Engine<'m> {
             solver_calls: 0,
             fresh_count: 0,
             finding_seq: 0,
+            func_objs: IndexMap::new(),
             budget: Budget::default(),
             models: ModelRegistry::with_builtins(),
             alloc_policy: AllocPolicy::default(),
@@ -742,8 +745,8 @@ impl<'m> Engine<'m> {
             Callee::Direct(id) => id,
             // 023 §5. VPP's node dispatch is indirect calls through registration tables,
             // so this is the ordinary path rather than an exotic one.
-            Callee::Indirect(_) => {
-                self.indirect(a, s, dst, span);
+            Callee::Indirect(op) => {
+                self.indirect(a, s, op, dst, span);
                 return;
             }
         };
@@ -1186,6 +1189,13 @@ impl<'m> Engine<'m> {
                 };
                 Value::Ptr(Pointer { base, off: 0 })
             }
+            // A function's address is a pointer to a **`Function` object**, so it has
+            // provenance like any other and an indirect call can ask which function it
+            // names. One object per `FuncId`, since two `&f` are the same pointer.
+            RValue::AddrOfFunc(id) => {
+                let base = self.func_object(s, *id);
+                Value::Ptr(Pointer { base, off: 0 })
+            }
             // 020 §4.1 keeps this distinct from `Add` so provenance survives the
             // arithmetic: the object comes through untouched and only the offset moves.
             // The offset is **signed** — vppinfra's vector header sits below the user
@@ -1212,6 +1222,32 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// The object standing for `id`'s code. Zero-sized: nothing reads a function's bytes,
+    /// and a non-zero size would put it in the address space's range search where an
+    /// integer near it would resolve to it.
+    fn func_object(&mut self, s: &mut State, id: FuncId) -> ObjectId {
+        if let Some(o) = self.func_objs.get(&id) {
+            return *o;
+        }
+        let span = self
+            .module
+            .funcs
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| f.span)
+            .unwrap_or(Span::DUMMY);
+        let o = s.mem.alloc(ObjKind::Function, 0, 1, span);
+        self.func_objs.insert(id, o);
+        o
+    }
+
+    fn func_of_object(&self, o: ObjectId) -> Option<FuncId> {
+        self.func_objs
+            .iter()
+            .find(|(_, v)| **v == o)
+            .map(|(k, _)| *k)
     }
 
     /// 023 §5 / 024 §1 step 4: **a call chiero did not perform invalidates what it was
@@ -1509,7 +1545,26 @@ impl<'m> Engine<'m> {
     /// Candidates are every defined function whose signature could be called here. A
     /// real resolution against the pointer's value is owed; over-approximating is the
     /// safe direction, and the cap is what keeps it affordable.
-    fn indirect(&mut self, _a: &mut TermArena, s: &mut State, dst: Option<ValueId>, span: Span) {
+    fn indirect(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        op: &Operand,
+        dst: Option<ValueId>,
+        span: Span,
+    ) {
+        // **A pointer chiero can resolve is not a pointer chiero cannot resolve.** The
+        // unresolvable sibling exists because the candidate list would otherwise be
+        // implicitly exhaustive — but when the operand names one function there is no
+        // list to be wrong about, and forking over every defined function is the safe
+        // answer to a question already answered.
+        if let Some(Value::Ptr(p)) = self.operand(a, s, op)
+            && p.off == 0
+            && let Some(id) = self.func_of_object(p.base)
+        {
+            self.direct_into(s, id, dst, span);
+            return;
+        }
         let all: Vec<FuncId> = self
             .module
             .funcs

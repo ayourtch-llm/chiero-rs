@@ -3893,3 +3893,57 @@ fn a_function_pointer_with_a_known_target_resolves_to_one_callee() {
         r.states()[0].assumptions()
     );
 }
+
+/// **Two `&f` are the same pointer.** C says so — function pointers to the same function
+/// compare equal — and chiero needs it for a different reason: a fresh object per
+/// `AddrOfFunc` would make `if (cb == handler)` false against itself, silently pruning the
+/// branch a registration-table check takes.
+#[test]
+fn a_functions_address_is_the_same_pointer_every_time() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfFunc(FuncId(1)),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfFunc(FuncId(1)),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::AddrOfFunc(FuncId(2)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let f1 = defined(
+        1,
+        "one",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(1))))],
+        CTy::Int(32),
+    );
+    let f2 = defined(
+        2,
+        "two",
+        vec![block(0, vec![], Terminator::Return(Some(i32c(2))))],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, f1, f2],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert_eq!(s.local(ValueId(0)), s.local(ValueId(1)));
+    // And two *different* functions are different pointers, or the first assertion is
+    // satisfied by handing out one object for everything.
+    assert_ne!(s.local(ValueId(0)), s.local(ValueId(2)));
+}
