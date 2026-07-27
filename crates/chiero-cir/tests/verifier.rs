@@ -722,6 +722,128 @@ fn addr_of_an_undeclared_local_is_rejected() {
     assert_rejects(&m, VerifyErrorKind::UnknownId);
 }
 
+/// `verify` took only a `&Function`, so **every module-level identity check was
+/// missing**: two globals with one id, two functions with one id or one name, a call to
+/// a function that does not exist, and an address of an undeclared global all produced
+/// zero errors.
+#[test]
+fn module_level_identity_is_checked() {
+    let g = |id: u32, name: &str| Global {
+        id: GlobalId(id),
+        name: name.into(),
+        size: 8,
+        align: 8,
+        is_const: false,
+        span: Span::DUMMY,
+    };
+
+    // Two globals sharing an id.
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.globals = vec![g(0, "a"), g(0, "b")];
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+
+    // Two functions sharing a name — `func_id` resolves to the first, silently.
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    let mut second = m.funcs[0].clone();
+    second.id = FuncId(1);
+    m.funcs.push(second);
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+}
+
+#[test]
+fn dangling_references_are_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Call {
+        dst: None,
+        callee: Callee::Direct(FuncId(42)),
+        args: vec![],
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::UnknownId);
+
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::AddrOfGlobal { g: GlobalId(7) },
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::UnknownId);
+}
+
+/// Call arity. Against `func @g(%0: i32, %1: i32)`, both a call with no arguments and
+/// one with three verified clean.
+#[test]
+fn call_arity_is_checked() {
+    let two_params = |m: &mut Module| {
+        let mut callee = m.funcs[0].clone();
+        callee.id = FuncId(1);
+        callee.name = "callee".into();
+        callee.params = vec![
+            Param {
+                value: ValueId(20),
+                ty: CTy::Int(32),
+            },
+            Param {
+                value: ValueId(21),
+                ty: CTy::Int(32),
+            },
+        ];
+        callee.body = Body::Declared;
+        callee.blocks.clear();
+        m.funcs.push(callee);
+    };
+
+    for args in [vec![], vec![i32c(1), i32c(2), i32c(3)]] {
+        let mut m = valid_module();
+        make_void(&mut m);
+        two_params(&mut m);
+        m.funcs[0].blocks[0].insts[0] = inst(InstKind::Call {
+            dst: None,
+            callee: Callee::Direct(FuncId(1)),
+            args,
+        });
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        assert_rejects(&m, VerifyErrorKind::CallArity);
+    }
+
+    // The right arity verifies, and a variadic callee accepts extras.
+    let mut m = valid_module();
+    make_void(&mut m);
+    two_params(&mut m);
+    m.funcs[1].variadic = true;
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Call {
+        dst: None,
+        callee: Callee::Direct(FuncId(1)),
+        args: vec![i32c(1), i32c(2), i32c(3)],
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert!(verify(&m).iter().all(|e| !e.is_error()), "{:?}", verify(&m));
+}
+
+/// `successors()` feeds reachability and the dominance scan, so dropping the switch
+/// `default` would make every default target look unreachable.
+#[test]
+fn switch_default_is_a_successor() {
+    let t = Terminator::Switch {
+        scrut: i32c(0),
+        ty: CTy::Int(32),
+        cases: vec![(1, BlockId(1))],
+        default: BlockId(2),
+    };
+    assert!(
+        t.successors().contains(&BlockId(2)),
+        "default is a successor"
+    );
+    // And the order is deterministic (001 §5).
+    assert_eq!(t.successors(), vec![BlockId(1), BlockId(2)]);
+}
+
 /// Verification must be deterministic (001 §5).
 #[test]
 fn error_order_is_deterministic() {

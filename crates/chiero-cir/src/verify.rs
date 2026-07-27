@@ -24,6 +24,7 @@ pub enum VerifyErrorKind {
     AllocaExtentMismatch,
     DuplicateId,
     UnknownId,
+    CallArity,
     /// Rule 3: a *warning*. Unreachable C code exists and is legal.
     UnreachableBlock,
 }
