@@ -10409,3 +10409,114 @@ fn step_four_still_fires_when_there_are_more_objects_than_the_cap() {
         r.findings()
     );
 }
+
+/// **An address pinned into a guard gap is a wild pointer, not "unconstrained".** 021 §7.1
+/// names this scenario — a legal one-past-the-end pointer landing in the gap — and the
+/// answer is `UNBOUND`. Reporting "the value is unconstrained" blames the program for
+/// saying nothing when it said something exact: the third instance of the cause-conflation
+/// this area keeps producing. Found by review.
+#[test]
+fn an_address_in_a_guard_gap_is_a_wild_pointer() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    // Well past the object and well short of the next one: inside the
+                    // guard gap, which belongs to nothing.
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Bin {
+                            op: BinOp::Add,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(1)),
+                            b: Operand::Const(Const::Int { bits: 64, val: 64 }),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(3)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(4)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 8)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let wild = r.states().iter().any(|s| {
+        matches!(s.local(ValueId(5)), Some(Value::Ptr(p)) if p.base == chiero_mem::ObjectId::UNBOUND)
+    });
+    assert!(
+        wild,
+        "an address belonging to no object is a wild pointer: {:#?}",
+        r.states()
+            .iter()
+            .map(|s| s.local(ValueId(5)))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !r.findings()
+            .iter()
+            .any(|f| f.contains("value is unconstrained")),
+        "and the program is not blamed for saying nothing: {:#?}",
+        r.findings()
+    );
+}

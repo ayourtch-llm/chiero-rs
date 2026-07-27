@@ -2103,6 +2103,7 @@ impl<'m> Engine<'m> {
         let mut candidates: Vec<chiero_mem::ObjectId> = Vec::new();
         let mut over_cap = false;
         let mut undecided = false;
+        let mut feasible_count = 0usize;
         for (id, base, size) in ranges.iter().copied() {
             let lo = a.bv(64, base as u128);
             let hi = a.bv(64, base.wrapping_add(size) as u128);
@@ -2117,11 +2118,18 @@ impl<'m> Engine<'m> {
             let inside = a.and(in_lo, in_hi);
             match self.feasible(a, s, inside) {
                 Feas::Yes => {
-                    if candidates.len() == cap {
+                    feasible_count += 1;
+                    // **Counted past the cap, not stopped at it.** Breaking out here meant
+                    // step 4's "every object is feasible" test could never be reached once
+                    // the object count exceeded `max_resolutions` — so at VPP's >10⁴
+                    // objects the unconstrained case was permanently invisible. The scan
+                    // already costs one query per object; counting the rest costs nothing
+                    // more.
+                    if candidates.len() < cap {
+                        candidates.push(id);
+                    } else {
                         over_cap = true;
-                        break;
                     }
-                    candidates.push(id);
                 }
                 // **"The solver could not tell" is not "the program said nothing".**
                 // Folding them together is the same mistake 021 records against an
@@ -2148,6 +2156,27 @@ impl<'m> Engine<'m> {
         }
         let can_be_wild = !matches!(self.feasible(a, s, outside), Feas::No);
 
+        // **Step 4 is decided before step 5**, because "every object *and* nowhere" is a
+        // statement about the program and the cap is a statement about chiero. Testing the
+        // cap first let the number of objects decide which one a reader was told.
+        if can_be_wild && feasible_count == ranges.len() && !ranges.is_empty() {
+            self.finding_seq += 1;
+            s.findings.push((
+                self.finding_seq,
+                None,
+                "unresolvable pointer: the value is unconstrained, so it could refer to \
+                 any object or to none"
+                    .to_string(),
+            ));
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "a symbolic pointer with no constraint at all was not resolved",
+            );
+            s.status = Status::Terminated(TermReason::Unsupported);
+            return None;
+        }
         if over_cap {
             // Step 5: concretize, and say the exploration was cut rather than that the
             // pointer was pinned.
@@ -2187,7 +2216,23 @@ impl<'m> Engine<'m> {
             s.status = Status::Terminated(TermReason::Unsupported);
             return None;
         }
-        if candidates.is_empty() || (can_be_wild && candidates.len() == ranges.len()) {
+        if candidates.is_empty() && can_be_wild {
+            // 021 §7.1's own scenario: an address provably in a guard gap belongs to no
+            // object. That is a **wild pointer**, not "the value is unconstrained" — it is
+            // pinned exactly, and blaming the program for saying nothing when it said
+            // something precise is the same conflation, one branch over.
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "a symbolic pointer resolved to no known object",
+            );
+            return Some(Value::Ptr(Pointer {
+                base: chiero_mem::ObjectId::UNBOUND,
+                off: 0,
+            }));
+        }
+        if candidates.is_empty() {
             // Step 4: no information at all. Not a concretization — the path ends.
             self.finding_seq += 1;
             s.findings.push((
