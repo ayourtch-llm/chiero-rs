@@ -204,6 +204,18 @@ impl ModelRegistry {
             ModelEntry::exact("memset"),
             ModelEntry::exact("strlen"),
             ModelEntry::exact("strcpy"),
+            ModelEntry::exact("__builtin_clz"),
+            ModelEntry::exact("__builtin_ctz"),
+            ModelEntry::exact("__builtin_popcount"),
+            ModelEntry::exact("__builtin_bswap16"),
+            ModelEntry::exact("__builtin_bswap32"),
+            ModelEntry::exact("__builtin_bswap64"),
+            ModelEntry::exact("__builtin_add_overflow"),
+            ModelEntry::exact("__builtin_sub_overflow"),
+            ModelEntry::exact("__builtin_mul_overflow"),
+            ModelEntry::exact("chiero_assume"),
+            ModelEntry::exact("chiero_assert"),
+            ModelEntry::exact("chiero_mark_fidelity"),
             ModelEntry::approximate("scanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("fscanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("read", "syscall result is outside the program"),
@@ -353,7 +365,26 @@ pub mod models {
     pub fn is_implemented(name: &str) -> bool {
         matches!(
             name,
-            "malloc" | "calloc" | "free" | "memcpy" | "memmove" | "memset" | "strlen" | "strcpy"
+            "malloc"
+                | "calloc"
+                | "free"
+                | "memcpy"
+                | "memmove"
+                | "memset"
+                | "strlen"
+                | "strcpy"
+                | "__builtin_clz"
+                | "__builtin_ctz"
+                | "__builtin_popcount"
+                | "__builtin_bswap16"
+                | "__builtin_bswap32"
+                | "__builtin_bswap64"
+                | "__builtin_add_overflow"
+                | "__builtin_sub_overflow"
+                | "__builtin_mul_overflow"
+                | "chiero_assume"
+                | "chiero_assert"
+                | "chiero_mark_fidelity"
         )
     }
 
@@ -530,5 +561,163 @@ pub mod models {
         let faults = r.faults.clone();
         cx.lift(&faults);
         ModelOutcome::Value(Some(Value::Ptr(dst)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compiler builtins (024 §6).
+// ---------------------------------------------------------------------------
+
+/// What a builtin produced. `Undefined` is a *finding*, not a value: C leaves these cases
+/// undefined, and answering anyway would be inventing a semantics the program cannot rely
+/// on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuiltinResult {
+    Value(i128),
+    Undefined(String),
+}
+
+/// `__builtin_{add,sub,mul}_overflow`: the wrapped result **and** whether it overflowed.
+/// Both are outputs — the caller stores one and branches on the other.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct OverflowResult {
+    pub wrapped: i128,
+    pub overflowed: bool,
+}
+
+pub mod builtins {
+    use super::*;
+
+    fn wrap(width: u32, v: i128) -> i128 {
+        let m = 1i128 << width;
+        let x = v & (m - 1);
+        // Two's complement: values at or above the sign bit are negative.
+        if x >= (1i128 << (width - 1)) {
+            x - m
+        } else {
+            x
+        }
+    }
+
+    fn fits(width: u32, v: i128) -> bool {
+        let hi = 1i128 << (width - 1);
+        v >= -hi && v < hi
+    }
+
+    /// 024 contract 13. The computation is done **wide** and then compared, which is the
+    /// whole point: a narrow computation cannot tell an overflow from a legitimate result
+    /// because the evidence has already been discarded.
+    pub fn add_overflow(width: u32, x: i128, y: i128) -> OverflowResult {
+        let wide = x + y;
+        OverflowResult {
+            wrapped: wrap(width, wide),
+            overflowed: !fits(width, wide),
+        }
+    }
+
+    pub fn sub_overflow(width: u32, x: i128, y: i128) -> OverflowResult {
+        let wide = x - y;
+        OverflowResult {
+            wrapped: wrap(width, wide),
+            overflowed: !fits(width, wide),
+        }
+    }
+
+    pub fn mul_overflow(width: u32, x: i128, y: i128) -> OverflowResult {
+        let wide = x * y;
+        OverflowResult {
+            wrapped: wrap(width, wide),
+            overflowed: !fits(width, wide),
+        }
+    }
+
+    /// 024 contract 14. **Zero is undefined**, not 32. Returning the width would answer a
+    /// question C does not define, and the answer would look reasonable.
+    pub fn clz(width: u32, v: i128) -> BuiltinResult {
+        if v == 0 {
+            return BuiltinResult::Undefined("__builtin_clz of zero is undefined behaviour".into());
+        }
+        let u = (v as u128) & ((1u128 << width) - 1);
+        BuiltinResult::Value((u.leading_zeros() - (128 - width)) as i128)
+    }
+
+    pub fn ctz(width: u32, v: i128) -> BuiltinResult {
+        if v == 0 {
+            return BuiltinResult::Undefined("__builtin_ctz of zero is undefined behaviour".into());
+        }
+        let u = (v as u128) & ((1u128 << width) - 1);
+        BuiltinResult::Value(u.trailing_zeros() as i128)
+    }
+
+    /// Defined at zero, unlike `clz`/`ctz` — the asymmetry is C's, not chiero's.
+    pub fn popcount(width: u32, v: i128) -> BuiltinResult {
+        let u = (v as u128) & ((1u128 << width) - 1);
+        BuiltinResult::Value(u.count_ones() as i128)
+    }
+
+    /// A byte permutation at the **declared** width.
+    pub fn bswap(width: u32, v: i128) -> i128 {
+        let bytes = (width / 8) as usize;
+        let u = (v as u128) & ((1u128 << width) - 1);
+        let mut out = 0u128;
+        for i in 0..bytes {
+            let byte = (u >> (8 * i)) & 0xFF;
+            out |= byte << (8 * (bytes - 1 - i));
+        }
+        out as i128
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness intrinsics (024 §7).
+// ---------------------------------------------------------------------------
+
+/// What an intrinsic asks the engine to do. `chiero_assume` and `chiero_assert` are
+/// **not** interchangeable — §7 names confusing them as the classic way to make a test
+/// suite vacuous, because an assert that constrained would turn every failing check into
+/// a pruned path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IntrinsicOutcome {
+    Continue,
+    /// The condition cannot be decided here; add it to the path condition.
+    Constrain,
+    /// This path cannot happen. **No finding** — a statement about the harness, not the
+    /// program.
+    KillState,
+    Finding(String),
+    Degrade(String),
+}
+
+pub mod intrinsics {
+    use super::*;
+
+    /// `chiero_assume(c)`. A decided-false condition kills the state silently; an
+    /// undecided one becomes a constraint.
+    pub fn assume(cond: Option<bool>) -> IntrinsicOutcome {
+        match cond {
+            Some(true) => IntrinsicOutcome::Continue,
+            Some(false) => IntrinsicOutcome::KillState,
+            None => IntrinsicOutcome::Constrain,
+        }
+    }
+
+    /// `chiero_assert(c)`. A condition that **can** be violated is a finding — including
+    /// one nobody can decide, since "I could not rule it out" is exactly what an assert
+    /// is for. Constraining here instead would prune the failure and the suite would pass
+    /// by not testing anything.
+    pub fn assert_(cond: Option<bool>) -> IntrinsicOutcome {
+        match cond {
+            Some(true) => IntrinsicOutcome::Continue,
+            Some(false) => IntrinsicOutcome::Finding("chiero_assert failed".into()),
+            None => IntrinsicOutcome::Finding(
+                "chiero_assert may be violated; the solver could not rule it out".into(),
+            ),
+        }
+    }
+
+    /// `chiero_mark_fidelity(why)`. A harness saying "what follows is approximate"
+    /// deliberately, rather than the engine discovering it.
+    pub fn mark_fidelity(why: &str) -> IntrinsicOutcome {
+        IntrinsicOutcome::Degrade(why.to_string())
     }
 }
