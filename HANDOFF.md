@@ -1988,7 +1988,29 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `check_bits` (or the byte range overflows) *and* after the init checks (or contract 6b's
    conditional bitfield reports the wrong fault).
 
-   **STILL OWED from wave 41, all with probes in the review:**
+   **Wave 41 continued** (`bb074d9`, `3b4d8fd`; 585 tests). D2/D3/D4 fixed:
+   `havoc_range_reporting` returns how many bytes it managed and carries its faults, so a
+   declared clobber wider than the object is a **finding** rather than a fidelity degrade —
+   *degrading reads as "chiero was unsure", not "your program is wrong"* — and the
+   read-only/freed/promoted refusals apply to both fills instead of only to `Symbolic` by
+   accident. D8/D9/D10 fixed: contract 27 runs through **both** call sites and pins the
+   accept side (a full-width bitfield is legal and was unpinned); an overflowing `BitRange`
+   is rejected rather than *accepted in release*; and contract 9's drift check now uses a
+   symbolic dividend, asserting `eval_ground` **fails** first so it fails loudly if folding
+   ever makes it vacuous again.
+
+   ⚠️ **Fixing the overflow moved the panic into the error *message***, which formatted
+   `bits.off + bits.width` as well. When guarding an arithmetic overflow, check every use
+   of the expression, not just the one that panicked.
+
+   **STILL OWED from wave 41:** E5 — every `OpaqueWrite` fixture has exactly one entry, so
+   "each declared write is honoured" is untested. Plus the suspicions the review left open:
+   a faulting `LoadBits` invents an unconstrained `w`-bit symbol where the field's range is
+   narrower (sound, over-approximate, but explores unreachable branches); 020 contract 32's
+   execution half is untested while a parser test cites it; and `022 contract 17` /
+   `024 contract 21` are cited only by module-header "Covers" lists.
+
+   *(earlier list, now resolved)*
    - **D2** `havoc_range` clobbering only the **first** byte survives the suite — the test
      pins the upper bound only. Also `concrete_size → 1` survives.
    - **D3** `HavocFill::Uninitialized` in `havoc_range` is unreachable in-tree *and* wrong
