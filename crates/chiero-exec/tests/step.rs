@@ -6670,3 +6670,115 @@ fn a_store_chiero_cannot_perform_forbids_a_proof() {
     );
     assert!(seal(&r, r.witness()).is_err(), "and the run cannot seal");
 }
+
+/// **`AllocaDyn` gives a dynamic-extent alloca its size at a program point** (020 §3). A
+/// VLA and `alloca()` both lower to it, and `vppinfra/mem.h` defines
+/// `clib_mem_alloc_stack` as `__builtin_alloca`, so this is a path VPP actually takes.
+///
+/// The size arrives *here* rather than in `Function::allocas`, because a function-level
+/// table would reference a value computed inside a block — making verifier rule 1
+/// undefined for it and creating the object before its size exists.
+#[test]
+fn alloca_dyn_gives_the_object_its_extent() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::AllocaDyn {
+                    dst: ValueId(0),
+                    alloca: AllocaId(0),
+                    elem: CTy::Int(8),
+                    count: Operand::Const(Const::Int { bits: 64, val: 12 }),
+                    align: 1,
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 12 }),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        count: chiero_cir::DYNAMIC_EXTENT,
+        ..alloca(0, CTy::Int(8), 0)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    let base = match s.local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    // **The extent is the one `AllocaDyn` supplied**, so the twelfth byte is inside and
+    // the thirteenth is not. Asserting only that the write succeeded would pass against
+    // an object of any size at least twelve.
+    let mut mem = s.mem.clone();
+    assert_eq!(
+        mem.read(chiero_mem::Pointer { base, off: 11 }, 1, Span::DUMMY)
+            .value,
+        Some(vec![0xAB])
+    );
+    assert!(
+        !mem.read(chiero_mem::Pointer { base, off: 12 }, 1, Span::DUMMY)
+            .faults
+            .is_empty(),
+        "and the object ends where it was told to"
+    );
+}
+
+/// **A dynamic extent that was never supplied is not a wrapped number.** `DYNAMIC_EXTENT`
+/// is `u64::MAX`, so `count * elem_size` panicked in debug and wrapped to an arbitrarily
+/// *small* object in release — the more dangerous of the two, since a wrapped size
+/// silently accepts or rejects the wrong accesses.
+///
+/// This restores the half of `a_dynamic_extent_does_not_overflow_the_size_computation`
+/// that was lost when verification landed: the module there had no `AllocaDyn` at all, so
+/// it is now correctly rejected before frame setup and the size is never computed.
+#[test]
+fn an_unsupplied_dynamic_extent_is_zero_not_a_wrapped_size() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::AllocaDyn {
+                dst: ValueId(0),
+                alloca: AllocaId(0),
+                elem: CTy::Int(8),
+                count: Operand::Const(Const::Int { bits: 64, val: 4 }),
+                align: 1,
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        count: chiero_cir::DYNAMIC_EXTENT,
+        ..alloca(0, CTy::Int(8), 0)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    // Before `AllocaDyn` runs, the object exists with **no** extent — every access to it
+    // faults rather than landing inside a size nobody chose.
+    assert_eq!(s.object_size_for_test(), Some(0));
+}
