@@ -1611,3 +1611,103 @@ fn a_bit_write_into_a_symbolic_byte_is_not_silently_lost() {
         r.value
     );
 }
+
+/// **`havoc_range` clobbers every byte it was given, not just the first.** The engine test
+/// for 020 contract 11 pinned only the *upper* bound — it read eight bytes and asserted
+/// *any* symbolic-byte fault, which one clobbered byte satisfies — so `0..size.min(1)`,
+/// `0..size-1` and a fixed offset all survived the suite. Found by review.
+///
+/// Checking each byte individually is the only assertion that distinguishes them.
+#[test]
+fn a_havoc_range_clobbers_every_byte_it_was_given() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 16, sp(2));
+    assert!(m.havoc_range(&mut a, ptr(o, 4), 8, HavocFill::Symbolic, sp(3)));
+    for i in 4..12i64 {
+        let r = m.read(ptr(o, i), 1, sp(4));
+        assert!(
+            r.faults
+                .iter()
+                .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+            "byte {i} was declared clobbered: {:#?}",
+            r.faults
+        );
+    }
+    // And the bytes either side are untouched — a fault there would mean the range ran
+    // wide, which the per-byte loop above cannot see on its own.
+    for i in [0i64, 3, 12, 15] {
+        let r = m.read(ptr(o, i), 1, sp(5));
+        assert!(r.faults.is_empty(), "byte {i} was not: {:#?}", r.faults);
+        assert_eq!(r.value, Some(vec![0xAB]));
+    }
+}
+
+/// **A range that runs off the end reports the overflow.** `havoc_range` discarded the
+/// `OutOfBounds` fault from each byte write, so an inline-asm block declaring a 16-byte
+/// clobber of an 8-byte buffer was a buffer overflow chiero *detected and did not report*
+/// — it only degraded fidelity. It also returned `false` after having already mutated the
+/// object, so the caller could not tell "nothing happened" from "half happened". Found by
+/// review.
+#[test]
+fn a_havoc_range_past_the_end_reports_and_says_how_far_it_got() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 8, sp(2));
+    let r = m.havoc_range_reporting(&mut a, ptr(o, 0), 16, HavocFill::Symbolic, sp(3));
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::OutOfBounds { .. })),
+        "the declared clobber is twice the object: {:#?}",
+        r.faults
+    );
+    // It says how far it got, so a partial mutation is not indistinguishable from none.
+    assert_eq!(r.value, Some(8), "eight bytes were actually clobbered");
+}
+
+/// **`HavocFill::Uninitialized` refuses what `Symbolic` refuses.** It mutated read-only
+/// and freed objects, and on a *promoted* one it reported success while changing nothing —
+/// which is precisely what 020 §4.3's "never silently a no-op" forbids. The arm has no
+/// in-tree caller today, so every mutation of it survived; that is a reason to fix it
+/// before something calls it, not a reason to leave it. Found by review.
+#[test]
+fn an_uninitialized_havoc_range_refuses_what_it_cannot_do() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+
+    let ro = m.alloc(ObjKind::Global, 8, 8, sp(1));
+    m.write(ptr(ro, 0), b"hello!!\0", sp(2));
+    m.set_readonly(ro);
+    assert!(
+        !m.havoc_range(&mut a, ptr(ro, 0), 8, HavocFill::Uninitialized, sp(3)),
+        "read-only memory is not written, by anyone"
+    );
+    let r = m.read(ptr(ro, 0), 8, sp(4));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(r.value, Some(b"hello!!\0".to_vec()));
+
+    let dead = m.alloc(ObjKind::Heap, 8, 8, sp(5));
+    m.free(dead, sp(6));
+    assert!(
+        !m.havoc_range(&mut a, ptr(dead, 0), 8, HavocFill::Uninitialized, sp(7)),
+        "freed memory is not invalidated further"
+    );
+
+    let promoted = m.alloc(ObjKind::Heap, 8, 8, sp(8));
+    m.set(ptr(promoted, 0), 1, 8, sp(9));
+    m.promote_to_array(&mut a, promoted);
+    assert!(
+        !m.havoc_range(
+            &mut a,
+            ptr(promoted, 0),
+            8,
+            HavocFill::Uninitialized,
+            sp(10)
+        ),
+        "a promoted object has no byte view to clear — reporting success while changing \
+         nothing is what 020 §4.3 forbids"
+    );
+}
