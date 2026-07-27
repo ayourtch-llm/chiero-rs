@@ -434,7 +434,7 @@ fn a_long_store_chain_serializes_in_linear_size() {
     let mut arr = a.array_const(64, 8, 0);
     for i in 0..2000u128 {
         let idx = a.bv(64, i);
-        let v = a.bv(8, (i % 251) as u128);
+        let v = a.bv(8, i % 251);
         arr = a.store(arr, idx, v);
     }
     let j = a.var(Sort::BitVec(64), "j");
@@ -460,7 +460,10 @@ fn sharing_preserves_the_value_of_the_term() {
     let text = a.to_smtlib(e);
     // Every variable still appears, and the shared subterm is bound rather than repeated.
     assert!(text.contains("v0_x") && text.contains("v1_y"));
-    assert!(text.contains("let "), "a shared subterm should be bound: {text}");
+    assert!(
+        text.contains("let "),
+        "a shared subterm should be bound: {text}"
+    );
     let mut m = Model::new();
     m.set(a.var_id(x).unwrap(), BvConst::new(8, 3));
     m.set(a.var_id(y).unwrap(), BvConst::new(8, 4));
@@ -468,8 +471,37 @@ fn sharing_preserves_the_value_of_the_term() {
     assert_eq!(a.eval(&m, e).unwrap().bits(), 56);
 }
 
-/// An unshared term needs no bindings, or every trivial query grows a `let` wrapper for
-/// nothing.
+/// **The flattening threshold has an effect.** A term small enough to render safely is
+/// left alone; one large enough that rendering it would recurse is bound flat. Without a
+/// case on each side of the line, setting the threshold to zero — binding everything —
+/// passes, and so does removing the flattening entirely for small inputs.
+#[test]
+fn the_flattening_threshold_separates_small_terms_from_large_ones() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    // An *unshared* chain: every node has one reference, so only flattening can bind it.
+    let mut t = x;
+    for k in 1..12u128 {
+        let c = a.bv(8, k);
+        t = a.add(t, c);
+    }
+    let text = a.to_smtlib(t);
+    assert!(
+        text.contains("let "),
+        "a long chain must be bound flat: {text}"
+    );
+    let mut m = Model::new();
+    m.set(a.var_id(x).unwrap(), BvConst::new(8, 1));
+    // 1 + (1+2+…+11) = 67.
+    assert_eq!(
+        a.eval(&m, t).unwrap().bits(),
+        67,
+        "flattening changed the value"
+    );
+}
+
+/// An unshared *small* term needs no bindings, or every trivial query grows a `let`
+/// wrapper for nothing.
 #[test]
 fn an_unshared_term_is_emitted_without_bindings() {
     let mut a = TermArena::new();

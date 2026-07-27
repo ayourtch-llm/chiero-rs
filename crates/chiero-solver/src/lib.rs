@@ -506,6 +506,109 @@ impl TermArena {
     /// The serialization is a first-class artifact: 022 §4 requires `--dump-queries`, and
     /// a disagreement with the backend is reported by handing over the exact script.
     pub fn to_smtlib(&self, t: Term) -> String {
+        // Nodes reached more than once are bound with `let` instead of written again.
+        // Without this a shared DAG expands into a tree: 22 shared nodes came to 54 MB,
+        // and 021 §3's init array — one `store` per bit — would be astronomically worse.
+        let order = self.postorder(t);
+        let mut refs: IndexMap<Term, u32> = IndexMap::new();
+        for &n in &order {
+            for c in self.children(n) {
+                *refs.entry(c).or_insert(0) += 1;
+            }
+        }
+        // Above a small size, **every** non-trivial node is bound. Sharing alone is not
+        // enough: a long *unshared* chain — which is exactly what one `store` per bit
+        // produces — has refcount 1 everywhere, so nothing would be bound and the
+        // renderer would recurse its whole length. Binding flattens it to depth one.
+        // Below the threshold only genuinely shared nodes are bound, so a small query
+        // reads as it always did.
+        const FLATTEN_ABOVE: usize = 8;
+        let flatten = order.len() > FLATTEN_ABOVE;
+        let mut names: IndexMap<Term, String> = IndexMap::new();
+        for (i, &n) in order.iter().enumerate() {
+            // Constants and variables are already their own shortest form; binding them
+            // would make the text longer, not shorter.
+            let trivial = matches!(self.nodes[n.0 as usize], Node::Const(_) | Node::Var(_, _));
+            let shared = refs.get(&n).copied().unwrap_or(0) > 1;
+            if !trivial && (shared || flatten) {
+                names.insert(n, format!("s{i}"));
+            }
+        }
+        // Nested rather than a single flat binding: SMT-LIB `let` binds in *parallel*, so
+        // a later binding cannot see an earlier one in the same group.
+        let mut out = String::new();
+        let mut closers = 0usize;
+        for &n in &order {
+            if let Some(name) = names.get(&n) {
+                out.push_str(&format!("(let (({name} {})) ", self.render(n, &names)));
+                closers += 1;
+            }
+        }
+        out.push_str(&self.render_root(t, &names));
+        for _ in 0..closers {
+            out.push(')');
+        }
+        out
+    }
+
+    /// Post-order over the DAG, each node once. **Iterative**: a 2000-element store chain
+    /// overflowed the stack when this recursed.
+    fn postorder(&self, root: Term) -> Vec<Term> {
+        let mut seen: Vec<bool> = vec![false; self.nodes.len()];
+        let mut out = Vec::new();
+        let mut stack = vec![(root, false)];
+        while let Some((n, expanded)) = stack.pop() {
+            if expanded {
+                out.push(n);
+                continue;
+            }
+            if seen[n.0 as usize] {
+                continue;
+            }
+            seen[n.0 as usize] = true;
+            stack.push((n, true));
+            for c in self.children(n) {
+                if !seen[c.0 as usize] {
+                    stack.push((c, false));
+                }
+            }
+        }
+        out
+    }
+
+    fn children(&self, t: Term) -> Vec<Term> {
+        match &self.nodes[t.0 as usize] {
+            Node::Const(_) | Node::Var(_, _) => vec![],
+            Node::Not(a) | Node::Extend { a, .. } | Node::Extract { a, .. } => vec![*a],
+            Node::Bin(_, a, b) | Node::Concat { hi: a, lo: b } | Node::Select { a, i: b } => {
+                vec![*a, *b]
+            }
+            Node::Ite { c, t, f } | Node::Store { a: c, i: t, v: f } => vec![*c, *t, *f],
+            Node::ArrayConst { val, .. } => vec![*val],
+        }
+    }
+
+    /// The root, which is never itself replaced by a name.
+    fn render_root(&self, t: Term, names: &IndexMap<Term, String>) -> String {
+        match names.get(&t) {
+            Some(n) => n.clone(),
+            None => self.render(t, names),
+        }
+    }
+
+    /// One node, with any *bound* child written as its name.
+    fn render(&self, t: Term, names: &IndexMap<Term, String>) -> String {
+        self.emit(t, names)
+    }
+
+    fn sub(&self, t: Term, names: &IndexMap<Term, String>) -> String {
+        match names.get(&t) {
+            Some(n) => n.clone(),
+            None => self.emit(t, names),
+        }
+    }
+
+    fn emit(&self, t: Term, names: &IndexMap<Term, String>) -> String {
         match &self.nodes[t.0 as usize] {
             Node::Const(c) => {
                 // **Always a bitvector.** Guessing that every width-1 constant is a
@@ -519,7 +622,7 @@ impl TermArena {
             }
             Node::Var(v, _) => smt_name(v, &self.vars[v.0 as usize].0),
             // Same distinction: `not` over a `Bool`, `bvnot` over a vector.
-            Node::Not(a) if self.smt_is_bool(*a) => format!("(not {})", self.to_smtlib(*a)),
+            Node::Not(a) if self.smt_is_bool(*a) => format!("(not {})", self.sub_named(names, *a)),
             Node::Extend { a, to, signed } if self.smt_is_bool(*a) => {
                 let by = to - 1;
                 let op = if *signed {
@@ -527,9 +630,9 @@ impl TermArena {
                 } else {
                     "zero_extend"
                 };
-                format!("((_ {op} {by}) {})", self.smt_bv(*a))
+                format!("((_ {op} {by}) {})", self.smt_bv_named(names, *a))
             }
-            Node::Not(a) => format!("(bvnot {})", self.to_smtlib(*a)),
+            Node::Not(a) => format!("(bvnot {})", self.sub_named(names, *a)),
             Node::Extend { a, to, signed } => {
                 let by = to - self.width(*a);
                 let op = if *signed {
@@ -537,13 +640,17 @@ impl TermArena {
                 } else {
                     "zero_extend"
                 };
-                format!("((_ {op} {by}) {})", self.to_smtlib(*a))
+                format!("((_ {op} {by}) {})", self.sub_named(names, *a))
             }
             Node::Extract { a, hi, lo } => {
-                format!("((_ extract {hi} {lo}) {})", self.to_smtlib(*a))
+                format!("((_ extract {hi} {lo}) {})", self.sub_named(names, *a))
             }
             Node::Concat { hi, lo } => {
-                format!("(concat {} {})", self.smt_bv(*hi), self.smt_bv(*lo))
+                format!(
+                    "(concat {} {})",
+                    self.smt_bv_named(names, *hi),
+                    self.smt_bv_named(names, *lo)
+                )
             }
             Node::ArrayConst { idx, val } => {
                 // `as const` needs the full sort annotation, since the element sort is
@@ -551,17 +658,21 @@ impl TermArena {
                 format!(
                     "((as const (Array (_ BitVec {idx}) (_ BitVec {}))) {})",
                     self.width(*val),
-                    self.to_smtlib(*val)
+                    self.sub_named(names, *val)
                 )
             }
             Node::Select { a, i } => {
-                format!("(select {} {})", self.to_smtlib(*a), self.to_smtlib(*i))
+                format!(
+                    "(select {} {})",
+                    self.sub_named(names, *a),
+                    self.sub_named(names, *i)
+                )
             }
             Node::Store { a, i, v } => format!(
                 "(store {} {} {})",
-                self.to_smtlib(*a),
-                self.to_smtlib(*i),
-                self.smt_bv(*v)
+                self.sub_named(names, *a),
+                self.sub_named(names, *i),
+                self.smt_bv_named(names, *v)
             ),
             Node::Ite { c, t, f } => {
                 // A predicate is width-1 in the arena but **`Bool` in SMT-LIB**, so it is
@@ -573,11 +684,11 @@ impl TermArena {
                 // same sort error one level down.
                 let bool_branches = self.smt_is_bool(*t) && self.smt_is_bool(*f);
                 let (tb, fb) = if bool_branches {
-                    (self.to_smtlib(*t), self.to_smtlib(*f))
+                    (self.sub_named(names, *t), self.sub_named(names, *f))
                 } else {
-                    (self.smt_bv(*t), self.smt_bv(*f))
+                    (self.smt_bv_named(names, *t), self.smt_bv_named(names, *f))
                 };
-                format!("(ite {} {tb} {fb})", self.smt_bool(*c))
+                format!("(ite {} {tb} {fb})", self.smt_bool_named(names, *c))
             }
             // `and`/`or`/`xor` over two `Bool`s are the *boolean* connectives, not the
             // bitvector ones. `(bvor (bvult …) (bvult …))` is a sort error the backend
@@ -593,22 +704,30 @@ impl TermArena {
                     _ => "xor",
                 };
                 if self.smt_is_bool(*a) || self.smt_is_bool(*b) {
-                    format!("({op} {} {})", self.smt_bool(*a), self.smt_bool(*b))
+                    format!(
+                        "({op} {} {})",
+                        self.smt_bool_named(names, *a),
+                        self.smt_bool_named(names, *b)
+                    )
                 } else {
                     let bv = match k {
                         BinKind::And => "bvand",
                         BinKind::Or => "bvor",
                         _ => "bvxor",
                     };
-                    format!("({bv} {} {})", self.to_smtlib(*a), self.to_smtlib(*b))
+                    format!(
+                        "({bv} {} {})",
+                        self.sub_named(names, *a),
+                        self.sub_named(names, *b)
+                    )
                 }
             }
             Node::Bin(k, a, b) => {
                 let (x, y) = if *k == BinKind::Eq && self.smt_is_bool(*a) && self.smt_is_bool(*b) {
                     // `=` is sort-polymorphic, so two Bools compare directly.
-                    (self.to_smtlib(*a), self.to_smtlib(*b))
+                    (self.sub_named(names, *a), self.sub_named(names, *b))
                 } else {
-                    (self.smt_bv(*a), self.smt_bv(*b))
+                    (self.smt_bv_named(names, *a), self.smt_bv_named(names, *b))
                 };
                 let op = match k {
                     BinKind::Add => "bvadd",
@@ -632,21 +751,25 @@ impl TermArena {
         }
     }
 
+    fn sub_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
+        self.sub(t, names)
+    }
+
     /// Render `t` where a `Bool` is required, coercing a one-bit vector if need be.
-    fn smt_bool(&self, t: Term) -> String {
+    fn smt_bool_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
         if self.smt_is_bool(t) {
-            self.to_smtlib(t)
+            self.sub(t, names)
         } else {
-            format!("(= {} #b1)", self.to_smtlib(t))
+            format!("(= {} #b1)", self.sub(t, names))
         }
     }
 
     /// Render `t` where a bit-vector is required, coercing a `Bool` if need be.
-    fn smt_bv(&self, t: Term) -> String {
+    fn smt_bv_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
         if self.smt_is_bool(t) {
-            format!("(ite {} #b1 #b0)", self.to_smtlib(t))
+            format!("(ite {} #b1 #b0)", self.sub(t, names))
         } else {
-            self.to_smtlib(t)
+            self.sub(t, names)
         }
     }
 
