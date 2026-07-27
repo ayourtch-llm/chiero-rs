@@ -726,3 +726,168 @@ fn a_negative_byte_offset_in_the_bit_api_is_out_of_bounds() {
         r.faults
     );
 }
+
+// ---------------------------------------------------------------------------
+// Wave 9 leftovers: copy/set, and the leak graph's two structural defects.
+// ---------------------------------------------------------------------------
+
+/// **021 contract 22, the `memcpy` contract.** Overlapping ranges under
+/// `Overlap::Forbidden` are one finding; under `Overlap::Allowed` (`memmove`) they are
+/// none and the result is correct. Modelling `memcpy` as `memmove` loses a real and
+/// common bug; modelling `memmove` as `memcpy` reports one on correct code.
+#[test]
+fn copy_distinguishes_memcpy_from_memmove_on_overlap() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    m.write(ptr(o, 0), &[1, 2, 3, 4, 5, 6, 7, 8], sp(2));
+
+    let bad = m.copy(ptr(o, 2), ptr(o, 0), 6, Overlap::Forbidden, sp(3));
+    assert_eq!(bad.faults.len(), 1, "{:#?}", bad.faults);
+    assert!(matches!(bad.faults[0], MemFault::OverlappingCopy { .. }));
+
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    m.write(ptr(o, 0), &[1, 2, 3, 4, 5, 6, 7, 8], sp(2));
+    let ok = m.copy(ptr(o, 2), ptr(o, 0), 6, Overlap::Allowed, sp(3));
+    assert!(ok.faults.is_empty(), "{:#?}", ok.faults);
+    assert_eq!(
+        m.read(ptr(o, 0), 8, sp(4)).value.unwrap(),
+        vec![1, 2, 1, 2, 3, 4, 5, 6],
+        "memmove must copy as if through a temporary"
+    );
+}
+
+/// Non-overlapping copies are fine under either rule, or the test above is satisfied by
+/// a model that reports every copy.
+#[test]
+fn a_non_overlapping_copy_is_never_a_finding() {
+    let mut m = Memory::new();
+    let a = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    let b = m.alloc(ObjKind::Heap, 32, 8, sp(2));
+    m.write(ptr(a, 0), &[9; 8], sp(3));
+    for rule in [Overlap::Forbidden, Overlap::Allowed] {
+        let r = m.copy(ptr(b, 0), ptr(a, 0), 8, rule, sp(4));
+        assert!(r.faults.is_empty(), "{rule:?}: {:#?}", r.faults);
+    }
+    assert_eq!(m.read(ptr(b, 0), 8, sp(5)).value.unwrap(), vec![9; 8]);
+}
+
+/// A copy carries the **initialization status** across, not just the bytes. Marking the
+/// destination initialized would launder an uninitialized source — the same defect
+/// `realloc` had, in the operation C programs actually reach for.
+#[test]
+fn a_copy_carries_initialization_status_across() {
+    let mut m = Memory::new();
+    let a = m.alloc(ObjKind::Heap, 32, 8, sp(1));
+    let b = m.alloc(ObjKind::Heap, 32, 8, sp(2));
+    m.write(ptr(a, 4), &[1, 2, 3, 4], sp(3)); // 0..4 never written
+    assert!(m.copy(ptr(b, 0), ptr(a, 0), 8, Overlap::Allowed, sp(4)).faults.is_empty());
+    assert!(
+        m.read(ptr(b, 0), 4, sp(5))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "the uninitialized half of the source must stay uninitialized"
+    );
+    assert!(m.read(ptr(b, 4), 4, sp(6)).faults.is_empty());
+}
+
+/// **021 contract 28: `SetMem` marks the range initialized and readable as the set
+/// byte.**
+#[test]
+fn set_marks_the_range_initialized_and_readable() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    assert!(m.set(ptr(o, 0), 0xAB, 8, sp(2)).faults.is_empty());
+    let r = m.read(ptr(o, 0), 8, sp(3));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(r.value.unwrap(), vec![0xAB; 8]);
+    // Beyond the set range nothing changed.
+    assert!(
+        m.read(ptr(o, 8), 4, sp(4))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. }))
+    );
+}
+
+/// `copy` and `set` run the same five steps: a copy out of freed memory is a
+/// use-after-free, and one past the end is out of bounds.
+#[test]
+fn copy_and_set_run_the_same_checks() {
+    let mut m = Memory::new();
+    let a = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let b = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m.write(ptr(a, 0), &[1; 16], sp(3));
+    m.free(a, sp(4));
+    assert!(
+        m.copy(ptr(b, 0), ptr(a, 0), 8, Overlap::Allowed, sp(5))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::UseAfterFree { .. })),
+        "a copy out of freed memory is a use-after-free"
+    );
+    assert!(
+        m.set(ptr(b, 12), 0, 8, sp(6))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::OutOfBounds { .. }))
+    );
+}
+
+/// **Overwriting a pointer field must drop the old edge.**
+///
+/// `point_at` was append-only, so an edge once recorded could never be removed — and
+/// leaks were therefore systematically *under*-reported after any pointer store. This is
+/// the ordinary shape `p->next = q;` when `p->next` already pointed somewhere.
+#[test]
+fn overwriting_a_pointer_slot_drops_the_old_edge() {
+    let mut m = Memory::new();
+    let g = m.alloc(ObjKind::Global, 8, 8, sp(1));
+    let first = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    let second = m.alloc(ObjKind::Heap, 16, 8, sp(3));
+    m.set_pointer(g, 0, first);
+    assert_eq!(m.leaks().len(), 1, "second is unreachable: {:#?}", m.leaks());
+    // `g->slot0 = second` — `first` is now unreachable.
+    m.set_pointer(g, 0, second);
+    let leaks = m.leaks();
+    assert_eq!(leaks.len(), 1, "{leaks:#?}");
+    assert_eq!(leaks[0].obj, first, "the overwritten target is the leak now");
+}
+
+/// Two different slots hold two different edges, or the fix above degenerates into "one
+/// pointer per object" and a struct with two pointer fields leaks one of them.
+#[test]
+fn distinct_pointer_slots_hold_distinct_edges() {
+    let mut m = Memory::new();
+    let g = m.alloc(ObjKind::Global, 16, 8, sp(1));
+    let a = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    let b = m.alloc(ObjKind::Heap, 16, 8, sp(3));
+    m.set_pointer(g, 0, a);
+    m.set_pointer(g, 8, b);
+    assert!(m.leaks().is_empty(), "{:#?}", m.leaks());
+}
+
+/// **021 §4's roots are *derived*, not declared.** "Live heap objects unreachable from
+/// globals, the return value, or any live stack object are leaks" — so a heap object
+/// held only by a live local is not a leak, and requiring the caller to mark roots by
+/// hand made every such object read as one.
+#[test]
+fn globals_and_live_stack_objects_are_roots_without_being_declared() {
+    let mut m = Memory::new();
+    let g = m.alloc(ObjKind::Global, 8, 8, sp(1));
+    let held_by_global = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m.set_pointer(g, 0, held_by_global);
+
+    let local = m.alloc(ObjKind::Stack, 8, 8, sp(3));
+    let held_by_local = m.alloc(ObjKind::Heap, 16, 8, sp(4));
+    m.set_pointer(local, 0, held_by_local);
+
+    assert!(m.leaks().is_empty(), "{:#?}", m.leaks());
+
+    // When the frame goes away, what only it held becomes a leak.
+    m.exit_scope(local, sp(5));
+    let leaks = m.leaks();
+    assert_eq!(leaks.len(), 1, "{leaks:#?}");
+    assert_eq!(leaks[0].obj, held_by_local);
+}
