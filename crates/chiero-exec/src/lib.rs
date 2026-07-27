@@ -213,6 +213,10 @@ pub struct Frame {
     /// puts the `va_list` in *memory* so `va_list *` can cross a function boundary; this
     /// is the argument area it iterates, which belongs to the activation that received it.
     varargs: Vec<Value>,
+    /// How wide one lane of a vector-valued local is. `ExtractLane` and `InsertLane` carry
+    /// no element type, and a total width cannot say how it is divided — 32 bits is four
+    /// `u8` lanes or two `u16` lanes, and the two give different answers.
+    lane_w: IndexMap<ValueId, u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -337,6 +341,16 @@ impl State {
         if let Some(f) = self.stack.last_mut() {
             f.ptr_vals.insert(v, p);
         }
+    }
+
+    fn remember_lane_width(&mut self, v: ValueId, w: u32) {
+        if let Some(f) = self.stack.last_mut() {
+            f.lane_w.insert(v, w);
+        }
+    }
+
+    fn lane_width_of(&self, v: ValueId) -> Option<u32> {
+        self.stack.last().and_then(|f| f.lane_w.get(&v)).copied()
     }
 
     pub fn value_provenance_of(&self, v: ValueId) -> Option<Pointer> {
@@ -738,6 +752,7 @@ impl<'m> Engine<'m> {
                 frame_objs,
                 ptr_vals: IndexMap::new(),
                 varargs: Vec::new(),
+                lane_w: IndexMap::new(),
             }],
             ret: None,
             edge_counts: IndexMap::new(),
@@ -867,6 +882,11 @@ impl<'m> Engine<'m> {
                         && let Some(Value::Ptr(p)) = self.operand(a, s, src)
                     {
                         s.remember_value_provenance(*dst, p);
+                    }
+                    // A vector's lane width travels with the local, for the same reason
+                    // as provenance: the shape is not recoverable from the value.
+                    if let Some(w) = self.lane_width_produced(a, s, rv) {
+                        s.remember_lane_width(*dst, w);
                     }
                 }
             }
@@ -1278,6 +1298,7 @@ impl<'m> Engine<'m> {
             frame_objs,
             ptr_vals: IndexMap::new(),
             varargs,
+            lane_w: IndexMap::new(),
         });
         s.pc = (f.entry, 0);
         s.trace.push((*id, f.entry));
@@ -1832,10 +1853,96 @@ impl<'m> Engine<'m> {
                     off: p.off.wrapping_add(off),
                 })
             }
-            // 023 §7's table puts a `LoweringGap` under **`Unknown`**, not
-            // `Approximated`: an unimplemented lowering is not a modeling lie, it is the
-            // engine not knowing.
-            other => return self.lowering_gap(s, span, &format!("{other:?}")),
+            // 021 §3's "bytes are bytes", for SIMD: a vector is a bit-vector of
+            // `lanes * width` bits, **little-endian by lane**, so lane 0 occupies the low
+            // bits exactly as a load of the same memory would see it. Every operation
+            // below is then slicing and concatenation rather than a separate lane model.
+            RValue::Splat { elem, lanes } => {
+                let Some(e) = self.scalar(a, s, elem) else {
+                    return self.lowering_gap(s, span, "a non-scalar splat element");
+                };
+                let mut t = e;
+                for _ in 1..*lanes {
+                    t = a.concat(e, t);
+                }
+                Value::Scalar(t)
+            }
+            RValue::ExtractLane { v, lane } => {
+                let Some(x) = self.scalar(a, s, v) else {
+                    return self.lowering_gap(s, span, "a non-scalar vector operand");
+                };
+                // **The lane width is recorded, not guessed.** `ExtractLane` carries no
+                // element type (020 §4), and a total bit width alone cannot say how it is
+                // divided — a 32-bit value is four `u8` lanes or two `u16` lanes and the
+                // extract differs. Inferring one would silently read the wrong bits.
+                let Some(w) = (match v {
+                    Operand::Value(id) => s.lane_width_of(*id),
+                    _ => None,
+                }) else {
+                    return self.lowering_gap(s, span, "an extract from a vector of unknown shape");
+                };
+                if (*lane + 1) * w > a.width(x) {
+                    return self.lowering_gap(s, span, "an extract past the vector's end");
+                }
+                Value::Scalar(a.extract(x, (*lane + 1) * w - 1, *lane * w))
+            }
+            RValue::InsertLane { v, lane, val } => {
+                let (Some(x), Some(e)) = (self.scalar(a, s, v), self.scalar(a, s, val)) else {
+                    return self.lowering_gap(s, span, "a non-scalar insert operand");
+                };
+                let w = a.width(e);
+                let total = a.width(x);
+                if w == 0 || (*lane + 1) * w > total {
+                    return self.lowering_gap(s, span, "an insert past the vector's end");
+                }
+                // Rebuilt from the parts either side, so the lane's own bits are the only
+                // ones that move.
+                let mut t = e;
+                if *lane > 0 {
+                    let low = a.extract(x, *lane * w - 1, 0);
+                    t = a.concat(t, low);
+                }
+                if (*lane + 1) * w < total {
+                    let high = a.extract(x, total - 1, (*lane + 1) * w);
+                    t = a.concat(high, t);
+                }
+                Value::Scalar(t)
+            }
+            RValue::Shuffle { a: x, b: y, mask } => {
+                let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
+                    return self.lowering_gap(s, span, "a non-scalar shuffle operand");
+                };
+                if mask.is_empty() || a.width(xv) != a.width(yv) {
+                    return self.lowering_gap(s, span, "a shuffle of mismatched vectors");
+                }
+                let lanes = mask.len() as u32;
+                let Some(w) = (a.width(xv)).checked_div(lanes).filter(|w| *w > 0) else {
+                    return self.lowering_gap(s, span, "a shuffle whose mask does not fit");
+                };
+                let mut out: Option<Term> = None;
+                for &m in mask {
+                    // 020 rule 12: an index past `lanes` addresses the *second* operand,
+                    // which is what makes a shuffle able to interleave two vectors.
+                    let (src, idx) = if m < lanes { (xv, m) } else { (yv, m - lanes) };
+                    if (idx + 1) * w > a.width(src) {
+                        return self.lowering_gap(s, span, "a shuffle index past the end");
+                    }
+                    let piece = a.extract(src, (idx + 1) * w - 1, idx * w);
+                    // Lane 0 is the low bits, so each later lane is concatenated above.
+                    out = Some(match out {
+                        None => piece,
+                        Some(acc) => a.concat(piece, acc),
+                    });
+                }
+                match out {
+                    Some(t) => Value::Scalar(t),
+                    None => return self.lowering_gap(s, span, "an empty shuffle"),
+                }
+            } // **No catch-all**, as in `exec_inst`: every `RValue` is handled, so adding
+              // one is a compile error rather than a silent gap. 023 §7's table put a
+              // `LoweringGap` under `Unknown` — an unimplemented lowering is not a modeling
+              // lie, it is the engine not knowing — and the individual arms above still say
+              // so wherever they genuinely cannot proceed.
         })
     }
 
@@ -1915,6 +2022,30 @@ impl<'m> Engine<'m> {
             .iter()
             .find(|(_, v)| **v == o)
             .map(|(k, _)| *k)
+    }
+
+    /// The lane width of the vector this rvalue produces, where it produces one.
+    ///
+    /// Recorded rather than derived: `Splat` and `InsertLane` know it from the element
+    /// they were given, and `Shuffle` from its operand and mask. A vector arriving any
+    /// other way — loaded from memory, returned by a call — has no recorded shape, and an
+    /// `ExtractLane` on it is a gap rather than a guess at how the bits divide.
+    fn lane_width_produced(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        rv: &RValue,
+    ) -> Option<u32> {
+        match rv {
+            RValue::Splat { elem, .. } => self.scalar(a, s, elem).map(|t| a.width(t)),
+            RValue::InsertLane { val, .. } => self.scalar(a, s, val).map(|t| a.width(t)),
+            RValue::Shuffle { a: x, mask, .. } => {
+                let t = self.scalar(a, s, x)?;
+                a.width(t).checked_div(mask.len() as u32).filter(|w| *w > 0)
+            }
+            RValue::Use(Operand::Value(v)) => s.lane_width_of(*v),
+            _ => None,
+        }
     }
 
     /// A concrete operand value, or `None`. A symbolic size is 023 §10's territory and is
@@ -2475,6 +2606,7 @@ impl<'m> Engine<'m> {
             frame_objs,
             ptr_vals: IndexMap::new(),
             varargs: Vec::new(),
+            lane_w: IndexMap::new(),
         });
         s.pc = (f.entry, 0);
         s.trace.push((id, f.entry));

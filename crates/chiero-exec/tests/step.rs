@@ -7575,10 +7575,6 @@ fn va_arg_reads_the_variadic_arguments_in_order() {
 /// load of the same memory would see it.
 #[test]
 fn the_vector_operations_move_lanes_where_they_belong() {
-    let v4 = || CTy::Vector {
-        elem: Box::new(CTy::Int(8)),
-        lanes: 4,
-    };
     let caller = defined(
         0,
         "main",
@@ -7603,6 +7599,23 @@ fn the_vector_operations_move_lanes_where_they_belong() {
                         val: Operand::Const(Const::Int { bits: 8, val: 0x01 }),
                     },
                 }),
+                // **A distinguishable second operand.** With `b` equal to `a`'s splat,
+                // lane 0 of each is the same byte, so a shuffle that never crossed into
+                // `b` gave the same answer — the same-answer trap, in the fixture.
+                inst(InstKind::Assign {
+                    dst: ValueId(8),
+                    rv: RValue::ExtractLane {
+                        v: Operand::Value(ValueId(0)),
+                        lane: 3,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(7),
+                    rv: RValue::Splat {
+                        elem: Operand::Const(Const::Int { bits: 8, val: 0x77 }),
+                        lanes: 4,
+                    },
+                }),
                 inst(InstKind::Assign {
                     dst: ValueId(2),
                     rv: RValue::ExtractLane {
@@ -7623,7 +7636,7 @@ fn the_vector_operations_move_lanes_where_they_belong() {
                     dst: ValueId(4),
                     rv: RValue::Shuffle {
                         a: Operand::Value(ValueId(1)),
-                        b: Operand::Value(ValueId(0)),
+                        b: Operand::Value(ValueId(7)),
                         mask: vec![2, 4, 2, 4],
                     },
                 }),
@@ -7664,6 +7677,14 @@ fn the_vector_operations_move_lanes_where_they_belong() {
         other => panic!("{other:?}"),
     };
     assert_eq!(bits(0, &mut a), Some(0xABAB_ABAB), "splat fills every lane");
+    // **The recorded lane width is the element's, not a multiple of it.** A splat that
+    // recorded twice the width still produces the right bits and only reads back wrong,
+    // so the extract is what pins it — asserting on the splat alone cannot.
+    assert_eq!(
+        bits(8, &mut a),
+        Some(0xAB),
+        "one lane of the splat is one element"
+    );
     assert_eq!(bits(2, &mut a), Some(0x01), "the lane that was written");
     assert_eq!(
         bits(3, &mut a),
@@ -7673,7 +7694,7 @@ fn the_vector_operations_move_lanes_where_they_belong() {
     assert_eq!(bits(5, &mut a), Some(0x01), "mask 2 takes a's lane 2");
     assert_eq!(
         bits(6, &mut a),
-        Some(0xAB),
+        Some(0x77),
         "mask 4 crosses into b's lane 0"
     );
 }
