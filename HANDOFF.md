@@ -1922,6 +1922,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    share a byte, so a per-byte mask must answer wrongly for one. 27's two halves each fail
    a mutation individually.
 
+   **WAVE 38** (`11cc2cf`; 575 tests, **97/161 cited**) — 020 contract 11: an `Opaque`'s
+   declared `writes` were **ignored entirely**, so inline asm saying it clobbers a buffer
+   left chiero believing the old bytes. `Memory::havoc_range` clobbers exactly the declared
+   range, filling through the symbolic overlay rather than promoting — promotion would take
+   the *untouched* bytes with it. Contract 31 passed on arrival.
+
+   ⚠️ **Both assertions in that test were the same trap and I fixed one at first.** 021 §5
+   hands back a value *alongside* a fault, so `read(..).value` shows the stale bytes behind
+   an overlay: "was invalidated" needs the **fault**, "was not invalidated" needs its
+   **absence**. Comparing values alone passes either way. Mutation caught it by doubling the
+   clobbered size. **Whenever a test asserts a range changed and its neighbour did not, both
+   halves have to read the fault, not the value.**
+
+   One survivor classified **as a no-op with a probe**: naming every clobbered byte the same
+   still yields distinct terms — `TermArena::var` mints a fresh `VarId` per call and
+   `smt_name` prefixes it (`v3_clobber`), so the name is cosmetic and cannot collide in a
+   script either.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
