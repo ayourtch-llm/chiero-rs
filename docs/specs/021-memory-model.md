@@ -106,11 +106,26 @@ and records the equality constraint, which also gives §7's bump allocator the c
 extent it needs to place the next object. `SizeVal::Sym` survives for the window between
 allocation and concretization, and for objects whose size is never queried.
 
-Promotion to `Array` happens on exactly one trigger: a write at
-a **symbolic offset** that the solver cannot pin to a small set of concrete offsets.
-Reads at a symbolic offset from a `Bytes` object are answered by an if-then-else chain
-when the feasible offset set has ≤ `ite_threshold` (default 16, configurable, recorded in
-the result) and force promotion otherwise. Promotion is one-way within a state.
+Promotion to `Array` happens on **two** triggers. The first is a write at a **symbolic
+offset** that the solver cannot pin to a small set of concrete offsets. Reads at a symbolic
+offset from a `Bytes` object are answered by an if-then-else chain when the feasible offset
+set has ≤ `ite_threshold` (default 16, configurable, recorded in the result) and force
+promotion otherwise.
+
+The second is a `HavocFill::Symbolic` havoc ([024 §2.1](024-library-models.md)), which
+replaces an object's contents with an unconstrained array. This was added while
+implementing the havoc and is amended here rather than left as an undocumented deviation.
+The alternative — one fresh byte term per byte — is O(size) in solver variables for
+something that happens on **every** unmodeled call, and `MAX_MATERIALIZED_BYTES` is 64 MiB.
+It has a real cost, and the cost is stated rather than hidden: a promoted object has no
+byte view, so a later concrete read of it faults and a later havoc of it cannot follow the
+pointers stored inside it. The second of those is why `Memory::pointees` reports
+completeness separately from what it found — "nothing there" and "could not look" are
+different answers, and only one closes the reachable set.
+
+Promotion is one-way within a state. In particular a `HavocFill::Uninitialized` havoc of an
+already-promoted object zeroes its init array; it must **not** drop back to `Bytes`, which
+would discard the array contents and answer later reads from stale bytes.
 
 Rationale: the overwhelming majority of VPP accesses are at concrete offsets from a
 symbolic base (`p->field`, `v[i]` with `i` concretizable), and those must not pay array
