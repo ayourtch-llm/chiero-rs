@@ -1877,7 +1877,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    refuses to guess — an asymmetry the reviewer could not turn into a defect but which
    contradicts the commit's own rule.
 
-   **M1's instruction set is complete.** Still owed on the engine: `Store`/`Load` ignore
+   **WAVE 35 — M1's exit criterion, measured** (`bfe81b2`). `cargo xtask
+   contract-coverage` walks 020–024 for numbered contracts and the sources for `NNN
+   contract K` citations. **82 of 161 cited.** M1 is *not* close to its exit, and I had
+   been answering that question from recollection.
+
+   Uncited by document — 020: 33, 021: 17, 022: 12, 023: 11, 024: 6. The 020 gap is the
+   largest and is mostly textual-format and verifier surface; 022's is the solver's
+   independence slicing, caches and differential campaign, which 022 §6.2 records as owed.
+
+   ⚠️ It is a **coverage** measure and labelled as one: a citation means a test *claims* to
+   cover a contract, which this project has found is not the same thing roughly twenty
+   times. It answers "what has nobody looked at".
+
+   *Two gate bugs worth remembering:* matching the literal heading `## Testable contracts`
+   found nothing (the heading is numbered) and the gate then reported **0/0 cited** — full
+   coverage of an empty set, the most misleading answer a gate can give. And walking only
+   `crates/` marked 023 contract 13a uncovered, since `check-proof-surface` enforces it.
+
+   **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
+   above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
+   `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
+   **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
    the CIR's `align`, which is what a real `ub-strict` mode would need — and note it has
    **no observable effect today**, because `report_faults` filters `Misaligned` out
    entirely, so the honest order is `ub-strict` first and `align` with it. Then **M2 onward
