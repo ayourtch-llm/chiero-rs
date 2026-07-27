@@ -1271,13 +1271,52 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `DISPATCHABLE` is now one list feeding both `can_dispatch` and `is_implemented`, checked
    both ways against the registry.
 
-   **STILL OWED from this review:** `ModelOutcome::Fork` and `Havoc` are not handled by
-   dispatch (so `malloc`'s NULL branch needs `may_fail: false` to run); the intrinsics do
-   not yet translate their *condition* argument, so every call takes the safe reading; `longjmp` continues silently where contract 20
+   **STILL OWED from this review:** ~~`Fork` handling~~ and ~~the intrinsics' condition
+   argument~~ DONE, below. `Havoc` is still a gap in dispatch; `longjmp` continues silently where contract 20
    wants `Unknown` + terminate (`ModelOutcome` has no `Terminate`); `HavocSpec` is inert
    and `fidelity_effect` ignores `self`, making contract 21c's test vacuous;
    `ModelCtx::lift` emits `{:?}` dumps rather than spanned findings; `malloc` returns
    `Value::Scalar` not `Value::Ptr` in the engine's eyes; `Fork` guards are all `None`.
+
+   **FORKS + INTRINSIC CONDITIONS DONE** (`f1b91ce` red, `11ea5b6` green, 469 tests).
+   `ModelOutcome::Fork` becomes sibling states — the first alternative continues *this*
+   state so exploration order stays deterministic (023 §3). `malloc` with the default
+   `AllocPolicy` now explores both the object and `NULL` at **`Exact`**: a fork is not an
+   approximation. The intrinsics translate their first argument and pass `None` when it
+   cannot be decided, which is the whole reason both take an `Option` — hardcoding "true"
+   was safe for `assume` and **vacuous for `assert`** (every assertion in a harness
+   passed, 070 §7's failure mode reached from the other side).
+
+   ⚠️ **A sibling state never passes through `step`'s post-call increment**, so it must
+   arrive already advanced. The first fork test found this loudly: the sibling still
+   pointed *at* the `malloc` call, re-dispatched it, and forked again — 10001 states.
+   **`indirect` had the identical bug silently**, every candidate skipping its entry block
+   straight to the terminator. No test could see it because every candidate in the fixture
+   had an **empty entry block** — the same-answer trap in the *fixture* rather than the
+   assertion. Lesson: a fixture whose callee does nothing cannot tell "called it" from
+   "skipped it".
+
+   **THE INIT MASK IS A BITSET, AND THE CAP IS A HOLDABLE SIZE** (`02d9d08` red,
+   `fd787cf` green, 473 tests) — found by the review agent probing `calloc`, and the
+   failure was **SIGABRT, not a fault**: `memory allocation of 68719476736 bytes failed`.
+   `InitMask` held one `InitBit` per *bit* and `InitBit` is eight bytes because it carries
+   a `Term`, so the mask cost **64x the object** and an allocation exactly at the 1 GiB cap
+   asked the host for 64 GiB. It is now a `Vec<u64>` bitset for `Yes` plus a sparse
+   `BTreeMap` for `Cond`, with whole-word `set_range` (per-bit iteration made a large
+   `memset` minutes rather than milliseconds). The lattice stays in `join`; the two fast
+   paths are its identities, `join(old, Yes) == Yes` and `join(old, No) == old`.
+
+   **`MAX_MATERIALIZED_BYTES` is 64 MiB, down from 1 GiB.** A cap has to be a size chiero
+   can actually *hold*, not just one it is willing to accept — contents plus bitset plus
+   `set`'s fill is a ~2.2x host multiplier. Every existing test allocated comfortably
+   under the old cap, so none could see it: **the boundary is exactly where the arithmetic
+   goes wrong**, and 64 MiB is cheap enough that a test can sit on it.
+
+   *Two mutation survivors became tests:* the mask has a **canonical form** (a `Cond`
+   entry shadowed by a set `Yes` bit is unreachable through `get`, so only `PartialEq`
+   sees it — and `MemObject` derives `PartialEq`), and a **guardless conditional write**
+   changes nothing about initialization in either direction. *Two survivors are left
+   deliberately:* the cap's value is policy, and `get`'s range guard is defensive.
 
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
