@@ -1757,6 +1757,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *different test* containing the same line. **Anchor on something unique to the target,
    and verify the edit arrived** — `grep -c` for the new text before running anything.
 
+   **WAVE 30** (`f988920`; 557 tests) — **varargs**. The cursor lives in the `va_list`
+   object's own bytes, because 020 §4.4.1 needs a `va_list *` to cross a function boundary
+   with the callee advancing the *caller's* state; engine-side state cannot express that.
+   Variadic arguments are `Value`s on the frame, not bytes, since `format_function_t` takes
+   `u8 *` and `va_list *` — in these paths the varargs *are* pointers and must keep their
+   objects. `va_arg` past the end is a **gap, not a value**: a fresh symbol would let a
+   `printf` with too few arguments look like it read something real. `va_end` is a
+   deliberate no-op.
+
+   ⚠️ **`exec_inst` has no catch-all any more.** Every `InstKind` is handled, so adding one
+   is a compile error rather than a silent `LoweringGap` — which is exactly how `Load`,
+   `Store`, `CopyMem`, `SetMem` and the four `Va*` all stayed missing for waves, behind a
+   uniform workaround that read as house style. The same change was made to the
+   `ModelOutcome` match for the same reason.
+
+   Also: wave 27's `scanf` `.skip(1)` gap is **no longer reachable** — three tests kill
+   that mutation now. Judged, not assumed: the claim was made against `673fc8d`, before the
+   positional fix and its tests.
+
    **STILL OWED from wave 27:**
    - ~~**`strcpy` and `calloc` report the same bug twice**~~ DONE (wave 28). — `cx.report(msg.clone())` *and*
      `ModelOutcome::Finding(msg)`, two `finding_seq` ids, neither keyed.
@@ -1774,11 +1793,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - ~~`storing_a_null_pointer_lands_like_any_other` same-answer trap~~ DONE (wave 28).: its check
      answers from the table the store populated, and its fallback arm accepts a scalar as
      an answer to "is this a null pointer". Reload as `i64` and compare.
-   - `scanf`'s `.skip(1)` → `.skip(0)` survives: "the format is not an output" is unpinned.
+   - ~~`scanf`'s `.skip(1)` → `.skip(0)` survives~~ no longer reachable (wave 30).
    - ~~`Engine::operand` handles only `Const::Int` and `Const::Null`~~ DONE (wave 29) for
      `GlobalAddr`/`FuncAddr`; `Float`, `Wide` and `Undef` stay gaps deliberately.
 
-   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** the four `Va*` (010 measured
+   **Still unimplemented, in rough priority order:** the five vector `RValue`s
+   (`Shuffle`, `InsertLane`, `ExtractLane`, `Splat`) — `exec_inst` is exhaustive but `eval`
+   is not; `Store`/`Load` still ignore the CIR's `align`, which is what a real `ub-strict`
+   mode would need; the `Status::Errored` sites that do not `degrade` themselves. Then
+   **M2 onward in 080 — the frontend — which has not started.**
+
+   *(superseded list)* the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
    not a scalar operand.
