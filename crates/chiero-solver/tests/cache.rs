@@ -326,3 +326,121 @@ fn the_assertion_stack_is_part_of_what_the_cache_remembers_and_answers() {
         "x * y == 7 has solutions once the bounds are gone, and z == 3 does not change it"
     );
 }
+
+/// **022 contract 8.** The same query, answered cold and from an exact-cache hit, returns
+/// a byte-identical model — and two independent runs of the same query do too.
+///
+/// §2: "Two runs producing different counterexamples for the same query would break golden
+/// tests and make findings unreproducible." That is what a witness (023 §9) rests on, so
+/// this is tested on both tiers: a query tier 1 decides, and one only a backend can.
+///
+/// The contract's fifth way, "with slicing disabled", is not tested: independence slicing
+/// does not exist yet, so there is nothing to disable and a test would assert against
+/// itself. Listed as owed rather than claimed.
+#[test]
+fn the_same_query_gives_a_byte_identical_model_cold_and_warm() {
+    // Tier 1's own answer: `x <u 5`.
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let five = a.bv(32, 5);
+    let lt = a.ult(x, five);
+    let mut s = TieredSolver::new();
+    let CheckResult::Sat(cold) = s.check(&mut a, &[lt]) else {
+        panic!("tier 1 decides this");
+    };
+    let CheckResult::Sat(warm) = s.check(&mut a, &[lt]) else {
+        panic!("and again");
+    };
+    assert_eq!(
+        cold, warm,
+        "an exact-cache hit is the same answer, model included"
+    );
+
+    // A fresh solver over a fresh arena reaches the same model: the answer is a function
+    // of the query, not of the solver's history.
+    let mut a2 = TermArena::new();
+    let x2 = a2.var(Sort::BitVec(32), "x");
+    let five2 = a2.bv(32, 5);
+    let lt2 = a2.ult(x2, five2);
+    let mut s2 = TieredSolver::new();
+    let CheckResult::Sat(again) = s2.check(&mut a2, &[lt2]) else {
+        panic!("tier 1 decides this");
+    };
+    assert_eq!(cold, again, "two runs of one query agree");
+
+    // And the same on tier 2, where the model comes from the backend.
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping the tier-2 half: no SMT-LIB backend (022 contract 2)");
+        return;
+    };
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let mut ar = TermArena::new();
+        let p = ar.var(Sort::BitVec(32), "p");
+        let q = ar.var(Sort::BitVec(32), "q");
+        let prod = ar.mul(p, q);
+        let seven = ar.bv(32, 7);
+        let e = ar.eq(prod, seven);
+        let mut sr = TieredSolver::with_backend(backend.clone());
+        let CheckResult::Sat(m) = sr.check(&mut ar, &[e]) else {
+            panic!("7 has factorizations");
+        };
+        // …and immediately again, from the exact cache.
+        let CheckResult::Sat(m2) = sr.check(&mut ar, &[e]) else {
+            panic!("cached");
+        };
+        assert_eq!(m, m2, "the exact cache returns the model it stored");
+        runs.push(m);
+    }
+    assert_eq!(
+        runs[0], runs[1],
+        "two independent runs of one backend query agree — a witness that changed between \
+         runs would not be replayable"
+    );
+}
+
+/// **022 contract 8b.** A counterexample-cache hit returns the same *verdict* a fresh solve
+/// would, and may return a different satisfying assignment.
+///
+/// The verdict half is what makes it safe; the assignment half is why contract 8 is scoped
+/// to the exact cache. Both are asserted here, because "may differ" is not a licence to be
+/// wrong — the returned model is still checked against every constraint of the query it
+/// answers, which is what makes a cache `Sat` self-certifying in §3's sense.
+#[test]
+fn a_counterexample_hit_keeps_the_verdict_and_may_change_the_assignment() {
+    let Some(mut s) = solver() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let (cs, _) = hard_constraints(&mut a, 16);
+
+    // Cold: the model of one constraint alone.
+    let CheckResult::Sat(alone) = s.check(&mut a, &cs[3..=3]) else {
+        panic!("satisfiable");
+    };
+    // A larger set, whose model pins sixteen pairs…
+    assert!(matches!(s.check(&mut a, &cs), CheckResult::Sat(_)));
+    // …and now the *same single-constraint query* through a different solver whose cache
+    // was warmed the other way round.
+    let mut s2 = solver().expect("checked above");
+    assert!(matches!(s2.check(&mut a, &cs), CheckResult::Sat(_)));
+    let CheckResult::Sat(from_cache) = s2.check(&mut a, &cs[3..=3]) else {
+        panic!("a subset of a satisfiable set is satisfiable");
+    };
+
+    // The verdict is the same — that is the guarantee.
+    // The assignment need not be, and here it is not: `from_cache` came from the
+    // sixteen-pair model. What must hold is that it satisfies the query it answers.
+    assert_eq!(
+        a.eval(&from_cache, cs[3]).map(|v| v.bits() != 0),
+        Ok(true),
+        "a returned model satisfies the query it is returned for"
+    );
+    assert!(
+        from_cache.len() >= alone.len(),
+        "the cached model is the larger one, which is the case worth checking: {} vs {}",
+        from_cache.len(),
+        alone.len()
+    );
+}

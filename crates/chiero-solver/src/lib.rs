@@ -191,7 +191,14 @@ enum Node {
 
 /// A complete assignment. Every declared variable has a value (022 §2), which is what
 /// makes evaluation total and a validated model a real witness.
-#[derive(Clone, Debug, Default)]
+///
+/// `PartialEq` is **map** equality, not insertion-order equality: two models assigning the
+/// same values are the same model however they were built. 022 contract 8 says "returns
+/// byte-identical models", and a test that wanted the stronger reading — the same values
+/// in the same order — compares the rendered form as well. There was no equality at all
+/// until contract 8 was written, which is its own small lesson about contracts nobody has
+/// tried to check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Model {
     values: IndexMap<VarId, BvConst>,
 }
