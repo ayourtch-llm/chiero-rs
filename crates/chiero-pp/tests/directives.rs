@@ -263,6 +263,17 @@ fn configured_defines_are_real_macros_and_undef_stops_them() {
 }
 
 #[test]
+fn leading_whitespace_hash_still_starts_a_directive() {
+    let tu = preprocess_str(
+        "spacing.c",
+        "   #define VALUE 9\n\t#if VALUE == 9\nyes\n  #endif\n",
+        Config::default(),
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["yes"]);
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files

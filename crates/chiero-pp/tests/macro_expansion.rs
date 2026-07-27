@@ -281,6 +281,16 @@ fn expansion_chain_child() {
 }
 
 #[test]
+fn line_builtin_uses_expansion_location_not_macro_spelling() {
+    let tu = preprocess_str(
+        "line.c",
+        "#define HERE __LINE__\n\n\nHERE\n",
+        Config::default(),
+    );
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["4"]);
+}
+
+#[test]
 fn deep_macro_chain_does_not_abort_the_process() {
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "expansion_chain_child"])
