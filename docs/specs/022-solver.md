@@ -299,6 +299,31 @@ A cache hit is **indistinguishable from a fresh answer**, including its effect o
 `Fidelity`. A cached result that degraded a state when first computed degrades it
 identically on every hit.
 
+That sentence is about the **exact** cache, and the counterexample cache cannot satisfy
+it — which is worth stating rather than discovering. Its third rule answers a query from a
+model computed for a *different* query, and no such model is the one a fresh solve would
+have returned. So the two caches carry different promises:
+
+- **Exact cache**: same query → byte-identical answer, model included. This is what
+  contract 8 tests.
+- **Counterexample cache**: the *verdict* is what a fresh solve would give — `Sat` because
+  a concrete assignment satisfies every constraint (self-certifying, §3), `Unsat` because
+  a subset was already proved unsatisfiable and adding constraints cannot rescue it — but
+  the satisfying **assignment** may be any one, not a canonical one.
+
+Reproducibility survives this, because it is a property of *runs*: the cache state is a
+deterministic function of the query sequence, and the same program explored in the same
+order asks the same questions and gets the same answers. What does not survive is
+comparing a cold run against a warm one query-by-query, and contract 8 is scoped
+accordingly. A witness ([023 §9](023-execution-engine.md)) is therefore reproducible for
+the run that produced it, which is what a replay needs, and is not guaranteed to be the
+*same* witness a differently-ordered exploration would have produced for the same finding.
+
+The alternative — dropping the third rule so every `Sat` comes from a fresh solve — buys
+canonical models at the cost of the single largest measured win in KLEE, on the case
+(sibling states sharing a long prefix) that [023 §1](023-execution-engine.md) is built
+around. The honest scope is cheaper than the lost sharing.
+
 Cache keys are computed from hash-consed `Term` ids, so they are structural, not textual.
 Caches are per-`TermArena`. Because a run may hold 10 000 live states, the counterexample
 cache is bounded by a documented entry count with LRU eviction — it is a known memory hog
@@ -349,10 +374,20 @@ it gets the heaviest validation in the project:
 7d. The independent evaluator shares no symbols with the constant folder — checked
     mechanically — and is differentially tested against z3's `simplify` on random ground
     terms.
-8. The same query answered five ways — via tier 1, via tier 2, from a cold cache, from a
-   warm cache, and with slicing disabled — returns byte-identical models. (Testing only
-   "two runs agree" is vacuous: the second run hits the exact cache and never calls a
-   backend, so a constant-model implementation passes.)
+8. The same query answered five ways — via tier 1, via tier 2, from a cold cache, from an
+   **exact-cache** hit, and with slicing disabled — returns byte-identical models.
+   (Testing only "two runs agree" is vacuous: the second run hits the exact cache and
+   never calls a backend, so a constant-model implementation passes.)
+8b. A **counterexample-cache** hit returns the same *verdict* a fresh solve would, and may
+    return a different satisfying assignment (§6.2). A cached model is returned only after
+    being evaluated against every constraint of the query it is offered for, so a `Sat`
+    from the cache is self-certifying in exactly the way §3 requires of tier 1; and no
+    query is ever answered `Unsat` from a *subset* of a known-`Unsat` set.
+
+    *(An earlier draft said "from a warm cache" in contract 8 without distinguishing the
+    two caches, which the counterexample cache cannot satisfy — review demonstrated the
+    same query returning a 2-value model cold and a 16-value model warm. The two caches
+    make different promises; §6.2 now says which.)*
 9. Independence slicing sends only the relevant component to the backend **and returns the
    same answer as the unsliced query**, over the whole corpus. Verifying only that the
    dumped query got smaller tests that slicing happened, not that it was correct.
@@ -369,7 +404,10 @@ it gets the heaviest validation in the project:
      `check([¬c])` return different answers and neither serves the other's cached result.
 11c. An `Unknown` result is never returned from the exact cache, and a tier-1 `Unknown` on
      query `Q` does not prevent tier 2 from being consulted for `Q` or any superset of it.
-11d. A cache hit degrades the consuming state's fidelity identically to a fresh answer.
+11d. An **exact-cache** hit degrades the consuming state's fidelity identically to a fresh
+     answer. A counterexample-cache hit may return a definite answer where a fresh tier-1
+     query would have said `Unknown` — the caches sit below tier 1, so this can only make
+     an answer *more* decided, never less, and never contradicts a tier that did decide.
 12. Cached model reuse: a new query whose constraints are all satisfied by a cached model
     returns `Sat` with zero backend calls.
 13. `paranoid` mode over the full corpus reports zero tier-1/tier-2 disagreements.
