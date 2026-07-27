@@ -647,9 +647,14 @@ pub mod models {
     /// The format is not *parsed*: `%n` writes through an argument and a mismatched
     /// conversion writes the wrong width, so counting conversions would be a claim
     /// chiero cannot back. Every pointer after the first is an output.
-    pub fn scanf(_cx: &mut ModelCtx, args: &[Pointer]) -> ModelOutcome {
+    /// `args` is indexed by **argument position**, with `None` where the argument was not
+    /// a pointer. Taking a filtered list and skipping its first element skipped the first
+    /// *resolved* pointer instead of the format — so an unresolvable format argument, which
+    /// is the ordinary case since a format string is usually a global, meant the first real
+    /// output buffer survived the havoc untouched.
+    pub fn scanf(_cx: &mut ModelCtx, args: &[Option<Pointer>]) -> ModelOutcome {
         ModelOutcome::Havoc(HavocSpec {
-            objects: args.iter().skip(1).map(|p| p.base).collect(),
+            objects: args.iter().skip(1).flatten().map(|p| p.base).collect(),
             ..HavocSpec::unmodeled_extern()
         })
     }

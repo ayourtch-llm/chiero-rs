@@ -1833,9 +1833,11 @@ impl<'m> Engine<'m> {
                 }),
                 "longjmp" => Some(models::longjmp(&mut cx)),
                 "scanf" => {
-                    let ps: Vec<Pointer> = resolved
+                    // **Positional**, with a hole where an argument was not a pointer.
+                    // Filtering first renumbered the arguments under the model's feet.
+                    let ps: Vec<Option<Pointer>> = resolved
                         .iter()
-                        .filter_map(|v| match v {
+                        .map(|v| match v {
                             Some(Value::Ptr(p)) => Some(*p),
                             _ => None,
                         })

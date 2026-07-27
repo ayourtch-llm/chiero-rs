@@ -1049,7 +1049,10 @@ fn scanf_havocs_its_output_pointers_and_not_its_format() {
     let mut cx = ctx(&mut m, &mut a);
     let spec = match models::scanf(
         &mut cx,
-        &[Pointer { base: fmt, off: 0 }, Pointer { base: out, off: 0 }],
+        &[
+            Some(Pointer { base: fmt, off: 0 }),
+            Some(Pointer { base: out, off: 0 }),
+        ],
     ) {
         ModelOutcome::Havoc(s) => s,
         other => panic!("scanf havocs: {other:?}"),
