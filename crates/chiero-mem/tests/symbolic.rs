@@ -45,7 +45,10 @@ fn a_partly_symbolic_word_reads_as_a_concat_without_promoting() {
     m.write_sym_byte(ptr(o, 2), x, sp(3));
     m.write_sym_byte(ptr(o, 3), y, sp(4));
 
-    assert!(m.is_bytes(o), "a partly symbolic word must not force array theory");
+    assert!(
+        m.is_bytes(o),
+        "a partly symbolic word must not force array theory"
+    );
 
     let r = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(5));
     assert!(r.faults.is_empty(), "{:#?}", r.faults);
@@ -73,7 +76,10 @@ fn a_wholly_concrete_read_folds_to_a_constant() {
     let mut m = Memory::new();
     let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
     m.write(ptr(o, 0), &[1, 2, 3, 4], sp(2));
-    let t = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3)).value.unwrap();
+    let t = m
+        .read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(3))
+        .value
+        .unwrap();
     assert_eq!(
         a.eval_ground(t).unwrap().bits(),
         0x0403_0201,
@@ -93,12 +99,19 @@ fn a_symbolic_offset_write_leaves_candidates_conditional() {
     let val = a.bv(8, 0x7F);
     let r = m.write_at_symbolic_offset(&mut a, o, off, &[2, 3, 4], val, sp(2));
     assert!(r.faults.is_empty(), "{:#?}", r.faults);
-    assert!(m.is_bytes(o), "three candidates is well under the threshold");
+    assert!(
+        m.is_bytes(o),
+        "three candidates is well under the threshold"
+    );
 
     for k in [2u64, 3, 4] {
         assert_eq!(m.init_bit_of(o, k * 8), InitBit::Cond, "byte {k}");
     }
-    assert_eq!(m.init_bit_of(o, 0), InitBit::No, "byte 0 was not a candidate");
+    assert_eq!(
+        m.init_bit_of(o, 0),
+        InitBit::No,
+        "byte 0 was not a candidate"
+    );
 
     // A definitely-different offset is still an uninitialized read.
     assert!(
@@ -141,6 +154,65 @@ fn a_conditionally_initialized_read_is_reported_conditionally() {
         r.faults
     );
     assert!(r.value.is_some());
+}
+
+/// **The guard must name the byte it guards.** Every test above checks the
+/// *initialization* effect of a symbolic-offset write and none checks the *value*, so
+/// building every candidate's guard as `off == 0` survived them all. Evaluating the
+/// resulting term under each feasible offset is what distinguishes a correct chain from
+/// a chain that writes the same byte three times.
+#[test]
+fn each_candidate_byte_is_guarded_by_its_own_offset() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 0), &[0xEE; 16], sp(2));
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0x7F);
+    m.write_at_symbolic_offset(&mut a, o, off, &[2, 3], val, sp(3));
+
+    let b2 = m
+        .read_term(&mut a, ptr(o, 2), 1, Endian::Little, sp(4))
+        .value
+        .unwrap();
+    let b3 = m
+        .read_term(&mut a, ptr(o, 3), 1, Endian::Little, sp(5))
+        .value
+        .unwrap();
+    let ov = a.var_id(off).unwrap();
+
+    let mut model = Model::new();
+    model.set(ov, BvConst::new(8, 2));
+    assert_eq!(
+        a.eval(&model, b2).unwrap().bits(),
+        0x7F,
+        "off == 2 writes byte 2"
+    );
+    assert_eq!(
+        a.eval(&model, b3).unwrap().bits(),
+        0xEE,
+        "and leaves byte 3 alone"
+    );
+
+    model.set(ov, BvConst::new(8, 3));
+    assert_eq!(
+        a.eval(&model, b2).unwrap().bits(),
+        0xEE,
+        "off == 3 leaves byte 2 alone"
+    );
+    assert_eq!(
+        a.eval(&model, b3).unwrap().bits(),
+        0x7F,
+        "and writes byte 3"
+    );
+
+    model.set(ov, BvConst::new(8, 9));
+    assert_eq!(
+        a.eval(&model, b2).unwrap().bits(),
+        0xEE,
+        "an infeasible offset writes neither"
+    );
+    assert_eq!(a.eval(&model, b3).unwrap().bits(), 0xEE);
 }
 
 /// A conditional write over **definitely initialized** memory stays definite: both
@@ -195,14 +267,27 @@ fn promotion_preserves_value_and_initialization_together() {
     m.write_at_symbolic_offset(&mut a, o, off, &[4], val, sp(3));
 
     let before: Vec<(Option<Vec<u8>>, InitBit)> = (0..8u64)
-        .map(|b| (m.read(ptr(o, b as i64), 1, sp(4)).value, m.init_bit_of(o, b * 8)))
+        .map(|b| {
+            (
+                m.read(ptr(o, b as i64), 1, sp(4)).value,
+                m.init_bit_of(o, b * 8),
+            )
+        })
         .collect();
     m.promote_to_array(&mut a, o);
     assert!(!m.is_bytes(o));
     let after: Vec<(Option<Vec<u8>>, InitBit)> = (0..8u64)
-        .map(|b| (m.read(ptr(o, b as i64), 1, sp(5)).value, m.init_bit_of(o, b * 8)))
+        .map(|b| {
+            (
+                m.read(ptr(o, b as i64), 1, sp(5)).value,
+                m.init_bit_of(o, b * 8),
+            )
+        })
         .collect();
-    assert_eq!(before, after, "promotion changed what the object says about itself");
+    assert_eq!(
+        before, after,
+        "promotion changed what the object says about itself"
+    );
 }
 
 /// Promotion is **one-way within a state** (021 §3). A representation that oscillated

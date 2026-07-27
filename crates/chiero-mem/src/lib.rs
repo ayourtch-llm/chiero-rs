@@ -9,7 +9,9 @@
 //! initialization mask. Symbolic offsets, `Contents::Array` promotion, lifetime and
 //! provenance build on it.
 
+use chiero_solver::{Term, TermArena};
 use chiero_span::Span;
+use std::collections::BTreeMap;
 
 /// An object's identity. Two reserved values are present in every state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -109,10 +111,19 @@ impl InitMask {
         }
     }
 
-    /// The first bit in the range that is not *definitely* initialized. `Cond` counts as
-    /// not-definitely: the point of the third state is that it decides neither way.
-    pub fn first_not_yes(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
-        (lo_bit..lo_bit + n_bits).find(|&b| self.get(b) != InitBit::Yes)
+    /// The first **definitely uninitialized** bit in the range.
+    pub fn first_no(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
+        (lo_bit..lo_bit + n_bits).find(|&b| self.get(b) == InitBit::No)
+    }
+
+    /// The first *conditionally* initialized bit in the range.
+    ///
+    /// Kept separate from `first_no` because the two produce different findings: a `No`
+    /// bit is a definite uninitialized read, a `Cond` bit is one the engine must
+    /// discharge against the path condition. 021 contract 6b turns on exactly this —
+    /// a read at a conditionally-written offset must not report a *definite* finding.
+    pub fn first_cond(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
+        (lo_bit..lo_bit + n_bits).find(|&b| self.get(b) == InitBit::Cond)
     }
 }
 
@@ -147,6 +158,11 @@ pub enum AccessError {
         off: i64,
         bit: u64,
     },
+    /// The range touched a `Cond` bit but no `No` bit — conditionally initialized.
+    MaybeUninitialized {
+        off: i64,
+        bit: u64,
+    },
     /// An access wider than the payload can represent. Distinct from `OutOfBounds`
     /// because it is a *chiero* limit rather than a program error: the object might be
     /// large enough, and the caller still cannot be answered exactly.
@@ -177,6 +193,10 @@ pub struct MemObject {
     pub span: Span,
     data: Vec<u8>,
     init: InitMask,
+    /// Symbolic bytes at concrete offsets (021 §3's `sym` overlay). Sparse, because the
+    /// overwhelming majority of bytes are concrete and must not pay for the few that
+    /// are not.
+    sym: BTreeMap<u64, Term>,
 }
 
 impl MemObject {
@@ -190,6 +210,7 @@ impl MemObject {
             span,
             data: vec![0; size as usize],
             init: InitMask::new(size),
+            sym: BTreeMap::new(),
         }
     }
 
@@ -291,8 +312,11 @@ impl MemObject {
 
     pub fn read_bytes(&self, off: i64, size: u64) -> Result<Vec<u8>, AccessError> {
         let at = self.check(off, size)?;
-        if let Some(bit) = self.init.first_not_yes(off as u64 * 8, size * 8) {
+        if let Some(bit) = self.init.first_no(off as u64 * 8, size * 8) {
             return Err(AccessError::Uninitialized { off, bit });
+        }
+        if let Some(bit) = self.init.first_cond(off as u64 * 8, size * 8) {
+            return Err(AccessError::MaybeUninitialized { off, bit });
         }
         Ok(self.data[at..at + size as usize].to_vec())
     }
@@ -342,8 +366,14 @@ impl MemObject {
 
     pub fn read_bits(&self, lo_bit: u64, n_bits: u64) -> Result<u128, AccessError> {
         self.check_bits(lo_bit, n_bits)?;
-        if let Some(bit) = self.init.first_not_yes(lo_bit, n_bits) {
+        if let Some(bit) = self.init.first_no(lo_bit, n_bits) {
             return Err(AccessError::Uninitialized {
+                off: (lo_bit / 8) as i64,
+                bit,
+            });
+        }
+        if let Some(bit) = self.init.first_cond(lo_bit, n_bits) {
+            return Err(AccessError::MaybeUninitialized {
                 off: (lo_bit / 8) as i64,
                 bit,
             });
@@ -625,6 +655,19 @@ pub enum MemFault {
         bit: u64,
         at: Span,
     },
+    /// The read touched a byte written only under a guard (`InitBit::Cond`).
+    ///
+    /// The third state needs a third *outcome*, or it collapses back into one of the two
+    /// 021 §3.1 rejects: reporting definitely loses to the false-positive storm on
+    /// `v[i] = x; … use v[i]`, and staying silent loses real uninitialized reads. The
+    /// guard is the engine's to discharge against the path condition, not the memory
+    /// model's to guess.
+    MaybeUninitialized {
+        obj: ObjectId,
+        off: i64,
+        bit: u64,
+        at: Span,
+    },
     /// Recorded on every misaligned access; a *finding* only in `ub-strict` mode, since
     /// x86-64 tolerates it and VPP relies on that in places.
     Misaligned {
@@ -718,9 +761,29 @@ pub struct Leak {
     pub allocated_at: Span,
 }
 
+/// 021 §3. Objects start as `Bytes`; promotion is one-way within a state.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Repr {
+    /// Concrete bytes, a bit-indexed init mask, and a sparse overlay of symbolic bytes
+    /// at concrete offsets. The fast path, and the one nearly every VPP access takes.
+    Bytes,
+    /// SMT array with a parallel init array. Paid for only when a write at a symbolic
+    /// offset cannot be pinned to a small set.
+    Array,
+}
+
+/// 021 §3: reads at a symbolic offset are answered by an if-then-else chain when the
+/// feasible set is at most this large, and force promotion otherwise.
+///
+/// A **documented constant**, not a heuristic. An object that promoted on one run and not
+/// the next would answer the same program differently for no reason a reader could see,
+/// and 001 §5 makes determinism a hard requirement.
+pub const ITE_THRESHOLD: usize = 16;
+
 #[derive(Clone, Debug)]
 struct Entry {
     obj: Option<MemObject>,
+    repr: Repr,
     kind: ObjKind,
     size: u64,
     align: u64,
@@ -766,6 +829,7 @@ impl Memory {
             id,
             Entry {
                 obj,
+                repr: Repr::Bytes,
                 kind,
                 size,
                 align,
@@ -905,6 +969,23 @@ impl Memory {
                 value: Some(v),
                 faults,
             },
+            // A conditionally-initialized read still produces a value; only the *kind*
+            // of finding differs. Falling into the generic error branch dropped the
+            // value, which is the one thing this API exists not to do.
+            Err(AccessError::MaybeUninitialized { off, bit }) => {
+                faults.push(MemFault::MaybeUninitialized {
+                    obj: p.base,
+                    off,
+                    bit,
+                    at,
+                });
+                // No memoization here: the guard is still live, and marking the byte
+                // definitely initialized would silently discharge it in chiero's favour.
+                AccessResult {
+                    value: obj.raw_bytes(p.off, size),
+                    faults,
+                }
+            }
             Err(AccessError::Uninitialized { off, bit }) => {
                 faults.push(MemFault::Uninitialized {
                     obj: p.base,
@@ -1024,6 +1105,18 @@ impl Memory {
                 value: Some(v),
                 faults,
             },
+            Err(AccessError::MaybeUninitialized { off, bit }) => {
+                faults.push(MemFault::MaybeUninitialized {
+                    obj: p.base,
+                    off,
+                    bit,
+                    at,
+                });
+                AccessResult {
+                    value: obj.raw_bits(b, n_bits),
+                    faults,
+                }
+            }
             Err(AccessError::Uninitialized { off, bit }) => {
                 faults.push(MemFault::Uninitialized {
                     obj: p.base,
@@ -1205,6 +1298,194 @@ impl Memory {
         AccessResult {
             value: Some((bytes, init)),
             faults: vec![],
+        }
+    }
+
+    /// Whether this object is still on the `Bytes` fast path (021 §3).
+    pub fn is_bytes(&self, id: ObjectId) -> bool {
+        self.entry(id).is_some_and(|e| e.repr == Repr::Bytes)
+    }
+
+    pub fn init_bit_of(&self, id: ObjectId, bit: u64) -> InitBit {
+        self.entry(id)
+            .and_then(|e| e.obj.as_ref())
+            .map_or(InitBit::No, |o| o.init_bit(bit))
+    }
+
+    /// Place a symbolic byte at a concrete offset (021 §3's `sym` overlay).
+    pub fn write_sym_byte(&mut self, p: Pointer, t: Term, at: Span) -> AccessResult<()> {
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return AccessResult::fault(f);
+        }
+        let Some(e) = self.entry_mut(p.base) else {
+            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
+        };
+        let Some(o) = e.obj.as_mut() else {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: p.base,
+                size: 0,
+                at,
+            });
+        };
+        if o.check_only(p.off, 1).is_err() || p.off < 0 {
+            return AccessResult::fault(MemFault::OutOfBounds {
+                obj: p.base,
+                off: p.off,
+                size: 1,
+                obj_size: e.size,
+                at,
+            });
+        }
+        o.sym.insert(p.off as u64, t);
+        o.init.set_range(p.off as u64 * 8, 8, InitBit::Yes);
+        AccessResult {
+            value: Some(()),
+            faults: vec![],
+        }
+    }
+
+    /// Assemble `size` bytes into a term in target byte order (021 contract 5).
+    ///
+    /// Concrete bytes become constants and symbolic ones come from the overlay, so a
+    /// wholly concrete read folds to a constant and a mixed read is a `Concat` whose
+    /// concrete halves stay concrete. Promotion is *not* triggered by this: reads at
+    /// concrete offsets are the fast path the whole representation exists for.
+    pub fn read_term(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        size: u64,
+        e: Endian,
+        at: Span,
+    ) -> AccessResult<Term> {
+        if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return AccessResult::fault(f);
+        }
+        let obj_size = self.entry(p.base).map_or(0, |x| x.size);
+        let Some(entry) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
+        };
+        let Some(o) = entry.obj.as_ref() else {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: p.base,
+                size: obj_size,
+                at,
+            });
+        };
+        if p.off < 0 || o.check_only(p.off, size).is_err() {
+            return AccessResult::fault(MemFault::OutOfBounds {
+                obj: p.base,
+                off: p.off,
+                size,
+                obj_size,
+                at,
+            });
+        }
+        let mut faults = Vec::new();
+        if let Some(bit) = o.init.first_no(p.off as u64 * 8, size * 8) {
+            faults.push(MemFault::Uninitialized {
+                obj: p.base,
+                off: p.off,
+                bit,
+                at,
+            });
+        } else if let Some(bit) = o.init.first_cond(p.off as u64 * 8, size * 8) {
+            faults.push(MemFault::MaybeUninitialized {
+                obj: p.base,
+                off: p.off,
+                bit,
+                at,
+            });
+        }
+        // SMT-LIB `concat` puts its first argument in the high bits, so the most
+        // significant byte is folded in first.
+        let idx: Vec<u64> = match e {
+            Endian::Little => (0..size).rev().map(|i| p.off as u64 + i).collect(),
+            Endian::Big => (0..size).map(|i| p.off as u64 + i).collect(),
+        };
+        let mut t: Option<Term> = None;
+        for b in idx {
+            let byte = match o.sym.get(&b) {
+                Some(x) => *x,
+                None => a.bv(8, o.data[b as usize] as u128),
+            };
+            t = Some(match t {
+                None => byte,
+                Some(acc) => a.concat(acc, byte),
+            });
+        }
+        AccessResult { value: t, faults }
+    }
+
+    /// A write whose offset is symbolic but pinned to a small set of feasible values
+    /// (021 §3.1).
+    ///
+    /// Each candidate byte becomes `ite(off == k, val, old)` and its initialization
+    /// becomes `Cond` — neither definitely written nor definitely not. Past
+    /// `ITE_THRESHOLD` candidates the object promotes instead of growing a chain of
+    /// nested selects that no solver wants to see.
+    pub fn write_at_symbolic_offset(
+        &mut self,
+        a: &mut TermArena,
+        id: ObjectId,
+        off: Term,
+        candidates: &[u64],
+        val: Term,
+        at: Span,
+    ) -> AccessResult<()> {
+        if let Some(f) = self.state_fault(id, 0, at) {
+            return AccessResult::fault(f);
+        }
+        if candidates.len() > ITE_THRESHOLD {
+            self.promote_to_array(a, id);
+            return AccessResult {
+                value: Some(()),
+                faults: vec![],
+            };
+        }
+        let w = a.width(off);
+        let Some(e) = self.entry_mut(id) else {
+            return AccessResult::fault(MemFault::WildPointer { off: 0, at });
+        };
+        let Some(o) = e.obj.as_mut() else {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: id,
+                size: 0,
+                at,
+            });
+        };
+        for &k in candidates {
+            if o.check_only(k as i64, 1).is_err() {
+                continue;
+            }
+            let old = match o.sym.get(&k) {
+                Some(x) => *x,
+                None => a.bv(8, o.data[k as usize] as u128),
+            };
+            let kc = a.bv(w, k as u128);
+            let cond = a.eq(off, kc);
+            o.sym.insert(k, a.ite(cond, val, old));
+            // The join is what keeps a conditional write from *downgrading* memory that
+            // was already definitely initialized: both branches of the `ite` are then
+            // initialized, so the result is `Yes`.
+            o.init.set_range(k * 8, 8, InitBit::Cond);
+        }
+        AccessResult {
+            value: Some(()),
+            faults: vec![],
+        }
+    }
+
+    /// 021 §3: promotion to array theory, **one-way within a state**.
+    ///
+    /// A representation that oscillated would make cost unpredictable and results
+    /// order-dependent. The bytes and the init mask are kept as they are — the array
+    /// form is a promise about how *future* symbolic-offset accesses are answered, and
+    /// contract 6 requires the `(value, initialization-status)` pair to survive the
+    /// change unaltered.
+    pub fn promote_to_array(&mut self, _a: &mut TermArena, id: ObjectId) {
+        if let Some(e) = self.entry_mut(id) {
+            e.repr = Repr::Array;
         }
     }
 
@@ -1425,6 +1706,9 @@ fn lift(e: AccessError, obj: ObjectId, at: Span) -> MemFault {
             at,
         },
         AccessError::Uninitialized { off, bit } => MemFault::Uninitialized { obj, off, bit, at },
+        AccessError::MaybeUninitialized { off, bit } => {
+            MemFault::MaybeUninitialized { obj, off, bit, at }
+        }
         AccessError::BadRange {
             want_bits,
             max_bits,

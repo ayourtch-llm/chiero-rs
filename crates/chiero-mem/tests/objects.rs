@@ -151,19 +151,25 @@ fn a_conditionally_written_byte_is_neither_initialized_nor_not() {
     assert_eq!(o.init_bit(8), InitBit::No, "byte 1 is untouched");
 }
 
-/// **`Cond` is not `Yes`, and a read must treat it that way.**
+/// **`Cond` is neither `Yes` nor `No`, and a read must produce a third outcome.**
 ///
-/// Storing the third state is only half of it: if a read then accepts `Cond` as
-/// initialized, the state is decoration and the model behaves exactly like the
-/// two-state mask 021 §3.1 rejects. Conditionally-initialized is not definitely
-/// initialized, so the read is not silently answered.
+/// An earlier version of this test asserted a *definite* `Uninitialized` for a
+/// conditionally-written byte. **021 contract 6b says the opposite**: a read at a
+/// conditionally-written offset does not report an uninitialized read. Both obvious
+/// readings are wrong and §3.1 says so — forcing `Cond` to "yes" loses real
+/// uninitialized reads, forcing it to "no" produces the false-positive storm on
+/// `v[i] = x; … use v[i]` that is ubiquitous. So the read is reported *conditionally*,
+/// with the guard left for the engine to discharge against the path condition.
 #[test]
-fn reading_through_a_conditionally_written_byte_is_not_silently_initialized() {
+fn reading_through_a_conditionally_written_byte_is_conditionally_reported() {
     let mut o = obj(8);
     o.write_bytes_cond(0, &[7], Cond::Symbolic).unwrap();
     assert!(
-        matches!(o.read_bytes(0, 1), Err(AccessError::Uninitialized { .. })),
-        "a byte initialized only under a guard is not definitely initialized"
+        matches!(
+            o.read_bytes(0, 1),
+            Err(AccessError::MaybeUninitialized { .. })
+        ),
+        "not silently accepted, and not a definite finding either"
     );
     // And an unconditional write over it settles the question.
     o.write_bytes(0, &[9]).unwrap();
