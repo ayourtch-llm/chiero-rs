@@ -1150,4 +1150,10 @@ fn a_models_reports_and_faults_stay_in_step() {
             .any(|(f, t)| f.is_some() && t.contains("out-of-bounds")),
         "the fault is paired with its own text: {reports:#?}"
     );
+    // A note *after* a fault must not inherit it — that is the direction the drift ran,
+    // putting a fault's key on someone else's sentence.
+    cx.report("a note made afterwards");
+    let last = cx.reports().last().expect("just pushed").clone();
+    assert_eq!(last.1, "a note made afterwards");
+    assert!(last.0.is_none(), "a note carries no fault: {last:?}");
 }

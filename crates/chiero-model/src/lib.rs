@@ -318,9 +318,13 @@ pub struct ModelCtx<'a> {
     arena: &'a mut TermArena,
     span: Span,
     endian: Endian,
-    findings: Vec<String>,
-    /// The `MemFault` behind each lifted finding, so the engine can build 023 §6.1's key.
-    faults: Vec<MemFault>,
+    /// What the model has to say, each item paired with the `MemFault` behind it when
+    /// there is one — so the engine can build 023 §6.1's key.
+    ///
+    /// **One list, not two.** Parallel `Vec`s indexed together drift the moment a model
+    /// reports something without a fault, which puts a fault's key on someone else's
+    /// sentence; nothing but convention kept them aligned.
+    reports: Vec<(Option<MemFault>, String)>,
 }
 
 impl<'a> ModelCtx<'a> {
@@ -338,8 +342,7 @@ impl<'a> ModelCtx<'a> {
             arena,
             span,
             endian,
-            findings: Vec::new(),
-            faults: Vec::new(),
+            reports: Vec::new(),
         }
     }
 
@@ -355,8 +358,8 @@ impl<'a> ModelCtx<'a> {
     pub fn endian(&self) -> Endian {
         self.endian
     }
-    pub fn findings(&self) -> &[String] {
-        &self.findings
+    pub fn findings(&self) -> Vec<String> {
+        self.reports.iter().map(|(_, t)| t.clone()).collect()
     }
     /// Report something the model noticed and is *continuing* past.
     ///
@@ -364,7 +367,7 @@ impl<'a> ModelCtx<'a> {
     /// message to the engine — doing both put the same sentence on two independent routes
     /// with two sequence ids, which no deduplication can merge.
     pub fn report(&mut self, what: impl Into<String>) {
-        self.findings.push(what.into());
+        self.reports.push((None, what.into()));
     }
     /// Memory faults become findings **as sentences**. `{:?}` put chiero's internal
     /// struct shape in the product: 001 §1 has an LLM at the other end of these, and a
@@ -372,19 +375,13 @@ impl<'a> ModelCtx<'a> {
     /// at: Span { lo: BytePos(0), … } }` to learn that byte 0 was never written.
     fn lift(&mut self, faults: &[MemFault]) {
         for f in faults {
-            self.findings.push(f.to_string());
-            // **The fault travels with its text.** Stringifying and dropping the struct
-            // left the engine nothing to deduplicate on, so one `memcpy` bug inside a loop
-            // became one finding per iteration — while the same bug raised by a `Store`
-            // was deduplicated correctly. 023 §6.1's key is built from the fault.
-            self.faults.push(f.clone());
+            self.reports.push((Some(f.clone()), f.to_string()));
         }
     }
 
-    /// The memory faults behind `findings`, in the same order. Empty for a report the
-    /// model made itself with `report`, which has no fault to key on.
-    pub fn faults(&self) -> &[MemFault] {
-        &self.faults
+    /// Everything the model said, each with the fault behind it where there is one.
+    pub fn reports(&self) -> &[(Option<MemFault>, String)] {
+        &self.reports
     }
 }
 

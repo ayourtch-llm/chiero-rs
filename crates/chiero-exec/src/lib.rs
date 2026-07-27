@@ -2157,13 +2157,10 @@ impl<'m> Engine<'m> {
                 // swallowed, both found by review rather than by the compiler.
                 None => translated = false,
             }
-            // The faults come with their text, in the same order, so a model's report
-            // gets 023 §6.1's key exactly as a `Store`'s does. A report the model made
-            // itself — a string with no fault behind it — keeps the fork identity.
-            let lifted = cx.faults().to_vec();
-            for (i, f) in cx.findings().iter().enumerate() {
-                keyed.push((lifted.get(i).cloned(), f.clone()));
-            }
+            // Each report arrives already paired with the fault behind it, so a model's
+            // finding gets 023 §6.1's key exactly as a `Store`'s does. A report the model
+            // made itself has no fault to key on and keeps the fork identity.
+            keyed.extend(cx.reports().iter().cloned());
         }
 
         for f in findings {
