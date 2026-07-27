@@ -401,3 +401,82 @@ fn a_select_over_a_store_at_the_same_symbolic_index_folds() {
     assert_ne!(other, v);
     assert!(a.eval_ground(other).is_err());
 }
+
+/// **A shared DAG must serialize as a DAG.**
+///
+/// `to_smtlib` expanded every reference, so a term reached twice was written twice — and
+/// a 22-node chain of `x + x` serialized to **54 MB**. 022 §4 requires `--dump-queries`,
+/// and every backend query pays this, so it is not a reporting nicety.
+///
+/// Promotion makes it acute rather than theoretical: 021 §3's init array is one `store`
+/// per *bit*, so a 2.5 KB VPP buffer is twenty thousand nested stores whose text would be
+/// astronomically larger than the structure.
+#[test]
+fn a_shared_dag_serializes_in_linear_size() {
+    let mut a = TermArena::new();
+    let mut t = a.var(Sort::BitVec(64), "x");
+    for _ in 0..22 {
+        t = a.add(t, t);
+    }
+    let text = a.to_smtlib(t);
+    assert!(
+        text.len() < 4096,
+        "22 shared nodes must not serialize to {} bytes",
+        text.len()
+    );
+}
+
+/// The same for a long store chain with a symbolic index, which cannot fold — this is
+/// exactly the shape promotion produces.
+#[test]
+fn a_long_store_chain_serializes_in_linear_size() {
+    let mut a = TermArena::new();
+    let mut arr = a.array_const(64, 8, 0);
+    for i in 0..2000u128 {
+        let idx = a.bv(64, i);
+        let v = a.bv(8, (i % 251) as u128);
+        arr = a.store(arr, idx, v);
+    }
+    let j = a.var(Sort::BitVec(64), "j");
+    let s = a.select(arr, j);
+    let text = a.to_smtlib(s);
+    assert!(
+        text.len() < 400_000,
+        "2000 stores must not serialize to {} bytes",
+        text.len()
+    );
+}
+
+/// Sharing must not change what the text *means*. A `let`-bound rendering that got the
+/// binding order wrong, or reused a name across scopes, would be smaller and wrong.
+#[test]
+fn sharing_preserves_the_value_of_the_term() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let s = a.add(x, y);
+    let d = a.mul(s, s);
+    let e = a.add(d, s);
+    let text = a.to_smtlib(e);
+    // Every variable still appears, and the shared subterm is bound rather than repeated.
+    assert!(text.contains("v0_x") && text.contains("v1_y"));
+    assert!(text.contains("let "), "a shared subterm should be bound: {text}");
+    let mut m = Model::new();
+    m.set(a.var_id(x).unwrap(), BvConst::new(8, 3));
+    m.set(a.var_id(y).unwrap(), BvConst::new(8, 4));
+    // (3+4)*(3+4) + (3+4) = 56, mod 256.
+    assert_eq!(a.eval(&m, e).unwrap().bits(), 56);
+}
+
+/// An unshared term needs no bindings, or every trivial query grows a `let` wrapper for
+/// nothing.
+#[test]
+fn an_unshared_term_is_emitted_without_bindings() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let c = a.bv(8, 5);
+    let e = a.ult(x, c);
+    let text = a.to_smtlib(e);
+    assert!(!text.contains("let "), "nothing is shared here: {text}");
+    assert_eq!(text, "(bvult v0_x (_ bv5 8))");
+}
