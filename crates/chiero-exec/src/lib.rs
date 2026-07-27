@@ -124,6 +124,10 @@ pub enum TermReason {
     /// 023 §8: a *documented* budget was exceeded. Findings on this state are real;
     /// absence of findings proves nothing beyond the bound.
     Budget,
+    /// The path met something chiero cannot follow and cannot bound — 024 contract 20's
+    /// `longjmp`. Distinct from `Budget`, which is a limit chiero chose, and from
+    /// `Unreachable`, which is a claim about the *program*.
+    Unsupported,
 }
 
 /// 023 §8. Only the deterministic budgets are here; `wall_clock` is a non-deterministic
@@ -794,7 +798,17 @@ impl<'m> Engine<'m> {
                 // the library reduced safety, because the registration was read as a
                 // claim about the *call* rather than about the model.
                 Some(Precision::Exact) if self.can_dispatch(&name) => {
-                    self.dispatch(a, s, &name, dst, args, span);
+                    self.dispatch(
+                        a,
+                        s,
+                        DispatchCall {
+                            name: &name,
+                            dst,
+                            args,
+                            ret_ty: &ret_ty,
+                            span,
+                        },
+                    );
                 }
                 Some(Precision::Exact) => {
                     self.note_once(
@@ -1255,15 +1269,14 @@ impl<'m> Engine<'m> {
     ///
     /// Anything that will not translate is a *gap* rather than a silent skip — the point
     /// of dispatch is to stop a registration standing in for a call.
-    fn dispatch(
-        &mut self,
-        a: &mut TermArena,
-        s: &mut State,
-        name: &str,
-        dst: Option<ValueId>,
-        args: &[Operand],
-        span: Span,
-    ) {
+    fn dispatch(&mut self, a: &mut TermArena, s: &mut State, c: DispatchCall<'_>) {
+        let DispatchCall {
+            name,
+            dst,
+            args,
+            ret_ty,
+            span,
+        } = c;
         use chiero_model::models;
 
         if matches!(
@@ -1289,6 +1302,7 @@ impl<'m> Engine<'m> {
         let mut findings: Vec<String> = Vec::new();
         let mut result: Option<Value> = None;
         let mut forks: Vec<Option<Value>> = Vec::new();
+        let mut terminate: Option<String> = None;
         let mut translated = true;
         {
             let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
@@ -1329,6 +1343,7 @@ impl<'m> Engine<'m> {
                         )),
                     }
                 }),
+                "longjmp" => Some(models::longjmp(&mut cx)),
                 "strcpy" => match (ptr(0), ptr(1)) {
                     (Some(d), Some(sp)) => Some(models::strcpy(&mut cx, d, sp, strp)),
                     _ => None,
@@ -1365,6 +1380,12 @@ impl<'m> Engine<'m> {
                     findings.push(msg);
                     translated = false;
                 }
+                // 024 contract 20. Not a `Finding`: a finding leaves the state running,
+                // and the whole point is that everything after this call is a path the
+                // program does not have.
+                Some(ModelOutcome::Terminate(why)) => {
+                    terminate = Some(why);
+                }
                 Some(_) => translated = false,
                 None => translated = false,
             }
@@ -1383,10 +1404,10 @@ impl<'m> Engine<'m> {
             // The model ran and produced no value; the caller still needs *something*,
             // and a fresh symbol is the honest one.
             self.fresh_count += 1;
-            let t = a.var(
-                chiero_solver::Sort::BitVec(64),
-                &format!("model{}", self.fresh_count),
-            );
+            // The **declared** return type. A hardcoded `BitVec(64)` also overwrote the
+            // correctly-sorted value the extern path had just set, so the sort got worse
+            // by dispatching a model than by not having one.
+            let t = a.var(sort_of(ret_ty), &format!("model{}", self.fresh_count));
             s.set_local(d, Value::Scalar(t));
         }
         // Siblings are created *after* this state's own result is in place, so each
@@ -1401,6 +1422,11 @@ impl<'m> Engine<'m> {
             // pointed *at* the call re-dispatched it and forked again, forever.
             sib.pc.1 = sib.pc.1.wrapping_add(1);
             self.pending.push(sib);
+        }
+        if let Some(why) = terminate {
+            s.status = Status::Terminated(TermReason::Unsupported);
+            s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
+            return;
         }
         if !translated {
             self.note_once(
@@ -1623,6 +1649,17 @@ fn resolve_builtin(name: &str) -> &str {
         Some(base) if chiero_model::dispatchable().contains(&base) => base,
         _ => name,
     }
+}
+
+/// The call `dispatch` is being asked to perform. A struct rather than eight positional
+/// parameters, four of which are `Option`s and references that read the same at a call
+/// site.
+struct DispatchCall<'c> {
+    name: &'c str,
+    dst: Option<ValueId>,
+    args: &'c [Operand],
+    ret_ty: &'c CTy,
+    span: Span,
 }
 
 fn lift_value(v: chiero_model::Value) -> Value {

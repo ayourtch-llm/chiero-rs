@@ -2715,13 +2715,7 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
     // `true` unconditionally passed the loop above — every assertion in it was satisfied
     // by a function that says yes to everything. These are registered models chiero has
     // *no* implementation for, which is exactly what the flag exists to distinguish.
-    for n in [
-        "scanf",
-        "printf",
-        "sqrt",
-        "longjmp",
-        "not_a_function_at_all",
-    ] {
+    for n in ["scanf", "printf", "sqrt", "read", "not_a_function_at_all"] {
         assert!(
             !chiero_model::models::is_implemented(n),
             "`{n}` has no implementation here and must not claim one"
@@ -2786,6 +2780,7 @@ fn every_dispatchable_name_is_actually_performed_by_the_engine() {
         ("chiero_assume", vec![CTy::Int(32)], vec![i32v(1)]),
         ("chiero_assert", vec![CTy::Int(32)], vec![i32v(1)]),
         ("chiero_mark_fidelity", vec![CTy::Ptr], vec![p1.clone()]),
+        ("longjmp", vec![], vec![]),
     ];
     let names: Vec<&str> = cases.iter().map(|(n, _, _)| *n).collect();
     for n in chiero_model::dispatchable() {

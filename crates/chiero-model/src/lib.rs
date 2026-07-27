@@ -224,7 +224,10 @@ impl ModelRegistry {
             ModelEntry::approximate("printf", "formatted output is not modeled precisely"),
             ModelEntry::approximate("sqrt", "floating point is approximated (023 §7)"),
             ModelEntry::approximate("pow", "floating point is approximated (023 §7)"),
-            ModelEntry::approximate("longjmp", "non-local control flow is unsupported"),
+            // Exact **as a model**: chiero performs it faithfully by ending the path,
+            // which is what `longjmp` does to the current one. 024 contract 20 wants
+            // `Unknown` on the *result*, and the model's `Terminate` is what produces it.
+            ModelEntry::exact("longjmp"),
         ] {
             r.register(e).expect("the builtin list has no duplicates");
         }
@@ -287,6 +290,12 @@ pub enum ModelOutcome {
     /// The call could not be performed and the reason is reportable.
     Finding(String),
     Havoc(HavocSpec),
+    /// The call does not return, and chiero cannot follow where it went. 024 contract 20:
+    /// `longjmp` must terminate the state at `Unknown`, never continue it. A `Finding`
+    /// would report the same words and leave execution walking down a path the program
+    /// does not have, which is the failure this variant exists to make impossible to
+    /// express.
+    Terminate(String),
 }
 
 /// Mirrors 023 §1.1: a pointer keeps its object. A model handing back a bare term would
@@ -373,6 +382,7 @@ pub const DISPATCHABLE: &[&str] = &[
     "chiero_assume",
     "chiero_assert",
     "chiero_mark_fidelity",
+    "longjmp",
 ];
 
 pub fn dispatchable() -> &'static [&'static str] {
@@ -413,6 +423,7 @@ pub mod models {
                 | "chiero_assume"
                 | "chiero_assert"
                 | "chiero_mark_fidelity"
+                | "longjmp"
         )
     }
 
@@ -618,6 +629,17 @@ pub mod models {
 
     /// The range becomes initialized and reads back as the set byte; nothing outside it
     /// changes.
+    /// 024 contract 20. Non-local control flow: the state ends here.
+    ///
+    /// There is nothing to model — the point is that continuing is *wrong*, not that the
+    /// jump is hard. A `setjmp`/`longjmp` pair is expressible in principle, but only by
+    /// recording the whole state at the `setjmp`, which 023 §5 does not do.
+    pub fn longjmp(_cx: &mut ModelCtx) -> ModelOutcome {
+        ModelOutcome::Terminate(
+            "longjmp: non-local control flow is unsupported, so this path ends here".to_string(),
+        )
+    }
+
     pub fn memset(cx: &mut ModelCtx, dst: Pointer, byte: u8, size: u64) -> ModelOutcome {
         let at = cx.span();
         let r = cx.mem().set(dst, byte, size, at);
