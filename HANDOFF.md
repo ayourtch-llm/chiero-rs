@@ -1676,8 +1676,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - ~~**C8**~~ DONE (wave 25).
    - ~~Mutant **E**~~ DONE (wave 25). The `MAX_ACCESS_BITS` boundary was untested — a 16-byte `__int128`/SSE
      access is `Exact` today and `>=` would make it a fault.
-   - Mutant **Y**: dropping `lowering_gap` on an untranslatable store leaves fidelity
-     `Exact` and **seals PROVEN** over a discarded write.
+   - ~~Mutant **Y**~~ DONE (wave 26), pinned.
    - `Store`/`Load` still ignore the CIR's `align`, which is what a real `ub-strict` mode
      would need.
 
@@ -1685,7 +1684,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    a mutant gives the file an *older* mtime, so cargo considers it up to date and the next
    run silently tests the mutant. `touch` after every revert.
 
-   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `AllocaDyn`; the four `Va*` (010 measured
+   **WAVE 26** (`2f68983`, `facfa16`; 546 tests). Pinned the last of wave 23's list — an
+   untranslatable `Store` leaves the run unprovable, which was unpinned and let `seal`
+   return PROVEN over a discarded write. Then **`AllocaDyn`**: a fresh object per
+   execution (C's `alloca` in a loop accumulates, and reusing one object makes the second
+   iteration alias the first), a symbolic count is a gap rather than a guess.
+
+   ⚠️ **Two of my own assertions were same-answer traps and mutation found both.** "The
+   thirteenth byte faults" passes against an *over-allocated* object, because an
+   uninitialized read faults too — it needed the fault **kind**. And nothing looked the
+   alloca up by id after `AllocaDyn` ran, so dropping the `frame_objs` insert changed
+   nothing. General form: **an assertion that something went wrong is weaker than one that
+   says what went wrong**, and a value written by one path must be *read back by another*
+   or the write is unpinned.
+
+   `a_dynamic_extent_does_not_overflow_the_size_computation`'s lost coverage is restored
+   as `a_dynamic_extent_multiplies_the_element_size` — the computation now lives in
+   `AllocaDyn`, so it is observable again.
+
+   **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
    not a scalar operand.
