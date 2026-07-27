@@ -1,0 +1,29 @@
+target x86_64-unknown-linux-gnu
+
+func @max(%0: i32, %1: i32) -> i32 {
+entry:
+  .line 2
+  %2 = cmp sgt i32 %0, %1
+  br %2, bb1, bb2
+bb1:
+  .line 3
+  ret %0
+bb2:
+  .line 5
+  ret %1
+}
+
+func @classify(%0: i32) -> i32 {
+entry:
+  .line 10
+  switch i32 %0, [0 -> bb1, 1 -> bb1, 2 -> bb2], default bb3
+bb1:
+  .line 12
+  ret 100i32
+bb2:
+  .line 14
+  ret 200i32
+bb3:
+  .line 16
+  ret 0i32
+}

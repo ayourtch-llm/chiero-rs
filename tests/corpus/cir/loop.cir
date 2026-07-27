@@ -1,0 +1,27 @@
+target x86_64-unknown-linux-gnu
+
+func @count_to(%0: i32) -> i32 {
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "i"
+entry:
+  .line 3
+  .scope enter 0
+  %1 = addrlocal %0
+  store i32 0i32 -> %1 align 4
+  goto bb1
+bb1:
+  .line 5
+  %2 = load i32, %1 align 4
+  %3 = cmp slt i32 %2, %0
+  br %3, bb2, bb3
+bb2:
+  .line 6
+  %4 = load i32, %1 align 4
+  %5 = add i32 %4, 1i32
+  store i32 %5 -> %1 align 4
+  goto bb1
+bb3:
+  .line 8
+  %6 = load i32, %1 align 4
+  .scope exit 0
+  ret %6
+}

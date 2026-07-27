@@ -1,0 +1,22 @@
+target x86_64-unknown-linux-gnu
+
+func @read_a(%0: ptr) -> i32 {
+entry:
+  .line 3
+  %1 = loadbits i32, %0 bits 0..3 align 4
+  ret %1
+}
+
+func @read_b_signed(%0: ptr) -> i32 {
+entry:
+  .line 9
+  %1 = loadbits i32, %0 bits 3..8 signed align 4
+  ret %1
+}
+
+func @write_a(%0: ptr, %1: i32) -> void {
+entry:
+  .line 15
+  storebits i32 %1 -> %0 bits 0..3 align 4
+  ret
+}

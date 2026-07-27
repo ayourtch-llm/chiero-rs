@@ -245,6 +245,9 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     // Rule 1a: assigned exactly once.
     let mut defs: IndexMap<ValueId, (BlockId, usize)> = IndexMap::new();
     let mut types: IndexMap<ValueId, CTy> = IndexMap::new();
+    // Positions are 1-based so parameters can sit at 0, strictly before every
+    // instruction in the entry block. With both at 0 a parameter would fail to dominate
+    // instruction 0 — which is where parameters are overwhelmingly used.
     for p in &f.params {
         defs.insert(p.value, (f.entry, 0));
         types.insert(p.value, p.ty.clone());
@@ -273,7 +276,7 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     for b in &f.blocks {
         for (i, inst) in b.insts.iter().enumerate() {
             for op in operands_of(inst) {
-                check_dominated(f, b.id, i, op, &defs, &doms, inst.span, out);
+                check_dominated(f, b.id, i + 1, op, &defs, &doms, inst.span, out);
             }
             check_inst_types(f, inst, &types, out);
         }

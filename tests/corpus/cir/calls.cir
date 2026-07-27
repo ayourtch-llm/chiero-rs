@@ -1,0 +1,28 @@
+target x86_64-unknown-linux-gnu
+
+func @callee(%0: i32) -> i32
+
+func @noargs() -> void
+
+func @caller(%0: i32) -> i32 {
+entry:
+  .line 7
+  %1 = call @callee(%0)
+  call @noargs()
+  %2 = add i32 %1, 1i32
+  ret %2
+}
+
+func @indirect(%0: ptr, %1: i32) -> i32 {
+entry:
+  .line 15
+  %2 = call %0(%1)
+  ret %2
+}
+
+func @takes_addr() -> ptr {
+entry:
+  .line 21
+  %0 = addrfunc @callee
+  ret %0
+}
