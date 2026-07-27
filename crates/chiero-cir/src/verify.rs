@@ -964,7 +964,23 @@ fn check_inst_types(
         InstKind::VaStart { list } | InstKind::VaEnd { list } => {
             require_ptr(f, list, types, "va_list", i.span, out)
         }
-        InstKind::VaArg { list, .. } => require_ptr(f, list, types, "va_list", i.span, out),
+        InstKind::VaArg { list, ty, .. } => {
+            require_ptr(f, list, types, "va_list", i.span, out);
+            // `Void` is the escape hatch for values whose type cannot be resolved, so a
+            // value declared `Void` silently disables rules 5 and 6 for everything
+            // derived from it. `VaArg` declares its own result type, so it could hand one
+            // out on request — and a `va_arg` of `void` is meaningless in C regardless.
+            if *ty == CTy::Void {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::WidthMismatch,
+                    i.span,
+                    "vaarg result type is void, which disables type checking downstream"
+                        .to_string(),
+                );
+            }
+        }
         InstKind::VaCopy { dst, src } => {
             require_ptr(f, dst, types, "va_copy destination", i.span, out);
             require_ptr(f, src, types, "va_copy source", i.span, out);
@@ -1053,7 +1069,13 @@ fn check_rvalue_types(
                 );
             }
         }
-        RValue::Cast { kind, from, to, .. } => check_cast(f, *kind, from, to, span, out),
+        RValue::Cast { kind, a, from, to } => {
+            // The declared `from` is not taken on faith. A mislabelled source type is the
+            // same class of hole as an unchecked `va_list`, and on `PtrToInt`/`IntToPtr`
+            // it is exactly the pair 021 §7.1 makes carry provenance.
+            require_ty(f, a, from, types, "cast source", span, out);
+            check_cast(f, *kind, from, to, span, out)
+        }
         RValue::Shuffle { a, mask, .. } => {
             if let Some(CTy::Vector { lanes, .. }) = resolve(a, types) {
                 for &m in mask {
@@ -1105,14 +1127,27 @@ fn check_cast(
             format!("{kind:?} from {from:?} to {to:?}: {why}"),
         );
     };
+    // Width alone is not the shape. `trunc f64 -> i32` is `fptosi` wearing the wrong
+    // name, and the two compute completely different values — so the domain must match
+    // as well as the direction.
+    let int_to_int = from.is_int() && to.is_int();
+    let fp_to_fp = matches!(from, CTy::Float(_)) && matches!(to, CTy::Float(_));
     match kind {
-        CastKind::Trunc | CastKind::FpTrunc => match (fw, tw) {
-            (Some(a), Some(b)) if a > b => {}
-            _ => bad(out, "must narrow strictly"),
+        CastKind::Trunc => match (fw, tw) {
+            (Some(a), Some(b)) if a > b && int_to_int => {}
+            _ => bad(out, "must narrow strictly, integer to integer"),
         },
-        CastKind::ZExt | CastKind::SExt | CastKind::FpExt => match (fw, tw) {
-            (Some(a), Some(b)) if a < b => {}
-            _ => bad(out, "must widen strictly"),
+        CastKind::FpTrunc => match (fw, tw) {
+            (Some(a), Some(b)) if a > b && fp_to_fp => {}
+            _ => bad(out, "must narrow strictly, float to float"),
+        },
+        CastKind::ZExt | CastKind::SExt => match (fw, tw) {
+            (Some(a), Some(b)) if a < b && int_to_int => {}
+            _ => bad(out, "must widen strictly, integer to integer"),
+        },
+        CastKind::FpExt => match (fw, tw) {
+            (Some(a), Some(b)) if a < b && fp_to_fp => {}
+            _ => bad(out, "must widen strictly, float to float"),
         },
         // Rule 12. This is the check that did not exist before spec review.
         CastKind::Bitcast => match (fw, tw) {

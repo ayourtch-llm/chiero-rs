@@ -95,7 +95,7 @@ entry:
   %11 = shl i32 %10, 1i32
   %12 = neg i32 %11
   %13 = cmp slt i32 %12, 0i32
-  %14 = zext i32 %13 to i64
+  %14 = zext i1 %13 to i64
   %15 = trunc i64 %14 to i8
   %16 = bitcast i32 %11 to f32
   %17 = select %13, %11, %12
@@ -329,7 +329,7 @@ entry:
   %12 = ptrdiff 4 %1, %1
   %13 = neg i32 %11
   %14 = cmp slt i32 %13, 0i32
-  %15 = zext i32 %14 to i64
+  %15 = zext i1 %14 to i64
   %16 = select %14, %11, %13
   %17 = ptradd %1, -8i64
   %18 = fresh i32
