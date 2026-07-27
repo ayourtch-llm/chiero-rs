@@ -597,7 +597,7 @@ fn a_two_input_witness_replays_in_order() {
         .replaying(w)
         .run(&mut a2);
     assert!(
-        replay.findings().iter().any(|f| *f == original.message),
+        replay.findings().contains(&original.message),
         "the same finding, re-reached: {:#?}",
         replay.findings()
     );
