@@ -2219,16 +2219,57 @@ impl<'m> Engine<'m> {
                 off: 0,
             });
         }
+        // **Each state constrains the address to its own object** (§5.1 step 3). Without
+        // it every resolved state still believes the address could be anywhere, so a later
+        // branch can take a side only possible for a *different* object — a false positive
+        // carrying a witness that looks replayable.
+        let constrain =
+            |a: &mut TermArena, ranges: &[(chiero_mem::ObjectId, u64, u64)], p: Pointer| {
+                if p.base == chiero_mem::ObjectId::UNBOUND {
+                    // The wild state is the negation of all of them, which is what makes the
+                    // fork exhaustive rather than merely plural.
+                    let mut acc = a.bv(1, 1);
+                    for (_, base, size) in ranges.iter().copied() {
+                        let lo = a.bv(64, base as u128);
+                        let hi = a.bv(64, base.wrapping_add(size) as u128);
+                        let below = a.ult(addr, lo);
+                        let lt_hi = a.ult(addr, hi);
+                        let eq_hi = a.eq(addr, hi);
+                        let in_hi = a.or(lt_hi, eq_hi);
+                        let above = a.not(in_hi);
+                        let not_in = a.or(below, above);
+                        acc = a.and(acc, not_in);
+                    }
+                    return acc;
+                }
+                let (_, base, size) = ranges
+                    .iter()
+                    .copied()
+                    .find(|(id, _, _)| *id == p.base)
+                    .expect("candidate came from these ranges");
+                let lo = a.bv(64, base as u128);
+                let hi = a.bv(64, base.wrapping_add(size) as u128);
+                let below = a.ult(addr, lo);
+                let in_lo = a.not(below);
+                let lt_hi = a.ult(addr, hi);
+                let eq_hi = a.eq(addr, hi);
+                let in_hi = a.or(lt_hi, eq_hi);
+                a.and(in_lo, in_hi)
+            };
         let mine = sibs.pop().expect("non-empty");
         for p in sibs {
             let mut sib = s.clone();
             sib.id = self.new_id();
             sib.pc.1 = sib.pc.1.wrapping_add(1);
+            let c = constrain(a, &ranges, p);
+            sib.path.push(c);
             if let Some(d) = self.pending_dst {
                 sib.set_local(d, Value::Ptr(p));
             }
             self.pending.push(sib);
         }
+        let c = constrain(a, &ranges, mine);
+        s.path.push(c);
         s.degrade(
             Fidelity::Bounded,
             AssumptionKind::BudgetHit,

@@ -10165,6 +10165,19 @@ fn each_resolved_state_constrains_the_address_to_its_object() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    // **Count the states that reach the equality branch**, so the *continuing* state is
+    // covered too — the loop below inspects each state's own resolution, and dropping the
+    // constraint on the state that carries on rather than forking survived it.
+    let at_eq = r
+        .states()
+        .iter()
+        .filter(|s| s.trace().iter().any(|(_, b)| *b == BlockId(3)))
+        .count();
+    assert!(
+        at_eq <= 2,
+        "only the state resolved to alloca 0, and possibly the wild one, can take the \
+         branch requiring that address: {at_eq} states did"
+    );
     // A state resolved to an object *other* than alloca 0 must not also reach block 3,
     // where the address equals alloca 0's base.
     for s in r.states() {
