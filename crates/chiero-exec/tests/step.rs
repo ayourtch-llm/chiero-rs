@@ -2422,3 +2422,232 @@ fn the_trace_records_which_function_each_block_belongs_to() {
         "and the caller's to the caller: {t:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Real model dispatch (024 contracts 1, 5, 9, 10 end to end).
+// ---------------------------------------------------------------------------
+
+fn extern_fn(id: u32, name: &str, params: Vec<CTy>, ret: CTy) -> Function {
+    let mut f = defined(id, name, vec![], ret);
+    f.params = params
+        .into_iter()
+        .enumerate()
+        .map(|(i, ty)| Param {
+            value: ValueId(i as u32),
+            ty,
+        })
+        .collect();
+    f.body = Body::Declared;
+    f
+}
+
+/// **024 contract 1, through the engine.** `malloc(16)` gives the caller a *pointer* —
+/// `Value::Ptr`, not a bare scalar — to a 16-byte heap object, and the run stays `Exact`
+/// because the model ran.
+///
+/// The provenance matters at exactly this call: 023 §1.1 says a pointer keeps its
+/// `ObjectId`, and `malloc` is where most heap objects come from, so losing it here loses
+/// it everywhere downstream.
+#[test]
+fn malloc_dispatches_and_returns_a_real_pointer() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![Operand::Const(Const::Int { bits: 64, val: 16 })],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "malloc", vec![CTy::Int(64)], CTy::Ptr),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_alloc_policy(chiero_model::AllocPolicy { may_fail: false })
+        .run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states()[0].assumptions());
+    match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => {
+            assert_ne!(p.base, chiero_mem::ObjectId::NULL);
+            assert_eq!(p.off, 0);
+        }
+        other => panic!("malloc must yield a pointer, got {other:?}"),
+    }
+}
+
+/// **024 contract 9, end to end.** `strcpy` into a four-byte destination from a ten-byte
+/// source is one finding — the textbook overflow this whole layer exists to catch, and
+/// the case that was finishing `Exact` and sealing a proof until dispatch existed.
+#[test]
+fn strcpy_into_a_short_buffer_is_found_through_the_engine() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    // The source is uninitialized, so `strlen` reports that rather than a length — which
+    // is itself correct, and the run must not be `Exact` either way.
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        !r.findings().is_empty(),
+        "the model's findings reach the run: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
+
+/// **024 contract 5, through the engine.** `free` of a stack object is a finding, and
+/// `free(NULL)` is not — the model's verdict has to reach the run rather than staying
+/// inside `ModelCtx`.
+#[test]
+fn free_of_a_stack_object_is_found_through_the_engine() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("BadFree")),
+        "freeing a stack object is a finding: {:#?}",
+        r.findings()
+    );
+}
+
+/// A dispatched model that finds nothing leaves the run **exact and silent**. Without
+/// this the tests above are satisfied by dispatch that reports on every call, and every
+/// program touching libc would carry a finding.
+#[test]
+fn a_dispatched_model_with_nothing_to_report_stays_exact() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 32, val: 0 }),
+                        Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    ],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(
+                1,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+    assert!(seal(&r, r.witness()).is_ok());
+}
+
+/// **`can_dispatch` and the model implementations cannot drift.** Both were hand-written
+/// lists, so a name could be dispatchable with nothing behind it, or implemented and
+/// unreachable — and mutation showed neither direction was pinned.
+#[test]
+fn everything_dispatchable_is_implemented_and_vice_versa() {
+    for n in chiero_model::dispatchable() {
+        assert!(
+            chiero_model::models::is_implemented(n),
+            "`{n}` is dispatchable with no implementation"
+        );
+    }
+    let r = chiero_model::ModelRegistry::with_builtins();
+    for n in chiero_model::dispatchable() {
+        assert!(r.lookup(n).is_some(), "`{n}` is dispatchable but unregistered");
+    }
+}
