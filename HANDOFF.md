@@ -2411,6 +2411,32 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    **loop** fixture is what catches it. Same family as the extent trap in wave 53: *if two
    fixtures differ in the dimension the mutation does not touch, the mutation lives.*
 
+   **WAVE 62** (`9993247`; 675 tests, **124/164 cited**) — 020 contracts 42 and 43, both
+   of which were `_ => give_up`: the engine reported "chiero cannot follow this" about
+   constructs the IR *defines*, which in the output is indistinguishable from a program
+   that really is unfollowable.
+
+   **`Const::Undef` is a value now** (`Value::Undef`), and deliberately *not* a fresh
+   symbol: a symbol is a value nobody has pinned yet and the solver may pin later, while
+   `Undef` is a value that does not exist. Arithmetic and comparison propagate it —
+   including `undef * 0`, which is 0 for every *value* and undefined for a non-value.
+   Storing it leaves the destination uninitialized (so a later read is 021 §3.1's finding,
+   not a read of something chiero invented). A branch on it forks both ways and adds **no**
+   path constraint — there is no term to constrain, and inventing one would let a later
+   query prove something about a value that does not exist. The degradation is `Unknown`,
+   not `Approximated`: chiero approximated nothing, it propagated the program's own
+   absence of a value.
+
+   **`IndirectGoto` forks per declared target.** The address is not resolved to a block —
+   a label address has no representation the memory model can match against a `BlockId` —
+   so the run records `Approximated` and says the target list is the *frontend's*
+   declaration rather than implying the set was computed. Contract 42 came with an explicit
+   "drop the contract if you drop the terminator" escape hatch, which this makes moot.
+
+   *Method note:* making `Value` non-exhaustive forced a decision at three match sites
+   (return value, store operand, `scalar`) that would otherwise have been defaulted. **A
+   new enum variant is a free audit of everywhere the old ones were assumed total.**
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2488,7 +2514,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **671 tests, 122/164
+   **M1's instruction set is complete**, but M1's *exit* is not — **675 tests, 124/164
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
