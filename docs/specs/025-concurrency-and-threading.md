@@ -57,6 +57,11 @@ analysed for an arbitrary worker rather than worker 0, so an off-by-one against
 `vlib_num_workers()` is reachable. The context is supplied by the caller, or inferred by
 `chiero-vpp` from node registration ([060](060-vpp-integration.md)).
 
+`ThreadCtx` lives on the `State` ([023 §1](023-execution-engine.md)), not on the run: it
+**changes mid-path**. `vlib_worker_thread_barrier_sync` moves the state from `Main` to
+`Barrier` and `_release` moves it back, which is what makes contract 9 — the same
+`vec_add1` being a finding outside a barrier and not inside one — expressible at all.
+
 C11 atomics and `clib_atomic_*` execute as their non-atomic equivalents. The memory
 ordering argument is **preserved in the IR** ([020 §4.2](020-cir.md)) and consumed by §3
 even though execution ignores it.
@@ -80,9 +85,42 @@ pub enum Sharing {
 }
 ```
 
-Classification is a lattice join over accesses; an object that is `PerThread` on one path
-and `Shared` on another is `Shared`. The checker maintains a **lock set** per state,
-updated by lock/unlock models registered by `chiero-vpp`.
+Classification is a lattice join over accesses. The lattice must be written out, because
+two of its joins occur constantly and an implementer's guess decides whether findings
+appear at all:
+
+```
+        Unknown  ⊒  Shared            (top: Unknown ≡ Shared for every decision)
+           │
+    ┌──────┴──────┬────────────┐
+ Guarded{l}   PerThread{k}   BarrierOnly
+    └──────┬──────┴────────────┘
+        Immutable                     (bottom)
+```
+
+| Join | Result | Why |
+|---|---|---|
+| `Guarded{l1} ⊔ Guarded{l2}`, `l1 ≠ l2` | `Shared` | Two different locks guard nothing together. Choosing `Guarded{l1}` would silently suppress the "lock not held" finding. |
+| `PerThread{k1} ⊔ PerThread{k2}`, `k1 ≠ k2` | `Shared` | Two different keys means two threads reach it. |
+| `PerThread{k} ⊔ Guarded{l}` | `Shared` | Inconsistent discipline is itself the finding. |
+| `Immutable ⊔ anything` | the other | `Immutable` is bottom. |
+| `Unknown ⊔ anything` | `Shared` | `Unknown` and `Shared` are equivalent for every conservative decision. |
+
+**`Immutable` and `PerThread` are conclusions, not observations.** "Written before workers
+start, read-only after" is not decidable here: there is no time model, analysis starts at
+an arbitrary function ([021 §6](021-memory-model.md)), and exploration is budget-truncated
+([023 §8](023-execution-engine.md)). Any implementation reduces them to "no contradicting
+access was observed on an explored path" — an *under*-approximation being consumed as if
+it were an over-approximation, which is the wrong direction for a safety property.
+
+The rule: **`Immutable` and `PerThread` may only be concluded when exploration of that
+object was complete** (the object's own accesses were all `Exact`). Otherwise the
+classification is `Unknown`, which by the table is `Shared`. This is what stops a
+budget-truncated run from certifying an object as unshared because it never looked.
+
+The checker maintains a **lock set per state** in `CheckerState`
+([023 §6.1](023-execution-engine.md)); the lock-order graph in §3 is explicitly *global*
+state and is declared as such.
 
 Findings it produces:
 
@@ -117,10 +155,24 @@ Stated in these words in every report touching a `Shared` object:
 
 Findings are still sound in the direction that matters: a reported unguarded shared write
 is really unguarded on that path. Absences are not proofs — and per
-[023 §7](023-execution-engine.md), a run in `Worker` or `Unspecified` context whose result
-touched a `Shared` object **cannot be reported as `Exact`**. It is capped at `Bounded`
-with an assumption naming the sequential-consistency and no-interleaving limits. That cap
-is the mechanism that keeps this document's honesty from depending on prose.
+[023 §7](023-execution-engine.md), the fidelity rule is:
+
+> **Any result whose execution touched an object whose final classification is not in
+> `{PerThread, Immutable, BarrierOnly}` has `fidelity ≥ Bounded`**, with an assumption
+> naming the sequential-consistency and no-interleaving limits.
+
+Three things about that sentence are deliberate, because the earlier draft got each wrong:
+
+- **`≥ Bounded`, not `≤`.** `Fidelity` is ordered `Exact < Bounded < Approximated <
+  Unknown` and worst wins, so `≤ Bounded` would *permit* `Exact` — the exact outcome the
+  rule exists to forbid. "Capped" was the wrong word too: this is a floor.
+- **No exemption for `Main`.** §2 defines `Main` as "main thread, **workers running**",
+  and §3's flagship finding is a config-time mutation racing a worker. Restricting the
+  rule to `Worker`/`Unspecified` would let precisely the dangerous case report `Exact`.
+  Only `Barrier` context is genuinely exclusive.
+- **`Unknown` sharing is included.** Keying on "touched a `Shared` object" let anything
+  classified `Unknown` escape the rule entirely; the set is now stated positively, as the
+  three classifications that are actually safe.
 
 ## 5. Hooks for v2
 
@@ -168,17 +220,35 @@ requirement:
    and the context is `Barrier` inside.
 10. An object written only in `Barrier` context, then written from `Worker` context,
     produces exactly one finding.
-11. Every result whose execution touched a `Shared` object has `fidelity <= Bounded` and
+11. Every result whose execution touched an object classified outside
+    `{PerThread, Immutable, BarrierOnly}` has **`fidelity >= Bounded`** (note the
+    direction: `Fidelity` orders `Exact < Bounded`, so `<=` would permit `Exact`) and
     carries an assumption naming sequential consistency and no-interleaving — enforced by
     a test that greps the rendered report text.
+11b. The rule applies in `ThreadCtx::Main` too: a `Main`-context run mutating a `Shared`
+     object is not `Exact`. Only `Barrier` context is exempt.
+11c. An object whose classification joins to `Unknown` is treated as `Shared` by the
+     fidelity rule.
 12. A result in `ThreadCtx::Main` touching only `PerThread` and `Immutable` objects may
-    still be `Exact` (the cap is not blanket pessimism).
-13. `Sharing` classification is a monotone lattice join: replaying a corpus with the paths
-    explored in reverse order yields identical classifications.
+    still be `Exact` (the rule is not blanket pessimism) — **provided** exploration of
+    those objects was complete.
+12b. The same program with a budget that truncates exploration of a `PerThread` object
+     classifies it `Unknown`, not `PerThread`, and is therefore not `Exact`.
+13. The join table in §3 is exercised directly: `Guarded{l1} ⊔ Guarded{l2}` and
+    `PerThread{k1} ⊔ PerThread{k2}` both yield `Shared`. Replaying a corpus with paths
+    explored in reverse order yields identical classifications — on a corpus containing
+    at least one object of each classification, so a constant classifier fails.
+13b. A TLS (`__thread`) variable is classified `PerThread` and produces no finding, where
+     the same variable made non-TLS produces one.
 14. `grep -rE 'vlib_|clib_spinlock|thread_index' crates/chiero-exec/src crates/chiero-check/src`
     yields no hits — every VPP-specific lock and thread-index model is registered from
     `chiero-vpp` through the [024 §8](024-environment-models.md) extension point, and the
     checker itself is target-agnostic.
-15. The discipline checker runs on a pthread-based (non-VPP) corpus program with
-    `pthread_mutex_*` models and finds the same five bug classes — proving contract 14 is
-    real and not an accident of naming.
+15. The discipline checker runs on a pthread-based (non-VPP) corpus program using the
+    `pthread_mutex_*` models from [024 §5.1](024-environment-models.md) and produces
+    findings for these five, named explicitly so the contract is writable: unguarded
+    shared write, unguarded shared read-modify-write, lock not held on a guarded object,
+    lock leak on an error-return path, and lock-order inversion. (The remaining three in
+    §3 — barrier-protected state, per-thread key mismatch, missing barrier around config
+    mutation — have no pthread analogue and are VPP-corpus only.) This is what proves
+    contract 14 is real and not an accident of naming.

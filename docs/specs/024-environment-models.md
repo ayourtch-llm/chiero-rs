@@ -65,6 +65,42 @@ Both forms declare a `Precision`. `Approximate` requires a static string explain
 is lost, which is what appears in the report. A model author cannot mark something
 approximate without saying why.
 
+### 2.1 Precision has a mechanical fidelity effect
+
+Declaring `Precision::Approximate(r)` is **not** editorial. Dispatching such a model:
+
+1. sets `Fidelity ≥ Approximated` per the [023 §7](023-execution-engine.md) table, and
+2. pushes `Assumption { kind: Model, detail: r, span }`.
+
+`ModelOutcome::Havoc` does the same, whether it came from the default fallback (§1 step 4)
+or from a registered model that chose to havoc.
+
+Without this rule there is a hole straight through the project's central guarantee: a run
+calling `scanf` (`Approximate("input")`), any `<math.h>` function (`Approximate("float")`),
+`read`/`ioctl` (`Approximate("syscall")`), or `__builtin_frame_address` could finish
+`Exact`, mint an `ExactWitness`, and report **"no bugs exist"** as a proof. The unmodeled
+path was already handled loudly; this closes the *modeled* path, which is worse because it
+looks deliberate.
+
+`HavocSpec` must therefore say exactly what it invalidates:
+
+```rust
+pub struct HavocSpec {
+    pub objects: Vec<ObjectId>,     // fully invalidated
+    pub ranges: Vec<(Pointer, Term)>,
+    pub reachable_depth: u32,       // follow pointers stored *inside* those objects, N deep
+    pub init: HavocInit,            // Symbolic (known-unknown) | Uninitialized
+    pub may_free: bool,
+}
+```
+
+`init` matters and has no safe default: `Symbolic` marks bytes initialized-with-unknown-
+value, which can mask a genuine uninitialized-read bug; `Uninitialized` produces a
+false-positive storm on any buffer the callee legitimately filled. The default for an
+**unmodeled** extern is `Symbolic` with `reachable_depth: 1` — an unknown function is
+assumed to have written something meaningful rather than left garbage — and the choice is
+recorded in the assumption so it is visible rather than folkloric.
+
 ## 3. Memory models
 
 | Symbol | Semantics |
@@ -93,10 +129,17 @@ The hard case is symbolic contents. `strlen(p)` where the bytes are symbolic:
    concrete bytes).
 2. At the first byte that *may* be zero, fork: one state with the byte constrained to zero
    (length known), one with it non-zero, continuing.
-3. Cap at `max_string_scan` (default 256) or the object's bounds, whichever is smaller.
-   Exceeding it: constrain a terminator to exist within the bound, set `Bounded`, record.
+3. Cap at `max_string_scan` (default 256), set `Bounded`, and record.
 4. Running off the end of the object is an OOB finding (unterminated string), not a
    silent stop — this is a real bug class and the most valuable thing these models catch.
+
+Steps 3 and 4 must not be allowed to cancel each other. An earlier draft had the cap
+"constrain a terminator to exist within the bound", which **assumes away exactly the
+unterminated-string bug step 4 exists to find** whenever the object is smaller than the
+cap. The rule is therefore: the scan is bounded by `min(max_string_scan, object size)`,
+reaching the *object's* end is always an OOB finding, and reaching the *scan cap* first
+adds no constraint — it terminates the state with `Bounded`. Constraining a terminator to
+exist is never correct.
 
 `strcpy` and `strcat` are the same walk plus a bounds check on the destination, which is
 where classic overflows are found.
@@ -112,6 +155,26 @@ where classic overflows are found.
 | `open/read/write/close`, `socket`, `ioctl` | Symbolic return honoring the documented error convention (e.g. `read` returns `-1..=n`), destinations havoc'd where written, `Approximate("syscall")`. |
 | `getenv` | `NULL` or a symbolic string, forked. |
 | `longjmp`/`setjmp` | **Unsupported**: diagnosed, state terminated with `Unknown`. Pretending is worse than declining. |
+
+### 5.1 Threading primitives
+
+`pthread_mutex_lock`/`_unlock`/`_trylock`, `pthread_rwlock_*`, `pthread_create`,
+`pthread_self`, and C11 `mtx_*` are modeled **here**, not in `chiero-vpp`. They are
+standard-library surface, not VPP knowledge, and
+[025 §3](025-concurrency-and-threading.md)'s discipline checker needs a target-agnostic
+lock vocabulary — 025 contract 15 requires the checker to find the same bug classes on a
+pthread corpus as on a VPP one, which is what proves the checker is not secretly
+VPP-shaped. `chiero-vpp` registers `clib_spinlock_*`/`clib_rwlock_*` against the same
+`LockOp` vocabulary.
+
+`pthread_create` is **not** executed as a thread in v1: it records a thread-entry point
+for the discipline checker and returns success, with the no-interleaving blind spot
+already declared by 025 §4.
+
+**Thread-local storage** (`__thread`, `_Thread_local`; 20 VPP files) creates an object with
+`ObjOrigin::Global` but `Sharing::PerThread { key: current thread index }` pinned at
+creation. Without this a TLS variable is indistinguishable from a shared global, and every
+correct per-thread access becomes a false `Shared` finding.
 
 ## 6. Compiler builtins
 
@@ -210,7 +273,18 @@ are printed in `--explain` output, so a reader can always see which models were 
 19. `grep -rE 'vec_|pool_|clib_|vlib_' crates/chiero-model/src` yields no hits.
 20. `longjmp` in a corpus program yields exactly one "unsupported" diagnostic and a state
     terminated with `Fidelity::Unknown` — never a silently-continued path.
-21. Every `ModelEntry` with `Precision::Approximate` carries a non-empty reason string
-    (checked over the whole default registry).
+21. Every `ModelEntry` with `Precision::Approximate` carries a reason string of ≥ 8
+    non-whitespace characters, **and** for each such entry in the default registry a
+    single-call program yields `Fidelity::Approximated`, exactly one `Assumption`, and
+    that reason text present in the rendered report. (A non-empty check alone is satisfied
+    by `" "` and says nothing about the fidelity effect.)
+21b. A corpus program calling `scanf` cannot produce an `Exact` result, and `seal`
+     ([023 §7.1](023-execution-engine.md)) returns `NotProven` for it.
+21c. `ModelOutcome::Havoc` from a *registered* model degrades fidelity identically to the
+     default unmodeled-extern havoc.
+21d. Default havoc with `reachable_depth: 1` invalidates a pointer stored inside the
+     havoc'd object's bytes; with `0` it does not. Both are recorded in the assumption.
+21e. `HavocInit::Symbolic` produces no uninitialized-read finding on the havoc'd bytes;
+     `Uninitialized` produces one. The default for an unmodeled extern is `Symbolic`.
 22. `printf("%d", p)` where `p` is a pointer produces exactly one format-mismatch finding;
     `printf` with an invalid pointer argument produces one memory finding.

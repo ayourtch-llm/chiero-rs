@@ -11,21 +11,51 @@ checkers** ([040](040-defect-checkers.md)) and knows nothing about C source
 pub struct State {
     pub id: StateId,
     pub mem: Memory,                        // 021
-    pub locals: IndexMap<ValueId, Term>,    // per active frame, in `stack`
-    pub stack: Vec<Frame>,
+    pub stack: Vec<Frame>,                  // locals live per frame, not here
     pub pc: Pc,                             // (FuncId, BlockId, inst index)
-    pub path: PathCondition,                // Vec<Term>, append-only per state
+    pub path: PathCondition,                // append-only; carries possibly_infeasible (022 §6.1)
     pub trace: PathTrace,                   // block sequence + fork decisions, for replay
     pub fidelity: Fidelity,                 // monotonically degrading (§7)
     pub assumptions: Vec<Assumption>,       // recorded, human-readable (§7)
+    pub thread: ThreadCtx,                  // 025 §2; mutable — barrier_sync changes it
+    pub checkers: IndexMap<CheckerId, Box<dyn CheckerState>>,   // §6.1
     pub budget: BudgetUse,
     pub loop_counts: IndexMap<(FuncId, BlockId), u32>,
     pub status: Status,                     // Running | Terminated(Why) | Errored(Why)
 }
 
-pub struct Frame { pub func: FuncId, pub ret_to: Option<Pc>, pub ret_dst: Option<ValueId>,
-                   pub locals: IndexMap<ValueId, Term>, pub scope_objs: Vec<ObjectId> }
+pub struct Frame {
+    pub id: FrameId,
+    pub func: FuncId,
+    pub ret_to: Option<Pc>,
+    pub ret_dst: Option<ValueId>,
+    pub locals: IndexMap<ValueId, Value>,
+    /// Which object each alloca materialized to *in this activation* (021 §1).
+    pub frame_objs: IndexMap<AllocaId, ObjectId>,
+    pub scope_objs: IndexMap<ScopeId, Vec<ObjectId>>,
+}
 ```
+
+### 1.1 `Value`, not `Term` — pointers carry provenance
+
+```rust
+pub enum Value { Scalar(Term), Ptr(Pointer) }
+```
+
+This is not a convenience. [021 §2](021-memory-model.md) states that provenance is
+*never* lost — arithmetic leaving an object's bounds still yields a pointer anchored to
+that object — and `Pointer { base: ObjectId, off: Term }` is how. A bare `Term` has no
+`ObjectId`, so storing locals as `Term` would leave only one way to recover the base:
+searching the address space. That search is lossy **by construction**, because
+[021 §7](021-memory-model.md) puts guard gaps between objects precisely so an
+out-of-bounds pointer resolves to *no* object. Round-tripping a pointer through `Term`
+therefore converts a detectable OOB into `UNBOUND`, and 021 contract 3 (`PtrAdd` past the
+end and back again preserves `base`) becomes unimplementable.
+
+`Value` is used consistently wherever a pointer can appear: `Frame::locals`,
+`Event::Call { args }`, `Model::call`'s arguments ([024 §1](024-environment-models.md)),
+and `Witness`. Without it, `memcpy` overlap detection and `free`'s object identification
+have nothing to work from.
 
 `PathCondition` is append-only and shared structurally between forks (`Arc` prefix chain)
 so a 200-constraint path costs one allocation per fork, not 200. The solver's caches
@@ -142,6 +172,32 @@ solver access (`may(cond)`, `must(cond)`) and a `witness()` that extracts a conc
 — but **only through this interface**, so that every finding is forced to come with a
 counterexample or explicitly declare it has none.
 
+### 6.1 Checker state is per-state, and forks with it
+
+A `Checker` is a stateless **observer**; everything it remembers lives in the `State`:
+
+```rust
+pub trait CheckerState: DynClone + Any {
+    fn on_fork(&self) -> Box<dyn CheckerState> { dyn_clone::clone_box(self) }
+}
+```
+
+`State::checkers` holds one `CheckerState` per registered checker, cloned on fork
+alongside `Memory` (and, like it, copy-on-write).
+
+Without this the path-sensitive checkers are simply unimplementable. A `&mut self` on the
+`Checker` itself is shared across *all* states, while the `Searcher` interleaves events
+from unrelated states arbitrarily — DFS backtracks between them, `RandomPath` and
+`Interleaved` jump constantly, and parallel workers (§11) cannot share `&mut self` at all.
+[025 §3](025-concurrency-and-threading.md) requires "a lock set per state" and a per-path
+`Sharing` classification; a lock set accumulated across interleaved states is noise.
+
+**Global checker state is the exception and must be declared.** 025's lock-order graph is
+deliberately cross-state and cross-entry-point; it lives in `CheckerCtx::global`, and
+025 contract 8 requires its result to be independent of the order states were explored.
+Anything not declared global is per-state, and contract 17's requirement that 1, 2 and 8
+worker threads produce identical results applies to it.
+
 Multiple checkers observing the same event report independently; deduplication is
 [040](040-defect-checkers.md)'s job, by `(checker, span, object, kind)`.
 
@@ -151,12 +207,26 @@ Multiple checkers observing the same event report independently; deduplication i
 pub enum Fidelity { Exact, Bounded, Approximated, Unknown }   // ordered, worst wins
 ```
 
-| Value | Meaning |
-|---|---|
-| `Exact` | The explored region was explored completely, and every solver answer was definite. |
-| `Bounded` | Exploration was cut by a documented budget (depth, unroll `k`, state cap, time). Findings are real; absence of findings proves nothing beyond the bound. |
-| `Approximated` | Something was modeled imprecisely: an unmodeled extern, `Opaque`/asm, a float, an over-cap concretization. |
-| `Unknown` | A solver returned `Unknown` on a decision that mattered, or a `LoweringGap` was reached. |
+**This table is normative.** Every other document references it rather than restating it;
+earlier drafts restated it and drifted into four mutually inconsistent versions.
+
+| Value | Meaning | Causes — the complete list |
+|---|---|---|
+| `Exact` | The explored region was explored completely, and every solver answer was definite. | — |
+| `Bounded` | Exploration was cut by a **documented budget**. Findings are real; absence of findings proves nothing beyond the bound. | depth, unroll `k`, state cap, fork cap, recursion cap, `max_resolutions`, `max_indirect`, `max_string_scan`, `LazyPolicy::max_depth`, unescalated recipe candidates, wall clock |
+| `Approximated` | Something was **modeled imprecisely** — a deliberate lie about semantics, not a truncation of search. | unmodeled extern; any model with `Precision::Approximate`; `ModelOutcome::Havoc`; `Opaque`/inline asm; floats; `--vec-summary`; concretizing a symbolic value to one model |
+| `Unknown` | The engine **does not know** and cannot bound its ignorance. | a solver `Unknown` on a decision that mattered; a `LoweringGap`; an access through `ObjectId::UNBOUND`; a pointer resolution with no information (021 §5.1) |
+
+Two boundaries that earlier drafts got wrong in both directions:
+
+- **A cap that was hit is `Bounded`; discarding values is `Approximated`.** Exceeding
+  `max_resolutions` and then *concretizing to one model* does both: the cap is a budget,
+  but keeping one of several feasible objects is a modeling lie. It is
+  `Approximated`, because the stronger claim is the false one. Same for symbolic
+  allocation and `memcpy` sizes.
+- **A solver `Unknown` on a branch yields `Unknown`, not `Approximated`.** The table's own
+  definition says so, and §3 takes the branch anyway — the engine genuinely does not know
+  whether that path exists.
 
 Rules, non-negotiable:
 
@@ -175,19 +245,65 @@ Point 4 is the whole reason the enum exists, and it is what makes chiero usable 
 tool: an LLM will read "no bugs" as "safe", so chiero must be structurally incapable of
 saying it loosely.
 
+### 7.1 `ExactWitness`
+
+The token must be bound to the run it blesses, or it is theatre — mint one from a trivial
+`Exact` run (`return 0;`) and it would bless anything.
+
+```rust
+pub struct ExactWitness { run: RunId, _seal: PhantomData<Sealed> }  // private field, !Clone
+
+/// The ONLY function in the workspace that reads `RunResult::fidelity` to decide
+/// whether a result may be presented as a proof.
+pub fn seal(r: &RunResult, w: ExactWitness) -> Result<Proven<'_>, NotProven>;
+```
+
+`ExactWitness` is non-`Clone`, has a private field, and is constructible only inside
+`chiero-exec`. `seal` consumes it and additionally checks `w.run == r.id`, so a witness
+from another run is rejected at runtime even though both are `Exact`.
+
+Being honest about the guarantee: the type system prevents *downstream crates* from
+forging a proof. It does not prevent `chiero-exec` itself from minting a witness on a
+degraded run — that remains one ordinary `if`, concentrated in one function so it can be
+reviewed and property-tested. "Structurally impossible to overclaim" is true of every
+consumer and is a single audited branch inside the engine; contract 13b tests that branch
+across all four fidelity levels.
+
 ## 8. Budgets
 
 ```rust
 pub struct Budget {
+    // Deterministic budgets — these gate output and are reproducible.
     pub max_depth: u32,            // 10_000 instructions per path
     pub max_loop_iters: u32,       // k, per (func, back-edge), default 8
     pub max_states: u32,           // 10_000 live
     pub max_forks: u32,            // per run
-    pub wall_clock: Duration,      // default 60s
-    pub max_solver_time: Duration, // per query, default 10s
     pub max_memory_objects: u32,
+    pub max_solver_rlimit: u64,    // z3 :rlimit — deterministic work units, NOT seconds
+    // Non-deterministic backstop — never gates a reported result (§8.1).
+    pub wall_clock: Option<Duration>,   // default 60s
 }
 ```
+
+### 8.1 Determinism requires that time not gate output
+
+[001 §5](001-architecture.md) makes byte-identical output a hard requirement, and a
+wall-clock timeout is not reproducible: it changes `Fidelity`, `assumptions` and
+`budget_hits`, all of which are output. Worse, contract 17 asks for identical results at
+1, 2 and 8 worker threads, and thread count changes solver load, which changes which
+queries time out.
+
+So the two kinds of budget are separated:
+
+- **Deterministic budgets** gate results. Solver effort is bounded by z3's `:rlimit`
+  (deterministic work units) rather than `:timeout` (seconds) — this is exactly why the
+  distinction exists in z3, and it is what makes `Unknown(ResourceLimit)` reproducible.
+- **`wall_clock` is a non-deterministic abort.** Hitting it terminates the run and is
+  reported as `BudgetHit::WallClock`, but results produced under it are excluded from the
+  determinism contracts, and the run is marked `nondeterministic_abort: true`. CI runs the
+  determinism gates with `wall_clock: None`.
+
+Without this split, contract 6 and contract 17 are not merely hard, they are false.
 
 Loop bounds are per **back edge**, identified by dominator analysis over the CFG, not by
 syntactic loop recovery — CIR has no loops ([020 §1](020-cir.md)). Exceeding any budget
@@ -260,12 +376,14 @@ results (contract 17).
 3. `Br` on `x < 5` with `x` fresh produces exactly two states with path conditions
    `x < 5` and `¬(x < 5)`, in that order.
 4. A `Br` whose feasibility query returns `Unknown` produces a state on that branch with
-   `Fidelity ≥ Approximated` and exactly one `Assumption` naming the solver timeout.
+   `Fidelity == Unknown` (per the §7 table, not merely `Approximated`) and exactly one
+   `Assumption` naming the cause.
 5. A loop `while (i < n) i++` with `max_loop_iters = 3` terminates, produces 4 states, and
    the run's fidelity is `Bounded` with a `BudgetHit` naming the back edge.
-6. The same program run twice produces identical `StateId` sequences, identical fork
-   order, identical findings, and byte-identical output — including under `RandomPath`
-   with the default seed.
+6. With `wall_clock: None`, the same program run twice produces identical `StateId`
+   sequences, identical fork order, identical findings, and byte-identical output —
+   including under `RandomPath` with the default seed. (With a wall clock set, this is not
+   required and the run is flagged; see §8.1.)
 7. Changing the `RandomPath` seed changes exploration order and the seed appears in
    `RunResult`.
 8. A call to an unmodeled extern with a pointer argument havocs the pointee, returns a
@@ -276,24 +394,39 @@ results (contract 17).
 10. An indirect call resolvable to 3 functions forks into 4 states (3 + unresolvable), and
     with `max_indirect = 2` yields `Bounded` and a recorded cap.
 11. `Fidelity` never increases: property test over 10 000 random runs asserts monotonicity
-    per state.
-12. Every state whose fidelity is worse than `Exact` has ≥ 1 `Assumption`.
-13. A `RunResult` with `Fidelity != Exact` cannot be converted into a `Proof`-carrying
-    answer — this is a *compile-fail* test (`trybuild`), not a runtime check.
+    per state. The test must include a run that *does* degrade (a always-`Unknown`
+    implementation passes monotonicity trivially).
+12. Every state whose fidelity is worse than `Exact` has ≥ 1 `Assumption` **whose `kind`
+    matches the recorded cause and whose text appears in the rendered report** — a dummy
+    assumption must not satisfy this.
+13a. **Compile-fail** (`trybuild`): `ExactWitness` cannot be constructed outside
+     `chiero-exec`, and cannot be `Clone`d.
+13b. **Runtime**: `seal` returns `NotProven` for `Bounded`, `Approximated` and `Unknown`
+     results, and `Proven` only for `Exact` — property-tested across all four levels; and
+     an `ExactWitness` minted by run A is rejected against run B even when both are
+     `Exact`.
 14. `no bugs found` under a hit budget renders as "no bugs found within <bound>" and never
     as "no bugs exist" (golden test on the rendered text).
 15. Every `Finding` from the corpus has a `Witness`, or an explicit
     `witness: None` with a recorded reason.
 16. Replaying a `Witness` through the engine with all inputs concretized re-reaches the
     same `Finding` at the same `Span` — for every finding in the corpus.
-17. Running with 1, 2 and 8 worker threads produces identical `RunResult`s (modulo
-    wall-clock timings in `stats`).
+17. With `wall_clock: None`, running with 1, 2 and 8 worker threads produces identical
+    `RunResult`s (modulo wall-clock timings in `stats`). Per-state `CheckerState` is what
+    makes this achievable; a checker holding cross-state mutable state would break it.
 18. Exceeding `max_states` terminates the run cleanly with `Bounded`, reporting the
     findings already collected — no data loss, no panic.
 19. A checker returning `Action::Assume` constrains the state and the subsequent branch
     feasibility reflects it.
 20. Two checkers reporting the same event produce two findings at the engine level (the
     engine does not deduplicate).
-21. `BlockCoverage` from a run over a corpus function matches the set of blocks the
-    concrete gcc-compiled run covers for the same concretized inputs (ties the engine to
-    the differential oracle in [070](070-testing-and-tdd-protocol.md)).
+21. **Per witness replay, at line granularity**: for a single witness replayed with all
+    inputs concretized, the `gcov_lines` of the CIR blocks chiero executed equal the lines
+    gcov reports for the gcc-compiled program on the same inputs. Stated at *block*
+    granularity across a whole symbolic run it would be false twice over — a symbolic run
+    covers the union over many paths, and chiero's CFG does not correspond block-to-block
+    with gcc's post-gimplification CFG.
+22. A stateful checker's `CheckerState` is cloned on fork: a lock acquired before a fork
+    is held in both children, and released in one leaves it held in the other.
+23. A `Value::Ptr` survives being stored to a local, loaded back, and passed to a model:
+    `free(p)` after such a round trip identifies the same `ObjectId`.
