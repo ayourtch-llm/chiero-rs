@@ -4593,3 +4593,127 @@ fn a_symbolic_store_reads_back_as_the_same_unknown() {
         "and it is still an unknown, not the model's bytes"
     );
 }
+
+/// **`CopyMem` and `SetMem` are CIR instructions, not just library calls.** A frontend
+/// lowers a struct assignment and an array initializer to these directly, with no
+/// `memcpy` in the source at all — so leaving them unimplemented means `s = t;` between
+/// structs degrades the run to `Unknown` and silently keeps the destination's old bytes.
+#[test]
+fn copy_mem_and_set_mem_move_bytes() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0xAB,
+                    }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                }),
+                inst(InstKind::CopyMem {
+                    dst: Operand::Value(ValueId(1)),
+                    src: Operand::Value(ValueId(0)),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    align: 1,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8), alloca(1, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    let mut mem = s.mem.clone();
+    for v in [0u32, 1] {
+        let base = match s.local(ValueId(v)) {
+            Some(Value::Ptr(p)) => p.base,
+            other => panic!("{other:?}"),
+        };
+        let read = mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY);
+        assert!(read.faults.is_empty(), "{:#?}", read.faults);
+        assert_eq!(read.value, Some(vec![0xAB; 8]), "buffer {v}");
+    }
+}
+
+/// **`CopyMem` is `memcpy`, so overlapping ranges are a finding.** 021 contract 22 draws
+/// the line between `Overlap::Forbidden` and `Overlap::Allowed`, and a lowering that
+/// picked the permissive one would silently accept UB that the library model rejects —
+/// the same call, two answers, depending on which spelling the frontend chose.
+#[test]
+fn copy_mem_forbids_overlap() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 16 }),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 2 }),
+                    },
+                }),
+                inst(InstKind::CopyMem {
+                    dst: Operand::Value(ValueId(1)),
+                    src: Operand::Value(ValueId(0)),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    align: 1,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("overlapping-copy")),
+        "{:#?}",
+        r.findings()
+    );
+}
