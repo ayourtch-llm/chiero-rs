@@ -1783,6 +1783,15 @@ impl Memory {
         }
     }
 
+    /// 021 §7.1's **fallback**: the object containing `addr`, by range search. Wrong in
+    /// both directions by construction — an integer that happens to land inside an object
+    /// is followed to it, and a pointer whose object was freed resolves to whatever now
+    /// occupies the address — so a caller must record that it guessed. Provenance, when
+    /// there is any, is the caller's to keep; `Memory` cannot see where a term came from.
+    pub fn object_containing(&self, addr: u64) -> Pointer {
+        self.space.int_to_ptr(IntVal::Const(addr))
+    }
+
     /// The NUL-terminated string at `p`, if every byte of it is concrete and
     /// initialized. `None` for anything else — a *partly* readable string is not a
     /// string, and guessing at the readable prefix would put a truncated reason in a

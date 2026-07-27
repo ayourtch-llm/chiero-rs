@@ -219,6 +219,10 @@ pub struct State {
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
     findings: Vec<(u64, String)>,
+    /// Where an integer came from, for 021 §7.1's provenance-first `IntToPtr`. Keyed on
+    /// the term, so arithmetic that produces a *different* term correctly loses the
+    /// provenance rather than carrying it somewhere it does not belong.
+    ptr_ints: IndexMap<Term, Pointer>,
 }
 
 impl State {
@@ -268,6 +272,7 @@ impl State {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            ptr_ints: IndexMap::new(),
         }
     }
 
@@ -277,6 +282,15 @@ impl State {
 
     pub fn assumptions(&self) -> &[Assumption] {
         &self.assumptions
+    }
+
+    /// Record that `t` is the address of `p`. See `ptr_ints`.
+    pub fn remember_provenance(&mut self, t: Term, p: Pointer) {
+        self.ptr_ints.insert(t, p);
+    }
+
+    pub fn provenance_of(&self, t: Term) -> Option<Pointer> {
+        self.ptr_ints.get(&t).copied()
     }
 
     pub fn findings(&self) -> Vec<&str> {
@@ -596,6 +610,7 @@ impl<'m> Engine<'m> {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            ptr_ints: IndexMap::new(),
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
         // 001 §5's determinism requirement is met by construction rather than by luck.
@@ -1328,9 +1343,45 @@ impl<'m> Engine<'m> {
                 from,
                 to,
             } => {
+                // 021 §7.1. These two are the only casts whose operand or result is a
+                // pointer, so they are settled before the bit-width machinery below.
+                if *kind == CastKind::PtrToInt {
+                    let Some(Value::Ptr(p)) = self.operand(a, s, x) else {
+                        return self.lowering_gap(s, span, "PtrToInt of a non-pointer");
+                    };
+                    let Some(base) = s.mem.addr_of(p.base) else {
+                        return self.lowering_gap(s, span, "PtrToInt of an unplaced object");
+                    };
+                    let t = a.bv(64, base.wrapping_add(p.off as u64) as u128);
+                    // **The origin is remembered, not recovered.** The address alone
+                    // cannot say which object it came from once the object is freed, and
+                    // `ObjectId` is what every later check is about.
+                    s.remember_provenance(t, p);
+                    return Some(Value::Scalar(t));
+                }
+                if *kind == CastKind::IntToPtr {
+                    let Some(t) = self.scalar(a, s, x) else {
+                        return self.lowering_gap(s, span, "IntToPtr of a non-scalar");
+                    };
+                    // Provenance **first**. The range search below is the fallback, and
+                    // it is wrong in both directions.
+                    if let Some(p) = s.provenance_of(t) {
+                        return Some(Value::Ptr(p));
+                    }
+                    let Ok(c) = a.eval_ground(t) else {
+                        return self.lowering_gap(s, span, "IntToPtr of a symbolic integer");
+                    };
+                    let p = s.mem.object_containing(c.bits() as u64);
+                    s.degrade(
+                        Fidelity::Unknown,
+                        AssumptionKind::NoInformation,
+                        span,
+                        "IntToPtr of an integer with no provenance: the object was found \
+                         by address, which is wrong if a different object now occupies it",
+                    );
+                    return Some(Value::Ptr(p));
+                }
                 let Some(xv) = self.scalar(a, s, x) else {
-                    // `PtrToInt` on a pointer is 021 §7.1's business and is owed; it is
-                    // not a scalar operand, so it lands here rather than being guessed.
                     return self.lowering_gap(s, span, &format!("{kind:?} of a non-scalar"));
                 };
                 let (fw, tw) = (bits_of_cty(from), bits_of_cty(to));

@@ -5110,6 +5110,28 @@ fn a_pointer_round_trips_through_an_integer_by_provenance() {
                         to: CTy::Ptr,
                     },
                 }),
+                // The *integer* has to be right too, not just recoverable. Provenance
+                // gives the pointer back whatever the address says, so dropping the
+                // offset from the address computation is invisible without this — and a
+                // program that prints or compares the integer would see a lie.
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(64),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Value(ValueId(4)),
+                    },
+                }),
             ],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -5134,6 +5156,12 @@ fn a_pointer_round_trips_through_an_integer_by_provenance() {
         "provenance is not a guess: {:#?}",
         s.assumptions()
     );
+    match s.local(ValueId(5)) {
+        Some(Value::Scalar(t)) => {
+            assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(4))
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// **An integer with no provenance is not silently resolved.** 021 §7.1 keeps the range
