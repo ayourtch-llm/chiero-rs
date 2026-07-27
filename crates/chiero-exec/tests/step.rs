@@ -9516,6 +9516,124 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
     );
 }
 
+/// **021 contract 17.** With `max_resolutions = 2` the same case **concretizes**, and the
+/// result carries `Fidelity::Approximated` — 023 §7's table puts discarding feasible paths
+/// there, which is a different statement from step 4's `Unknown`.
+///
+/// The distinction is the whole of §5.1's warning: `Approximated` says "chiero looked,
+/// found more than it would explore, and picked one"; `Unknown` says "chiero knew
+/// nothing". Reporting the second as the first would claim a search that never happened.
+#[test]
+fn over_max_resolutions_concretizes_and_says_approximated() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(3),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(1)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        alloca(0, CTy::Int(8), 8),
+        alloca(1, CTy::Int(8), 8),
+        alloca(2, CTy::Int(8), 8),
+        alloca(3, CTy::Int(8), 8),
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(backend)
+        .with_budget(Budget {
+            max_resolutions: 2,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    let resolved: Vec<_> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(4)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        resolved.len(),
+        1,
+        "concretized to one object rather than forked: {resolved:?}"
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Approximated,
+        "chiero looked and discarded feasible paths — not `Unknown`: {:#?}",
+        r.states()[0].assumptions()
+    );
+    assert!(
+        r.states().iter().any(|s| s
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("max_resolutions"))),
+        "and names the bound it hit"
+    );
+}
+
 /// **021 §5.1: an unresolved pointer stops the path, and says *why* it was unresolved.**
 ///
 /// The reason matters more than the fidelity here. §5.1 step 4 — the value is *wholly
