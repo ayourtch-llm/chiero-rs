@@ -53,10 +53,82 @@ impl VerifyError {
 /// Verify a module. Errors are returned in a deterministic order (001 §5).
 pub fn verify(m: &Module) -> Vec<VerifyError> {
     let mut out = Vec::new();
+    check_module_identity(m, &mut out);
     for f in &m.funcs {
-        verify_function(f, &mut out);
+        verify_function(m, f, &mut out);
     }
     out
+}
+
+/// Cross-function identity. `verify_function` cannot see any of this, so before the
+/// module was threaded through, two globals with one id, two functions with one name,
+/// and every dangling reference produced no error at all.
+fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
+    let anon = Function {
+        id: FuncId(0),
+        name: "<module>".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let mut gids: Vec<GlobalId> = Vec::new();
+    let mut gnames: Vec<&str> = Vec::new();
+    for g in &m.globals {
+        if gids.contains(&g.id) {
+            err(
+                out,
+                &anon,
+                VerifyErrorKind::DuplicateId,
+                g.span,
+                format!("{:?} is declared more than once", g.id),
+            );
+        }
+        if gnames.contains(&&*g.name) {
+            err(
+                out,
+                &anon,
+                VerifyErrorKind::DuplicateId,
+                g.span,
+                format!("global `{}` is declared more than once", g.name),
+            );
+        }
+        gids.push(g.id);
+        gnames.push(&g.name);
+        // Rule 7 applies to globals too.
+        check_align(&anon, g.align, g.span, out);
+    }
+    let mut fids: Vec<FuncId> = Vec::new();
+    let mut fnames: Vec<&str> = Vec::new();
+    for f in &m.funcs {
+        if fids.contains(&f.id) {
+            err(
+                out,
+                f,
+                VerifyErrorKind::DuplicateId,
+                f.span,
+                format!("{:?} is declared more than once", f.id),
+            );
+        }
+        // A duplicate *name* is the quietest failure: name resolution takes the first,
+        // so a `.cir` file naming the other simply calls something else.
+        if fnames.contains(&&*f.name) {
+            err(
+                out,
+                f,
+                VerifyErrorKind::DuplicateId,
+                f.span,
+                format!("function `{}` is declared more than once", f.name),
+            );
+        }
+        fids.push(f.id);
+        fnames.push(&f.name);
+    }
 }
 
 fn err(
@@ -74,7 +146,7 @@ fn err(
     });
 }
 
-fn verify_function(f: &Function, out: &mut Vec<VerifyError>) {
+fn verify_function(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
     // Rule 10.
     match (&f.body, f.blocks.is_empty()) {
         (Body::Declared, false) => {
@@ -106,6 +178,7 @@ fn verify_function(f: &Function, out: &mut Vec<VerifyError>) {
     }
 
     check_structural_identity(f, out);
+    check_references(m, f, out);
     check_block_refs(f, out);
     if out.iter().any(|e| e.kind == VerifyErrorKind::UnknownBlock) {
         // Later rules index blocks by id; a dangling reference would make their
@@ -199,6 +272,82 @@ fn check_structural_identity(f: &Function, out: &mut Vec<VerifyError>) {
                     i.span,
                     format!("AddrOfLocal names undeclared {alloca:?}"),
                 );
+            }
+        }
+    }
+}
+
+/// Every `FuncId`/`GlobalId` a function names must exist, and a direct call must supply
+/// the callee's arity.
+fn check_references(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
+    let known_func = |id: FuncId| m.funcs.iter().any(|x| x.id == id);
+    let known_global = |id: GlobalId| m.globals.iter().any(|x| x.id == id);
+
+    for b in &f.blocks {
+        for i in &b.insts {
+            match &i.kind {
+                InstKind::Call {
+                    callee: Callee::Direct(id),
+                    args,
+                    ..
+                } => {
+                    match m.funcs.iter().find(|x| x.id == *id) {
+                        None => err(
+                            out,
+                            f,
+                            VerifyErrorKind::UnknownId,
+                            i.span,
+                            format!("call to undeclared {id:?}"),
+                        ),
+                        Some(callee) => {
+                            let n = callee.params.len();
+                            // A variadic callee legitimately accepts extras; forbidding
+                            // them would be worse than not checking at all.
+                            let ok = if callee.variadic {
+                                args.len() >= n
+                            } else {
+                                args.len() == n
+                            };
+                            if !ok {
+                                err(
+                                    out,
+                                    f,
+                                    VerifyErrorKind::CallArity,
+                                    i.span,
+                                    format!(
+                                        "`{}` takes {}{} argument(s), given {}",
+                                        callee.name,
+                                        n,
+                                        if callee.variadic { "+" } else { "" },
+                                        args.len()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+                InstKind::Assign { rv, .. } => match rv {
+                    RValue::AddrOfFunc(id) if !known_func(*id) => {
+                        err(
+                            out,
+                            f,
+                            VerifyErrorKind::UnknownId,
+                            i.span,
+                            format!("address of undeclared {id:?}"),
+                        );
+                    }
+                    RValue::AddrOfGlobal { g } if !known_global(*g) => {
+                        err(
+                            out,
+                            f,
+                            VerifyErrorKind::UnknownId,
+                            i.span,
+                            format!("address of undeclared {g:?}"),
+                        );
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }

@@ -603,6 +603,9 @@ fn a_diamond_join_needs_the_dominator_intersection() {
 fn call_arguments_are_dominance_checked() {
     let mut m = valid_module();
     make_void(&mut m);
+    // Variadic so the argument does not also trip the arity check; the defect under
+    // test is the undominated use.
+    m.funcs[0].variadic = true;
     m.funcs[0].blocks[0].insts.insert(
         0,
         inst(InstKind::Call {
