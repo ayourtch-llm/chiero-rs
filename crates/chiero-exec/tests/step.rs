@@ -10769,6 +10769,15 @@ fn an_address_inside_an_object_resolves_to_it_at_that_offset() {
         resolved.contains(&(base0, 6)),
         "six bytes into a 32-byte object: {resolved:?}"
     );
+    // **And no wild path.** The address is pinned *inside* an object, so a state saying
+    // it points nowhere is a path the program does not have — a false positive with a
+    // witness that cannot be replayed. The wild state exists only when a model actually
+    // lands outside every object; "the solver did not say no" is not a witness. Found by
+    // review as M14.
+    assert!(
+        resolved.iter().all(|(b, _)| *b != ObjectId::UNBOUND),
+        "a provably-inside address has no wild path: {resolved:?}"
+    );
 }
 
 /// The upper bound is *inclusive* — C makes a one-past-the-end pointer legal, and 021

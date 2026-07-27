@@ -39,9 +39,18 @@ fn objects_are_placed_in_their_region_with_a_guard_gap() {
         s.addr_of(g).unwrap() < 0x0000_2000_0000,
         "regions must not run into each other"
     );
+    // **The literal, not the constant.** `>= GUARD_GAP` is satisfied by setting
+    // `GUARD_GAP` to 0 — three assertions here proved only that the code and the test
+    // read the same constant. What the gap is *for* is that an overrun smaller than a
+    // page cannot reach a neighbour, so a page is what gets asserted. Found by review
+    // as G1.
+    assert_eq!(
+        GUARD_GAP, 4096,
+        "a page: an overrun smaller than one cannot reach across"
+    );
     assert!(
-        s.addr_of(b).unwrap() - (s.addr_of(a).unwrap() + 100) >= GUARD_GAP,
-        "objects must be separated by at least one guard gap"
+        s.addr_of(b).unwrap() - (s.addr_of(a).unwrap() + 100) >= 4096,
+        "objects must be separated by at least one page"
     );
 }
 
@@ -77,7 +86,7 @@ fn no_two_objects_overlap_across_random_allocation_sequences() {
             let (a_addr, a_size) = w[0];
             let (b_addr, _) = w[1];
             assert!(
-                b_addr >= a_addr + a_size + GUARD_GAP,
+                b_addr >= a_addr + a_size + 4096,
                 "objects at {a_addr:#x}+{a_size} and {b_addr:#x} are not gap-separated"
             );
         }
@@ -146,18 +155,19 @@ fn an_out_of_bounds_pointer_does_not_round_trip_into_its_neighbour() {
 #[test]
 fn a_one_past_the_end_pointer_of_a_gap_sized_object_keeps_its_object() {
     let mut s = space();
-    let o = s.alloc(ObjKind::Heap, GUARD_GAP, 4096, Span::DUMMY);
-    let p = Pointer {
-        base: o,
-        off: GUARD_GAP as i64,
-    };
+    // Sized to the gap deliberately: its one-past-the-end address is the first byte of
+    // the gap, which is exactly where range search stops finding it. Spelled out rather
+    // than written `GUARD_GAP`, so shrinking the constant cannot quietly move the
+    // pointer back inside the object and keep the test green.
+    let o = s.alloc(ObjKind::Heap, 4096, 4096, Span::DUMMY);
+    let p = Pointer { base: o, off: 4096 };
     let n = s.ptr_to_int(p);
     let back = s.int_to_ptr(n);
     assert_eq!(
         back.base, o,
         "one-past-the-end is legal C and must not become a wild pointer"
     );
-    assert_eq!(back.off, GUARD_GAP as i64);
+    assert_eq!(back.off, 4096);
 }
 
 /// **021 contract 12c: provenance propagates through integer arithmetic.**
