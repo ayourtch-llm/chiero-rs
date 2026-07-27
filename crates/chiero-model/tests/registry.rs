@@ -1110,3 +1110,44 @@ fn a_model_that_gives_up_reports_once() {
         reported
     );
 }
+
+/// **A model's reports and the faults behind them stay in step.** `dispatch` pairs
+/// `findings()[i]` with `faults()[i]`, and `report()` pushed only to `findings` — so a
+/// model that reported something *before* lifting a fault shifted every later fault onto
+/// the wrong message. Nothing enforced it; it held only because no shipped model
+/// interleaves, which makes it a trap for the next one. Found by review.
+#[test]
+fn a_models_reports_and_faults_stay_in_step() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let dst = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
+    let src = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.set(Pointer { base: src, off: 0 }, 1, 16, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    // A note first, then a fault: the interleaving no shipped model happens to do.
+    cx.report("a note the model wanted to make");
+    models::memcpy(
+        &mut cx,
+        Pointer { base: dst, off: 0 },
+        Pointer { base: src, off: 0 },
+        16,
+    );
+    let reports = cx.reports();
+    assert!(reports.len() >= 2, "{reports:#?}");
+    assert!(
+        reports[0].1.contains("a note"),
+        "the note has no fault behind it: {:?}",
+        reports[0]
+    );
+    assert!(
+        reports[0].0.is_none(),
+        "and it is not paired with one: {:?}",
+        reports[0]
+    );
+    assert!(
+        reports
+            .iter()
+            .any(|(f, t)| f.is_some() && t.contains("out-of-bounds")),
+        "the fault is paired with its own text: {reports:#?}"
+    );
+}
