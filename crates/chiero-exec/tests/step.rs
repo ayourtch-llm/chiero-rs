@@ -9514,3 +9514,91 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
         r.states()[0].assumptions()
     );
 }
+
+/// **021 §5.1 and contract 16.** A symbolic base pointer that can refer to 3 objects forks
+/// into **4** states — one per object, plus the wild-pointer state — with mutually
+/// exclusive constraints.
+///
+/// The fourth state is not bookkeeping: without it the candidate list is implicitly claimed
+/// exhaustive, so an address that falls outside every known object is never explored and
+/// the run still reports on the "complete" set. That is the same argument as the
+/// unresolvable state on an indirect *call*, one indirection over.
+#[test]
+fn a_symbolic_base_forks_per_object_plus_one_wild() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(2),
+                    },
+                }),
+                // An address the solver knows only through a constraint: it equals one of
+                // the three, but chiero cannot fold it to a constant.
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Fresh { ty: CTy::Int(64) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(3)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        alloca(0, CTy::Int(8), 8),
+        alloca(1, CTy::Int(8), 8),
+        alloca(2, CTy::Int(8), 8),
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    // Three objects exist, so three resolutions plus the wild state.
+    assert_eq!(
+        r.states().len(),
+        4,
+        "three candidates plus one wild: {:#?}",
+        r.states()
+            .iter()
+            .map(|s| s.local(ValueId(4)))
+            .collect::<Vec<_>>()
+    );
+    let wild = r
+        .states()
+        .iter()
+        .filter(|s| match s.local(ValueId(4)) {
+            Some(Value::Ptr(p)) => p.base == chiero_mem::ObjectId::UNBOUND,
+            _ => false,
+        })
+        .count();
+    assert_eq!(wild, 1, "exactly one state says the pointer may be nowhere");
+    // And the run says it did not know: an unresolved base is not an exact answer.
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+}
