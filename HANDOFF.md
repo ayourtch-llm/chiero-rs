@@ -1855,11 +1855,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    the arity; `ExtractLane`'s bounds check is behind verifier rule 12) — each came with a
    probe, and each holds.
 
-   **STILL OWED from wave 33:** `ModelOutcome::Finding` is still pushed unkeyed, so a model
-   that *gives up* inside a loop reports once per iteration — the shape fixed for `lift`ed
-   faults but not for this path; `ShuffleDyn` is declared in 020 §4 and absent from
-   `chiero_cir::RValue`, so "eval is exhaustive" is exhaustive over a smaller enum than the
-   spec's; and `InsertLane` derives its width from the inserted element while `ExtractLane`
+   **WAVE 34** (`893b6be`, `53f787a`; 567 tests). **`ModelOutcome::Finding` is keyed by
+   its call site** — a model giving up has no `MemFault`, but the *call* identifies the
+   bug, so one `strcpy` that cannot scan its source is one report however many times the
+   loop runs. ⚠️ Deduplicating on the **text** would not have worked: two iterations give
+   different messages ("Unterminated { scanned: 16 }" then "CapReached { scanned: 0 }"),
+   because the first partly wrote the destination. The now-dead unkeyed `findings` path is
+   removed rather than left empty.
+
+   **020 contract 33 amended**: `ShuffleDyn` is declared in §4.1 and absent from `RValue`,
+   so `eval`'s exhaustiveness cannot catch it — *a variant the enum never had is not one
+   the match can be missing*. The contract now says its second half is untestable rather
+   than reading as satisfied.
+
+   *The give-up test needed two call sites*: with one, the `span` component was unpinned
+   because every report shared it. Recurring rule — **a key component is untested whenever
+   every fixture supplies the same value for it.**
+
+   **STILL OWED from wave 33:** ~~`ModelOutcome::Finding` unkeyed~~ and ~~`ShuffleDyn`~~
+   both handled in wave 34. Remaining: `InsertLane` derives its width from the inserted element while `ExtractLane`
    refuses to guess — an asymmetry the reviewer could not turn into a defect but which
    contradicts the commit's own rule.
 
