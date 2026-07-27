@@ -604,7 +604,49 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    not see it (fifth vacuity); the dedup key was unpinned in three directions; and the
    dedup fix made cooking quadratic — 305 ms at 32k sites against a budget of millions.
 
-   **Wave 5 (QUEUED — nothing cached):**
+   **Wave 5 — `chiero-cir` review COMPLETE, applied in `22a3523`.** 95 mutations,
+   **43 survived (45% escape rate)** — the most productive review yet, and the method
+   (mutate, re-run, report survivors) should now be the default brief for every code
+   review on this project.
+
+   Fixed: rule 5 was **entirely unimplemented** (no width check on `Bin`/`Un`/`Cmp`/
+   `Select`/`Br`/bare-`ret`); `Operand::Value` typing was one indirection deep so a
+   pointer through `%1 = %0` disabled rule 6 downstream; **nothing asserted `is_error()`
+   is true**, so returning `false` unconditionally passed all 42 tests; unreachable
+   blocks also raised hard dominance errors, making "dead code is legal" true only for
+   *empty* dead blocks; 20 malformed inputs panicked instead of erroring; contract 3 was
+   half-tested.
+
+   **STILL OWED from that review — do these before trusting `chiero-cir`:**
+   - **Eight constructs print but cannot be parsed back**: `Const::Wide`, `Const::Float`,
+     `Const::Undef`, `Const::GlobalAddr`, `Const::FuncAddr` as an operand (printed by id,
+     parsed by name), `BinOp::PtrDiff` (and its `elem_size` is dropped outright),
+     `RValue::Shuffle`, and **`CTy::Vector` in any instruction** — `toks()` splits on
+     whitespace before `ty()` sees `<16 x i8>`, so **no `.cir` fixture can contain a
+     vector**, making 020 §4.1.1 and rule 12 permanently untestable from the corpus.
+   - **`print` drops six semantic fields**: `variadic`, all four `FnAttrs` (including
+     `order_sensitive`, which 020 contract 18 needs), `is_const`, `config`, `metadata`,
+     and all spans. Contract 1 does not actually hold. The corpus round-trip test
+     compares text-to-text, so it cannot see this — **make it structural** (derive
+     `PartialEq` on `Module`).
+   - **`MarkerKind::Line` at instruction position is deleted on reparse** (folded into
+     `gcov_lines`), so `insts.len()` goes 1 → 0. Decide whether it is representable.
+   - **Entry-label aliasing**: `block_label` prints `entry` for `f.entry` while the
+     parser hardcodes `entry → BlockId(0)`, so a function with `entry == BlockId(3)` and
+     a sibling `BlockId(0)` reparses into two blocks both numbered 0.
+   - Rule 13's second half (a `DYNAMIC_EXTENT` decl with no `AllocaDyn`), rule 7 for
+     `AllocaDecl`/`Global` alignment, duplicate `BlockId`/`AllocaId`/param `ValueId`,
+     dangling `FuncId`/`GlobalId`, and call arity — all unchecked.
+   - ~50 opcode-table entries are untested lookups (`mul` printed as `add` survives; all
+     four `UnreachableReason`s collapse to `gap`, which matters because 020 §5 gives
+     `LoweringGap` and `BuiltinUnreachable` different meanings).
+   - **The normative example in 020 §6 does not parse** (named values `%v`, `= zero` on
+     globals, alloca syntax without scope/lifetime). Either the spec or the parser is
+     wrong; the spec's own worked example is not a valid fixture.
+   - `tests/corpus.rs` tells the user to run `cargo xtask fmt-corpus`, which does not
+     exist.
+
+   **Wave 6 (QUEUED — nothing cached):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -632,8 +674,11 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      020 contracts 1 and 5 — which quantify over "every module in the corpus" — pass
      vacuously today.** That is the sixth vacuity and it is already known; the corpus is
      owed.
-   - **A third `chiero-span` pass** only if the first two stop finding things; the trend
-     is still strongly positive.
+   - **`chiero-solver`** once `solver-lite` exists — the term arena and evaluator are in
+     (`de3f33a`, 11 tests) but the solver proper is not. Brief it with the mutation
+     method and point it at 022 §3's soundness rules.
+   - **A third `chiero-span` pass** only if the others stop finding things; the trend is
+     still strongly positive.
 
 3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
    subagent finding is a claim, not a verdict; several will be wrong, and adopting a
@@ -712,7 +757,10 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    **Next in `chiero-cir`:** the optional passes (§9) with their
    observational-transparency requirement, and the remaining 020 contracts (31–44:
    `Opaque` dsts, vector ops, varargs, `AllocaDyn`, `Undef`, volatile stores).
-   **Then `chiero-solver`** — the next crate on M1's critical path and the one with the
+   **`chiero-solver` STARTED** (`33b9136` red, `de3f33a` green): `Sort`, `BvConst`,
+   hash-consed `TermArena` with folding at construction, and the independent evaluator
+   with SMT-LIB semantics — including the four non-uniform division-by-zero cases
+   (022 contracts 19a–19d). 11 tests. **Next: `solver-lite`** — and the one with the
    heaviest validation burden (022 §7): `solver-lite`'s `Unsat` may only come from the
    §3.2 fragment, every `Sat` needs an independently-evaluated model, and contract 7b's
    exhaustive small-width enumeration is the check that closes the asymmetry without
