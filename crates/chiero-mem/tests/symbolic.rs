@@ -624,3 +624,157 @@ fn read_term_assembles_big_endian_in_the_other_order() {
         .unwrap();
     assert_eq!(a.eval_ground(le).unwrap().bits(), 0x4433_2211);
 }
+
+// ---------------------------------------------------------------------------
+// The array path, and contract 6 as it was actually written.
+// ---------------------------------------------------------------------------
+
+/// **`InitBit::Cond` carries its guard** (021 §3.1 writes it as `Cond(Term)`).
+///
+/// Without the term there is nothing for the engine to discharge, so `MaybeUninitialized`
+/// is a report the caller can only accept or reject wholesale — the two outcomes §3.1
+/// rejects. It is also what makes §3.1's "`Cond` collapses to `Yes`/`No` whenever its
+/// guard folds to a constant" expressible at all, and what promotion needs to build the
+/// init array as `ite(t, 1, 0)`.
+#[test]
+fn a_conditional_init_bit_carries_the_guard_that_makes_it_conditional() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 1);
+    m.write_at_symbolic_offset(&mut a, o, off, &[2], val, sp(2));
+
+    let InitBit::Cond(g) = m.init_bit_of(o, 2 * 8) else {
+        panic!("expected a guarded bit, got {:?}", m.init_bit_of(o, 2 * 8))
+    };
+    // The guard is `off == 2`, so it holds exactly when the write landed.
+    let ov = a.var_id(off).unwrap();
+    let mut model = Model::new();
+    model.set(ov, BvConst::new(8, 2));
+    assert_eq!(a.eval(&model, g).unwrap().bits(), 1);
+    model.set(ov, BvConst::new(8, 3));
+    assert_eq!(a.eval(&model, g).unwrap().bits(), 0);
+}
+
+/// Two conditional writes with *different* guards must be distinguishable. Dropping the
+/// term made every `MaybeUninitialized` byte-identical, so the engine could not tell one
+/// pending question from another.
+#[test]
+fn two_conditional_writes_carry_different_guards() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let i = a.var(Sort::BitVec(8), "i");
+    let j = a.var(Sort::BitVec(8), "j");
+    let val = a.bv(8, 1);
+    m.write_at_symbolic_offset(&mut a, o, i, &[2], val, sp(2));
+    m.write_at_symbolic_offset(&mut a, o, j, &[3], val, sp(3));
+    let (InitBit::Cond(g2), InitBit::Cond(g3)) =
+        (m.init_bit_of(o, 2 * 8), m.init_bit_of(o, 3 * 8))
+    else {
+        panic!("both bytes should be guarded")
+    };
+    assert_ne!(g2, g3, "different writes, different guards");
+}
+
+/// **021 contract 6, as written.** "For every feasible offset the two paths agree on the
+/// `(value, initialization-status)` pair, not merely the value."
+///
+/// Until now there was only one path, so the test compared `Bytes` to itself. Two objects
+/// are given identical histories, one promoted before the symbolic write and one after,
+/// and every byte is compared *as a pair*. Comparing values alone would leave exactly the
+/// disagreement the tri-state exists to prevent untested.
+#[test]
+fn the_bytes_path_and_the_array_path_agree_on_value_and_initialization() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let via_bytes = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let via_array = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+
+    // Identical histories: some concrete bytes, some never written.
+    for o in [via_bytes, via_array] {
+        m.write(ptr(o, 0), &[0x11, 0x22, 0x33, 0x44], sp(3));
+    }
+    // One is promoted *before* the symbolic write, so it takes the array path.
+    m.promote_to_array(&mut a, via_array);
+
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0x7F);
+    let candidates = [5u64, 6, 7];
+    for o in [via_bytes, via_array] {
+        m.write_at_symbolic_offset(&mut a, o, off, &candidates, val, sp(4));
+    }
+    assert!(m.is_bytes(via_bytes));
+    assert!(!m.is_bytes(via_array));
+
+    let ov = a.var_id(off).unwrap();
+    for k in candidates.iter().copied().chain([0, 1, 2, 3, 4, 8, 15]) {
+        // Initialization status must agree, and `Cond` must agree *as a condition*, not
+        // merely as a tag: both guards are evaluated under the same models.
+        let (ib, ia) = (
+            m.init_bit_of(via_bytes, k * 8),
+            m.init_bit_of(via_array, k * 8),
+        );
+        match (ib, ia) {
+            (InitBit::Cond(gb), InitBit::Cond(ga)) => {
+                for probe in 0..16u128 {
+                    let mut model = Model::new();
+                    model.set(ov, BvConst::new(8, probe));
+                    assert_eq!(
+                        a.eval(&model, gb).unwrap().bits(),
+                        a.eval(&model, ga).unwrap().bits(),
+                        "byte {k}: guards disagree at off = {probe}"
+                    );
+                }
+            }
+            (x, y) => assert_eq!(x, y, "byte {k}: initialization status differs"),
+        }
+
+        // And the value must agree under every feasible offset.
+        let tb = m
+            .read_term(&mut a, ptr(via_bytes, k as i64), 1, Endian::Little, sp(5))
+            .value
+            .unwrap();
+        let ta = m
+            .read_term(&mut a, ptr(via_array, k as i64), 1, Endian::Little, sp(6))
+            .value
+            .unwrap();
+        for probe in candidates.iter().copied().chain([9, 10]) {
+            let mut model = Model::new();
+            model.set(ov, BvConst::new(8, probe as u128));
+            assert_eq!(
+                a.eval(&model, tb).unwrap().bits(),
+                a.eval(&model, ta).unwrap().bits(),
+                "byte {k}: values disagree at off = {probe}"
+            );
+        }
+    }
+}
+
+/// Promotion itself preserves the pair. The previous test for this **measured after
+/// mutating**: its `before` pass called `read`, which memoizes an uninitialized byte to
+/// `Yes`, so every `No` had already become `Yes` by the time `after` was taken — and a
+/// promotion that marked every never-written byte initialized passed it.
+#[test]
+fn promotion_preserves_value_and_initialization_without_reading_first() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 4), &[7, 8], sp(2)); // 0..4 and 6..16 never written
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 5);
+    m.write_at_symbolic_offset(&mut a, o, off, &[9], val, sp(3));
+
+    // `init_bit_of` is a pure observation; `read` is not.
+    let before: Vec<InitBit> = (0..16u64).map(|b| m.init_bit_of(o, b * 8)).collect();
+    m.promote_to_array(&mut a, o);
+    let after: Vec<InitBit> = (0..16u64).map(|b| m.init_bit_of(o, b * 8)).collect();
+    assert_eq!(before, after, "promotion altered the initialization mask");
+    assert!(
+        before.iter().any(|b| *b == InitBit::No),
+        "the fixture must contain a never-written byte, or this proves nothing"
+    );
+    assert!(before.iter().any(|b| matches!(b, InitBit::Cond(_))));
+    assert!(before.iter().any(|b| *b == InitBit::Yes));
+}
