@@ -1435,7 +1435,9 @@ impl Memory {
     }
 
     /// Whether this object is still on the `Bytes` fast path (021 §3).
-    pub fn size_of_pub(&self, id: ObjectId) -> Option<u64> { self.entry(id).map(|e| e.size) }
+    pub fn size_of_pub(&self, id: ObjectId) -> Option<u64> {
+        self.entry(id).map(|e| e.size)
+    }
 
     pub fn is_bytes(&self, id: ObjectId) -> bool {
         self.entry(id).is_some_and(|e| e.repr == Repr::Bytes)

@@ -181,7 +181,12 @@ pub struct State {
 }
 
 impl State {
-    pub fn object_size_for_test(&self) -> Option<u64> { self.frame_objs.values().next().and_then(|o| self.mem.size_of_pub(*o)) }
+    pub fn object_size_for_test(&self) -> Option<u64> {
+        self.frame_objs
+            .values()
+            .next()
+            .and_then(|o| self.mem.size_of_pub(*o))
+    }
 
     pub fn local(&self, v: ValueId) -> Option<Value> {
         self.stack.last()?.locals.get(&v).copied()
@@ -260,6 +265,10 @@ pub struct RunResult {
     pub id: u32,
     pub states: Vec<State>,
     pub solver_calls: u64,
+    /// 022 §4 wants this at one for a whole run. A per-query spawn shows up immediately.
+    pub backend_spawns: u64,
+    /// How many solvers the run built. One, or the caches are discarded between queries.
+    pub solver_inits: u64,
 }
 
 impl RunResult {
@@ -267,7 +276,12 @@ impl RunResult {
     pub fn fidelity(&self) -> Fidelity {
         self.states
             .iter()
-            .map(|s| s.fidelity)
+            .map(|s| match s.status {
+                // An errored state did not finish, so nothing about it is exact — and a
+                // run containing one must not mint a proof.
+                Status::Errored(_) => Fidelity::Unknown,
+                _ => s.fidelity,
+            })
             .fold(Fidelity::Exact, Fidelity::degrade)
     }
 
@@ -290,6 +304,12 @@ pub struct Engine<'m> {
     fresh_count: u32,
     budget: Budget,
     backend: Option<SmtLib>,
+    /// **One solver for the run.** A fresh one per query spawned a process per
+    /// escalation and threw away the cache each time, so its hit rate was structurally
+    /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
+    /// describing something that could not happen.
+    solver: Option<TieredSolver>,
+    solver_inits: u64,
 }
 
 impl<'m> Engine<'m> {
@@ -302,6 +322,8 @@ impl<'m> Engine<'m> {
             fresh_count: 0,
             budget: Budget::default(),
             backend: None,
+            solver: None,
+            solver_inits: 0,
         }
     }
 
@@ -327,7 +349,17 @@ impl<'m> Engine<'m> {
         let mut mem = Memory::new();
         let mut frame_objs = IndexMap::new();
         for d in &f.allocas {
-            let id = mem.alloc(ObjKind::Stack, d.count * 8, d.align, d.span);
+            // Sized by the **element type**. `count * 8` made `char buf[4]` a 32-byte
+            // object and writes at offsets 4..31 fault-free — eight times too permissive
+            // for exactly the buffers overflows happen in. A dynamic extent is a
+            // saturating zero here; `AllocaDyn` supplies the real size at a program point.
+            let elem = size_of_cty(&d.ty);
+            let bytes = if d.count == chiero_cir::DYNAMIC_EXTENT {
+                0
+            } else {
+                d.count.saturating_mul(elem)
+            };
+            let id = mem.alloc(ObjKind::Stack, bytes, d.align, d.span);
             frame_objs.insert(d.id, id);
         }
         let start = State {
@@ -364,10 +396,13 @@ impl<'m> Engine<'m> {
             done.push(s);
         }
         done.sort_by_key(|s| s.id.0);
+        let backend_spawns = self.solver.as_ref().map_or(0, |s| s.stats().backend_spawns);
         RunResult {
             id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             states: done,
             solver_calls: self.solver_calls,
+            backend_spawns,
+            solver_inits: self.solver_inits,
         }
     }
 
@@ -381,10 +416,32 @@ impl<'m> Engine<'m> {
     /// partially-executed instruction, which is what makes serialization tractable (§2).
     fn step(&mut self, a: &mut TermArena, s: &mut State) -> Option<State> {
         let cur = s.func();
-        let f = self.module.funcs.iter().find(|f| f.id == cur)?;
-        let b = f.blocks.iter().find(|b| b.id == s.pc.0)?;
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == cur) else {
+            s.status = Status::Errored(format!("no such function {cur:?}"));
+            return None;
+        };
+        // **`step` is total** (023 §2). Returning `None` here without setting a status
+        // left the run loop spinning forever — no allocation, so not even the OOM killer
+        // would end it.
+        let Some(b) = f.blocks.iter().find(|b| b.id == s.pc.0) else {
+            s.status = Status::Errored(format!("no such block {:?}", s.pc.0));
+            return None;
+        };
         if s.pc.1 < b.insts.len() {
-            let i = &b.insts[s.pc.1];
+            // §8 counts `max_depth` in **instructions**. Counting edges left a
+            // straight-line path of any length unbounded.
+            s.steps += 1;
+            if s.steps > self.budget.max_depth {
+                s.status = Status::Terminated(TermReason::Budget);
+                s.degrade(
+                    Fidelity::Bounded,
+                    AssumptionKind::BudgetHit,
+                    b.span,
+                    "max_depth reached",
+                );
+                return None;
+            }
+            let i = &b.insts[s.pc.1].clone();
             self.exec_inst(a, s, i);
             // A call re-points `pc` at the callee; anything else advances within the
             // block. `usize::MAX` is the sentinel a call leaves behind so this lands on 0.
@@ -397,6 +454,8 @@ impl<'m> Engine<'m> {
     fn exec_inst(&mut self, a: &mut TermArena, s: &mut State, i: &Inst) {
         match &i.kind {
             InstKind::Assign { dst, rv } => {
+                // A dropped assignment is a silent hole, so `eval` degrades on its way to
+                // returning `None` and the local simply stays unbound.
                 if let Some(v) = self.eval(a, s, rv, i.span) {
                     s.set_local(*dst, v);
                 }
@@ -419,7 +478,9 @@ impl<'m> Engine<'m> {
                 self.call(a, s, *dst, callee, args, i.span);
             }
             InstKind::Marker(_) => {}
-            _ => {}
+            other => {
+                self.lowering_gap(s, i.span, &format!("{other:?}"));
+            }
         }
     }
 
@@ -534,7 +595,20 @@ impl<'m> Engine<'m> {
             }
             Terminator::Goto(b) => self.take_edge(s, *b),
             Terminator::Br { cond, t: bt, f: bf } => self.branch(a, s, cond, *bt, *bf),
-            Terminator::Unreachable(_) => {
+            Terminator::Unreachable(why) => {
+                // 020 §5: reaching a `LoweringGap` is `Fidelity::Unknown` and a
+                // diagnostic — **never a licence to treat the path as infeasible**.
+                // Discarding the reason turned "chiero could not lower this" into
+                // "execution ended here", which is a proof-shaped answer to a question
+                // nobody answered.
+                if *why == UnreachableReason::LoweringGap {
+                    s.degrade(
+                        Fidelity::Unknown,
+                        AssumptionKind::NoInformation,
+                        Span::DUMMY,
+                        "reached a lowering gap",
+                    );
+                }
                 s.status = Status::Terminated(TermReason::Unreachable);
                 None
             }
@@ -550,7 +624,6 @@ impl<'m> Engine<'m> {
     /// which needs no dominator analysis to recognize at run time.
     fn take_edge(&mut self, s: &mut State, to: BlockId) -> Option<State> {
         let from = s.pc.0;
-        s.steps += 1;
         if s.steps > self.budget.max_depth {
             s.status = Status::Terminated(TermReason::Budget);
             s.degrade(
@@ -627,6 +700,41 @@ impl<'m> Engine<'m> {
                 s.status = Status::Errored("both branches infeasible".into());
                 None
             }
+            // One side refuted, the other undecided: explore **only** the undecided one.
+            //
+            // Currently unreachable from the test suite, and deliberately kept. Tier 1
+            // decides the negation of a comparison whenever it decides the comparison, so
+            // it produces `(No, Yes)` rather than `(No, Unknown)`; the combination arises
+            // with a *backend* that gives up under an rlimit. The catch-all below would
+            // take both edges, and one of them carries a path condition the solver
+            // already refuted — a false finding with an impossible witness. A guard
+            // against unsoundness is worth keeping before the case that triggers it is
+            // routine.
+            // Taking both would carry a path condition the solver had already proved
+            // unsatisfiable, and any checker firing there produces a false finding with
+            // an impossible witness. §3 says take a branch the solver *could not* refute.
+            (Feas::No, Feas::Unknown) => {
+                s.path.push(neg);
+                self.take_edge(s, bf);
+                s.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::SolverUnknown,
+                    Span::DUMMY,
+                    "solver could not decide the false branch; the true branch is refuted",
+                );
+                None
+            }
+            (Feas::Unknown, Feas::No) => {
+                s.path.push(c);
+                self.take_edge(s, bt);
+                s.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::SolverUnknown,
+                    Span::DUMMY,
+                    "solver could not decide the true branch; the false branch is refuted",
+                );
+                None
+            }
             // §3 step 3: **take the branch anyway.** Dropping one the solver could not
             // refute would let "no bug found" mean "the solver timed out". The fidelity
             // is `Unknown`, not `Approximated` — §7's table is explicit that the engine
@@ -659,14 +767,23 @@ impl<'m> Engine<'m> {
         // A fresh solver per query is wasteful and will be replaced by a per-state
         // incremental stack; correctness first, and the backend process itself is
         // long-lived (022 §4) so the cost is the assertion replay, not a spawn.
-        let mut solver = match self.backend.clone() {
-            Some(b) => TieredSolver::with_backend(b),
-            None => TieredSolver::new(),
-        };
-        for p in &s.path {
-            solver.assert(*p);
+        if self.solver.is_none() {
+            // Counted, because `backend_spawns` cannot distinguish one solver from many:
+            // a freshly built solver reports one spawn for its own first query, which is
+            // the same number the correct implementation reports for the whole run.
+            self.solver_inits += 1;
+            self.solver = Some(match self.backend.clone() {
+                Some(b) => TieredSolver::with_backend(b),
+                None => TieredSolver::new(),
+            });
         }
-        match solver.check(a, &[t]) {
+        let solver = self.solver.as_mut().expect("just built");
+        // The path condition goes in as *assumptions* rather than assertions, so the
+        // solver's own stack stays empty between queries and sibling states share both
+        // the process and the caches.
+        let mut asks: Vec<Term> = s.path.clone();
+        asks.push(t);
+        match solver.check(a, &asks) {
             CheckResult::Sat(_) => Feas::Yes,
             CheckResult::Unsat => Feas::No,
             CheckResult::Unknown(_) => Feas::Unknown,
@@ -675,15 +792,31 @@ impl<'m> Engine<'m> {
 
     fn eval(&mut self, a: &mut TermArena, s: &mut State, rv: &RValue, span: Span) -> Option<Value> {
         Some(match rv {
-            RValue::Use(o) => self.operand(a, s, o)?,
+            RValue::Use(o) => match self.operand(a, s, o) {
+                Some(v) => v,
+                // `operand` returning `None` used to drop the assignment in silence; the
+                // `Const` families it cannot represent — floats, wide vectors, global
+                // addresses — are §7's `Approximated` and `Unknown` causes, not nothing.
+                None => return self.lowering_gap(s, span, &format!("{o:?}")),
+            },
             RValue::Bin { op, a: x, b: y, ty } => {
-                let (xv, yv) = (self.scalar(a, s, x)?, self.scalar(a, s, y)?);
+                let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
+                    return self.lowering_gap(s, span, "a non-scalar arithmetic operand");
+                };
                 let _ = ty;
-                Value::Scalar(bin(a, *op, xv, yv))
+                match bin(a, *op, xv, yv) {
+                    Some(t) => Value::Scalar(t),
+                    None => return self.lowering_gap(s, span, &format!("{op:?}")),
+                }
             }
             RValue::Cmp { op, a: x, b: y, .. } => {
-                let (xv, yv) = (self.scalar(a, s, x)?, self.scalar(a, s, y)?);
-                Value::Scalar(cmp(a, *op, xv, yv))
+                let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
+                    return self.lowering_gap(s, span, "a non-scalar comparison operand");
+                };
+                match cmp(a, *op, xv, yv) {
+                    Some(t) => Value::Scalar(t),
+                    None => return self.lowering_gap(s, span, &format!("{op:?}")),
+                }
             }
             RValue::Fresh { ty } => {
                 // Named per state and per position, so two `Fresh` values are two
@@ -694,19 +827,30 @@ impl<'m> Engine<'m> {
             }
             RValue::AddrOfLocal { alloca } => {
                 // The local keeps the *object*, not an address — §1.1's whole point.
-                let base = *s.frame_objs.get(alloca)?;
+                let Some(base) = s.frame_objs.get(alloca).copied() else {
+                    return self.lowering_gap(s, span, "an alloca with no object");
+                };
                 Value::Ptr(Pointer { base, off: 0 })
             }
-            _ => {
-                s.degrade(
-                    Fidelity::Approximated,
-                    AssumptionKind::OpaqueCode,
-                    span,
-                    "rvalue is not modeled yet",
-                );
-                return None;
-            }
+            // 023 §7's table puts a `LoweringGap` under **`Unknown`**, not
+            // `Approximated`: an unimplemented lowering is not a modeling lie, it is the
+            // engine not knowing.
+            other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// Record that something on this path was not modeled. **This is the one rule behind
+    /// a family of holes**: no path may end at `Exact` unless everything on it was
+    /// modeled, or an unexecuted program mints a proof — which §7 rule 4 says the crate
+    /// must be structurally incapable of.
+    fn lowering_gap(&mut self, s: &mut State, span: Span, what: &str) -> Option<Value> {
+        s.degrade(
+            Fidelity::Unknown,
+            AssumptionKind::NoInformation,
+            span,
+            &format!("`{what}` is not modeled"),
+        );
+        None
     }
 
     fn operand(&mut self, a: &mut TermArena, s: &State, o: &Operand) -> Option<Value> {
@@ -742,6 +886,20 @@ fn negate(a: &mut TermArena, t: Term) -> Term {
     a.eq(t, zero)
 }
 
+/// 020 §2's widths. `Void` has no storage, and an aggregate is not an alloca element
+/// type in CIR.
+fn size_of_cty(t: &CTy) -> u64 {
+    match t {
+        CTy::Void => 0,
+        CTy::Int(b) => (*b as u64).div_ceil(8),
+        CTy::Float(FloatKind::F32) => 4,
+        CTy::Float(FloatKind::F64) => 8,
+        CTy::Float(FloatKind::X87_80) => 16,
+        CTy::Ptr => 8,
+        CTy::Vector { elem, lanes } => size_of_cty(elem) * *lanes as u64,
+    }
+}
+
 fn sort_of(ty: &CTy) -> chiero_solver::Sort {
     chiero_solver::Sort::BitVec(match ty {
         CTy::Int(b) => *b,
@@ -750,20 +908,64 @@ fn sort_of(ty: &CTy) -> chiero_solver::Sort {
     })
 }
 
-fn bin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Term {
-    match op {
+/// **No default.** An unimplemented operation returns `None` and the caller records a
+/// `LoweringGap`; defaulting to addition made `5 - 3` come out `8` at `Fidelity::Exact`,
+/// which is a wrong answer wearing a proof. 023 §2's "the mapping from CIR ops to solver
+/// ops is 1:1 by construction" is only true if the map is total or says when it is not.
+fn bin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
+    Some(match op {
         BinOp::Add => a.add(x, y),
+        BinOp::Sub => a.sub(x, y),
         BinOp::Mul => a.mul(x, y),
+        BinOp::UDiv => a.udiv(x, y),
+        BinOp::SDiv => a.sdiv(x, y),
+        BinOp::URem => a.urem(x, y),
+        BinOp::SRem => a.srem(x, y),
         BinOp::And => a.and(x, y),
         BinOp::Or => a.or(x, y),
-        _ => a.add(x, y),
-    }
+        BinOp::Xor => a.xor(x, y),
+        BinOp::Shl => a.shl(x, y),
+        BinOp::LShr => a.lshr(x, y),
+        BinOp::AShr => a.ashr(x, y),
+        // Floats and pointer differences are not modeled yet, and saying so is the whole
+        // point of this function returning an `Option`.
+        _ => return None,
+    })
 }
 
-fn cmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Term {
-    match op {
+fn cmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
+    Some(match op {
         CmpOp::Eq => a.eq(x, y),
+        // Defaulting `Ne` to `Eq` **inverted** it, so every `if (x != y)` took the
+        // opposite branch — silently, and at `Exact`.
+        CmpOp::Ne => {
+            let e = a.eq(x, y);
+            a.not(e)
+        }
         CmpOp::ULt => a.ult(x, y),
-        _ => a.eq(x, y),
-    }
+        CmpOp::ULe => {
+            let lt = a.ult(x, y);
+            let e = a.eq(x, y);
+            a.or(lt, e)
+        }
+        CmpOp::UGt => a.ult(y, x),
+        CmpOp::UGe => {
+            let gt = a.ult(y, x);
+            let e = a.eq(x, y);
+            a.or(gt, e)
+        }
+        CmpOp::SLt => a.slt(x, y),
+        CmpOp::SLe => {
+            let lt = a.slt(x, y);
+            let e = a.eq(x, y);
+            a.or(lt, e)
+        }
+        CmpOp::SGt => a.slt(y, x),
+        CmpOp::SGe => {
+            let gt = a.slt(y, x);
+            let e = a.eq(x, y);
+            a.or(gt, e)
+        }
+        _ => return None,
+    })
 }

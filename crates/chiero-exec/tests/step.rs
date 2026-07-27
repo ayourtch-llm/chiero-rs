@@ -1133,7 +1133,10 @@ fn nothing_unmodeled_can_end_at_exact() {
                     0,
                     vec![inst(InstKind::Assign {
                         dst: ValueId(0),
-                        rv: RValue::Use(Operand::Const(Const::Float(FloatKind::F64, 0x4000_0000_0000_0000))),
+                        rv: RValue::Use(Operand::Const(Const::Float(
+                            FloatKind::F64,
+                            0x4000_0000_0000_0000,
+                        ))),
                     })],
                     Terminator::Return(Some(i32c(0))),
                 )],
@@ -1232,6 +1235,108 @@ fn a_refuted_branch_is_not_explored_even_when_the_other_side_is_unknown() {
     );
 }
 
+/// The **(refuted, undecided)** shape specifically, which is where the catch-all arm did
+/// its damage: tier 1 proves the true side impossible but cannot decide the false side,
+/// because the negation of a comparison is outside its fragment (022 §3.2). Taking both
+/// then explores a path the solver had already refuted.
+#[test]
+fn a_side_the_solver_refuted_is_dropped_even_when_the_other_is_undecided() {
+    let mut a = TermArena::new();
+    // x = fresh; if (x <u 5) { if (5 <u x) A else B }
+    // The inner true side contradicts the outer constraint; the inner false side is a
+    // negated comparison, which tier 1 answers `Unknown`.
+    let m = func(
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            a: Operand::Value(ValueId(0)),
+                            b: i32c(5),
+                            ty: CTy::Int(32),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(4),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Cmp {
+                        op: CmpOp::ULt,
+                        a: i32c(5),
+                        b: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                    },
+                })],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(2),
+                    f: BlockId(3),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(200)))),
+            block(3, vec![], Terminator::Return(Some(i32c(201)))),
+            block(4, vec![], Terminator::Return(Some(i32c(202)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m).run(&mut a);
+    let rets: Vec<_> = r
+        .states
+        .iter()
+        .map(|s| s.return_value_bits(&mut a))
+        .collect();
+    assert!(
+        !rets.contains(&Some(200)),
+        "`x <u 5` and `5 <u x` cannot both hold: {rets:?}"
+    );
+}
+
+/// An operation the engine does **not** implement must degrade, not compute something
+/// else. Floats are `Approximated` in §7's table and unimplemented here, so the honest
+/// answer is a gap — the default that quietly returned an *addition* was the shape of
+/// the original defect and must not survive in the tail of the match either.
+#[test]
+fn an_unimplemented_operation_degrades_rather_than_computing_something_else() {
+    let m = func(
+        vec![block(
+            0,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Bin {
+                    op: BinOp::FAdd,
+                    a: i32c(1),
+                    b: i32c(2),
+                    ty: CTy::Float(FloatKind::F64),
+                },
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(r.witness().is_none());
+    assert!(
+        r.states[0].local(ValueId(0)).is_none(),
+        "an unmodeled operation produces no value at all, rather than a wrong one"
+    );
+}
+
 /// **A `Goto` to a block that does not exist must terminate, not spin.** `step` returned
 /// `None` without setting a status and the run loop spun forever — no allocation, so not
 /// even the OOM killer would end it. §2's "step is total" was false.
@@ -1285,8 +1390,13 @@ fn an_alloca_is_sized_by_its_element_type() {
 }
 
 /// A dynamic extent must not overflow the size computation. `DYNAMIC_EXTENT` is
-/// `u64::MAX`, so `count * elem_size` panicked in debug and wrapped to a *small* object
-/// in release — which is the more dangerous of the two.
+/// `u64::MAX`, so `count * elem_size` panicked in debug and wrapped to an arbitrary
+/// *small* object in release — which is the more dangerous of the two, since a wrapped
+/// size silently accepts or rejects the wrong accesses.
+///
+/// The extent is zero until an `AllocaDyn` supplies it at a program point (020 §3), so
+/// what this pins is that the size is the *declared* absence of one rather than a
+/// wrapped number that looks like a real bound.
 #[test]
 fn a_dynamic_extent_does_not_overflow_the_size_computation() {
     let mut m = func(
@@ -1306,10 +1416,11 @@ fn a_dynamic_extent_does_not_overflow_the_size_computation() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
     assert_eq!(r.states.len(), 1, "the run completes rather than panicking");
-    assert_ne!(
+    assert_eq!(
         r.states[0].object_size_for_test(),
         Some(0),
-        "a wrapped size would be a tiny object that accepts nothing"
+        "no extent yet; `AllocaDyn` supplies it, and a wrapped number would masquerade \
+         as a real bound"
     );
 }
 
@@ -1345,8 +1456,7 @@ fn max_depth_counts_instructions_not_edges() {
 /// which is the whole mechanism by which symbolic execution is not just enumeration.
 #[test]
 fn a_later_branch_sees_the_constraints_of_an_earlier_one() {
-    let Some(backend) = z3_or_skip("a_later_branch_sees_the_constraints_of_an_earlier_one")
-    else {
+    let Some(backend) = z3_or_skip("a_later_branch_sees_the_constraints_of_an_earlier_one") else {
         return;
     };
     let mut a = TermArena::new();
@@ -1421,5 +1531,13 @@ fn a_run_uses_one_backend_process_for_all_its_queries() {
     assert_eq!(
         r.backend_spawns, 1,
         "022 §4 wants one process for the whole run, not one per query"
+    );
+    // `backend_spawns` alone cannot tell one solver from many — a fresh solver reports
+    // one spawn for its own first query, the same number the correct implementation
+    // reports for the whole run. Counting the solvers is what distinguishes them, and
+    // it is the caches, not just the process, that a rebuild throws away.
+    assert_eq!(
+        r.solver_inits, 1,
+        "one solver, so the caches survive between queries"
     );
 }

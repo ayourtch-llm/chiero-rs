@@ -108,6 +108,7 @@ pub struct VarId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BinKind {
     Add,
+    Sub,
     Mul,
     And,
     Or,
@@ -424,6 +425,9 @@ impl TermArena {
         self.intern(Node::Bin(k, a, b))
     }
 
+    pub fn sub(&mut self, a: Term, b: Term) -> Term {
+        self.bin(BinKind::Sub, a, b)
+    }
     pub fn add(&mut self, a: Term, b: Term) -> Term {
         self.bin(BinKind::Add, a, b)
     }
@@ -601,7 +605,7 @@ impl TermArena {
         self.emit(t, names)
     }
 
-    fn sub(&self, t: Term, names: &IndexMap<Term, String>) -> String {
+    fn render_named(&self, t: Term, names: &IndexMap<Term, String>) -> String {
         match names.get(&t) {
             Some(n) => n.clone(),
             None => self.emit(t, names),
@@ -731,6 +735,7 @@ impl TermArena {
                 };
                 let op = match k {
                     BinKind::Add => "bvadd",
+                    BinKind::Sub => "bvsub",
                     BinKind::Mul => "bvmul",
                     BinKind::And => "bvand",
                     BinKind::Or => "bvor",
@@ -752,24 +757,24 @@ impl TermArena {
     }
 
     fn sub_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
-        self.sub(t, names)
+        self.render_named(t, names)
     }
 
     /// Render `t` where a `Bool` is required, coercing a one-bit vector if need be.
     fn smt_bool_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
         if self.smt_is_bool(t) {
-            self.sub(t, names)
+            self.render_named(t, names)
         } else {
-            format!("(= {} #b1)", self.sub(t, names))
+            format!("(= {} #b1)", self.render_named(t, names))
         }
     }
 
     /// Render `t` where a bit-vector is required, coercing a `Bool` if need be.
     fn smt_bv_named(&self, names: &IndexMap<Term, String>, t: Term) -> String {
         if self.smt_is_bool(t) {
-            format!("(ite {} #b1 #b0)", self.sub(t, names))
+            format!("(ite {} #b1 #b0)", self.render_named(t, names))
         } else {
-            self.sub(t, names)
+            self.render_named(t, names)
         }
     }
 
@@ -1032,6 +1037,7 @@ fn fold(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
     let b = |v: bool| BvConst::new(1, v as u128);
     match k {
         BinKind::Add => BvConst::new(w, x.bits().wrapping_add(y.bits())),
+        BinKind::Sub => BvConst::new(w, x.bits().wrapping_sub(y.bits())),
         BinKind::Mul => BvConst::new(w, x.bits().wrapping_mul(y.bits())),
         BinKind::And => BvConst::new(w, x.bits() & y.bits()),
         BinKind::Or => BvConst::new(w, x.bits() | y.bits()),
