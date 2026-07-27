@@ -1117,6 +1117,43 @@ impl<'m> Engine<'m> {
         s.witness = Some(Witness { bindings });
     }
 
+    /// Give this activation a **fresh** object for each `Lifetime::Scope` alloca of
+    /// `scope` (021 contract 29).
+    ///
+    /// The object is the activation of the declaration, not the declaration: a loop body
+    /// entered three times has three of them, and reusing one would let this pass read
+    /// the last pass's bytes and make a pointer that escaped the last pass look live.
+    ///
+    /// A function whose CIR carries no `Scope` markers is unaffected — its objects are
+    /// still built once at frame entry, which is what every fixture without markers
+    /// relies on. `Lifetime::Function` is untouched here for the same reason it survives
+    /// `Scope(Exit)`: `alloca()` memory belongs to the activation, not the block.
+    fn enter_scope(&mut self, s: &mut State, scope: ScopeId, at: Span) {
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == s.func()) else {
+            return;
+        };
+        let decls: Vec<(AllocaId, u64, u64)> = f
+            .allocas
+            .iter()
+            .filter(|d| d.scope == scope && d.lifetime == Lifetime::Scope)
+            .map(|d| {
+                let elem = size_of_cty(&d.ty);
+                let bytes = if d.count == chiero_cir::DYNAMIC_EXTENT {
+                    0
+                } else {
+                    d.count.saturating_mul(elem)
+                };
+                (d.id, bytes, d.align)
+            })
+            .collect();
+        for (id, bytes, align) in decls {
+            let obj = s.mem.alloc(ObjKind::Stack, bytes, align, at);
+            if let Some(fr) = s.stack.last_mut() {
+                fr.frame_objs.insert(id, obj);
+            }
+        }
+    }
+
     /// Retire this activation's `Lifetime::Scope` objects belonging to `scope` (021 §4).
     ///
     /// **Only this activation's, and only this scope's.** `AllocaId` is unique within a
@@ -1514,6 +1551,9 @@ impl<'m> Engine<'m> {
             // marker kinds are reporting-only and do nothing here.
             InstKind::Marker(MarkerKind::Scope(ev)) if ev.kind == ScopeKind::Exit => {
                 self.exit_scope(s, ev.scope, i.span);
+            }
+            InstKind::Marker(MarkerKind::Scope(ev)) => {
+                self.enter_scope(s, ev.scope, i.span);
             }
             InstKind::Marker(_) => {} // **No catch-all.** Every `InstKind` is handled, so adding one is a compile
                                       // error rather than a silent `LoweringGap` — which is how `Load`, `Store`,

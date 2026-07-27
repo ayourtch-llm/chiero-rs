@@ -473,10 +473,14 @@ fn an_alloca_in_a_loop_body_is_a_new_object_each_time_the_scope_opens() {
         variadic: false,
         allocas: vec![alloca(0, 1, Lifetime::Scope)],
         blocks: vec![
-            // head: the loop body's scope opens, a pointer is taken, the scope closes,
-            // and the back edge runs it again. `max_loop_iters` bounds the count.
+            // A preheader: the verifier rejects a back edge into the entry block, so a
+            // self-loop on block 0 never runs at all — the fixture would have measured
+            // nothing and said so as "one object".
+            block(0, vec![], Terminator::Goto(BlockId(1))),
+            // The loop body's scope opens, a pointer is taken, the scope closes, and the
+            // back edge runs it again. `max_loop_iters` bounds the count.
             block(
-                0,
+                1,
                 vec![
                     inst(
                         InstKind::Marker(MarkerKind::Scope(ScopeEvent {
@@ -502,7 +506,7 @@ fn an_alloca_in_a_loop_body_is_a_new_object_each_time_the_scope_opens() {
                         30,
                     ),
                 ],
-                Terminator::Goto(BlockId(0)),
+                Terminator::Goto(BlockId(1)),
             ),
         ],
         entry: BlockId(0),
