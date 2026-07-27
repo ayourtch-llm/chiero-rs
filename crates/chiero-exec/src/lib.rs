@@ -14,6 +14,7 @@
 
 use chiero_cir::*;
 use chiero_mem::{Memory, ObjKind, Pointer};
+use chiero_model::{ModelRegistry, Precision};
 use chiero_solver::{CheckResult, SmtLib, Solver, Term, TermArena, TieredSolver};
 use chiero_span::Span;
 use indexmap::IndexMap;
@@ -53,6 +54,10 @@ pub enum AssumptionKind {
     /// returning 0 — that is the same confidently-wrong failure as reading uninitialized
     /// memory as zero, one level up.
     UnmodeledCall,
+    /// A model declared `Precision::Approximate` was dispatched. 024 §2.1 makes this
+    /// mechanical: the *modeled* imprecise path is more dangerous than the unmodeled one
+    /// because it looks deliberate.
+    ModelApproximate,
     /// A `LoweringGap` or an access with no information behind it.
     NoInformation,
 }
@@ -346,6 +351,7 @@ pub struct Engine<'m> {
     fresh_count: u32,
     budget: Budget,
     backend: Option<SmtLib>,
+    models: ModelRegistry,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -363,6 +369,7 @@ impl<'m> Engine<'m> {
             solver_calls: 0,
             fresh_count: 0,
             budget: Budget::default(),
+            models: ModelRegistry::with_builtins(),
             backend: None,
             solver: None,
             solver_inits: 0,
@@ -371,6 +378,13 @@ impl<'m> Engine<'m> {
 
     pub fn with_solver(mut self, t: SolverTier) -> Self {
         self.tier = t;
+        self
+    }
+
+    /// Replace the model registry — how `chiero-vpp` supplies vppinfra models without
+    /// this crate knowing anything about them (024 §8).
+    pub fn with_models(mut self, m: ModelRegistry) -> Self {
+        self.models = m;
         self
     }
 
@@ -564,20 +578,42 @@ impl<'m> Engine<'m> {
         );
 
         if body == Body::Declared {
-            // No registry yet, so every extern is unmodeled. **A fresh value, never a
-            // zero**: silently returning 0 is the same confidently-wrong failure as
-            // reading uninitialized memory as zero, one level up.
+            // **The module's own definition always wins** — this branch is only reached
+            // when there is no body. A registry that shadowed local definitions would
+            // analyse a different program than the one on disk, most often exactly where
+            // a project reimplemented a libc function for a reason.
+            //
+            // Every extern returns a fresh value, modeled or not: silently returning 0 is
+            // the same confidently-wrong failure as reading uninitialized memory as zero,
+            // one level up.
             if let Some(d) = dst {
                 self.fresh_count += 1;
                 let t = a.var(sort_of(&ret_ty), &format!("extern{}", self.fresh_count));
                 s.set_local(d, Value::Scalar(t));
             }
-            s.degrade(
-                Fidelity::Approximated,
-                AssumptionKind::UnmodeledCall,
-                span,
-                &format!("`{name}` has no body and no model"),
-            );
+            match self.models.lookup(&name).map(|e| e.precision.clone()) {
+                // 024 §2.1: dispatching an approximate model degrades *mechanically*, and
+                // the model's own reason travels into the report.
+                Some(Precision::Approximate(why)) => {
+                    self.note_once(
+                        s,
+                        AssumptionKind::ModelApproximate,
+                        span,
+                        &format!("`{name}` is modeled approximately: {why}"),
+                    );
+                }
+                // An exact model claims to be faithful, so nothing degrades. Without this
+                // the distinction would carry no information.
+                Some(Precision::Exact) => {}
+                None => {
+                    self.note_once(
+                        s,
+                        AssumptionKind::UnmodeledCall,
+                        span,
+                        &format!("`{name}` has no body and no model"),
+                    );
+                }
+            }
             if noreturn {
                 s.status = Status::Terminated(TermReason::Return);
             }
@@ -887,6 +923,21 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// Degrade, recording the reason **once**. A call in a loop must not stack up one
+    /// assumption per iteration and drown the finding it exists to explain — but each
+    /// call still produces its own fresh value, since deduplicating the report must not
+    /// deduplicate the values.
+    fn note_once(&mut self, s: &mut State, kind: AssumptionKind, span: Span, detail: &str) {
+        if s.assumptions
+            .iter()
+            .any(|x| x.kind == kind && x.detail == detail)
+        {
+            s.fidelity = s.fidelity.degrade(Fidelity::Approximated);
+            return;
+        }
+        s.degrade(Fidelity::Approximated, kind, span, detail);
     }
 
     /// Record that something on this path was not modeled. **This is the one rule behind

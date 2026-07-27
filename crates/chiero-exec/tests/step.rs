@@ -1775,7 +1775,12 @@ fn calling_an_exact_model_leaves_the_run_exact() {
 
     let mut a = TermArena::new();
     let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
-    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states()[0].assumptions());
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
     assert!(seal(&r, r.witness()).is_ok());
 }
 
