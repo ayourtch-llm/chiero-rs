@@ -150,6 +150,10 @@ impl SourceFile {
 #[derive(Debug, Default)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
+    expansions: Vec<Expansion>,
+    macros: Vec<MacroInfo>,
+    /// Reverse index: macro → every expansion of it. The test-selection primitive.
+    by_macro: indexmap::IndexMap<MacroId, Vec<ExpnCtx>>,
 }
 
 impl SourceMap {
@@ -223,5 +227,124 @@ impl SourceMap {
         let lo = (sp.lo.0 - f.start_pos.0) as usize;
         let hi = (sp.hi.0 - f.start_pos.0) as usize;
         f.src.get(lo..hi)
+    }
+}
+
+/// Index into `SourceMap::macros`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MacroId(pub u32);
+
+/// The minimum a macro needs for *provenance*. `chiero-pp` owns the full definition
+/// (012 §1); this is the slice `chiero-span` needs to answer 010 §3.1, and keeping it
+/// here is what lets `chiero-span` depend on nothing (001 §4 rule 5).
+#[derive(Debug, Clone)]
+pub struct MacroInfo {
+    pub name: Arc<str>,
+    /// Where the macro's name appears in its `#define`.
+    pub def_span: Span,
+    /// Extent of the replacement list, used to tell a body token from an argument
+    /// token (010 §2.2).
+    pub body_extent: Span,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ExpnKind {
+    ObjectLike,
+    FunctionLike,
+    Builtin,
+    Pragma,
+    Paste,
+    Stringize,
+}
+
+/// One macro invocation (010 §2.1).
+#[derive(Debug, Clone)]
+pub struct Expansion {
+    pub parent: ExpnCtx,
+    pub macro_id: Option<MacroId>,
+    pub call_site: Span,
+    pub call_extent: Span,
+    pub arg_spans: Vec<Span>,
+    pub kind: ExpnKind,
+}
+
+/// One frame of an expansion backtrace, outermost-first.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ExpnFrame {
+    pub ctx: ExpnCtx,
+    pub macro_id: Option<MacroId>,
+    pub call_site: Span,
+}
+
+/// Where a token's text actually came from (010 §2.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TokenOrigin {
+    MacroBody(MacroId),
+    MacroArg { expn: ExpnCtx, arg_index: usize },
+    Verbatim(FileId),
+    Synthesized,
+}
+
+/// Allocation counting, for 010 contract 9.
+pub mod test_support {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(crate) static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Number of allocations made through chiero-span's counting allocator.
+    pub fn alloc_count() -> usize {
+        ALLOCS.load(Ordering::Relaxed)
+    }
+}
+
+impl SourceMap {
+    pub fn add_macro(&mut self, _name: &str, _def_span: Span, _body_extent: Span) -> MacroId {
+        todo!("green")
+    }
+
+    pub fn add_expansion(
+        &mut self,
+        _parent: ExpnCtx,
+        _macro_id: Option<MacroId>,
+        _call_site: Span,
+        _call_extent: Span,
+        _arg_spans: Vec<Span>,
+        _kind: ExpnKind,
+    ) -> ExpnCtx {
+        todo!("green")
+    }
+
+    /// Where the token's text literally appears — possibly inside a macro definition.
+    pub fn spelling_loc(&self, _sp: Span) -> Option<Loc> {
+        todo!("green")
+    }
+
+    /// Walk ctx → parent → … → ROOT and resolve the outermost call site.
+    /// **This is what gcov sees.** Coverage correlation uses this and nothing else.
+    pub fn expansion_loc(&self, _sp: Span) -> Option<Loc> {
+        todo!("green")
+    }
+
+    /// Full chain, outermost-first.
+    pub fn expansion_backtrace(&self, _sp: Span) -> Vec<ExpnFrame> {
+        todo!("green")
+    }
+
+    pub fn involves_macro(&self, _sp: Span, _m: MacroId) -> bool {
+        todo!("green")
+    }
+
+    /// Every expansion of `m`, including via macros whose bodies expand it.
+    pub fn expansion_sites(&self, _m: MacroId) -> impl Iterator<Item = ExpnCtx> + '_ {
+        std::iter::empty()
+    }
+
+    pub fn origin(&self, _sp: Span) -> TokenOrigin {
+        todo!("green")
+    }
+
+    #[doc(hidden)]
+    pub fn force_parent_for_test(&mut self, _child: ExpnCtx, _parent: ExpnCtx) {
+        todo!("green")
     }
 }
