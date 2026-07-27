@@ -1163,3 +1163,107 @@ fn an_initialized_read_is_still_concrete() {
         .unwrap();
     assert_eq!(a.eval_ground(t).unwrap().bits(), 0x0403_0201);
 }
+
+// ---------------------------------------------------------------------------
+// Symbolic-offset reads, and the unpinned store promotion exists for.
+// ---------------------------------------------------------------------------
+
+/// **021 §3: a read at a symbolic offset with a small feasible set is answered by an
+/// if-then-else chain**, without promoting. This is the other half of `ITE_THRESHOLD`,
+/// which until now was consulted only on the write path — so the threshold governed half
+/// of what §3 says it governs.
+#[test]
+fn a_symbolic_offset_read_within_the_threshold_is_an_ite_chain() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.write(ptr(o, 0), &[10, 11, 12, 13, 14, 15, 16, 17], sp(2));
+    let off = a.var(Sort::BitVec(8), "off");
+
+    let r = m.read_term_at(&mut a, o, off, &[2, 3, 4], sp(3));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert!(m.is_bytes(o), "a small feasible set does not promote");
+
+    let t = r.value.unwrap();
+    let ov = a.var_id(off).unwrap();
+    for (k, want) in [(2u128, 12u128), (3, 13), (4, 14)] {
+        let mut model = Model::new();
+        model.set(ov, BvConst::new(8, k));
+        assert_eq!(
+            a.eval(&model, t).unwrap().bits(),
+            want,
+            "off = {k} must read byte {k}"
+        );
+    }
+}
+
+/// **A read past the threshold promotes**, which is what array theory is for: one
+/// `select` at a symbolic index rather than a thousand nested selects.
+#[test]
+fn a_symbolic_offset_read_past_the_threshold_promotes() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 2048, 8, sp(1));
+    m.set(ptr(o, 0), 0x5A, 2048, sp(2));
+    let off = a.var(Sort::BitVec(16), "off");
+    let many: Vec<u64> = (0..1000).collect();
+
+    let r = m.read_term_at(&mut a, o, off, &many, sp(3));
+    assert!(!m.is_bytes(o), "1000 candidates is past the threshold");
+    let t = r.value.unwrap();
+    // Every byte holds 0x5A, so the answer is 0x5A whichever index the model picks.
+    let ov = a.var_id(off).unwrap();
+    for k in [0u128, 500, 999] {
+        let mut model = Model::new();
+        model.set(ov, BvConst::new(16, k));
+        assert_eq!(a.eval(&model, t).unwrap().bits(), 0x5A);
+    }
+}
+
+/// **A promoted object takes an *unpinned* symbolic store** — one `store(data, off, val)`
+/// at a symbolic index, with no candidate enumeration. That is the write promotion exists
+/// *for*, and enumerating candidates after promoting defeats the point.
+#[test]
+fn a_promoted_object_takes_an_unpinned_symbolic_store() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 256, 8, sp(1));
+    m.set(ptr(o, 0), 0xEE, 256, sp(2));
+    m.promote_to_array(&mut a, o);
+
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0x7F);
+    let w = m.store_at(&mut a, o, off, val, sp(3));
+    assert!(w.faults.is_empty(), "{:#?}", w.faults);
+
+    // Reading the same symbolic index gives what was just written, for *every* index —
+    // no enumeration was involved, so there is nothing to have missed.
+    let r = m.read_term_at(&mut a, o, off, &[], sp(4)).value.unwrap();
+    let ov = a.var_id(off).unwrap();
+    for k in [0u128, 7, 200, 255] {
+        let mut model = Model::new();
+        model.set(ov, BvConst::new(8, k));
+        assert_eq!(a.eval(&model, r).unwrap().bits(), 0x7F, "index {k}");
+    }
+}
+
+/// **The index width must match the offset's**, not a hardcoded 64. A `store` whose index
+/// is a different width from the array's is a sort error the backend rejects, and the
+/// arena's own width assertions would not catch it because arrays carry no scalar width.
+#[test]
+fn the_array_index_width_follows_the_offset() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.promote_to_array(&mut a, o);
+    let off = a.var(Sort::BitVec(16), "off");
+    let val = a.bv(8, 1);
+    let w = m.store_at(&mut a, o, off, val, sp(2));
+    assert!(
+        w.faults.is_empty(),
+        "a 16-bit offset must be usable against the array: {:#?}",
+        w.faults
+    );
+    let r = m.read_term_at(&mut a, o, off, &[], sp(3));
+    assert!(r.value.is_some(), "{:#?}", r.faults);
+}
