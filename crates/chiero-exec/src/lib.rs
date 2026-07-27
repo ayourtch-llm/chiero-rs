@@ -964,7 +964,15 @@ impl<'m> Engine<'m> {
                 // Sized by the budget rather than by a guess about the callee: the object
                 // exists so accesses have somewhere to land, and its extent is a bound
                 // chiero chose, so an access past it is reported as such.
-                let obj = mem.alloc(ObjKind::Extern, ENTRY_PARAM_BYTES, 16, f.span);
+                let obj = mem.alloc(ObjKind::Lazy, ENTRY_PARAM_BYTES, 16, f.span);
+                // **021 §6: "fully symbolic and fully initialized".** The caller filled
+                // this buffer; chiero does not know *what with*, which is not the same as
+                // nobody having written it. Leaving the bytes uninitialized turned every
+                // function that takes a pointer into an uninitialized-read report — §6
+                // calls that "an uninitialized-read false-positive storm", and §3.1's
+                // whole reason for distinguishing symbolic from uninitialized is to make
+                // this expressible. Contract 27.
+                mem.havoc_object(a, obj, HavocFill::Symbolic, f.span);
                 Value::Ptr(Pointer { base: obj, off: 0 })
             } else {
                 let t = a.var(sort_of(&p.ty), &format!("param{i}"));
