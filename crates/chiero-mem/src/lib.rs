@@ -1550,6 +1550,12 @@ impl Memory {
                 bit,
                 at,
             });
+            // 021 §5 / contract 26: the fresh symbol is memoized, so a repeated read is
+            // the same value and not a second finding. `read` did this and `read_term`
+            // did not, which left the two APIs disagreeing about the same byte.
+            if p.off >= 0 {
+                self.memoize(p.base, p.off as u64 * 8, size * 8);
+            }
         } else if let Some(bit) = first_cond {
             faults.push(MemFault::MaybeUninitialized {
                 obj: p.base,
