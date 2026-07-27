@@ -168,10 +168,15 @@ fn cmp_declared_wider_than_one_bit_is_rejected() {
             ty: CTy::Int(32),
         },
     });
-    // The operand type is legal here, so this must NOT be rejected.
-    assert!(verify(&m).is_empty(), "operand ty on Cmp is legal");
+    // A wide operand type on a Cmp is legal on its own.
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert!(
+        verify(&m).is_empty(),
+        "operand ty on Cmp is legal: {:?}",
+        verify(&m)
+    );
 
-    // ...but using the result where an i32 is expected is a width error.
+    // ...but the *result* is Int(1), so returning it from an i32 function is not.
     m.funcs[0].blocks[0].term = Terminator::Return(Some(Operand::Value(ValueId(0))));
     assert_rejects(&m, VerifyErrorKind::WidthMismatch);
 }
@@ -225,6 +230,8 @@ fn width_changing_bitcast_is_rejected() {
             },
         },
     });
+    // Neutralize the return so the only defect is the cast itself.
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
     assert_rejects(&m, VerifyErrorKind::BadCast);
 }
 
@@ -407,10 +414,15 @@ fn alloca_dyn_against_a_static_decl_is_rejected() {
 #[test]
 fn error_order_is_deterministic() {
     let mut m = valid_module();
-    m.funcs[0].blocks[0].term = Terminator::Goto(BlockId(99));
+    // Two defects reported by the same pass. A dangling block reference deliberately
+    // short-circuits (its diagnostics would be nonsense), so it cannot be used here.
     m.funcs[0].blocks[0].insts.push(inst(InstKind::Assign {
         dst: ValueId(0),
         rv: RValue::Use(i32c(1)),
+    }));
+    m.funcs[0].blocks[0].insts.push(inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::Use(i32c(2)),
     }));
     let a: Vec<_> = verify(&m).iter().map(|e| format!("{e:?}")).collect();
     let b: Vec<_> = verify(&m).iter().map(|e| format!("{e:?}")).collect();
