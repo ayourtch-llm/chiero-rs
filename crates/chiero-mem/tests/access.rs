@@ -1134,3 +1134,41 @@ fn a_memory_fault_renders_as_a_sentence_and_exposes_its_key() {
     assert_eq!(wild.object(), None);
     assert_eq!(wild.kind(), "wild-pointer");
 }
+
+/// **Every `copy` test used `dst.off == 0`**, so the offset arithmetic in both the overlay
+/// reinstatement and the init reinstatement was entirely unpinned — a same-answer trap in
+/// the fixture, and `memcpy(&buf[4], src, n)` is ordinary code. Found by review.
+#[test]
+fn a_copy_to_a_nonzero_offset_lands_where_it_was_told() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let src = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    let dst = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    m.set(ptr(src, 0), 1, 8, sp(3));
+    let x = a.var(chiero_solver::Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(src, 2), x, sp(4));
+    // The destination is untouched, so anything landing at offset 0 is visible as a
+    // *missing* fault there rather than as wrong bytes.
+    let r = m.copy(ptr(dst, 4), ptr(src, 0), 8, Overlap::Allowed, sp(5));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert!(
+        !m.read(ptr(dst, 0), 4, sp(6)).faults.is_empty(),
+        "nothing was written before offset 4"
+    );
+    assert_eq!(m.read(ptr(dst, 4), 2, sp(7)).value, Some(vec![1, 1]));
+    // The symbol was at src+2, so it lands at dst+6 — not dst+2. A *concrete* read is
+    // the sharp instrument here: it refuses a symbolic byte and answers a concrete one,
+    // so the two offsets give different answers rather than both "something is there".
+    assert!(
+        m.read(ptr(dst, 6), 1, sp(8))
+            .faults
+            .iter()
+            .any(|f| f.kind() == "symbolic-byte"),
+        "the symbol is at dst+6"
+    );
+    assert_eq!(
+        m.read(ptr(dst, 5), 1, sp(9)).value,
+        Some(vec![1]),
+        "and its neighbours are the concrete bytes"
+    );
+}

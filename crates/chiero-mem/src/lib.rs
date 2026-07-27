@@ -352,6 +352,19 @@ impl MemObject {
     }
 
     /// The symbolic byte at `b`, if the overlay holds one.
+    /// Bytes without initialization. See `Memory::write_uninit_bytes_for_test`.
+    pub fn write_raw_uninit(&mut self, off: i64, bytes: &[u8]) {
+        if off < 0 {
+            return;
+        }
+        for (i, b) in bytes.iter().enumerate() {
+            let at = off as usize + i;
+            if at < self.data.len() {
+                self.data[at] = *b;
+            }
+        }
+    }
+
     /// Forget everything about the contents: no bytes, no overlay, nothing initialized.
     /// The object stays the same size and identity — this is invalidation, not a free.
     pub fn clear_contents(&mut self, size: u64) {
@@ -1687,6 +1700,17 @@ impl Memory {
     /// at it otherwise.
     pub fn addr_of(&self, id: ObjectId) -> Option<u64> {
         self.space.addr_of(id)
+    }
+
+    /// Put bytes down **without** marking them initialized — the state fresh heap memory
+    /// is in. Only for tests: no program operation writes bytes it does not also
+    /// initialize, and the distinction is exactly what `pointees` turns on.
+    pub fn write_uninit_bytes_for_test(&mut self, p: Pointer, bytes: &[u8]) {
+        if let Some(e) = self.entry_mut(p.base)
+            && let Some(o) = e.obj.as_mut()
+        {
+            o.write_raw_uninit(p.off, bytes);
+        }
     }
 
     /// The NUL-terminated string at `p`, if every byte of it is concrete and

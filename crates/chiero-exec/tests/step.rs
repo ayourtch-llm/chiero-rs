@@ -4223,3 +4223,153 @@ fn ptr_add_reads_narrow_offsets_as_signed_and_refuses_wide_ones() {
         r.states()[0].assumptions()
     );
 }
+
+/// **The havoc's shape, at all three call sites.** Mutation showed only one of the three
+/// the engine advertises was tested, and that the fill kind, the depth and "every pointer
+/// argument, not just the first" were all unpinned. Each is a different way for the
+/// invalidation to be quietly narrower than it claims.
+#[test]
+fn the_default_havoc_covers_every_pointer_argument_at_depth_one() {
+    // `sqrt` is registered `Approximate` and has no engine arm; `nothing_known` is
+    // unregistered. Both must invalidate, and the exact-but-undispatchable arm is
+    // covered by `an_exact_model_with_no_engine_arm_degrades_on_valid_arguments`.
+    for callee in ["sqrt", "nothing_known"] {
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(1),
+                        },
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Const(Const::Int {
+                                bits: 32,
+                                val: 0xAB,
+                            }),
+                            Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        ],
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![
+                            Operand::Value(ValueId(1)),
+                            Operand::Const(Const::Int {
+                                bits: 32,
+                                val: 0xCD,
+                            }),
+                            Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        ],
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![alloca(0, CTy::Int(8), 8), alloca(1, CTy::Int(8), 8)];
+        let m = Module {
+            funcs: vec![
+                caller,
+                extern_fn(1, callee, vec![CTy::Ptr, CTy::Ptr], CTy::Void),
+                extern_fn(
+                    2,
+                    "memset",
+                    vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                    CTy::Ptr,
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        let s = &r.states()[0];
+        let mut mem = s.mem.clone();
+        for (v, byte) in [(0u32, 0xABu8), (1, 0xCD)] {
+            let base = match s.local(ValueId(v)) {
+                Some(Value::Ptr(p)) => p.base,
+                other => panic!("{other:?}"),
+            };
+            let read = mem.read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY);
+            // **`Symbolic`, not `Uninitialized`** (024 §2.1's default): a known-unknown,
+            // so a later read must not be an uninitialized-read finding. Swapping the two
+            // fills is otherwise invisible — both stop the old bytes coming back.
+            assert!(
+                !read.faults.iter().any(|f| f.kind() == "uninitialized-read"),
+                "`{callee}` arg {v}: symbolic is not uninitialized: {:#?}",
+                read.faults
+            );
+            assert_ne!(
+                read.value,
+                Some(vec![byte; 4]),
+                "`{callee}` invalidated argument {v}"
+            );
+        }
+    }
+}
+
+/// **A symbolic `PtrAdd` offset is a gap, not a guess.** Concretizing to any particular
+/// value — 0 is the tempting one — produces an address the program never computes, and
+/// every access through it is then a confident report about the wrong bytes.
+#[test]
+fn a_symbolic_ptr_add_offset_is_a_gap() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Fresh { ty: CTy::Int(64) },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Value(ValueId(1)),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
+    assert!(
+        r.states()[0].local(ValueId(2)).is_none(),
+        "no fabricated pointer was handed out"
+    );
+}

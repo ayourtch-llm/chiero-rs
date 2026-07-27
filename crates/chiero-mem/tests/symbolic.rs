@@ -1509,3 +1509,59 @@ fn a_havoc_that_cannot_follow_pointers_reports_it() {
          'there was nothing there'"
     );
 }
+
+/// **A havoc does not follow a word it cannot vouch for.** `pointees` reads only
+/// initialized concrete words: an uninitialized one is whatever the allocator left there,
+/// and following it invents a reference to an object the program never named.
+#[test]
+fn the_pointer_scan_ignores_uninitialized_words() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let inner = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let outer = m.alloc(ObjKind::Heap, 8, 8, sp(2));
+    m.set(ptr(inner, 0), 0xCD, 8, sp(3));
+    // The address is *there* in the bytes, but nothing wrote it: `write_raw_for_test`
+    // puts the bytes down without marking them initialized, which is exactly the state
+    // fresh heap memory is in.
+    let addr = m.addr_of(inner).expect("placed");
+    m.write_uninit_bytes_for_test(ptr(outer, 0), &addr.to_le_bytes());
+    let reached = m.havoc(&mut a, &[outer], 1, HavocFill::Uninitialized, sp(4));
+    assert_eq!(
+        reached.objects,
+        vec![outer],
+        "an uninitialized word is not a reference"
+    );
+}
+
+/// **Clearing an object's contents clears its symbolic overlay too.** A leftover overlay
+/// entry would make a byte of a freshly-invalidated object read back as the symbol the
+/// *previous* contents had, which is a stale value wearing an unknown's clothes.
+#[test]
+fn an_uninitialized_havoc_drops_the_symbolic_overlay() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.set(ptr(o, 0), 1, 8, sp(2));
+    let x = a.var(Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(o, 2), x, sp(3));
+    m.havoc(&mut a, &[o], 0, HavocFill::Uninitialized, sp(4));
+    let r = m.read(ptr(o, 2), 1, sp(5));
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "uninitialized: {:#?}",
+        r.faults
+    );
+    // **And not *also* symbolic.** Clearing the init mask alone makes the two cases give
+    // the same answer here, so the absence of the overlay is what the mutation turns on:
+    // a leftover entry would make this byte read back as the symbol the *previous*
+    // contents had — a stale value wearing an unknown's clothes.
+    assert!(
+        !r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the overlay is gone too: {:#?}",
+        r.faults
+    );
+}
