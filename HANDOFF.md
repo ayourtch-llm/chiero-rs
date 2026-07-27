@@ -1911,6 +1911,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    and contract 8's ("one shift-UB event") need 023 §6's event surface, which does not
    exist. Contracts 12, 14–18 need the frontend and belong to M2.
 
+   **WAVE 37** (`675c143`; 573 tests, **95/161 cited**) — 020's bitfield block, contracts
+   24, 25, 26, 27. ⚠️ **Contract 26 was a real gap in code I wrote**: `LoadBits` with
+   `signed: true` over `0b111` in three bits is `-1`, not `7`. I implemented the sign
+   extension in wave 20 and tested only the unsigned side, so `sext`→`zext` survived until
+   now. *Implementing both directions and testing one is its own failure mode* — the code
+   looks covered because the feature is present.
+
+   24/25 are the pair 020 names as **the** thing byte-granular init cannot do: both fields
+   share a byte, so a per-byte mask must answer wrongly for one. 27's two halves each fail
+   a mutation individually.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
