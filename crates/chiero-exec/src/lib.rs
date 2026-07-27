@@ -104,6 +104,32 @@ impl AssumptionKind {
     }
 }
 
+/// A defined-but-undefined-behaviour operation, as 020 §4.1 wants it recorded.
+///
+/// §4.1's separation: "defined IR semantics, UB reported as findings". The *value* is
+/// always the SMT-LIB one so the IR and the solver cannot disagree, the path always
+/// continues, and this is what a `Checker` (040) later turns into a finding. The engine
+/// deliberately does not decide whether it is a bug — `memcpy(d, s, n - 1)` with `n = 0`
+/// wraps on purpose all over VPP, and a checker with the context is what tells those
+/// apart from the mistakes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UbEvent {
+    pub kind: UbKind,
+    pub span: Span,
+    /// What the operation was, for a report a reader can act on.
+    pub detail: String,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UbKind {
+    /// Signed `Add`/`Sub`/`Mul` whose mathematical result does not fit.
+    SignedOverflow,
+    /// `Shl`/`LShr`/`AShr` by at least the operand width.
+    Shift,
+    /// `UDiv`/`SDiv`/`URem`/`SRem` by zero.
+    DivByZero,
+}
+
 /// 023 §6.1's deduplication key, minus the `checker` component the checker framework will
 /// add. Two reports of one bug — the same fault, at the same place, about the same object
 /// — are one finding however many times the path runs through them.
@@ -304,6 +330,8 @@ pub struct State {
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
     findings: Vec<StateFinding>,
+    /// 020 §4.1's UB events, in the order this path met them.
+    ub: Vec<UbEvent>,
     /// **Every symbolic input this path ever created**, in creation order (023 §9). The
     /// witness is an assignment to exactly these, so a symbol minted without landing here
     /// is a value the replay harness would leave to chance.
@@ -388,6 +416,7 @@ impl State {
             steps: 0,
             findings: Vec::new(),
             inputs: Vec::new(),
+            ub: Vec::new(),
             replay_used: 0,
             witness: None,
             unwitnessed: None,
@@ -446,6 +475,11 @@ impl State {
 
     pub fn findings(&self) -> Vec<&str> {
         self.findings.iter().map(|f| f.message.as_str()).collect()
+    }
+
+    /// 020 §4.1's UB events on this path.
+    pub fn ub_events(&self) -> &[UbEvent] {
+        &self.ub
     }
 
     /// This path's witness, or `None` with a reason (023 contract 15).
@@ -666,6 +700,11 @@ impl RunResult {
             .fold(Fidelity::Exact, Fidelity::degrade)
     }
 
+    /// Every UB event on every path, in state order (020 §4.1).
+    pub fn ub_events(&self) -> Vec<UbEvent> {
+        self.states.iter().flat_map(|s| s.ub.clone()).collect()
+    }
+
     /// A witness bound to *this* run. Minting is unconditional: 023 §7.1 wants exactly
     /// **one** function reading fidelity to decide whether a result is a proof, and that
     /// function is `seal`. Gating here as well made `seal`'s own check unreachable, which
@@ -850,6 +889,7 @@ impl<'m> Engine<'m> {
                 steps: 0,
                 findings: Vec::new(),
                 inputs: Vec::new(),
+                ub: Vec::new(),
                 replay_used: 0,
                 witness: None,
                 unwitnessed: None,
@@ -928,6 +968,7 @@ impl<'m> Engine<'m> {
             steps: 0,
             findings: Vec::new(),
             inputs: entry_inputs,
+            ub: Vec::new(),
             replay_used: 0,
             witness: None,
             unwitnessed: None,
@@ -1287,6 +1328,64 @@ impl<'m> Engine<'m> {
             .collect();
         for id in dying {
             s.mem.exit_scope(id, at);
+        }
+    }
+
+    /// Record 020 §4.1's UB event for a binary operation, if this one has one.
+    ///
+    /// **Only when the operands are concrete.** A symbolic divisor *may* be zero, and
+    /// deciding that costs a solver query per arithmetic instruction — which is 040's
+    /// business, with the path condition and a budget, not the interpreter's. What the
+    /// engine owes is the event for what it can see, and §4.1 asks for exactly that: the
+    /// IR semantics are defined, and a checker turns the event into a finding.
+    #[allow(clippy::too_many_arguments)]
+    fn note_ub(
+        &mut self,
+        a: &TermArena,
+        s: &mut State,
+        op: BinOp,
+        ty: &CTy,
+        x: Term,
+        y: Term,
+        span: Span,
+    ) {
+        let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else {
+            return;
+        };
+        let w = bits_of_cty(ty).unwrap_or_else(|| a.width(x));
+        let mut push = |kind: UbKind, detail: String| {
+            s.ub.push(UbEvent { kind, span, detail });
+        };
+        match op {
+            BinOp::Shl | BinOp::LShr | BinOp::AShr if yc.bits() >= w as u128 => {
+                push(
+                    UbKind::Shift,
+                    format!("{op:?} of a {w}-bit value by {}", yc.bits()),
+                );
+            }
+            BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem if yc.bits() == 0 => {
+                push(UbKind::DivByZero, format!("{op:?} by zero"));
+            }
+            // Signed overflow is a statement about the *mathematical* result, so it is
+            // computed at full width and compared against the range — recomputing it in
+            // the operand's width is exactly the wrap being tested for.
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                let (xs, ys) = (xc.signed(), yc.signed());
+                let exact: Option<i128> = match op {
+                    BinOp::Add => xs.checked_add(ys),
+                    BinOp::Sub => xs.checked_sub(ys),
+                    _ => xs.checked_mul(ys),
+                };
+                let lo = -(1i128 << (w - 1));
+                let hi = (1i128 << (w - 1)) - 1;
+                if exact.is_none_or(|v| v < lo || v > hi) {
+                    push(
+                        UbKind::SignedOverflow,
+                        format!("{op:?} of {xs} and {ys} does not fit in {w} signed bits"),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2177,7 +2276,9 @@ impl<'m> Engine<'m> {
                 let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
                     return self.lowering_gap(s, span, "a non-scalar arithmetic operand");
                 };
-                let _ = ty;
+                // **The event, before the value** — the value is always produced, so an
+                // early return added later cannot silently drop the event.
+                self.note_ub(a, s, *op, ty, xv, yv, span);
                 match bin(a, *op, xv, yv) {
                     Some(t) => Value::Scalar(t),
                     None => return self.lowering_gap(s, span, &format!("{op:?}")),

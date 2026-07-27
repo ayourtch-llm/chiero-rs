@@ -79,6 +79,18 @@ pub fn render(r: &RunResult) -> String {
         }
     }
 
+    // 020 §4.1's UB events. Not findings — the engine does not decide whether wrapping
+    // was a mistake, and VPP wraps deliberately all over — but a reader who cannot see
+    // them has to take a checker's word for what the program did.
+    let ub = r.ub_events();
+    if !ub.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "undefined behaviour ({}):", ub.len());
+        for e in &ub {
+            let _ = writeln!(out, "  - [{:?}] {} at {:?}", e.kind, e.detail, e.span);
+        }
+    }
+
     // 023 §8: the bounds are reported whether or not they were hit, so a reader can tell
     // an `Exact` run under generous bounds from one under trivial ones.
     let b = r.budget();

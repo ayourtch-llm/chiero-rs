@@ -204,3 +204,23 @@ fn signed_overflow_wraps_and_reports() {
     let (ok, _) = run_op(BinOp::Add, 32, 1, 1);
     assert!(ok.ub_events().is_empty(), "1 + 1 does not");
 }
+
+/// The events reach the reader. 020 §4.1 keeps the *decision* — is this wrap a bug? — in
+/// a checker, because VPP wraps on purpose all over; what a reader must not have to take
+/// on trust is what the program actually did.
+#[test]
+fn ub_events_appear_in_the_rendered_report() {
+    let (r, _) = run_op(BinOp::UDiv, 32, 5, 0);
+    let text = render(&r);
+    assert!(
+        text.contains("undefined behaviour") && text.contains("DivByZero"),
+        "{text}"
+    );
+    // And a clean run says nothing about UB, rather than printing an empty section.
+    let (ok, _) = run_op(BinOp::Add, 32, 1, 1);
+    assert!(
+        !render(&ok).contains("undefined behaviour"),
+        "{}",
+        render(&ok)
+    );
+}
