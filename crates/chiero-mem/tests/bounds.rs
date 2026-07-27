@@ -251,3 +251,109 @@ fn an_undecidable_bounds_question_neither_claims_nor_assumes() {
         cx.path()
     );
 }
+
+/// **The witness must actually be used.**
+///
+/// `bounds_decision` computed a concrete in-bounds offset and every branch then proceeded
+/// at a hardcoded 0, so a symbolic read whose path condition pinned `i == 4` returned
+/// byte 0 — silently, with no fault and no approximation marker. The offset was
+/// bounds-checked and then thrown away, which is worse than not checking it: the answer
+/// looks authoritative.
+#[test]
+fn a_symbolic_read_proceeds_at_the_offset_the_path_condition_implies() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    for i in 0..64i64 {
+        m.write(Pointer { base: o, off: i }, &[i as u8 + 1], sp(2));
+    }
+    let i = a.var(Sort::BitVec(64), "i");
+    let four = a.bv(64, 4);
+    let pinned = a.eq(i, four);
+    let mut cx = AccessCtx::new();
+    cx.assume(pinned);
+
+    let r = m.read_sym(&mut cx, &mut a, o, i, 1, sp(3));
+    assert!(
+        r.faults.is_empty(),
+        "i == 4 is in a 64-byte object: {:#?}",
+        r.faults
+    );
+    assert_eq!(
+        r.value.unwrap(),
+        vec![5],
+        "byte 4 holds 5; returning byte 0 would be a confident wrong answer"
+    );
+}
+
+/// A symbolic write lands where the path condition says, for the same reason — and the
+/// dangerous direction, since a write to the wrong byte corrupts state the analysis then
+/// reasons about.
+#[test]
+fn a_symbolic_write_lands_at_the_implied_offset() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0xEE, 64, sp(2));
+    let i = a.var(Sort::BitVec(64), "i");
+    let seven = a.bv(64, 7);
+    let pinned = a.eq(i, seven);
+    let mut cx = AccessCtx::new();
+    cx.assume(pinned);
+
+    let val = a.bv(8, 0x5A);
+    assert!(
+        m.write_sym(&mut cx, &mut a, o, i, val, sp(3))
+            .faults
+            .is_empty()
+    );
+    let t = m.read_term(
+        &mut a,
+        Pointer { base: o, off: 7 },
+        1,
+        Endian::Little,
+        sp(4),
+    );
+    assert_eq!(a.eval_ground(t.value.unwrap()).unwrap().bits(), 0x5A);
+    // And byte 0 was not touched.
+    let z = m.read_term(
+        &mut a,
+        Pointer { base: o, off: 0 },
+        1,
+        Endian::Little,
+        sp(5),
+    );
+    assert_eq!(a.eval_ground(z.value.unwrap()).unwrap().bits(), 0xEE);
+}
+
+/// A **concrete** offset must be honoured even when the path condition is undecidable.
+///
+/// The witness is normally read out of a model, and tier 1 returns none when the path
+/// contains something outside its fragment — so without deciding a ground offset
+/// directly, a constant index inside a function with one multiplication in its path
+/// silently became byte 0.
+#[test]
+fn a_concrete_offset_is_honoured_under_an_undecidable_path_condition() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    for i in 0..64i64 {
+        m.write(Pointer { base: o, off: i }, &[i as u8 + 1], sp(2));
+    }
+    // Something tier 1 cannot decide, in the path condition rather than the offset.
+    let x = a.var(Sort::BitVec(64), "x");
+    let y = a.var(Sort::BitVec(64), "y");
+    let p = a.mul(x, y);
+    let twelve = a.bv(64, 12);
+    let hard = a.eq(p, twelve);
+    let mut cx = AccessCtx::new();
+    cx.assume(hard);
+
+    let off = a.bv(64, 9);
+    let r = m.read_sym(&mut cx, &mut a, o, off, 1, sp(3));
+    assert_eq!(
+        r.value.unwrap(),
+        vec![10],
+        "byte 9 holds 10 regardless of what the solver can say about the path"
+    );
+}

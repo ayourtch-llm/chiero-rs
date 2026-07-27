@@ -1863,6 +1863,26 @@ impl AccessCtx {
         &self.path
     }
 
+    /// A concrete value for `t` consistent with the path condition, if tier 1 can find
+    /// one. `None` when it cannot — the caller must not invent one.
+    pub fn model_of(&mut self, a: &mut TermArena, t: Term) -> Option<i64> {
+        let vars = {
+            let mut v = Vec::new();
+            a.vars_of(t, &mut v);
+            v
+        };
+        match self.solver.check(a, &[]) {
+            CheckResult::Sat(m) => {
+                let mut sub = chiero_solver::Model::new();
+                for v in vars {
+                    sub.set(v, m.get(v)?);
+                }
+                a.eval(&sub, t).ok().map(|c| c.bits() as i64)
+            }
+            _ => None,
+        }
+    }
+
     /// Whether `t` can hold under the current path condition.
     fn feasible(&mut self, a: &mut TermArena, t: Term) -> Feasibility {
         // A concrete offset folds the condition to a literal at construction (022 §2), and
@@ -1962,6 +1982,23 @@ impl Memory {
         }
     }
 
+    /// A concrete offset consistent with the path condition.
+    ///
+    /// Every branch of the decision below used to proceed at a hardcoded `0`, so a read
+    /// whose path condition pinned `i == 4` returned byte 0 — bounds-checked and then
+    /// thrown away, which is worse than not checking, because the answer looks
+    /// authoritative. Concretizing here is what 023 §7 calls `Approximated`; the term is
+    /// still the truth, and this is the byte the witness names.
+    fn witness(&self, a: &mut TermArena, cx: &mut AccessCtx, off: Term, hint: Option<i64>) -> i64 {
+        if let Ok(v) = a.eval_ground(off) {
+            return v.bits() as i64;
+        }
+        match cx.model_of(a, off) {
+            Some(v) => v,
+            None => hint.unwrap_or(0),
+        }
+    }
+
     /// The three-way decision of 021 §5 step 2.
     ///
     /// `Err` means the access does not happen: the state check failed, or the access is
@@ -2013,8 +2050,11 @@ impl Memory {
         let can_be_ok = cx.feasible(a, in_bounds);
 
         match (can_be_ok, can_be_oob) {
-            // Definitely in bounds: nothing to report, nothing to add.
-            (_, Feasibility::No) => Ok((vec![], 0)),
+            // Definitely in bounds: nothing to report, nothing to add — but the access
+            // still has to happen *somewhere*, and that somewhere is a model of the path
+            // condition, not zero.
+            (Feasibility::Yes(w), Feasibility::No) => Ok((vec![], self.witness(a, cx, off, w))),
+            (_, Feasibility::No) => Ok((vec![], self.witness(a, cx, off, None))),
             // Definitely out of bounds: report and terminate. Continuing here would carry
             // an unsatisfiable path condition, which 023 §3 calls a chiero bug.
             (Feasibility::No, _) => Err(vec![MemFault::OutOfBounds {
@@ -2027,17 +2067,21 @@ impl Memory {
             // May be out of bounds: report with a witness, then **continue on the
             // in-bounds branch** with the constraint added. Killing the state instead
             // would let one early OOB hide everything downstream of it.
-            (_, Feasibility::Yes(witness)) => {
+            (_, Feasibility::Yes(oob_witness)) => {
                 cx.assume(in_bounds);
+                // The *reported* witness is an out-of-bounds one — that is the bug being
+                // shown. The offset execution then proceeds at is an **in-bounds** one,
+                // re-derived under the constraint just added.
+                let go = self.witness(a, cx, off, None);
                 Ok((
                     vec![MemFault::OutOfBoundsMaybe {
                         obj: id,
                         size,
                         obj_size,
-                        witness: witness.unwrap_or(limit as i64),
+                        witness: oob_witness.unwrap_or(limit as i64),
                         at,
                     }],
-                    0,
+                    go,
                 ))
             }
             // Tier 1 could not decide. **No constraint is added**: assuming the access
@@ -2045,7 +2089,7 @@ impl Memory {
             // the very path the escalation exists to explore. Escalation is the engine's
             // to perform (022 §4); the honest interim answer is to proceed and claim
             // nothing.
-            (_, Feasibility::Unknown) => Ok((vec![], 0)),
+            (_, Feasibility::Unknown) => Ok((vec![], self.witness(a, cx, off, None))),
         }
     }
 }
