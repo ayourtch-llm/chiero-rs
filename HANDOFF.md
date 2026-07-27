@@ -435,6 +435,20 @@ Commit message prefixes: `red:`, `green:`, `review:`, `spec:`, `chore:`.
 The user authorized subagents specifically for these reviews. (General standing
 instruction otherwise discourages unrequested subagent use — this is the carve-out.)
 
+### 8.1 Subagent rules the user set 2026-07-27 — standing
+
+- **Max 2–3 concurrent agents.** Not more. The user asked for this explicitly after I
+  launched 5 at once. Queue the rest and run them in waves.
+- **Don't kill already-running agents to enforce a new limit** — their prompt cache goes
+  cold and the work is wasted. The user clarified that limits apply to *future* launches;
+  let in-flight agents finish. (I killed 3 before hearing this. Don't repeat it.)
+- **Use a `model: fable` subagent for adversarial reviews**, and also **for reviewing code
+  and detailed architecture decisions whenever there is doubt**. Fable reasons
+  differently from the main model, which is the point — it is the independent
+  perspective, not a second opinion from the same mind. Give it the brief that most
+  benefits from independence (architecture challenges, cross-cutting consistency),
+  and tell it explicitly not to be agreeable.
+
 ## 9. Next actions
 
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
@@ -469,20 +483,49 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 (NOT `<src>.gcov.json.gz`), and JSON `branches[]` entries carry only
 `{count, throw, fallthrough}` — **no target block**, which is precisely why the native
 `.gcno` path is required for arc-level work.
-2. **Offer the adversarial subagent review of the spec set** (the §8 carve-out covers it).
-   Highest-value targets, in order: 020/021 (CIR↔memory interface — bitfield init
-   tracking and `LoadBits` are the newest and least settled), 022 (the "lite may only
-   answer Sat with a validated model" rule is the project's main soundness hinge),
-   032 (recall is the metric that matters and the refinement rules are subtle),
-   041 (the observational-equivalence definition — each choice changes the answer).
-3. **Only after the user approves**: begin the TDD loop at **M1** in
+2. **Adversarial spec review — IN PROGRESS as of 2026-07-27.** The user chose this over
+   starting implementation. Run in waves of ≤3 (§8.1).
+
+   **Wave 1 (running):** (a) 020+021 CIR↔memory interface; (b) 022+023+024+025 solver
+   soundness + engine fidelity; (c) **Fable** — challenge the load-bearing architecture
+   decisions (own-frontend-vs-clang, CIR contract boundary, non-SSA, build order, total
+   scope) **plus** cross-document contradictions, dangling forward references, and the
+   central claim's chain of custody.
+
+   **Wave 2 (QUEUED — launch after wave 1 reports):**
+   - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
+     (a missed test is a shipped regression). Specific leads worth chasing: can a change
+     be misclassified `Cosmetic` when line position is semantically observable
+     (`__LINE__`, `__FILE__`, `assert` text — grep VPP for `__LINE__`)? constructor/
+     destructor attributes (51 VPP files) run before `main`. Conditional-compilation
+     branches not taken in the analyzed config. Multiarch 1:N holes. Also: how many of
+     032's 21 contracts does a trivial "always select every test" selector pass?
+   - **040+041+042+050** — findings, equivalence, recipes, tool surface. Specific leads:
+     is the compile-and-ASan replay harness (040 §3) actually achievable for findings in
+     static functions / deep in VPP init / with UCSE objects, or does it quietly become
+     vestigial? **Likely real bug**: under 021 §7's deterministic addresses, do two
+     versions that allocate differently yield different pointer values and so spuriously
+     `Differs` in `prove_equivalent`? Which 041 contracts does an always-`Unknown`
+     implementation pass?
+
+   Original briefs for wave 2 are reconstructable from the above; the agents were
+   launched once and killed to respect the concurrency limit, so nothing is cached.
+
+3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
+   subagent finding is a claim, not a verdict; several will be wrong, and adopting a
+   wrong one damages a spec that is currently correct. Where a finding is right, amend
+   the spec; where it is wrong, say so and move on.
+
+4. **Only after the user approves**: begin the TDD loop at **M1** in
    [080](docs/specs/080-roadmap.md) — the symbolic core against **hand-written `.cir`**,
    no C parsed. M1 and M2 are deliberately parallelizable (12 cores); that independence
    is the whole reason for the CIR contract boundary.
-4. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at milestone
+
+5. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at milestone
    boundaries. **Update §7/§9 and commit this file first, every time.**
-6. ~~Re-verify clang/z3~~ — **done**, both verified working (§3). `070`'s oracle section
-   can assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
+
+~~Re-verify clang/z3~~ — done, both verified working (§3). `070`'s oracle section can
+assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 
 ## 10. Standing reminders
 
