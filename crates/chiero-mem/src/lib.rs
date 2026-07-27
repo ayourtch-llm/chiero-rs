@@ -118,7 +118,24 @@ pub enum AccessError {
         off: i64,
         bit: u64,
     },
+    /// An access wider than the payload can represent. Distinct from `OutOfBounds`
+    /// because it is a *chiero* limit rather than a program error: the object might be
+    /// large enough, and the caller still cannot be answered exactly.
+    BadRange {
+        want_bits: u64,
+        max_bits: u64,
+    },
+    /// 021 §4: `readonly` globals reject writes with a finding, and contract 21 requires
+    /// the bytes to be unchanged.
+    ReadOnly {
+        off: i64,
+    },
 }
+
+/// The widest integer the byte and bit APIs can carry. Accesses beyond it are refused
+/// rather than silently truncated — 020 permits `Int(512)` for AVX-512, so this is a real
+/// boundary that `Const::Wide` exists to cross, not a theoretical one.
+pub const MAX_ACCESS_BITS: u64 = 128;
 
 /// A memory object: a contiguous extent with byte contents and an init mask.
 #[derive(Clone, Debug, PartialEq)]

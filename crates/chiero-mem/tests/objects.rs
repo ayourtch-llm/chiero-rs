@@ -215,3 +215,230 @@ fn a_zero_size_access_one_past_the_end_is_in_bounds() {
         Err(AccessError::OutOfBounds { .. })
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Wave 8, from the mutation review. Every one probed before being acted on.
+// ---------------------------------------------------------------------------
+
+/// **The bounds check does not bound: a `size_t` underflow reads as in-bounds.**
+///
+/// `size as i64` is a wrapping cast, so any `size >= 2^63` is negative, the computed end
+/// lands at or below the offset, and the check passes. The trigger is the canonical
+/// overflow bug — `clib_memcpy(d, s, a - b)` with `a < b` — and the observed result was
+/// an *uninitialized-read* finding for a 16-exabyte overflow: a real buffer overflow
+/// silently reclassified as a different, milder bug.
+#[test]
+fn a_size_underflow_is_out_of_bounds_not_something_milder() {
+    let o = obj(16);
+    match o.read_bytes(0, u64::MAX - 3) {
+        Err(AccessError::OutOfBounds { .. }) => {}
+        other => panic!("a wrapped size must be out of bounds, got {other:?}"),
+    }
+    let mut o = obj(16);
+    assert!(matches!(o.write_bytes_cond(0, &[0], Cond::Always), Ok(())));
+    assert!(matches!(
+        o.read_bytes(8, u64::MAX / 2),
+        Err(AccessError::OutOfBounds { .. })
+    ));
+}
+
+/// **A conditional write must not *downgrade* a definitely-initialized byte.**
+///
+/// 021 §3.1 defines the conditional write as `ite(off == k, val, old)`. If `old` is
+/// already `Yes`, both branches are initialized, so the join is `Yes`. Assigning `Cond`
+/// unconditionally reintroduces exactly the false-positive storm on `v[i] = x; … use
+/// v[i]` that the tri-state exists to prevent — and now on code that was *definitely*
+/// initialized before the loop, which is the common shape: `memset(v, 0, n)` and then a
+/// guarded write.
+#[test]
+fn a_conditional_write_over_initialized_memory_stays_initialized() {
+    let mut o = obj(8);
+    o.write_bytes(0, &[0; 8]).unwrap(); // memset
+    o.write_bytes_cond(0, &[1], Cond::Symbolic).unwrap(); // v[i] = x
+    assert_eq!(
+        o.init_bit(0),
+        InitBit::Yes,
+        "both branches of the ite are initialized, so the join is initialized"
+    );
+    assert!(o.read_bytes(0, 1).is_ok(), "and the read must not fire");
+}
+
+/// The join is one-directional: a conditional write over *uninitialized* memory is still
+/// `Cond`. Without this the fix above is just "always Yes", which loses every real
+/// uninitialized read.
+#[test]
+fn a_conditional_write_over_uninitialized_memory_is_still_conditional() {
+    let mut o = obj(8);
+    o.write_bytes_cond(0, &[1], Cond::Symbolic).unwrap();
+    assert_eq!(o.init_bit(0), InitBit::Cond);
+}
+
+/// **Bitfields wider than the value type corrupt memory silently.** Rust masks shift
+/// amounts when overflow checks are off, so `v >> 128` is `v >> 0` and bit 128 of the
+/// field gets bit 0 of the value. Nothing bounded a bitfield to the payload width, and
+/// `__int128` bitfields plus over-wide `LoadBits` units are reachable.
+#[test]
+fn a_bitfield_wider_than_the_payload_is_rejected() {
+    let mut o = obj(32);
+    assert!(matches!(
+        o.write_bits(0, 160, 1),
+        Err(AccessError::BadRange { .. })
+    ));
+    assert!(matches!(
+        o.read_bits(0, 129),
+        Err(AccessError::BadRange { .. })
+    ));
+    // The boundary itself is fine.
+    assert!(o.write_bits(0, 128, 1).is_ok());
+}
+
+/// `check_bits` must not overflow before it compares. `lo_bit + n_bits` wraps, the
+/// wrapped sum passes the check, and the indexing that follows panics — a crash rather
+/// than a finding, reachable from any bit offset derived from a wrapped pointer
+/// difference.
+#[test]
+fn a_wrapping_bit_range_is_rejected_rather_than_panicking() {
+    let o = obj(16);
+    assert!(matches!(
+        o.read_bits(u64::MAX - 63, 64),
+        Err(AccessError::OutOfBounds { .. })
+    ));
+}
+
+/// **`read_int`/`write_int` above the payload width.** Writing 20 bytes duplicated the
+/// value's low bytes at offset 16 and returned `Ok`; reading 20 bytes silently narrowed
+/// to 16 and reported nothing. The two were not inverses and neither said so.
+#[test]
+fn an_integer_access_wider_than_the_payload_is_rejected() {
+    let mut o = obj(32);
+    assert!(matches!(
+        o.write_int(0, 20, 0xDEAD, Endian::Little),
+        Err(AccessError::BadRange { .. })
+    ));
+    o.write_bytes(0, &[0xFF; 20]).unwrap();
+    assert!(matches!(
+        o.read_int(0, 20, Endian::Little),
+        Err(AccessError::BadRange { .. })
+    ));
+}
+
+/// `read_int` and `write_int` are exact inverses at every legal size, in both orders.
+/// This is the companion to the rejection above — otherwise "reject everything" passes.
+#[test]
+fn integer_access_round_trips_at_every_legal_size() {
+    for size in 1..=16u64 {
+        for e in [Endian::Little, Endian::Big] {
+            let mut o = obj(32);
+            let v = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210u128 >> (8 * (16 - size));
+            o.write_int(0, size, v, e).unwrap();
+            assert_eq!(o.read_int(0, size, e).unwrap(), v, "size {size}, {e:?}");
+        }
+    }
+}
+
+/// **021 §4: `readonly` globals reject writes with a finding.** The field existed and
+/// nothing read it — a `pub` field that looks like a safety property but is inert is
+/// worse than no field at all. Contract 21 also requires the bytes to be unchanged.
+#[test]
+fn a_readonly_object_rejects_writes_and_keeps_its_bytes() {
+    let mut o = MemObject::new(ObjectId(2), ObjKind::Global, 8, 8, Span::DUMMY);
+    o.write_bytes(0, &[1, 2, 3, 4]).unwrap();
+    o.readonly = true;
+    assert!(matches!(
+        o.write_bytes(0, &[0xEE]),
+        Err(AccessError::ReadOnly { .. })
+    ));
+    assert!(matches!(
+        o.write_bits(0, 4, 0xF),
+        Err(AccessError::ReadOnly { .. })
+    ));
+    assert_eq!(
+        o.read_bytes(0, 4).unwrap(),
+        vec![1, 2, 3, 4],
+        "a rejected write must not alter the bytes"
+    );
+}
+
+/// **021 contract 24: `StoreBits` to `a` leaves every bit of `b` unchanged.** The crate's
+/// headline claim, and it had no test in the direction that matters — the existing one
+/// writes `a` and only asserts `b` is uninitialized, never writing `b` at all.
+///
+/// The value is deliberately not a palindrome. `0b101` is bit-reversal-invariant in three
+/// bits, so a model that reversed bit order passed the old test: the measuring apparatus
+/// could not see the fault it was aimed at.
+#[test]
+fn writing_one_bitfield_leaves_its_neighbour_untouched() {
+    let mut o = obj(8);
+    o.write_bits(0, 3, 0b110).unwrap(); // `a`, not a palindrome
+    o.write_bits(3, 5, 0b10011).unwrap(); // `b`, same byte
+    assert_eq!(o.read_bits(0, 3).unwrap(), 0b110, "writing b disturbed a");
+    assert_eq!(o.read_bits(3, 5).unwrap(), 0b10011);
+    // And back the other way.
+    o.write_bits(0, 3, 0b001).unwrap();
+    assert_eq!(
+        o.read_bits(3, 5).unwrap(),
+        0b10011,
+        "rewriting a disturbed b"
+    );
+}
+
+/// A zero bit written over a one bit must actually clear. `|=` instead of a masked
+/// assignment loses it, and no earlier test ever wrote a zero over a one.
+#[test]
+fn writing_a_zero_bit_clears_it() {
+    let mut o = obj(8);
+    o.write_bits(0, 8, 0xFF).unwrap();
+    o.write_bits(0, 8, 0x00).unwrap();
+    assert_eq!(o.read_bits(0, 8).unwrap(), 0);
+}
+
+/// Bit accesses away from offset zero. Every earlier bit test used `lo_bit == 0` on the
+/// value path, so a model that discarded `lo_bit` entirely passed the whole suite.
+#[test]
+fn bit_access_works_away_from_the_first_byte() {
+    let mut o = obj(8);
+    o.write_bits(20, 12, 0xABC).unwrap();
+    assert_eq!(o.read_bits(20, 12).unwrap(), 0xABC);
+    assert_eq!(o.init_bit(20), InitBit::Yes);
+    assert_eq!(o.init_bit(19), InitBit::No, "bit 19 was not written");
+    assert_eq!(o.init_bit(32), InitBit::No, "bit 32 was not written");
+}
+
+/// Byte accesses away from offset zero, for the same reason: every successful read in the
+/// suite was at offset 0, so "read from offset 0 always" survived. Contract 1's positive
+/// case reads at `user - 8`, which *evaluates* to 0 — only its negative half had teeth.
+#[test]
+fn byte_access_works_away_from_the_start_of_the_object() {
+    let mut o = obj(16);
+    o.write_bytes(9, &[1, 2, 3]).unwrap();
+    assert_eq!(o.read_bytes(9, 3).unwrap(), vec![1, 2, 3]);
+    assert!(matches!(
+        o.read_bytes(8, 3),
+        Err(AccessError::Uninitialized { .. })
+    ));
+}
+
+/// The location fields in a finding are asserted at a non-zero location, since the type's
+/// own doc-comment says a finding that cannot say *where* is not actionable — and every
+/// existing assertion was at offset 0, where a model reporting 0 unconditionally passes.
+#[test]
+fn an_uninitialized_finding_names_the_first_bad_bit() {
+    let mut o = obj(16);
+    o.write_bytes(0, &[1, 2, 3]).unwrap();
+    match o.read_bytes(0, 4) {
+        Err(AccessError::Uninitialized { off, bit }) => {
+            assert_eq!(off, 0);
+            assert_eq!(bit, 24, "byte 3 is the first uninitialized one");
+        }
+        other => panic!("expected Uninitialized, got {other:?}"),
+    }
+}
+
+/// 021 §1's reserved objects. Nothing asserted them, so swapping the two constants
+/// survived — and they are the difference between a null-dereference finding and a
+/// wild-pointer one.
+#[test]
+fn the_reserved_object_ids_are_what_the_spec_says() {
+    assert_eq!(ObjectId::NULL, ObjectId(0));
+    assert_ne!(ObjectId::UNBOUND, ObjectId::NULL);
+}
