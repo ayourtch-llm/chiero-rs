@@ -1812,10 +1812,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    second operand was the same splat as the first, so lane 0 of each held the same byte;
    and the recorded lane width was unpinned until an `ExtractLane` read it back.
 
-   **M1's instruction set is now complete.** Still owed on the engine: `Store`/`Load`
-   ignore the CIR's `align`, which is what a real `ub-strict` mode would need; the
-   `Status::Errored` sites that do not `degrade` themselves. Then **M2 onward in 080 — the
-   frontend — which has not started.**
+   **WAVE 32** (`ec5dbf3`; 559 tests) — `State::give_up` sets the status and degrades
+   together. The guarantee rested on `RunResult::fidelity` special-casing `Errored`, so
+   `State::fidelity()` alone answered `Exact` for a state that had stopped.
+
+   ⚠️ **That test took three attempts to stop being vacuous**, and both failures are
+   general: an `if … { continue; }` escape hatch meant the loop body never ran and the test
+   asserted *nothing*; and once removed, every fixture was being rejected by `verify`
+   first, so the run errored on the **verification path** — which degrades explicitly — and
+   the engine's own sites were never reached. **A fixture that errors for a different
+   reason than the one under test is the same-answer trap wearing a different hat.**
+
+   Also judged stale: the review's claim that removing `RunResult::fidelity`'s special case
+   survives. Four tests kill it now; it was true at the commit it was written against.
+
+   **M1's instruction set is complete.** Still owed on the engine: `Store`/`Load` ignore
+   the CIR's `align`, which is what a real `ub-strict` mode would need — and note it has
+   **no observable effect today**, because `report_faults` filters `Misaligned` out
+   entirely, so the honest order is `ub-strict` first and `align` with it. Then **M2 onward
+   in 080 — the frontend — which has not started.**
 
    *(superseded list)* the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
