@@ -248,6 +248,7 @@ struct Engine {
     once: BTreeSet<PathBuf>,
     guards: BTreeMap<PathBuf, String>,
     line_overrides: BTreeMap<FileId, Vec<LineOverride>>,
+    probed_headers: BTreeMap<PathBuf, String>,
     macros: Vec<StoredMacro>,
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
@@ -302,6 +303,7 @@ impl Engine {
             once: BTreeSet::new(),
             guards: BTreeMap::new(),
             line_overrides: BTreeMap::new(),
+            probed_headers: BTreeMap::new(),
             macros: Vec::new(),
             by_name: BTreeMap::new(),
             diagnostics,
@@ -398,7 +400,7 @@ impl Engine {
                 {
                     self.once.insert(path.to_path_buf());
                 } else {
-                    self.directive(&line, &mut conditionals);
+                    self.directive(&line, &mut conditionals, path, loader);
                 }
             } else if active {
                 ordinary.extend(line);
@@ -485,7 +487,11 @@ impl Engine {
             {
                 return Vec::new();
             }
-            match loader.load(&resolved) {
+            let loaded = self
+                .probed_headers
+                .remove(&resolved)
+                .map_or_else(|| loader.load(&resolved), Ok);
+            match loaded {
                 Ok(source) => {
                     let input = self.lex_source(&resolved, &source);
                     if let Some(guard) = detect_guard_tokens(&input) {
@@ -536,6 +542,43 @@ impl Engine {
                 hide: BTreeSet::new(),
             })
             .collect()
+    }
+
+    fn probe_include(
+        &mut self,
+        tokens: &[Tok],
+        current: &Path,
+        loader: &mut dyn FileLoader,
+    ) -> bool {
+        let Some((name, quoted)) = parse_header_name(tokens) else {
+            return false;
+        };
+        let mut directories = Vec::new();
+        if quoted {
+            directories.push(
+                current
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .to_path_buf(),
+            );
+            directories.extend(self.config.iquote_paths.iter().cloned());
+        }
+        directories.extend(self.config.include_paths.iter().cloned());
+        directories.extend(self.config.system_paths.iter().cloned());
+        if directories.is_empty() {
+            directories.push(PathBuf::new());
+        }
+        for directory in directories {
+            let resolved = directory.join(&name);
+            if self.probed_headers.contains_key(&resolved) {
+                return true;
+            }
+            if let Ok(source) = loader.load(&resolved) {
+                self.probed_headers.insert(resolved, source);
+                return true;
+            }
+        }
+        false
     }
 
     fn add_builtin(&mut self, name: &str) {
@@ -654,13 +697,19 @@ impl Engine {
         self.by_name.insert(name.into(), index);
     }
 
-    fn directive(&mut self, line: &[Tok], conditionals: &mut Vec<Conditional>) {
+    fn directive(
+        &mut self,
+        line: &[Tok],
+        conditionals: &mut Vec<Conditional>,
+        current: &Path,
+        loader: &mut dyn FileLoader,
+    ) {
         let directive = line.get(1).map(|t| t.text.as_str());
         let active = conditionals.last().is_none_or(|frame| frame.active);
         match directive {
             Some("if") => {
                 let parent_active = active;
-                let value = parent_active && self.eval_if(&line[2..]);
+                let value = parent_active && self.eval_if(&line[2..], current, loader);
                 conditionals.push(Conditional {
                     parent_active,
                     active: value,
@@ -688,7 +737,7 @@ impl Engine {
                 let should_eval = conditionals
                     .last()
                     .is_some_and(|frame| frame.parent_active && !frame.taken);
-                let value = should_eval && self.eval_if(&line[2..]);
+                let value = should_eval && self.eval_if(&line[2..], current, loader);
                 if let Some(frame) = conditionals.last_mut() {
                     frame.active = value;
                     frame.taken |= value;
@@ -781,11 +830,24 @@ impl Engine {
         }
     }
 
-    fn eval_if(&mut self, tokens: &[Tok]) -> bool {
+    fn eval_if(&mut self, tokens: &[Tok], current: &Path, loader: &mut dyn FileLoader) -> bool {
         let mut prepared = Vec::new();
         let mut i = 0;
         while i < tokens.len() {
-            if tokens[i].text == "defined" {
+            if tokens[i].text == "__has_include"
+                && tokens.get(i + 1).is_some_and(|token| token.text == "(")
+                && let Some(close) = tokens[i + 2..]
+                    .iter()
+                    .position(|token| token.text == ")")
+                    .map(|offset| i + 2 + offset)
+            {
+                let value = self.probe_include(&tokens[i + 2..close], current, loader);
+                prepared.push(synthetic_number(
+                    if value { "1" } else { "0" },
+                    tokens[i].token.span,
+                ));
+                i = close + 1;
+            } else if tokens[i].text == "defined" {
                 let parenthesized = tokens.get(i + 1).is_some_and(|t| t.text == "(");
                 let name_index = i + if parenthesized { 2 } else { 1 };
                 let value = tokens
@@ -1147,7 +1209,7 @@ impl Engine {
                 && let Some(param) = def.body.get(i + 1)
                 && let Some(raw) = raw_by_name.get(&param.text)
             {
-                replacement.push(self.stringize(&def.body[i], raw, expn, def.def.id));
+                replacement.push(self.stringize(&def.body[i], raw, expn));
                 i += 2;
                 continue;
             }
@@ -1199,13 +1261,7 @@ impl Engine {
         self.paste(replacement, expn)
     }
 
-    fn stringize(
-        &mut self,
-        operator: &Tok,
-        raw: &[Tok],
-        parent: ExpnCtx,
-        macro_id: MacroId,
-    ) -> Tok {
+    fn stringize(&mut self, operator: &Tok, raw: &[Tok], parent: ExpnCtx) -> Tok {
         let mut inside = String::new();
         for (index, token) in raw.iter().enumerate() {
             if index != 0 && token.token.leading_space {
@@ -1220,7 +1276,7 @@ impl Engine {
         }
         let expn = self.source_map.add_expansion(
             parent,
-            Some(macro_id),
+            None,
             Span::new(operator.token.span.lo, operator.token.span.hi, parent),
             Span::new(operator.token.span.lo, operator.token.span.hi, parent),
             Vec::new(),
@@ -1283,6 +1339,16 @@ impl Engine {
                     continue;
                 }
                 let text = format!("{}{}", left.text, right.text);
+                let Some(kind) = self.classify_paste(&text) else {
+                    self.diagnostics.push(Diagnostic {
+                        span: input[i].token.span,
+                        message: format!("token paste `{text}` is not one preprocessing token"),
+                    });
+                    output.push(left);
+                    output.push(right);
+                    i += 2;
+                    continue;
+                };
                 let expn = self.source_map.add_expansion(
                     parent,
                     None,
@@ -1293,7 +1359,7 @@ impl Engine {
                 );
                 output.push(Tok {
                     token: PpToken {
-                        kind: classify_paste(&text),
+                        kind,
                         span: Span::new(input[i].token.span.lo, input[i].token.span.lo, expn),
                         leading_space: left.token.leading_space,
                         bol: left.token.bol,
@@ -1309,6 +1375,23 @@ impl Engine {
         }
         output.retain(|token| !token.text.is_empty());
         output
+    }
+
+    fn classify_paste(&self, text: &str) -> Option<PpTokenKind> {
+        let mut map = SourceMap::new();
+        let file = map.add_file("<paste>", text);
+        let lexed = self.lex_session.lex(&map, file, LexConfig::default());
+        let tokens: Vec<_> = lexed
+            .tokens()
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| !matches!(token.kind, PpTokenKind::Eof))
+            .collect();
+        if tokens.len() == 1 && lexed.text_at(tokens[0].0) == Some(text) {
+            Some(tokens[0].1.kind.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -1424,14 +1507,6 @@ fn synthetic_punct(text: &str, punct: Punct, at: Span) -> Tok {
         },
         text: text.into(),
         hide: BTreeSet::new(),
-    }
-}
-
-fn classify_paste(text: &str) -> PpTokenKind {
-    if text.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
-        PpTokenKind::Number
-    } else {
-        PpTokenKind::Ident(Symbol(0))
     }
 }
 
@@ -1816,19 +1891,73 @@ fn parse_char_constant(text: &str) -> i64 {
         .find('\'')
         .and_then(|start| text.rfind('\'').map(|end| &text[start + 1..end]))
         .unwrap_or("");
-    let mut chars = inside.chars();
-    match chars.next() {
-        Some('\\') => match chars.next() {
-            Some('n') => i64::from(b'\n'),
-            Some('r') => i64::from(b'\r'),
-            Some('t') => i64::from(b'\t'),
-            Some('0') => 0,
-            Some('\\') => i64::from(b'\\'),
-            Some('\'') => i64::from(b'\''),
-            Some(other) => other as i64,
-            None => 0,
-        },
-        Some(ch) => ch as i64,
-        None => 0,
+    let bytes = inside.as_bytes();
+    let mut index = 0;
+    let mut value = 0_u64;
+    while index < bytes.len() {
+        let unit = if bytes[index] != b'\\' {
+            let unit = u64::from(bytes[index]);
+            index += 1;
+            unit
+        } else {
+            index += 1;
+            if index >= bytes.len() {
+                break;
+            }
+            match bytes[index] {
+                b'x' => {
+                    index += 1;
+                    let start = index;
+                    let mut unit = 0_u64;
+                    while index < bytes.len() && bytes[index].is_ascii_hexdigit() {
+                        unit = unit
+                            .wrapping_mul(16)
+                            .wrapping_add(u64::from(hex_value(bytes[index])));
+                        index += 1;
+                    }
+                    if index == start {
+                        u64::from(b'x')
+                    } else {
+                        unit
+                    }
+                }
+                digit @ b'0'..=b'7' => {
+                    let mut unit = u64::from(digit - b'0');
+                    index += 1;
+                    for _ in 1..3 {
+                        if index >= bytes.len() || !(b'0'..=b'7').contains(&bytes[index]) {
+                            break;
+                        }
+                        unit = unit * 8 + u64::from(bytes[index] - b'0');
+                        index += 1;
+                    }
+                    unit
+                }
+                escape => {
+                    index += 1;
+                    u64::from(match escape {
+                        b'a' => 0x07,
+                        b'b' => 0x08,
+                        b'f' => 0x0c,
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
+                        b'v' => 0x0b,
+                        other => other,
+                    })
+                }
+            }
+        };
+        value = value.wrapping_shl(8) | (unit & 0xff);
+    }
+    value as i64
+}
+
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => 0,
     }
 }

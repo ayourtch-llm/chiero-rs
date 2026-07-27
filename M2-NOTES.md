@@ -72,6 +72,19 @@
   This campaign exposed and fixed a macro-generated argument whose spelling endpoints
   were in reverse global-source order; such a sequence now retains an honest component
   span instead of constructing an inverted or cross-file envelope.
+- The adjacent feature-query discriminator reproduced a remaining defect:
+  `__has_include(<present.h>)` always evaluated false. It now probes the configured
+  search order during `#if` evaluation and caches a successful load for a subsequent
+  real include.
+- Synthesized-token discriminators reproduced two provenance/lexing shortcuts:
+  stringization was incorrectly labelled `MacroBody`, and paste guessed only
+  identifier-or-number kinds. Stringized tokens now have synthesized provenance and
+  pasted spellings are accepted only when the lexer recognizes exactly one complete
+  preprocessing token, including prefixed literals.
+- Escaped and multichar constant compiler-oracle cases reproduced the remaining
+  character-constant shortcut. `#if` decoding now handles hexadecimal, octal, and
+  standard escapes and accumulates multichar constants compatibly with the GCC/Clang
+  oracle cases.
 
 ## Mutation checks
 
