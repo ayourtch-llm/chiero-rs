@@ -215,8 +215,16 @@ fn an_undecidable_branch_is_taken_and_yields_unknown_fidelity() {
         ],
         CTy::Int(32),
     );
-    let r = Engine::new(&m).with_solver(SolverTier::LiteOnly).run(&mut a);
-    assert!(!r.states.is_empty(), "the branch is taken, not dropped");
+    let r = Engine::new(&m)
+        .with_solver(SolverTier::LiteOnly)
+        .run(&mut a);
+    // **Both** sides, not just one. "The branch is taken anyway" means neither is
+    // dropped — keeping one and discarding the other loses a path the solver never
+    // refuted, which is the same unsoundness in half measure, and asserting only that
+    // *some* state survived cannot tell the two apart.
+    assert_eq!(r.states.len(), 2, "{:#?}", r.states);
+    assert_eq!(r.states[0].return_value_bits(&mut a), Some(10));
+    assert_eq!(r.states[1].return_value_bits(&mut a), Some(20));
     for s in &r.states {
         assert_eq!(
             s.fidelity,
@@ -334,19 +342,19 @@ fn a_runs_fidelity_is_the_worst_of_its_states() {
     let mut a = TermArena::new();
     let m = func(
         vec![
+            // A *constant* condition, so the branch itself contributes nothing and the
+            // only degradation on the run comes from the opaque construct. A symbolic
+            // condition would be legitimately `Unknown` under tier 1 alone, which would
+            // make this test about the solver rather than about fidelity aggregation.
             block(
                 0,
-                vec![inst(InstKind::Assign {
-                    dst: ValueId(0),
-                    rv: RValue::Fresh { ty: CTy::Int(1) },
-                })],
+                vec![],
                 Terminator::Br {
-                    cond: Operand::Value(ValueId(0)),
+                    cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
                     t: BlockId(1),
                     f: BlockId(2),
                 },
             ),
-            // Only the true branch is imprecise.
             block(
                 1,
                 vec![inst(InstKind::Opaque {
@@ -362,14 +370,21 @@ fn a_runs_fidelity_is_the_worst_of_its_states() {
         CTy::Int(32),
     );
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.states.len(), 2);
-    assert_eq!(r.states[1].fidelity, Fidelity::Exact, "the other path is clean");
+    assert_eq!(r.states.len(), 1, "a constant condition has one successor");
     assert_eq!(
         r.fidelity(),
         Fidelity::Approximated,
         "one imprecise path degrades the run"
     );
     assert!(r.witness().is_none());
+
+    // And the aggregation itself: worst wins over a mixed set.
+    assert_eq!(
+        [Fidelity::Exact, Fidelity::Approximated, Fidelity::Exact]
+            .into_iter()
+            .fold(Fidelity::Exact, Fidelity::degrade),
+        Fidelity::Approximated
+    );
 }
 
 /// **023 §1.1: a local holding a pointer keeps its object.** Storing it as a bare term
@@ -383,7 +398,9 @@ fn a_local_holding_a_pointer_keeps_its_object_identity() {
             0,
             vec![inst(InstKind::Assign {
                 dst: ValueId(0),
-                rv: RValue::AddrOfLocal { alloca: AllocaId(0) },
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
             })],
             Terminator::Return(None),
         )],
