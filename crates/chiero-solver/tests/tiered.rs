@@ -290,32 +290,39 @@ fn a_killed_backend_is_restarted_and_the_stack_replayed() {
         return;
     };
     let mut a = TermArena::new();
-    let x = a.var(Sort::BitVec(8), "x");
-    let c5 = a.bv(8, 5);
-    let c3 = a.bv(8, 3);
-    let lt5 = a.ult(x, c5);
-    let gt3 = a.ult(c3, x);
+    let x = a.var(Sort::BitVec(16), "x");
+    let y = a.var(Sort::BitVec(16), "y");
+    // Multiplication, so tier 1 cannot decide it and the query must reach the backend —
+    // otherwise the restart path is never exercised and the test proves nothing.
+    let p = a.mul(x, y);
+    let c = a.bv(16, 1001);
+    let prod = a.eq(p, c);
+    let one = a.bv(16, 1);
+    let gx = a.ult(one, x);
 
     let mut t = TieredSolver::with_backend(backend);
-    t.assert(lt5);
-    t.assert(gt3);
-    // Establish the answer with a healthy process.
-    let before = matches!(t.check(&mut a, &[]), CheckResult::Sat(_));
-    assert!(before, "x is 4");
-
-    t.kill_backend_for_test();
+    t.assert(prod);
+    t.assert(gx);
+    assert!(matches!(t.check(&mut a, &[]), CheckResult::Sat(_)));
     let spawns_before = t.stats().backend_spawns;
 
-    // A fresh query on the same stack: only correct if the assertions were replayed.
-    let c9 = a.bv(8, 9);
-    let lt9 = a.ult(x, c9);
-    match t.check(&mut a, &[lt9]) {
+    t.kill_backend_for_test();
+
+    // A different query on the same stack: only correct if the assertions reached the
+    // restarted process. 1001 = 7 * 11 * 13, so with `x < 100` the product still has to
+    // hold — a backend answering against an empty context would return anything.
+    let c100 = a.bv(16, 100);
+    let lt100 = a.ult(x, c100);
+    match t.check(&mut a, &[lt100]) {
         CheckResult::Sat(m) => {
-            let v = m.get(a.var_id(x).unwrap()).unwrap().bits();
+            let xv = m.get(a.var_id(x).unwrap()).unwrap().bits();
+            let yv = m.get(a.var_id(y).unwrap()).unwrap().bits();
             assert_eq!(
-                v, 4,
-                "the replayed stack must still constrain x to 4, got {v}"
+                (xv * yv) & 0xffff,
+                1001,
+                "the replayed stack must still constrain x*y == 1001, got {xv}*{yv}"
             );
+            assert!(xv > 1 && xv < 100);
         }
         other => panic!("expected Sat after restart, got {other:?}"),
     }

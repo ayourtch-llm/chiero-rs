@@ -893,48 +893,85 @@ impl SmtLib {
         None
     }
 
-    /// Emit SMT-LIB2 for one query and read the answer back.
-    ///
-    /// The process is spawned per query for now. 022 §4 requires a **long-lived** process
-    /// with real incremental `push`/`pop`, because startup dominates short queries; that
-    /// is the next step and is recorded as owed rather than claimed here.
-    fn run(&self, a: &TermArena, terms: &[Term], vars: &[VarId]) -> Option<(bool, Model)> {
-        use std::io::Write;
-        let mut script = String::from("(set-logic QF_BV)\n");
-        for v in vars {
-            let (name, sort) = &a.vars[v.0 as usize];
-            script.push_str(&format!(
-                "(declare-const {} (_ BitVec {}))\n",
-                smt_name(v, name),
-                sort.width()
-            ));
-        }
-        for t in terms {
-            script.push_str(&format!("(assert {})\n", a.to_smtlib(*t)));
-        }
-        script.push_str("(check-sat)\n(get-model)\n");
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
 
-        let mut child = std::process::Command::new(&self.path)
+/// A live backend process. Kept open across queries: 022 §4 requires real incremental
+/// solving, and startup dominates short queries.
+#[derive(Debug)]
+struct Session {
+    child: std::process::Child,
+    /// Variables already declared to this process, so a restart knows what to redeclare.
+    declared: Vec<VarId>,
+}
+
+impl Session {
+    fn spawn(path: &std::path::Path) -> Option<Session> {
+        let child = std::process::Command::new(path)
             .args(["-in", "-smt2"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()?;
-        child.stdin.as_mut()?.write_all(script.as_bytes()).ok()?;
-        drop(child.stdin.take());
-        let out = child.wait_with_output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        let first = text.lines().next()?.trim();
-        match first {
-            "unsat" => Some((false, Model::new())),
-            "sat" => Some((true, parse_model(a, &text, vars))),
-            // Anything else — `unknown`, a parse error, garbage — is not an answer.
-            _ => None,
+        let mut s = Session {
+            child,
+            declared: Vec::new(),
+        };
+        s.send("(set-logic QF_BV)\n(set-option :produce-models true)\n")?;
+        Some(s)
+    }
+
+    fn send(&mut self, text: &str) -> Option<()> {
+        use std::io::Write;
+        let stdin = self.child.stdin.as_mut()?;
+        stdin.write_all(text.as_bytes()).ok()?;
+        stdin.flush().ok()
+    }
+
+    /// Read one balanced S-expression or bare token from the process.
+    ///
+    /// A long-lived process means output must be framed rather than read to EOF, and
+    /// parenthesis balance is the framing SMT-LIB2 gives us.
+    fn read_answer(&mut self) -> Option<String> {
+        use std::io::Read;
+        let out = self.child.stdout.as_mut()?;
+        let mut buf = Vec::new();
+        let mut depth = 0i32;
+        let mut started = false;
+        let mut byte = [0u8; 1];
+        loop {
+            if out.read(&mut byte).ok()? == 0 {
+                return None; // the process died
+            }
+            let c = byte[0];
+            buf.push(c);
+            match c {
+                b'(' => {
+                    depth += 1;
+                    started = true;
+                }
+                b')' => {
+                    depth -= 1;
+                    if started && depth == 0 {
+                        return Some(String::from_utf8_lossy(&buf).into_owned());
+                    }
+                }
+                b'\n' if !started && !buf.iter().all(|b| b.is_ascii_whitespace()) => {
+                    return Some(String::from_utf8_lossy(&buf).trim().to_string());
+                }
+                _ => {}
+            }
         }
     }
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -997,6 +1034,7 @@ pub struct TieredSolver {
     asserted: Vec<Term>,
     scopes: Vec<usize>,
     backend: Option<SmtLib>,
+    session: Option<Session>,
     paranoid: bool,
     stats: SolverStats,
     /// `Some(model)` = Sat, `None` = Unsat. The model is cached alongside the answer:
@@ -1027,18 +1065,25 @@ impl TieredSolver {
         &self.stats
     }
 
-    /// Kill the backend process, for contract 14's restart-and-replay test.
-    pub fn kill_backend_for_test(&mut self) {
-        todo!("green")
-    }
-
+    /// Ask the live backend, restarting and **replaying** if the process has died.
+    ///
+    /// Replay is the part that is easy to skip and impossible to notice: a restarted
+    /// process still answers, just against an empty context, so the query silently
+    /// becomes a different question.
     fn ask_backend(&mut self, a: &TermArena, all: &[Term]) -> Option<CheckResult> {
-        let b = self.backend.as_ref()?;
+        let path = self.backend.as_ref()?.path().to_path_buf();
         let mut vars = Vec::new();
         for t in all {
             a.vars_of(*t, &mut vars);
         }
-        let r = b.run(a, all, &vars);
+
+        let mut r = self.query(a, &path, all, &vars);
+        if r.is_none() {
+            // The process died. Restart and replay, then try once more; a second
+            // failure is a real backend error rather than a transient one.
+            self.session = None;
+            r = self.query(a, &path, all, &vars);
+        }
         self.stats.backend_calls += 1;
         match r {
             Some((true, m)) => {
@@ -1059,6 +1104,77 @@ impl TieredSolver {
             None => Some(CheckResult::Unknown(UnknownReason::BackendError(
                 "backend gave no usable answer".into(),
             ))),
+        }
+    }
+
+    /// One query against the live session, spawning it if needed. `None` means the
+    /// process is unusable and the caller should restart it.
+    fn query(
+        &mut self,
+        a: &TermArena,
+        path: &std::path::Path,
+        all: &[Term],
+        vars: &[VarId],
+    ) -> Option<(bool, Model)> {
+        if self.session.is_none() {
+            self.session = Session::spawn(path);
+            self.stats.backend_spawns += 1;
+        }
+        let s = self.session.as_mut()?;
+
+        // Declare any variable this process has not seen. Redeclaring after a restart is
+        // exactly the "replay" contract 14 is about — the stack is re-sent below.
+        let mut decls = String::new();
+        for v in vars {
+            if !s.declared.contains(v) {
+                let (name, sort) = &a.vars[v.0 as usize];
+                decls.push_str(&format!(
+                    "(declare-const {} (_ BitVec {}))\n",
+                    smt_name(v, name),
+                    sort.width()
+                ));
+                s.declared.push(*v);
+            }
+        }
+
+        // `push`/`pop` around the assertions keeps the process reusable: the next query
+        // starts from the same clean base rather than inheriting this one's constraints.
+        let mut script = decls;
+        script.push_str("(push 1)\n");
+        for t in all {
+            script.push_str(&format!("(assert {})\n", a.to_smtlib(*t)));
+        }
+        script.push_str("(check-sat)\n");
+        s.send(&script)?;
+
+        let verdict = s.read_answer()?;
+        match verdict.trim() {
+            "unsat" => {
+                s.send("(pop 1)\n")?;
+                Some((false, Model::new()))
+            }
+            "sat" => {
+                s.send("(get-model)\n")?;
+                let text = s.read_answer()?;
+                s.send("(pop 1)\n")?;
+                Some((true, parse_model(a, &text, vars)))
+            }
+            _ => {
+                let _ = s.send("(pop 1)\n");
+                None
+            }
+        }
+    }
+
+    /// Kill the backend **process** while keeping the session, for contract 14.
+    ///
+    /// Dropping the session instead would only exercise "no session yet → spawn one",
+    /// which is a different and much easier path. The real failure is a process that
+    /// dies mid-query: the write or read fails, and the retry must restart *and replay*.
+    pub fn kill_backend_for_test(&mut self) {
+        if let Some(s) = self.session.as_mut() {
+            let _ = s.child.kill();
+            let _ = s.child.wait();
         }
     }
 }
