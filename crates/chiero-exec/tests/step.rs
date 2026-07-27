@@ -5602,3 +5602,101 @@ fn an_invented_value_forbids_a_proof_and_a_definite_fault_does_not() {
         r.states()[0].assumptions()
     );
 }
+
+/// **One bug in a loop is one finding.** `report_faults` mints a fresh sequence id per
+/// fault and `RunResult::findings` dedups only on that id, so a faulting access inside a
+/// loop produced one byte-identical copy per iteration — nine here, and 256 for a loop
+/// over `VLIB_FRAME_SIZE` buffers. 023 §6.1's key is `(checker, span, object, kind)`, and
+/// `MemFault::kind()`/`at()`/`object()` were added in an earlier wave precisely to supply
+/// it; nothing used them. Found by review.
+#[test]
+fn one_faulting_access_in_a_loop_is_one_finding() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(0, vec![], Terminator::Goto(BlockId(1))),
+            block(
+                1,
+                vec![inst(InstKind::Store {
+                    addr: Operand::Const(Const::Null),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let nulls: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("null-dereference"))
+        .collect();
+    assert_eq!(nulls.len(), 1, "{:#?}", r.findings());
+}
+
+/// **A zero-sized load is a gap, not a 64-bit symbol.** `size_of_cty(CTy::Void)` is 0, so
+/// `read_term` returns no value and no fault, and the `None` arm minted a fresh variable
+/// through `sort_of` — which falls through to `BitVec(64)` for anything that is not `Int`
+/// or `Ptr`. chiero invented a 64-bit value for a load of nothing. The same fallthrough
+/// gives a *faulting* `f32` load 64 bits where the succeeding path gives 32. Found by
+/// review.
+#[test]
+fn a_zero_sized_load_is_not_fabricated() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Void,
+                        align: 1,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.states()[0].local(ValueId(1)).is_none(),
+        "nothing was invented: {:?}",
+        r.states()[0].local(ValueId(1))
+    );
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.kind == AssumptionKind::NoInformation),
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+}
