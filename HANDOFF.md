@@ -1015,17 +1015,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    representation is live; promotion obeys the state check and reports when there is
    nothing to promote from.
 
-   **STILL OWED from wave 11:**
-   - **Coverage:** the `s{i}` → `s{i%2}` shadowing mutant in `to_smtlib` **survives** — the
-     sharing tests assert via the arena's own evaluator, which never reads the emitted
-     text, and the only tests that parse it `z3_or_skip`. Also untested: `children()`
-     dropping `Store`'s index/value.
-   - **Not implemented, from 021 §3:** no fresh symbol is ever minted for an uninitialized
-     read (`read_term` returns concrete 0 — the exact "silently reading zero" §3 names as
-     the commonest way a symbolic executor is confidently wrong); no `SizeVal::Sym`; no
-     symbolic-offset *read* API, so `ITE_THRESHOLD` is write-only; no unpinned symbolic
-     store (`idx_bits` hardcoded 64, unrelated to `width(off)`); init-array index width
-     should track `TargetConfig` per §3.1.
+   **Wave 11 fully applied** (`1448cbd` red, `ebdc2e2` green, 373 tests). An uninitialized
+   read now yields a **fresh symbol**, never zero — §3's "single most common way a symbolic
+   executor produces confidently wrong results". Minting and memoizing are one act
+   (contract 26 wants the same term on a repeat, §3 wants it symbolic). Only `No` bytes
+   are materialized: a `Cond` byte carries a live guard and overwriting it would discharge
+   that guard in chiero's favour. The `s{i}`-shadowing and `Store`-children gaps are
+   closed with solver-free structural tests.
+
+   *Consequences worth remembering:* the byte API can no longer answer for a byte it just
+   caused to be symbolized (it reports `SymbolicByte`, a different statement from "nobody
+   wrote this"); and the contract-6 test compares **values only where the byte was
+   written**, because two never-written bytes get different fresh symbols by construction
+   and the two objects standing in for the two paths are different objects.
+
+   *A process failure to avoid repeating:* I folded two new solver tests in as "passing on
+   arrival" without checking — one was failing and I had read only the first lines of the
+   output. **Read the whole result before calling a test a pinning test.**
+
+   **STILL OWED (021 §3):** no `SizeVal::Sym`; no symbolic-offset *read* API, so
+   `ITE_THRESHOLD` is write-only; no unpinned symbolic store (`idx_bits` hardcoded 64,
+   unrelated to `width(off)`); init-array index width should track `TargetConfig` per §3.1.
 
    **Original wave-11 findings, for reference:**
    - **Every byte-level write to a promoted object is silently discarded.** `read` refuses
