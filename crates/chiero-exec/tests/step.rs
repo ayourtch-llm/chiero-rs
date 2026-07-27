@@ -5645,6 +5645,78 @@ fn one_faulting_access_in_a_loop_is_one_finding() {
     assert_eq!(nulls.len(), 1, "{:#?}", r.findings());
 }
 
+/// **The object is part of the key, or deduplication loses real bugs.** Two uninitialized
+/// reads of the *same kind* at the *same span* are two findings when they are about two
+/// different objects — and a hand-written fixture has `Span::DUMMY` everywhere, so without
+/// the object component the key collapses them and one bug disappears. Merging is the
+/// dangerous direction: a duplicate is noise, a dropped finding is a missed bug.
+#[test]
+fn two_objects_faulting_alike_are_two_findings() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(1)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 4,
+            ..alloca(0, CTy::Int(32), 1)
+        },
+        AllocaDecl {
+            align: 4,
+            ..alloca(1, CTy::Int(32), 1)
+        },
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let reads: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("uninitialized-read"))
+        .collect();
+    assert_eq!(reads.len(), 2, "two buffers, two bugs: {:#?}", r.findings());
+}
+
 /// **A zero-sized load is a gap, not a 64-bit symbol.** `size_of_cty(CTy::Void)` is 0, so
 /// `read_term` returns no value and no fault, and the `None` arm minted a fresh variable
 /// through `sort_of` — which falls through to `BitVec(64)` for anything that is not `Int`

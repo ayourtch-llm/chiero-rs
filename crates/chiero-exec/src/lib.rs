@@ -91,6 +91,16 @@ impl AssumptionKind {
     }
 }
 
+/// 023 §6.1's deduplication key, minus the `checker` component the checker framework will
+/// add. Two reports of one bug — the same fault, at the same place, about the same object
+/// — are one finding however many times the path runs through them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FindingKey {
+    kind: &'static str,
+    span: Span,
+    object: Option<chiero_mem::ObjectId>,
+}
+
 /// 023 §7 rule 3: every degradation names its cause. "Approximated with no reason" is a
 /// bug, so this is recorded at the point of degradation, never after the fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,7 +228,7 @@ pub struct State {
     /// The id is minted where the finding is, so every state descended from that call
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
-    findings: Vec<(u64, String)>,
+    findings: Vec<(u64, Option<FindingKey>, String)>,
     /// Where an integer came from, for 021 §7.1's provenance-first `IntToPtr`. Keyed on
     /// the term, so arithmetic that produces a *different* term correctly loses the
     /// provenance rather than carrying it somewhere it does not belong.
@@ -294,7 +304,7 @@ impl State {
     }
 
     pub fn findings(&self) -> Vec<&str> {
-        self.findings.iter().map(|(_, f)| f.as_str()).collect()
+        self.findings.iter().map(|(_, _, f)| f.as_str()).collect()
     }
 
     pub fn trace(&self) -> &[(FuncId, BlockId)] {
@@ -438,9 +448,16 @@ impl RunResult {
     pub fn findings(&self) -> Vec<String> {
         let mut seen: Vec<u64> = Vec::new();
         let mut out = Vec::new();
-        for (id, f) in self.states.iter().flat_map(|s| s.findings.iter()) {
-            if seen.contains(id) {
-                continue;
+        let mut keys: Vec<FindingKey> = Vec::new();
+        for (id, key, f) in self.states.iter().flat_map(|s| s.findings.iter()) {
+            // 023 §6.1's key when there is one, the report's identity otherwise. The id
+            // alone recognises the copies a *fork* makes and cannot recognise the copies
+            // a *loop* makes, because those are genuinely separate reports of one bug.
+            match key {
+                Some(k) if keys.contains(k) => continue,
+                Some(k) => keys.push(k.clone()),
+                None if seen.contains(id) => continue,
+                None => {}
             }
             seen.push(*id);
             out.push(f.clone());
@@ -1356,6 +1373,11 @@ impl<'m> Engine<'m> {
                     return self.lowering_gap(s, span, "a load through a non-pointer address");
                 };
                 let size = size_of_cty(ty);
+                if size == 0 {
+                    // Nothing to read, so nothing to invent. `sort_of` would have handed
+                    // back a 64-bit symbol for a load of a zero-sized type.
+                    return self.lowering_gap(s, span, &format!("a load of {ty:?}"));
+                }
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
                 self.report_faults(s, &r.faults, span);
                 match r.value.filter(|_| !unusable(&r.faults)) {
@@ -1684,7 +1706,13 @@ impl<'m> Engine<'m> {
         let faults = &faults[..];
         for f in faults {
             self.finding_seq += 1;
-            s.findings.push((self.finding_seq, f.to_string()));
+            let key = FindingKey {
+                kind: f.kind(),
+                span: f.at(),
+                object: f.object(),
+            };
+            s.findings
+                .push((self.finding_seq, Some(key), f.to_string()));
         }
         // **A finding is not automatically a degradation.** A null dereference or a bad
         // free is a definite fact about the program that chiero modeled exactly; saying
@@ -1947,7 +1975,9 @@ impl<'m> Engine<'m> {
 
         for f in findings {
             self.finding_seq += 1;
-            s.findings.push((self.finding_seq, f));
+            // A model's report is a string with no structure to key on, so it keeps the
+            // fork identity. 023 §6.1's full key is 040's to apply.
+            s.findings.push((self.finding_seq, None, f));
         }
         if let (Some(d), Some(v)) = (dst, result) {
             s.set_local(d, v);
@@ -2042,7 +2072,7 @@ impl<'m> Engine<'m> {
             }
             IntrinsicOutcome::Finding(f) => {
                 self.finding_seq += 1;
-                s.findings.push((self.finding_seq, f));
+                s.findings.push((self.finding_seq, None, f));
             }
             IntrinsicOutcome::Degrade(why) => {
                 s.degrade(
