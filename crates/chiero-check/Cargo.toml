@@ -1,0 +1,18 @@
+[package]
+name = "chiero-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chiero-span.workspace = true
+chiero-cir.workspace = true
+chiero-exec.workspace = true
+chiero-mem.workspace = true
+chiero-solver.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true

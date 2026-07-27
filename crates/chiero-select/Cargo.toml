@@ -1,0 +1,18 @@
+[package]
+name = "chiero-select"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chiero-span.workspace = true
+chiero-gcov.workspace = true
+chiero-diff.workspace = true
+chiero-exec.workspace = true
+chiero-opt.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true

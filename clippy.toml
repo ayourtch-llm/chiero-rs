@@ -1,0 +1,6 @@
+# 001 §5: determinism is mandatory. HashMap/HashSet iteration order is not stable
+# across runs, so they must not appear in any output path. Use IndexMap/BTreeMap.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "non-deterministic iteration; use IndexMap or BTreeMap (001 §5)" },
+    { path = "std::collections::HashSet", reason = "non-deterministic iteration; use IndexSet or BTreeSet (001 §5)" },
+]

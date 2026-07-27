@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/ayourtch/chiero-rs"
+
+# Versions are unified across the workspace and bumped together (001 §6).
+[workspace.dependencies]
+chiero-span   = { path = "crates/chiero-span",   version = "0.1.0" }
+chiero-lex    = { path = "crates/chiero-lex",    version = "0.1.0" }
+chiero-pp     = { path = "crates/chiero-pp",     version = "0.1.0" }
+chiero-ast    = { path = "crates/chiero-ast",    version = "0.1.0" }
+chiero-parse  = { path = "crates/chiero-parse",  version = "0.1.0" }
+chiero-sema   = { path = "crates/chiero-sema",   version = "0.1.0" }
+chiero-lower  = { path = "crates/chiero-lower",  version = "0.1.0" }
+chiero-cir    = { path = "crates/chiero-cir",    version = "0.1.0" }
+chiero-solver = { path = "crates/chiero-solver", version = "0.1.0" }
+chiero-mem    = { path = "crates/chiero-mem",    version = "0.1.0" }
+chiero-model  = { path = "crates/chiero-model",  version = "0.1.0" }
+chiero-exec   = { path = "crates/chiero-exec",   version = "0.1.0" }
+chiero-gcov   = { path = "crates/chiero-gcov",   version = "0.1.0" }
+chiero-diff   = { path = "crates/chiero-diff",   version = "0.1.0" }
+chiero-select = { path = "crates/chiero-select", version = "0.1.0" }
+chiero-check  = { path = "crates/chiero-check",  version = "0.1.0" }
+chiero-opt    = { path = "crates/chiero-opt",    version = "0.1.0" }
+chiero-recipe = { path = "crates/chiero-recipe", version = "0.1.0" }
+chiero-vpp    = { path = "crates/chiero-vpp",    version = "0.1.0" }
+chiero-tool   = { path = "crates/chiero-tool",   version = "0.1.0" }
+chiero-cli    = { path = "crates/chiero-cli",    version = "0.1.0" }
+
+# Determinism is mandatory (001 §5): no HashMap iteration in any output path.
+indexmap = "2"
+smallvec = "1"
+# Surface crates only.
+anyhow = "1"
+serde_json = "1"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# Determinism is a hard requirement (001 §5). These catch the two easiest ways to
+# break it: iterating a HashMap/HashSet into an output path.
+disallowed_types = "deny"
+
+[profile.release]
+debug = 1

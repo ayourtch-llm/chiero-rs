@@ -448,6 +448,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
   perspective, not a second opinion from the same mind. Give it the brief that most
   benefits from independence (architecture challenges, cross-cutting consistency),
   and tell it explicitly not to be agreeable.
+- **`codex` is running in `pty-4`** (user set this up 2026-07-27) — a genuinely different
+  model family, reachable via the `mcp__tttt__tttt_pty_*` tools. Use it when a second
+  *independent* opinion is worth more than another Claude pass: contested architecture
+  calls, a subagent finding that looks wrong, or anything where agreement between two
+  Claude instances would prove little. Not a default reviewer — a tiebreaker.
 
 ## 9. Next actions
 
@@ -455,10 +460,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 complete at draft-1. ~4600 lines across `docs/specs/`, every document ending in numbered
 `## Testable contracts`.
 
-**⛔ YOU ARE AT THE USER'S REVIEW GATE (§2 decision 3). DO NOT START IMPLEMENTING.**
-The next action is the user's, not yours: present the spec set, offer the adversarial
-subagent review, and wait for approval. If a fresh context lands here and the user has
-not yet approved, ask — do not infer approval from the specs being finished.
+**✅ SPEC GATE PASSED — 2026-07-27.** The user read the specs ("looks reasonable to me")
+and granted **full autonomy**. §2 decision 3 is now discharged: run free, no check-ins
+until the first vertical is green. Do not re-ask for approval.
+
+Autonomy does **not** suspend the §8 TDD protocol or the §8.1 subagent rules — red before
+green, both adversarial reviews, ≤3 concurrent agents. Full autonomy means no permission
+requests, not fewer gates.
 
 1. ~~Write the specs~~ — done. If the user asks for changes, amend in place with a
    `spec:` commit; the specs are normative and the README says deviations are amended in
@@ -532,5 +540,6 @@ assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 - Don't re-ask the three §2 decisions.
 - Don't clone VPP; it's at `/home/ubuntu/vpp`.
 - Don't design anything that links clang or z3 at build time.
-- Don't start implementing before the user's spec-gate approval.
+- ~~Don't start implementing before the user's spec-gate approval.~~ **Approved
+  2026-07-27, full autonomy granted.** Build.
 - Update §7 and §9 of this file before every context refresh, and commit it.

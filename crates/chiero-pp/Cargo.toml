@@ -1,0 +1,15 @@
+[package]
+name = "chiero-pp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chiero-span.workspace = true
+chiero-lex.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true

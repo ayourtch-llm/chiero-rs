@@ -1,0 +1,18 @@
+[package]
+name = "chiero-vpp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chiero-span.workspace = true
+chiero-model.workspace = true
+chiero-check.workspace = true
+chiero-recipe.workspace = true
+chiero-gcov.workspace = true
+indexmap.workspace = true
+
+[lints]
+workspace = true
