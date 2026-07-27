@@ -1631,3 +1631,41 @@ fn valist_instructions_accept_a_pointer_list() {
         );
     }
 }
+
+/// **020 §4.1 declares `ShuffleDyn` and `RValue` does not have it.** It is the general
+/// form — `__builtin_shuffle(v, mask_vector)` with a runtime mask — and 020 contract 33's
+/// second half is unimplementable without it: "a value constrained to be some permutation
+/// of the input lanes, and `Approximated`". Found by review, which noticed that "`eval` is
+/// exhaustive" is exhaustive over a *smaller enum than the spec's*, so the compile-time
+/// guarantee that wave 31 added does not cover it.
+///
+/// This test is the reminder that the two disagree. It asserts the constant-mask form is
+/// present, so it fails the day someone deletes that too, and it exists to be replaced by
+/// a real `ShuffleDyn` test rather than to stay.
+#[test]
+fn the_constant_mask_shuffle_exists_and_the_dynamic_one_is_owed() {
+    let mut m = valid_module();
+    m.funcs[0].params = vec![Param {
+        value: ValueId(9),
+        ty: CTy::Vector {
+            elem: Box::new(CTy::Int(8)),
+            lanes: 4,
+        },
+    }];
+    m.funcs[0].blocks[0].insts.insert(
+        0,
+        inst(InstKind::Assign {
+            dst: ValueId(1),
+            rv: RValue::Shuffle {
+                a: Operand::Value(ValueId(9)),
+                b: Operand::Value(ValueId(9)),
+                mask: vec![0, 1, 2, 3],
+            },
+        }),
+    );
+    assert!(
+        verify(&m).iter().all(|e| !e.kind.is_error()),
+        "the constant-mask form verifies: {:#?}",
+        verify(&m)
+    );
+}
