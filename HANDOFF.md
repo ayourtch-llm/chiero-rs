@@ -1545,9 +1545,15 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    renumbered the arguments under its feet.
 
    **STILL OWED from wave 22, in the reviewer's priority order:**
-   - `Engine::run` never calls `chiero_cir::verify`, though 020 §8 says it runs "before
-     execution, **always**". A width-mismatched `Store` panics in `extract`. This is the
-     wave-5 "malformed input panics instead of erroring" class, reopened on a new surface.
+   - ~~`Engine::run` never calls `chiero_cir::verify`~~ **DONE** (`2112d3b`, 526 tests). A
+     failing module yields one `Errored` state at `Unknown`. ⚠️ **Wiring it in immediately
+     red-flagged four of my own fixtures** — three passed `Const::Int { bits: 32 }` as
+     `SetMem`'s fill byte where 020 rule 5 wants `Int(8)`; I had copied the shape from a
+     `memset` *call*, whose argument really is a C `int`. The instruction and the call are
+     not the same thing. **Owed back:** `a_dynamic_extent_does_not_overflow_the_size_computation`
+     lost its `object_size_for_test` assertion, because a `DYNAMIC_EXTENT` alloca with no
+     `AllocaDyn` is now correctly rejected before frame setup. Restore that half when
+     `AllocaDyn` lands. The `yields_unknown_value` cluster is pinned in both directions.
    - A zero-sized `Load` (`CTy::Void`) fabricates a **64-bit** symbol, because `sort_of`
      falls through to `BitVec(64)` — which also gives a faulting `f32` load the wrong width.
    - A faulting **loop** floods the findings list (9 byte-identical copies of one bug;
