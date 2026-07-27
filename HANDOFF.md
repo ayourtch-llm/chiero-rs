@@ -1895,6 +1895,22 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    coverage of an empty set, the most misleading answer a gate can give. And walking only
    `crates/` marked 023 contract 13a uncovered, since `check-proof-surface` enforces it.
 
+   **WAVE 36** (`3f5040a`; 570 tests, **91/161 cited**). 020 contracts 9 (div/rem by zero,
+   execution continues, **and the solver agrees with the engine about the same term** —
+   that half is what stops the IR and solver conventions drifting), 19 and 20 (union punning
+   both ways, no cast node, **zero findings** — a model that reported correct C here would
+   be unusable on VPP), and 7's value half. Contracts 3 and 6 were already enforced and only
+   needed citing.
+
+   ⚠️ **The scanner now reads `020 contracts 19 and 20`, not just the singular.** Accepting
+   only one form would push authors into writing "020 contract 19. 020 contract 20." to
+   satisfy the gate — **a gate that forces unnatural prose gets worked around rather than
+   followed** — and that change alone surfaced five citations already present.
+
+   *Recorded, not claimed:* contract 7's other half ("exactly one signed-overflow event")
+   and contract 8's ("one shift-UB event") need 023 §6's event surface, which does not
+   exist. Contracts 12, 14–18 need the frontend and belong to M2.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
