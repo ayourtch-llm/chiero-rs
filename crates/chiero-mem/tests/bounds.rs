@@ -1,0 +1,202 @@
+//! Symbolic bounds checking and `AccessCtx` (021 §5 step 2).
+//!
+//! Covers **021 contract 2's symbolic half**.
+//!
+//! Everything so far has taken a concrete offset, where "in bounds" is a fact. With a
+//! symbolic offset it is a *question for the solver*, and §5 step 2 says exactly what to
+//! do with each of the three answers:
+//!
+//! - **Definitely in bounds** — the out-of-bounds condition is unsatisfiable under the
+//!   path condition. No finding.
+//! - **May be out of bounds** — both branches are satisfiable. One finding **with a
+//!   concrete witness**, and execution *continues on the in-bounds branch* with the
+//!   in-bounds constraint added. Continuing is what keeps one early OOB from hiding
+//!   everything downstream of it; killing the state would make the first symbolic index
+//!   in a function the last thing chiero ever says about it.
+//! - **Definitely out of bounds** — the in-bounds condition is unsatisfiable. One
+//!   finding, and the state **terminates**: there is no in-bounds branch to continue on,
+//!   and continuing would carry a path condition that is itself unsatisfiable, which
+//!   023 §3 treats as a chiero bug rather than a finding.
+//!
+//! `AccessCtx` exists because none of that belongs to `Memory`. Bounds checking *adds a
+//! constraint to the path condition*, which is the engine's state, not the heap's.
+
+use chiero_mem::*;
+use chiero_solver::{Sort, TermArena};
+use chiero_span::{BytePos, ExpnCtx, Span};
+
+fn sp(lo: u32) -> Span {
+    Span {
+        lo: BytePos(lo),
+        hi: BytePos(lo + 4),
+        ctx: ExpnCtx(0),
+    }
+}
+
+/// An index the path condition already pins below the object's size is definitely in
+/// bounds, and produces no finding at all.
+#[test]
+fn a_provably_in_bounds_symbolic_offset_is_not_reported() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0, 64, sp(2));
+
+    let i = a.var(Sort::BitVec(64), "i");
+    let ten = a.bv(64, 10);
+    let bound = a.ult(i, ten);
+    let mut cx = AccessCtx::new();
+    cx.assume(bound);
+
+    let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(3));
+    assert!(r.faults.is_empty(), "i < 10 in a 64-byte object: {:#?}", r.faults);
+    assert_eq!(cx.path().len(), 1, "nothing was added to a fact already known");
+}
+
+/// **The may-OOB case: report, then continue on the in-bounds branch.**
+///
+/// The finding must carry a concrete witness — an offset a reader can plug in — because
+/// "some value of `i` is out of bounds" is not a bug report anyone can act on.
+#[test]
+fn a_may_be_out_of_bounds_access_reports_with_a_witness_and_continues() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0, 64, sp(2));
+
+    // Unconstrained: `i` may be in bounds and may not.
+    let i = a.var(Sort::BitVec(64), "i");
+    let mut cx = AccessCtx::new();
+
+    let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(3));
+    match r.faults.as_slice() {
+        [MemFault::OutOfBoundsMaybe { witness, .. }] => {
+            assert!(
+                *witness < 0 || *witness + 4 > 64,
+                "the witness must actually be out of bounds, got {witness}"
+            );
+        }
+        other => panic!("expected one may-OOB finding, got {other:#?}"),
+    }
+    assert!(
+        r.value.is_some(),
+        "execution continues on the in-bounds branch, so there is a value"
+    );
+    assert_eq!(
+        cx.path().len(),
+        1,
+        "the in-bounds constraint is added to the path condition"
+    );
+    // Having added it, the same access is now provably in bounds and silent.
+    let again = m.read_sym(&mut cx, &mut a, o, i, 4, sp(4));
+    assert!(
+        again.faults.is_empty(),
+        "the constraint is what makes the continuation sound: {:#?}",
+        again.faults
+    );
+}
+
+/// **The must-OOB case terminates.** There is no in-bounds branch to continue on, and
+/// continuing would carry an unsatisfiable path condition.
+#[test]
+fn a_provably_out_of_bounds_symbolic_offset_terminates() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+
+    let i = a.var(Sort::BitVec(64), "i");
+    let hundred = a.bv(64, 100);
+    let past = a.ult(hundred, i);
+    let mut cx = AccessCtx::new();
+    cx.assume(past);
+
+    let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(2));
+    assert!(r.value.is_none(), "no in-bounds branch exists");
+    assert!(
+        matches!(r.faults[..], [MemFault::OutOfBounds { .. }]),
+        "a must-OOB is definite, not a maybe: {:#?}",
+        r.faults
+    );
+    assert_eq!(cx.path().len(), 1, "nothing is added to a dead path");
+}
+
+/// A symbolic *write* runs the same three-way decision. Without this the checking is
+/// one-directional and every symbolic store is unchecked, which is the more dangerous
+/// half — a wild write corrupts state the analysis then reasons about.
+#[test]
+fn a_symbolic_write_is_bounds_checked_the_same_way() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    let i = a.var(Sort::BitVec(64), "i");
+    let val = a.bv(8, 7);
+    let mut cx = AccessCtx::new();
+
+    let r = m.write_sym(&mut cx, &mut a, o, i, val, sp(2));
+    assert!(
+        matches!(r.faults[..], [MemFault::OutOfBoundsMaybe { .. }]),
+        "{:#?}",
+        r.faults
+    );
+    assert_eq!(cx.path().len(), 1);
+}
+
+/// The in-bounds constraint is a *conjunction*, not a replacement: an access that adds
+/// one must not discard what the path already knew. A context that overwrote its path
+/// condition would silently widen every state it touched.
+#[test]
+fn the_in_bounds_constraint_is_added_not_substituted() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    let i = a.var(Sort::BitVec(64), "i");
+    let j = a.var(Sort::BitVec(64), "j");
+    let two = a.bv(64, 2);
+    let unrelated = a.ult(j, two);
+    let mut cx = AccessCtx::new();
+    cx.assume(unrelated);
+
+    m.read_sym(&mut cx, &mut a, o, i, 4, sp(2));
+    assert_eq!(cx.path().len(), 2, "the earlier assumption must survive");
+    assert!(cx.path().contains(&unrelated));
+}
+
+/// The state check still comes first (021 §5 step 1): a symbolic access into freed
+/// memory is a use-after-free, not a bounds question, and must not consult the solver at
+/// all — the object's contents are not the issue.
+#[test]
+fn a_symbolic_access_into_freed_memory_is_a_use_after_free() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.free(o, sp(2));
+    let i = a.var(Sort::BitVec(64), "i");
+    let mut cx = AccessCtx::new();
+    let r = m.read_sym(&mut cx, &mut a, o, i, 4, sp(3));
+    assert!(matches!(r.faults[..], [MemFault::UseAfterFree { .. }]), "{:#?}", r.faults);
+    assert!(cx.path().is_empty(), "a dead object raises no bounds constraint");
+}
+
+/// A concrete offset expressed as a symbolic term is decided without ambiguity, so
+/// folding does not change the answer. Otherwise the symbolic path and the concrete path
+/// could disagree about the same access, which is the disagreement contract 6 warns
+/// about in a different guise.
+#[test]
+fn a_constant_offset_term_agrees_with_the_concrete_path() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0, 64, sp(2));
+    let mut cx = AccessCtx::new();
+
+    let inside = a.bv(64, 8);
+    assert!(m.read_sym(&mut cx, &mut a, o, inside, 4, sp(3)).faults.is_empty());
+
+    let outside = a.bv(64, 62);
+    let r = m.read_sym(&mut cx, &mut a, o, outside, 4, sp(4));
+    assert!(
+        matches!(r.faults[..], [MemFault::OutOfBounds { .. }]),
+        "62 + 4 > 64 is definite, not a maybe: {:#?}",
+        r.faults
+    );
+}
