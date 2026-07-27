@@ -1777,3 +1777,62 @@ fn a_bit_range_reaching_a_symbolic_byte_is_refused() {
     // And the concrete byte is untouched: a refusal is not a partial write.
     assert_eq!(m.read(ptr(o, 0), 1, sp(5)).value, Some(vec![0]));
 }
+
+/// **`HavocFill::Uninitialized`'s success path.** Only its three refusals were tested, so
+/// making the arm a total no-op — or deleting its bounds check — survived the whole suite.
+/// The arm has no in-tree caller yet, which is exactly why it needs a test before one
+/// arrives. Found by review.
+#[test]
+fn an_uninitialized_havoc_range_clears_exactly_the_range() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 16, sp(2));
+    assert!(m.havoc_range(&mut a, ptr(o, 4), 8, HavocFill::Uninitialized, sp(3)));
+
+    for i in 4..12i64 {
+        let r = m.read(ptr(o, i), 1, sp(4));
+        assert!(
+            r.faults
+                .iter()
+                .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+            "byte {i} was cleared: {:#?}",
+            r.faults
+        );
+    }
+    // Either side untouched, and readable — the absence of a fault is the assertion, not
+    // the value, since a stale value accompanies a fault.
+    for i in [0i64, 3, 12, 15] {
+        let r = m.read(ptr(o, i), 1, sp(5));
+        assert!(r.faults.is_empty(), "byte {i}: {:#?}", r.faults);
+        assert_eq!(r.value, Some(vec![0xAB]));
+    }
+}
+
+/// **A refusal carries its faults.** `refuse` returning an empty vector survived, so an
+/// inline-asm clobber of `const` or freed memory producing **no finding at all** would
+/// have shipped green. Found by review.
+#[test]
+fn a_havoc_range_refusal_says_why() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let ro = m.alloc(ObjKind::Global, 8, 8, sp(1));
+    m.write(ptr(ro, 0), b"abcdefg\0", sp(2));
+    m.set_readonly(ro);
+    let r = m.havoc_range_reporting(&mut a, ptr(ro, 0), 8, HavocFill::Symbolic, sp(3));
+    assert_eq!(r.value, Some(0));
+    assert!(
+        r.faults.iter().any(|f| f.kind() == "write-to-readonly"),
+        "a refusal names its reason: {:#?}",
+        r.faults
+    );
+
+    let dead = m.alloc(ObjKind::Heap, 8, 8, sp(4));
+    m.free(dead, sp(5));
+    let r = m.havoc_range_reporting(&mut a, ptr(dead, 0), 8, HavocFill::Symbolic, sp(6));
+    assert!(
+        r.faults.iter().any(|f| f.kind() == "use-after-free"),
+        "{:#?}",
+        r.faults
+    );
+}

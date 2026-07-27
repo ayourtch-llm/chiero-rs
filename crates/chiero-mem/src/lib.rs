@@ -268,7 +268,7 @@ pub enum AccessError {
         off: i64,
         bit: u64,
     },
-    /// The range holds a symbolic byte, which a concrete read cannot answer for.
+    /// The range holds a symbolic byte, which a concrete access cannot answer for.
     SymbolicByte {
         off: i64,
     },
@@ -990,7 +990,7 @@ pub enum MemFault {
         off: i64,
         at: Span,
     },
-    /// A concrete read touched a byte that holds a *symbolic* value.
+    /// A concrete access touched a byte that holds a *symbolic* value.
     ///
     /// The byte API cannot answer, and inventing a concrete zero is what 021 §3 names as
     /// the single most common way a symbolic executor produces confidently wrong results.
@@ -1203,7 +1203,7 @@ impl std::fmt::Display for MemFault {
             ),
             MemFault::SymbolicByte { obj, off, .. } => write!(
                 f,
-                "byte {off} of {obj:?} holds a symbolic value, which a concrete read                  cannot answer for"
+                "byte {off} of {obj:?} holds a symbolic value, which a concrete access                  cannot answer for"
             ),
             MemFault::OutOfBoundsMaybe {
                 obj,
@@ -1836,6 +1836,11 @@ impl Memory {
             other.entry(id).and_then(|e| e.obj.as_ref()),
         ) {
             (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            // **Nothing to share is shared.** An object past `MAX_MATERIALIZED_BYTES`
+            // has no storage in either memory, so a fork cannot have copied it —
+            // answering `false` conflated "not shared" with "nothing to share", and
+            // would report a phantom copy in any accounting built on this.
+            (None, None) => self.entry(id).is_some() && other.entry(id).is_some(),
             _ => false,
         }
     }

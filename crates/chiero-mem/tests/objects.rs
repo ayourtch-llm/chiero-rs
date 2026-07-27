@@ -681,3 +681,52 @@ fn a_plain_read_does_not_break_sharing() {
         "reading written bytes changes nothing"
     );
 }
+
+/// **"Nothing to share" is shared.** An object past `MAX_MATERIALIZED_BYTES` has no
+/// storage in either memory, so a fork cannot have copied it — answering "not shared"
+/// conflated the two and would report a phantom copy in any accounting built on this.
+/// Neither answer was pinned, so this decides it rather than leaving it to default. Found
+/// by review.
+#[test]
+fn an_object_with_no_storage_counts_as_shared_after_a_fork() {
+    let mut m = Memory::new();
+    let huge = m.alloc(ObjKind::Heap, MAX_MATERIALIZED_BYTES + 1, 16, Span::DUMMY);
+    let ordinary = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+    let forked = m.clone();
+    assert!(
+        m.shares_storage_with(&forked, huge),
+        "there was nothing to copy"
+    );
+    assert!(m.shares_storage_with(&forked, ordinary));
+    // An object one memory does not have at all is still not shared.
+    let mut other = Memory::new();
+    let elsewhere = other.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+    assert!(!m.shares_storage_with(&other, elsewhere));
+}
+
+/// **A refused bit write leaves the object exactly as it was.** `check_bit_write`
+/// validates the whole range before `write_bits` touches anything, so a range that is
+/// partly writable does not land its writable half — which would upgrade those init bits
+/// to `Yes` and turn a genuine uninitialized-read defect into a clean read. Correct, and
+/// unpinned until now. Found by review.
+#[test]
+fn a_refused_bit_write_changes_nothing() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 4, 4, Span::DUMMY);
+    let x = a.var(chiero_solver::Sort::BitVec(8), "x");
+    m.write_sym_byte(Pointer { base: o, off: 1 }, x, Span::DUMMY);
+
+    // Bits 0..12 span byte 0 (concrete, uninitialized) and byte 1 (symbolic).
+    let w = m.write_bits(Pointer { base: o, off: 0 }, 0, 12, 0xFFF, Span::DUMMY);
+    assert!(!w.faults.is_empty(), "the premise: refused");
+
+    // Byte 0 must still be uninitialized. If the writable half had landed, its bits would
+    // read as `Yes` and a real defect would have become a clean read.
+    let r = m.read(Pointer { base: o, off: 0 }, 1, Span::DUMMY);
+    assert!(
+        r.faults.iter().any(|f| f.kind() == "uninitialized-read"),
+        "nothing was written: {:#?}",
+        r.faults
+    );
+}
