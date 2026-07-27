@@ -588,7 +588,23 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    64-byte index unit with its ~2.5 KB element pitch, and M1's gate listing contract
    ranges that excluded every contract the reviews had added.
 
-   **Wave 4 (QUEUED — nothing cached):**
+   **Wave 4 — span re-review COMPLETE, applied in `d1c782d`.** It attacked the wave-3
+   fixes themselves and found that two of the eight were not actually pinned, plus four
+   new defects. Method worth copying: it **re-broke each claimed fix** and checked a test
+   failed; six did, two did not.
+
+   Biggest lesson: *the definition-side fix left the expansion side doing what it
+   forbade.* Macro identity stopped resolving `DUMMY` spans, but `cook_tu` still called
+   `expansion_loc` on synthesized call sites — so every `##`/`_Pragma`/builtin reported
+   a site at whichever file occupies offset 0. **When fixing "X must not be derived from
+   a byte offset", grep for every other place that derives from a byte offset.**
+
+   Also: the guard was added to `add_macro_at` (zero callers) while `add_macro` (every
+   caller) kept the old behaviour; contract 17 was still false and its test still could
+   not see it (fifth vacuity); the dedup key was unpinned in three directions; and the
+   dedup fix made cooking quadratic — 305 ms at 32k sites against a budget of millions.
+
+   **Wave 5 (QUEUED — nothing cached):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -608,10 +624,16 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      review, especially 021 §3.1's tri-state `InitMask`, 021 §5.2 arenas, 042 §4.2.1's
      `(ObjectId, byte range)` entity identity, and **015, which is brand new and has
      never been reviewed at all**.
-   - **`chiero-cir`** — types and verifier are real code (21 tests) with no review yet.
-     Ask specifically whether a wrong verifier passes the suite, and whether the
-     `assert_rejects` one-defect-one-kind rule is itself circumventable.
-   - **A re-review of `chiero-span` after the wave-3 fixes**, which were extensive.
+   - **`chiero-cir`** — types, verifier and the textual format are real code (37 tests)
+     with no review yet. Brief it to re-break each claimed property, as wave 4 did. Ask
+     specifically: does a wrong verifier pass? is `assert_rejects`'s
+     one-defect-one-kind rule circumventable? does the printer/parser lose information
+     on any construct not in the round-trip fixture? **`tests/corpus/cir/` is empty, so
+     020 contracts 1 and 5 — which quantify over "every module in the corpus" — pass
+     vacuously today.** That is the sixth vacuity and it is already known; the corpus is
+     owed.
+   - **A third `chiero-span` pass** only if the first two stop finding things; the trend
+     is still strongly positive.
 
 3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
    subagent finding is a claim, not a verdict; several will be wrong, and adopting a
@@ -682,9 +704,13 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    no files. **Then `chiero-solver`**, which is the next crate on M1's critical path and
    the one with the heaviest validation burden (022 §7).
 
-   **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace
-   rendering, which 001 §5 says lives here; and 010 contracts 11 (re-lex round trip)
-   and 18 (peak-memory bound), which need a lexer and a bigger fixture respectively.
+   **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace rendering,
+   which 001 §5 says lives here; contract 11 (re-lex round trip, needs a lexer);
+   contract 18 (peak-memory bound, needs a large fixture); contract 19 (per-`ConfigId`
+   sites, needs `ConfigId`); `CookedSite`'s `func`/`config` fields from 010 §6.2; the
+   `arg_spans: SmallVec<[Span; 4]>` of 010 §6.3 (`smallvec` is a declared dependency
+   used nowhere); and contract 16's "checked mechanically" half — a comment claims an
+   `xtask` grep for per-TU ids that does not exist.
 
    ⚠️ **Three times this session I wrote an instrument that could not observe what its
    assertion claimed** — the vacuous `alloc_count`, the empty-graph workspace test (found
