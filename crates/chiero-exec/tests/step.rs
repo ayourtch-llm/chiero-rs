@@ -8981,3 +8981,141 @@ fn two_opaque_instructions_yield_four_distinct_symbols() {
         }
     }
 }
+
+/// **020 contract 21.** Storing a *symbolic* `u32` through the union's `as_u32` view, then
+/// overwriting `as_u8[1]` with a constant, then loading `as_u32` again, yields a term that
+/// is a `Concat` of three extracted symbolic bytes and the constant — not a fresh symbol,
+/// and not a concretization.
+///
+/// This is the case that decides whether partial overwrites of symbolic data are usable at
+/// all: VPP rewrites one byte of a packet header constantly, and a model that answered
+/// "the whole word is now unknown" would lose every constraint on the other three bytes.
+#[test]
+fn a_constant_overwrites_one_byte_of_a_symbolic_word() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                // `u.as_u8[1] = 0xEE`
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 1 }),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(2)),
+                    val: Operand::Const(Const::Int { bits: 8, val: 0xEE }),
+                    ty: CTy::Int(8),
+                    align: 1,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                // Byte 1 is now concrete...
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(2)),
+                        ty: CTy::Int(8),
+                        align: 1,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                // ...and the word still depends on the original symbol: `w ^ x` has the
+                // overwritten byte's bits set from the constant and zeroes elsewhere only
+                // if the other three bytes came through unchanged.
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Bin {
+                        op: BinOp::Xor,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(3)),
+                        b: Operand::Value(ValueId(1)),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "a partial overwrite is exact: {:#?}",
+        r.states()[0].assumptions()
+    );
+    let s = &r.states()[0];
+    // The overwritten byte reads back concrete.
+    match s.local(ValueId(4)) {
+        Some(Value::Scalar(t)) => {
+            assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(0xEE))
+        }
+        other => panic!("{other:?}"),
+    }
+    // **The other three bytes are still the symbol.** Under every assignment of `x`, the
+    // xor's bytes 0, 2 and 3 are zero — which is only true if they survived the overwrite
+    // as *the same term*, not as a fresh unknown.
+    let (Some(Value::Scalar(x)), Some(Value::Scalar(diff))) =
+        (s.local(ValueId(1)), s.local(ValueId(5)))
+    else {
+        panic!("expected scalars");
+    };
+    for probe in [0u128, 0x1234_5678, u32::MAX as u128] {
+        let mut model = chiero_solver::Model::new();
+        model.set(
+            a.var_id(x).expect("fresh is a variable"),
+            chiero_solver::BvConst::new(32, probe),
+        );
+        let v = a.eval(&model, diff).expect("ground under the model").bits();
+        assert_eq!(
+            v & 0xFFFF_00FF,
+            0,
+            "bytes 0, 2 and 3 came through untouched, for x = {probe:#x} (diff = {v:#x})"
+        );
+        // And byte 1 is exactly the difference between the constant and what was there,
+        // so "unchanged everywhere" is not satisfied by the write having been dropped.
+        assert_eq!(
+            (v >> 8) & 0xFF,
+            0xEE ^ ((probe >> 8) & 0xFF),
+            "byte 1 is the constant, for x = {probe:#x}"
+        );
+    }
+}
