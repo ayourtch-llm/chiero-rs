@@ -35,6 +35,10 @@ fn splice_forms_one_identifier_with_physical_span() {
     assert!(matches!(token.kind, PpTokenKind::Ident(_)));
     assert_eq!(out.text(token), "bar");
     assert_eq!(token.span.len(), 5);
+
+    let crlf = lex("ba\\\r\nr");
+    assert_eq!(crlf.text(&crlf.tokens()[0]), "bar");
+    assert_eq!(crlf.tokens()[0].span.len(), 6);
 }
 
 #[test]

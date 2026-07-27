@@ -247,6 +247,22 @@ fn include_next_continues_after_the_current_search_directory() {
 }
 
 #[test]
+fn configured_defines_are_real_macros_and_undef_stops_them() {
+    let config = Config {
+        defines: vec![("FLAG".into(), "7".into()), ("EMPTY".into(), String::new())],
+        ..Config::default()
+    };
+    let src = "#if FLAG == 7\nconfigured\n#endif\n\
+               before FLAG EMPTY\n#undef FLAG\nafter FLAG\n";
+    let tu = preprocess_str("defines.c", src, config);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(
+        tu.token_texts().collect::<Vec<_>>(),
+        ["configured", "before", "7", "after", "FLAG"]
+    );
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files

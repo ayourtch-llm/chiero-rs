@@ -2,6 +2,7 @@
 
 use chiero_pp::{Config, ConfigId, preprocess_str};
 use chiero_span::TokenOrigin;
+use std::collections::BTreeSet;
 
 fn texts(src: &str) -> Vec<String> {
     let tu = preprocess_str("fixture.c", src, Config::default());
@@ -228,5 +229,33 @@ fn va_opt_is_out_of_v1_scope_and_diagnosed() {
     assert!(
         !tu.token_texts().any(|text| text == "__VA_OPT__"),
         "out-of-scope syntax must not silently pass through"
+    );
+}
+
+#[test]
+fn stringize_collapses_internal_whitespace_and_comments() {
+    assert_eq!(texts("#define str(x) #x\nstr(a   b/**/c)\n"), ["\"a b c\""]);
+}
+
+#[test]
+fn deterministic_context_numbering_covers_nested_user_macros() {
+    let src = "#define B(x) [x]\n#define A(x) B(x)\nA(1) A(2)\n";
+    let first = preprocess_str("deterministic.c", src, Config::default());
+    let second = preprocess_str("deterministic.c", src, Config::default());
+    assert_eq!(
+        first.token_texts().collect::<Vec<_>>(),
+        second.token_texts().collect::<Vec<_>>()
+    );
+    let first_ctx: Vec<_> = first.tokens.iter().map(|token| token.span.ctx).collect();
+    let second_ctx: Vec<_> = second.tokens.iter().map(|token| token.span.ctx).collect();
+    assert_eq!(first_ctx, second_ctx);
+    assert!(
+        first_ctx
+            .iter()
+            .filter(|context| !context.is_root())
+            .collect::<BTreeSet<_>>()
+            .len()
+            >= 4,
+        "fixture must exercise nested and repeated user expansion contexts"
     );
 }
