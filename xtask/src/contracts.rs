@@ -107,10 +107,14 @@ pub fn measure(root: &Path) -> std::io::Result<Coverage> {
     Ok(cov)
 }
 
+/// Citations are prose, so the scanner reads prose: `023 contract 10`, and also
+/// `020 contracts 19 and 20`. Accepting only the singular form would push authors into
+/// writing "020 contract 19. 020 contract 20." to satisfy a gate — and a gate that forces
+/// unnatural prose gets worked around rather than followed.
 fn cite_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
-    let pat = b" contract ";
+    let pat = b" contract";
     let mut i = 0;
     while let Some(pos) = find(&bytes[i..], pat) {
         let at = i + pos;
@@ -120,13 +124,26 @@ fn cite_ids(text: &str) -> Vec<String> {
         if at >= 3 {
             let doc = std::str::from_utf8(&bytes[at - 3..at]).unwrap_or("");
             if doc.len() == 3 && doc.chars().all(|c| c.is_ascii_digit()) {
-                let rest = &text[at + pat.len()..];
-                let id: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
-                    .collect();
-                if !id.is_empty() && id.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                let mut rest = &text[at + pat.len()..];
+                rest = rest.strip_prefix('s').unwrap_or(rest);
+                // A run of ids joined by `, ` or ` and `, so a sentence about two
+                // contracts cites both.
+                loop {
+                    let r = rest.trim_start_matches([' ', ',']);
+                    let r = r.strip_prefix("and ").unwrap_or(r);
+                    let r = r.trim_start();
+                    let id: String = r
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+                        .collect();
+                    if id.is_empty() || !id.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        break;
+                    }
                     out.push(format!("{doc}:{id}"));
+                    rest = &r[id.len()..];
+                    if !(rest.starts_with(", ") || rest.starts_with(" and ")) {
+                        break;
+                    }
                 }
             }
         }

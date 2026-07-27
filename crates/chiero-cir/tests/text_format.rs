@@ -39,7 +39,7 @@ fn module_round_trips_through_text() {
     assert_eq!(m.globals.len(), again.globals.len());
 }
 
-/// 020 §6: **unknown directives are a hard parse error.** Silent tolerance in a
+/// **020 contract 3.** 020 §6: **unknown directives are a hard parse error.** Silent tolerance in a
 /// fixture format produces tests that pass by not testing anything, so this is the
 /// contract that keeps the whole `.cir` corpus honest.
 #[test]

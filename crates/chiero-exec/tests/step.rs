@@ -8443,3 +8443,247 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
         "one per call site, not per iteration: {gave_up:#?}"
     );
 }
+
+/// **020 contract 9.** Division and remainder by zero follow §4.1's table and **execution
+/// continues**: `UDiv 5 0` and `SDiv 5 0` are all-ones, `SDiv (-5) 0` is `1`, `URem 5 0`
+/// is `5`, `SRem (-5) 0` is `-5`. The contract also requires each to agree with the
+/// solver's evaluation of the same term, so the IR and solver conventions cannot drift —
+/// which is the half that makes this worth a test rather than a table lookup.
+///
+/// Continuing matters: C leaves it undefined, but a symbolic executor that stops there
+/// stops analysing everything after it, and these are SMT-LIB's total semantics.
+#[test]
+fn division_by_zero_follows_the_table_and_execution_continues() {
+    let cases: [(BinOp, i128, i128, u128); 5] = [
+        (BinOp::UDiv, 5, 0, u32::MAX as u128),
+        (BinOp::SDiv, 5, 0, u32::MAX as u128),
+        (BinOp::SDiv, -5, 0, 1),
+        (BinOp::URem, 5, 0, 5),
+        (BinOp::SRem, -5, 0, (-5i32) as u32 as u128),
+    ];
+    for (op, x, y, want) in cases {
+        let caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Bin {
+                            op,
+                            ty: CTy::Int(32),
+                            a: i32c(x),
+                            b: i32c(y),
+                        },
+                    }),
+                    // Execution *continues*: this instruction after the division must run.
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Use(i32c(99)),
+                    }),
+                ],
+                Terminator::Return(Some(Operand::Value(ValueId(0)))),
+            )],
+            CTy::Int(32),
+        );
+        let m = Module {
+            funcs: vec![caller],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        let s = &r.states()[0];
+        assert_eq!(
+            r.states()[0].return_value_bits(&mut a),
+            Some(want),
+            "{op:?} {x} {y}"
+        );
+        assert!(
+            s.local(ValueId(1)).is_some(),
+            "{op:?}: the instruction after the division ran"
+        );
+        // **And the solver agrees with the engine about the same term** (022 §1). This is
+        // the half that stops the two conventions drifting apart: a table the engine
+        // implements alone is a table only the engine believes.
+        match s.local(ValueId(0)) {
+            Some(Value::Scalar(t)) => {
+                assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(want))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// **020 contract 7's value half.** `Int(32)` `Add` of `0x7FFFFFFF` and `1` is
+/// `0x80000000` — wrapping is *defined* in the IR even though C leaves signed overflow
+/// undefined, because an IR that trapped could not represent the program the compiler
+/// actually emits.
+///
+/// The contract's other half — "emits exactly one signed-overflow event" — needs 023 §6's
+/// event surface, which is not implemented. That half is uncovered and recorded, not
+/// quietly claimed by this test.
+#[test]
+fn signed_overflow_wraps_and_is_defined() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Bin {
+                    op: BinOp::Add,
+                    ty: CTy::Int(32),
+                    a: i32c(0x7FFF_FFFF),
+                    b: i32c(1),
+                },
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(0x8000_0000));
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "wrapping is not an approximation"
+    );
+}
+
+/// **020 contracts 19 and 20: type punning through a union, both directions.** Storing
+/// `0x11223344` as a `u32` and loading byte 2 yields `0x22` little-endian; storing four
+/// bytes and loading a `u32` yields the concatenation. **No cast node and no active-member
+/// state appear in the CIR** — that is the whole point of 021 §3's "bytes are bytes", and
+/// it is what lets VPP's packet code be analysed at all.
+///
+/// Contract 20 also requires **zero findings**: this is correct C under the default
+/// checker set, and a memory model that reported it would be unusable on VPP.
+#[test]
+fn a_union_puns_in_both_directions_with_no_cast_node() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0x1122_3344,
+                    }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                // `&u.as_u8[2]`, reached by pointer arithmetic — no cast, no member state.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 2 }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(1)),
+                        ty: CTy::Int(8),
+                        align: 1,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                // The reverse: four byte stores, then one 32-bit load.
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    for i in 0..4u32 {
+        caller.blocks[0].insts.push(inst(InstKind::Assign {
+            dst: ValueId(10 + i),
+            rv: RValue::PtrAdd {
+                base: Operand::Value(ValueId(3)),
+                off: Operand::Const(Const::Int {
+                    bits: 64,
+                    val: i as i128,
+                }),
+            },
+        }));
+        caller.blocks[0].insts.push(inst(InstKind::Store {
+            addr: Operand::Value(ValueId(10 + i)),
+            val: Operand::Const(Const::Int {
+                bits: 8,
+                val: (0x44 - i * 0x11) as i128,
+            }),
+            ty: CTy::Int(8),
+            align: 1,
+            vol: Volatility::Normal,
+        }));
+    }
+    caller.blocks[0].insts.push(inst(InstKind::Assign {
+        dst: ValueId(20),
+        rv: RValue::Load {
+            addr: Operand::Value(ValueId(3)),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        },
+    }));
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 4,
+            ..alloca(0, CTy::Int(32), 1)
+        },
+        AllocaDecl {
+            align: 4,
+            ..alloca(1, CTy::Int(32), 1)
+        },
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "correct C under the default checker set: {:#?}",
+        r.findings()
+    );
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+    let s = &r.states()[0];
+    let bits = |v: u32, a: &mut TermArena| match s.local(ValueId(v)) {
+        Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        bits(2, &mut a),
+        Some(0x22),
+        "byte 2 of 0x11223344, little-endian"
+    );
+    assert_eq!(
+        bits(20, &mut a),
+        Some(0x1122_3344),
+        "and back the other way"
+    );
+}

@@ -192,7 +192,9 @@ fn check_layering(graph: &Graph, out: &mut Vec<Violation>) {
 
             let Some(to) = layer(dep) else { continue };
 
-            // Rule 3: chiero-cir never depends on a frontend crate.
+            // Rule 3 / **020 contract 6**: chiero-cir never depends on a frontend crate.
+            // The CIR boundary is what makes M1 and M2 independently buildable, so a
+            // dependency here means the build order has silently collapsed.
             if name == "chiero-cir" && to == Layer::Frontend {
                 out.push(Violation {
                     rule: "cir-contract-boundary",
