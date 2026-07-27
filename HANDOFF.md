@@ -2100,10 +2100,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *General lesson, and the second time in two waves:* a test that passes tells you nothing
    about **why**. Both of wave 46's tests passed; one was reporting the wrong cause.
 
-   **STILL OWED on §5.1:** contract 16 (fork into candidates + 1 wild) and step 4's own
-   detection **both need a solver tier that can decide range queries over a variable**. The
-   `Br`-on-`ult` fixture exists and reaches only `SolverUnknown`. The fork machinery is
-   implemented and unexercised — that is the honest status, not "done". Contract 17 (`max_resolutions = 2`
+   **WAVE 48** (`0ee0aa5`, and contract 17; 603 tests, **105/161 cited**). 021 contracts
+   16 and 17 are covered. The fork machinery needed a **tier-2 backend** — `solver-lite`
+   cannot decide `addr ∈ [base, base+size]` over a variable — so both tests take
+   `SmtLib::discover()` and **skip with a printed reason** when z3 is absent (022 contract
+   2). I verified they are not skipping here: z3 is on `PATH` and no skip line appears. *A
+   test that passes by skipping silently is worse than the gap it was written to close.*
+
+   §5.1's two ends are now pinned against each other: `Approximated` means "looked, found
+   more than it would explore, picked one"; `Unknown` means "knew nothing". Both mutations
+   die.
+
+   **STILL OWED on §5.1:** step 4's own detection (wholly unconstrained: every object *and*
+   nowhere both feasible) is still unreached — the tier-2 tests exercise steps 3 and 5.
+   Contracts 17b, 18 and 19 need `PointerBitInspection`, lazy materialization and
+   `--fork-on-alias`, none of which exist. Contract 17 (`max_resolutions = 2`
    concretizes at `Approximated`) needs the same fixture with a smaller cap. Contracts 17b,
    18, 19 need `PointerBitInspection`, lazy materialization and `--fork-on-alias`, none of
    which exist.
