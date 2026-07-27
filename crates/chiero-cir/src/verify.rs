@@ -25,6 +25,10 @@ pub enum VerifyErrorKind {
     DuplicateId,
     UnknownId,
     CallArity,
+    /// 020 §3: `funcs`/`globals` are *indexed by* `FuncId`/`GlobalId`. The printer
+    /// resolves references positionally and the verifier resolves them by `.id`, so
+    /// a permuted table prints the wrong name for every reference.
+    IdNotIndex,
     /// Rule 3: a *warning*. Unreachable C code exists and is legal.
     UnreachableBlock,
 }

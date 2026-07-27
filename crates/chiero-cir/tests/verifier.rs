@@ -866,3 +866,154 @@ fn error_order_is_deterministic() {
     assert_eq!(a, b);
     assert!(a.len() >= 2);
 }
+
+// ---------------------------------------------------------------------------
+// Wave 7. Six defects found by the third mutation review, each confirmed by probe
+// before being treated as a finding.
+// ---------------------------------------------------------------------------
+
+/// **The dominance lattice is wrong in the presence of dead code.**
+///
+/// An unreachable block is dominated by nothing but itself, so `dom[dead] = {dead}`.
+/// Meeting that into a *live* join empties the set, and a value defined in the entry
+/// block stops dominating its use. The shape — dead code falling into a live join —
+/// is ubiquitous in real C, and this is a hard error, so the module is rejected and
+/// never runs. `chiero-lower` would trip on its first real function.
+///
+/// The fix is standard Cooper-Harvey-Kennedy: unreachable predecessors are not part
+/// of the meet.
+#[test]
+fn a_dead_predecessor_does_not_break_dominance_for_a_live_block() {
+    let mut m = valid_module();
+    let f = &mut m.funcs[0];
+    // entry: %0 = add 2, 3; goto bb1     bb1: ret %0     bb2 (dead): goto bb1
+    f.blocks[0].term = Terminator::Goto(BlockId(1));
+    f.blocks.push(block(
+        1,
+        vec![],
+        Terminator::Return(Some(Operand::Value(ValueId(0)))),
+    ));
+    f.blocks
+        .push(block(2, vec![], Terminator::Goto(BlockId(1))));
+
+    let errs: Vec<_> = verify(&m).into_iter().filter(|e| e.is_error()).collect();
+    assert!(
+        errs.is_empty(),
+        "entry dominates bb1 regardless of the dead bb2; got: {errs:#?}"
+    );
+    // The dead block is still worth a warning — that part was already right.
+    assert!(
+        verify(&m)
+            .iter()
+            .any(|e| e.kind == VerifyErrorKind::UnreachableBlock)
+    );
+}
+
+/// Alignment and cast shape have nothing to do with reachability. The `continue` that
+/// suppresses spurious dominance errors in dead blocks also skips `check_inst_types`,
+/// so a dead block is a hole in rules 5, 6, 7, 11 and 12. Dead code is legal, so it
+/// reaches the engine's data structures like any other.
+#[test]
+fn type_rules_still_apply_inside_an_unreachable_block() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0].params = vec![Param {
+        value: ValueId(9),
+        ty: CTy::Ptr,
+    }];
+    m.funcs[0].blocks.push(block(
+        1,
+        vec![inst(InstKind::Store {
+            addr: Operand::Value(ValueId(9)),
+            val: i32c(0),
+            ty: CTy::Int(32),
+            align: 3, // not a power of two
+            vol: Volatility::Normal,
+        })],
+        Terminator::Return(None),
+    ));
+    let errs = verify(&m);
+    assert!(
+        errs.iter().any(|e| e.kind == VerifyErrorKind::BadAlignment),
+        "align 3 is invalid wherever it appears; got: {errs:#?}"
+    );
+}
+
+/// **Rule 5 does not reach store values at all.** `Store` and `StoreBits` carry a
+/// declared `ty`/`unit`, and the value written through them is never checked against
+/// it. Storing an i64 through `store i32` is exactly the malformed IR the verifier
+/// exists to stop before the memory model has to guess a truncation.
+#[test]
+fn a_store_value_wider_than_its_declared_type_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].params = vec![Param {
+        value: ValueId(9),
+        ty: CTy::Ptr,
+    }];
+    m.funcs[0].blocks[0].insts = vec![inst(InstKind::Store {
+        addr: Operand::Value(ValueId(9)),
+        val: Operand::Const(Const::Int { bits: 64, val: 0 }),
+        ty: CTy::Int(32),
+        align: 4,
+        vol: Volatility::Normal,
+    })];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+/// Rule 5 for `SetMem`: the fill byte is a byte. An `i32` here means the memory model
+/// has to invent a narrowing rule of its own.
+#[test]
+fn a_setmem_fill_byte_that_is_not_a_byte_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].params = vec![Param {
+        value: ValueId(9),
+        ty: CTy::Ptr,
+    }];
+    m.funcs[0].blocks[0].insts = vec![inst(InstKind::SetMem {
+        dst: Operand::Value(ValueId(9)),
+        byte: i32c(0),
+        size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+    })];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+/// **`verify` must check every function, not the first one.** Restricting the module
+/// loop to `.take(1)` survived the entire suite, because every verifier fixture breaks
+/// `funcs[0]` and every corpus fixture is clean. A bug in the loop bound is invisible.
+#[test]
+fn a_defect_in_the_second_function_is_still_reported() {
+    let mut m = valid_module();
+    let mut g = m.funcs[0].clone();
+    g.id = FuncId(1);
+    g.name = "g".into();
+    g.ret = CTy::Void;
+    g.blocks[0].term = Terminator::Goto(BlockId(77));
+    m.funcs.push(g);
+    let errs = verify(&m);
+    assert!(
+        errs.iter()
+            .any(|e| e.kind == VerifyErrorKind::UnknownBlock && e.func == FuncId(1)),
+        "a defect in funcs[1] must be reported; got: {errs:#?}"
+    );
+}
+
+/// 020 §3 says functions and globals are "indexed by `FuncId`"/"indexed by `GlobalId`".
+/// Nothing enforced it, and the two halves of the crate disagree about which it is: the
+/// printer resolves positionally (`m.globals[g.0]`) while the verifier resolves by
+/// `.id`. A module whose ids are permuted verifies clean and then prints the *wrong
+/// name* for every reference. Make the convention an invariant.
+#[test]
+fn a_function_whose_id_is_not_its_index_is_rejected() {
+    let mut m = valid_module();
+    let mut g = m.funcs[0].clone();
+    g.id = FuncId(1);
+    g.name = "g".into();
+    m.funcs.push(g);
+    m.funcs.swap(0, 1); // ids are now [1, 0]; both still unique
+    assert_rejects(&m, VerifyErrorKind::IdNotIndex);
+}

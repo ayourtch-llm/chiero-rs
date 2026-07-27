@@ -872,3 +872,75 @@ fn value_names_are_function_scoped() {
     // Both get id 0 in their own function; neither collides with the other.
     assert_eq!(print(&m), print(&parse(&print(&m)).unwrap()));
 }
+
+// ---------------------------------------------------------------------------
+// Wave 7 text-format defects.
+// ---------------------------------------------------------------------------
+
+/// **020 §6: "Unknown directives are a hard parse error. Silent tolerance in a
+/// test-fixture format produces tests that pass by not testing anything."**
+///
+/// The rule was enforced for directives and mnemonics but not for *operands*: every
+/// instruction parser indexes fixed token positions and drops the rest. This is how
+/// `fresh i32 "input"` from 020 §4.1 silently loses its reason string — the parse
+/// succeeds and the field is simply gone.
+#[test]
+fn trailing_junk_on_an_instruction_is_a_hard_error() {
+    let src =
+        "func @k(%0: ptr) -> void {\nentry:\n  store i32 0i32 -> %0 align 4 frobnicate\n  ret\n}\n";
+    let e = parse(src).expect_err("trailing tokens must not be silently discarded");
+    assert!(
+        e.message.contains("frobnicate"),
+        "the error must name the offending token, got: {}",
+        e.message
+    );
+}
+
+/// The same rule at the other parser entry points. Contract 3 was tested for unknown
+/// *instructions* only, so tolerance survived everywhere else.
+#[test]
+fn unknown_function_attributes_and_block_directives_are_hard_errors() {
+    let a = "func @f() -> void frobattr {\nentry:\n  ret\n}\n";
+    assert!(parse(a).is_err(), "unknown function attribute was accepted");
+    let b = "func @f() -> void {\nentry:\n  .frobdir 3\n  ret\n}\n";
+    assert!(parse(b).is_err(), "unknown block directive was accepted");
+}
+
+/// Alloca ids got the id-aliasing fix that values and labels received; they did not.
+/// A named alloca is interned from 0, so it collides with a literal `%0` alloca in the
+/// same function — the identical defect, in the one id space that was missed.
+#[test]
+fn named_and_numeric_allocas_do_not_collide() {
+    let src = "func @g() -> i32 {\n  alloca %buf : i32 x 4 align 4 scope 0 lifetime scope\n  alloca %0 : i32 x 4 align 4 scope 0 lifetime scope\nentry:\n  ret 0i32\n}\n";
+    let m = parse(src).expect("both allocas are legal and distinct");
+    let errs: Vec<_> = chiero_cir::verify(&m)
+        .into_iter()
+        .filter(|e| e.is_error())
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "`%buf` and `%0` are two different objects; got: {errs:#?}"
+    );
+    assert_eq!(m.funcs[0].allocas.len(), 2);
+    assert_ne!(m.funcs[0].allocas[0].id, m.funcs[0].allocas[1].id);
+}
+
+/// Named *parameters* are interned at 0..k-1 before the literal scan runs, so a literal
+/// `%0` in the body silently resolves to the first parameter instead of being a distinct
+/// value. 020 §6 permits mixing the two spellings; the existing collision test uses
+/// numeric parameters only, so it cannot see this.
+#[test]
+fn named_parameters_do_not_collide_with_numeric_body_values() {
+    let src = "func @h(%a: i32, %b: i32) -> i32 {\nentry:\n  %0 = add i32 %a, %b\n  ret %0\n}\n";
+    let m = parse(src).expect("mixing named params and numeric body values is legal");
+    let f = &m.funcs[0];
+    let dst = match &f.blocks[0].insts[0].kind {
+        chiero_cir::InstKind::Assign { dst, .. } => *dst,
+        other => panic!("expected an assign, got {other:?}"),
+    };
+    assert_ne!(
+        dst, f.params[0].value,
+        "the body's `%0` must not alias parameter `%a`"
+    );
+    assert_ne!(dst, f.params[1].value);
+}
