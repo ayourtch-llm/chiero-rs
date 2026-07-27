@@ -1164,6 +1164,43 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    consult the registry** — every extern is treated as unmodeled, so contracts 11 and 12
    are unreachable.
 
+   **WAVE 13 — registry/call review APPLIED** (`a484dba` red, `77237de` green, 430 tests,
+   5 gate probes). Nine confirmed defects:
+   - **`Proven` was forgeable** — all fields public, no marker, so a struct literal was a
+     second route to a proof. Contract 13a was false again, in a different type. Sealed,
+     plus a fifth gate probe verified by opening the hole.
+   - **Allocas were per state, not per activation** — `AllocaId` is unique only *within* a
+     function, so a callee's 100-byte local **was** the caller's 4-byte object. Silent, at
+     `Exact`. `frame_objs` now lives on `Frame` as 023 §1 says.
+   - **A `noreturn` function with a body never ran it** — §5's rule is that the *call* does
+     not return, not that a body is discarded. `ret_to: None` is the right mechanism.
+   - A `Return` of an unevaluable operand ended at `Exact`; loop budgets were shared across
+     functions; an empty module panicked; call arguments were discarded.
+   - `chiero-model`: seven names claimed `Exact` with **no implementation**; endianness was
+     hardcoded under a comment saying otherwise (**same-answer trap #9**); contract 19's
+     guard checked four exact tokens where the spec is a **prefix** regex over a recursive
+     walk — which then caught the module doc quoting the prefixes, so the *prose* was
+     reworded rather than the guard weakened.
+
+   *Two tests could not observe anything and had to be rebuilt:* the alloca test saw one
+   frame because the callee had returned and popped (its callee no longer returns); and the
+   loop-budget test asserted on the budget **note**, which names the function from a
+   different source than the counter key — it reads the keys now, over a back edge
+   traversed exactly once, since an infinite loop terminates the state before the second
+   function is reached.
+
+   **STILL OWED (from this review, judged valid):** `Budget` has 3 of 023 §8's 6
+   deterministic budgets (`max_states`, `max_forks`, `max_memory_objects` absent, so
+   contract 18 is unimplementable); `State::trace` records only `BlockId` with no `FuncId`
+   and only for `take_edge`, so it cannot be replayed; gate probe 3 fails with `E0594`
+   rather than a visibility error and reports "unrelated reason" (safe — CI still reds —
+   but the diagnosis is wrong); `chiero_model::Value` duplicates `chiero_exec::Value`
+   against 023 §1.1's "one `Value` used consistently"; `HavocSpec.objects` is `Vec<u32>`
+   not `Vec<ObjectId>` and `ranges` is missing; `ModelOutcome::Fork`'s guard is
+   `Option<Term>` and always `None`; `register` returns `()` not `ModelId`. Plus the large
+   remainder of 024 §3–§7 (string models, builtins, harness intrinsics) and the engine's
+   indirect calls, searchers and checkers.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
