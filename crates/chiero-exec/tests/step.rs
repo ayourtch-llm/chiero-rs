@@ -6874,3 +6874,91 @@ fn address_zero_is_null_not_an_unknown_object() {
         chiero_mem::ObjectId::UNBOUND
     );
 }
+
+/// **Provenance crosses a return.** Moving `IntToPtr` onto the per-frame dataflow table
+/// closed the laundering hole and took an honest case with it: `uintptr_t f(void) { return
+/// (uintptr_t)&g; } … int *p = (int *)f();` degraded to `Unknown`, because the callee's
+/// frame — and its provenance — is gone by the time the caller casts back. Index↔pointer
+/// conversion helpers are the dominant VPP idiom, so this is not a corner. Found by review,
+/// which was right that the commit message noted the laundering case degrading and not
+/// this one.
+///
+/// The value is *returned*, which is a dataflow edge like any other; it is the frame
+/// boundary that lost it, not the arithmetic.
+#[test]
+fn provenance_crosses_a_return() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Call {
+                    dst: Some(ValueId(0)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(64),
+    );
+    caller.allocas = vec![];
+    let mut callee = defined(
+        1,
+        "addr_of_local",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(0)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(64),
+    );
+    callee.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(64), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert!(
+        matches!(s.local(ValueId(1)), Some(Value::Ptr(_))),
+        "a pointer came back, not a guess: {:?}",
+        s.local(ValueId(1))
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "an honest round trip is not a range search: {:#?}",
+        s.assumptions()
+    );
+}
