@@ -2111,6 +2111,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    more than it would explore, picked one"; `Unknown` means "knew nothing". Both mutations
    die.
 
+   **WAVE 49** (`32d6fd4`; 604 tests, **106/161 cited**) — 023 contract 18, and it found a
+   real defect: ⚠️ **`max_states` was not a bound.** The check ran *after* a step's siblings
+   were pushed, so `max_states = 4` ended with six states — and `RunResult::budget` reports
+   that number as if it held. It now checks before each push, counting the **running** state
+   as well as `done` and `work`; forgetting `s` itself is why the first fix still overshot
+   by one.
+
+   *The assertion that made the difference* was the exact state count. Without it, removing
+   the `max_states` check entirely survived — `max_forks` and `max_depth` also end the run
+   `Bounded` with the finding intact. Same-answer trap, one budget over.
+
+   **023's remainder needs machinery:** contract 7 needs `RandomPath` and a seed in
+   `RunResult`; 14 a renderer; 15, 16 and 21 a `Witness` type; 17 threading; 19, 20 and 22
+   the checker framework; 24 the `CallReturn` event.
+
    **STILL OWED on §5.1:** step 4's own detection (wholly unconstrained: every object *and*
    nowhere both feasible) is still unreached — the tier-2 tests exercise steps 3 and 5.
    Contracts 17b, 18 and 19 need `PointerBitInspection`, lazy materialization and
