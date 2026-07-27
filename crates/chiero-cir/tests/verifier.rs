@@ -1463,3 +1463,171 @@ fn every_cast_kind_accepts_the_right_shape() {
         assert!(errs.is_empty(), "{what} was rejected: {errs:#?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wave 8, from the chiero-mem mutation review. Each probed before being acted on.
+// ---------------------------------------------------------------------------
+
+/// **A `Cast`'s declared `from` is never checked against its operand.**
+///
+/// This is the same failure class commit 09ae8fd closed for `va_list` — a declared type
+/// the verifier takes on faith — left open on the `PtrToInt`/`IntToPtr` pair, which is
+/// exactly the pair 021 §7.1 makes carry *provenance*. A lowering bug that mislabels
+/// `from` produces a module that verifies clean and then mints an unprovenanced pointer,
+/// and the memory model has no way to notice.
+#[test]
+fn a_cast_operand_must_match_its_declared_source_type() {
+    let cases: Vec<(&str, CastKind, Operand, CTy, CTy)> = vec![
+        (
+            "ptrtoint of an integer declared as a pointer",
+            CastKind::PtrToInt,
+            i32c(7),
+            CTy::Ptr,
+            CTy::Int(64),
+        ),
+        (
+            "trunc of a null declared as an i64",
+            CastKind::Trunc,
+            Operand::Const(Const::Null),
+            CTy::Int(64),
+            CTy::Int(32),
+        ),
+    ];
+    for (what, kind, a, from, to) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(InstKind::Assign {
+            dst: ValueId(21),
+            rv: RValue::Cast { kind, a, from, to },
+        })];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        let errs = verify(&m);
+        assert!(!errs.is_empty(), "{what} must be rejected; got: {errs:#?}");
+    }
+}
+
+/// **Width-changing casts never check the int/float domain.** `trunc f64 -> i32` and
+/// `fptosi f64 -> i32` compute completely different values, so accepting the first is the
+/// same error as the equal-width `trunc` this suite already rejects — a cast wearing
+/// another cast's name — only with a wrong *value* rather than a redundant one.
+#[test]
+fn width_casts_must_stay_within_their_domain() {
+    let f32t = CTy::Float(FloatKind::F32);
+    let f64t = CTy::Float(FloatKind::F64);
+    let cases: Vec<(&str, CastKind, CTy, CTy)> = vec![
+        (
+            "trunc f64 -> i32 is fptosi",
+            CastKind::Trunc,
+            f64t.clone(),
+            CTy::Int(32),
+        ),
+        (
+            "trunc f64 -> f32 is fptrunc",
+            CastKind::Trunc,
+            f64t.clone(),
+            f32t.clone(),
+        ),
+        (
+            "fptrunc i64 -> i32 is trunc",
+            CastKind::FpTrunc,
+            CTy::Int(64),
+            CTy::Int(32),
+        ),
+        (
+            "zext f32 -> i64",
+            CastKind::ZExt,
+            f32t.clone(),
+            CTy::Int(64),
+        ),
+        (
+            "sext i32 -> f64",
+            CastKind::SExt,
+            CTy::Int(32),
+            f64t.clone(),
+        ),
+        (
+            "fpext i32 -> i64",
+            CastKind::FpExt,
+            CTy::Int(32),
+            CTy::Int(64),
+        ),
+    ];
+    for (what, kind, from, to) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(InstKind::Assign {
+            dst: ValueId(21),
+            rv: RValue::Cast {
+                kind,
+                a: Operand::Const(Const::Undef(from.clone())),
+                from,
+                to,
+            },
+        })];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        assert!(
+            verify(&m)
+                .iter()
+                .any(|e| e.kind == VerifyErrorKind::BadCast),
+            "{what} was accepted"
+        );
+    }
+}
+
+/// **`vaarg %x : void` mints a universal type-checking wildcard.**
+///
+/// `Void` is the deliberate escape hatch for values whose type the verifier cannot
+/// resolve, so every rule downstream of such a value silently stops applying. `VaArg`
+/// *declares* its result type, so it can hand out `Void` on request — one
+/// `vaarg … : void` disables rules 5 and 6 for everything derived from it. A `va_arg` of
+/// `void` is meaningless in C anyway.
+#[test]
+fn a_vaarg_of_void_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts = vec![inst(InstKind::VaArg {
+        dst: ValueId(30),
+        list: Operand::Const(Const::Null),
+        ty: CTy::Void,
+    })];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+/// The acceptance half the `va_list` commit argued for and then did not write. A verifier
+/// that rejects **every** varargs instruction — making all 2552 VPP `va_list *` sites
+/// unverifiable — passes the rejection test on its own.
+#[test]
+fn valist_instructions_accept_a_pointer_list() {
+    let null = Operand::Const(Const::Null);
+    let cases: Vec<(&str, InstKind)> = vec![
+        ("vastart", InstKind::VaStart { list: null.clone() }),
+        ("vaend", InstKind::VaEnd { list: null.clone() }),
+        (
+            "vacopy",
+            InstKind::VaCopy {
+                dst: null.clone(),
+                src: null.clone(),
+            },
+        ),
+        (
+            "vaarg",
+            InstKind::VaArg {
+                dst: ValueId(20),
+                list: null.clone(),
+                ty: CTy::Int(32),
+            },
+        ),
+    ];
+    for (what, kind) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(kind)];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        let errs = verify(&m);
+        assert!(
+            errs.is_empty(),
+            "{what} with a pointer list must verify: {errs:#?}"
+        );
+    }
+}
