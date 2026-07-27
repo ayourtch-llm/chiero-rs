@@ -2307,13 +2307,13 @@ impl<'m> Engine<'m> {
         };
 
         let (alloc, strp) = (self.alloc_policy, self.string_policy);
-        let mut findings: Vec<String> = Vec::new();
         let mut keyed: Vec<(Option<chiero_mem::MemFault>, String)> = Vec::new();
         let mut result: Option<Value> = None;
         let mut forks: Vec<Option<Value>> = Vec::new();
         let mut terminate: Option<String> = None;
         let mut havoc: Option<HavocSpec> = None;
         let mut unresolved_args = false;
+        let mut gave_up: Option<String> = None;
         let mut translated = true;
         {
             let mut cx = ModelCtx::new(&mut s.mem, a, span, chiero_mem::Endian::Little);
@@ -2412,7 +2412,13 @@ impl<'m> Engine<'m> {
                 // dropped it. It is still a gap — the call did not produce a value — so
                 // `translated` stays false and the assumption is recorded too.
                 Some(ModelOutcome::Finding(msg)) => {
-                    findings.push(msg);
+                    // **Keyed by the call site.** A model giving up has no `MemFault`
+                    // behind it, but the *call* is what identifies the bug: one `strcpy`
+                    // that cannot scan its source is one report however many times the
+                    // loop runs. Deduplicating on the text would not do it — two
+                    // iterations produce different messages, because the first one
+                    // partly wrote the destination.
+                    gave_up = Some(msg);
                     translated = false;
                 }
                 // 024 contract 20. Not a `Finding`: a finding leaves the state running,
@@ -2439,9 +2445,15 @@ impl<'m> Engine<'m> {
             keyed.extend(cx.reports().iter().cloned());
         }
 
-        for f in findings {
+        if let Some(msg) = gave_up {
             self.finding_seq += 1;
-            s.findings.push((self.finding_seq, None, f));
+            let key = FindingKey {
+                kind: "model-gave-up",
+                span,
+                object: None,
+                func: s.func(),
+            };
+            s.findings.push((self.finding_seq, Some(key), msg));
         }
         for (fault, text) in keyed {
             self.finding_seq += 1;

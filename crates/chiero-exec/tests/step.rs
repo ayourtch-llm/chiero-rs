@@ -8389,13 +8389,28 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
                 ],
                 Terminator::Goto(BlockId(1)),
             ),
+            // **Two call sites in the loop.** With one, the span component of the key is
+            // unpinned: every report already shares it.
             block(
                 1,
-                vec![inst(InstKind::Call {
-                    dst: None,
-                    callee: Callee::Direct(FuncId(1)),
-                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
-                })],
+                vec![
+                    inst_at(
+                        InstKind::Call {
+                            dst: None,
+                            callee: Callee::Direct(FuncId(1)),
+                            args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                        },
+                        10,
+                    ),
+                    inst_at(
+                        InstKind::Call {
+                            dst: None,
+                            callee: Callee::Direct(FuncId(1)),
+                            args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                        },
+                        20,
+                    ),
+                ],
                 Terminator::Goto(BlockId(1)),
             ),
         ],
@@ -8422,5 +8437,9 @@ fn a_model_that_gives_up_in_a_loop_reports_once() {
         .into_iter()
         .filter(|f| f.contains("strcpy"))
         .collect();
-    assert_eq!(gave_up.len(), 1, "{gave_up:#?}");
+    assert_eq!(
+        gave_up.len(),
+        2,
+        "one per call site, not per iteration: {gave_up:#?}"
+    );
 }
