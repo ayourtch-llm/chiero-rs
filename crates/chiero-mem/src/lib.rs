@@ -80,7 +80,16 @@ pub enum Cond {
 /// read) or "no" (firing on every correct one).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitMask {
-    bits: Vec<InitBit>,
+    /// Length in **bits**, so a mask knows where it ends independently of `yes`'s
+    /// word-rounded length.
+    len: u64,
+    /// One bit per tracked bit: set means `Yes`. A `Vec<InitBit>` cost eight bytes per
+    /// *bit* — 64x the object — which aborted the process at the cap rather than
+    /// producing a fault.
+    yes: Vec<u64>,
+    /// `Cond` bits, sparse. Conditional writes are rare and clustered; paying a word per
+    /// bit for them would undo the point of the bitset.
+    cond: BTreeMap<u64, Term>,
 }
 
 impl InitMask {
@@ -90,20 +99,86 @@ impl InitMask {
     /// panicked. The `MAX_MATERIALIZED_BYTES` guard lives in `Memory::alloc`, which is
     /// not the only way to reach this constructor.
     pub fn new(size: u64) -> InitMask {
-        let n = usize::try_from(size.saturating_mul(8)).unwrap_or(usize::MAX);
+        let len = size.saturating_mul(8);
+        let words = usize::try_from(len.div_ceil(64)).unwrap_or(usize::MAX);
         InitMask {
-            bits: vec![InitBit::No; n],
+            len,
+            yes: vec![0u64; words],
+            cond: BTreeMap::new(),
+        }
+    }
+
+    fn yes_at(&self, bit: u64) -> bool {
+        match self.yes.get((bit / 64) as usize) {
+            Some(w) => w >> (bit % 64) & 1 == 1,
+            None => false,
+        }
+    }
+
+    fn set_yes(&mut self, bit: u64, to: bool) {
+        if let Some(w) = self.yes.get_mut((bit / 64) as usize) {
+            if to {
+                *w |= 1u64 << (bit % 64);
+            } else {
+                *w &= !(1u64 << (bit % 64));
+            }
         }
     }
 
     pub fn get(&self, bit: u64) -> InitBit {
-        self.bits.get(bit as usize).copied().unwrap_or(InitBit::No)
+        if bit >= self.len {
+            return InitBit::No;
+        }
+        if self.yes_at(bit) {
+            InitBit::Yes
+        } else {
+            match self.cond.get(&bit) {
+                Some(t) => InitBit::Cond(*t),
+                None => InitBit::No,
+            }
+        }
     }
 
     pub fn set_range(&mut self, lo_bit: u64, n_bits: u64, to: InitBit) {
-        for b in lo_bit..lo_bit + n_bits {
-            if let Some(slot) = self.bits.get_mut(b as usize) {
-                *slot = join(*slot, to);
+        let hi = (lo_bit.saturating_add(n_bits)).min(self.len);
+        if lo_bit >= hi {
+            return;
+        }
+        match to {
+            // `join(old, No) == old` for all three, so this is a no-op rather than a
+            // clear. Writing `No` over `Yes` would erase an initialization.
+            InitBit::No => {}
+            InitBit::Yes => {
+                // Whole words at a time: a `memset` of the largest allowed object is
+                // 2^33 bits, and one iteration per bit made it minutes rather than
+                // milliseconds.
+                let mut b = lo_bit;
+                while b < hi {
+                    let w = (b / 64) as usize;
+                    let off = b % 64;
+                    let take = (64 - off).min(hi - b);
+                    let m = if take == 64 {
+                        u64::MAX
+                    } else {
+                        ((1u64 << take) - 1) << off
+                    };
+                    self.yes[w] |= m;
+                    b += take;
+                }
+                // A bit that is now definitely initialized has no guard left to record.
+                let stale: Vec<u64> = self.cond.range(lo_bit..hi).map(|(b, _)| *b).collect();
+                for b in stale {
+                    self.cond.remove(&b);
+                }
+            }
+            // Through `join`, so the lattice has one definition rather than one per
+            // representation. The two fast paths above are `join(old, Yes) == Yes` and
+            // `join(old, No) == old`, which hold for every `old`.
+            InitBit::Cond(_) => {
+                for b in lo_bit..hi {
+                    let j = join(self.get(b), to);
+                    self.set_exact(b, j);
+                }
             }
         }
     }
@@ -111,8 +186,22 @@ impl InitMask {
     /// Set one bit's status verbatim, bypassing the join. Only for copying an existing
     /// mask (`realloc`), where the destination has no prior state to join with.
     pub fn set_exact(&mut self, bit: u64, to: InitBit) {
-        if let Some(slot) = self.bits.get_mut(bit as usize) {
-            *slot = to;
+        if bit >= self.len {
+            return;
+        }
+        match to {
+            InitBit::No => {
+                self.set_yes(bit, false);
+                self.cond.remove(&bit);
+            }
+            InitBit::Yes => {
+                self.set_yes(bit, true);
+                self.cond.remove(&bit);
+            }
+            InitBit::Cond(t) => {
+                self.set_yes(bit, false);
+                self.cond.insert(bit, t);
+            }
         }
     }
 
@@ -661,11 +750,18 @@ impl AddressSpace {
 
 /// Above this, an object is not materialized and every access to it faults.
 ///
-/// `MemObject` allocates `size` bytes plus eight times that for the init mask, so an
-/// unconstrained `clib_mem_alloc(n)` used to abort the process — and an abort is not
+/// An unconstrained `clib_mem_alloc(n)` used to abort the process, and an abort is not
 /// something `catch_unwind` can contain. 023 §10 concretizes symbolic sizes from a solver
 /// model, which can hand back anything the constraints allow.
-pub const MAX_MATERIALIZED_BYTES: u64 = 1 << 30;
+///
+/// The number has to be a size chiero can actually *hold*, not just one it is willing to
+/// accept. `MemObject` costs `size` bytes of contents plus `size / 8` for the init
+/// bitset, and `Memory::set` builds a `size`-byte fill, so the cap is roughly a 2.2x
+/// host-memory multiplier. At the previous 1 GiB — with a mask that then cost eight bytes
+/// per *bit* — an object exactly at the cap asked for 64 GiB and died. 64 MiB is above
+/// any single object in the VPP paths §2 targets and cheap enough that the boundary case
+/// is testable, which is what let the old cap go wrong unnoticed.
+pub const MAX_MATERIALIZED_BYTES: u64 = 1 << 26;
 
 /// 020 §4: `memcpy` forbids overlap, `memmove` permits it. Collapsing the two loses a
 /// real bug in one direction and invents one in the other.

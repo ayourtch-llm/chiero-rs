@@ -523,3 +523,47 @@ fn the_compact_mask_keeps_the_three_states_apart() {
     assert_eq!(mask.first_no(0, 32), Some(16));
     assert_eq!(mask.first_cond(0, 32), None);
 }
+
+/// **The mask has a canonical form**, and it has to, because `MemObject` derives
+/// `PartialEq`: two objects that agree about every bit must compare equal. With a `Yes`
+/// bitset and a sparse `Cond` map the same meaning has two possible encodings — a `Cond`
+/// entry shadowed by a set `Yes` bit — and `get` cannot tell them apart, so only equality
+/// can. Leaving the stale entries also grows the map without bound over a loop that
+/// writes conditionally and then definitely.
+#[test]
+fn a_definite_write_erases_the_guard_it_covers() {
+    let mut a = chiero_solver::TermArena::new();
+    let g = a.var(chiero_solver::Sort::Bool, "g");
+    let mut viaz = InitMask::new(2);
+    viaz.set_range(0, 16, InitBit::Cond(g));
+    viaz.set_range(0, 16, InitBit::Yes);
+    let mut direct = InitMask::new(2);
+    direct.set_range(0, 16, InitBit::Yes);
+    assert_eq!(
+        viaz, direct,
+        "the guard is spent once the write is definite"
+    );
+}
+
+/// **A conditional write with no guard changes nothing about initialization.** 021 §3.1's
+/// join is `join(old, No) == old` in every case, which is what makes this safe in both
+/// directions: it cannot erase an initialization (a false uninitialized-read report on
+/// memory that was written), and it cannot create one (a missed report on memory that was
+/// not). The bytes still land — this is about what chiero *claims* it knows.
+#[test]
+fn a_guardless_conditional_write_neither_initializes_nor_erases() {
+    let mut o = MemObject::new(ObjectId(1), ObjKind::Heap, 4, 1, Span::DUMMY);
+    o.write_bytes(0, &[1, 2]).unwrap();
+    o.write_bytes_cond(0, &[9, 9], Cond::Symbolic, None)
+        .unwrap();
+    o.write_bytes_cond(2, &[9, 9], Cond::Symbolic, None)
+        .unwrap();
+    assert_eq!(o.read_bytes(0, 2).unwrap(), vec![9, 9], "the bytes land");
+    assert_eq!(o.init_bit(0), InitBit::Yes, "still initialized");
+    // The other half stays reportable — reading it is an error, not a value.
+    assert_eq!(o.init_bit(16), InitBit::No, "still uninitialized");
+    assert_eq!(
+        o.read_bytes(2, 2),
+        Err(AccessError::Uninitialized { off: 2, bit: 16 })
+    );
+}
