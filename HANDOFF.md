@@ -1493,6 +1493,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `Some(0)`, and the first version of that commit returned the zero. **Any future reader
    of an `AccessResult` has to make the same check** — the type permits the mistake.
 
+   **WAVE 21** (`c082286` red, `8c493a0` green, 518 tests) — **021 §7.1's provenance-first
+   `IntToPtr`**, the locked decision, implemented. `PtrToInt` records where the address
+   came from and `IntToPtr` consults that *before* the range search. The origin is
+   remembered, not recovered: the address alone cannot say which object it was once that
+   object is freed, and `ObjectId` is what every later check is about. The record is keyed
+   on the **term**, so arithmetic producing a different term loses the provenance rather
+   than carrying it somewhere it does not belong. The fallback degrades to `Unknown` and
+   names itself — a fallback answering `Exact` is indistinguishable from knowing.
+
+   *Mutation caught the subtle half:* the **integer's value** was unpinned. Provenance
+   hands the pointer back whatever the address says, so dropping the offset from the
+   address computation round-tripped perfectly while a program printing or comparing the
+   integer would see a lie. Same shape as the `container_of` offset trap two waves ago:
+   when a value is recoverable by a second route, the first route stops being tested.
+
    **Still unimplemented in `exec_inst`/`eval`, in rough priority order:** `AllocaDyn`; the four `Va*` (010 measured
    2552 `va_list *` in VPP, so this is not exotic); `Shuffle`/`InsertLane`/`ExtractLane`/
    `Splat`; and `PtrToInt`/`IntToPtr` casts, which land in the gap because a pointer is
