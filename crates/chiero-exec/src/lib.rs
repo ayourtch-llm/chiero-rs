@@ -209,6 +209,10 @@ pub struct Frame {
     /// *within* a function, so one map per state would let a callee's `%2` inherit the
     /// caller's provenance — and recursion has the same shape.
     ptr_vals: IndexMap<ValueId, Pointer>,
+    /// The arguments past the declared parameters of a variadic call, in order. 020 §4.4.1
+    /// puts the `va_list` in *memory* so `va_list *` can cross a function boundary; this
+    /// is the argument area it iterates, which belongs to the activation that received it.
+    varargs: Vec<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -733,6 +737,7 @@ impl<'m> Engine<'m> {
                 locals: entry_locals,
                 frame_objs,
                 ptr_vals: IndexMap::new(),
+                varargs: Vec::new(),
             }],
             ret: None,
             edge_counts: IndexMap::new(),
@@ -1010,10 +1015,70 @@ impl<'m> Engine<'m> {
                 }
                 s.set_local(*dst, Value::Ptr(Pointer { base: obj, off: 0 }));
             }
-            InstKind::Marker(_) => {}
-            other => {
-                self.lowering_gap(s, i.span, &format!("{other:?}"));
+            // 020 §4.4.1. The `va_list` is a real object so `va_list *` can cross a
+            // function boundary — VPP's whole format infrastructure has the callee
+            // advancing the *caller's* iteration state. The cursor therefore lives in the
+            // object's bytes, not beside it.
+            InstKind::VaStart { list } => {
+                let Some(Value::Ptr(p)) = self.operand(a, s, list) else {
+                    self.lowering_gap(s, i.span, "va_start on a non-pointer");
+                    return;
+                };
+                let zero = a.bv(64, 0);
+                let r = s.mem.write_term(a, p, zero, 8, Endian::Little, i.span);
+                self.report_faults(s, &r.faults, i.span);
             }
+            InstKind::VaArg { dst, list, ty } => {
+                let Some(Value::Ptr(p)) = self.operand(a, s, list) else {
+                    self.lowering_gap(s, i.span, "va_arg on a non-pointer");
+                    return;
+                };
+                let cur = s.mem.read_term(a, p, 8, Endian::Little, i.span);
+                self.report_faults(s, &cur.faults, i.span);
+                let Some(n) = cur
+                    .value
+                    .filter(|_| !unusable(&cur.faults))
+                    .and_then(|t| a.eval_ground(t).ok())
+                    .map(|c| c.bits() as usize)
+                else {
+                    self.lowering_gap(s, i.span, "a va_list cursor chiero cannot read");
+                    return;
+                };
+                // **Past the end is not a value.** C leaves it undefined, and handing back
+                // a fresh symbol would let a `printf` with too few arguments look like it
+                // read something real.
+                let Some(v) = s.stack.last().and_then(|fr| fr.varargs.get(n)).copied() else {
+                    self.lowering_gap(s, i.span, "va_arg past the end of the variadic arguments");
+                    return;
+                };
+                let _ = ty;
+                s.set_local(*dst, v);
+                let next = a.bv(64, n as u128 + 1);
+                let r = s.mem.write_term(a, p, next, 8, Endian::Little, i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
+            // A copy duplicates the *iteration state*, so the two lists advance
+            // independently from a shared position — which is what `va_copy` is for.
+            InstKind::VaCopy { dst, src } => {
+                let (Some(Value::Ptr(d)), Some(Value::Ptr(sp))) =
+                    (self.operand(a, s, dst), self.operand(a, s, src))
+                else {
+                    self.lowering_gap(s, i.span, "va_copy on a non-pointer");
+                    return;
+                };
+                let r = s.mem.copy(d, sp, 8, chiero_mem::Overlap::Forbidden, i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
+            // `va_end` has no effect chiero can observe: the object's lifetime is the
+            // frame's. Recording it as a gap would degrade every correct variadic
+            // function for doing the right thing.
+            InstKind::VaEnd { list } => {
+                let _ = self.operand(a, s, list);
+            }
+            InstKind::Marker(_) => {} // **No catch-all.** Every `InstKind` is handled, so adding one is a compile
+                                      // error rather than a silent `LoweringGap` — which is how `Load`, `Store`,
+                                      // `CopyMem`, `SetMem` and the four `Va*` all stayed missing for waves, behind
+                                      // a uniform workaround that read as house style.
         }
     }
 
@@ -1180,6 +1245,18 @@ impl<'m> Engine<'m> {
                 locals.insert(p.value, v);
             }
         }
+        // 020 §4.4.1: everything past the declared parameters is the variadic argument
+        // area the callee's `va_list` iterates. Kept as `Value`s rather than bytes so a
+        // pointer argument keeps its object — `format_function_t` takes `u8 *` and
+        // `va_list *`, so varargs *are* pointers in the VPP paths this exists for.
+        let varargs: Vec<Value> = if f.variadic {
+            args.iter()
+                .skip(f.params.len())
+                .filter_map(|o| self.operand(a, s, o))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Each activation gets its **own** objects: `AllocaId` is unique only within a
         // function, so sharing them by id makes a callee's local be the caller's.
         let mut frame_objs = IndexMap::new();
@@ -1200,6 +1277,7 @@ impl<'m> Engine<'m> {
             locals,
             frame_objs,
             ptr_vals: IndexMap::new(),
+            varargs,
         });
         s.pc = (f.entry, 0);
         s.trace.push((*id, f.entry));
@@ -2396,6 +2474,7 @@ impl<'m> Engine<'m> {
             locals: IndexMap::new(),
             frame_objs,
             ptr_vals: IndexMap::new(),
+            varargs: Vec::new(),
         });
         s.pc = (f.entry, 0);
         s.trace.push((id, f.entry));
