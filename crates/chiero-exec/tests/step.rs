@@ -8687,3 +8687,162 @@ fn a_union_puns_in_both_directions_with_no_cast_node() {
         "and back the other way"
     );
 }
+
+/// **020 contract 26.** `LoadBits` with `signed: true` over a 3-bit field holding `0b111`
+/// yields `-1` at `Int(32)`; with `signed: false` it yields `7`. A bitfield's high bit is
+/// a sign bit, and reading `int x : 3` as 7 where C says -1 is a wrong answer with no
+/// symptom — every comparison against it silently flips.
+///
+/// I implemented the sign extension and tested only the unsigned side, which is how this
+/// stayed uncovered.
+#[test]
+fn a_signed_bitfield_sign_extends_and_an_unsigned_one_does_not() {
+    for (signed, want) in [(true, 0xFFFF_FFFFu128), (false, 7)] {
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::StoreBits {
+                        addr: Operand::Value(ValueId(0)),
+                        val: Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0b111,
+                        }),
+                        unit: CTy::Int(32),
+                        bits: BitRange { off: 0, width: 3 },
+                        align: 4,
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::LoadBits {
+                            addr: Operand::Value(ValueId(0)),
+                            unit: CTy::Int(32),
+                            bits: BitRange { off: 0, width: 3 },
+                            signed,
+                            align: 4,
+                        },
+                    }),
+                ],
+                Terminator::Return(Some(Operand::Value(ValueId(1)))),
+            )],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![AllocaDecl {
+            align: 4,
+            ..alloca(0, CTy::Int(32), 1)
+        }];
+        let m = Module {
+            funcs: vec![caller],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        assert_eq!(
+            r.states()[0].return_value_bits(&mut a),
+            Some(want),
+            "signed: {signed}"
+        );
+    }
+}
+
+/// **020 contracts 24 and 25.** `struct { u32 a:3; u32 b:5; }` — writing only `a` and
+/// reading `a` produces no uninitialized-read finding, while reading `b` produces exactly
+/// one. 020 names this as *the* contract byte-granular initialization cannot satisfy: both
+/// fields live in the same byte, so a per-byte mask must answer wrongly for one of them.
+///
+/// Contract 25's half is that the write leaves every bit of `b` unchanged, which is the
+/// same fact from the other side and is what makes the finding above trustworthy.
+#[test]
+fn writing_one_bitfield_leaves_its_neighbour_uninitialized() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::StoreBits {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0b101,
+                    }),
+                    unit: CTy::Int(32),
+                    bits: BitRange { off: 0, width: 3 },
+                    align: 4,
+                }),
+                // `a` reads back with no finding...
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::LoadBits {
+                        addr: Operand::Value(ValueId(0)),
+                        unit: CTy::Int(32),
+                        bits: BitRange { off: 0, width: 3 },
+                        signed: false,
+                        align: 4,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller.clone()],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "reading the field that was written is not a bug: {:#?}",
+        r.findings()
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(0b101));
+
+    // ...and `b`, in the same byte, reads back as exactly one finding.
+    let mut caller2 = caller;
+    caller2.blocks[0].insts.pop();
+    caller2.blocks[0].insts.push(inst(InstKind::Assign {
+        dst: ValueId(1),
+        rv: RValue::LoadBits {
+            addr: Operand::Value(ValueId(0)),
+            unit: CTy::Int(32),
+            bits: BitRange { off: 3, width: 5 },
+            signed: false,
+            align: 4,
+        },
+    }));
+    let m = Module {
+        funcs: vec![caller2],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|f| f.contains("uninitialized-read"))
+            .count(),
+        1,
+        "{:#?}",
+        r.findings()
+    );
+}

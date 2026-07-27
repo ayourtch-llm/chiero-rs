@@ -1669,3 +1669,50 @@ fn the_constant_mask_shuffle_exists_and_the_dynamic_one_is_owed() {
         verify(&m)
     );
 }
+
+/// **020 contract 27.** `verify` rejects a `BitRange` whose `off + width` exceeds the unit
+/// width, and one with `width == 0`. Both are the shape that would otherwise reach the
+/// engine's bit API and read or write bits that are not part of the field — a zero-width
+/// load in particular yields a zero-width term, which the arena has no representation for.
+#[test]
+fn verify_rejects_a_bit_range_that_does_not_fit_its_unit() {
+    for (off, width, why) in [(30u32, 4u32, "past the end"), (0, 0, "zero width")] {
+        let mut m = valid_module();
+        m.funcs[0].allocas = vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 1,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }];
+        m.funcs[0].blocks[0].insts.insert(
+            0,
+            inst(InstKind::Assign {
+                dst: ValueId(5),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            }),
+        );
+        m.funcs[0].blocks[0].insts.insert(
+            1,
+            inst(InstKind::Assign {
+                dst: ValueId(6),
+                rv: RValue::LoadBits {
+                    addr: Operand::Value(ValueId(5)),
+                    unit: CTy::Int(32),
+                    bits: BitRange { off, width },
+                    signed: false,
+                    align: 4,
+                },
+            }),
+        );
+        assert!(
+            verify(&m).iter().any(|e| e.kind.is_error()),
+            "{why}: off {off} width {width} must be rejected"
+        );
+    }
+}
