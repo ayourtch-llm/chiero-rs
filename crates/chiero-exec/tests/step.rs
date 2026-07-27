@@ -6615,3 +6615,58 @@ fn scanf_says_so_when_it_could_not_resolve_an_output_argument() {
     );
     assert_ne!(r.fidelity(), Fidelity::Exact);
 }
+
+/// **A store chiero could not perform must not leave the run provable.** The value path
+/// falls to `lowering_gap` when `operand` cannot represent the value — floats, wide
+/// vectors, global addresses — and the review found nothing pinned that: with the
+/// degradation removed, fidelity stayed `Exact` and `seal` returned **PROVEN** over a
+/// program whose write was silently discarded.
+///
+/// This is the shape that matters most in this project: not a wrong answer, but a *missing*
+/// one presented as a proof.
+#[test]
+fn a_store_chiero_cannot_perform_forbids_a_proof() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // 023 §7 approximates floating point, and `operand` cannot represent a
+                // float constant at all — so the store cannot happen.
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Float(FloatKind::F64, 0x4000_0000_0000_0000)),
+                    ty: CTy::Float(FloatKind::F64),
+                    align: 8,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Float(FloatKind::F64), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "the write did not happen: {:#?}",
+        r.states()[0].assumptions()
+    );
+    assert!(seal(&r, r.witness()).is_err(), "and the run cannot seal");
+}
