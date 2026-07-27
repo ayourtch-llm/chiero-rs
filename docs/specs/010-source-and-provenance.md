@@ -17,13 +17,53 @@ entirely out of macros. Consider a one-line change to the body of `vec_add1` in
   false negative that ships bugs.
 - **File-level dependency tracking over-answers.** "Anything that `#include`s `vec.h`"
   is most of VPP. That is a true answer and a useless one.
-- **A clang AST gets closer but loses resolution.** Clang records a spelling/expansion
-  location pair, but chiero needs the full nesting chain, per-argument attribution, and
-  a *reverse* index from macro definition to every expansion site.
-
 chiero answers precisely: *every function that expanded `vec_add1`, transitively through
 nested macros*, and from there, via the coverage index, exactly the tests that executed
 those expansions.
+
+### 1.1 Why chiero owns this rather than using clang
+
+An earlier draft of this section claimed clang could not supply the nesting chain,
+per-argument attribution, or a reverse index. **That claim was tested and is false**, and
+it is corrected here rather than quietly dropped, because a false rationale will not hold
+the line when the frontend gets hard.
+
+What clang actually does, verified with clang 18.1.3 on the `vec_add1`/`vec_add1_ha`
+fixture in §3.2:
+
+- **Full nesting chain: yes.** A diagnostic inside the nested expansion prints
+  `expanded from macro 'vec_add1'` *and* `expanded from macro 'vec_add1_ha'`, with both
+  `m.h` definition sites — the same two-frame backtrace §5 specifies as chiero's output.
+  `SourceManager` retains the whole tree and `getImmediateMacroCallerLoc` walks it.
+- **Per-token argument attribution: yes.** `SourceManager::isMacroArgExpansion` /
+  `isMacroBodyExpansion` is exactly the `TokenOrigin` discriminator in §2.2.
+- **Reverse index: substantially.** libclang with a detailed preprocessing record emits
+  `MACRO_DEFINITION` and `MACRO_INSTANTIATION` cursors per TU. It does *not* enumerate
+  *nested* expansions, but `PPCallbacks::MacroExpands` in the C++ API does.
+
+So the honest reasons are these, and they are sufficient:
+
+1. **The no-external-toolchain constraint.** chiero is specified as a modular, embeddable,
+   pure-Rust library that builds and runs with `--no-default-features` and links nothing
+   ([001 §5](001-architecture.md)). Depending on libclang for a *core* capability — not an
+   oracle, not an optional accelerator — forfeits that property outright. This is the
+   binding reason.
+2. **Both sides of a diff, including non-compiling states.** [031](031-change-impact.md)
+   compares two parsed programs. Requiring every analysed revision to be clang-parseable
+   with a full, correct compilation database is a much stronger precondition than
+   requiring it to be chiero-parseable.
+3. **Provenance as a 12-byte `Copy` value.** `Span` is threaded through the AST, CIR, the
+   memory model and every finding. Across an FFI boundary, provenance becomes a handle
+   into a foreign object graph with a foreign lifetime.
+4. **Ownership of lowering.** CIR's `Block::gcov_lines` and per-instruction spans are
+   produced by our own lowering; clang would give us a provenance-rich AST and then a gap.
+
+**Contingency, stated plainly** ([080](080-roadmap.md) names the frontend as the riskiest
+milestone): a clang-subprocess provenance extractor is a *viable fallback for the
+impact/selection vertical specifically*, since that vertical needs expansion sites and
+line mappings but not symbolic execution. It would cost the pure-Rust property for that
+vertical only. Recording this is deliberate — the alternative is a taboo resting on a
+claim that does not survive a five-minute experiment.
 
 The model below exists to make that query cheap and exact. It is deliberately modeled on
 rustc's `SyntaxContext`/`ExpnId` hygiene machinery, which is a proven shape for exactly
@@ -232,20 +272,81 @@ several thousand call sites is the problem. The backtrace is what makes chiero's
 findings usable on a macro-heavy codebase, so it is a hard requirement on every
 user-facing report, including the JSON emitted by [050](050-tool-interface.md).
 
-## 6. Memory budget
+## 6. Scale, identity across TUs, and the cooked index
 
-VPP is ~1M lines. A rough upper bound on expansions is ~10M for a full-tree analysis. At
-~64 bytes per `Expansion` (with a `SmallVec<[Span; 4]>` for `arg_spans`) that is ~640 MB
-— acceptable on the 251 GB target machine but not free.
+### 6.1 Two problems that only appear at whole-tree scale
 
-Mitigations, in priority order:
+Everything in §2–§5 is per translation unit. `MacroId`, `FileId` and `ExpnCtx` are indices
+into *one* `PreprocessedTu`'s `SourceMap` ([012 §5](012-preprocessor.md)). The headline
+capability, though, is a whole-tree query — "every function in VPP that expands
+`vec_add1`" — and two things break on the way there:
+
+**Identity.** `vec.h` is one file with one `vec_add1`, but 1552 TUs each mint their own
+`FileId` and `MacroId` for it. Meanwhile [030 §5](030-coverage-gcov.md) keys the coverage
+index on a global `(FileId, line)` and [031 §1](031-change-impact.md) needs a single
+`Entity::Macro`. Per-TU ids cannot serve either.
+
+**Lifetime.** The obvious memory mitigation — drop per-TU expansion tables after lowering,
+keep the reverse index — is *incorrect as stated in earlier drafts*, because
+`by_macro: IndexMap<MacroId, Vec<ExpnCtx>>` stores `ExpnCtx` values that are indices
+**into the table being dropped**. Every retained handle would dangle, and
+`expansion_loc` — the one query [031 §3.2](031-change-impact.md) needs to get from an
+expansion site to its enclosing function — would be uncomputable. The retained artifact
+must be *resolved*, not a set of handles.
+
+### 6.2 The cooked index
+
+Resolution happens **before** the per-TU tables are dropped:
+
+```rust
+/// Cross-TU interners, owned by the driver, populated as each TU is preprocessed.
+pub struct GlobalInterner {
+    files:  IndexMap<PathBuf, GlobalFileId>,        // canonicalized real path
+    macros: IndexMap<(GlobalFileId, Symbol, u32), MacroEntity>,   // file, name, def line
+}
+
+/// The retained whole-tree artifact. Self-contained: no ExpnCtx, no per-TU ids.
+pub struct CookedExpansionIndex {
+    /// macro -> every site it reached, transitively through nested macros.
+    sites: IndexMap<MacroEntity, Vec<CookedSite>>,
+}
+
+pub struct CookedSite {
+    pub file: GlobalFileId,      // the .c file gcov attributes to
+    pub line: u32,               // expansion_loc, already resolved
+    pub func: Option<FuncKey>,   // enclosing function (030 §5)
+    pub depth: u32,              // 0 = written literally at the call site
+    pub config: ConfigId,        // which build configuration produced it
+}
+```
+
+A macro's identity is `(defining file, name, definition line)` — matching
+[031 §1](031-change-impact.md)'s `Entity::Macro`, and keeping a redefinition of the same
+name distinct. Files are interned by canonicalized path, so `vec.h` is one
+`GlobalFileId` across all 1552 TUs.
+
+Per-TU tables are dropped only after every site they contain has been cooked. The
+invariant is worth stating as a rule: **no long-lived structure may hold an `ExpnCtx`,
+`MacroId` or `FileId`.** Those are per-TU and short-lived by construction; anything
+crossing a TU boundary uses the global ids above.
+
+### 6.3 Budget
+
+An earlier estimate of ~10M expansions tree-wide was optimistic by one to two orders of
+magnitude: [013 §7](013-parser.md) notes a single preprocessed VPP TU runs to tens of
+megabytes of tokens, and there are 1552 of them, which puts raw expansions at 10⁸–10⁹ and
+the naive full-table footprint in the tens of gigabytes. That is precisely why the cooked
+index is the *design* and not an optimization — it is bounded by expansion **sites**
+(millions), not by expansion **events**.
+
+Within a TU, while the tables are live:
 1. `arg_spans` as `SmallVec<[Span; 4]>`; the overwhelming majority of macros have ≤4 args.
 2. `Expansion` interning: identical `(macro_id, call_site, parent)` triples are shared.
-3. Per-TU expansion tables, dropped after lowering, with only the `by_macro` reverse
-   index retained across TUs — the reverse index is all the coverage vertical needs.
+3. TUs are processed in a streaming fashion and cooked one at a time, so peak memory is
+   one TU's tables plus the cooked index — not the whole tree's tables.
 
-Mitigation 3 is the important one: analyses that span the whole tree keep the reverse
-index, not the full tables.
+Contract 13 pins the property that actually matters: the cooked index answers
+`expansion_sites` correctly *after* the per-TU tables are gone.
 
 ## 7. Testable contracts
 
@@ -269,3 +370,24 @@ index, not the full tables.
     `spelling_loc` re-lexes to the same token text.
 12. `BytePos` → `FileId` lookup agrees with a linear scan over `start_pos` for every
     file boundary in a 100-file fixture.
+
+### Cross-TU identity and the cooked index (§6)
+
+13. **The retained index survives the tables it was built from**: after two TUs are
+    preprocessed, cooked, and their `SourceMap`s dropped, `expansion_sites` for a macro
+    defined in a shared header still returns both TUs' sites, with resolved
+    `(file, line, func)`. This is the contract that catches the dangling-`ExpnCtx` design
+    error, and it must be written as a test that actually drops the tables.
+14. Two TUs including the same header yield **one** `GlobalFileId` for it and **one**
+    `MacroEntity` per macro, even though their per-TU `FileId`/`MacroId` values differ.
+15. Two macros with the same name defined at different lines (or in different files) are
+    distinct `MacroEntity`s; a macro `#undef`ed and redefined at a new line likewise.
+16. No type reachable from `CookedExpansionIndex` transitively contains an `ExpnCtx`,
+    `MacroId` or `FileId` — checked mechanically, since this is the invariant that keeps
+    §6.2 true as the code evolves.
+17. Cooking is order-independent: preprocessing the TUs in reverse order yields a
+    byte-identical `CookedExpansionIndex`.
+18. Peak memory over a 100-TU fixture is bounded by (one TU's tables + the cooked index),
+    not by the sum of all TUs' tables — asserted against a recorded high-water mark.
+19. A macro expanded under two different `ConfigId`s produces sites carrying each config,
+    and querying by config returns only the matching subset.

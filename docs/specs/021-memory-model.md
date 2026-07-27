@@ -26,8 +26,31 @@ pub struct MemObject {
     pub readonly: bool,
 }
 
-pub enum ObjKind { Global, Stack, Heap, Extern, Lazy }
+pub enum ObjKind { Global, Stack, Heap, Extern, Lazy, Function, VarArgs }
 ```
+
+`ObjKind::Function` gives every `FuncId` an object of size 0 in the Text region (§7), so
+that `AddrOfFunc`/`Const::FuncAddr` ([020 §4](020-cir.md)) has somewhere to point. Without
+it there is no `Term`→`FuncId` mapping, and the indirect-call resolution
+[023 §5](023-execution-engine.md) depends on cannot be implemented. VPP needs this
+constantly: `vlib_node_t::function` is assigned `&node##_fn` and later called through the
+loaded pointer, and `format_function_t *`/`unformat_function_t *` are passed by value
+throughout.
+
+`ObjKind::VarArgs` backs `va_list` (§10).
+
+```rust
+pub enum ObjOrigin {
+    Global(GlobalId), Alloca { func: FuncId, alloca: AllocaId, frame: FrameId },
+    Heap(Span), LazyParam { func: FuncId, param: u32 }, LazyDeref(Span),
+    Extern(Symbol), Function(FuncId), VarArgs { func: FuncId, frame: FrameId },
+}
+```
+
+`Alloca` carries a `FrameId`: with `max_recursion_depth = 32`
+([023 §5](023-execution-engine.md)) there can be 32 live objects for one `AllocaId`, and
+an alloca inside a loop produces a fresh object per iteration (§4). An origin that cannot
+distinguish activations cannot report which one a use-after-scope refers to.
 
 Reserved objects, present in every state:
 `ObjectId::NULL` — size 0, address 0, any access is a null-dereference finding.
@@ -67,9 +90,9 @@ beyond it UB, so the two are reported at different severities).
 
 ```rust
 pub enum Contents {
-    /// Fast path: concrete bytes plus a per-byte initialization mask,
-    /// plus a sparse overlay of symbolic bytes at concrete offsets.
-    Bytes { data: Vec<u8>, init: BitVec, sym: BTreeMap<u64, SymByte> },
+    /// Fast path: concrete bytes, a bit-indexed initialization mask, and a sparse
+    /// overlay of symbolic bytes at concrete offsets.
+    Bytes { data: Vec<u8>, init: InitMask, sym: BTreeMap<u64, SymByte> },
     /// Slow path: SMT array BV(ptr_width) -> BV(8), with a parallel init array.
     Array { data: Term, init: Term },
 }
@@ -99,6 +122,44 @@ mask is what makes uninitialized-read detection possible, and reading uninitiali
 yields a fresh symbol *plus* a finding rather than zero. Silently reading zero is the
 single most common way a symbolic executor produces confidently wrong results.
 
+### 3.1 The initialization mask
+
+Two properties are required of `init`, and a naive per-byte boolean has neither.
+
+**Bit granularity.** `LoadBits`/`StoreBits` ([020 §4.5.1](020-cir.md)) exist so a bitfield
+access touches only its own bits. That is pointless unless initialization is tracked at
+the same granularity: writing `a` in `struct { u32 a:3; u32 b:5; }` and then reading `a`
+must produce no finding, while reading `b` must produce one — and both fields live in
+byte 0. A per-byte mask can only answer "yes" (missing every real uninitialized-bitfield
+read) or "no" (firing on every correct one). VPP settles the argument: `session_types.h`
+packs nine bitfields into one `u32`, several of them unnamed padding that is never
+written.
+
+**A third state.** A write at a *symbolic* offset that stays in `Bytes` (§3, feasible set
+≤ `ite_threshold`) writes each candidate byte conditionally: `ite(off == k, val, old)`.
+Such a byte is neither definitely initialized nor definitely not. Forcing it to "yes"
+silently loses real uninitialized reads; forcing it to "no" produces a false-positive
+storm on `v[i] = x; … use v[i]`, which is ubiquitous. Worse, the `Array` path represents
+this exactly (`Store(init, off, 1)`), so a two-state `Bytes` mask would make the two paths
+disagree on the *same program* purely because the feasible set crossed 16 — which would
+falsify contract 6.
+
+```rust
+pub struct InitMask { bits: Vec<InitBit> }      // length 8 * size, indexed by BIT
+pub enum InitBit { No, Yes, Cond(Term) }        // Cond: initialized iff Term holds
+```
+
+`Cond` collapses to `Yes`/`No` whenever its guard folds to a constant, so the common case
+costs one enum tag. The `Array` variant's `init: Term` is an SMT array
+`BV(ptr_width + 3) -> BV(1)`, bit-indexed to match, and promotion maps `No`→0, `Yes`→1,
+`Cond(t)`→`ite(t, 1, 0)` — so promotion preserves initialization state exactly, which is
+what makes the two paths agree.
+
+**Symbolic is not uninitialized.** A lazily-materialized object (§6) is fully `Yes` with
+unknown *values*. Conflating "we don't know the value" with "nobody wrote it" turns every
+UCSE run into a false-positive storm, and is the single easiest way to make this whole
+subsystem useless.
+
 ## 4. Lifetime
 
 - **Globals** are created at module load, initialized from `GlobalInit`, `Live` forever.
@@ -122,12 +183,39 @@ it is reported. That is a real and frequent VPP bug class.
 
 ```rust
 impl Memory {
-    fn read (&self, p: &Pointer, size: u64, ty: CTy) -> Result<Term, MemFault>;
-    fn write(&mut self, p: &Pointer, val: &Term, size: u64) -> Result<(), MemFault>;
-    fn copy (&mut self, dst: &Pointer, src: &Pointer, size: &Term, overlap: Overlap);
-    fn set  (&mut self, dst: &Pointer, byte: &Term, size: &Term);
+    fn read (&mut self, cx: &mut AccessCtx, p: &Pointer, size: u64, ty: CTy) -> AccessResult;
+    fn read_bits(&mut self, cx: &mut AccessCtx, p: &Pointer, unit: CTy, bits: BitRange,
+                 signed: bool) -> AccessResult;
+    fn write(&mut self, cx: &mut AccessCtx, p: &Pointer, val: &Term, size: u64) -> AccessResult;
+    fn write_bits(&mut self, cx: &mut AccessCtx, p: &Pointer, val: &Term, unit: CTy,
+                  bits: BitRange) -> AccessResult;
+    fn copy (&mut self, cx: &mut AccessCtx, dst: &Pointer, src: &Pointer, size: &Term,
+             overlap: Overlap) -> AccessResult;
+    fn set  (&mut self, cx: &mut AccessCtx, dst: &Pointer, byte: &Term, size: &Term) -> AccessResult;
 }
+
+pub struct AccessResult { pub value: Option<Term>, pub faults: Vec<MemFault> }
 ```
+
+Three things about this signature are load-bearing:
+
+**`&mut self`, even for `read`.** A read mutates: it materializes a `Lazy` object on first
+dereference (§6), it memoizes the fresh symbol invented for an uninitialized byte, and it
+may force promotion to `Array` (§3). The memoization is not an optimization — 020
+contract 10 requires a non-volatile load to yield the *same* value when repeated, so two
+reads of one never-written byte must return one term. An immutable `read` returning a new
+symbol each time makes `x == x` satisfiably false over uninitialized memory.
+
+**`AccessCtx`, not a bare `Memory`.** Bounds checking adds a constraint to the path
+condition, symbolic-base resolution forks states (§5.1), and neither belongs to `Memory`.
+`AccessCtx` carries the solver, the path condition, and a fork sink, and is supplied by
+the engine.
+
+**Faults alongside a value, not instead of one.** `Result<Term, MemFault>` cannot express
+the normal case: an out-of-bounds access continues on the in-bounds branch *and* reports;
+a misaligned access is recorded *and* succeeds; an uninitialized read yields a value *and*
+a finding. Multiple faults per access are possible (misaligned *and* partially
+uninitialized), so `faults` is a vector.
 
 Every access performs, in this order:
 
