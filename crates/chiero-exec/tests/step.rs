@@ -1754,9 +1754,59 @@ fn calling_an_approximate_model_degrades_the_run_with_its_reason() {
     );
 }
 
-/// An **exact** model does not degrade. Without this the test above is satisfied by an
-/// engine that degrades on every call into the registry, and the `Exact`/`Approximate`
-/// distinction would carry no information at all.
+/// **A model that is registered but not *dispatched* must not make the run more
+/// confident than no model at all.**
+///
+/// The engine looked up a name's `Precision` and, seeing `Exact`, recorded nothing —
+/// while never running the model. So `strcpy` into a four-byte buffer finished `Exact`
+/// and `seal` returned a proof, for a textbook overflow. An *unregistered* name degrades
+/// and refuses the seal, so registering a correct implementation made the engine **less**
+/// safe: adding `strlen` and `strcpy` to the builtin list removed the degradation those
+/// calls previously caused.
+///
+/// `Exact` describes the model's faithfulness *if it runs*. Nothing about it licenses a
+/// claim over a call the engine never made.
+#[test]
+fn a_registered_model_the_engine_cannot_dispatch_still_degrades() {
+    for name in ["strcpy", "memcpy", "malloc", "strlen"] {
+        let caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![inst(InstKind::Call {
+                    dst: Some(ValueId(0)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                })],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        let mut ext = defined(1, name, vec![], CTy::Int(32));
+        ext.body = Body::Declared;
+        let mut a = TermArena::new();
+        let r = Engine::new(&two_funcs(caller, ext)).run(&mut a);
+        assert_ne!(
+            r.fidelity(),
+            Fidelity::Exact,
+            "`{name}` was never run, so nothing about the call is exact"
+        );
+        assert!(seal(&r, r.witness()).is_err(), "`{name}` sealed a proof");
+        assert!(
+            r.states()[0]
+                .assumptions()
+                .iter()
+                .any(|x| x.detail.contains(name)),
+            "the assumption must name the call: {:#?}",
+            r.states()[0].assumptions()
+        );
+    }
+}
+
+/// An **exact** model that the engine *does* dispatch leaves the run exact. Without this
+/// the rule above collapses into "every registry call degrades", and the
+/// `Exact`/`Approximate` distinction would carry no information at all.
 #[test]
 fn calling_an_exact_model_leaves_the_run_exact() {
     let caller = defined(
@@ -1773,7 +1823,10 @@ fn calling_an_exact_model_leaves_the_run_exact() {
         )],
         CTy::Int(32),
     );
-    let mut ext = defined(1, "memset", vec![], CTy::Void);
+    // `chiero_assume(true)` is dispatchable with no arguments the engine must translate,
+    // so it exercises the "ran it, and the model is faithful" path rather than the
+    // "registered but unreachable" one.
+    let mut ext = defined(1, "chiero_assume", vec![], CTy::Void);
     ext.body = Body::Declared;
 
     let mut a = TermArena::new();

@@ -813,3 +813,129 @@ fn the_builtins_are_registered_and_implemented() {
         assert!(models::is_implemented(n), "`{n}` is registered but absent");
     }
 }
+
+/// **`strlen` must report the memory faults it provoked.** Every other model lifts them;
+/// `strlen` read `r.value` and dropped `r.faults`, so:
+///
+/// - `strlen` over a `malloc`'d buffer answered **0** with no finding, because an
+///   uninitialized byte reads back as `Some([0])` *plus* a fault — the model saw the zero
+///   and called it a terminator;
+/// - and it consumed the memory model's report-once memoization while discarding it, so a
+///   later genuine read of those bytes was clean forever.
+#[test]
+fn strlen_reports_the_faults_its_reads_provoke() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    assert!(
+        !cx.findings().is_empty(),
+        "an uninitialized buffer has no string in it: {r:?}"
+    );
+    assert!(
+        !matches!(r, StrScan::Exact(0)),
+        "a zero that was never written is not a terminator"
+    );
+}
+
+/// The same for a dead object: `strlen` on freed memory is a use-after-free, not an
+/// unimplemented-feature note.
+#[test]
+fn strlen_on_freed_memory_reports_the_use_after_free() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, b"abc\0", Span::DUMMY);
+    m.free(o, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    models::strlen(&mut cx, Pointer { base: o, off: 0 }, StringPolicy::default());
+    assert!(
+        cx.findings().iter().any(|f| f.contains("UseAfterFree")),
+        "{:#?}",
+        cx.findings()
+    );
+}
+
+/// **An `Unterminated` finding requires that the walk actually read something.** With
+/// zero bytes of room — a NULL pointer, an offset past the end, a size-0 object — the
+/// loop body never ran, yet the model asserted an out-of-bounds read. §4's rule cuts both
+/// ways: claiming a bug you did not observe is inventing one.
+#[test]
+fn a_walk_that_reads_nothing_does_not_claim_an_unterminated_string() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let empty = m.alloc(ObjKind::Heap, 0, 1, Span::DUMMY);
+    let small = m.alloc(ObjKind::Heap, 4, 1, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    for (what, p) in [
+        ("a null pointer", Pointer { base: chiero_mem::ObjectId::NULL, off: 0 }),
+        ("a zero-size object", Pointer { base: empty, off: 0 }),
+        ("an offset past the end", Pointer { base: small, off: 100 }),
+    ] {
+        let before = cx.findings().len();
+        let r = models::strlen(&mut cx, p, StringPolicy::default());
+        assert!(
+            !matches!(r, StrScan::Unterminated { .. }),
+            "{what}: nothing was read, so nothing is known: {r:?}"
+        );
+        assert!(
+            !cx.findings()[before..]
+                .iter()
+                .any(|f| f.contains("unterminated")),
+            "{what}: {:#?}",
+            &cx.findings()[before..]
+        );
+    }
+}
+
+/// **The scan cap actually bounds the walk.** The uniform-`'x'` fixture could not tell:
+/// scanning 256 bytes or 1000 gives the same `CapReached { 256 }` and the same text. A
+/// NUL past the cap distinguishes them — a model that ignored the cap would find it.
+#[test]
+fn the_cap_stops_the_walk_rather_than_only_labelling_it() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 1000, 1, Span::DUMMY);
+    m.set(Pointer { base: o, off: 0 }, b'x', 1000, Span::DUMMY);
+    m.write(Pointer { base: o, off: 300 }, b"\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    let r = models::strlen(
+        &mut cx,
+        Pointer { base: o, off: 0 },
+        StringPolicy { max_scan: 256 },
+    );
+    assert!(
+        matches!(r, StrScan::CapReached { .. }),
+        "the NUL is at 300 and the cap is 256, so the walk must not reach it: {r:?}"
+    );
+}
+
+/// `strlen` walks from the **pointer**, not the object base, and measures its room from
+/// there. Every earlier fixture used offset 0, so reading from the base instead was
+/// indistinguishable.
+#[test]
+fn strlen_walks_from_the_pointer_not_the_object_base() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, b"abcdef\0", Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    match models::strlen(&mut cx, Pointer { base: o, off: 4 }, StringPolicy::default()) {
+        StrScan::Exact(n) => assert_eq!(n, 2, "\"ef\" is two bytes"),
+        other => panic!("expected 2, got {other:?}"),
+    }
+}
+
+/// **`calloc` of an unrepresentable size must not abort the process.** `Memory::set`
+/// materialized the fill buffer before any guard, so `calloc(1, 1 << 45)` killed the run
+/// — reintroducing exactly the abort `MAX_MATERIALIZED_BYTES` exists to prevent, one
+/// level up from where the guard sits.
+#[test]
+fn calloc_of_an_enormous_size_is_a_fault_not_an_abort() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::calloc(&mut cx, 1, 1 << 45, AllocPolicy { may_fail: false });
+    assert!(!cx.findings().is_empty(), "{out:?}");
+}
