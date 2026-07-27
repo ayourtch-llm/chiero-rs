@@ -431,7 +431,7 @@ impl TermArena {
                 // bitvector is what `LoadBits` of a `u32 flag:1` yields, so the case is
                 // ordinary, not exotic. Coercion now happens where the *context* knows
                 // which sort it needs.
-                { format!("(_ bv{} {})", c.bits(), c.width()) }
+                format!("(_ bv{} {})", c.bits(), c.width())
             }
             Node::Var(v, _) => smt_name(v, &self.vars[v.0 as usize].0),
             // Same distinction: `not` over a `Bool`, `bvnot` over a vector.
