@@ -241,13 +241,59 @@ memory model reports faults, it does not decide what they mean.
 When the *base* is symbolic — a pointer loaded from memory whose value the solver has not
 pinned — resolution is:
 
-1. Ask the solver for the set of objects whose address range the pointer value can fall
-   in, capped at `max_resolutions` (default 8).
+0. If the value carries provenance (§7.1) or came from a registered **arena** (§5.2), use
+   it directly — no search.
+1. Otherwise ask the solver for the set of objects whose address range the pointer value
+   can fall in, capped at `max_resolutions` (default 8). The search is over an interval
+   tree keyed on base address, not a linear scan: §8 concedes VPP entry points may exceed
+   10⁴ objects, and a per-dereference O(objects) solver sweep is not viable.
 2. If exactly one, continue with it.
 3. If several, **fork** one state per object with the corresponding constraint, plus one
    state constrained to none of them (the wild-pointer state, reported).
-4. If more than `max_resolutions`, concretize to the solver's model, record
-   `Fidelity::Bounded`, and say so in every result derived from the path.
+4. **If the value is wholly unconstrained** — the feasible set is "every object", i.e. the
+   solver has no information at all — the answer is `Fidelity::Unknown` and an
+   `UnresolvablePointer` finding. Execution of that path stops.
+5. If the set is merely larger than `max_resolutions`, concretize to the solver's model,
+   record `Fidelity::Approximated` ([023 §7](023-execution-engine.md)), and say so in
+   every result derived from the path.
+
+Steps 4 and 5 must stay distinct. An earlier draft merged them, so an unconstrained
+pointer was concretized to an arbitrary object and the run reported `Bounded` — which
+reads as "we explored a subset correctly" when in fact execution proceeded through the
+whole function reading and writing *the wrong memory*. Every downstream finding, and every
+downstream *absence* of a finding, would have been about unrelated bytes. This is the
+highest-value instance of the "wrong answer instead of honest unknown" failure the whole
+fidelity apparatus exists to prevent.
+
+### 5.2 Arenas
+
+Step 4 would fire on the most-executed function in VPP's data plane. `vlib_get_buffer` is:
+
+```c
+/* vlib/buffer_funcs.h */
+vlib_buffer_ptr_from_index (uword buffer_mem_start, u32 buffer_index, uword offset)
+{
+  offset += ((uword) buffer_index) << CLIB_LOG2_CACHE_LINE_BYTES;
+  return uword_to_pointer (buffer_mem_start + offset, vlib_buffer_t *);
+}
+```
+
+Pure `IntToPtr` over an arithmetic term. Under UCSE, `buffer_mem_start` is loaded from a
+lazily-materialized structure and is therefore an unconstrained 64-bit symbol — so without
+help, every VPP node analysis dies at its first buffer access.
+
+An **arena** is a registered striding region: a base value, an element size, a stride, and
+a count.
+
+```rust
+pub struct Arena { pub base: Term, pub elem_size: u64, pub stride: u64, pub count: SizeVal }
+```
+
+`IntToPtr` of `base + k * stride + d` resolves to element `k` of the arena at offset `d`,
+with `k` symbolic and bounds-checked against `count` — one object per accessed index,
+materialized lazily, rather than a fork over the whole address space. `chiero-vpp`
+registers the buffer pool this way ([060](060-vpp-integration.md)); the mechanism itself
+is target-agnostic and is the general answer for any pool/slab/index-addressed allocator.
 
 ## 6. Lazy initialization (under-constrained symbolic execution)
 
@@ -307,11 +353,64 @@ them explicitly; they are a **performance** property, analysed from `RecordLayou
 one. The guard gaps above are chosen for OOB detection, not to mimic any real allocator's
 placement, and no analysis may infer locality from them.
 
-`PtrToInt` yields `addr + off`. `IntToPtr` searches the address ranges; a hit yields the
-corresponding `Pointer`, a miss yields `UNBOUND`. Pointer comparison between objects is
-therefore decidable and consistent with the arithmetic, which C strictly speaking leaves
-unspecified — the deviation is intentional, documented, and reported when a program's
-outcome depends on it.
+### 7.1 Round-tripping through integers must not launder provenance
+
+`PtrToInt` yields `addr + off`. The naive inverse — have `IntToPtr` search address ranges
+— is **wrong in both directions**, and address-range search alone must never be the
+primary mechanism:
+
+- **It converts a real bug into a legitimate access.** Object A (size 100) and object B
+  more than one guard gap away. `q = A + 8192` correctly keeps `q.base = A`, and
+  dereferencing it is an honest OOB finding. But `r = (u8 *)(uword) q` computes
+  `A.addr + 8192`, and the range search *hits B*, returning a valid in-bounds pointer into
+  an unrelated object. The out-of-bounds write becomes a silent, legal-looking write to
+  the wrong object. Guard gaps only bound OOB distances smaller than the gap.
+- **It reports a bug on conforming code.** For a page-aligned object of size exactly 4096,
+  the legal one-past-the-end pointer lands in the guard gap, misses every range, and
+  becomes a wild-pointer finding with `Fidelity::Unknown`.
+
+So `PtrToInt` **records provenance in the term**: the state carries
+`int_provenance: IndexMap<Term, Pointer>`, populated on every `PtrToInt`. `IntToPtr`
+consults it first — including through intervening integer arithmetic, by propagating the
+tag across `Add`/`Sub` with a constant or with a provenance-free operand. Only on a miss
+does it fall back to address-range search, and only on a miss there does it yield
+`UNBOUND`.
+
+This is what makes `uword_to_pointer` round-trips exact, and VPP does them constantly.
+
+### 7.2 Pointer-bit inspection
+
+Concrete addresses leak into arithmetic through `PtrToInt`, so a program that inspects its
+own pointer bits gets a definite answer manufactured by the bump allocator. Real example,
+`plugins/nsim/nsim_input.c`:
+
+```c
+if ((((uword) ep) & (CLIB_CACHE_LINE_BYTES - 1)) == 0)
+  clib_prefetch_load (ep + 2);
+```
+
+Whether this holds depends on the real allocator; chiero decides it concretely from the
+region base plus a bump, prunes one branch as infeasible on *every* run, and — because
+addresses are deterministic (contract 15) — never looks flaky. The same applies to
+`clib_mem_is_aligned` and every `round_pow2((uword) p, …)`. Note this also quietly
+violates §7's own claim that no analysis may infer locality from the layout: it is
+inferring it, implicitly.
+
+Two mitigations, both required:
+
+1. **Object base addresses are symbolic**, constrained only by `align` and pairwise
+   disjointness. The deterministic concrete address of §7 remains, as the **witness value**
+   the model reports — so replay and reporting are unchanged, but the solver cannot prove
+   an alignment fact the allocator invented.
+2. A `PointerBitInspection` event fires whenever a branch condition depends on
+   `PtrToInt` bits below the object's guaranteed alignment, so a checker can flag it.
+   Without the event, §7's promise to report "when a program's outcome depends on it" is
+   unfalsifiable prose.
+
+The same reasoning applies to §6's `distinct_by_default`: distinct concrete addresses
+would *decide* `p == q` false for two lazily-materialized parameters that alias in
+reality, pruning a real path. Symbolic bases leave it open, and `--fork-on-alias`
+explores it.
 
 ## 8. Forking and sharing
 
@@ -332,9 +431,13 @@ API. The API is specified so that swap does not touch callers.
 1. A 64-byte object with the user pointer at offset 8: reading `Int(32)` at offset `-8`
    from the user pointer succeeds and returns the header bytes; reading at `-16` is an
    OOB finding. (The `vec_header` contract.)
-2. Writing `Int(32)` at offset 60 of a 64-byte object succeeds; at offset 61 it is one
-   OOB finding with concrete witness `61`, and execution continues with the in-bounds
-   constraint.
+2. Writing `Int(32)` at offset 60 of a 64-byte object succeeds. **Must-OOB and may-OOB are
+   distinguished**: at a *concrete* offset 61 the access is out of bounds under every
+   model, so it is one OOB finding and the state **terminates** — "continue with the
+   in-bounds constraint" would continue a state whose path condition is unsatisfiable,
+   which [023 §3](023-execution-engine.md) elsewhere treats as a chiero bug. For a
+   *symbolic* offset that may or may not be in bounds, it is one OOB finding with a
+   concrete witness and execution continues on the in-bounds branch.
 3. `PtrAdd` past the end of an object then back inside yields a pointer that reads
    correctly and preserves `base`.
 4. Writing `Float(F32)` `1.0` then reading `Int(32)` at the same address yields
@@ -342,8 +445,13 @@ API. The API is specified so that swap does not touch callers.
 5. Writing bytes 0..2 concretely and 2..4 symbolically, then reading `Int(32)`, yields a
    `Concat` term whose low half is concrete — and the object is still `Contents::Bytes`.
 6. A write at a symbolic offset with 3 feasible values keeps the object as `Bytes`; with
-   1000 feasible values it promotes to `Array`, and both produce identical read results
-   for every feasible offset.
+   1000 feasible values it promotes to `Array`. For every feasible offset the two paths
+   agree on the **`(value, initialization-status)` pair**, not merely the value —
+   comparing values alone leaves the disagreement the tri-state `InitMask` exists to
+   prevent (§3.1) untested.
+6b. A conditional write at a symbolic offset leaves the candidate bytes `InitBit::Cond`,
+    not `Yes` and not `No`: a subsequent read at a *definitely different* offset reports
+    an uninitialized read, and one at the written offset does not.
 7. Reading a never-written stack byte yields exactly one uninitialized-read finding and a
    fresh symbol; reading a lazily-initialized parameter's bytes yields **no** finding.
 8. `free(p)` then `*p` is exactly one use-after-free finding naming both spans;
@@ -356,16 +464,37 @@ API. The API is specified so that swap does not touch callers.
     exactly one leak finding; storing that pointer into a global produces none.
 12. `p = (int*)(uintptr_t)q` for a valid `q` round-trips: `p` resolves to `q`'s object
     with the same offset.
-13. An `IntToPtr` of `0xDEAD` resolves to `UNBOUND` and any access is one wild-pointer
-    finding with `Fidelity::Unknown`.
-14. Two distinct objects never overlap in the concrete address space, and every pair is
-    separated by ≥ 4096 bytes (property test over 10 000 random allocation sequences).
-15. Two runs of the same program assign identical addresses to identical objects.
+12b. **Provenance survives the round trip in the cases address search gets wrong** (§7.1):
+     a pointer out of bounds by more than a guard gap round-trips to its *original*
+     object, not to the neighbour it would collide with; and a one-past-the-end pointer of
+     a gap-sized object round-trips to its own object rather than becoming `UNBOUND`.
+     These two are the contract — contract 12 alone only tests the easy case.
+12c. Provenance propagates through integer arithmetic: `(T*)((uword)p + 8 - 4)` resolves to
+     `p`'s object at offset 4.
+13. An `IntToPtr` of the *constant* `0xDEAD` resolves to `UNBOUND` and any access is one
+    wild-pointer finding with `Fidelity::Unknown`.
+13b. An `IntToPtr` of a **wholly unconstrained symbol** yields `Fidelity::Unknown` and one
+     `UnresolvablePointer` finding, and no read through it is ever reported as in-bounds
+     (§5.1 step 4). This is the `vlib_get_buffer` case; getting it wrong analyses the
+     wrong memory for an entire function.
+13c. With an arena registered (§5.2), the same `base + (i << 6)` expression resolves to
+     element `i` with `i` still symbolic, bounds-checked against the arena's count, with
+     no fork over unrelated objects.
+14. Two distinct objects never overlap and every pair is separated by ≥ 4096 bytes
+    (property test, 10 000 random allocation sequences) — **and** an OOB pointer at
+    distance `gap + 1` does not resolve to the neighbouring object (the property that
+    actually matters; separation alone is satisfied by spacing objects a megabyte apart).
+15. Two runs assign identical witness addresses to identical objects, **and** two
+    different path-exploration orders assign identical addresses to the same object.
 16. A symbolic base pointer that can refer to 3 objects forks into 4 states (3 resolved +
     1 wild) with mutually exclusive constraints whose disjunction is implied by the path
     condition.
 17. With `max_resolutions = 2` the same case concretizes, and the result carries
-    `Fidelity::Bounded` with a note naming the cap.
+    `Fidelity::Approximated` (per the [023 §7](023-execution-engine.md) table — discarding
+    feasible objects is a modeling lie, not a truncated search) with a note naming the cap.
+17b. A branch whose condition depends on `PtrToInt` bits below the object's guaranteed
+     alignment emits a `PointerBitInspection` event and does **not** have one side pruned
+     as infeasible (§7.2).
 18. Two lazily-materialized pointer parameters are distinct objects by default; under
     `--fork-on-alias` the alias state exists and the result's `assumptions` differ
     between the two modes.
@@ -377,3 +506,28 @@ API. The API is specified so that swap does not touch callers.
 22. `CopyMem` with overlapping ranges and `Overlap::Forbidden` is one finding (the
     `memcpy` contract); with `Overlap::Allowed` (`memmove`) it is none and the result is
     correct.
+23. **Bit-granular initialization** (§3.1): for `struct { u32 a:3; u32 b:5; }`, writing `a`
+    then reading `a` produces no finding and reading `b` produces exactly one — the
+    mirror of [020](020-cir.md) contract 24, pinned on the owning side. A per-byte mask
+    fails one half or the other.
+24. `StoreBits` to `a` leaves every bit of `b` unchanged including when symbolic, and
+    leaves `b`'s init bits untouched.
+25. Promotion `Bytes` → `Array` preserves initialization exactly: `No`→0, `Yes`→1,
+    `Cond(t)`→`ite(t,1,0)`, verified by comparing reads before and after promotion.
+26. **Two reads of the same never-written byte return the same term** and produce exactly
+    one uninitialized-read finding, not two (the memoization requirement behind `&mut
+    self` in §5).
+27. A lazily-materialized object's bytes are `Yes` with unknown values: reading them
+    produces no uninitialized-read finding (§3.1's symbolic-is-not-uninitialized rule).
+28. `SetMem` marks the written range initialized and readable as the set byte; a
+    symbolic-size `SetMem` marks the definitely-covered prefix `Yes` and the rest `Cond`.
+29. An alloca in a loop body executed 3 times yields 3 distinct `ObjectId`s with distinct
+    `ObjOrigin::Alloca{ frame }`, and a recursive function at depth 32 has 32 live objects
+    for the same `AllocaId`.
+30. `Lifetime::Function` (`alloca()`) memory is not retired at inner `Scope(Exit)`;
+    `Lifetime::Scope` memory is.
+31. A `va_list` object round-trips through `VaStart`/`VaArg`/`VaEnd` and is addressable:
+    taking its address and passing it to another function that advances it is visible to
+    the caller ([020 §4.4.1](020-cir.md)).
+32. A function-pointer value stored to a global, loaded, and called indirectly resolves to
+    exactly one `FuncId` with no fork (the `ObjKind::Function` contract).
