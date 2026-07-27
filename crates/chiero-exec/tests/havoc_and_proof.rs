@@ -1,6 +1,6 @@
 //! Havoc initialization and the proof surface — 024 contracts 21b and 21e.
 //!
-//! Covers: 024 contracts 21b, 21e.
+//! Covers: 024 contracts 21b, 21e; 022 contract 11d.
 //!
 //! Both are about the same failure: a run that knows less than it says. 024 §2.1 puts it
 //! plainly — the *modeled* imprecise path is more dangerous than the unmodeled one,
@@ -184,5 +184,132 @@ fn an_unmodeled_externs_havoc_leaves_bytes_symbolic_not_uninitialized() {
             .flat_map(|s| s.assumptions())
             .map(|x| &x.detail)
             .collect::<Vec<_>>()
+    );
+}
+
+/// **022 contract 11d.** "An exact-cache hit degrades the consuming state's fidelity
+/// identically to a fresh answer."
+///
+/// The consumer is the engine: `Engine::feasible` turns a solver answer into a fork
+/// decision *and* a degradation, so a cache that changed either would change the explored
+/// state space and the reported fidelity — silently, and depending on exploration order.
+/// This is why §6 puts the caches below escalation and why the counterexample cache is
+/// scoped to the verdict (contract 8b).
+///
+/// Two identical conditions on one path: the second asks a question the first already
+/// answered, so it is served from the exact cache. Both must leave the state in the same
+/// condition as if nothing had been cached.
+#[test]
+fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    // `x = fresh; if (x*y == 7) { if (x*y == 7) { ... } }` — the inner test is the same
+    // query as the outer one, and nonlinear so it must reach a solver the first time.
+    let mk = |cond_block: u32, next: u32| {
+        block(
+            cond_block,
+            vec![],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(3)),
+                t: BlockId(next),
+                f: BlockId(9),
+            },
+        )
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::Bin {
+                                op: BinOp::Mul,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: Operand::Value(ValueId(1)),
+                            },
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(3),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Eq,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(2)),
+                                b: i32c(7),
+                            },
+                        },
+                        span: Span::DUMMY,
+                    },
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(9),
+                },
+            ),
+            mk(1, 2),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+            block(9, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    // The inner branch asked a question already in the cache — and the run is still
+    // `Exact`: a cached answer that degraded, or one that failed to degrade where a
+    // fresh answer would have, is the failure 11d names.
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "nothing here is approximate: {:#?}",
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .map(|x| (&x.kind, &x.detail))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        r.states().iter().all(|s| s.assumptions().is_empty()),
+        "and no state carries an assumption from a cache hit"
+    );
+    // The fixture must actually have asked twice, or it proves nothing about caching.
+    assert!(
+        r.solver_calls >= 2,
+        "the fixture must reach the solver more than once: {}",
+        r.solver_calls
     );
 }
