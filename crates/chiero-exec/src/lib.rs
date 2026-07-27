@@ -107,6 +107,11 @@ struct FindingKey {
     func: FuncId,
 }
 
+/// How big an object an entry function's pointer parameter points at. The caller is
+/// outside the analysis, so there is no right answer — this is a *bound chiero chose*, and
+/// an access past it is reported as one rather than silently allowed.
+pub const ENTRY_PARAM_BYTES: u64 = 4096;
+
 /// 023 §7 rule 3: every degradation names its cause. "Approximated with no reason" is a
 /// bug, so this is recorded at the point of degradation, never after the fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -693,6 +698,25 @@ impl<'m> Engine<'m> {
                 _seal: Sealed,
             };
         }
+        // **The entry function's parameters are unknown, not absent.** Leaving them
+        // unbound made every use a lowering gap, so `void f(int *out) { *out = 7; }`
+        // analysed on its own wrote nothing — and a whole-program tool is used on a
+        // library exactly this way. A pointer parameter gets a fresh object of unknown
+        // contents, which is what "called from somewhere chiero has not seen" means; a
+        // scalar gets a fresh symbol of its declared width.
+        let mut entry_locals: IndexMap<ValueId, Value> = IndexMap::new();
+        for (i, p) in f.params.iter().enumerate() {
+            let v = if p.ty == CTy::Ptr {
+                // Sized by the budget rather than by a guess about the callee: the object
+                // exists so accesses have somewhere to land, and its extent is a bound
+                // chiero chose, so an access past it is reported as such.
+                let obj = mem.alloc(ObjKind::Extern, ENTRY_PARAM_BYTES, 16, f.span);
+                Value::Ptr(Pointer { base: obj, off: 0 })
+            } else {
+                Value::Scalar(a.var(sort_of(&p.ty), &format!("param{i}")))
+            };
+            entry_locals.insert(p.value, v);
+        }
         let start = State {
             id: self.new_id(),
             mem,
@@ -706,7 +730,7 @@ impl<'m> Engine<'m> {
                 func: f.id,
                 ret_to: None,
                 ret_dst: None,
-                locals: IndexMap::new(),
+                locals: entry_locals,
                 frame_objs,
                 ptr_vals: IndexMap::new(),
             }],
