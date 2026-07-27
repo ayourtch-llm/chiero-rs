@@ -6823,3 +6823,54 @@ fn a_dynamic_extent_multiplies_the_element_size() {
         "and thirteen do not"
     );
 }
+
+/// **Dead code does not make a module unexecutable.** 020 rule 3 makes `UnreachableBlock`
+/// a *warning* — "unreachable C code exists and is legal" — and wave 7 fixed the dominance
+/// lattice specifically so a live join after dead code would work. Wiring verification into
+/// `run` gated on `!errs.is_empty()` instead of on `is_error()`, so a `default:` after an
+/// exhaustive switch, or anything after a `return`, refused to run at all. Found by review;
+/// the bug is mine, from the commit that added the gate.
+#[test]
+fn a_module_with_dead_code_still_runs() {
+    let caller = defined(
+        0,
+        "main",
+        vec![
+            block(0, vec![], Terminator::Return(Some(i32c(7)))),
+            // Nothing branches here.
+            block(1, vec![], Terminator::Return(Some(i32c(9)))),
+        ],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        !matches!(r.states()[0].status, Status::Errored(_)),
+        "{:?}",
+        r.states()[0].status
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(7));
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+}
+
+/// **Address zero is `NULL`, not an unknown object.** `int_to_ptr` range-searches and falls
+/// through to `UNBOUND`, so `*(int *)0 = 1` reported a *wild pointer* — "matching no known
+/// object" — instead of a null dereference, and degraded to `Unknown` on top. C spells
+/// `NULL` as `((void *)0)`, so any frontend lowering it through `IntToPtr` mis-classifies
+/// the commonest bug in C. Found by review.
+#[test]
+fn address_zero_is_null_not_an_unknown_object() {
+    let mut m = chiero_mem::Memory::new();
+    let _o = m.alloc(chiero_mem::ObjKind::Heap, 16, 8, Span::DUMMY);
+    assert_eq!(m.object_containing(0).base, chiero_mem::ObjectId::NULL);
+    // And a plausible-looking non-zero address still resolves to nothing, so this is not
+    // "everything unknown becomes NULL".
+    assert_eq!(
+        m.object_containing(0xDEAD_BEEF).base,
+        chiero_mem::ObjectId::UNBOUND
+    );
+}
