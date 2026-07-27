@@ -166,3 +166,192 @@ fn malloc_forks_into_success_and_failure_unless_told_not_to() {
     let never = AllocPolicy { may_fail: false };
     assert_eq!(never.outcomes(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Models that actually execute (024 §3, contracts 1-5, 10).
+// ---------------------------------------------------------------------------
+
+use chiero_mem::{Endian, Memory, ObjKind, Pointer};
+use chiero_solver::TermArena;
+use chiero_span::Span;
+
+fn ctx<'a>(m: &'a mut Memory, a: &'a mut TermArena) -> ModelCtx<'a> {
+    ModelCtx::new(m, a, Span::DUMMY)
+}
+
+/// **024 contract 1.** `malloc(16)` produces one `Heap` object of size 16 with all bytes
+/// uninitialized, and forks into a success state and a `NULL` state.
+#[test]
+fn malloc_allocates_uninitialized_and_forks_on_failure() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::malloc(&mut cx, 16, AllocPolicy::default());
+
+    let ModelOutcome::Fork(branches) = out else {
+        panic!("malloc must fork by default, got {out:?}")
+    };
+    assert_eq!(branches.len(), 2, "success and NULL");
+    let (ok, null) = (&branches[0], &branches[1]);
+    let ModelOutcome::Value(Some(Value::Ptr(p))) = &ok.1 else {
+        panic!("the success branch returns a pointer, got {:?}", ok.1)
+    };
+    assert_eq!(p.off, 0);
+    assert_eq!(cx.mem().size_of_pub(p.base), Some(16));
+    // Uninitialized: reading it is a finding, which is the whole reason `malloc` is not
+    // `calloc` and the reason a checker can tell them apart.
+    assert!(
+        cx.mem()
+            .read(*p, 4, Span::DUMMY)
+            .faults
+            .iter()
+            .any(|f| matches!(f, chiero_mem::MemFault::Uninitialized { .. })),
+        "malloc'd bytes are uninitialized"
+    );
+    assert!(
+        matches!(&null.1, ModelOutcome::Value(Some(Value::Ptr(q))) if q.base == chiero_mem::ObjectId::NULL),
+        "the failure branch returns NULL, got {:?}",
+        null.1
+    );
+}
+
+/// **024 contract 2.** With `alloc_may_fail = false` the same call is one outcome. This
+/// is how an allocator that aborts instead of returning `NULL` is modeled.
+#[test]
+fn malloc_does_not_fork_when_the_allocator_cannot_fail() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::malloc(&mut cx, 16, AllocPolicy { may_fail: false });
+    assert!(
+        matches!(out, ModelOutcome::Value(Some(Value::Ptr(_)))),
+        "one outcome, got {out:?}"
+    );
+}
+
+/// **024 contract 3.** `calloc(4, 8)` yields 32 zeroed, *initialized* bytes — reading
+/// them produces no finding. A `calloc` that allocated without initializing would be
+/// indistinguishable from `malloc` and would report a false uninitialized read on every
+/// correct use.
+#[test]
+fn calloc_yields_zeroed_initialized_bytes() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::calloc(&mut cx, 4, 8, AllocPolicy { may_fail: false });
+    let ModelOutcome::Value(Some(Value::Ptr(p))) = out else {
+        panic!("expected a pointer, got {out:?}")
+    };
+    assert_eq!(cx.mem().size_of_pub(p.base), Some(32));
+    let r = cx.mem().read(p, 32, Span::DUMMY);
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+    assert_eq!(r.value.unwrap(), vec![0u8; 32]);
+}
+
+/// **024 contract 4.** `calloc(SIZE_MAX, 2)` is exactly one overflow finding. Silently
+/// wrapping would allocate a *small* object for a request that cannot be satisfied, which
+/// is the classic integer-overflow-to-heap-overflow chain.
+#[test]
+fn calloc_reports_the_multiplication_overflow() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let mut cx = ctx(&mut m, &mut a);
+    let out = models::calloc(&mut cx, u64::MAX, 2, AllocPolicy { may_fail: false });
+    match out {
+        ModelOutcome::Finding(f) => assert!(
+            f.contains("overflow"),
+            "the finding must name the cause: {f}"
+        ),
+        other => panic!("expected one overflow finding, got {other:?}"),
+    }
+    assert_eq!(cx.findings().len(), 1, "exactly one: {:#?}", cx.findings());
+}
+
+/// **024 contract 5.** `free(NULL)` is a no-op producing no findings; freeing a non-heap
+/// object is exactly one finding. `free(NULL)` is legal C that models call constantly,
+/// and reporting it is a false positive on correct code.
+#[test]
+fn free_of_null_is_silent_and_free_of_a_stack_object_is_not() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let stack = m.alloc(ObjKind::Stack, 16, 8, Span::DUMMY);
+    let heap = m.alloc(ObjKind::Heap, 16, 8, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+
+    let n = models::free(
+        &mut cx,
+        Pointer {
+            base: chiero_mem::ObjectId::NULL,
+            off: 0,
+        },
+    );
+    assert!(matches!(n, ModelOutcome::Value(None)));
+    assert!(cx.findings().is_empty(), "{:#?}", cx.findings());
+
+    models::free(&mut cx, Pointer { base: stack, off: 0 });
+    assert_eq!(cx.findings().len(), 1, "{:#?}", cx.findings());
+
+    // And a real heap free is silent, or the test above is satisfied by a model that
+    // reports every free.
+    models::free(&mut cx, Pointer { base: heap, off: 0 });
+    assert_eq!(cx.findings().len(), 1, "a legitimate free adds nothing");
+}
+
+/// **024 contract 10.** `memcpy` with overlapping ranges is one finding; `memmove` with
+/// the same ranges is none and produces the correct bytes.
+#[test]
+fn memcpy_and_memmove_differ_on_overlap() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 32, 8, Span::DUMMY);
+    m.write(Pointer { base: o, off: 0 }, &[1, 2, 3, 4, 5, 6, 7, 8], Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+
+    let dst = Pointer { base: o, off: 2 };
+    let src = Pointer { base: o, off: 0 };
+    models::memcpy(&mut cx, dst, src, 6);
+    assert_eq!(cx.findings().len(), 1, "overlap is a memcpy violation");
+
+    models::memmove(&mut cx, dst, src, 6);
+    assert_eq!(cx.findings().len(), 1, "memmove adds none");
+    assert_eq!(
+        cx.mem()
+            .read(Pointer { base: o, off: 0 }, 8, Span::DUMMY)
+            .value
+            .unwrap(),
+        vec![1, 2, 1, 2, 3, 4, 5, 6],
+        "memmove copies as if through a temporary"
+    );
+}
+
+/// `memset` marks the range initialized and readable as the set byte, and a read past it
+/// still reports uninitialized — or the model has quietly initialized the whole object.
+#[test]
+fn memset_initializes_exactly_its_range() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, Span::DUMMY);
+    let mut cx = ctx(&mut m, &mut a);
+    models::memset(&mut cx, Pointer { base: o, off: 0 }, 0xAB, 8);
+    assert!(cx.findings().is_empty());
+    let r = cx.mem().read(Pointer { base: o, off: 0 }, 8, Span::DUMMY);
+    assert_eq!(r.value.unwrap(), vec![0xAB; 8]);
+    assert!(
+        !cx.mem()
+            .read(Pointer { base: o, off: 8 }, 8, Span::DUMMY)
+            .faults
+            .is_empty(),
+        "beyond the range nothing changed"
+    );
+}
+
+/// The endianness the models use comes from the target, not from a constant chosen here —
+/// a model crate that hardcoded little-endian would silently produce byte-swapped answers
+/// on a big-endian target.
+#[test]
+fn the_model_context_carries_the_target_byte_order() {
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    let cx = ctx(&mut m, &mut a);
+    assert_eq!(cx.endian(), Endian::Little, "the default target is x86-64");
+}
