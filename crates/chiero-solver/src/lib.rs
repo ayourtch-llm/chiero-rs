@@ -776,3 +776,70 @@ fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool) -> bool {
     }
     (d.lo, d.hi, d.zeros, d.ones) != (lo0, hi0, z0, o0)
 }
+
+/// Tier 2: an SMT-LIB2 solver spoken to over a **subprocess** (022 §4).
+///
+/// A subprocess, not FFI, is the whole point: chiero never links a solver, builds with
+/// `--no-default-features`, and runs when none is installed. Discovery is a runtime fact.
+#[derive(Debug)]
+pub struct SmtLib {
+    path: std::path::PathBuf,
+}
+
+impl SmtLib {
+    /// `$CHIERO_SMT_SOLVER`, then z3, cvc5, bitwuzla on `PATH`.
+    pub fn discover() -> Option<SmtLib> {
+        todo!("green")
+    }
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SolverStats {
+    pub backend_calls: u64,
+    pub cache_entries: usize,
+    pub tier1_unknown: u64,
+}
+
+/// Tier 1, escalating to tier 2 on `Unknown`, with the caches of 022 §6.
+#[derive(Debug, Default)]
+pub struct TieredSolver {
+    asserted: Vec<Term>,
+    scopes: Vec<usize>,
+    backend: Option<SmtLib>,
+    paranoid: bool,
+    stats: SolverStats,
+    cache: IndexMap<(Vec<u32>, Vec<u32>), bool>,
+}
+
+impl TieredSolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_backend(_b: SmtLib) -> Self {
+        todo!("green")
+    }
+    pub fn set_paranoid(&mut self, _on: bool) {
+        todo!("green")
+    }
+    pub fn stats(&self) -> &SolverStats {
+        &self.stats
+    }
+}
+
+impl Solver for TieredSolver {
+    fn assert(&mut self, _t: Term) {
+        todo!("green")
+    }
+    fn push(&mut self) {
+        todo!("green")
+    }
+    fn pop(&mut self, _n: u32) {
+        todo!("green")
+    }
+    fn check(&mut self, _a: &mut TermArena, _assumptions: &[Term]) -> CheckResult {
+        todo!("green")
+    }
+}
