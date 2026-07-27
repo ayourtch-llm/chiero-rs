@@ -2084,6 +2084,7 @@ impl<'m> Engine<'m> {
         // optimisation, and asking the solver about every object is what it forbids.
         let mut candidates: Vec<chiero_mem::ObjectId> = Vec::new();
         let mut over_cap = false;
+        let mut undecided = false;
         for (id, base, size) in ranges.iter().copied() {
             let lo = a.bv(64, base as u128);
             let hi = a.bv(64, base.wrapping_add(size) as u128);
@@ -2096,12 +2097,21 @@ impl<'m> Engine<'m> {
             let eq_hi = a.eq(addr, hi);
             let in_hi = a.or(lt_hi, eq_hi);
             let inside = a.and(in_lo, in_hi);
-            if matches!(self.feasible(a, s, inside), Feas::Yes) {
-                if candidates.len() == cap {
-                    over_cap = true;
-                    break;
+            match self.feasible(a, s, inside) {
+                Feas::Yes => {
+                    if candidates.len() == cap {
+                        over_cap = true;
+                        break;
+                    }
+                    candidates.push(id);
                 }
-                candidates.push(id);
+                // **"The solver could not tell" is not "the program said nothing".**
+                // Folding them together is the same mistake 021 records against an
+                // earlier draft, one level up: it would report an *unconstrained pointer*
+                // finding about a program that constrains it perfectly well and a tier
+                // that cannot see it.
+                Feas::Unknown => undecided = true,
+                Feas::No => {}
             }
         }
         // Can the pointer be outside *every* object? That is the wild state, and it is
@@ -2137,6 +2147,27 @@ impl<'m> Engine<'m> {
                 base: first,
                 off: 0,
             }));
+        }
+        if undecided && candidates.is_empty() {
+            // 023 §7's `SolverUnknown` cause, not §5.1 step 4. The fidelity is the same
+            // and the reason is not, and only the reason tells a reader whether to
+            // strengthen the program or the solver.
+            self.finding_seq += 1;
+            s.findings.push((
+                self.finding_seq,
+                None,
+                "a symbolic pointer could not be resolved: the solver did not decide \
+                 which objects its value can fall in"
+                    .to_string(),
+            ));
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::SolverUnknown,
+                span,
+                "the solver could not decide a pointer's object set",
+            );
+            s.status = Status::Terminated(TermReason::Unsupported);
+            return None;
         }
         if candidates.is_empty() || (can_be_wild && candidates.len() == ranges.len()) {
             // Step 4: no information at all. Not a concretization — the path ends.

@@ -9516,18 +9516,21 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
     );
 }
 
-/// **021 §5.1 step 4.** A pointer whose value carries *no constraint at all* is
-/// `Fidelity::Unknown`, an `UnresolvablePointer` finding, and the path **stops**.
+/// **021 §5.1: an unresolved pointer stops the path, and says *why* it was unresolved.**
 ///
-/// 021 records that an earlier draft merged this with step 5 — concretizing to an
-/// arbitrary object and reporting `Bounded` — which reads as "we looked and bounded it"
-/// when nothing was known. Keeping them distinct is the whole point, so this pins the
-/// no-information end.
+/// The reason matters more than the fidelity here. §5.1 step 4 — the value is *wholly
+/// unconstrained*, so every object and being nowhere are all feasible — is a statement
+/// about the **program**. `solver-lite` returning `Unknown` for the range queries is a
+/// statement about **chiero**. Both end the path at `Fidelity::Unknown`, and only the
+/// reason tells a reader whether to strengthen the program or the solver.
 ///
-/// Contract 16's case (a base *constrained* to three of several objects, forking into
-/// four) needs a fixture that puts a real constraint on the address; it is owed.
+/// ⚠️ **With the current tier, step 4 is not reachable**: `solver-lite`'s §3.2 fragment
+/// does not decide `addr ∈ [base, base+size]` over a variable, so every case arrives as
+/// `SolverUnknown`. An earlier version of this test asserted the step-4 text and passed —
+/// for the wrong reason, on a run whose real cause was the solver. Step 4's own detection
+/// is owed a tier that can answer, and is *not* claimed as covered.
 #[test]
-fn a_wholly_unconstrained_pointer_stops_the_path() {
+fn an_unresolvable_pointer_stops_the_path_and_names_its_reason() {
     let mut caller = defined(
         0,
         "main",
@@ -9570,20 +9573,132 @@ fn a_wholly_unconstrained_pointer_stops_the_path() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.fidelity(), Fidelity::Unknown, "nothing was known");
-    assert!(
-        r.findings()
-            .iter()
-            .any(|f| f.contains("unresolvable pointer")),
-        "{:#?}",
-        r.findings()
-    );
+    assert_eq!(r.fidelity(), Fidelity::Unknown, "nothing was resolved");
     assert!(
         r.states()[0].local(ValueId(5)).is_none(),
         "the path stopped rather than continuing with a guess"
     );
-    // **Not a concretization.** Step 5 would have produced a pointer and said
-    // `Approximated`; step 4 produces neither.
+    // **Not a concretization.** Step 5 would produce a pointer and say `Approximated`;
+    // neither of the unresolved paths produces one.
     assert!(r.states()[0].local(ValueId(4)).is_none());
     assert_ne!(r.fidelity(), Fidelity::Approximated);
+    // And the finding names a cause a reader can act on.
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("solver did not decide") || f.contains("value is unconstrained")),
+        "{:#?}",
+        r.findings()
+    );
+}
+
+/// **021 §5.1: "the solver could not tell" is not "the program said nothing".** A base
+/// constrained by a real path condition — a branch on `addr < &d` — is not resolvable by
+/// `solver-lite`, whose §3.2 fragment does not cover this shape. That must be reported as
+/// a *solver* limit, with `SolverUnknown`, and not as 021 §5.1 step 4's unconstrained
+/// pointer.
+///
+/// Folding the two together is the same mistake 021 records against an earlier draft, one
+/// level up: it would blame the program for what the tier could not see, and only the
+/// reason tells a reader whether to strengthen the program or the solver. I made exactly
+/// that mistake writing §5.1 and this is the test that caught it.
+///
+/// **Contract 16 itself — the fork into candidates plus one wild — is still owed**, and
+/// needs a solver tier that can decide these queries. The fork machinery exists and this
+/// fixture cannot reach it.
+#[test]
+fn an_undecided_pointer_blames_the_solver_not_the_program() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(3),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(1)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        alloca(0, CTy::Int(8), 8),
+        alloca(1, CTy::Int(8), 8),
+        alloca(2, CTy::Int(8), 8),
+        alloca(3, CTy::Int(8), 8),
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("the solver did not decide")),
+        "the reason names the solver: {:#?}",
+        r.findings()
+    );
+    assert!(
+        !r.findings()
+            .iter()
+            .any(|f| f.contains("the value is unconstrained")),
+        "and does not blame the program: {:#?}",
+        r.findings()
+    );
+    assert!(
+        r.states().iter().any(|s| s
+            .assumptions()
+            .iter()
+            .any(|x| x.kind == AssumptionKind::SolverUnknown)),
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
 }
