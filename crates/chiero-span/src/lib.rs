@@ -307,8 +307,17 @@ pub enum TokenOrigin {
 }
 
 impl SourceMap {
-    /// Record a macro defined in real source. Identity comes from `def_span`'s location.
+    /// Record a macro. Identity comes from `def_span`'s location when it has one.
+    ///
+    /// A `DUMMY` span means "no source location" — a `-D` macro or a builtin — and must
+    /// **not** be resolved: `DUMMY.lo` is `BytePos(0)`, which lands in whichever file
+    /// occupies offset 0 and fabricates a definition site. This is the default
+    /// constructor every caller uses, so guarding only `add_macro_at` would leave the
+    /// forbidden behaviour on the path everyone takes.
     pub fn add_macro(&mut self, name: &str, def_span: Span, body_extent: Span) -> MacroId {
+        if def_span.is_dummy() {
+            return self.add_macro_at(name, def_span, body_extent, None, 0);
+        }
         let loc = self.lookup_loc(def_span.lo);
         self.add_macro_at(
             name,
@@ -366,9 +375,14 @@ impl SourceMap {
         // `parent`. Both are legal per the types, and `cook_tu` uses one for the line
         // and the other for the depth — so a map where they disagree yields a site whose
         // line and depth describe different chains. They are one chain, by invariant.
-        debug_assert_eq!(
-            call_site.ctx, parent,
-            "an expansion's call site must live in its parent context"
+        // Exempt synthesized call sites: a `##` paste or `_Pragma` nested in a macro
+        // body has no written location, so its span is DUMMY at ROOT while its parent
+        // is the enclosing expansion. `chiero-pp` will construct exactly that.
+        debug_assert!(
+            call_site.is_dummy() || call_site.ctx == parent,
+            "an expansion's call site must live in its parent context: {:?} vs {:?}",
+            call_site.ctx,
+            parent
         );
         let ctx = ExpnCtx(self.expansions.len() as u32 + 1);
         self.expansions.push(Expansion {
@@ -520,19 +534,24 @@ pub struct GlobalFileId(pub u32);
 pub fn normalize_path(p: &Path) -> PathBuf {
     let mut out: Vec<std::ffi::OsString> = Vec::new();
     let mut prefix = PathBuf::new();
+    let mut rooted = false;
     for c in p.components() {
         match c {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                if out.is_empty() {
-                    // Leading `..` cannot be resolved lexically; keep it.
-                    out.push("..".into());
-                } else {
+                if !out.is_empty() {
                     out.pop();
+                } else if !rooted {
+                    // Leading `..` in a *relative* path cannot be resolved lexically.
+                    out.push("..".into());
                 }
+                // `/..` is `/`: discard.
             }
             std::path::Component::Normal(n) => out.push(n.to_os_string()),
-            other => prefix.push(other.as_os_str()),
+            other => {
+                rooted = true;
+                prefix.push(other.as_os_str());
+            }
         }
     }
     let mut result = prefix;
@@ -542,12 +561,16 @@ pub fn normalize_path(p: &Path) -> PathBuf {
     result
 }
 
+/// A macro's cross-TU identity: defining file, name, definition line.
+type MacroKey = (GlobalFileId, Arc<str>, u32);
+
 /// Cross-TU interners, owned by the driver (010 §6.2).
 #[derive(Debug, Default)]
 pub struct GlobalInterner {
+    canonicalized: bool,
     files: indexmap::IndexMap<PathBuf, GlobalFileId>,
     paths: Vec<PathBuf>,
-    macros: indexmap::IndexMap<(GlobalFileId, Arc<str>, u32), MacroEntity>,
+    macros: indexmap::IndexMap<MacroKey, MacroEntity>,
 }
 
 /// One resolved expansion site. Self-contained: no `ExpnCtx`, no per-TU ids.
@@ -562,6 +585,13 @@ pub struct CookedSite {
 #[derive(Debug, Default)]
 pub struct CookedExpansionIndex {
     sites: indexmap::IndexMap<MacroEntity, Vec<CookedSite>>,
+    /// `(entity, file, line) -> index into that entity's site vector`.
+    ///
+    /// Without it, deduplication is a linear scan of a vector that keeps growing across
+    /// all 1552 TUs — quadratic in total sites, measured at 305 ms for 32k sites and
+    /// rising ~3.5x per doubling. 010 §6.3 budgets *millions* of sites, so the fix that
+    /// made the index bounded by sites would have made building it unaffordable.
+    by_site: indexmap::IndexMap<(MacroEntity, GlobalFileId, u32), usize>,
     dropped: u32,
 }
 
@@ -601,7 +631,15 @@ impl GlobalInterner {
 
     /// Renumber files into path order and return `old id -> new id`. Macro entities are
     /// renumbered to match, so every id in the index can be remapped mechanically.
-    pub(crate) fn canonicalize(&mut self) -> Vec<GlobalFileId> {
+    pub(crate) fn canonicalize(&mut self) -> (Vec<GlobalFileId>, Vec<MacroEntity>) {
+        // A second canonicalization would compute an identity file remap and silently
+        // leave any *other* index over this interner un-remapped, giving it wrong paths
+        // with no error. Once is the contract.
+        assert!(
+            !self.canonicalized,
+            "GlobalInterner::canonicalize called twice; finalize exactly one index per interner"
+        );
+        self.canonicalized = true;
         let mut order: Vec<usize> = (0..self.paths.len()).collect();
         order.sort_by(|&a, &b| self.paths[a].cmp(&self.paths[b]));
 
@@ -622,15 +660,21 @@ impl GlobalInterner {
             .collect();
         self.files.sort_unstable_keys();
 
-        // Macro keys carry a file id, so they move too. Entity *values* keep their
-        // numbering; only the keys are re-sorted, which is what makes lookup stable.
-        self.macros = self
+        // Macro keys carry a file id, so they move too — and the entity *values* are
+        // renumbered into the sorted key order, so entity ids are order-independent.
+        let mut keys: Vec<(MacroKey, MacroEntity)> = self
             .macros
             .iter()
             .map(|((f, n, l), e)| ((remap[f.0 as usize], n.clone(), *l), *e))
             .collect();
-        self.macros.sort_unstable_keys();
-        remap
+        keys.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut entity_remap = vec![MacroEntity(0); self.macros.len()];
+        self.macros.clear();
+        for (new, (k, old)) in keys.into_iter().enumerate() {
+            entity_remap[old.0 as usize] = MacroEntity(new as u32);
+            self.macros.insert(k, MacroEntity(new as u32));
+        }
+        (remap, entity_remap)
     }
 
     /// The synthetic file that owns command-line (`-D`) and builtin macros, so they get
@@ -716,10 +760,21 @@ impl CookedExpansionIndex {
                 self.dropped += 1;
                 continue;
             };
+            // A synthesized call site (`##` paste, `#` stringize, `_Pragma`, a builtin)
+            // has no written location. Resolving `DUMMY.lo` would land at offset 0 and
+            // report the expansion against whichever file happens to be there — the same
+            // fabrication the definition side guards against, one step later.
+            if expn.call_site.is_dummy() {
+                self.dropped += 1;
+                continue;
+            }
             // `expansion_loc` of the call site is the line gcov attributes to — the
             // outermost `.c` line, even when this expansion is nested inside another.
             let probe = Span::new(expn.call_site.lo, expn.call_site.hi, ctx);
             let Some(loc) = sm.expansion_loc(probe) else {
+                // Unresolvable location: count it. A vanished site is a false negative
+                // in change impact, and `dropped() == 0` is a soundness claim.
+                self.dropped += 1;
                 continue;
             };
             let gf = interner.intern_file(sm.file(loc.file).path());
@@ -759,14 +814,29 @@ impl CookedExpansionIndex {
     ///
     /// Call once after the last `cook_tu`.
     pub fn finalize(&mut self, interner: &mut GlobalInterner) {
-        let remap = interner.canonicalize();
-        for v in self.sites.values_mut() {
+        let (file_remap, entity_remap) = interner.canonicalize();
+        let mut rebuilt: indexmap::IndexMap<MacroEntity, Vec<CookedSite>> =
+            indexmap::IndexMap::with_capacity(self.sites.len());
+        for (e, mut v) in std::mem::take(&mut self.sites) {
             for s in v.iter_mut() {
-                s.file = remap[s.file.0 as usize];
+                s.file = file_remap[s.file.0 as usize];
             }
             v.sort_unstable_by_key(|s| (s.file, s.line, s.depth));
+            // Entities are renumbered too. Renumbering only *files* left the site map
+            // keyed on first-seen entity order, so cooking two TUs that define different
+            // macros in the opposite order produced a different index — and the test
+            // could not see it, because its TUs all shared one macro from one header.
+            rebuilt.insert(entity_remap[e.0 as usize], v);
         }
-        self.sites.sort_unstable_keys();
+        rebuilt.sort_unstable_keys();
+        self.sites = rebuilt;
+        // The side index's keys are stale after renumbering; rebuild it.
+        self.by_site.clear();
+        for (e, v) in &self.sites {
+            for (i, s) in v.iter().enumerate() {
+                self.by_site.insert((*e, s.file, s.line), i);
+            }
+        }
     }
 
     /// Expansions that could not be attributed to a macro entity. Non-zero means the

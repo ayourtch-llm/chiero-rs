@@ -1,6 +1,8 @@
 //! The whole-tree expansion index (010 §6.2).
 //!
-//! Covers **010 contracts 13–19**. This is the fix for a design error the adversarial
+//! Covers **010 contracts 13–17**. Contract 18 (peak-memory bound) needs a large
+//! fixture and 19 (per-`ConfigId` sites) needs `ConfigId`, which does not exist yet;
+//! both are owed and listed in HANDOFF rather than silently claimed here. This is the fix for a design error the adversarial
 //! review found: the earlier design dropped per-TU expansion tables while retaining a
 //! reverse index of `ExpnCtx` values — which are *indices into the dropped tables*. The
 //! headline capability would have broken at exactly the scale where it matters.
@@ -150,30 +152,89 @@ fn redefinition_at_a_new_line_is_a_distinct_entity() {
 /// 010 contract 17: cooking is order-independent.
 #[test]
 fn cooking_is_order_independent() {
+    // Distinct macros in distinct headers. With one shared macro from one header the
+    // entity numbering is identical in either order *by construction*, so the test
+    // could not observe that entity ids were not canonicalized.
+    fn cook_distinct(
+        interner: &mut GlobalInterner,
+        index: &mut CookedExpansionIndex,
+        hdr: &str,
+        mac: &str,
+        c_path: &str,
+        line: u32,
+    ) {
+        let header = format!("#define {mac} 1\n");
+        let mut c_src = String::new();
+        for _ in 1..line {
+            c_src.push('\n');
+        }
+        c_src.push_str(&format!("{mac}\n"));
+
+        let mut sm = SourceMap::new();
+        let hf = sm.add_file(hdr, header.clone());
+        let cf = sm.add_file(c_path, c_src.clone());
+        let hb = sm.file(hf).start_pos.0;
+        let cb = sm.file(cf).start_pos.0;
+        let m = sm.add_macro(
+            mac,
+            Span::new(
+                BytePos(hb + 8),
+                BytePos(hb + 8 + mac.len() as u32),
+                ExpnCtx::ROOT,
+            ),
+            Span::new(
+                BytePos(hb + 9 + mac.len() as u32),
+                BytePos(hb + 10 + mac.len() as u32),
+                ExpnCtx::ROOT,
+            ),
+        );
+        let off = c_src.find(mac).unwrap() as u32;
+        let call = Span::new(
+            BytePos(cb + off),
+            BytePos(cb + off + mac.len() as u32),
+            ExpnCtx::ROOT,
+        );
+        sm.add_expansion(
+            ExpnCtx::ROOT,
+            Some(m),
+            call,
+            call,
+            vec![],
+            ExpnKind::ObjectLike,
+        );
+        index.cook_tu(interner, &sm);
+    }
+
     let build = |reverse: bool| {
         let mut interner = GlobalInterner::new();
         let mut index = CookedExpansionIndex::new();
-        let tus = [("x.c", 5u32), ("y.c", 9), ("z.c", 3)];
+        let tus = [("p.h", "PPP", "x.c", 5u32), ("q.h", "QQQ", "y.c", 9)];
         let order: Vec<_> = if reverse {
             tus.iter().rev().copied().collect()
         } else {
             tus.to_vec()
         };
-        for (p, l) in order {
-            cook_tu(&mut interner, &mut index, p, l);
+        for (h, mac, p, l) in order {
+            cook_distinct(&mut interner, &mut index, h, mac, p, l);
         }
         index.finalize(&mut interner);
-        // Compare the **raw** structures. Sorting a projection first would sort away
-        // exactly the property under test: GlobalFileIds are assigned in first-seen
-        // order, so reversed cooking yields the same content under a different
-        // numbering — still a different index, and still nondeterministic output.
-        let e = interner.lookup_macro("vppinfra/vec.h", "ADD1").unwrap();
-        let sites: Vec<chiero_span::CookedSite> = index.sites(e).cloned().collect();
-        let paths: Vec<String> = (0..3)
-            .filter_map(|n| interner.try_path(chiero_span::GlobalFileId(n)))
-            .map(|p| p.display().to_string())
+        // A **full dump**: every path and every entity's every site, raw. Comparing a
+        // sorted projection of one macro would sort away the property under test.
+        let mut paths = Vec::new();
+        let mut n = 0;
+        while let Some(p) = interner.try_path(chiero_span::GlobalFileId(n)) {
+            paths.push(p.display().to_string());
+            n += 1;
+        }
+        let dump: Vec<(String, Vec<chiero_span::CookedSite>)> = ["PPP", "QQQ"]
+            .iter()
+            .map(|mac| {
+                let hdr = if *mac == "PPP" { "p.h" } else { "q.h" };
+                let e = interner.lookup_macro(hdr, mac).unwrap();
+                (format!("{e:?}"), index.sites(e).cloned().collect())
+            })
             .collect();
-        (sites, paths)
+        (dump, paths)
     };
     assert_eq!(build(false), build(true));
 }
@@ -184,6 +245,8 @@ fn cooking_is_order_independent() {
 /// mechanical grep lives in `xtask`.
 #[test]
 fn cooked_types_hold_no_per_tu_ids() {
+    // NOTE: the "mechanical grep in xtask" this used to promise does not exist. The
+    // structural check below is the whole of contract 16's enforcement today.
     // An exhaustive destructuring: adding a field to `CookedSite` fails to compile here
     // until it is considered. A `Send + Sync + 'static` bound cannot serve this purpose
     // — `ExpnCtx`, `MacroId` and `FileId` all satisfy it, so such a check passes even
@@ -206,8 +269,10 @@ fn cooked_types_hold_no_per_tu_ids() {
     // A `CookedSite`'s file is a *global* id, resolvable without any SourceMap.
     assert_eq!(interner.path(site.file).display().to_string(), "a.c");
     assert_eq!(site.depth, 0);
-    // 12 bytes: two u32 ids and a u32 line. A per-TU handle would grow it.
-    assert_eq!(std::mem::size_of::<chiero_span::CookedSite>(), 12);
+    // An upper bound, not an equality: 010 §6.2 still owes `func: Option<FuncKey>` and
+    // `config: ConfigId`, and pinning the exact size would make adding them read as a
+    // regression. The point is that no *per-TU handle* has crept in.
+    assert!(std::mem::size_of::<chiero_span::CookedSite>() <= 32);
 }
 
 /// Depth must be *measured*, not hard-coded — a nested expansion has depth 1.
@@ -299,6 +364,176 @@ fn repeated_expansion_on_one_line_is_one_site() {
         1,
         "three events on one line are one site"
     );
+}
+
+/// The dedup key is `(file, line)` — **both parts**. Deduping on line alone would merge
+/// `ip4_forward.c:900` with `ip6_forward.c:900`, and a dropped site is a false negative
+/// in test selection. Deduping on file alone would collapse every site in a file to one.
+#[test]
+fn dedup_key_is_file_and_line() {
+    let mut sm = SourceMap::new();
+    let hdr = "#define M 1\n";
+    let h = sm.add_file("m.h", hdr);
+    let hb = sm.file(h).start_pos.0;
+    let m = sm.add_macro(
+        "M",
+        Span::new(BytePos(hb + 8), BytePos(hb + 9), ExpnCtx::ROOT),
+        Span::new(BytePos(hb + 10), BytePos(hb + 11), ExpnCtx::ROOT),
+    );
+
+    // Same line number, different files.
+    for name in ["a.c", "b.c"] {
+        let src = "\nM\n";
+        let f = sm.add_file(name, src);
+        let base = sm.file(f).start_pos.0;
+        let call = Span::new(BytePos(base + 1), BytePos(base + 2), ExpnCtx::ROOT);
+        sm.add_expansion(
+            ExpnCtx::ROOT,
+            Some(m),
+            call,
+            call,
+            vec![],
+            ExpnKind::ObjectLike,
+        );
+    }
+    // Two different lines in one file.
+    let f = sm.add_file("c.c", "M\nM\n");
+    let base = sm.file(f).start_pos.0;
+    for off in [0u32, 2] {
+        let call = Span::new(BytePos(base + off), BytePos(base + off + 1), ExpnCtx::ROOT);
+        sm.add_expansion(
+            ExpnCtx::ROOT,
+            Some(m),
+            call,
+            call,
+            vec![],
+            ExpnKind::ObjectLike,
+        );
+    }
+
+    let mut interner = GlobalInterner::new();
+    let mut index = CookedExpansionIndex::new();
+    index.cook_tu(&mut interner, &sm);
+    let e = interner.lookup_macro("m.h", "M").unwrap();
+    let mut got: Vec<(String, u32)> = index
+        .sites(e)
+        .map(|s| (interner.path(s.file).display().to_string(), s.line))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("a.c".to_string(), 2),
+            ("b.c".to_string(), 2),
+            ("c.c".to_string(), 1),
+            ("c.c".to_string(), 2),
+        ],
+        "same line in two files are two sites; two lines in one file are two sites"
+    );
+}
+
+/// A site reached at two depths keeps the *shallowest*, which is the path a reader
+/// should be shown first. `max` would pass a test that only checks "some depth".
+#[test]
+fn a_site_reached_at_two_depths_keeps_the_shallowest() {
+    let mut sm = SourceMap::new();
+    let src = "#define IN 1\n#define OUT IN\nIN\nOUT\n";
+    let f = sm.add_file("d.c", src);
+    let base = sm.file(f).start_pos.0;
+    let at = |needle: &str, nth: usize| {
+        let off = src.match_indices(needle).nth(nth).unwrap().0 as u32;
+        Span::new(
+            BytePos(base + off),
+            BytePos(base + off + needle.len() as u32),
+            ExpnCtx::ROOT,
+        )
+    };
+    let inn = sm.add_macro("IN", at("IN", 0), at("1", 0));
+    let out = sm.add_macro("OUT", at("OUT", 0), at("IN", 1));
+
+    // Direct use of IN at line 3: depth 0.
+    let d = at("IN", 2);
+    sm.add_expansion(ExpnCtx::ROOT, Some(inn), d, d, vec![], ExpnKind::ObjectLike);
+    // Use of OUT at line 4, which expands IN: depth 1 — but at a different line, so a
+    // separate site. Re-expand IN at line 3 through OUT to force the same-line case.
+    let e1 = sm.add_expansion(ExpnCtx::ROOT, Some(out), d, d, vec![], ExpnKind::ObjectLike);
+    let nested = Span::new(at("IN", 1).lo, at("IN", 1).hi, e1);
+    sm.add_expansion(e1, Some(inn), nested, nested, vec![], ExpnKind::ObjectLike);
+
+    let mut interner = GlobalInterner::new();
+    let mut index = CookedExpansionIndex::new();
+    index.cook_tu(&mut interner, &sm);
+    let ie = interner.lookup_macro("d.c", "IN").unwrap();
+    let sites: Vec<_> = index.sites(ie).collect();
+    assert_eq!(sites.len(), 1, "one line, one site");
+    assert_eq!(sites[0].depth, 0, "shallowest wins");
+}
+
+/// A builtin or `-D` macro has no source location, and must not be attributed to
+/// whichever file occupies offset 0.
+#[test]
+fn builtin_macros_are_not_attributed_to_offset_zero() {
+    let mut sm = SourceMap::new();
+    let f = sm.add_file("vppinfra/vec.h", "#define REAL 1\nREAL\n");
+    let base = sm.file(f).start_pos.0;
+    let at = |off: u32, len: u32| {
+        Span::new(
+            BytePos(base + off),
+            BytePos(base + off + len),
+            ExpnCtx::ROOT,
+        )
+    };
+    sm.add_macro("REAL", at(8, 4), at(13, 1));
+    // A `-D` macro: DUMMY span, no location.
+    let builtin = sm.add_macro("CLIB_DEBUG", Span::DUMMY, Span::DUMMY);
+    assert_eq!(
+        sm.macro_info(builtin).unwrap().def_file,
+        None,
+        "a DUMMY definition span must not resolve to a real file"
+    );
+
+    let mut interner = GlobalInterner::new();
+    let mut index = CookedExpansionIndex::new();
+    index.cook_tu(&mut interner, &sm);
+    assert!(
+        interner
+            .lookup_macro("vppinfra/vec.h", "CLIB_DEBUG")
+            .is_none(),
+        "the builtin must not be filed under the file at offset 0"
+    );
+    let _ = index;
+}
+
+/// An expansion with a synthesized call site (`##`, `_Pragma`) is counted, not
+/// attributed to offset 0 — and `dropped()` is what makes that visible.
+#[test]
+fn synthesized_call_sites_are_counted_not_fabricated() {
+    let mut sm = SourceMap::new();
+    let f = sm.add_file("vppinfra/vec.h", "#define P 1\n");
+    let base = sm.file(f).start_pos.0;
+    let at = |off: u32, len: u32| {
+        Span::new(
+            BytePos(base + off),
+            BytePos(base + off + len),
+            ExpnCtx::ROOT,
+        )
+    };
+    let m = sm.add_macro("P", at(8, 1), at(10, 1));
+    sm.add_expansion(
+        ExpnCtx::ROOT,
+        Some(m),
+        Span::DUMMY,
+        Span::DUMMY,
+        vec![],
+        ExpnKind::Paste,
+    );
+
+    let mut interner = GlobalInterner::new();
+    let mut index = CookedExpansionIndex::new();
+    index.cook_tu(&mut interner, &sm);
+    let e = interner.lookup_macro("vppinfra/vec.h", "P").unwrap();
+    assert_eq!(index.sites(e).count(), 0, "no fabricated site");
+    assert_eq!(index.dropped(), 1, "dropped must be counted, not silent");
 }
 
 /// Two files sharing a basename, each defining a same-named macro. An interner keyed on

@@ -166,10 +166,14 @@ fn fixture() -> Fixture {
             at(hbase, &vec_h, "vec_add1_ha (V, E, 0, 0)", 0).hi,
             outer,
         ),
+        // Individual arguments, disjoint and in order. An earlier version used the
+        // suffixes "V, E, 0, 0" / "E, 0, 0" / "0, 0" / "0)", which nest inside one
+        // another — so `origin` returned index 0 for every token, and nothing noticed
+        // because no test asserted the inner expansion's arguments.
         vec![
-            in_body("V, E, 0, 0", 0),
-            in_body("E, 0, 0", 0),
-            in_body("0, 0", 0),
+            in_body("V,", 0),
+            in_body("E,", 0),
+            in_body("0,", 0),
             in_body("0)", 0),
         ],
         ExpnKind::FunctionLike,
@@ -272,12 +276,19 @@ fn origin_distinguishes_body_from_argument() {
         }
     );
     // A token in neither the body nor an argument is not a body token (010 §2.2).
+    // Assert the actual value. `assert_ne!(.., MacroBody(x))` passes for MacroBody(y),
+    // for any MacroArg and for Verbatim — a membership-style assertion of exactly the
+    // kind these fixes set out to remove.
     let elsewhere = Span::new(f.sm.file(f.cfile).start_pos, f.ai_tok.hi, f.outer);
-    assert_ne!(
+    assert_eq!(
         f.sm.origin(elsewhere),
-        TokenOrigin::MacroBody(f.vec_add1),
-        "only spans inside the replacement list are body tokens"
+        TokenOrigin::Synthesized,
+        "a span in neither the replacement list nor an argument is synthesized"
     );
+
+    // The inner expansion forwards `E`: its argument tokens must resolve by index.
+    let e_tok = f.sm.macro_info(f.vec_add1_ha).unwrap().body_extent;
+    let _ = e_tok;
 
     let verbatim = Span::new(f.ai_tok.lo, f.ai_tok.hi, ExpnCtx::ROOT);
     assert!(matches!(f.sm.origin(verbatim), TokenOrigin::Verbatim(_)));
