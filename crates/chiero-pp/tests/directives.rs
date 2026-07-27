@@ -199,6 +199,54 @@ fn lexer_diagnostics_are_promoted_only_on_active_lines() {
 }
 
 #[test]
+fn predefined_and_feature_test_macros_drive_conditionals() {
+    let src = "#if __STDC__ == 1 && defined(__x86_64__)\nplatform\n#endif\n\
+               #if __has_builtin(not_a_real_builtin)\nwrong\n#else\nfallback\n#endif\n";
+    let tu = preprocess_str("predefined.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(
+        tu.token_texts().collect::<Vec<_>>(),
+        ["platform", "fallback"]
+    );
+}
+
+#[test]
+fn line_error_warning_and_pragma_have_defined_effects() {
+    let src = "#line 40 \"virtual.c\"\n__LINE__ __FILE__\n\
+               #warning careful now\n#error broken now\n\
+               _Pragma(\"once\") after\n";
+    let tu = preprocess_str("physical.c", src, Config::default());
+    assert_eq!(
+        tu.token_texts().collect::<Vec<_>>(),
+        ["40", "\"virtual.c\"", "after"]
+    );
+    assert_eq!(tu.diagnostics.len(), 2);
+    assert!(tu.diagnostics[0].message.contains("careful now"));
+    assert!(tu.diagnostics[1].message.contains("broken now"));
+}
+
+#[test]
+fn include_next_continues_after_the_current_search_directory() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("one/api.h"),
+        "one\n#include_next <api.h>\n".into(),
+    );
+    files
+        .files
+        .insert(PathBuf::from("two/api.h"), "two\n".into());
+    let config = Config {
+        include_paths: vec![PathBuf::from("one"), PathBuf::from("two")],
+        ..Config::default()
+    };
+    let tu = preprocess_with_loader("main.c", "#include <api.h>\n", config, &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["one", "two"]);
+    assert_eq!(files.reads.get(Path::new("one/api.h")), Some(&1));
+    assert_eq!(files.reads.get(Path::new("two/api.h")), Some(&1));
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files
