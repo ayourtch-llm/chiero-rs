@@ -13,7 +13,9 @@
 //! not have.
 
 mod report;
+mod witness;
 pub use report::render;
+pub use witness::{Binding, InputOrigin, Witness};
 
 use chiero_cir::*;
 use chiero_mem::{Endian, HavocFill, Memory, ObjKind, ObjectId, Pointer};
@@ -108,6 +110,36 @@ struct FindingKey {
     /// identical for every one of them and two distinct bugs merge. A real frontend gives
     /// them distinct spans; the key must not depend on that to be correct.
     func: FuncId,
+}
+
+/// One report as the state recorded it. `Finding` is the public shape (023 §9); this is
+/// what a state carries before the run is over and the witness exists.
+#[derive(Clone, Debug)]
+struct StateFinding {
+    id: u64,
+    key: Option<FindingKey>,
+    message: String,
+    span: Span,
+}
+
+/// A report the engine produced, with everything a reader needs to act on it —
+/// 023 §9's `Finding`, minus the fields that need machinery that does not exist yet
+/// (`backtrace`, `trace`, `object`, and the `FindingKind` enum a checker framework will
+/// supply). Adding those is additive; what is here already has to be right.
+#[derive(Clone, Debug)]
+pub struct Finding {
+    /// The report's identity — shared by every state descended from the one that made it,
+    /// which is how a fork's copies are recognised as one report.
+    pub id: u64,
+    pub message: String,
+    pub span: Span,
+    /// 023 §9. `None` **only** with `unwitnessed` set (contract 15).
+    pub witness: Option<Witness>,
+    /// Why there is no witness. The absence is allowed; the silence is not.
+    pub unwitnessed: Option<String>,
+    /// The fidelity of the path this was found on — not the run's. A definite fault on an
+    /// `Exact` path stays actionable in a run some *other* path degraded.
+    pub fidelity: Fidelity,
 }
 
 /// How big an object an entry function's pointer parameter points at. The caller is
@@ -263,7 +295,17 @@ pub struct State {
     /// The id is minted where the finding is, so every state descended from that call
     /// shares it. Deduplicating on the *text* instead would collapse two genuinely
     /// separate reports that happen to read the same, which is the common case in a loop.
-    findings: Vec<(u64, Option<FindingKey>, String)>,
+    findings: Vec<StateFinding>,
+    /// **Every symbolic input this path ever created**, in creation order (023 §9). The
+    /// witness is an assignment to exactly these, so a symbol minted without landing here
+    /// is a value the replay harness would leave to chance.
+    inputs: Vec<(Term, InputOrigin)>,
+    /// Filled once, when the state finishes: the engine still has the arena and the
+    /// solver there, and `RunResult` has neither.
+    witness: Option<Witness>,
+    /// Why there is no witness, when there is none. 023 contract 15 allows the absence
+    /// and not the silence.
+    unwitnessed: Option<String>,
     /// Where an address term came from, for a pointer that went through **memory**: the
     /// bytes are the carrier, and the program itself declared the field to be a pointer.
     ///
@@ -321,6 +363,9 @@ impl State {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            inputs: Vec::new(),
+            witness: None,
+            unwitnessed: None,
             ptr_ints: IndexMap::new(),
         }
     }
@@ -375,7 +420,16 @@ impl State {
     }
 
     pub fn findings(&self) -> Vec<&str> {
-        self.findings.iter().map(|(_, _, f)| f.as_str()).collect()
+        self.findings.iter().map(|f| f.message.as_str()).collect()
+    }
+
+    /// This path's witness, or `None` with a reason (023 contract 15).
+    pub fn witness(&self) -> Option<&Witness> {
+        self.witness.as_ref()
+    }
+
+    pub fn unwitnessed(&self) -> Option<&str> {
+        self.unwitnessed.as_deref()
     }
 
     pub fn trace(&self) -> &[(FuncId, BlockId)] {
@@ -517,10 +571,22 @@ impl RunResult {
     /// to 040. This is the narrower thing 024's "exactly one" wording needs: the same
     /// *report*, seen from several states, is one report.
     pub fn findings(&self) -> Vec<String> {
+        self.reports().into_iter().map(|f| f.message).collect()
+    }
+
+    /// The same reports, whole (023 §9). `findings` is the projection to text; this is
+    /// what a caller needs to replay one, and the two cannot disagree because there is
+    /// one implementation.
+    pub fn reports(&self) -> Vec<Finding> {
         let mut seen: Vec<u64> = Vec::new();
         let mut out = Vec::new();
         let mut keys: Vec<FindingKey> = Vec::new();
-        for (id, key, f) in self.states.iter().flat_map(|s| s.findings.iter()) {
+        for (st, f) in self
+            .states
+            .iter()
+            .flat_map(|st| st.findings.iter().map(move |f| (st, f)))
+        {
+            let (id, key) = (&f.id, &f.key);
             // 023 §6.1's key when there is one, the report's identity otherwise. The id
             // alone recognises the copies a *fork* makes and cannot recognise the copies
             // a *loop* makes, because those are genuinely separate reports of one bug.
@@ -531,7 +597,20 @@ impl RunResult {
                 None => {}
             }
             seen.push(*id);
-            out.push(f.clone());
+            out.push(Finding {
+                id: f.id,
+                message: f.message.clone(),
+                span: f.span,
+                witness: st.witness.clone(),
+                unwitnessed: st.unwitnessed.clone().or_else(|| {
+                    // A state that never finished has no witness because nothing tried,
+                    // and contract 15 wants that said rather than left blank.
+                    st.witness.is_none().then(|| {
+                        "the path did not terminate, so no assignment was extracted".to_string()
+                    })
+                }),
+                fidelity: st.fidelity,
+            });
         }
         out
     }
@@ -715,6 +794,9 @@ impl<'m> Engine<'m> {
                 edge_counts: IndexMap::new(),
                 steps: 0,
                 findings: Vec::new(),
+                inputs: Vec::new(),
+                witness: None,
+                unwitnessed: None,
                 ptr_ints: IndexMap::new(),
             };
             bad.degrade(
@@ -744,6 +826,7 @@ impl<'m> Engine<'m> {
         // contents, which is what "called from somewhere chiero has not seen" means; a
         // scalar gets a fresh symbol of its declared width.
         let mut entry_locals: IndexMap<ValueId, Value> = IndexMap::new();
+        let mut entry_inputs: Vec<(Term, InputOrigin)> = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
             let v = if p.ty == CTy::Ptr {
                 // Sized by the budget rather than by a guess about the callee: the object
@@ -752,7 +835,16 @@ impl<'m> Engine<'m> {
                 let obj = mem.alloc(ObjKind::Extern, ENTRY_PARAM_BYTES, 16, f.span);
                 Value::Ptr(Pointer { base: obj, off: 0 })
             } else {
-                Value::Scalar(a.var(sort_of(&p.ty), &format!("param{i}")))
+                let t = a.var(sort_of(&p.ty), &format!("param{i}"));
+                entry_inputs.push((
+                    t,
+                    InputOrigin::Param {
+                        index: i,
+                        name: String::new(),
+                        span: f.span,
+                    },
+                ));
+                Value::Scalar(t)
             };
             entry_locals.insert(p.value, v);
         }
@@ -779,6 +871,9 @@ impl<'m> Engine<'m> {
             edge_counts: IndexMap::new(),
             steps: 0,
             findings: Vec::new(),
+            inputs: entry_inputs,
+            witness: None,
+            unwitnessed: None,
             ptr_ints: IndexMap::new(),
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
@@ -838,6 +933,7 @@ impl<'m> Engine<'m> {
                     );
                 }
             }
+            self.attach_witness(a, &mut s);
             done.push(s);
         }
         // The order states *finished* is recorded before sorting, so a change of searcher
@@ -855,6 +951,77 @@ impl<'m> Engine<'m> {
             budget: self.budget,
             _seal: Sealed,
         }
+    }
+
+    /// Record a symbol as an **input**: something the program did not compute, that the
+    /// replay harness must supply (023 §9). Every `a.var` in the engine goes through
+    /// here — one that does not is a value the witness silently leaves to chance.
+    fn input(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        sort: chiero_solver::Sort,
+        name: &str,
+        origin: InputOrigin,
+    ) -> Term {
+        let t = a.var(sort, name);
+        s.inputs.push((t, origin));
+        t
+    }
+
+    /// 023 §9: a concrete assignment for every symbolic input on this path.
+    ///
+    /// Computed when the state finishes rather than when the finding is made: the path is
+    /// append-only, so a model of the *final* path satisfies every prefix of it and
+    /// therefore replays through every finding on the way. Doing it per finding would
+    /// cost a query each and answer the same question.
+    fn attach_witness(&mut self, a: &mut TermArena, s: &mut State) {
+        if s.findings.is_empty() {
+            return;
+        }
+        // **No inputs is a complete answer, not a failed one.** Reporting `None` here
+        // would claim a failure that did not happen — and it would cost a solver call to
+        // claim it.
+        if s.inputs.is_empty() {
+            s.witness = Some(Witness::empty());
+            return;
+        }
+        let model = match self.probe(a, s, &[]) {
+            CheckResult::Sat(m) => m,
+            CheckResult::Unsat => {
+                s.unwitnessed = Some(
+                    "the path condition is unsatisfiable at termination, so no input \
+                     assignment reaches this report"
+                        .to_string(),
+                );
+                return;
+            }
+            CheckResult::Unknown(why) => {
+                s.unwitnessed = Some(format!(
+                    "the solver could not decide this path's condition, so no input \
+                     assignment could be extracted: {why:?}"
+                ));
+                return;
+            }
+        };
+        let mut bindings = Vec::new();
+        for (t, origin) in s.inputs.clone() {
+            let width = a.width(t);
+            // **`pinned` is the honest part.** A model need not assign a variable the
+            // path never mentions; binding it to zero and presenting that as the
+            // solver's answer would tell a reader the bug needs a value it does not.
+            let (value, pinned) = match a.eval(&model, t) {
+                Ok(c) => (c.bits(), true),
+                Err(_) => (0, false),
+            };
+            bindings.push(Binding {
+                origin,
+                width,
+                value,
+                pinned,
+            });
+        }
+        s.witness = Some(Witness { bindings });
     }
 
     fn new_id(&mut self) -> StateId {
@@ -939,7 +1106,13 @@ impl<'m> Engine<'m> {
                 // 020 §4.3: never silently a no-op. Each output is a fresh symbol,
                 // distinct per instruction, and the path is a modeling lie from here on.
                 for (v, ty) in dsts {
-                    let t = a.var(sort_of(ty), &format!("opaque_{}", v.0));
+                    let t = self.input(
+                        a,
+                        s,
+                        sort_of(ty),
+                        &format!("opaque_{}", v.0),
+                        InputOrigin::Opaque { span: i.span },
+                    );
                     s.set_local(*v, Value::Scalar(t));
                 }
                 // **A declared write is a write.** Ignoring `writes` left inline asm that
@@ -1262,7 +1435,16 @@ impl<'m> Engine<'m> {
             // one level up.
             if let Some(d) = dst {
                 self.fresh_count += 1;
-                let t = a.var(sort_of(&ret_ty), &format!("extern{}", self.fresh_count));
+                let t = self.input(
+                    a,
+                    s,
+                    sort_of(&ret_ty),
+                    &format!("extern{}", self.fresh_count),
+                    InputOrigin::ExternReturn {
+                        func: name.to_string(),
+                        span,
+                    },
+                );
                 s.set_local(d, Value::Scalar(t));
             }
             // 024 §1 step 3. gcc emits the `__builtin_` spelling for anything it
@@ -1763,7 +1945,13 @@ impl<'m> Engine<'m> {
                         // The access produced nothing, so the caller gets a symbol chiero
                         // made up — which is exactly the case §7 puts under `Unknown`.
                         self.fresh_count += 1;
-                        let t = a.var(sort_of(ty), &format!("load{}", self.fresh_count));
+                        let t = self.input(
+                            a,
+                            s,
+                            sort_of(ty),
+                            &format!("load{}", self.fresh_count),
+                            InputOrigin::Load { span },
+                        );
                         s.degrade(
                             Fidelity::Unknown,
                             AssumptionKind::NoInformation,
@@ -1910,9 +2098,12 @@ impl<'m> Engine<'m> {
                     }
                     None => {
                         self.fresh_count += 1;
-                        let t = a.var(
+                        let t = self.input(
+                            a,
+                            s,
                             chiero_solver::Sort::BitVec(w),
                             &format!("bits{}", self.fresh_count),
+                            InputOrigin::Load { span },
                         );
                         s.degrade(
                             Fidelity::Unknown,
@@ -1928,7 +2119,13 @@ impl<'m> Engine<'m> {
                 // Named per state and per position, so two `Fresh` values are two
                 // symbols and repeating one is not.
                 self.fresh_count += 1;
-                let t = a.var(sort_of(ty), &format!("fresh{}", self.fresh_count));
+                let t = self.input(
+                    a,
+                    s,
+                    sort_of(ty),
+                    &format!("fresh{}", self.fresh_count),
+                    InputOrigin::Fresh { span },
+                );
                 Value::Scalar(t)
             }
             RValue::AddrOfLocal { alloca } => {
@@ -2104,13 +2301,14 @@ impl<'m> Engine<'m> {
     /// "wrong answer instead of honest unknown".
     fn unresolvable_pointer(&mut self, s: &mut State, span: Span) {
         self.finding_seq += 1;
-        s.findings.push((
-            self.finding_seq,
-            None,
-            "unresolvable pointer: the value is unconstrained, so it could refer to \
-             any object or to none"
+        s.findings.push(StateFinding {
+            id: self.finding_seq,
+            key: None,
+            message: "unresolvable pointer: the value is unconstrained, so it could \
+                      refer to any object or to none"
                 .to_string(),
-        ));
+            span,
+        });
         s.degrade(
             Fidelity::Unknown,
             AssumptionKind::NoInformation,
@@ -2297,13 +2495,14 @@ impl<'m> Engine<'m> {
             // and the reason is not, and only the reason tells a reader whether to
             // strengthen the program or the solver.
             self.finding_seq += 1;
-            s.findings.push((
-                self.finding_seq,
-                None,
-                "a symbolic pointer could not be resolved: the solver did not decide \
-                 which objects its value can fall in"
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: None,
+                message: "a symbolic pointer could not be resolved: the solver did not \
+                          decide which objects its value can fall in"
                     .to_string(),
-            ));
+                span,
+            });
             s.degrade(
                 Fidelity::Unknown,
                 AssumptionKind::SolverUnknown,
@@ -2613,8 +2812,12 @@ impl<'m> Engine<'m> {
                 object: f.object(),
                 func: s.func(),
             };
-            s.findings
-                .push((self.finding_seq, Some(key), f.to_string()));
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: Some(key),
+                message: f.to_string(),
+                span: f.at(),
+            });
         }
         // **A finding is not automatically a degradation.** A null dereference or a bad
         // free is a definite fact about the program that chiero modeled exactly; saying
@@ -2914,17 +3117,28 @@ impl<'m> Engine<'m> {
                 object: None,
                 func: s.func(),
             };
-            s.findings.push((self.finding_seq, Some(key), msg));
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: Some(key),
+                message: msg,
+                span,
+            });
         }
         for (fault, text) in keyed {
             self.finding_seq += 1;
-            let key = fault.map(|f| FindingKey {
+            let key = fault.as_ref().map(|f| FindingKey {
                 kind: f.kind(),
                 span: f.at(),
                 object: f.object(),
                 func: s.func(),
             });
-            s.findings.push((self.finding_seq, key, text));
+            let at = fault.as_ref().map_or(span, |f| f.at());
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key,
+                message: text,
+                span: at,
+            });
         }
         if let (Some(d), Some(v)) = (dst, result) {
             s.set_local(d, v);
@@ -2937,7 +3151,16 @@ impl<'m> Engine<'m> {
             // The **declared** return type. A hardcoded `BitVec(64)` also overwrote the
             // correctly-sorted value the extern path had just set, so the sort got worse
             // by dispatching a model than by not having one.
-            let t = a.var(sort_of(ret_ty), &format!("model{}", self.fresh_count));
+            let t = self.input(
+                a,
+                s,
+                sort_of(ret_ty),
+                &format!("model{}", self.fresh_count),
+                InputOrigin::ModelReturn {
+                    func: name.to_string(),
+                    span,
+                },
+            );
             s.set_local(d, Value::Scalar(t));
         }
         // Siblings are created *after* this state's own result is in place, so each
@@ -3030,7 +3253,12 @@ impl<'m> Engine<'m> {
             }
             IntrinsicOutcome::Finding(f) => {
                 self.finding_seq += 1;
-                s.findings.push((self.finding_seq, None, f));
+                s.findings.push(StateFinding {
+                    id: self.finding_seq,
+                    key: None,
+                    message: f,
+                    span,
+                });
             }
             IntrinsicOutcome::Degrade(why) => {
                 s.degrade(

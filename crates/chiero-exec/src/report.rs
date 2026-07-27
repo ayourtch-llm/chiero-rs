@@ -12,7 +12,7 @@
 //! did not — the verdict is the reader's, and 023 §7 exists because an LLM reading "no
 //! bugs" as "safe" is the failure mode the whole fidelity apparatus is built against.
 
-use crate::{Assumption, Fidelity, RunResult};
+use crate::{Assumption, Fidelity, Finding, RunResult};
 use std::fmt::Write;
 
 /// Render a run as the text a person (or a tool speaking to one) reads.
@@ -22,7 +22,7 @@ pub fn render(r: &RunResult) -> String {
     let _ = writeln!(out, "chiero run {} — fidelity: {f:?}", r.id());
     let _ = writeln!(out);
 
-    let findings = r.findings();
+    let findings = r.reports();
     if findings.is_empty() {
         // **The only sentence in chiero that a reader may act on as an absence.** Its two
         // forms differ by exactly what §7 rule 4 makes them differ by, and neither claims
@@ -44,8 +44,9 @@ pub fn render(r: &RunResult) -> String {
     } else {
         let n = findings.len();
         let _ = writeln!(out, "{n} finding{}:", if n == 1 { "" } else { "s" });
-        for (i, text) in findings.iter().enumerate() {
-            let _ = writeln!(out, "  {}. {text}", i + 1);
+        for (i, f) in findings.iter().enumerate() {
+            let _ = writeln!(out, "  {}. {} [{:?}]", i + 1, f.message, f.fidelity);
+            write_witness(&mut out, f);
         }
     }
 
@@ -97,4 +98,42 @@ fn distinct_assumptions(r: &RunResult) -> Vec<Assumption> {
         out.push(a.clone());
     }
     out
+}
+
+/// 023 §9: the witness is what distinguishes a finding from a plausible-sounding guess,
+/// so a report that keeps it to itself has not shown its work. An input the model left
+/// free says so — a reader who sees a specific number assumes the bug needs it.
+fn write_witness(out: &mut String, f: &Finding) {
+    match (&f.witness, &f.unwitnessed) {
+        (Some(w), _) if w.bindings.is_empty() => {
+            let _ = writeln!(out, "     witness: no symbolic inputs on this path");
+        }
+        (Some(w), _) => {
+            let _ = writeln!(out, "     witness:");
+            for b in &w.bindings {
+                let _ = writeln!(
+                    out,
+                    "       {} at {:?} = {} ({} bits{})",
+                    b.origin.label(),
+                    b.origin.span(),
+                    b.value,
+                    b.width,
+                    if b.pinned {
+                        ""
+                    } else {
+                        ", unconstrained — any value replays"
+                    }
+                );
+            }
+        }
+        (None, Some(why)) => {
+            let _ = writeln!(out, "     no witness: {why}");
+        }
+        (None, None) => {
+            let _ = writeln!(
+                out,
+                "     no witness, and no reason recorded — a bug in chiero"
+            );
+        }
+    }
 }

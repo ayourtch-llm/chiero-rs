@@ -239,3 +239,120 @@ fn the_report_shows_the_witness() {
         "with the value it binds: {text}"
     );
 }
+
+/// **Every symbol-minting site is an input, not just `Fresh`.** A witness that omits one
+/// is worse than no witness: it looks complete, and the replay harness built from it
+/// supplies every value but that one, so the bug does not reproduce and reads as refuted.
+/// Two more of the six sites, each with its own origin — the load and the extern return.
+#[test]
+fn a_load_with_no_value_and_an_extern_return_are_both_inputs() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 1,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    40,
+                ),
+                // Uninitialized: the load produces no value, so chiero invents one.
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Load {
+                            addr: Operand::Value(ValueId(0)),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                    },
+                    50,
+                ),
+                // An extern with no body and no model: its return is an input too.
+                inst(
+                    InstKind::Call {
+                        dst: Some(ValueId(2)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    },
+                    60,
+                ),
+                inst(
+                    InstKind::Store {
+                        addr: Operand::Const(Const::Null),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                    70,
+                ),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let ext = Function {
+        id: FuncId(1),
+        name: "some_extern".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, ext],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the null store is reported");
+    let w = f.witness.expect("both inputs are decidable");
+    let origins: Vec<_> = w.bindings.iter().map(|b| b.origin.clone()).collect();
+    assert!(
+        origins.contains(&InputOrigin::Load { span: at(50) }),
+        "the load that produced no value: {origins:?}"
+    );
+    assert!(
+        origins.iter().any(|o| matches!(
+            o,
+            InputOrigin::ExternReturn { func, span } if func == "some_extern" && *span == at(60)
+        )),
+        "the extern return, named: {origins:?}"
+    );
+}

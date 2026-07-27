@@ -10924,9 +10924,8 @@ fn resolution_cost_does_not_grow_with_the_object_count() {
 /// wants told apart from step 5: concretizing here and reporting `Bounded` means the rest
 /// of the function reads and writes *the wrong memory*. Discovering it by asking whether
 /// every one of the 40 is feasible would be the forbidden sweep, so it is decided from
-/// the path alone — with no solver at all, which this pins by running at tier 1.
-#[test]
-fn an_unconstrained_pointer_is_step_four_however_many_objects_exist() {
+/// the path alone, and the cost of deciding it does not move with the object count.
+fn step_four_run(nobj: u32) -> (Vec<String>, Fidelity, bool, u64) {
     let mut f = defined(
         0,
         "main",
@@ -10951,28 +10950,46 @@ fn an_unconstrained_pointer_is_step_four_however_many_objects_exist() {
         )],
         CTy::Int(32),
     );
-    f.allocas = (0..40).map(|i| alloca(i, CTy::Int(8), 32)).collect();
+    f.allocas = (0..nobj).map(|i| alloca(i, CTy::Int(8), 32)).collect();
     let m = Module {
         funcs: vec![f],
         ..Default::default()
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert!(
-        r.findings()
-            .iter()
-            .any(|f| f.contains("value is unconstrained")),
-        "step 4, named as such: {:#?}",
-        r.findings()
-    );
-    assert_eq!(r.fidelity(), Fidelity::Unknown);
-    assert!(
-        r.states()[0].local(ValueId(1)).is_none(),
-        "step 5 would hand back a pointer into one arbitrary object"
-    );
+    (
+        r.findings(),
+        r.fidelity(),
+        r.states()[0].local(ValueId(1)).is_some(),
+        r.solver_calls,
+    )
+}
+
+#[test]
+fn an_unconstrained_pointer_is_step_four_however_many_objects_exist() {
+    for n in [4, 40] {
+        let (findings, fidelity, resolved, _) = step_four_run(n);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("value is unconstrained")),
+            "step 4, named as such, with {n} objects: {findings:#?}"
+        );
+        assert_eq!(fidelity, Fidelity::Unknown);
+        assert!(
+            !resolved,
+            "step 5 would hand back a pointer into one arbitrary object"
+        );
+    }
+    // **The cost, too.** Reading step 4 off the path is what makes it reachable at VPP's
+    // object counts at all; a version that asks whether each of the 40 is feasible gives
+    // the same answer here and cannot give it there. (The run does spend queries — the
+    // finding gets a witness — but not *per object*.)
+    let (_, _, _, few) = step_four_run(4);
+    let (_, _, _, many) = step_four_run(40);
     assert_eq!(
-        r.solver_calls, 0,
-        "the path mentions the value nowhere; that is readable without a solver"
+        few, many,
+        "36 more objects must not cost a query: {few} -> {many}"
     );
 }
 
