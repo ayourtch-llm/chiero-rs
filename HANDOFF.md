@@ -578,7 +578,15 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    wrong one damages a spec that is currently correct. Where a finding is right, amend
    the spec; where it is wrong, say so and move on.
 
-4. **Only after the user approves**: begin the TDD loop at **M1** in
+3.5. **M0 IS DONE** (commits `04d3b90` red, `dbc68e2` green). Workspace of 21 crates per
+   001 §6, `xtask check-deps` enforcing all seven 001 §4 rules with synthetic violating
+   fixtures, CI running fmt + clippy-deny-warnings + `--no-default-features` + the
+   dependency gate + tests. `clippy.toml` denies `HashMap`/`HashSet` workspace-wide since
+   001 §5 makes determinism a hard requirement.
+   *Process note*: I wrote the checker before its test, then backed it out to a stub to
+   get a genuine RED (8 failures, all value mismatches). Don't repeat that — red first.
+
+4. **Begin the TDD loop at **M1** in
    [080](docs/specs/080-roadmap.md) — the symbolic core against **hand-written `.cir`**,
    no C parsed. M1 and M2 are deliberately parallelizable (12 cores); that independence
    is the whole reason for the CIR contract boundary.
