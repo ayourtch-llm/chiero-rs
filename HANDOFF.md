@@ -1940,6 +1940,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `smt_name` prefixes it (`v3_clobber`), so the name is cosmetic and cannot collide in a
    script either.
 
+   **WAVE 39** (`1f3dee6`; 576 tests, **98/161 cited**) — 020 contract 21: a constant
+   overwriting one byte of a symbolic word leaves the other three as *the same term*. VPP
+   rewrites one byte of a packet header constantly, and a model answering "the whole word
+   is unknown now" would lose every constraint on the rest.
+
+   *Assertion style worth reusing:* the test asserts over **evaluations under a model**,
+   not over term shape. `loaded ^ original` must have bytes 0, 2, 3 zero and byte 1 equal
+   to `0xEE ^ original_byte_1`. Asserting a `Concat` structure would pass against any
+   equivalent-but-wrong rebuild *and* break on a legitimate folding change; asserting
+   values pins the meaning. The second half matters — "unchanged everywhere" alone is
+   satisfied by the write having been **dropped**.
+
    **M1's instruction set is complete**, but M1's *exit* is not — see the coverage numbers
    above; the remaining 79 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
