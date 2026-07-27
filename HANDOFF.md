@@ -1318,6 +1318,61 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    changes nothing about initialization in either direction. *Two survivors are left
    deliberately:* the cap's value is policy, and `get`'s range guard is defensive.
 
+   **WAVE 15 — model-dispatch review APPLIED across three slices.** The reviewer ran 28
+   mutants against `29e3132`, 15 survived, and it reported 13 findings. Every one was
+   re-probed here before acting. Three were already red-tested; the rest are below.
+
+   **Wave A** (`0b1b56a` red, `f4ab1a6` green, 478 tests) — five defects plus `PtrAdd`:
+
+   ⚠️ **A `strlen` that established nothing handed back a fabricated length.** `CapReached`
+   and `Unterminated` became `ModelOutcome::Value(None)`, which is *not* the untranslatable
+   arm — `translated` stayed true, the `dst` fallback minted a fresh unconstrained 64-bit
+   symbol, and the run stayed `Exact` and **sealed**. Worse than a missed bug:
+   `n = strlen(buf); if (n == 999999) bug();` is feasible against an unconstrained `n`, so
+   chiero reports a bug that cannot happen and calls the run a proof. Now a `Finding`.
+
+   `ModelOutcome::Finding`'s payload was dropped by `dispatch`, which matched only `Value`
+   — invisible because two of the three producers also call `cx.report`. `strcpy` measured
+   destination room from the object base (`max(0)`, the same mistake fixed in `strlen` one
+   wave earlier), so a negative-offset overflow reported *success* and stayed `Exact`. A
+   copy laundered a symbolic byte into a stale constant: `read_raw` faulted on the source
+   but still returned the bytes behind the overlay, so `memcpy` stopped being *silent*
+   without stopping being a *constant*. `read_raw` now returns a triple and `copy`
+   reinstates the overlay.
+
+   ⚠️ **024 contract 9 had no end-to-end evidence.** The test never initialized the source,
+   so `strlen` faulted on byte 0 and the destination check never ran; "not `Exact`" and
+   "some finding" were both satisfied by the uninitialized read, and swapping dst and src
+   gave the same answers. Fixing the fixture needed a pointer walk, which exposed that
+   **`PtrAdd` was a lowering gap** — every pointer walk in any program was degrading the
+   run to `Unknown`.
+
+   **Wave B** (`2f1cca8` red, `99dc29d` green, 482 tests) — **a call chiero did not perform
+   now invalidates what it was handed** (023 §5, 024 §1 step 4). `Memory::havoc` is
+   breadth-first with a visited set, not a depth counter: a structure that points back at
+   itself is normal for VPP's pools. Pointees are read *before* the fill, since the fill
+   destroys the addresses they were found through. `Symbolic` swaps contents for an
+   unconstrained array (O(1), versus one fresh variable per byte); `Uninitialized` clears
+   the mask. `pointees` is `int_to_ptr`'s range search over *initialized concrete* words
+   only — following an uninitialized one would invent a reference to allocator garbage.
+   The engine test asserts on a **later read**, not on the assumption.
+
+   **Wave C** (`75c1786`, 485 tests) — the vacuous tests. `is_implemented` began with
+   `DISPATCHABLE.contains(&name)`, so it was true by construction and the "cannot drift"
+   test could not fail. `can_dispatch`'s guard test passed through the *argument gap*
+   rather than the refusal, because it called everything with `args: vec![]`. The `memset`
+   fixture used `(byte 0, size 8)`, which reports the same as `(byte 8, size 0)`. And
+   **one report is now one finding**: a fork copies a state's findings, so one
+   `free(&stack_var)` plus one branch was two reports against contract 5's "exactly one".
+   Findings carry an identity minted where the report is; deduplicating on *text* would
+   collapse two genuine reports that read the same, which is the common case in a loop.
+
+   **STILL OWED from wave 15's review:** `chiero_mark_fidelity` discards the `why` its
+   caller passed; 024 §1 step 3's `__builtin_x` → `x` aliasing is unimplemented; the
+   `model{n}` fresh value is always `BitVec(64)` regardless of return type; symbolic sizes
+   degrade though 024 §3 permits them; `AllocPolicy` is engine-global where 024 §3 wants it
+   per allocator; `State::findings()` has no direct test.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
