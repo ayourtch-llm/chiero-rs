@@ -403,8 +403,8 @@ are complete; verticals are in progress.
 - [x] `025-concurrency-and-threading.md` — **added mid-flight** (§4.13c #3); ThreadCtx +
       discipline checker + declared blind spot + v2 hooks
 - [x] `030-coverage-gcov.md` — §4.9; formats **empirically verified** against gcc 13.3
-- [ ] `031-change-impact.md` — §4.8 steps 1–2
-- [ ] `032-test-selection.md` — §4.8 steps 3–6
+- [x] `031-change-impact.md` — §4.8 steps 1–2; +Cosmetic-change class, completeness lattice
+- [x] `032-test-selection.md` — §4.8 steps 3–6; +"drop only on Exact proof" rule, safety/reduction eval harness
 - [ ] `040-defect-checkers.md` — §4.10 checkers + replay
 - [ ] `041-optimization-analysis.md` — §4.10 optimization **+ cache-line/locality analysis
       (§4.13c #2): straddling, hot/cold field placement, false sharing, prefetch distance**
@@ -438,11 +438,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 ## 9. Next actions
 
 **You are here:** frontend + symbolic-core blocks done; verticals in progress
-(**16 of 24** written: 030 and 042 done). **8 specs remain.**
+(**18 of 24** written: 030, 031, 032, 042 done). **6 specs remain.**
 
-1. **Write the remaining 8 specs** in §7 order. Next up, finishing the verticals block:
-   `031-change-impact`, `032-test-selection`, `040-defect-checkers`,
-   `041-optimization-analysis`. Then `050`/`060`, then `070`/`080`.
+1. **Write the remaining 6 specs** in §7 order: `040-defect-checkers`,
+   `041-optimization-analysis`, then `050`/`060`, then `070`/`080`.
+   Note `041` is now load-bearing for `032`: test selection's strongest refinement is
+   `prove_equivalent(before, after)`, and 032 contract 5 requires it to report fidelity
+   honestly, so `041` must define that primitive before `080` sequences the milestones.
    Cross-references the core block already promises and the verticals MUST honor:
    - `041` owes the **cache-line/locality analysis** (§4.13c #2) — 014 §1 already added
      `TargetConfig::cache_line_bytes` and 021 §7 already points at 041 for it.
