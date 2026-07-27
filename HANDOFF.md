@@ -617,36 +617,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *empty* dead blocks; 20 malformed inputs panicked instead of erroring; contract 3 was
    half-tested.
 
-   **STILL OWED from that review — do these before trusting `chiero-cir`:**
-   - **Eight constructs print but cannot be parsed back**: `Const::Wide`, `Const::Float`,
-     `Const::Undef`, `Const::GlobalAddr`, `Const::FuncAddr` as an operand (printed by id,
-     parsed by name), `BinOp::PtrDiff` (and its `elem_size` is dropped outright),
-     `RValue::Shuffle`, and **`CTy::Vector` in any instruction** — `toks()` splits on
-     whitespace before `ty()` sees `<16 x i8>`, so **no `.cir` fixture can contain a
-     vector**, making 020 §4.1.1 and rule 12 permanently untestable from the corpus.
-   - **`print` drops six semantic fields**: `variadic`, all four `FnAttrs` (including
-     `order_sensitive`, which 020 contract 18 needs), `is_const`, `config`, `metadata`,
-     and all spans. Contract 1 does not actually hold. The corpus round-trip test
-     compares text-to-text, so it cannot see this — **make it structural** (derive
-     `PartialEq` on `Module`).
-   - **`MarkerKind::Line` at instruction position is deleted on reparse** (folded into
-     `gcov_lines`), so `insts.len()` goes 1 → 0. Decide whether it is representable.
-   - **Entry-label aliasing**: `block_label` prints `entry` for `f.entry` while the
-     parser hardcodes `entry → BlockId(0)`, so a function with `entry == BlockId(3)` and
-     a sibling `BlockId(0)` reparses into two blocks both numbered 0.
-   - Rule 13's second half (a `DYNAMIC_EXTENT` decl with no `AllocaDyn`), rule 7 for
-     `AllocaDecl`/`Global` alignment, duplicate `BlockId`/`AllocaId`/param `ValueId`,
-     dangling `FuncId`/`GlobalId`, and call arity — all unchecked.
-   - ~50 opcode-table entries are untested lookups (`mul` printed as `add` survives; all
-     four `UnreachableReason`s collapse to `gap`, which matters because 020 §5 gives
-     `LoweringGap` and `BuiltinUnreachable` different meanings).
-   - **The normative example in 020 §6 does not parse** (named values `%v`, `= zero` on
-     globals, alloca syntax without scope/lifetime). Either the spec or the parser is
-     wrong; the spec's own worked example is not a valid fixture.
-   - `tests/corpus.rs` tells the user to run `cargo xtask fmt-corpus`, which does not
-     exist.
+   **Wave-5 debt DISCHARGED** in `6beec51`/`bb308cd` (round-trip) and `44bf4eb`
+   (structural rules). All eight print-but-don't-parse constructs fixed, including
+   `CTy::Vector` — the tokenizer split `<4 x i32>` on whitespace, so **no `.cir` fixture
+   could contain a vector at all**; they now print as `<4xi32>` and there is a vector
+   fixture. `print` no longer drops `variadic`, the four `FnAttrs`, or `is_const`, and
+   the round-trip test compares **structurally** (`PartialEq` on `Module`) rather than
+   text-to-text, which is what hid the loss. Block labels no longer alias. Structural
+   identity (duplicate/dangling ids), rule 7 for declarations and rule 13's second half
+   are checked. **020 §6's normative example now parses** and is a test; the parser
+   gained named values/labels (canonicalized to numbers on output) and optional
+   alloca scope/lifetime, and the spec was amended for `GlobalInit`, which is genuinely
+   not implemented.
+
+   **Still owed in `chiero-cir`:** `GlobalInit` in the textual format; `Marker::Line` at
+   instruction position (currently folded into `gcov_lines` on reparse, so `insts.len()`
+   drops); call arity and dangling `FuncId`/`GlobalId` checks; the optional passes (020
+   §9); and `cargo xtask fmt-corpus`, which `tests/corpus.rs` names but does not exist.
 
    **Wave 6 (QUEUED — nothing cached):**
+   - **Re-review `chiero-cir` after this round**, with the mutation brief. The last pass
+     had a 45% escape rate and the fixes were extensive; wave 4 showed that re-reviewing
+     fixes finds more.
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
