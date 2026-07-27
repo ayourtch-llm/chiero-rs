@@ -947,6 +947,37 @@ impl<'m> Engine<'m> {
                     .write_bits(p, bits.off as u64, bits.width as u64, v.bits(), i.span);
                 self.report_faults(s, &r.faults, i.span);
             }
+            // 020 §3: a runtime extent arrives **here**, at a real program point, and not
+            // in `Function::allocas` — a function-level table would reference a value
+            // computed inside a block, which is undefined for verifier rule 1 and creates
+            // the object before its size exists.
+            InstKind::AllocaDyn {
+                dst,
+                alloca,
+                elem,
+                count,
+                align,
+            } => {
+                let Some(n) = self.concrete_size(a, s, count) else {
+                    // A symbolic count is 021's `SizeVal::Sym` and is owed. Guessing one
+                    // would give the object a size the program never chose, and every
+                    // bounds answer about it would be about that invented size.
+                    self.lowering_gap(s, i.span, "AllocaDyn with a symbolic count");
+                    return;
+                };
+                let Some(bytes) = n.checked_mul(size_of_cty(elem)) else {
+                    self.lowering_gap(s, i.span, "AllocaDyn whose extent overflows");
+                    return;
+                };
+                // **A fresh object per execution.** C's `alloca` in a loop accumulates
+                // allocations, and reusing one object would make the second iteration
+                // alias the first — writes aliasing and lifetimes wrong at once.
+                let obj = s.mem.alloc(ObjKind::Stack, bytes, (*align).max(1), i.span);
+                if let Some(f) = s.stack.last_mut() {
+                    f.frame_objs.insert(*alloca, obj);
+                }
+                s.set_local(*dst, Value::Ptr(Pointer { base: obj, off: 0 }));
+            }
             InstKind::Marker(_) => {}
             other => {
                 self.lowering_gap(s, i.span, &format!("{other:?}"));

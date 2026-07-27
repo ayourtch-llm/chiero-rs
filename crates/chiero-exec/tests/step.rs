@@ -6698,6 +6698,12 @@ fn alloca_dyn_gives_the_object_its_extent() {
                     byte: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
                     size: Operand::Const(Const::Int { bits: 64, val: 12 }),
                 }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
             ],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -6734,42 +6740,60 @@ fn alloca_dyn_gives_the_object_its_extent() {
         Some(vec![0xAB])
     );
     assert!(
-        !mem.read(chiero_mem::Pointer { base, off: 12 }, 1, Span::DUMMY)
+        mem.read(chiero_mem::Pointer { base, off: 12 }, 1, Span::DUMMY)
             .faults
-            .is_empty(),
+            .iter()
+            .any(|f| f.kind() == "out-of-bounds"),
         "and the object ends where it was told to"
+    );
+    // **The alloca id now names this object.** 020 §3 declares the alloca in the function
+    // table and `AllocaDyn` supplies its extent, so a later `AddrOfLocal` must reach the
+    // same object — otherwise the declaration and the instruction describe two different
+    // pieces of memory.
+    assert_eq!(
+        s.local(ValueId(1)),
+        s.local(ValueId(0)),
+        "the alloca id and the AllocaDyn result are the same object"
     );
 }
 
-/// **A dynamic extent that was never supplied is not a wrapped number.** `DYNAMIC_EXTENT`
-/// is `u64::MAX`, so `count * elem_size` panicked in debug and wrapped to an arbitrarily
-/// *small* object in release — the more dangerous of the two, since a wrapped size
-/// silently accepts or rejects the wrong accesses.
+/// **The extent is `count * sizeof(elem)`, and it multiplies rather than wraps.**
+/// `DYNAMIC_EXTENT` is `u64::MAX`, and the danger has always been a *small* wrapped object
+/// rather than a panic — a wrapped size silently accepts or rejects the wrong accesses.
+/// Three `int`s is twelve bytes, which a size that ignored `elem` would get wrong in the
+/// safe-looking direction.
 ///
-/// This restores the half of `a_dynamic_extent_does_not_overflow_the_size_computation`
-/// that was lost when verification landed: the module there had no `AllocaDyn` at all, so
-/// it is now correctly rejected before frame setup and the size is never computed.
+/// This is the property `a_dynamic_extent_does_not_overflow_the_size_computation` was
+/// reaching for before verification landed and made its module unexecutable; the
+/// computation now lives in `AllocaDyn`, so this is where it can be observed.
 #[test]
-fn an_unsupplied_dynamic_extent_is_zero_not_a_wrapped_size() {
+fn a_dynamic_extent_multiplies_the_element_size() {
     let mut caller = defined(
         0,
         "main",
         vec![block(
             0,
-            vec![inst(InstKind::AllocaDyn {
-                dst: ValueId(0),
-                alloca: AllocaId(0),
-                elem: CTy::Int(8),
-                count: Operand::Const(Const::Int { bits: 64, val: 4 }),
-                align: 1,
-            })],
+            vec![
+                inst(InstKind::AllocaDyn {
+                    dst: ValueId(0),
+                    alloca: AllocaId(0),
+                    elem: CTy::Int(32),
+                    count: Operand::Const(Const::Int { bits: 64, val: 3 }),
+                    align: 4,
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 1 }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 12 }),
+                }),
+            ],
             Terminator::Return(Some(i32c(0))),
         )],
         CTy::Int(32),
     );
     caller.allocas = vec![AllocaDecl {
         count: chiero_cir::DYNAMIC_EXTENT,
-        ..alloca(0, CTy::Int(8), 0)
+        ..alloca(0, CTy::Int(32), 0)
     }];
     let m = Module {
         funcs: vec![caller],
@@ -6777,8 +6801,25 @@ fn an_unsupplied_dynamic_extent_is_zero_not_a_wrapped_size() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "twelve bytes fit in three ints: {:#?}",
+        r.findings()
+    );
     let s = &r.states()[0];
-    // Before `AllocaDyn` runs, the object exists with **no** extent — every access to it
-    // faults rather than landing inside a size nobody chose.
-    assert_eq!(s.object_size_for_test(), Some(0));
+    let base = match s.local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = s.mem.clone();
+    // **The fault kind matters.** An over-allocated object faults here too — with an
+    // *uninitialized* read — so asserting merely that something went wrong passes against
+    // an object of any larger size. The same-answer trap, in my own assertion.
+    assert!(
+        mem.read(chiero_mem::Pointer { base, off: 12 }, 1, Span::DUMMY)
+            .faults
+            .iter()
+            .any(|f| f.kind() == "out-of-bounds"),
+        "and thirteen do not"
+    );
 }
