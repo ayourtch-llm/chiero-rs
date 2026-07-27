@@ -2333,6 +2333,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    every state carries the same list and "read only state 0" was invisible. **A fixture
    whose paths agree cannot test a claim about paths.**
 
+   **WAVE 59** (`0b06d31`; 651 tests, 112/161 cited) — the wave-55 review's last soundness
+   finding. `reports()` deduplicated **across paths** on 023 §6.1's key minus its
+   `checker` component, one layer too early: two out-of-bounds writes at two offsets on
+   two paths came back as one finding, and the second's witness was discarded. Contract 20
+   says the engine does not deduplicate. Across paths only the finding **id** may merge —
+   that is what recognises a fork's copies — while *within* a path the key still applies,
+   because a loop running through one fault repeatedly is one report and dropping that
+   half fails two existing tests.
+
+   Still open from that review, deliberately: nothing outside `chiero-exec`'s own tests
+   calls `render` or `reports` (`chiero-cli`, `chiero-check`, `chiero-tool` depend on the
+   crate but not on these), so contract 14 is a golden test on text no user sees yet.
+   Whichever crate eventually prints a run must call `render` rather than write its own
+   sentence — §7 rule 4 does not follow it there by itself.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2410,7 +2425,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **650 tests, 111/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **651 tests, 112/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
