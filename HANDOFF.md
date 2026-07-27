@@ -990,6 +990,47 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `if false { return None; }`, which changes nothing, and read its survival as a coverage
    gap. Verify the mutation actually alters behaviour, not just the text.
 
+   **WAVE 11 — array-path review: solver half APPLIED** (`27322cc` red, `20d80ff` green,
+   362 tests). **`chiero-mem` half is NOT yet applied — see below.**
+
+   *Critical:* `array_const` — the base of **every** promoted object — was rejected by z3
+   under `QF_ABV` ("unknown constant const"), so array theory was non-functional against
+   the backend. Now `(set-logic ALL)`; each narrower logic excluded something in turn.
+   **The omission that let it ship:** both array-backend tests used `array_var`, so
+   `array_const` had never been sent to a solver.
+
+   *Also:* `vars_of` and `eval` were still recursive — making only the serializer
+   iterative **moved** the failure, since `vars_of` runs immediately before serialization
+   and `eval` is on the model-validation path (a `Sat` over a deep term killed the process
+   instead of validating). Both iterative now. `Sort::Bool` variables are usable. An
+   `(error …)` from the backend is skipped rather than framed as the verdict.
+
+   **STILL OWED from wave 11 — `chiero-mem`, all confirmed by the reviewer's probes:**
+   - **Every byte-level write to a promoted object is silently discarded.** `read` refuses
+     a promoted object; no write path does, so `write`/`set`/`write_sym_byte`/`write_bits`
+     return no faults, mutate the frozen `Bytes` view, and are invisible — a wrong *value*
+     plus a spurious uninitialized-read finding.
+   - **`join` drops the earlier `Cond` guard.** The correct join of two guarded writes is
+     `Cond(t_old ∨ t_new)`; taking only the newer loses initialization, and the Bytes and
+     Array paths then disagree — **a direct contract 6 violation**. The contract-6 test
+     issues one symbolic write per object, so it cannot see it.
+   - **§3.1's "`Cond` collapses when its guard folds to a constant" is unimplemented on
+     the Bytes path**, so a definitely-written byte reports `MaybeUninitialized` — and
+     `init_bit_via` *does* collapse, so that is a **second** contract 6 violation on a
+     different input class.
+   - `read_term`'s memoization is a **no-op on a promoted object** (it writes the mask;
+     `init_bit_via` reads the array), breaking contract 26 there.
+   - `promote_to_array` silently no-ops on an unmaterialized object and promotes a freed
+     one.
+   - **Coverage:** the `s{i}` → `s{i%2}` shadowing mutant **survives** — my sharing tests
+     assert via the arena's own evaluator, which never reads the emitted text, and the
+     only tests that parse it `z3_or_skip`. Also untested: `children()` dropping `Store`'s
+     index/value, and "Yes must stay Yes" on the array init path.
+   - **Not implemented, from 021 §3:** no fresh symbol is ever minted for an uninitialized
+     read (`read_term` returns concrete 0 — the exact "silently reading zero" §3 names);
+     no `SizeVal::Sym`; no symbolic-offset *read* API, so `ITE_THRESHOLD` is write-only;
+     no unpinned symbolic store (`idx_bits` is hardcoded 64, unrelated to `width(off)`).
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
