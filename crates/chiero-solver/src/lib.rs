@@ -1475,6 +1475,16 @@ impl SmtLib {
         None
     }
 
+    /// A backend at a **named** path, discovery bypassed.
+    ///
+    /// `discover` answers "what is installed"; this answers "use this one". A test that
+    /// needs a backend which misbehaves on purpose has no other way to get one, and
+    /// pointing `$CHIERO_SMT_SOLVER` at it instead would make the whole process's
+    /// discovery depend on one test's environment.
+    pub fn at(path: impl Into<std::path::PathBuf>) -> SmtLib {
+        SmtLib { path: path.into() }
+    }
+
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
@@ -1659,6 +1669,13 @@ pub struct SolverStats {
     pub backend_spawns: u64,
     pub cache_entries: usize,
     pub tier1_unknown: u64,
+    /// Answers a backend gave that chiero could not use — unparseable output, a model
+    /// that failed independent evaluation, a dead process (022 contract 15).
+    ///
+    /// Counted because the failure is silent otherwise: every query comes back
+    /// `Unknown`, every consumer degrades honestly, and a run that decided *nothing*
+    /// looks like a run over a hard program.
+    pub backend_errors: u64,
 }
 
 /// Tier 1, escalating to tier 2 on `Unknown`, with the caches of 022 §6.
@@ -1728,15 +1745,23 @@ impl TieredSolver {
                 {
                     Some(CheckResult::Sat(m))
                 } else {
+                    self.stats.backend_errors += 1;
                     Some(CheckResult::Unknown(UnknownReason::BackendError(
                         "backend model failed independent evaluation".into(),
                     )))
                 }
             }
             Some((false, _)) => Some(CheckResult::Unsat),
-            None => Some(CheckResult::Unknown(UnknownReason::BackendError(
-                "backend gave no usable answer".into(),
-            ))),
+            None => {
+                // **Counted** (022 contract 15). Without it a backend that answers
+                // nothing usable is invisible: every query comes back `Unknown`, every
+                // consumer degrades honestly, and a run that decided nothing at all
+                // reads as a run over a hard program.
+                self.stats.backend_errors += 1;
+                Some(CheckResult::Unknown(UnknownReason::BackendError(
+                    "backend gave no usable answer".into(),
+                )))
+            }
         }
     }
 
