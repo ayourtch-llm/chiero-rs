@@ -1005,7 +1005,29 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    instead of validating). Both iterative now. `Sort::Bool` variables are usable. An
    `(error …)` from the backend is skipped rather than framed as the verdict.
 
-   **STILL OWED from wave 11 — `chiero-mem`, all confirmed by the reviewer's probes:**
+   **WAVE 11 `chiero-mem` half APPLIED** (`b4ff632` red, `54463c1` green, 368 tests).
+   Both contract-6 violations fixed: the join of two guarded writes is now the
+   **disjunction** of their guards, and `Cond` **collapses** when its guard folds. The
+   decision is made **per bit, not per byte** — the first attempt decided once from bit 0,
+   which let a bitfield-initialized half decide the untouched half; §3.1 argues the whole
+   tri-state *from* bitfields, so a mixed byte is the case, not a corner. Byte writes to a
+   promoted object are refused rather than lost; `read_term` memoizes into whichever
+   representation is live; promotion obeys the state check and reports when there is
+   nothing to promote from.
+
+   **STILL OWED from wave 11:**
+   - **Coverage:** the `s{i}` → `s{i%2}` shadowing mutant in `to_smtlib` **survives** — the
+     sharing tests assert via the arena's own evaluator, which never reads the emitted
+     text, and the only tests that parse it `z3_or_skip`. Also untested: `children()`
+     dropping `Store`'s index/value.
+   - **Not implemented, from 021 §3:** no fresh symbol is ever minted for an uninitialized
+     read (`read_term` returns concrete 0 — the exact "silently reading zero" §3 names as
+     the commonest way a symbolic executor is confidently wrong); no `SizeVal::Sym`; no
+     symbolic-offset *read* API, so `ITE_THRESHOLD` is write-only; no unpinned symbolic
+     store (`idx_bits` hardcoded 64, unrelated to `width(off)`); init-array index width
+     should track `TargetConfig` per §3.1.
+
+   **Original wave-11 findings, for reference:**
    - **Every byte-level write to a promoted object is silently discarded.** `read` refuses
      a promoted object; no write path does, so `write`/`set`/`write_sym_byte`/`write_bits`
      return no faults, mutate the frozen `Bytes` view, and are invisible — a wrong *value*
