@@ -1,0 +1,20 @@
+target x86_64-unknown-linux-gnu
+
+func @lane_ops(%0: <4xi32>) -> i32 {
+entry:
+  .line 3
+  %1 = extractlane %0, 2
+  %2 = insertlane %0, 0, 7i32
+  %3 = shuffle %0, %2, [0, 5, 2, 7]
+  %4 = bitcast <4xi32> %3 to i128
+  ret %1
+}
+
+func @splat_and_pun(%0: i32) -> <4xi32> {
+entry:
+  .line 12
+  %1 = splat %0, 4
+  %2 = bitcast <4xi32> %1 to <16xi8>
+  %3 = bitcast <16xi8> %2 to <4xi32>
+  ret %3
+}

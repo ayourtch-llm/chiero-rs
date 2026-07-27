@@ -343,7 +343,7 @@ global @g : size 8 align 8
 
 func @other() -> void
 
-func @gaps(%0: <4 x i32>, %1: ptr) -> void {
+func @gaps(%0: <4xi32>, %1: ptr) -> void {
 entry:
   .line 6
   %2 = extractlane %0, 3
@@ -352,7 +352,7 @@ entry:
   %5 = splat 3i32, 4
   %6 = undef i64
   %7 = ptrdiff 4 %1, %1
-  %8 = bitcast <4 x i32> %0 to i128
+  %8 = bitcast <4xi32> %0 to i128
   %9 = fresh f64
   %10 = globaladdr @g, 8
   %11 = funcaddr @other

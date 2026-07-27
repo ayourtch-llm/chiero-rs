@@ -127,19 +127,21 @@ impl<'a> Parser<'a> {
     }
 
     fn global(&mut self, t: &[String]) -> Result<Global, ParseError> {
-        // global @name : size N align N
-        if t.len() < 7 {
-            return self.err("malformed global");
-        }
+        // global [const] @name : size N align N
+        let is_const = t.get(1).map(String::as_str) == Some("const");
+        let o = usize::from(is_const);
         Ok(Global {
             id: GlobalId(0),
-            name: t[1].trim_start_matches('@').into(),
-            size: self.tok(t, 4)?.parse().map_err(|_| self.perr("bad size"))?,
+            name: self.tok(t, 1 + o)?.trim_start_matches('@').into(),
+            size: self
+                .tok(t, 4 + o)?
+                .parse()
+                .map_err(|_| self.perr("bad size"))?,
             align: self
-                .tok(t, 6)?
+                .tok(t, 6 + o)?
                 .parse()
                 .map_err(|_| self.perr("bad align"))?,
-            is_const: false,
+            is_const,
             span: Span::DUMMY,
         })
     }
@@ -192,9 +194,14 @@ impl<'a> Parser<'a> {
         let name: Symbol = joined[5..open].trim().trim_start_matches('@').into();
 
         let mut params = Vec::new();
+        let mut variadic = false;
         let inner = joined[open + 1..close].trim();
         if !inner.is_empty() {
             for p in inner.split(',') {
+                if p.trim() == "..." {
+                    variadic = true;
+                    continue;
+                }
                 let (v, ty_s) = p
                     .split_once(':')
                     .ok_or_else(|| self.perr("param needs :"))?;
@@ -212,19 +219,38 @@ impl<'a> Parser<'a> {
 
         let tail = joined[close + 1..].trim();
         let has_body = tail.ends_with('{');
-        let ret_s = tail.trim_start_matches("->").trim_end_matches('{').trim();
-        let ret = self.ty(ret_s)?;
+        let tail = tail.trim_start_matches("->").trim_end_matches('{').trim();
+        // The return type is the first token; the rest are attributes.
+        let mut it = tail.split_whitespace();
+        let ret = self.ty(it.next().unwrap_or("void"))?;
+        let mut attrs = FnAttrs::default();
+        let rest: Vec<&str> = it.collect();
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i] {
+                "noreturn" => attrs.noreturn = true,
+                "pure" => attrs.no_side_effects = true,
+                "order_sensitive" => attrs.order_sensitive = true,
+                "march" => {
+                    i += 1;
+                    let v = rest.get(i).ok_or_else(|| self.perr("march needs a name"))?;
+                    attrs.march_variant = Some(v.trim_matches('"').into());
+                }
+                other => return self.err(format!("unknown function attribute `{other}`")),
+            }
+            i += 1;
+        }
 
         let mut f = Function {
             id: FuncId(id),
             name,
             params,
             ret,
-            variadic: false,
+            variadic,
             allocas: Vec::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
-            attrs: Default::default(),
+            attrs,
             body: if has_body {
                 Body::Defined
             } else {
@@ -253,8 +279,8 @@ impl<'a> Parser<'a> {
             _ if s.starts_with('<') && s.ends_with('>') => {
                 let inner = &s[1..s.len() - 1];
                 let (n, e) = inner
-                    .split_once(" x ")
-                    .ok_or_else(|| self.perr("vector needs `N x ty`"))?;
+                    .split_once('x')
+                    .ok_or_else(|| self.perr("vector needs `NxTy`"))?;
                 CTy::Vector {
                     elem: Box::new(self.ty(e.trim())?),
                     lanes: n.trim().parse().map_err(|_| self.perr("bad lane count"))?,
@@ -305,6 +331,9 @@ impl<'a> Parser<'a> {
                         .parse()
                         .map_err(|_| self.perr("bad block label"))?
                 });
+                if labels.iter().any(|(_, seen)| *seen == id) {
+                    return self.err(format!("duplicate block label `{label}`"));
+                }
                 labels.push((label, id));
                 cur = Some(Block {
                     id,
@@ -737,6 +766,68 @@ impl<'a> Parser<'a> {
             },
             "addrfunc" => RValue::AddrOfFunc(self.func_id(g(1))?),
             "fresh" => RValue::Fresh { ty: self.ty(g(1))? },
+            "shuffle" => {
+                let joined = self.raw.clone();
+                let open = joined
+                    .find('[')
+                    .ok_or_else(|| self.perr("shuffle needs ["))?;
+                let close = joined
+                    .find(']')
+                    .ok_or_else(|| self.perr("shuffle needs ]"))?;
+                let mask: Result<Vec<u32>, ParseError> = joined[open + 1..close]
+                    .split(',')
+                    .filter(|x| !x.trim().is_empty())
+                    .map(|x| x.trim().parse().map_err(|_| self.perr("bad shuffle index")))
+                    .collect();
+                RValue::Shuffle {
+                    a: self.operand(g(1))?,
+                    b: self.operand(g(2))?,
+                    mask: mask?,
+                }
+            }
+            "ptrdiff" => RValue::Bin {
+                op: BinOp::PtrDiff {
+                    elem_size: g(1).parse().map_err(|_| self.perr("bad elem_size"))?,
+                },
+                ty: CTy::Ptr,
+                a: self.operand(g(2))?,
+                b: self.operand(g(3))?,
+            },
+            "undef" => RValue::Use(Operand::Const(Const::Undef(self.ty(g(1))?))),
+            "globaladdr" => RValue::Use(Operand::Const(Const::GlobalAddr {
+                g: self.global_id(g(1))?,
+                off: g(2).parse().map_err(|_| self.perr("bad offset"))?,
+            })),
+            "funcaddr" => RValue::Use(Operand::Const(Const::FuncAddr(self.func_id(g(1))?))),
+            "wide" => {
+                let bits: u32 = g(1)
+                    .trim_start_matches('i')
+                    .parse()
+                    .map_err(|_| self.perr("bad wide width"))?;
+                let hex = g(2).trim_start_matches("0x");
+                let mut words = Vec::new();
+                let mut rest = hex;
+                while !rest.is_empty() {
+                    let cut = rest.len().saturating_sub(16);
+                    let (head, tail) = rest.split_at(cut);
+                    words.push(
+                        u64::from_str_radix(tail, 16).map_err(|_| self.perr("bad wide limb"))?,
+                    );
+                    rest = head;
+                }
+                RValue::Use(Operand::Const(Const::Wide { bits, words }))
+            }
+            "fconst" => {
+                let k = match g(1) {
+                    "f32" => FloatKind::F32,
+                    "f64" => FloatKind::F64,
+                    "f80" => FloatKind::X87_80,
+                    o => return Err(self.perr(&format!("unknown float kind `{o}`"))),
+                };
+                let bits = u64::from_str_radix(g(2).trim_start_matches("0x"), 16)
+                    .map_err(|_| self.perr("bad float bits"))?;
+                RValue::Use(Operand::Const(Const::Float(k, bits)))
+            }
             "splat" => RValue::Splat {
                 elem: self.operand(g(1))?,
                 lanes: g(2).parse().map_err(|_| self.perr("bad lanes"))?,
@@ -832,8 +923,11 @@ pub fn print(m: &Module) -> String {
     o.push_str("target x86_64-unknown-linux-gnu\n");
     for g in &m.globals {
         o.push_str(&format!(
-            "\nglobal @{} : size {} align {}\n",
-            g.name, g.size, g.align
+            "\nglobal {}@{} : size {} align {}\n",
+            if g.is_const { "const " } else { "" },
+            g.name,
+            g.size,
+            g.align
         ));
     }
     for f in &m.funcs {
@@ -863,12 +957,28 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
         .iter()
         .map(|p| format!("%{}: {}", p.value.0, ty(&p.ty)))
         .collect();
-    o.push_str(&format!(
-        "func @{}({}) -> {}",
-        f.name,
-        params.join(", "),
-        ty(&f.ret)
-    ));
+    let mut plist = params.join(", ");
+    if f.variadic {
+        if plist.is_empty() {
+            plist.push_str("...");
+        } else {
+            plist.push_str(", ...");
+        }
+    }
+    o.push_str(&format!("func @{}({}) -> {}", f.name, plist, ty(&f.ret)));
+    // Attributes, in a fixed order so printing stays canonical.
+    if f.attrs.noreturn {
+        o.push_str(" noreturn");
+    }
+    if f.attrs.no_side_effects {
+        o.push_str(" pure");
+    }
+    if f.attrs.order_sensitive {
+        o.push_str(" order_sensitive");
+    }
+    if let Some(v) = &f.attrs.march_variant {
+        o.push_str(&format!(" march \"{v}\""));
+    }
     if f.body == Body::Declared {
         o.push('\n');
         return;
@@ -909,9 +1019,14 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
     o.push_str("}\n");
 }
 
-/// `entry` for the entry block, `bbN` otherwise — matching 020 §6's example.
-fn block_label(f: &Function, id: BlockId) -> String {
-    if id == f.entry {
+/// `entry` is the label for `BlockId(0)` **by id**, `bbN` otherwise.
+///
+/// Printing `entry` *positionally* — for whichever block happened to be `f.entry` —
+/// aliased: a function whose entry is `BlockId(3)` alongside a sibling `BlockId(0)`
+/// reparsed into two blocks both numbered 0, because the parser maps `entry` to
+/// `BlockId(0)`. Keying the label on the id removes the ambiguity.
+fn block_label(_f: &Function, id: BlockId) -> String {
+    if id.0 == 0 {
         "entry".to_string()
     } else {
         format!("bb{}", id.0)
@@ -926,7 +1041,10 @@ fn ty(t: &CTy) -> String {
         CTy::Float(FloatKind::F64) => "f64".into(),
         CTy::Float(FloatKind::X87_80) => "f80".into(),
         CTy::Ptr => "ptr".into(),
-        CTy::Vector { elem, lanes } => format!("<{} x {}>", lanes, ty(elem)),
+        // No spaces: `toks()` splits on whitespace before `ty()` sees the token, so
+        // `<16 x i8>` could never appear in an instruction — which meant no `.cir`
+        // fixture could contain a vector at all.
+        CTy::Vector { elem, lanes } => format!("<{}x{}>", lanes, ty(elem)),
     }
 }
 
@@ -937,24 +1055,31 @@ fn op(o: &Operand) -> String {
     }
 }
 
+/// Operand printing that can resolve `@names`. `konst` alone printed `@g0`/`@f0` while
+/// the parser resolves by name, so a global or function address as an *operand* printed
+/// in a form that could not be read back.
+fn opm(m: &Module, o: &Operand) -> String {
+    match o {
+        Operand::Const(Const::GlobalAddr { g, off }) => {
+            format!("globaladdr {}, {off}", gname(m, *g))
+        }
+        Operand::Const(Const::FuncAddr(f)) => format!("funcaddr {}", fname(m, *f)),
+        _ => op(o),
+    }
+}
+
 fn konst(c: &Const) -> String {
     match c {
         Const::Int { bits, val } => format!("{val}i{bits}"),
         Const::Wide { bits, words } => {
             let hex: Vec<String> = words.iter().rev().map(|w| format!("{w:016x}")).collect();
-            format!("0x{}i{bits}", hex.join(""))
+            format!("wide i{bits} 0x{}", hex.join(""))
         }
-        Const::Float(k, bits) => format!(
-            "{}:0x{bits:x}",
-            match k {
-                FloatKind::F32 => "f32",
-                FloatKind::F64 => "f64",
-                FloatKind::X87_80 => "f80",
-            }
-        ),
+        Const::Float(k, bits) => format!("fconst {} 0x{bits:x}", ty(&CTy::Float(*k))),
         Const::Null => "null".into(),
-        Const::GlobalAddr { g, off } => format!("@g{}+{off}", g.0),
-        Const::FuncAddr(f) => format!("@f{}", f.0),
+        // Only reachable for a module-less print; `opm` handles the named forms.
+        Const::GlobalAddr { g, off } => format!("globaladdr @g{}, {off}", g.0),
+        Const::FuncAddr(f) => format!("funcaddr @f{}", f.0),
         Const::Undef(t) => format!("undef {}", ty(t)),
     }
 }
@@ -1058,6 +1183,7 @@ fn print_inst(m: &Module, k: &InstKind, o: &mut String) {
 }
 
 fn print_rvalue(m: &Module, rv: &RValue, o: &mut String) {
+    let op = |x: &Operand| opm(m, x);
     match rv {
         RValue::Use(a) => o.push_str(&op(a)),
         RValue::Load {
@@ -1094,7 +1220,15 @@ fn print_rvalue(m: &Module, rv: &RValue, o: &mut String) {
             a,
             b: rhs,
             ty: t,
-        } => o.push_str(&format!("{} {} {}, {}", binop(*b), ty(t), op(a), op(rhs))),
+        } => {
+            // `elem_size` is part of the operator, not decoration: dropping it loses
+            // the scale the difference is measured in.
+            if let BinOp::PtrDiff { elem_size } = b {
+                o.push_str(&format!("ptrdiff {elem_size} {}, {}", op(a), op(rhs)));
+            } else {
+                o.push_str(&format!("{} {} {}, {}", binop(*b), ty(t), op(a), op(rhs)));
+            }
+        }
         RValue::Un { op: u, a, ty: t } => o.push_str(&format!(
             "{} {} {}",
             match u {
@@ -1200,6 +1334,8 @@ fn binop(b: BinOp) -> &'static str {
         BinOp::FMul => "fmul",
         BinOp::FDiv => "fdiv",
         BinOp::FRem => "frem",
+        // `elem_size` is part of the operator, not decoration: dropping it loses the
+        // scale the difference is measured in.
         BinOp::PtrDiff { .. } => "ptrdiff",
     }
 }

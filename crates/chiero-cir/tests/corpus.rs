@@ -95,19 +95,29 @@ fn the_corpus_covers_the_load_bearing_constructs() {
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap())
         .collect();
+    // Whole-token matching. A substring grep let `allocadyn` satisfy `alloca` and
+    // `callee` satisfy `call`, so the guard passed on constructs no fixture contained.
+    let tokens: std::collections::BTreeSet<&str> = all
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .collect();
     for construct in [
         "ptradd",   // pointer provenance (021 §2)
         "loadbits", // bitfields (020 §4.5.1)
-        "switch",   // multi-way control flow
-        "br",       // forking
-        "call",     // the call boundary
-        "alloca",   // stack objects
-        "copymem",  // aggregate assignment
-        ".scope",   // stack lifetime (015 §4)
-        ".line",    // the coverage join (015 §5)
+        "storebits",
+        "switch",  // multi-way control flow
+        "br",      // forking
+        "call",    // the call boundary
+        "alloca",  // stack objects
+        "copymem", // aggregate assignment
+        "setmem",
+        "extractlane", // vectors — impossible to express until the tokenizer was fixed
+        "shuffle",
+        "bitcast",
+        ".scope", // stack lifetime (015 §4)
+        ".line",  // the coverage join (015 §5)
     ] {
         assert!(
-            all.contains(construct),
+            tokens.contains(construct),
             "no corpus fixture exercises `{construct}`"
         );
     }
