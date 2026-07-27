@@ -20,6 +20,8 @@ pub struct Config {
     pub include_paths: Vec<PathBuf>,
     pub system_paths: Vec<PathBuf>,
     pub max_include_depth: usize,
+    /// Command-line-style object macros, applied after target predefines.
+    pub defines: Vec<(String, String)>,
 }
 
 impl Default for Config {
@@ -33,6 +35,7 @@ impl Default for Config {
             include_paths: Vec::new(),
             system_paths: Vec::new(),
             max_include_depth: 200,
+            defines: Vec::new(),
         }
     }
 }
@@ -134,6 +137,13 @@ struct Conditional {
     taken: bool,
 }
 
+#[derive(Clone)]
+struct LineOverride {
+    physical_start: u32,
+    reported_start: u32,
+    file: Option<String>,
+}
+
 struct MissingLoader;
 
 impl FileLoader for MissingLoader {
@@ -200,6 +210,7 @@ struct Engine {
     lex_diagnostics: BTreeMap<(FileId, u32), Vec<Diagnostic>>,
     once: BTreeSet<PathBuf>,
     guards: BTreeMap<PathBuf, String>,
+    line_overrides: BTreeMap<FileId, Vec<LineOverride>>,
     macros: Vec<StoredMacro>,
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
@@ -249,6 +260,7 @@ impl Engine {
             lex_diagnostics,
             once: BTreeSet::new(),
             guards: BTreeMap::new(),
+            line_overrides: BTreeMap::new(),
             macros: Vec::new(),
             by_name: BTreeMap::new(),
             diagnostics,
@@ -262,6 +274,18 @@ impl Engine {
             "__TIME__",
         ] {
             engine.add_builtin(builtin);
+        }
+        for (name, value) in [
+            ("__STDC__", "1"),
+            ("__STDC_HOSTED__", "1"),
+            ("__STDC_VERSION__", "201112L"),
+            ("__GNUC__", "13"),
+            ("__x86_64__", "1"),
+        ] {
+            engine.add_predefined_object(name, value);
+        }
+        for name in ["__has_include", "__has_attribute", "__has_builtin"] {
+            engine.add_predefined_query(name);
         }
         engine
     }
@@ -316,8 +340,13 @@ impl Engine {
                 // physical line. A directive is the only boundary at which an active
                 // ordinary-token chunk must be complete.
                 output.extend(self.expand(std::mem::take(&mut ordinary)));
-                if active && line.get(1).is_some_and(|token| token.text == "include") {
-                    output.extend(self.include(&line, path, depth, loader));
+                if active
+                    && line.get(1).is_some_and(|token| {
+                        matches!(token.text.as_str(), "include" | "include_next")
+                    })
+                {
+                    let include_next = line[1].text == "include_next";
+                    output.extend(self.include(&line, path, depth, loader, include_next));
                 } else if active
                     && line.get(1).is_some_and(|token| token.text == "pragma")
                     && line.get(2).is_some_and(|token| token.text == "once")
@@ -353,6 +382,7 @@ impl Engine {
         current: &Path,
         depth: usize,
         loader: &mut dyn FileLoader,
+        include_next: bool,
     ) -> Vec<Tok> {
         if depth >= self.config.max_include_depth {
             self.diagnostics.push(Diagnostic {
@@ -372,33 +402,31 @@ impl Engine {
             });
             return Vec::new();
         };
-        let mut candidates = Vec::new();
+        let mut directories = Vec::new();
         if quoted {
-            candidates.push(
+            directories.push(
                 current
                     .parent()
                     .unwrap_or_else(|| Path::new(""))
-                    .join(&name),
+                    .to_path_buf(),
             );
-            candidates.extend(
-                self.config
-                    .iquote_paths
-                    .iter()
-                    .map(|directory| directory.join(&name)),
-            );
+            directories.extend(self.config.iquote_paths.iter().cloned());
         }
-        candidates.extend(
-            self.config
-                .include_paths
+        directories.extend(self.config.include_paths.iter().cloned());
+        directories.extend(self.config.system_paths.iter().cloned());
+        if include_next {
+            let provider = current.parent().unwrap_or_else(|| Path::new(""));
+            if let Some(index) = directories
                 .iter()
-                .map(|directory| directory.join(&name)),
-        );
-        candidates.extend(
-            self.config
-                .system_paths
-                .iter()
-                .map(|directory| directory.join(&name)),
-        );
+                .position(|directory| directory == provider)
+            {
+                directories.drain(..=index);
+            }
+        }
+        let mut candidates: Vec<_> = directories
+            .into_iter()
+            .map(|directory| directory.join(&name))
+            .collect();
         if candidates.is_empty() {
             candidates.push(PathBuf::from(&name));
         }
@@ -488,6 +516,57 @@ impl Engine {
         self.by_name.insert(name.into(), index);
     }
 
+    fn add_predefined_object(&mut self, name: &str, value: &str) {
+        let id = self
+            .source_map
+            .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
+        let index = self.macros.len();
+        let body = vec![synthetic_number(value, Span::DUMMY)];
+        self.macros.push(StoredMacro {
+            def: MacroDef {
+                id,
+                name: Symbol(index as u32),
+                kind: MacroKind::ObjectLike,
+                body: body.iter().map(|token| token.token.clone()).collect(),
+                def_span: Span::DUMMY,
+                undef_span: None,
+            },
+            name: name.into(),
+            params: Vec::new(),
+            variadic_name: None,
+            std_variadic: false,
+            body,
+        });
+        self.by_name.insert(name.into(), index);
+    }
+
+    fn add_predefined_query(&mut self, name: &str) {
+        let id = self
+            .source_map
+            .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
+        let index = self.macros.len();
+        let body = vec![synthetic_number("0", Span::DUMMY)];
+        self.macros.push(StoredMacro {
+            def: MacroDef {
+                id,
+                name: Symbol(index as u32),
+                kind: MacroKind::FunctionLike {
+                    params: vec![Symbol(0)],
+                    variadic: Variadic::No,
+                },
+                body: body.iter().map(|token| token.token.clone()).collect(),
+                def_span: Span::DUMMY,
+                undef_span: None,
+            },
+            name: name.into(),
+            params: vec!["query".into()],
+            variadic_name: None,
+            std_variadic: false,
+            body,
+        });
+        self.by_name.insert(name.into(), index);
+    }
+
     fn directive(&mut self, line: &[Tok], conditionals: &mut Vec<Conditional>) {
         let directive = line.get(1).map(|t| t.text.as_str());
         let active = conditionals.last().is_none_or(|frame| frame.active);
@@ -570,6 +649,41 @@ impl Engine {
                 {
                     self.macros[index].def.undef_span = Some(name.token.span);
                 }
+            }
+            Some("line") => {
+                if let Some(number) = line.get(2)
+                    && let Ok(reported_start) = number.text.parse::<u32>()
+                    && let Some(loc) = self.source_map.lookup_loc(number.token.span.lo)
+                {
+                    let file = line.get(3).and_then(|token| {
+                        token
+                            .text
+                            .strip_prefix('"')
+                            .and_then(|text| text.strip_suffix('"'))
+                            .map(str::to_owned)
+                    });
+                    self.line_overrides
+                        .entry(loc.file)
+                        .or_default()
+                        .push(LineOverride {
+                            physical_start: loc.line + 1,
+                            reported_start,
+                            file,
+                        });
+                }
+            }
+            Some("error" | "warning") => {
+                let message = line
+                    .get(2..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.diagnostics.push(Diagnostic {
+                    span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
+                    message: format!("#{}: {message}", directive.unwrap_or_default()),
+                });
             }
             Some("pragma") => {}
             Some(other) => self.diagnostics.push(Diagnostic {
@@ -712,6 +826,28 @@ impl Engine {
         let mut i = 0;
         while i < input.len() {
             let token = &input[i];
+            if token.text == "_Pragma"
+                && input.get(i + 1).is_some_and(|token| token.text == "(")
+                && input
+                    .get(i + 2)
+                    .is_some_and(|token| matches!(token.token.kind, PpTokenKind::StringLit { .. }))
+                && input.get(i + 3).is_some_and(|token| token.text == ")")
+            {
+                self.source_map.add_expansion(
+                    token.token.span.ctx,
+                    None,
+                    token.token.span,
+                    Span::new(
+                        token.token.span.lo,
+                        input[i + 3].token.span.hi,
+                        token.token.span.ctx,
+                    ),
+                    Vec::new(),
+                    ExpnKind::Pragma,
+                );
+                output.extend(self.expand(input[i + 4..].to_vec()));
+                return output;
+            }
             let Some(&macro_index) = self.by_name.get(&token.text) else {
                 output.push(token.clone());
                 i += 1;
@@ -782,20 +918,15 @@ impl Engine {
     }
 
     fn expand_builtin(&mut self, call: &Tok, def: &StoredMacro) -> Tok {
+        let (reported_line, reported_file) = self.reported_line_file(call.token.span);
         let text = match def.name.as_str() {
             "__COUNTER__" => {
                 let value = self.counter.to_string();
                 self.counter += 1;
                 value
             }
-            "__LINE__" => self
-                .source_map
-                .expansion_loc(call.token.span)
-                .map_or_else(|| "0".into(), |loc| loc.line.to_string()),
-            "__FILE__" => self.source_map.lookup_file(call.token.span.lo).map_or_else(
-                || "\"\"".into(),
-                |file| format!("\"{}\"", self.source_map.file(file).path().display()),
-            ),
+            "__LINE__" => reported_line.to_string(),
+            "__FILE__" => format!("\"{reported_file}\""),
             "__DATE__" => format!("\"{}\"", self.config.date),
             "__TIME__" => format!("\"{}\"", self.config.time),
             _ => String::new(),
@@ -824,6 +955,26 @@ impl Engine {
             text,
             hide: call.hide.clone(),
         }
+    }
+
+    fn reported_line_file(&self, span: Span) -> (u32, String) {
+        let Some(loc) = self.source_map.expansion_loc(span) else {
+            return (0, String::new());
+        };
+        let mut line = loc.line;
+        let mut file = self.source_map.file(loc.file).path().display().to_string();
+        if let Some(overrides) = self.line_overrides.get(&loc.file)
+            && let Some(override_) = overrides
+                .iter()
+                .rev()
+                .find(|override_| override_.physical_start <= loc.line)
+        {
+            line = override_.reported_start + (loc.line - override_.physical_start);
+            if let Some(overridden) = &override_.file {
+                file.clone_from(overridden);
+            }
+        }
+        (line, file)
     }
 
     fn expand_function(

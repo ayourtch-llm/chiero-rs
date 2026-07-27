@@ -52,6 +52,10 @@
   reviewed tree; the tests remain to prevent regressions.
 - Per the updated 012 §2.3, `__VA_OPT__` is removed with a diagnostic rather than passed
   through.
+- Findings 11 and 12 reproduced: predefined feature queries broke `#if`, line control
+  was ignored, `_Pragma` leaked, and `#include_next` was rejected. Target predefines and
+  conservative feature queries now exist; `#line`, `#error`, `#warning`, `_Pragma`, and
+  search-position-aware `#include_next` have dedicated handling.
 
 ## Mutation checks
 
