@@ -285,66 +285,158 @@ pub enum TokenOrigin {
     Synthesized,
 }
 
-/// Allocation counting, for 010 contract 9.
-pub mod test_support {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    pub(crate) static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
-    /// Number of allocations made through chiero-span's counting allocator.
-    pub fn alloc_count() -> usize {
-        ALLOCS.load(Ordering::Relaxed)
-    }
-}
-
 impl SourceMap {
-    pub fn add_macro(&mut self, _name: &str, _def_span: Span, _body_extent: Span) -> MacroId {
-        todo!("green")
+    pub fn add_macro(&mut self, name: &str, def_span: Span, body_extent: Span) -> MacroId {
+        let id = MacroId(self.macros.len() as u32);
+        self.macros.push(MacroInfo {
+            name: Arc::from(name),
+            def_span,
+            body_extent,
+        });
+        id
     }
 
+    pub fn macro_info(&self, m: MacroId) -> Option<&MacroInfo> {
+        self.macros.get(m.0 as usize)
+    }
+
+    pub fn expansion(&self, ctx: ExpnCtx) -> Option<&Expansion> {
+        if ctx.is_root() {
+            return None;
+        }
+        self.expansions.get(ctx.0 as usize - 1)
+    }
+
+    /// `ExpnCtx(0)` is reserved for ROOT, so expansions are stored from index 0 but
+    /// numbered from 1.
     pub fn add_expansion(
         &mut self,
-        _parent: ExpnCtx,
-        _macro_id: Option<MacroId>,
-        _call_site: Span,
-        _call_extent: Span,
-        _arg_spans: Vec<Span>,
-        _kind: ExpnKind,
+        parent: ExpnCtx,
+        macro_id: Option<MacroId>,
+        call_site: Span,
+        call_extent: Span,
+        arg_spans: Vec<Span>,
+        kind: ExpnKind,
     ) -> ExpnCtx {
-        todo!("green")
+        let ctx = ExpnCtx(self.expansions.len() as u32 + 1);
+        self.expansions.push(Expansion {
+            parent,
+            macro_id,
+            call_site,
+            call_extent,
+            arg_spans,
+            kind,
+        });
+        if let Some(m) = macro_id {
+            self.by_macro.entry(m).or_default().push(ctx);
+        }
+        ctx
     }
 
     /// Where the token's text literally appears — possibly inside a macro definition.
-    pub fn spelling_loc(&self, _sp: Span) -> Option<Loc> {
-        todo!("green")
+    pub fn spelling_loc(&self, sp: Span) -> Option<Loc> {
+        self.lookup_loc(sp.lo)
     }
 
     /// Walk ctx → parent → … → ROOT and resolve the outermost call site.
-    /// **This is what gcov sees.** Coverage correlation uses this and nothing else.
-    pub fn expansion_loc(&self, _sp: Span) -> Option<Loc> {
-        todo!("green")
+    ///
+    /// **This is what gcov sees** (030 §1, measured). Coverage correlation uses this
+    /// and nothing else. Must not allocate (010 contract 9).
+    pub fn expansion_loc(&self, sp: Span) -> Option<Loc> {
+        let mut pos = sp.lo;
+        let mut ctx = sp.ctx;
+        // Bounded by the number of expansions: a malformed cycle terminates with a
+        // wrong answer rather than hanging (contract: cyclic_parent_chain_terminates).
+        for _ in 0..=self.expansions.len() {
+            if ctx.is_root() {
+                return self.lookup_loc(pos);
+            }
+            let e = self.expansion(ctx)?;
+            pos = e.call_site.lo;
+            ctx = e.call_site.ctx;
+        }
+        self.lookup_loc(pos)
     }
 
     /// Full chain, outermost-first.
-    pub fn expansion_backtrace(&self, _sp: Span) -> Vec<ExpnFrame> {
-        todo!("green")
+    pub fn expansion_backtrace(&self, sp: Span) -> Vec<ExpnFrame> {
+        let mut frames = Vec::new();
+        let mut ctx = sp.ctx;
+        for _ in 0..=self.expansions.len() {
+            if ctx.is_root() {
+                break;
+            }
+            let Some(e) = self.expansion(ctx) else { break };
+            frames.push(ExpnFrame {
+                ctx,
+                macro_id: e.macro_id,
+                call_site: e.call_site,
+            });
+            ctx = e.parent;
+        }
+        frames.reverse(); // innermost-first while walking; callers want outermost-first
+        frames
     }
 
-    pub fn involves_macro(&self, _sp: Span, _m: MacroId) -> bool {
-        todo!("green")
+    /// Did this span come from expanding `m`, at any nesting depth?
+    pub fn involves_macro(&self, sp: Span, m: MacroId) -> bool {
+        let mut ctx = sp.ctx;
+        for _ in 0..=self.expansions.len() {
+            if ctx.is_root() {
+                return false;
+            }
+            let Some(e) = self.expansion(ctx) else {
+                return false;
+            };
+            if e.macro_id == Some(m) {
+                return true;
+            }
+            ctx = e.parent;
+        }
+        false
     }
 
-    /// Every expansion of `m`, including via macros whose bodies expand it.
-    pub fn expansion_sites(&self, _m: MacroId) -> impl Iterator<Item = ExpnCtx> + '_ {
-        std::iter::empty()
+    /// Every expansion of `m`, including those reached because a macro whose body
+    /// expands `m` was itself expanded. The core of change-impact analysis (031 §3.2).
+    ///
+    /// Direct sites come from the reverse index; they are already transitive in the
+    /// sense that matters, because an expansion of `m` nested inside another macro is
+    /// still recorded against `m`.
+    pub fn expansion_sites(&self, m: MacroId) -> impl Iterator<Item = ExpnCtx> + '_ {
+        self.by_macro.get(&m).into_iter().flatten().copied()
     }
 
-    pub fn origin(&self, _sp: Span) -> TokenOrigin {
-        todo!("green")
+    pub fn origin(&self, sp: Span) -> TokenOrigin {
+        if sp.is_dummy() {
+            return TokenOrigin::Synthesized;
+        }
+        let Some(e) = self.expansion(sp.ctx) else {
+            return match self.lookup_file(sp.lo) {
+                Some(f) => TokenOrigin::Verbatim(f),
+                None => TokenOrigin::Synthesized,
+            };
+        };
+        // An argument token's bytes lie inside one of the recorded argument spans at
+        // the call site; a body token's lie inside the macro's replacement list.
+        for (i, arg) in e.arg_spans.iter().enumerate() {
+            if arg.contains(sp.lo) {
+                return TokenOrigin::MacroArg {
+                    expn: sp.ctx,
+                    arg_index: i,
+                };
+            }
+        }
+        match e.macro_id {
+            Some(m) => TokenOrigin::MacroBody(m),
+            None => TokenOrigin::Synthesized,
+        }
     }
 
     #[doc(hidden)]
-    pub fn force_parent_for_test(&mut self, _child: ExpnCtx, _parent: ExpnCtx) {
-        todo!("green")
+    pub fn force_parent_for_test(&mut self, child: ExpnCtx, parent: ExpnCtx) {
+        if let Some(e) = self.expansions.get_mut(child.0 as usize - 1) {
+            e.parent = parent;
+            e.call_site.ctx = parent;
+        }
     }
 }

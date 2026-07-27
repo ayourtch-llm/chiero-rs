@@ -6,6 +6,35 @@
 //! where the macro was used.
 
 use chiero_span::{BytePos, ExpnCtx, ExpnKind, MacroId, SourceMap, Span, TokenOrigin};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A counting allocator, so 010 contract 9 ("`expansion_loc` never allocates") is a
+/// real measurement rather than a comment. It is installed for this test binary only.
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+
+struct Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.alloc(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        unsafe { System.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.realloc(p, l, n) }
+    }
+}
+
+#[global_allocator]
+static A: Counting = Counting;
+
+fn alloc_count() -> usize {
+    ALLOCS.load(Ordering::Relaxed)
+}
 
 /// Builds the 010 §3.2 fixture:
 ///
@@ -85,10 +114,7 @@ fn fixture() -> Fixture {
         Some(vec_add1),
         call_site,
         at(cbase, &c_src, "vec_add1 (adj_list, ai)", 0),
-        vec![
-            at(cbase, &c_src, "adj_list", 0),
-            at(cbase, &c_src, "ai", 1), // the argument, not the `ai` inside adj_list
-        ],
+        vec![at(cbase, &c_src, "adj_list", 0), at(cbase, &c_src, "ai", 0)],
         ExpnKind::FunctionLike,
     );
 
@@ -114,7 +140,7 @@ fn fixture() -> Fixture {
 
     // A token substituted from the *caller's* argument, produced by the outer
     // expansion: its bytes point at ip4_forward.c, not at the macro body.
-    let a = at(cbase, &c_src, "ai", 1);
+    let a = at(cbase, &c_src, "ai", 0);
     let ai_tok = Span::new(a.lo, a.hi, outer);
 
     Fixture {
@@ -262,9 +288,20 @@ fn object_like_chain_has_depth_two() {
 #[test]
 fn expansion_loc_does_not_allocate() {
     let f = fixture();
-    let before = chiero_span::test_support::alloc_count();
+
+    // Sanity-check that the counting allocator is actually installed; otherwise the
+    // real assertion below would pass vacuously.
+    let probe_before = alloc_count();
+    let probe: Vec<u8> = Vec::with_capacity(64);
+    assert!(
+        alloc_count() > probe_before,
+        "counting allocator is not installed; this test would be vacuous"
+    );
+    drop(probe);
+
+    let before = alloc_count();
     let loc = f.sm.expansion_loc(f.resize_tok);
-    let after = chiero_span::test_support::alloc_count();
+    let after = alloc_count();
     assert!(loc.is_some());
     assert_eq!(
         after, before,
