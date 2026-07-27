@@ -41,7 +41,10 @@ fn a_negative_offset_from_the_user_pointer_reads_the_header() {
 
     // Below the object entirely.
     assert!(
-        matches!(o.read_int(user - 16, 4, Endian::Little), Err(AccessError::OutOfBounds { .. })),
+        matches!(
+            o.read_int(user - 16, 4, Endian::Little),
+            Err(AccessError::OutOfBounds { .. })
+        ),
         "-16 from the user pointer is before the object"
     );
 }
@@ -148,13 +151,32 @@ fn a_conditionally_written_byte_is_neither_initialized_nor_not() {
     assert_eq!(o.init_bit(8), InitBit::No, "byte 1 is untouched");
 }
 
+/// **`Cond` is not `Yes`, and a read must treat it that way.**
+///
+/// Storing the third state is only half of it: if a read then accepts `Cond` as
+/// initialized, the state is decoration and the model behaves exactly like the
+/// two-state mask 021 §3.1 rejects. Conditionally-initialized is not definitely
+/// initialized, so the read is not silently answered.
+#[test]
+fn reading_through_a_conditionally_written_byte_is_not_silently_initialized() {
+    let mut o = obj(8);
+    o.write_bytes_cond(0, &[7], Cond::Symbolic).unwrap();
+    assert!(
+        matches!(o.read_bytes(0, 1), Err(AccessError::Uninitialized { .. })),
+        "a byte initialized only under a guard is not definitely initialized"
+    );
+    // And an unconditional write over it settles the question.
+    o.write_bytes(0, &[9]).unwrap();
+    assert_eq!(o.read_bytes(0, 1).unwrap(), vec![9]);
+}
+
 /// Writes are tracked, so `write` then `read` at the same place never reports
 /// uninitialized. Without this the test above is satisfied by a model that reports
 /// `Uninitialized` for everything.
 #[test]
 fn a_written_byte_reads_back_initialized() {
     let mut o = obj(8);
-    for i in 0..8u64 {
+    for i in 0..8i64 {
         o.write_bytes(i, &[i as u8 + 1]).unwrap();
     }
     assert_eq!(o.read_bytes(0, 8).unwrap(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
@@ -170,7 +192,11 @@ fn a_written_byte_reads_back_initialized() {
 fn out_of_bounds_findings_name_the_offset_and_size() {
     let o = obj(16);
     match o.read_bytes(-4, 2) {
-        Err(AccessError::OutOfBounds { off, size, obj_size }) => {
+        Err(AccessError::OutOfBounds {
+            off,
+            size,
+            obj_size,
+        }) => {
             assert_eq!((off, size, obj_size), (-4, 2, 16));
         }
         other => panic!("expected OOB, got {other:?}"),
