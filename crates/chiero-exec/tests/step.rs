@@ -9119,3 +9119,122 @@ fn a_constant_overwrites_one_byte_of_a_symbolic_word() {
         );
     }
 }
+
+/// **020 contract 38.** `AllocaDyn` inside a loop body executed three times creates three
+/// **distinct** objects. C's `alloca` accumulates until function return, so reusing one
+/// object would make the second iteration alias the first — writes aliasing and lifetimes
+/// wrong at once, and a use-after-free that never fires because the memory is still there.
+#[test]
+fn alloca_dyn_in_a_loop_creates_a_distinct_object_each_time() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Use(i32c(0)),
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+            block(
+                1,
+                vec![inst(InstKind::AllocaDyn {
+                    dst: ValueId(1),
+                    alloca: AllocaId(0),
+                    elem: CTy::Int(8),
+                    count: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    align: 8,
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        count: chiero_cir::DYNAMIC_EXTENT,
+        ..alloca(0, CTy::Int(8), 0)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    // Every allocation is its own object, so the count of live stack objects grows with
+    // the iterations rather than staying at one.
+    let s = &r.states()[0];
+    let objects = s.mem.object_count_for_test();
+    assert!(
+        objects >= 3,
+        "three iterations, three objects, got {objects}"
+    );
+}
+
+/// **020 contract 35.** `Bitcast` between `Int(128)` and `Vector { Int(32), 4 }` verifies;
+/// between `Int(32)` and `Vector { Int(8), 16 }` it is rejected. Verifier rule 12 is that
+/// a bitcast preserves total width — 021 §3's "bytes are bytes" only holds if the bytes
+/// are the *same* bytes, and a cast that changed their number would be a reinterpretation
+/// of memory the program never wrote.
+#[test]
+fn a_bitcast_preserves_total_width() {
+    for (from, to, ok) in [
+        (
+            CTy::Int(128),
+            CTy::Vector {
+                elem: Box::new(CTy::Int(32)),
+                lanes: 4,
+            },
+            true,
+        ),
+        (
+            CTy::Int(32),
+            CTy::Vector {
+                elem: Box::new(CTy::Int(8)),
+                lanes: 16,
+            },
+            false,
+        ),
+    ] {
+        let caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: from.clone() },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::Bitcast,
+                            a: Operand::Value(ValueId(0)),
+                            from: from.clone(),
+                            to: to.clone(),
+                        },
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        let m = Module {
+            funcs: vec![caller],
+            ..Default::default()
+        };
+        let errs = chiero_cir::verify(&m);
+        assert_eq!(
+            errs.iter().all(|e| !e.kind.is_error()),
+            ok,
+            "{from:?} -> {to:?}: {errs:#?}"
+        );
+    }
+}

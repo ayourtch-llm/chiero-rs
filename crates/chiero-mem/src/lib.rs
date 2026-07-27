@@ -1771,6 +1771,13 @@ impl Memory {
         out
     }
 
+    /// How many objects this memory holds. Only for tests: a caller that needs to know
+    /// how many objects exist is usually asking the wrong question, but "did this loop
+    /// allocate once or three times" has no other observable.
+    pub fn object_count_for_test(&self) -> usize {
+        self.entries.len()
+    }
+
     /// The address `id` was placed at. `Memory` owns the address space, so a caller that
     /// needs to *store* a pointer — which is how a linked structure is built — cannot get
     /// at it otherwise.
