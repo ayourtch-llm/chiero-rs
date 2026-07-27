@@ -1201,6 +1201,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    remainder of 024 §3–§7 (string models, builtins, harness intrinsics) and the engine's
    indirect calls, searchers and checkers.
 
+   **String models DONE** (`8c19004` red, `4211912` green, 438 tests): 024 §4 and
+   contracts 6, 8, 9. `StrScan` has **three** outcomes — `Exact`, `Unterminated`,
+   `CapReached` — because §4 is explicit that "the object ended" and "I stopped looking"
+   are different claims. Collapsing them is how the cap assumes away the unterminated
+   bug; an earlier spec draft did exactly that, so the small-object case has its own test.
+   The cap **adds no constraint**. `strcpy` needs `strlen + 1`, tested at the boundary
+   both ways.
+
+   *This surfaced a `chiero-mem` defect:* **the scalar alignment rule was applied to
+   byte-wise copies.** An N-byte access wanting N-byte alignment is about scalar loads and
+   stores; `memcpy`/`memset`/`strcpy` move bytes and C imposes no alignment. Every
+   `strcpy` into a `char` buffer was a false positive. Now scoped via `write_bytewise`,
+   with a companion test that a *scalar* access at the same address still raises it.
+
+   *One survivor was the fixture, not the code:* the "strcpy that fits" test copied into a
+   freshly allocated object whose backing reads as zero, so forgetting the terminator left
+   a zero there anyway and looked right. Pre-fill destinations with non-zero bytes.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
