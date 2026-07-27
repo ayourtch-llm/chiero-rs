@@ -212,6 +212,14 @@ pub struct Assumption {
 pub enum Value {
     Scalar(Term),
     Ptr(Pointer),
+    /// 020 §4.1's `Const::Undef`: the program left this undecided, and so does chiero.
+    ///
+    /// **Not a fresh symbol.** A symbol is a value nobody has pinned *yet* and the solver
+    /// may pin later; `Undef` is a value that does not exist, and letting the solver
+    /// choose one is choosing for the program. Arithmetic on it stays `Undef` — including
+    /// `undef * 0`, which is 0 for every value of the operand and undefined for a
+    /// non-value.
+    Undef,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -538,7 +546,9 @@ impl State {
     pub fn return_value_bits(&self, a: &mut TermArena) -> Option<u128> {
         match self.ret? {
             Value::Scalar(t) => a.eval_ground(t).ok().map(|c| c.bits()),
-            Value::Ptr(_) => None,
+            // Neither has concrete bits, and `Undef` most emphatically does not: the
+            // whole point is that no value was chosen.
+            Value::Ptr(_) | Value::Undef => None,
         }
     }
 
@@ -1416,6 +1426,22 @@ impl<'m> Engine<'m> {
         }
     }
 
+    /// Whether an operand is 020 §4.1's `Undef`.
+    fn is_undef(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> bool {
+        matches!(self.operand(a, s, o), Some(Value::Undef))
+    }
+
+    /// The result of an operation with an `Undef` operand: `Undef`, and the run says it
+    /// knows less than exactly.
+    ///
+    /// `Unknown` rather than `Approximated`: chiero has not *approximated* anything here,
+    /// it has propagated the program's own absence of a value. 023 §7's `Approximated`
+    /// means "we kept one of several", which would be the wrong claim.
+    fn undef_result(&mut self, s: &mut State, span: Span, why: &str) -> Option<Value> {
+        s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, why);
+        Some(Value::Undef)
+    }
+
     fn new_id(&mut self) -> StateId {
         let id = StateId(self.next_state);
         self.next_state += 1;
@@ -1567,6 +1593,21 @@ impl<'m> Engine<'m> {
                 // manufactured a false uninitialized-read on the reload.
                 let t = match self.operand(a, s, val) {
                     Some(Value::Scalar(t)) => t,
+                    // **Storing `Undef` leaves the destination uninitialized**, which is
+                    // what it means: a later read is 021 §3.1's uninitialized-read
+                    // finding rather than a read of some value chiero invented here.
+                    Some(Value::Undef) => {
+                        let size = size_of_cty(ty);
+                        let r = s.mem.havoc_range_reporting(
+                            a,
+                            p,
+                            size,
+                            chiero_mem::HavocFill::Uninitialized,
+                            i.span,
+                        );
+                        self.report_faults(s, &r.faults, i.span);
+                        return;
+                    }
                     Some(Value::Ptr(q)) => {
                         let Some(t) = self.address_term(a, s, q, i.span) else {
                             return;
@@ -2109,6 +2150,49 @@ impl<'m> Engine<'m> {
                 s.status = Status::Terminated(TermReason::Unreachable);
                 None
             }
+            // **020 contract 42.** One state per declared target. The address is *not*
+            // resolved to a block — a `.cir` label address has no representation the
+            // memory model can match against a `BlockId` — so the target list is the
+            // frontend's declaration and the run says so rather than implying the set was
+            // computed. VPP has zero computed gotos tree-wide (020 §4), so this exists to
+            // keep the terminator honest rather than to carry traffic.
+            Terminator::IndirectGoto { addr, targets } => {
+                let _ = self.operand(a, s, addr);
+                if targets.is_empty() {
+                    s.give_up(
+                        "an indirect goto with no declared targets".into(),
+                        Span::DUMMY,
+                    );
+                    return None;
+                }
+                s.degrade(
+                    Fidelity::Approximated,
+                    AssumptionKind::OpaqueCode,
+                    Span::DUMMY,
+                    "an indirect goto: every declared target was explored, and the \
+                     declaration is the frontend's",
+                );
+                let mut mine = *targets.last().expect("non-empty");
+                let rest: Vec<BlockId> = targets[..targets.len() - 1].to_vec();
+                for to in rest {
+                    if self.forks >= self.budget.max_indirect {
+                        s.degrade(
+                            Fidelity::Bounded,
+                            AssumptionKind::BudgetHit,
+                            Span::DUMMY,
+                            &format!("max_indirect ({}) reached", self.budget.max_indirect),
+                        );
+                        mine = to;
+                        break;
+                    }
+                    self.forks += 1;
+                    let mut sib = s.clone();
+                    sib.id = self.new_id();
+                    self.take_edge(&mut sib, to);
+                    self.pending.push(sib);
+                }
+                self.take_edge(s, mine)
+            }
             _ => {
                 s.give_up("unsupported terminator".into(), Span::DUMMY);
                 None
@@ -2168,6 +2252,23 @@ impl<'m> Engine<'m> {
         bt: BlockId,
         bf: BlockId,
     ) -> Option<State> {
+        // **A branch on `Undef` forks both ways** (020 contract 43). Taking one side is
+        // choosing for a program that did not choose, and no path constraint is added:
+        // there is no term to constrain, and inventing one would let a later query
+        // "prove" something about a value that does not exist.
+        if matches!(self.operand(a, s, cond), Some(Value::Undef)) {
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                Span::DUMMY,
+                "a branch on undef: both sides explored, neither constrained",
+            );
+            let mut sibling = s.clone();
+            sibling.id = self.new_id();
+            self.take_edge(s, bt);
+            self.take_edge(&mut sibling, bf);
+            return Some(sibling);
+        }
         let Some(Value::Scalar(c)) = self.operand(a, s, cond) else {
             s.give_up("branch condition is not a scalar".into(), Span::DUMMY);
             return None;
@@ -2311,6 +2412,12 @@ impl<'m> Engine<'m> {
                 None => return self.lowering_gap(s, span, &format!("{o:?}")),
             },
             RValue::Bin { op, a: x, b: y, ty } => {
+                // **`Undef` in, `Undef` out** (020 contract 43) — including `undef * 0`,
+                // which is 0 for every *value* of the operand and undefined for a
+                // non-value. Checked before `scalar`, which has no term to hand back.
+                if self.is_undef(a, s, x) || self.is_undef(a, s, y) {
+                    return self.undef_result(s, span, "arithmetic on undef");
+                }
                 let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
                     return self.lowering_gap(s, span, "a non-scalar arithmetic operand");
                 };
@@ -2323,6 +2430,9 @@ impl<'m> Engine<'m> {
                 }
             }
             RValue::Cmp { op, a: x, b: y, .. } => {
+                if self.is_undef(a, s, x) || self.is_undef(a, s, y) {
+                    return self.undef_result(s, span, "a comparison against undef");
+                }
                 let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
                     return self.lowering_gap(s, span, "a non-scalar comparison operand");
                 };
@@ -3974,8 +4084,12 @@ impl<'m> Engine<'m> {
                 let base = self.func_object(s, *id);
                 Some(Value::Ptr(Pointer { base, off: 0 }))
             }
-            // `Float`, `Wide` and `Undef` remain gaps: 023 §7 approximates floating point,
-            // and inventing a value for `Undef` is the opposite of what it means.
+            // **`Undef` is a value, not a gap** (020 contract 43). Inventing one for it
+            // is the opposite of what it means, and so is refusing the operand: a
+            // `LoweringGap` says "chiero cannot follow this", where the truth is that the
+            // *program* did not say.
+            Operand::Const(Const::Undef(_)) => Some(Value::Undef),
+            // `Float` and `Wide` remain gaps: 023 §7 approximates floating point.
             _ => None,
         }
     }
@@ -3983,7 +4097,11 @@ impl<'m> Engine<'m> {
     fn scalar(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> Option<Term> {
         match self.operand(a, s, o)? {
             Value::Scalar(t) => Some(t),
-            Value::Ptr(_) => None,
+            // **`Undef` has no term, and must not get one.** A fresh symbol here would be
+            // a value the solver may pin, which is exactly what `Undef` says does not
+            // exist. Callers that can propagate it check for it before asking (020
+            // contract 43); the rest treat `None` as the gap it is.
+            Value::Ptr(_) | Value::Undef => None,
         }
     }
 }
