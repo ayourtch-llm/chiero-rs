@@ -635,6 +635,20 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      ones that catch the dangling-`ExpnCtx` design error. `cook_tu` resolves eagerly so
      the index is self-contained by construction.
 
+3.7. **`chiero-cir` STARTED** (`c0ae64b` red, `f27a3e9` green). All CIR types per 020
+   (`CTy`, `Const` incl. `Wide` for >128-bit, `RValue` incl. vector lane ops, `InstKind`
+   incl. `AllocaDyn`/`VaStart`/`VaArg`, `Terminator`, `Block`, `Function`, `Module`) plus
+   the **verifier**: all 13 rules of 020 §8, 21 tests, 020 contracts 4–5.
+   `Symbol = Arc<str>` for now — an interner belongs in `chiero-span` once a second
+   crate needs one.
+
+   **Next in `chiero-cir`: the textual `.cir` format** (020 §6) — printer + parser, with
+   the round-trip contracts 1–3. This is the highest-value remaining M1 item because
+   **every core test fixture is a `.cir` file**, so nothing else in M1 can be tested
+   until it exists. Note 020 §6 requires `print(parse(s)) == s` byte-exact for canonical
+   input and a **hard parse error on unknown directives** — silent tolerance in a
+   fixture format produces tests that pass by not testing anything.
+
    **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace
    rendering, which 001 §5 says lives here; and 010 contracts 11 (re-lex round trip)
    and 18 (peak-memory bound), which need a lexer and a bigger fixture respectively.
