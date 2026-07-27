@@ -426,3 +426,244 @@ fn a_local_holding_a_pointer_keeps_its_object_identity() {
         other => panic!("a local holding an address must be a pointer, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Escalation and budgets.
+// ---------------------------------------------------------------------------
+
+fn z3_or_skip(t: &str) -> Option<chiero_solver::SmtLib> {
+    match chiero_solver::SmtLib::discover() {
+        Some(b) => Some(b),
+        None => {
+            eprintln!("skipping {t}: no SMT-LIB2 backend on PATH");
+            None
+        }
+    }
+}
+
+/// **Escalation is what keeps the engine's answers worth having.**
+///
+/// Tier 1 is deliberately incomplete (022 §3), so under it alone a branch on
+/// `x * y < 7` is `Unknown` and *every* such fork degrades the run — the engine would
+/// report "I have no idea" for the ordinary case of a multiplied index. With tier 2 the
+/// same branch is decided and the run stays `Exact`.
+#[test]
+fn a_branch_tier_one_cannot_decide_is_escalated_and_stays_exact() {
+    let Some(backend) = z3_or_skip("a_branch_tier_one_cannot_decide_is_escalated") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let m = undecidable_branch_module();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert_eq!(r.states.len(), 2, "both branches are feasible");
+    for s in &r.states {
+        assert_eq!(
+            s.fidelity,
+            Fidelity::Exact,
+            "the backend decided it, so nothing was approximated: {:#?}",
+            s.assumptions
+        );
+        assert!(s.assumptions.is_empty());
+    }
+    assert!(r.witness().is_some(), "an exact run can be sealed");
+}
+
+/// The same program without a backend is `Unknown` — which is the honest answer, and the
+/// contrast is what shows escalation is doing something rather than the query having been
+/// easy all along.
+#[test]
+fn the_same_branch_without_a_backend_is_unknown() {
+    let mut a = TermArena::new();
+    let m = undecidable_branch_module();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(r.states.iter().all(|s| s.fidelity == Fidelity::Unknown));
+}
+
+fn undecidable_branch_module() -> Module {
+    func(
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Bin {
+                            op: BinOp::Mul,
+                            a: Operand::Value(ValueId(0)),
+                            b: Operand::Value(ValueId(1)),
+                            ty: CTy::Int(32),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Cmp {
+                            op: CmpOp::ULt,
+                            a: Operand::Value(ValueId(2)),
+                            b: i32c(7),
+                            ty: CTy::Int(32),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(3)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(10)))),
+            block(2, vec![], Terminator::Return(Some(i32c(20)))),
+        ],
+        CTy::Int(32),
+    )
+}
+
+/// **023 contract 5.** A loop with `max_loop_iters = 3` terminates, and the run is
+/// `Bounded` with a `BudgetHit` naming the back edge.
+///
+/// The bound is per **back edge** — CIR has no loops (020 §1), so there is nothing
+/// syntactic to count. Without a bound the engine does not merely run slowly; it does not
+/// return.
+#[test]
+fn a_loop_is_bounded_per_back_edge_and_the_run_says_so() {
+    let mut a = TermArena::new();
+    // entry: goto head
+    // head:  %c = fresh i1; br %c, body, exit
+    // body:  goto head          <- the back edge
+    // exit:  ret 0
+    let m = func(
+        vec![
+            block(0, vec![], Terminator::Goto(BlockId(1))),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(1) },
+                })],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(0)),
+                    t: BlockId(2),
+                    f: BlockId(3),
+                },
+            ),
+            block(2, vec![], Terminator::Goto(BlockId(1))),
+            block(3, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+
+    assert!(
+        r.states.iter().any(|s| s.status == Status::Terminated(TermReason::Budget)),
+        "some state must be cut by the bound: {:#?}",
+        r.states.iter().map(|s| &s.status).collect::<Vec<_>>()
+    );
+    let cut: Vec<_> = r
+        .states
+        .iter()
+        .filter(|s| s.status == Status::Terminated(TermReason::Budget))
+        .collect();
+    for s in cut {
+        assert_eq!(
+            s.fidelity,
+            Fidelity::Bounded,
+            "a budget is a truncated search, not a modeling lie"
+        );
+        assert!(
+            s.assumptions
+                .iter()
+                .any(|x| x.kind == AssumptionKind::BudgetHit
+                    && x.detail.contains("back edge")),
+            "the assumption must name the back edge: {:#?}",
+            s.assumptions
+        );
+    }
+    assert_eq!(r.fidelity(), Fidelity::Bounded);
+    assert!(
+        r.witness().is_none(),
+        "a bounded run cannot be presented as a proof"
+    );
+}
+
+/// A loop that exits on its own is **not** bounded. Without this the test above is
+/// satisfied by an engine that reports `Bounded` for every loop it sees, and "not found
+/// within a bound" would replace "not found" everywhere.
+#[test]
+fn a_loop_that_terminates_within_the_bound_stays_exact() {
+    let mut a = TermArena::new();
+    // Two iterations, decided concretely: no fork, no budget.
+    let m = func(
+        vec![
+            block(0, vec![], Terminator::Goto(BlockId(1))),
+            block(
+                1,
+                vec![],
+                Terminator::Br {
+                    cond: Operand::Const(Const::Int { bits: 1, val: 0 }),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(0)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m)
+        .with_budget(Budget {
+            max_loop_iters: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", r.states[0].assumptions);
+    assert!(r.witness().is_some());
+}
+
+/// **023 contract 6, the determinism core.** The same program run twice produces the same
+/// `StateId` sequence and the same results. 001 §5 makes this a hard requirement: a
+/// non-reproducible bug report is not a bug report.
+#[test]
+fn two_runs_of_one_program_are_identical() {
+    let build = || {
+        let mut a = TermArena::new();
+        let m = func(
+            vec![
+                block(
+                    0,
+                    vec![inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(1) },
+                    })],
+                    Terminator::Br {
+                        cond: Operand::Value(ValueId(0)),
+                        t: BlockId(1),
+                        f: BlockId(2),
+                    },
+                ),
+                block(1, vec![], Terminator::Return(Some(i32c(10)))),
+                block(2, vec![], Terminator::Return(Some(i32c(20)))),
+            ],
+            CTy::Int(32),
+        );
+        let r = Engine::new(&m).run(&mut a);
+        let ids: Vec<u32> = r.states.iter().map(|s| s.id.0).collect();
+        let rets: Vec<Option<u128>> = r
+            .states
+            .iter()
+            .map(|s| s.return_value_bits(&mut a))
+            .collect();
+        (ids, rets, r.fidelity())
+    };
+    assert_eq!(build(), build());
+}
