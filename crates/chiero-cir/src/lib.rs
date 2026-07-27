@@ -173,10 +173,22 @@ pub enum CmpOp {
     SLe,
     SGt,
     SGe,
+    /// Ordered: false if either operand is NaN.
     FOEq,
     FONe,
     FOLt,
     FOLe,
+    /// Unordered: true if either operand is NaN. **C's `isnan` idiom is `x != x`**,
+    /// which is an *unordered* not-equal — `FONe` is false for NaN, the opposite of
+    /// what C means, so the idiom has no correct lowering without these.
+    FUEq,
+    FUNe,
+    FULt,
+    FULe,
+    /// "Neither is NaN".
+    FOrd,
+    /// "At least one is NaN".
+    FUno,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

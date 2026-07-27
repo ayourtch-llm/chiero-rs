@@ -996,6 +996,12 @@ impl<'a> Parser<'a> {
                     "fone" => CmpOp::FONe,
                     "folt" => CmpOp::FOLt,
                     "fole" => CmpOp::FOLe,
+                    "fueq" => CmpOp::FUEq,
+                    "fune" => CmpOp::FUNe,
+                    "fult" => CmpOp::FULt,
+                    "fule" => CmpOp::FULe,
+                    "ford" => CmpOp::FOrd,
+                    "funo" => CmpOp::FUno,
                     o => return Err(self.perr(&format!("unknown cmp `{o}`"))),
                 },
                 ty: self.ty(g(2))?,
@@ -1636,6 +1642,12 @@ fn cmpop(c: CmpOp) -> &'static str {
         CmpOp::FONe => "fone",
         CmpOp::FOLt => "folt",
         CmpOp::FOLe => "fole",
+        CmpOp::FUEq => "fueq",
+        CmpOp::FUNe => "fune",
+        CmpOp::FULt => "fult",
+        CmpOp::FULe => "fule",
+        CmpOp::FOrd => "ford",
+        CmpOp::FUno => "funo",
     }
 }
 

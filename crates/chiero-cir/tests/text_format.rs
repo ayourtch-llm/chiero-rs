@@ -944,3 +944,71 @@ fn named_parameters_do_not_collide_with_numeric_body_values() {
     );
     assert_ne!(dst, f.params[1].value);
 }
+
+/// **020 contract 1 for the field 020 §1.5 calls "the product".**
+///
+/// Nothing printed or parsed spans, so every `Inst::span`, `Block::span`,
+/// `Function::span` and `Global::span` round-tripped to `Span::DUMMY`. Contracts 1 and
+/// 015/22 held only because every fixture has dummy spans — and
+/// `every_corpus_module_round_trips` compares `print(m)` to `print(parse(print(m)))`,
+/// which is invariant under anything the printer omits. This breaks the moment
+/// `chiero-lower` emits real CIR, and it breaks *silently*.
+///
+/// This test asserts structural equality against a module carrying real spans, so the
+/// instrument can actually observe the field.
+#[test]
+fn spans_survive_a_round_trip() {
+    use chiero_cir::*;
+    use chiero_span::{BytePos, ExpnCtx, Span};
+    let sp = |lo: u32, hi: u32, ctx: u32| Span {
+        lo: BytePos(lo),
+        hi: BytePos(hi),
+        ctx: ExpnCtx(ctx),
+    };
+    let mut m =
+        parse("func @f(%0: i32) -> i32 {\nentry:\n  %1 = add i32 %0, %0\n  ret %1\n}\n").unwrap();
+    m.funcs[0].span = sp(10, 20, 0);
+    m.funcs[0].blocks[0].span = sp(30, 40, 0);
+    // A macro-expanded instruction: a non-root `ExpnCtx` is the whole point of 010.
+    m.funcs[0].blocks[0].insts[0].span = sp(50, 60, 7);
+    let again = parse(&print(&m)).expect("printed spans must parse");
+    assert_eq!(again, m, "spans did not survive:\n{}", print(&m));
+}
+
+/// Dummy spans stay invisible, so the corpus does not grow a comment on every line.
+#[test]
+fn dummy_spans_are_not_printed() {
+    let src = "func @f() -> void {\nentry:\n  ret\n}\n";
+    let m = parse(src).unwrap();
+    assert!(!print(&m).contains("span"), "{}", print(&m));
+}
+
+/// **C's `isnan` idiom is `x != x`, which requires an *unordered* not-equal.** `FONe`
+/// is ordered, so it is **false** for NaN — the exact opposite of what C means. Without
+/// an unordered predicate the front end has no correct lowering for the idiom.
+#[test]
+fn unordered_float_predicates_exist_and_round_trip() {
+    use chiero_cir::CmpOp;
+    for (name, op) in [
+        ("fueq", CmpOp::FUEq),
+        ("fune", CmpOp::FUNe),
+        ("fult", CmpOp::FULt),
+        ("fule", CmpOp::FULe),
+        ("ford", CmpOp::FOrd),
+        ("funo", CmpOp::FUno),
+    ] {
+        let src = format!(
+            "func @f(%0: f64, %1: f64) -> i1 {{\nentry:\n  %2 = cmp {name} f64 %0, %1\n  ret %2\n}}\n"
+        );
+        let printed = format!("target x86_64-unknown-linux-gnu\n\n{src}");
+        let m = parse(&src).unwrap_or_else(|e| panic!("`{name}` must parse: {e:?}"));
+        match &m.funcs[0].blocks[0].insts[0].kind {
+            chiero_cir::InstKind::Assign {
+                rv: chiero_cir::RValue::Cmp { op: got, .. },
+                ..
+            } => assert_eq!(*got, op, "`{name}`"),
+            other => panic!("expected a cmp, got {other:?}"),
+        }
+        assert_eq!(print(&m), printed, "`{name}` does not print back");
+    }
+}
