@@ -590,6 +590,50 @@ impl<'m> Engine<'m> {
             let id = mem.alloc(ObjKind::Stack, bytes, d.align, d.span);
             frame_objs.insert(d.id, id);
         }
+        // 020 §8: **always**, including on hand-written fixtures. A module that fails
+        // verification is never executed — running one anyway means every later answer is
+        // about a program the CIR does not describe, and the failures are silent
+        // (a narrow value zero-extended) or fatal (a panic in `extract`) rather than
+        // reported.
+        let errs = chiero_cir::verify(self.module);
+        if !errs.is_empty() {
+            let mut bad = State {
+                id: self.new_id(),
+                mem,
+                pc: (f.entry, 0),
+                path: Vec::new(),
+                fidelity: Fidelity::Exact,
+                assumptions: Vec::new(),
+                status: Status::Errored(format!(
+                    "the module does not verify ({} error(s)); first: {:?}",
+                    errs.len(),
+                    errs.first()
+                )),
+                trace: Vec::new(),
+                stack: Vec::new(),
+                ret: None,
+                edge_counts: IndexMap::new(),
+                steps: 0,
+                findings: Vec::new(),
+                ptr_ints: IndexMap::new(),
+            };
+            bad.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                Span::DUMMY,
+                "the module was never executed, so nothing is known about it",
+            );
+            return RunResult {
+                id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                states: vec![bad],
+                solver_calls: 0,
+                backend_spawns: 0,
+                solver_inits: 0,
+                completion_order: Vec::new(),
+                budget: self.budget,
+                _seal: Sealed,
+            };
+        }
         let start = State {
             id: self.new_id(),
             mem,

@@ -1387,11 +1387,16 @@ fn a_dynamic_extent_does_not_overflow_the_size_computation() {
         1,
         "the run completes rather than panicking"
     );
-    assert_eq!(
-        r.states()[0].object_size_for_test(),
-        Some(0),
-        "no extent yet; `AllocaDyn` supplies it, and a wrapped number would masquerade \
-         as a real bound"
+    // **Rescoped when verification was wired in.** 020 requires an `AllocaDyn` to supply
+    // a dynamic extent, so this module is now correctly *rejected* before it runs, and
+    // the engine's frame setup is never reached. What survives is the half that matters
+    // for a tool — a malformed module is an error, not a panic or a wrapped size.
+    // The `object_size_for_test` assertion is owed again once `AllocaDyn` is implemented;
+    // recorded in HANDOFF rather than deleted quietly.
+    assert!(
+        matches!(r.states()[0].status, Status::Errored(_)),
+        "{:?}",
+        r.states()[0].status
     );
 }
 
@@ -4620,10 +4625,7 @@ fn copy_mem_and_set_mem_move_bytes() {
                 }),
                 inst(InstKind::SetMem {
                     dst: Operand::Value(ValueId(0)),
-                    byte: Operand::Const(Const::Int {
-                        bits: 32,
-                        val: 0xAB,
-                    }),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
                     size: Operand::Const(Const::Int { bits: 64, val: 8 }),
                 }),
                 inst(InstKind::CopyMem {
@@ -4694,7 +4696,7 @@ fn copy_mem_forbids_overlap() {
                 }),
                 inst(InstKind::SetMem {
                     dst: Operand::Value(ValueId(0)),
-                    byte: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 1 }),
                     size: Operand::Const(Const::Int { bits: 64, val: 16 }),
                 }),
                 inst(InstKind::Assign {
@@ -5351,7 +5353,7 @@ fn a_load_wider_than_chiero_can_carry_faults_rather_than_aborting() {
                 }),
                 inst(InstKind::SetMem {
                     dst: Operand::Value(ValueId(0)),
-                    byte: Operand::Const(Const::Int { bits: 32, val: 7 }),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 7 }),
                     size: Operand::Const(Const::Int { bits: 64, val: 32 }),
                 }),
                 inst(InstKind::Assign {
