@@ -49,18 +49,30 @@ pub enum AssumptionKind {
     OpaqueCode,
     /// A documented budget was hit.
     BudgetHit,
+    /// A call to a function with no body and no model. 023 §5 forbids silently
+    /// returning 0 — that is the same confidently-wrong failure as reading uninitialized
+    /// memory as zero, one level up.
+    UnmodeledCall,
     /// A `LoweringGap` or an access with no information behind it.
     NoInformation,
 }
 
 impl AssumptionKind {
+    /// Whether this kind can account for `Approximated` specifically.
+    fn is_modeling_lie(self) -> bool {
+        matches!(
+            self,
+            AssumptionKind::OpaqueCode | AssumptionKind::UnmodeledCall
+        )
+    }
+
     /// Whether this kind can account for a given fidelity level (023 contract 12: a
     /// *dummy* assumption must not satisfy the check).
     pub fn matches(self, f: Fidelity) -> bool {
         match f {
             Fidelity::Exact => false,
             Fidelity::Bounded => self == AssumptionKind::BudgetHit,
-            Fidelity::Approximated => self == AssumptionKind::OpaqueCode,
+            Fidelity::Approximated => self.is_modeling_lie(),
             Fidelity::Unknown => {
                 matches!(
                     self,
@@ -114,6 +126,8 @@ pub struct Budget {
     pub max_depth: u32,
     /// Per **back edge**, not per syntactic loop — CIR has none (020 §1).
     pub max_loop_iters: u32,
+    /// Per `FuncId` in the active stack (023 §5).
+    pub max_recursion_depth: u32,
 }
 
 impl Default for Budget {
@@ -121,6 +135,7 @@ impl Default for Budget {
         Budget {
             max_depth: 10_000,
             max_loop_iters: 8,
+            max_recursion_depth: 32,
         }
     }
 }
@@ -133,6 +148,16 @@ pub enum SolverTier {
     LiteOnly,
 }
 
+/// One activation. Locals live here, not in the state, so a callee cannot overwrite its
+/// caller's values — which is silent when it happens, since both are well-typed.
+#[derive(Clone, Debug)]
+pub struct Frame {
+    pub func: FuncId,
+    ret_to: Option<(FuncId, BlockId, usize)>,
+    ret_dst: Option<ValueId>,
+    locals: IndexMap<ValueId, Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct State {
     pub id: StateId,
@@ -143,7 +168,11 @@ pub struct State {
     pub fidelity: Fidelity,
     pub assumptions: Vec<Assumption>,
     pub status: Status,
-    locals: IndexMap<ValueId, Value>,
+    /// **An explicit stack, not host recursion.** 023 contract 9 requires the
+    /// interpreter's own stack usage to be O(1) in program recursion depth, and this is
+    /// what delivers it — along with honest `Span` backtraces and a recursion bound that
+    /// is a counter rather than a heuristic.
+    stack: Vec<Frame>,
     ret: Option<Value>,
     frame_objs: IndexMap<AllocaId, chiero_mem::ObjectId>,
     /// How often each back edge has been taken on *this* path.
@@ -153,7 +182,17 @@ pub struct State {
 
 impl State {
     pub fn local(&self, v: ValueId) -> Option<Value> {
-        self.locals.get(&v).copied()
+        self.stack.last()?.locals.get(&v).copied()
+    }
+
+    fn set_local(&mut self, v: ValueId, x: Value) {
+        if let Some(f) = self.stack.last_mut() {
+            f.locals.insert(v, x);
+        }
+    }
+
+    fn func(&self) -> FuncId {
+        self.stack.last().map_or(FuncId(0), |f| f.func)
     }
 
     /// The returned value as concrete bits, when it is one.
@@ -297,7 +336,12 @@ impl<'m> Engine<'m> {
             fidelity: Fidelity::Exact,
             assumptions: Vec::new(),
             status: Status::Running,
-            locals: IndexMap::new(),
+            stack: vec![Frame {
+                func: f.id,
+                ret_to: None,
+                ret_dst: None,
+                locals: IndexMap::new(),
+            }],
             ret: None,
             frame_objs,
             edge_counts: IndexMap::new(),
@@ -334,12 +378,15 @@ impl<'m> Engine<'m> {
     /// One instruction. Total: it advances, forks, or terminates — there is no
     /// partially-executed instruction, which is what makes serialization tractable (§2).
     fn step(&mut self, a: &mut TermArena, s: &mut State) -> Option<State> {
-        let f = &self.module.funcs[0];
+        let cur = s.func();
+        let f = self.module.funcs.iter().find(|f| f.id == cur)?;
         let b = f.blocks.iter().find(|b| b.id == s.pc.0)?;
         if s.pc.1 < b.insts.len() {
             let i = &b.insts[s.pc.1];
             self.exec_inst(a, s, i);
-            s.pc.1 += 1;
+            // A call re-points `pc` at the callee; anything else advances within the
+            // block. `usize::MAX` is the sentinel a call leaves behind so this lands on 0.
+            s.pc.1 = s.pc.1.wrapping_add(1);
             return None;
         }
         self.exec_term(a, s, &b.term.clone())
@@ -349,7 +396,7 @@ impl<'m> Engine<'m> {
         match &i.kind {
             InstKind::Assign { dst, rv } => {
                 if let Some(v) = self.eval(a, s, rv, i.span) {
-                    s.locals.insert(*dst, v);
+                    s.set_local(*dst, v);
                 }
             }
             InstKind::Opaque { dsts, why, .. } => {
@@ -357,7 +404,7 @@ impl<'m> Engine<'m> {
                 // distinct per instruction, and the path is a modeling lie from here on.
                 for (v, ty) in dsts {
                     let t = a.var(sort_of(ty), &format!("opaque_{}", v.0));
-                    s.locals.insert(*v, Value::Scalar(t));
+                    s.set_local(*v, Value::Scalar(t));
                 }
                 s.degrade(
                     Fidelity::Approximated,
@@ -366,16 +413,121 @@ impl<'m> Engine<'m> {
                     &format!("opaque construct ({why:?}) was not modeled"),
                 );
             }
+            InstKind::Call { dst, callee, args } => {
+                self.call(a, s, *dst, callee, args, i.span);
+            }
             InstKind::Marker(_) => {}
             _ => {}
         }
     }
 
+    /// 023 §5. Direct calls push a frame; externs consult the model registry, and with no
+    /// model produce a fresh value rather than a silent zero.
+    fn call(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        dst: Option<ValueId>,
+        callee: &Callee,
+        _args: &[Operand],
+        span: Span,
+    ) {
+        let Callee::Direct(id) = callee else {
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "indirect call resolution is not implemented",
+            );
+            return;
+        };
+        let Some(f) = self.module.funcs.iter().find(|f| f.id == *id) else {
+            s.status = Status::Errored("call to an unknown function".into());
+            return;
+        };
+        let (noreturn, body, name, ret_ty) = (
+            f.attrs.noreturn,
+            f.body.clone(),
+            f.name.clone(),
+            f.ret.clone(),
+        );
+
+        if body == Body::Declared {
+            // No registry yet, so every extern is unmodeled. **A fresh value, never a
+            // zero**: silently returning 0 is the same confidently-wrong failure as
+            // reading uninitialized memory as zero, one level up.
+            if let Some(d) = dst {
+                self.fresh_count += 1;
+                let t = a.var(sort_of(&ret_ty), &format!("extern{}", self.fresh_count));
+                s.set_local(d, Value::Scalar(t));
+            }
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::UnmodeledCall,
+                span,
+                &format!("`{name}` has no body and no model"),
+            );
+            if noreturn {
+                s.status = Status::Terminated(TermReason::Return);
+            }
+            return;
+        }
+        if noreturn {
+            s.status = Status::Terminated(TermReason::Return);
+            return;
+        }
+        // 023 §5: bounded per `FuncId` in the *active stack*, so mutual recursion counts
+        // against each participant rather than against a global depth.
+        let depth = s.stack.iter().filter(|fr| fr.func == *id).count() as u32;
+        if depth >= self.budget.max_recursion_depth {
+            s.status = Status::Terminated(TermReason::Budget);
+            s.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                span,
+                &format!(
+                    "max_recursion_depth ({}) reached in `{name}`",
+                    self.budget.max_recursion_depth
+                ),
+            );
+            return;
+        }
+        // The return address is the instruction *after* the call; `step` has not advanced
+        // `pc` yet, so it is one past the current index.
+        let ret_to = Some((s.func(), s.pc.0, s.pc.1 + 1));
+        s.stack.push(Frame {
+            func: *id,
+            ret_to,
+            ret_dst: dst,
+            locals: IndexMap::new(),
+        });
+        s.pc = (f.entry, 0);
+        // `step` increments the index after this returns, which would skip the callee's
+        // first instruction — so back it off by one.
+        s.pc.1 = usize::MAX;
+    }
+
     fn exec_term(&mut self, a: &mut TermArena, s: &mut State, t: &Terminator) -> Option<State> {
         match t {
             Terminator::Return(v) => {
-                s.ret = v.as_ref().and_then(|o| self.operand(a, s, o));
-                s.status = Status::Terminated(TermReason::Return);
+                let val = v.as_ref().and_then(|o| self.operand(a, s, o));
+                // Returning from an inner frame resumes the caller; returning from the
+                // outermost one ends the state.
+                // The outermost frame is **not** popped: its locals are the result of the
+                // run, and a terminated state whose locals have vanished can report
+                // nothing about what it computed.
+                if s.stack.len() > 1 {
+                    let f = s.stack.pop().expect("checked");
+                    if let Some((_, b, i)) = f.ret_to {
+                        s.pc = (b, i);
+                    }
+                    if let (Some(d), Some(x)) = (f.ret_dst, val) {
+                        s.set_local(d, x);
+                    }
+                } else {
+                    s.ret = val;
+                    s.status = Status::Terminated(TermReason::Return);
+                }
                 None
             }
             Terminator::Goto(b) => self.take_edge(s, *b),
@@ -557,7 +709,7 @@ impl<'m> Engine<'m> {
 
     fn operand(&mut self, a: &mut TermArena, s: &State, o: &Operand) -> Option<Value> {
         match o {
-            Operand::Value(v) => s.locals.get(v).copied(),
+            Operand::Value(v) => s.stack.last().and_then(|f| f.locals.get(v)).copied(),
             Operand::Const(Const::Int { bits, val }) => {
                 Some(Value::Scalar(a.bv(*bits, *val as u128)))
             }
