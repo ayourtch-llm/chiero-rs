@@ -2630,6 +2630,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    with the wrong parameter count does not verify, and the run reported "the module was
    never executed". **A fixture that does not verify reports the absence of everything.**
 
+   **WAVE 69** (`b076d50`; 690 tests, **136/165 cited**) — 020 contracts 13 and 34, both
+   determinism claims about the textual format, which is where 001 §5's hard requirement
+   becomes visible: a golden test compares text, so an unstable case order or a lossy
+   literal turns every downstream diff into noise and hides the change that mattered.
+
+   Contract 13's fixture writes its cases **out of order** deliberately — a printer that
+   sorted would pass a test whose cases were already sorted, and lose the program's own
+   order. Contract 34 asserts the 512-bit literal's *words*, not merely round-trip
+   stability, because a printer and parser that agreed on a wrong value would satisfy the
+   round trip; `memcpy_x86_64.h` manipulates `u8x64` directly, so a truncating format
+   yields a module that parses, verifies, and is not the program.
+
+   Also: 020 c39 and 021 c30 state the same property from two sides and both halves were
+   already tested, but only 021's number was cited — so 020's read as nobody's work.
+   *When two documents state one property, citing one of them leaves the other looking
+   unexamined.*
+
+   A review of wave 68's forking change is running: it altered how sibling states get
+   their path conditions, which is soundness-critical, and it is being checked against
+   `strlen` compiled with gcc as an oracle.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2707,7 +2728,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **688 tests, 133/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **690 tests, 136/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
