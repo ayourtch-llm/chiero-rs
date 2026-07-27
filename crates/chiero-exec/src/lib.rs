@@ -2658,7 +2658,17 @@ impl<'m> Engine<'m> {
                 span,
                 &why,
             );
-            let first = candidates.first().copied()?;
+            // **An empty candidate list here ends the path, not the function.** `?` on
+            // `first` returned `None` from a state still marked `Running`, so the
+            // assignment was silently dropped — the one `None` return in this function
+            // that terminated nothing. Unreachable by argument (a cut enumeration with no
+            // candidates means every model landed in a gap, which is the wild case
+            // handled above), and an argument of exactly that shape has been wrong here
+            // before.
+            let Some(first) = candidates.first().copied() else {
+                self.unresolvable_pointer(s, span);
+                return None;
+            };
             // **The offset comes from the address here too.** Handing back byte 0 of the
             // chosen object is the wave-51 D4 bug in a branch that had not been looked at.
             let off = s
