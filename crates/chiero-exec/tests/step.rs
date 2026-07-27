@@ -7414,6 +7414,13 @@ fn a_constant_address_is_a_pointer_like_any_other() {
                     dst: ValueId(3),
                     rv: RValue::AddrOfFunc(FuncId(1)),
                 }),
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Use(Operand::Const(Const::GlobalAddr {
+                        g: GlobalId(0),
+                        off: 2,
+                    })),
+                }),
             ],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -7446,5 +7453,12 @@ fn a_constant_address_is_a_pointer_like_any_other() {
     assert_eq!(s.local(ValueId(0)), s.local(ValueId(1)));
     assert_eq!(s.local(ValueId(2)), s.local(ValueId(3)));
     assert_ne!(s.local(ValueId(0)), s.local(ValueId(2)));
+    // **The offset is part of the constant.** `&s.field` is a `GlobalAddr` with a non-zero
+    // `off`, which is how a frontend spells a member address — dropping it silently aims
+    // every such access at the start of the object.
+    match s.local(ValueId(4)) {
+        Some(Value::Ptr(p)) => assert_eq!(p.off, 2),
+        other => panic!("{other:?}"),
+    }
     assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", s.assumptions());
 }

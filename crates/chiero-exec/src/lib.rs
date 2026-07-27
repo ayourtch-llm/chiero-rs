@@ -2432,7 +2432,7 @@ impl<'m> Engine<'m> {
         None
     }
 
-    fn operand(&mut self, a: &mut TermArena, s: &State, o: &Operand) -> Option<Value> {
+    fn operand(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> Option<Value> {
         match o {
             Operand::Value(v) => s.stack.last().and_then(|f| f.locals.get(v)).copied(),
             Operand::Const(Const::Int { bits, val }) => {
@@ -2442,11 +2442,26 @@ impl<'m> Engine<'m> {
                 base: chiero_mem::ObjectId::NULL,
                 off: 0,
             })),
+            // **The constant forms of the two `AddrOf` rvalues.** A frontend emits these
+            // wherever an address is a compile-time constant, so treating them as
+            // unrepresentable made `&g` a lowering gap in exactly the places it is most
+            // ordinary. They go through the same per-id object tables, because a second
+            // object for one global makes `p == &counter` false against itself.
+            Operand::Const(Const::GlobalAddr { g, off }) => {
+                let base = self.global_object(s, *g);
+                Some(Value::Ptr(Pointer { base, off: *off }))
+            }
+            Operand::Const(Const::FuncAddr(id)) => {
+                let base = self.func_object(s, *id);
+                Some(Value::Ptr(Pointer { base, off: 0 }))
+            }
+            // `Float`, `Wide` and `Undef` remain gaps: 023 §7 approximates floating point,
+            // and inventing a value for `Undef` is the opposite of what it means.
             _ => None,
         }
     }
 
-    fn scalar(&mut self, a: &mut TermArena, s: &State, o: &Operand) -> Option<Term> {
+    fn scalar(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> Option<Term> {
         match self.operand(a, s, o)? {
             Value::Scalar(t) => Some(t),
             Value::Ptr(_) => None,
