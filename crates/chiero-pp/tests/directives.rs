@@ -95,6 +95,55 @@ fn computed_include_is_expanded_before_resolution() {
     assert_eq!(tu.deps.len(), 2);
 }
 
+fn selected(expr: &str) -> String {
+    let src = format!("#if {expr}\nyes\n#else\nno\n#endif\n");
+    let tu = preprocess_str("expr.c", &src, Config::default());
+    assert!(
+        tu.diagnostics.is_empty(),
+        "{expr}: unexpected diagnostics: {:?}",
+        tu.diagnostics
+    );
+    tu.token_texts().collect()
+}
+
+#[test]
+fn if_expression_supports_c_integer_spelling_and_precedence() {
+    for (expr, expected) in [
+        ("0xFF", "yes"),
+        ("010 == 8", "yes"),
+        ("1 & 0", "no"),
+        ("1 | 0", "yes"),
+        ("3 ^ 3", "no"),
+        ("1 << 3 == 8", "yes"),
+        ("8 >> 2 == 2", "yes"),
+        ("~0 == -1", "yes"),
+        ("0 ? 0 : 1", "yes"),
+        ("(0, 1)", "yes"),
+        ("'A' == 65", "yes"),
+        ("-1 < 1U", "no"),
+    ] {
+        assert_eq!(selected(expr), expected, "{expr}");
+    }
+}
+
+#[test]
+fn elifdef_and_elifndef_select_exactly_one_branch() {
+    let src = "#define PRESENT 1\n\
+               #if 0\nwrong1\n\
+               #elifdef PRESENT\nyes1\n\
+               #else\nwrong2\n#endif\n\
+               #if 0\nwrong3\n\
+               #elifndef ABSENT\nyes2\n\
+               #else\nwrong4\n#endif\n";
+    let tu = preprocess_str("elifdef.c", src, Config::default());
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["yes1", "yes2"]);
+    assert_eq!(
+        tu.diagnostics.len(),
+        2,
+        "C23 directives are accepted but diagnosed under C11"
+    );
+}
+
 #[test]
 #[ignore = "external corpus regression metric"]
 /// External evidence for 012 contract 17. Ignored tests do not carry contract coverage
