@@ -2495,6 +2495,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    anything). Its exit gate is 012's `gcc -E`/`clang -E` differential, which is a stronger
    oracle than anything M1 has. **That branch is reviewed adversarially before it merges.**
 
+   **WAVE 64** (`6a16c3c` + the lying-backend test; 681 tests, **127/165 cited**).
+
+   **021 contract 27 was violated, and it is the kind that fires everywhere.** An entry
+   pointer parameter's pointee was an ordinary uninitialized object, so reading through one
+   reported an uninitialized read — on *every function that takes a pointer*. §6 names this
+   outcome in advance ("an uninitialized-read false-positive storm") and §3.1's whole
+   bit-granular init apparatus exists to make the distinction expressible: a caller-supplied
+   buffer is **unknown**, not **unwritten**. Entry pointees are `ObjKind::Lazy` and havoc'd
+   symbolic now.
+
+   Also cited, both already correct: contract 3 (out of an object and back preserves `base`
+   — the `container_of` idiom, which works only because provenance rides the pointer rather
+   than being recomputed from the address) and 13b (an unconstrained `IntToPtr` is never
+   read as in-bounds, because step 4 stops the path — the `vlib_get_buffer` case).
+
+   **022 contract 15's second cause is now pinned** — the item owed from wave 63. The fake
+   backend speaks the session protocol correctly and lies only in its answer: a valid model
+   with every variable zero, for a query saying one of them is 7. The earlier shell attempt
+   hung because *a fake that does not answer every command exactly is indistinguishable
+   from a slow one*. It kills both the missing counter and trusting tier 2's model
+   unvalidated. Contract 15's third cause (a dead process) is still unpinned.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2572,7 +2594,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **677 tests, 124/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **681 tests, 127/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
