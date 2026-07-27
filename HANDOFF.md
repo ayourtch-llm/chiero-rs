@@ -2386,6 +2386,31 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    already in hand. *A test that measures a mechanism by "did the backend get asked" is
    coupled to every future reason not to ask it.*
 
+   **WAVE 61** (`5b351dd`, `6ab6960` + volatile; 671 tests, **122/164 cited**) — two CIR
+   semantics gaps that were pure silence, both in 020.
+
+   **UB events** (contracts 8 and 9). §4.1's separation — "defined IR semantics, UB
+   reported as findings" — had only its first half: a shift past the width and a division
+   by zero computed the right value and told nobody. `UbEvent { kind, span, detail }` is
+   recorded per path for the three rows of §4.1's table. The value is unchanged (it is the
+   SMT-LIB value, "so the IR and the solver cannot disagree") and the path **continues**,
+   asserted directly because an earlier spec draft stopped the path on division alone.
+   Two deliberate limits, both in the code: events fire only on **concrete** operands (a
+   symbolic divisor *may* be zero, and deciding that is 040's business with a budget, not
+   the interpreter's), and the engine does not decide whether a wrap was a *mistake* —
+   VPP wraps on purpose all over.
+
+   **Volatile** (§4.2, contract 41). `Volatility` appeared nowhere in the engine: a
+   volatile load read back the bytes stored, so `*reg = 0; if (*reg == 0)` was a certainty
+   here and is not on the device. Loads now yield a fresh symbol **each time**, recorded
+   as `InputOrigin::Volatile` so a witness binds what the device returned; stores push an
+   `Effect` in program order, before the write, and nothing coalesces them.
+
+   ⚠️ *Method note:* the non-coalescing mutant survived the first test — it used two
+   *different* store instructions, so a coalescer keyed on the site slipped through. A
+   **loop** fixture is what catches it. Same family as the extent trap in wave 53: *if two
+   fixtures differ in the dimension the mutation does not touch, the mutation lives.*
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2463,7 +2488,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **661 tests, 120/164
+   **M1's instruction set is complete**, but M1's *exit* is not — **671 tests, 122/164
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
