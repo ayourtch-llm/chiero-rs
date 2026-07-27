@@ -1172,3 +1172,48 @@ fn a_copy_to_a_nonzero_offset_lands_where_it_was_told() {
         "and its neighbours are the concrete bytes"
     );
 }
+
+/// **`MAX_ACCESS_BITS` is enforced on the term API too.** It is checked in
+/// `read_int`/`write_int`/`read_bits`/`write_bits` and was not checked on the term path —
+/// so `read_term` of more than sixteen concrete bytes folds a `Concat` chain into a
+/// `BvConst` wider than 128 and **asserts inside the arena**, and `write_term`'s ground
+/// path shifts a `u128` by 128 or more. Both are process kills, not faults, and an abort
+/// is not something `catch_unwind` can contain. Reachable from the engine by loading a
+/// `<4 x i64>`, which is an AVX vector VPP uses. Found by review.
+#[test]
+fn the_term_api_refuses_an_access_wider_than_it_can_carry() {
+    let mut a = chiero_solver::TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 32, sp(1));
+    m.set(ptr(o, 0), 7, 64, sp(2));
+    let wide = MAX_ACCESS_BITS / 8 + 1;
+
+    let r = m.read_term(&mut a, ptr(o, 0), wide, chiero_mem::Endian::Little, sp(3));
+    assert!(r.value.is_none(), "no value came back");
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| f.kind() == "unsupported-access-width"),
+        "and it says which limit: {:#?}",
+        r.faults
+    );
+
+    let t = a.bv(64, 1);
+    let w = m.write_term(
+        &mut a,
+        ptr(o, 0),
+        t,
+        wide,
+        chiero_mem::Endian::Little,
+        sp(4),
+    );
+    assert!(
+        w.faults
+            .iter()
+            .any(|f| f.kind() == "unsupported-access-width"),
+        "{:#?}",
+        w.faults
+    );
+    // The bytes are untouched — a refused write writes nothing.
+    assert_eq!(m.read(ptr(o, 0), 8, sp(5)).value, Some(vec![7; 8]));
+}

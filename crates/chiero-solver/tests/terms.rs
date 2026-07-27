@@ -610,3 +610,30 @@ fn every_child_of_a_store_is_reachable_from_the_walk() {
         "the index and value of a store are children, or they go undeclared: {vars:?}"
     );
 }
+
+/// **The most dangerous mutation the review found.** Rewriting
+/// `extract(inner, hi + l2, lo + l2)` to `extract(inner, hi, lo)` is a silently *wrong
+/// value* whenever the inner slice's `lo` is non-zero — and it passed all 510 tests,
+/// because nothing in the suite extracted out of an extract at a non-zero inner offset.
+/// `x[23:8]` then `[7:0]` is the byte at bits 8..15, not the byte at 0..7.
+#[test]
+fn extract_of_extract_shifts_by_the_inner_lo() {
+    let mut a = TermArena::new();
+    let x = a.bv(32, 0xDEAD_BEEF);
+    let mid = a.extract(x, 23, 8);
+    let low = a.extract(mid, 7, 0);
+    assert_eq!(a.width(low), 8);
+    assert_eq!(
+        a.eval_ground(low).unwrap().bits(),
+        0xBE,
+        "the inner slice starts at bit 8, so this is 0xBE and not 0xEF"
+    );
+    // And it does not nest: a byte-wise round trip would grow one level per operation.
+    let deeper = a.extract(low, 3, 0);
+    assert_eq!(a.eval_ground(deeper).unwrap().bits(), 0xE);
+    assert!(
+        !a.to_smtlib(deeper).contains("((_ extract 3 0) ((_ extract"),
+        "one extract, not a chain: {}",
+        a.to_smtlib(deeper)
+    );
+}
