@@ -7171,3 +7171,213 @@ fn a_zero_word_reads_as_null_whatever_came_before() {
     );
     assert!(kind(&build(false)).starts_with("ptr:"));
 }
+
+/// **The *model* finding key, pinned in all four components.** An earlier commit claimed
+/// "all four fail a mutation individually"; that was true at `report_faults` and false at
+/// `dispatch`, where only the *existence* of a key was pinned. Two dedup paths, one tested.
+/// Found by review.
+///
+/// Each case merges a pair that differs in exactly one component, so each component is
+/// load-bearing on its own.
+#[test]
+fn the_model_finding_key_distinguishes_all_four_components() {
+    let ptr_to = |v: u32, alloca: u32| {
+        inst(InstKind::Assign {
+            dst: ValueId(v),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(alloca),
+            },
+        })
+    };
+    let big_memset = |p: u32, span: u32| {
+        inst_at(
+            InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Value(ValueId(p)),
+                    Operand::Const(Const::Int { bits: 32, val: 0 }),
+                    Operand::Const(Const::Int { bits: 64, val: 64 }),
+                ],
+            },
+            span,
+        )
+    };
+    let memset_decl = || {
+        extern_fn(
+            1,
+            "memset",
+            vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+            CTy::Ptr,
+        )
+    };
+
+    // `object`: two 4-byte buffers, same kind, same span, same function.
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                ptr_to(0, 0),
+                ptr_to(1, 1),
+                big_memset(0, 0),
+                big_memset(1, 0),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 4)];
+    let m = Module {
+        funcs: vec![caller, memset_decl()],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|f| f.contains("out-of-bounds"))
+            .count(),
+        2,
+        "two buffers: {:#?}",
+        r.findings()
+    );
+
+    // `span`: one buffer, two call sites.
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![ptr_to(0, 0), big_memset(0, 100), big_memset(0, 200)],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4)];
+    let m = Module {
+        funcs: vec![caller, memset_decl()],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|f| f.contains("out-of-bounds"))
+            .count(),
+        2,
+        "two call sites: {:#?}",
+        r.findings()
+    );
+
+    // `func`: the **same object** overflowed in a callee and in the caller, at the same
+    // span. Two different buffers would be told apart by `object` alone, which is how the
+    // first version of this case passed while `func` was still droppable.
+    let mut callee = defined(
+        2,
+        "other",
+        vec![block(
+            0,
+            vec![big_memset(0, 0)],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    callee.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Ptr,
+    }];
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                ptr_to(0, 0),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![Operand::Value(ValueId(0))],
+                }),
+                big_memset(0, 0),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4)];
+    let m = Module {
+        funcs: vec![caller, memset_decl(), callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|f| f.contains("out-of-bounds"))
+            .count(),
+        2,
+        "two functions: {:#?}",
+        r.findings()
+    );
+
+    // `kind`: one `memcpy` raising an overlap *and* an out-of-bounds on one object at one
+    // span — collapsing `kind` makes the second vanish behind the first.
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                ptr_to(0, 0),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 6 }),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Value(ValueId(1)),
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    ],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 12)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(
+                1,
+                "memcpy",
+                vec![CTy::Ptr, CTy::Ptr, CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let kinds: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("overlapping-copy") || f.contains("out-of-bounds"))
+        .collect();
+    assert_eq!(
+        kinds.len(),
+        2,
+        "two kinds, one object, one span: {kinds:#?}"
+    );
+}
