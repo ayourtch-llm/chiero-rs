@@ -7462,3 +7462,106 @@ fn a_constant_address_is_a_pointer_like_any_other() {
     }
     assert_eq!(r.fidelity(), Fidelity::Exact, "{:#?}", s.assumptions());
 }
+
+/// **`va_list` is memory, not engine state** (020 §4.4.1). It has to be, because VPP
+/// passes `va_list *` **by address across function boundaries** — `format.h` declares
+/// `typedef u8 *(format_function_t)(u8 *s, va_list *args);` and there are 2552 occurrences
+/// of `va_list *` in the tree. The whole format, unformat, CLI and trace infrastructure is
+/// built on the callee advancing the *caller's* iteration state.
+///
+/// `VaArg` is an instruction rather than an `RValue` because it **mutates**: it reads the
+/// next argument and advances the list. A side-effect-free `RValue` that advanced would be
+/// self-contradictory, and any pass allowed to reorder or CSE `RValue`s would silently
+/// corrupt argument order.
+#[test]
+fn va_arg_reads_the_variadic_arguments_in_order() {
+    let mut callee = defined(
+        1,
+        "sum_two",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::VaStart {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(2),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaArg {
+                    dst: ValueId(3),
+                    list: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                }),
+                inst(InstKind::VaEnd {
+                    list: Operand::Value(ValueId(1)),
+                }),
+                // The *difference*, so reading the same argument twice — or reading them
+                // in the wrong order — gives a different answer from reading them once
+                // each in order.
+                inst(InstKind::Assign {
+                    dst: ValueId(4),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(2)),
+                        b: Operand::Value(ValueId(3)),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(4)))),
+        )],
+        CTy::Int(32),
+    );
+    callee.params = vec![Param {
+        value: ValueId(0),
+        ty: CTy::Int(32),
+    }];
+    callee.variadic = true;
+    callee.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 24)
+    }];
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: Some(ValueId(0)),
+                callee: Callee::Direct(FuncId(1)),
+                args: vec![
+                    Operand::Const(Const::Int { bits: 32, val: 2 }),
+                    Operand::Const(Const::Int { bits: 32, val: 50 }),
+                    Operand::Const(Const::Int { bits: 32, val: 8 }),
+                ],
+            })],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(42),
+        "50 then 8, in that order"
+    );
+}
