@@ -2096,7 +2096,10 @@ impl<'m> Engine<'m> {
         addr: Term,
         span: Span,
     ) -> Option<Value> {
-        let ranges = s.mem.live_ranges();
+        // **Freed objects are searchable** (021 §4): the access through the resolved
+        // pointer is what reports the use-after-free, and a search that cannot see the
+        // object reports a wild pointer at address 0 instead.
+        let ranges = s.mem.resolvable_ranges();
         let cap = self.budget.max_resolutions as usize;
         // The cheap arithmetic filter is the semantics; §5.1's interval tree is the
         // optimisation, and asking the solver about every object is what it forbids.

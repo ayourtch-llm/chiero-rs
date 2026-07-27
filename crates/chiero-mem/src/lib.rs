@@ -1842,6 +1842,20 @@ impl Memory {
             .collect()
     }
 
+    /// Every object a *pointer* may resolve to, **including freed and out-of-scope ones**.
+    ///
+    /// 021 §4 keeps those entries precisely so a use-after-free can name its site, and the
+    /// §5.1 search is the one consumer that must see them: an address the path pins to a
+    /// freed block resolves to *nothing* under `live_ranges`, so the run reports a wild
+    /// pointer at address 0 rather than the use-after-free. The access itself still faults
+    /// — `state_fault` is what turns the resolution into the finding.
+    pub fn resolvable_ranges(&self) -> Vec<(ObjectId, u64, u64)> {
+        self.entries
+            .iter()
+            .filter_map(|(id, e)| self.space.addr_of(*id).map(|a| (*id, a, e.size)))
+            .collect()
+    }
+
     /// Whether `id`'s storage is **the same allocation** in both memories — the only way
     /// to tell structural sharing from an identical copy, which is what 021 contract 20
     /// asks for.
