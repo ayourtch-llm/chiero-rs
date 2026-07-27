@@ -587,14 +587,38 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *Process note*: I wrote the checker before its test, then backed it out to a stub to
    get a genuine RED (8 failures, all value mismatches). Don't repeat that — red first.
 
-3.6. **M1 STARTED.** `chiero-span` core types done red→green (`890b042`, `5aae0bd`):
-   `BytePos`, `ExpnCtx` (ROOT == 0, `Default`), `Span` (12 bytes, `Copy`, half-open,
-   `DUMMY`). 010 contracts 1–2 covered. Next in `chiero-span`: `SourceFile`/`SourceMap`
-   with the global `BytePos` space and binary-search file lookup, then `Expansion` +
-   the §3.1 queries (`spelling_loc`, `expansion_loc`, `expansion_backtrace`,
-   `involves_macro`, `origin`), then the §6.2 cooked cross-TU index. **Do 010 contract 9
-   (`expansion_loc` never allocates) as a real test with a counting allocator** — it is
-   the most-called query in the coverage vertical.
+   **The dep-gate adversarial review (`e16cd3a`) found four real defects. Its lesson
+   generalizes and should shape every test written from here on:**
+   - *Assert the exact set, not membership.* A shotgun implementation tagging every
+     violation with all seven rule names passed the whole original suite.
+   - *A test over real data must assert the data is non-trivial.* `the_real_workspace_is_clean`
+     passed on an empty graph, one `cargo metadata` schema change away from a silent
+     no-op gate. **I independently hit the identical bug in `chiero-span`'s
+     `expansion_loc_does_not_allocate`, which measured a counter nothing incremented.**
+     Two instances in one session — when a test asserts "X does not happen", first prove
+     the test can observe X happening.
+   - *Test the thing the contract names.* Contract 8 is about an exit code; nothing ran
+     the binary.
+   - *Don't claim coverage you don't have.* Rule 4 was "enforced" in three places and
+     nowhere. Gates now state which rules they cover; `check-vpp-leak` covers rule 4.
+
+3.6. **M1 IN PROGRESS — `chiero-span` is largely done.** 43 tests green, both gates
+   green, clippy clean.
+   - core types (`890b042` red, `5aae0bd` green): `BytePos`, `ExpnCtx` (ROOT == 0),
+     `Span` (12 bytes, `Copy`, half-open, `DUMMY`). 010 contracts 1–2.
+   - `SourceFile`/`SourceMap` (`2c3520c`, `1069534`): global `BytePos` space,
+     binary-search lookup verified against a linear scan at *every* position across 100
+     files, 1-based line/col counting bytes, CRLF and no-trailing-newline handled.
+     010 contract 12.
+   - provenance (`01a49d4`, `bafb02a`): `Expansion`, `MacroInfo`, and the §3.1 queries.
+     The `vec_add1` fixture from 010 §3.2 is built for real with correct line numbers.
+     010 contracts 3–10. `expansion_loc` allocates zero times, measured with a real
+     counting allocator.
+
+   **Still owed in `chiero-span`**: the §6.2 **cooked cross-TU index**
+   (`GlobalInterner`, `CookedExpansionIndex`, `MacroEntity`) — 010 contracts 13–19, the
+   ones that catch the dangling-`ExpnCtx` design error. Also `Diagnostic` (010 §7) with
+   macro-backtrace rendering, which 001 §5 says lives here.
 
    Working rhythm that is going well: write the test file first, stub the impl with
    `todo!()` so failures are behavioural not missing-symbol, commit `red:` with the
