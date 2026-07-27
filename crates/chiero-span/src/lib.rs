@@ -64,3 +64,88 @@ impl Span {
         self == Self::DUMMY
     }
 }
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Index into `SourceMap::files`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileId(pub u32);
+
+/// A resolved position: file, 1-based line and column, and the global offset.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Loc {
+    pub file: FileId,
+    pub line: u32,
+    pub col: u32,
+    pub pos: BytePos,
+}
+
+/// One source file, occupying `[start_pos, start_pos + len)` of the global space.
+#[derive(Debug)]
+pub struct SourceFile {
+    id: FileId,
+    path: PathBuf,
+    src: Arc<str>,
+    /// Global-space range this file occupies (010 §3).
+    pub start_pos: BytePos,
+    /// Byte offset of the start of each line, for O(log n) offset→line.
+    line_starts: Vec<BytePos>,
+}
+
+impl SourceFile {
+    pub fn id(&self) -> FileId {
+        self.id
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn src(&self) -> &str {
+        &self.src
+    }
+    pub fn byte_len(&self) -> u32 {
+        todo!("green")
+    }
+    pub fn is_empty(&self) -> bool {
+        todo!("green")
+    }
+    pub fn end_pos(&self) -> BytePos {
+        todo!("green")
+    }
+    pub fn line_count(&self) -> u32 {
+        todo!("green")
+    }
+}
+
+/// Owns every source file in one global `BytePos` space, so a `Span` needs no
+/// `FileId` field (010 §3).
+#[derive(Debug, Default)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_file(&mut self, _path: impl Into<PathBuf>, _src: impl Into<Arc<str>>) -> FileId {
+        todo!("green")
+    }
+
+    pub fn file(&self, _id: FileId) -> &SourceFile {
+        todo!("green")
+    }
+    pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
+        self.files.iter()
+    }
+    pub fn lookup_file(&self, _pos: BytePos) -> Option<FileId> {
+        todo!("green")
+    }
+    pub fn lookup_loc(&self, _pos: BytePos) -> Option<Loc> {
+        todo!("green")
+    }
+    pub fn span_text(&self, _sp: Span) -> Option<&str> {
+        todo!("green")
+    }
+}
