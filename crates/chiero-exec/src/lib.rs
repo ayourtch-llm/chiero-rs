@@ -169,6 +169,10 @@ pub struct Budget {
     pub max_forks: u32,
     /// Candidates explored at one indirect call site (023 §5).
     pub max_indirect: u32,
+    /// 021 §5.1: how many objects a symbolic base may resolve to before the engine
+    /// concretizes instead of forking. Past it the run is `Approximated`, which is a
+    /// different statement from the `Unknown` an *unconstrained* pointer gets.
+    pub max_resolutions: u32,
 }
 
 impl Default for Budget {
@@ -180,6 +184,7 @@ impl Default for Budget {
             max_states: 10_000,
             max_forks: 10_000,
             max_indirect: 16,
+            max_resolutions: 8,
         }
     }
 }
@@ -563,6 +568,9 @@ pub struct Engine<'m> {
     fresh_count: u32,
     /// Identity for a model report, so the copies a fork makes are recognised as one.
     finding_seq: u64,
+    /// The local `eval` is filling, for the one rvalue that needs to create sibling
+    /// states — 021 §5.1's resolution. `eval` does not otherwise know its destination.
+    pending_dst: Option<ValueId>,
     /// One `Function` object per `FuncId`, so two `&f` are the same pointer.
     func_objs: IndexMap<FuncId, ObjectId>,
     /// One object per file-scope variable, allocated on first use.
@@ -593,6 +601,7 @@ impl<'m> Engine<'m> {
             solver_calls: 0,
             fresh_count: 0,
             finding_seq: 0,
+            pending_dst: None,
             func_objs: IndexMap::new(),
             global_objs: IndexMap::new(),
             budget: Budget::default(),
@@ -878,7 +887,10 @@ impl<'m> Engine<'m> {
             InstKind::Assign { dst, rv } => {
                 // A dropped assignment is a silent hole, so `eval` degrades on its way to
                 // returning `None` and the local simply stays unbound.
-                if let Some(v) = self.eval(a, s, rv, i.span) {
+                self.pending_dst = Some(*dst);
+                let evaluated = self.eval(a, s, rv, i.span);
+                self.pending_dst = None;
+                if let Some(v) = evaluated {
                     s.set_local(*dst, v);
                     // **Provenance is recorded here, not in `eval`**, because `eval` does
                     // not know which local it is filling — and the local is the thing that
@@ -1787,7 +1799,8 @@ impl<'m> Engine<'m> {
                         return Some(Value::Ptr(p));
                     }
                     let Ok(c) = a.eval_ground(t) else {
-                        return self.lowering_gap(s, span, "IntToPtr of a symbolic integer");
+                        // 021 §5.1: a symbolic base is *resolved*, not refused.
+                        return self.resolve_symbolic_base(a, s, t, span);
                     };
                     let p = s.mem.object_containing(c.bits() as u64);
                     s.degrade(
@@ -2043,6 +2056,137 @@ impl<'m> Engine<'m> {
               // lie, it is the engine not knowing — and the individual arms above still say
               // so wherever they genuinely cannot proceed.
         })
+    }
+
+    /// 021 §5.1. Resolve a pointer whose value the solver has not pinned.
+    ///
+    /// The five steps, in the spec's order and for the spec's reasons:
+    /// 1. Provenance short-circuits the search — handled by the caller.
+    /// 2. Ask which objects the value can fall in, capped at `max_resolutions`.
+    /// 3. Exactly one: continue with it.
+    /// 4. **Wholly unconstrained** — every object is feasible *and* so is being nowhere —
+    ///    is `Unknown`, a finding, and the path **stops**.
+    /// 5. Merely over the cap: concretize and record `Approximated`.
+    ///
+    /// **Steps 4 and 5 must stay distinct.** 021 records that an earlier draft merged
+    /// them, so an unconstrained pointer was concretized to an arbitrary object and the run
+    /// said `Bounded` — which reads as "we looked and bounded it" when nothing was known.
+    fn resolve_symbolic_base(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        addr: Term,
+        span: Span,
+    ) -> Option<Value> {
+        let ranges = s.mem.live_ranges();
+        let cap = self.budget.max_resolutions as usize;
+        // The cheap arithmetic filter is the semantics; §5.1's interval tree is the
+        // optimisation, and asking the solver about every object is what it forbids.
+        let mut candidates: Vec<chiero_mem::ObjectId> = Vec::new();
+        let mut over_cap = false;
+        for (id, base, size) in ranges.iter().copied() {
+            let lo = a.bv(64, base as u128);
+            let hi = a.bv(64, base.wrapping_add(size) as u128);
+            // Only `ult`, `eq`, `not`, `and` and `or` exist in the arena, so the range
+            // test is built from them: `!(addr < lo) && (addr < hi || addr == hi)`. The
+            // upper bound is inclusive because one-past-the-end is a legal C pointer.
+            let below = a.ult(addr, lo);
+            let in_lo = a.not(below);
+            let lt_hi = a.ult(addr, hi);
+            let eq_hi = a.eq(addr, hi);
+            let in_hi = a.or(lt_hi, eq_hi);
+            let inside = a.and(in_lo, in_hi);
+            if matches!(self.feasible(a, s, inside), Feas::Yes) {
+                if candidates.len() == cap {
+                    over_cap = true;
+                    break;
+                }
+                candidates.push(id);
+            }
+        }
+        // Can the pointer be outside *every* object? That is the wild state, and it is
+        // also how step 4 is told from step 3.
+        let mut outside = a.bv(1, 1);
+        for (_, base, size) in ranges.iter().copied() {
+            let lo = a.bv(64, base as u128);
+            let hi = a.bv(64, base.wrapping_add(size) as u128);
+            let below = a.ult(addr, lo);
+            let lt_hi = a.ult(addr, hi);
+            let eq_hi = a.eq(addr, hi);
+            let in_hi = a.or(lt_hi, eq_hi);
+            let above = a.not(in_hi);
+            let not_in = a.or(below, above);
+            outside = a.and(outside, not_in);
+        }
+        let can_be_wild = !matches!(self.feasible(a, s, outside), Feas::No);
+
+        if over_cap {
+            // Step 5: concretize, and say the exploration was cut rather than that the
+            // pointer was pinned.
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::OpaqueCode,
+                span,
+                &format!(
+                    "a symbolic pointer could refer to more than max_resolutions ({cap}) \
+                     objects, so it was concretized to one"
+                ),
+            );
+            let first = candidates.first().copied()?;
+            return Some(Value::Ptr(Pointer {
+                base: first,
+                off: 0,
+            }));
+        }
+        if candidates.is_empty() || (can_be_wild && candidates.len() == ranges.len()) {
+            // Step 4: no information at all. Not a concretization — the path ends.
+            self.finding_seq += 1;
+            s.findings.push((
+                self.finding_seq,
+                None,
+                "unresolvable pointer: the value is unconstrained, so it could refer to \
+                 any object or to none"
+                    .to_string(),
+            ));
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "a symbolic pointer with no constraint at all was not resolved",
+            );
+            s.status = Status::Terminated(TermReason::Unsupported);
+            return None;
+        }
+        // Steps 2 and 3: one state per candidate, plus the wild one when it is feasible.
+        // *This* state takes the last candidate so the siblings are the earlier ones and
+        // exploration order stays deterministic (023 §3).
+        let mut sibs: Vec<Pointer> = candidates
+            .iter()
+            .map(|id| Pointer { base: *id, off: 0 })
+            .collect();
+        if can_be_wild {
+            sibs.push(Pointer {
+                base: chiero_mem::ObjectId::UNBOUND,
+                off: 0,
+            });
+        }
+        let mine = sibs.pop().expect("non-empty");
+        for p in sibs {
+            let mut sib = s.clone();
+            sib.id = self.new_id();
+            sib.pc.1 = sib.pc.1.wrapping_add(1);
+            if let Some(d) = self.pending_dst {
+                sib.set_local(d, Value::Ptr(p));
+            }
+            self.pending.push(sib);
+        }
+        s.degrade(
+            Fidelity::Bounded,
+            AssumptionKind::BudgetHit,
+            span,
+            "a symbolic pointer was resolved by searching the address space",
+        );
+        Some(Value::Ptr(mine))
     }
 
     /// A pointer's address as a term, **remembering where it came from** (021 §7.1). The

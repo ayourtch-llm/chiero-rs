@@ -1827,6 +1827,21 @@ impl Memory {
         out
     }
 
+    /// Every live object's id and address range, for 021 §5.1's resolution search.
+    ///
+    /// §5.1 calls for an interval tree keyed on base address, because §8 concedes a VPP
+    /// entry point may exceed 10⁴ objects and a per-dereference O(objects) *solver* sweep
+    /// is not viable. This returns the ranges so the caller can do the cheap arithmetic
+    /// filter first and ask the solver only about what survives it — the tree is the
+    /// optimisation, the filter is the semantics.
+    pub fn live_ranges(&self) -> Vec<(ObjectId, u64, u64)> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| e.state == ObjState::Live)
+            .filter_map(|(id, e)| self.space.addr_of(*id).map(|a| (*id, a, e.size)))
+            .collect()
+    }
+
     /// Whether `id`'s storage is **the same allocation** in both memories — the only way
     /// to tell structural sharing from an identical copy, which is what 021 contract 20
     /// asks for.

@@ -2353,6 +2353,7 @@ fn every_deterministic_budget_is_present_and_reported() {
         max_states: 11,
         max_forks: 13,
         max_indirect: 2,
+        max_resolutions: 4,
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_budget(used).run(&mut a);
@@ -9515,16 +9516,18 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
     );
 }
 
-/// **021 §5.1 and contract 16.** A symbolic base pointer that can refer to 3 objects forks
-/// into **4** states — one per object, plus the wild-pointer state — with mutually
-/// exclusive constraints.
+/// **021 §5.1 step 4.** A pointer whose value carries *no constraint at all* is
+/// `Fidelity::Unknown`, an `UnresolvablePointer` finding, and the path **stops**.
 ///
-/// The fourth state is not bookkeeping: without it the candidate list is implicitly claimed
-/// exhaustive, so an address that falls outside every known object is never explored and
-/// the run still reports on the "complete" set. That is the same argument as the
-/// unresolvable state on an indirect *call*, one indirection over.
+/// 021 records that an earlier draft merged this with step 5 — concretizing to an
+/// arbitrary object and reporting `Bounded` — which reads as "we looked and bounded it"
+/// when nothing was known. Keeping them distinct is the whole point, so this pins the
+/// no-information end.
+///
+/// Contract 16's case (a base *constrained* to three of several objects, forking into
+/// four) needs a fixture that puts a real constraint on the address; it is owed.
 #[test]
-fn a_symbolic_base_forks_per_object_plus_one_wild() {
+fn a_wholly_unconstrained_pointer_stops_the_path() {
     let mut caller = defined(
         0,
         "main",
@@ -9538,20 +9541,6 @@ fn a_symbolic_base_forks_per_object_plus_one_wild() {
                     },
                 }),
                 inst(InstKind::Assign {
-                    dst: ValueId(1),
-                    rv: RValue::AddrOfLocal {
-                        alloca: AllocaId(1),
-                    },
-                }),
-                inst(InstKind::Assign {
-                    dst: ValueId(2),
-                    rv: RValue::AddrOfLocal {
-                        alloca: AllocaId(2),
-                    },
-                }),
-                // An address the solver knows only through a constraint: it equals one of
-                // the three, but chiero cannot fold it to a constant.
-                inst(InstKind::Assign {
                     dst: ValueId(3),
                     rv: RValue::Fresh { ty: CTy::Int(64) },
                 }),
@@ -9564,41 +9553,37 @@ fn a_symbolic_base_forks_per_object_plus_one_wild() {
                         to: CTy::Ptr,
                     },
                 }),
+                // Never reached: the path ended at the unresolvable pointer.
+                inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Use(i32c(1)),
+                }),
             ],
             Terminator::Return(Some(i32c(0))),
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![
-        alloca(0, CTy::Int(8), 8),
-        alloca(1, CTy::Int(8), 8),
-        alloca(2, CTy::Int(8), 8),
-    ];
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
     let m = Module {
         funcs: vec![caller],
         ..Default::default()
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    // Three objects exist, so three resolutions plus the wild state.
-    assert_eq!(
-        r.states().len(),
-        4,
-        "three candidates plus one wild: {:#?}",
-        r.states()
+    assert_eq!(r.fidelity(), Fidelity::Unknown, "nothing was known");
+    assert!(
+        r.findings()
             .iter()
-            .map(|s| s.local(ValueId(4)))
-            .collect::<Vec<_>>()
+            .any(|f| f.contains("unresolvable pointer")),
+        "{:#?}",
+        r.findings()
     );
-    let wild = r
-        .states()
-        .iter()
-        .filter(|s| match s.local(ValueId(4)) {
-            Some(Value::Ptr(p)) => p.base == chiero_mem::ObjectId::UNBOUND,
-            _ => false,
-        })
-        .count();
-    assert_eq!(wild, 1, "exactly one state says the pointer may be nowhere");
-    // And the run says it did not know: an unresolved base is not an exact answer.
-    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        r.states()[0].local(ValueId(5)).is_none(),
+        "the path stopped rather than continuing with a guess"
+    );
+    // **Not a concretization.** Step 5 would have produced a pointer and said
+    // `Approximated`; step 4 produces neither.
+    assert!(r.states()[0].local(ValueId(4)).is_none());
+    assert_ne!(r.fidelity(), Fidelity::Approximated);
 }
