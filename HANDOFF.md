@@ -1597,8 +1597,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    implementation by the same string it checks.** **C6** `completion_order` was empty on
    the verify-failure path.
 
+   **WAVE 24 — four of wave 23's defects fixed** (`e88c7a8`/`94987a3`, `e278c5c`,
+   `4a7b806`; 539 tests).
+
+   **C3 provenance laundering is closed.** `IntToPtr` consults `Frame::ptr_vals` — the
+   local a `PtrToInt` wrote — so arithmetic writes a *different* local with no entry and
+   loses provenance. Recorded in `exec_inst`'s `Assign` arm, **not** in `eval`, because
+   `eval` does not know which local it is filling. **Per activation like `locals`**: a
+   `ValueId` is unique only within a function, so a state-wide map would let a callee's
+   `%2` inherit the caller's provenance — the exact bug `frame_objs` exists to avoid, one
+   level up. The value-keyed `ptr_ints` stays for the narrower job it can do honestly: a
+   pointer that went through **memory**, where the bytes are the carrier.
+
+   **C4**: `ModelCtx::lift` keeps the `MemFault` beside the text it renders, so a `memcpy`
+   bug in a loop is one finding like a `Store` bug already was. The earlier "one report is
+   one finding" claim was narrower than it read — it held only for `report_faults`.
+
+   **C5**: `FindingKey` gains `func`. ⚠️ **Two components were unpinned because of the
+   fixtures**: dropping `span` changed nothing since nearly every fixture uses
+   `Span::DUMMY` (there is now an `inst_at` helper), and dropping `kind` made an
+   out-of-bounds read *disappear* behind an uninitialized read — the worst outcome a
+   deduplicator can produce. All four components now fail a mutation individually.
+
    **STILL OWED from wave 23, highest first:**
-   - **C3 provenance laundering seals a PROVEN.** `ptr_ints` is keyed on the term, and
+   - ~~**C3 provenance laundering**~~ DONE (wave 24). `ptr_ints` is keyed on the term, and
      addresses are ground `bv(64, …)` constants that the arena hash-conses — so **term
      identity is value identity** and any integer expression evaluating to a recorded
      address gets that object back, bypassing the `Unknown` degrade exactly when it should
@@ -1626,10 +1648,10 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **C7** no `Status::Errored` site calls `degrade`, so `State::fidelity()` is `Exact`
      for a state that gave up; only one untested line in `RunResult::fidelity` prevents a
      PROVEN seal. (One path is now pinned; the other six sites are not.)
-   - **C4** `ModelCtx::lift` stringifies the `MemFault` and discards the struct, so
+   - ~~**C4**~~ DONE (wave 24). `ModelCtx::lift` stringified the `MemFault` and discards the struct, so
      `key: None` — every model-reported fault (`free`, `memcpy`, `memset`, `strcpy`,
      `calloc`) still floods a loop with N copies. `lift` has the fault in hand.
-   - **C5** the key merges distinct findings: `object()` is `None` for `NullDeref`/
+   - ~~**C5**~~ DONE (wave 24). The key merged distinct findings: `object()` is `None` for `NullDeref`/
      `WildPointer`/`BadRange`, and there is no *function* component, so two functions
      sharing `Span::DUMMY` collapse. Merging is the dangerous direction.
    - **C2** `p->next = NULL` is still dropped — `addr_of(ObjectId::NULL)` is `None` because
