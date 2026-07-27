@@ -958,6 +958,17 @@ fn check_inst_types(
             require_int(f, size, types, "memset size", i.span, out);
         }
         InstKind::AllocaDyn { align, .. } => check_align(f, *align, i.span, out),
+        // 020 §4.4.1: a `va_list` is a real addressable `MemObject`, so every operand
+        // that names one is a pointer. `check_inst_types` had no arm for these at all,
+        // which meant `vastart 0i32` verified clean.
+        InstKind::VaStart { list } | InstKind::VaEnd { list } => {
+            require_ptr(f, list, types, "va_list", i.span, out)
+        }
+        InstKind::VaArg { list, .. } => require_ptr(f, list, types, "va_list", i.span, out),
+        InstKind::VaCopy { dst, src } => {
+            require_ptr(f, dst, types, "va_copy destination", i.span, out);
+            require_ptr(f, src, types, "va_copy source", i.span, out);
+        }
         InstKind::Opaque {
             dsts,
             writes,
