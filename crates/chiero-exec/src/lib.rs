@@ -750,11 +750,26 @@ impl<'m> Engine<'m> {
                 align,
                 ..
             } => {
-                let (Some(Value::Ptr(p)), Some(t)) =
-                    (self.operand(a, s, addr), self.scalar(a, s, val))
-                else {
+                let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     self.lowering_gap(s, i.span, "a store through a non-pointer address");
                     return;
+                };
+                // **A stored pointer keeps its object** (023 contract 23). Taking the
+                // value through `scalar` refused every `p->next = q`, which is the shape
+                // of essentially every data structure — and the dropped store then
+                // manufactured a false uninitialized-read on the reload.
+                let t = match self.operand(a, s, val) {
+                    Some(Value::Scalar(t)) => t,
+                    Some(Value::Ptr(q)) => {
+                        let Some(t) = self.address_term(a, s, q, i.span) else {
+                            return;
+                        };
+                        t
+                    }
+                    None => {
+                        self.lowering_gap(s, i.span, "a store of an untranslatable value");
+                        return;
+                    }
                 };
                 let _ = align;
                 let size = size_of_cty(ty);
@@ -1300,6 +1315,13 @@ impl<'m> Engine<'m> {
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
                 self.report_faults(s, &r.faults, span);
                 match r.value.filter(|_| !unusable(&r.faults)) {
+                    // A pointer-typed load comes back as a **pointer**, through the same
+                    // provenance table `IntToPtr` uses — the bits alone cannot say which
+                    // object they name, and `ObjectId` is what every later check is about.
+                    Some(t) if *ty == CTy::Ptr => match s.provenance_of(t) {
+                        Some(q) => Value::Ptr(q),
+                        None => Value::Scalar(t),
+                    },
                     Some(t) => Value::Scalar(t),
                     None => {
                         // The access produced nothing, so the caller gets a symbol chiero
@@ -1349,15 +1371,7 @@ impl<'m> Engine<'m> {
                     let Some(Value::Ptr(p)) = self.operand(a, s, x) else {
                         return self.lowering_gap(s, span, "PtrToInt of a non-pointer");
                     };
-                    let Some(base) = s.mem.addr_of(p.base) else {
-                        return self.lowering_gap(s, span, "PtrToInt of an unplaced object");
-                    };
-                    let t = a.bv(64, base.wrapping_add(p.off as u64) as u128);
-                    // **The origin is remembered, not recovered.** The address alone
-                    // cannot say which object it came from once the object is freed, and
-                    // `ObjectId` is what every later check is about.
-                    s.remember_provenance(t, p);
-                    return Some(Value::Scalar(t));
+                    return self.address_term(a, s, p, span).map(Value::Scalar);
                 }
                 if *kind == CastKind::IntToPtr {
                     let Some(t) = self.scalar(a, s, x) else {
@@ -1530,6 +1544,27 @@ impl<'m> Engine<'m> {
         })
     }
 
+    /// A pointer's address as a term, **remembering where it came from** (021 §7.1). The
+    /// origin is recorded rather than recovered: the address alone cannot say which
+    /// object it was once that object is freed. Shared by `PtrToInt` and by storing a
+    /// pointer, so a pointer that goes through memory recovers exactly like one that goes
+    /// through a `uintptr_t`.
+    fn address_term(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        p: Pointer,
+        span: Span,
+    ) -> Option<Term> {
+        let Some(base) = s.mem.addr_of(p.base) else {
+            self.lowering_gap(s, span, "the address of an unplaced object");
+            return None;
+        };
+        let t = a.bv(64, base.wrapping_add(p.off as u64) as u128);
+        s.remember_provenance(t, p);
+        Some(t)
+    }
+
     /// The object for a file-scope variable, allocated on first use. One per `GlobalId`,
     /// since `&counter` twice is one address — and a `const` global is `readonly`, which
     /// is what makes a write to it a finding and what keeps a havoc off a string literal.
@@ -1591,6 +1626,18 @@ impl<'m> Engine<'m> {
     /// model's do. A fault that only reached the memory model is a bug chiero found and
     /// did not report.
     fn report_faults(&mut self, s: &mut State, faults: &[chiero_mem::MemFault], span: Span) {
+        // 021 §5 step 3: misalignment is **recorded** on every access and is a *finding*
+        // only in `ub-strict` mode, because x86-64 tolerates it and VPP relies on that.
+        // Reporting it unconditionally fired on every `CLIB_PACKED` packet header — and
+        // the check is against the object's *declared* alignment, so the address is not
+        // even involved. There is no `ub-strict` mode yet; when there is, this is where
+        // it goes.
+        let faults: Vec<_> = faults
+            .iter()
+            .filter(|f| f.kind() != "misaligned")
+            .cloned()
+            .collect();
+        let faults = &faults[..];
         for f in faults {
             self.finding_seq += 1;
             s.findings.push((self.finding_seq, f.to_string()));
