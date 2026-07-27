@@ -206,9 +206,15 @@ pub struct State {
     /// (023 §8) — two functions that both loop `b2 -> b1` are not one loop.
     edge_counts: IndexMap<(FuncId, BlockId, BlockId), u32>,
     steps: u32,
-    /// What the models reported on this path. Kept on the state so a fork carries only
-    /// what it actually saw.
-    findings: Vec<String>,
+    /// What the models reported on this path, each paired with the **identity of the
+    /// report**. Kept on the state so a fork carries only what it actually saw — but a
+    /// fork carries a *copy*, so one `free(&stack_var)` followed by one branch became two
+    /// identical findings, and 024 contracts 4, 5, 9, 10 and 22 all say "exactly one".
+    ///
+    /// The id is minted where the finding is, so every state descended from that call
+    /// shares it. Deduplicating on the *text* instead would collapse two genuinely
+    /// separate reports that happen to read the same, which is the common case in a loop.
+    findings: Vec<(u64, String)>,
 }
 
 impl State {
@@ -269,8 +275,8 @@ impl State {
         &self.assumptions
     }
 
-    pub fn findings(&self) -> &[String] {
-        &self.findings
+    pub fn findings(&self) -> Vec<&str> {
+        self.findings.iter().map(|(_, f)| f.as_str()).collect()
     }
 
     pub fn trace(&self) -> &[(FuncId, BlockId)] {
@@ -404,12 +410,24 @@ impl RunResult {
         self.budget
     }
 
-    /// Everything the models reported, across every state.
+    /// Everything the models reported, across every state — **once each**. States that
+    /// forked after a call all carry that call's finding, so a flat concatenation
+    /// multiplied every report by the number of surviving descendants.
+    ///
+    /// 023 §6.1 delegates the real deduplication key — `(checker, span, object, kind)` —
+    /// to 040. This is the narrower thing 024's "exactly one" wording needs: the same
+    /// *report*, seen from several states, is one report.
     pub fn findings(&self) -> Vec<String> {
-        self.states
-            .iter()
-            .flat_map(|s| s.findings.clone())
-            .collect()
+        let mut seen: Vec<u64> = Vec::new();
+        let mut out = Vec::new();
+        for (id, f) in self.states.iter().flat_map(|s| s.findings.iter()) {
+            if seen.contains(id) {
+                continue;
+            }
+            seen.push(*id);
+            out.push(f.clone());
+        }
+        out
     }
 
     /// 023 §7 rule 2: the **worst** over every state that contributed.
@@ -445,6 +463,8 @@ pub struct Engine<'m> {
     next_state: u32,
     solver_calls: u64,
     fresh_count: u32,
+    /// Identity for a model report, so the copies a fork makes are recognised as one.
+    finding_seq: u64,
     budget: Budget,
     backend: Option<SmtLib>,
     models: ModelRegistry,
@@ -470,6 +490,7 @@ impl<'m> Engine<'m> {
             next_state: 0,
             solver_calls: 0,
             fresh_count: 0,
+            finding_seq: 0,
             budget: Budget::default(),
             models: ModelRegistry::with_builtins(),
             alloc_policy: AllocPolicy::default(),
@@ -1344,7 +1365,8 @@ impl<'m> Engine<'m> {
         }
 
         for f in findings {
-            s.findings.push(f);
+            self.finding_seq += 1;
+            s.findings.push((self.finding_seq, f));
         }
         if let (Some(d), Some(v)) = (dst, result) {
             s.set_local(d, v);
@@ -1412,7 +1434,10 @@ impl<'m> Engine<'m> {
             IntrinsicOutcome::KillState => {
                 s.status = Status::Terminated(TermReason::Return);
             }
-            IntrinsicOutcome::Finding(f) => s.findings.push(f),
+            IntrinsicOutcome::Finding(f) => {
+                self.finding_seq += 1;
+                s.findings.push((self.finding_seq, f));
+            }
             IntrinsicOutcome::Degrade(why) => {
                 s.degrade(
                     Fidelity::Approximated,

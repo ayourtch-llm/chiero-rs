@@ -382,33 +382,38 @@ pub fn dispatchable() -> &'static [&'static str] {
 pub mod models {
     use super::*;
 
-    /// Whether a name has an implementation here. The registry uses it so an `Exact`
-    /// declaration cannot outrun the code behind it.
+    /// Whether a name has an implementation **here**, in this module. The registry uses
+    /// it so an `Exact` declaration cannot outrun the code behind it.
+    ///
+    /// Deliberately *not* derived from `DISPATCHABLE`: with `DISPATCHABLE.contains(&name)`
+    /// as the first disjunct this returned true for every name in that list by
+    /// construction, so the test asserting the two lists agree could not fail — adding a
+    /// name to `DISPATCHABLE` with no model behind it passed. Two lists that must agree
+    /// only catch drift if they are written down independently.
     pub fn is_implemented(name: &str) -> bool {
-        super::DISPATCHABLE.contains(&name)
-            || matches!(
-                name,
-                "malloc"
-                    | "calloc"
-                    | "free"
-                    | "memcpy"
-                    | "memmove"
-                    | "memset"
-                    | "strlen"
-                    | "strcpy"
-                    | "__builtin_clz"
-                    | "__builtin_ctz"
-                    | "__builtin_popcount"
-                    | "__builtin_bswap16"
-                    | "__builtin_bswap32"
-                    | "__builtin_bswap64"
-                    | "__builtin_add_overflow"
-                    | "__builtin_sub_overflow"
-                    | "__builtin_mul_overflow"
-                    | "chiero_assume"
-                    | "chiero_assert"
-                    | "chiero_mark_fidelity"
-            )
+        matches!(
+            name,
+            "malloc"
+                | "calloc"
+                | "free"
+                | "memcpy"
+                | "memmove"
+                | "memset"
+                | "strlen"
+                | "strcpy"
+                | "__builtin_clz"
+                | "__builtin_ctz"
+                | "__builtin_popcount"
+                | "__builtin_bswap16"
+                | "__builtin_bswap32"
+                | "__builtin_bswap64"
+                | "__builtin_add_overflow"
+                | "__builtin_sub_overflow"
+                | "__builtin_mul_overflow"
+                | "chiero_assume"
+                | "chiero_assert"
+                | "chiero_mark_fidelity"
+        )
     }
 
     /// 024 contract 1/2. Uninitialized contents, and a `NULL` branch unless the allocator

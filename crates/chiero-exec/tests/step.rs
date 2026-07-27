@@ -2642,8 +2642,15 @@ fn a_dispatched_model_with_nothing_to_report_stays_exact() {
                     callee: Callee::Direct(FuncId(1)),
                     args: vec![
                         Operand::Value(ValueId(0)),
-                        Operand::Const(Const::Int { bits: 32, val: 0 }),
-                        Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        // **Neither argument is 0 or 8.** With `(byte 0, size 8)` a
+                        // model that swapped them wrote zero bytes, which reports the
+                        // same "nothing happened" as writing eight zeroes — the
+                        // same-answer trap, and `memset` had no other engine-level test.
+                        Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0xAB,
+                        }),
+                        Operand::Const(Const::Int { bits: 64, val: 6 }),
                     ],
                 }),
             ],
@@ -2674,6 +2681,23 @@ fn a_dispatched_model_with_nothing_to_report_stays_exact() {
     );
     assert!(r.findings().is_empty(), "{:#?}", r.findings());
     assert!(seal(&r, r.witness()).is_ok());
+    // And it actually wrote: six 0xAB bytes, and the seventh still unreadable.
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = r.states()[0].mem.clone();
+    assert_eq!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 6, Span::DUMMY)
+            .value,
+        Some(vec![0xAB; 6])
+    );
+    assert!(
+        !mem.read(chiero_mem::Pointer { base, off: 6 }, 1, Span::DUMMY)
+            .faults
+            .is_empty(),
+        "the write stopped where it was told to"
+    );
 }
 
 /// **`can_dispatch` and the model implementations cannot drift.** Both were hand-written
@@ -2687,6 +2711,22 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
             "`{n}` is dispatchable with no implementation"
         );
     }
+    // **The other direction, or the check is one-sided.** `is_implemented` returning
+    // `true` unconditionally passed the loop above — every assertion in it was satisfied
+    // by a function that says yes to everything. These are registered models chiero has
+    // *no* implementation for, which is exactly what the flag exists to distinguish.
+    for n in [
+        "scanf",
+        "printf",
+        "sqrt",
+        "longjmp",
+        "not_a_function_at_all",
+    ] {
+        assert!(
+            !chiero_model::models::is_implemented(n),
+            "`{n}` has no implementation here and must not claim one"
+        );
+    }
     let r = chiero_model::ModelRegistry::with_builtins();
     for n in chiero_model::dispatchable() {
         assert!(
@@ -2694,6 +2734,189 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
             "`{n}` is dispatchable but unregistered"
         );
     }
+}
+
+/// **The list has to mean something.** `everything_dispatchable_is_implemented_and_vice_versa`
+/// could not fail while `is_implemented` began with `DISPATCHABLE.contains(&name)` — it
+/// was true for every name in the list by construction. So this calls each dispatchable
+/// name **through the engine, with arguments it can actually use**, and requires the
+/// engine not to say it gave up. Adding a name to `DISPATCHABLE` with no match arm behind
+/// it fails here.
+///
+/// The arguments are per-name rather than uniform because the arities and kinds differ,
+/// and a uniform list would land every name in the argument-translation gap — passing for
+/// the wrong reason, which is how the previous test passed.
+#[test]
+fn every_dispatchable_name_is_actually_performed_by_the_engine() {
+    // (name, params, args). `ValueId(0)` and `ValueId(1)` are pointers to two 16-byte
+    // locals; the source is filled and terminated before every call.
+    let sz = |v: i128| Operand::Const(Const::Int { bits: 64, val: v });
+    let i32v = |v: i128| Operand::Const(Const::Int { bits: 32, val: v });
+    let p0 = Operand::Value(ValueId(0));
+    let p1 = Operand::Value(ValueId(1));
+    let cases: Vec<(&str, Vec<CTy>, Vec<Operand>)> = vec![
+        ("malloc", vec![CTy::Int(64)], vec![sz(16)]),
+        (
+            "calloc",
+            vec![CTy::Int(64), CTy::Int(64)],
+            vec![sz(2), sz(8)],
+        ),
+        ("free", vec![CTy::Ptr], vec![p0.clone()]),
+        (
+            "memcpy",
+            vec![CTy::Ptr, CTy::Ptr, CTy::Int(64)],
+            vec![p0.clone(), p1.clone(), sz(4)],
+        ),
+        (
+            "memmove",
+            vec![CTy::Ptr, CTy::Ptr, CTy::Int(64)],
+            vec![p0.clone(), p1.clone(), sz(4)],
+        ),
+        (
+            "memset",
+            vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+            vec![p0.clone(), i32v(0), sz(4)],
+        ),
+        ("strlen", vec![CTy::Ptr], vec![p1.clone()]),
+        (
+            "strcpy",
+            vec![CTy::Ptr, CTy::Ptr],
+            vec![p0.clone(), p1.clone()],
+        ),
+        ("chiero_assume", vec![CTy::Int(32)], vec![i32v(1)]),
+        ("chiero_assert", vec![CTy::Int(32)], vec![i32v(1)]),
+        ("chiero_mark_fidelity", vec![CTy::Ptr], vec![p1.clone()]),
+    ];
+    let names: Vec<&str> = cases.iter().map(|(n, _, _)| *n).collect();
+    for n in chiero_model::dispatchable() {
+        assert!(names.contains(n), "`{n}` has no case here");
+    }
+
+    for (name, params, args) in cases {
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(1),
+                        },
+                    }),
+                    // Fill and terminate the source, so the string models have a real
+                    // string and do not bail before doing their job.
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![p1.clone(), i32v(0), sz(16)],
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args,
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![alloca(0, CTy::Int(8), 16), alloca(1, CTy::Int(8), 16)];
+        let m = Module {
+            funcs: vec![
+                caller,
+                extern_fn(1, name, params, CTy::Ptr),
+                extern_fn(
+                    2,
+                    "memset",
+                    vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                    CTy::Ptr,
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut a = TermArena::new();
+        let r = Engine::new(&m).run(&mut a);
+        for st in r.states() {
+            for x in st.assumptions() {
+                assert!(
+                    !x.detail.contains("could not be dispatched")
+                        && !x.detail.contains("cannot dispatch")
+                        && !x.detail.contains("no body and no model"),
+                    "`{name}` claims to be dispatchable: {}",
+                    x.detail
+                );
+            }
+        }
+    }
+}
+
+/// **`can_dispatch` itself, pinned.** `a_registered_model_the_engine_cannot_dispatch_still_degrades`
+/// called each name with `args: vec![]`, so once those names became dispatchable it kept
+/// passing through the *argument-translation* gap rather than through the refusal it
+/// exists to check — `can_dispatch → true` survived as a mutation. This registers an
+/// `Exact` model for a name the engine has no arm for and calls it with **valid**
+/// arguments, so only the refusal can produce the degradation.
+#[test]
+fn an_exact_model_with_no_engine_arm_degrades_on_valid_arguments() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: Some(ValueId(1)),
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Const(Const::Int { bits: 32, val: 8 })],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "__builtin_clz", vec![CTy::Int(32)], CTy::Int(32)),
+        ],
+        ..Default::default()
+    };
+    let reg = chiero_model::ModelRegistry::with_builtins();
+    assert_eq!(
+        reg.lookup("__builtin_clz").map(|e| e.precision.clone()),
+        Some(chiero_model::Precision::Exact),
+        "the premise: registered, and registered as exact"
+    );
+    assert!(
+        !chiero_model::dispatchable().contains(&"__builtin_clz"),
+        "the premise: implemented in chiero-model, no arm in the engine"
+    );
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_models(reg).run(&mut a);
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("cannot dispatch")),
+        "the refusal, not the argument gap: {:#?}",
+        r.states()[0].assumptions()
+    );
 }
 
 /// **024 contract 1's default.** `malloc` forks into success and `NULL`, and both states
@@ -3188,4 +3411,70 @@ fn an_unmodeled_extern_invalidates_the_pointer_it_was_handed() {
         "{:#?}",
         r.states()[0].assumptions()
     );
+}
+
+/// **024 contract 5's "exactly one".** One `free(&stack_var)` is one finding, however many
+/// states the run ends with. A state carries the findings it saw, and a fork carries a
+/// *copy* — so a single branch after the call doubled the report, and contracts 4, 9, 10
+/// and 22 use the same wording. 023 §6.1 delegates the real dedup key to 040, but a flat
+/// `Vec<String>` gave 040 nothing to dedup on either. Found by review.
+#[test]
+fn one_bad_free_is_one_finding_however_many_states_survive() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Value(ValueId(0))],
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(1)),
+                            b: i32c(7),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(1)))),
+            block(2, vec![], Terminator::Return(Some(i32c(2)))),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 2, "the branch really did fork");
+    let bad: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("BadFree"))
+        .collect();
+    assert_eq!(bad.len(), 1, "{:#?}", r.findings());
 }
