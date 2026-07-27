@@ -2229,6 +2229,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    to compare the cost at 4 objects and at 40. A whole-run counter standing in for a
    per-object property holds only until anything else in the run costs a query.
 
+   **WAVE 55** (`a0dc73d`; 628 tests, 109/161 cited) — **023 contract 16: a witness
+   replays.** `Engine::replaying(w)` binds every input to the witness's value through the
+   *same* `input` seam every symbol goes through; a separate replay path could drift from
+   the one it is meant to reproduce, which is the failure a replay exists to detect.
+   Bindings are consumed in creation order and each origin is checked against the site
+   asking for it — a mismatch or a short witness is a **finding**, because a run that
+   quietly stops reproducing while still reporting what it finds is how a refuted bug and
+   an unrelated one come to look the same. Values go in as constants, so the replay of the
+   guarded null store asks the solver nothing and explores one state.
+
+   ⚠️ *Method note:* the "never advance the cursor" mutant **survived** the first round —
+   with a single-input witness it is invisible. The two-input fixture had to be lifted out
+   of its own test and replayed too. *A replay test with one input tests almost nothing
+   about ordering.*
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2306,7 +2321,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **625 tests, 108/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **628 tests, 109/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
