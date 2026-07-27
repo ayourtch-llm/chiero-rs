@@ -565,7 +565,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    (`unformat_free` memsets), and a job-response path where a 5%-complete run could
    report `proven: true` over an empty findings list.
 
-   **Wave 3 (QUEUED — nothing cached):**
+   **Wave 3 — COMPLETE, applied in `284ef54` (code) and `479ac05` (specs).**
+
+   *The span implementation review was the most valuable single review so far.* It
+   demonstrated **six deliberate breakages that all 32 tests accepted**, including
+   `expansion_sites` returning every expansion in the TU — i.e. "re-run every test for
+   any change", indistinguishable from having no test selection. Also found: `origin`
+   never read `body_extent` (so any span with a non-ROOT ctx was a "body token"), the
+   fixture had drifted until that stopped mattering, the cooked index stored one entry
+   per expansion *event* rather than per *site* (inverting 010 §6.3's entire
+   justification), macro identity was reverse-engineered from `def_span.lo` so a builtin
+   resolved to whichever file occupies offset 0, and `intern_file` did not normalize
+   despite its doc comment.
+
+   *Fable's spec review found a critical error in 015 — the document written to prevent
+   exactly that class of error.* Its `gcov_lines` rule dropped lines from headers, which
+   would have zeroed coverage correlation for every `static inline` in vppinfra, and 015's
+   own contracts could not detect it because the subset property is vacuous on the empty
+   set. Also: scope markers specified on every exit but only the lexical entry (any
+   `switch` with a local breaks), the `&&` slot typed `i1` when `a && b` is `int`, a
+   contract contradicting C11's zero-initialization rule, arena geometry conflating VPP's
+   64-byte index unit with its ~2.5 KB element pitch, and M1's gate listing contract
+   ranges that excluded every contract the reviews had added.
+
+   **Wave 4 (QUEUED — nothing cached):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -585,8 +608,10 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      review, especially 021 §3.1's tri-state `InitMask`, 021 §5.2 arenas, 042 §4.2.1's
      `(ObjectId, byte range)` entity identity, and **015, which is brand new and has
      never been reviewed at all**.
-   - **`chiero-span`'s implementation** — the cooked index and provenance queries are now
-     real code (49 tests) and have had no adversarial review.
+   - **`chiero-cir`** — types and verifier are real code (21 tests) with no review yet.
+     Ask specifically whether a wrong verifier passes the suite, and whether the
+     `assert_rejects` one-defect-one-kind rule is itself circumventable.
+   - **A re-review of `chiero-span` after the wave-3 fixes**, which were extensive.
 
 3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
    subagent finding is a claim, not a verdict; several will be wrong, and adopting a
