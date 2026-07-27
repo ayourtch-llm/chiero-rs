@@ -64,8 +64,13 @@ struct Fixture {
     /// Span of the `vec_resize_ha` token, which is copied from `vec_add1_ha`'s body
     /// and reached only through two nested expansions.
     resize_tok: Span,
-    /// Span of the `ai` token, substituted from the caller's argument.
+    /// Span of the `ai` token, substituted from the caller's argument (index 1).
     ai_tok: Span,
+    /// Span of the `adj_list` token — argument index 0.
+    adj_tok: Span,
+    /// A macro that is defined and never expanded.
+    unused: MacroId,
+    cfile: chiero_span::FileId,
     /// The outer expansion, i.e. `vec_add1(...)` at ip4_forward.c:900.
     outer: ExpnCtx,
     /// The inner expansion, i.e. `vec_add1_ha(...)` from inside vec_add1's body.
@@ -79,7 +84,9 @@ fn fixture() -> Fixture {
         for _ in 1..118 {
             s.push('\n');
         }
-        s.push_str("#define vec_add1_ha(V,E,H,A) (vec_resize_ha(V,1,H,A))\n"); // 118
+        s.push_str(
+            "#define vec_add1_ha(V,E,H,A) (vec_resize_ha(V,1,H,A), (V)[_vec_len(V)-1] = (E))\n",
+        ); // 118
         s.push('\n'); // 119
         s.push_str("#define vec_add1(V,E) vec_add1_ha (V, E, 0, 0)\n"); // 120
         s
@@ -110,7 +117,12 @@ fn fixture() -> Fixture {
 
     // Macro definitions. `body_extent` is what discriminates a token copied from the
     // body from one substituted from an argument (010 §2.2).
-    let ha_body = at(hbase, &vec_h, "(vec_resize_ha(V,1,H,A))", 0);
+    let ha_body = at(
+        hbase,
+        &vec_h,
+        "(vec_resize_ha(V,1,H,A), (V)[_vec_len(V)-1] = (E))",
+        0,
+    );
     let vec_add1_ha = sm.add_macro("vec_add1_ha", at(hbase, &vec_h, "vec_add1_ha", 0), ha_body);
     let a1_body = at(hbase, &vec_h, "vec_add1_ha (V, E, 0, 0)", 0);
     let vec_add1 = sm.add_macro(
@@ -137,12 +149,29 @@ fn fixture() -> Fixture {
         BytePos(at(hbase, &vec_h, "vec_add1_ha (V, E, 0, 0)", 0).lo.0 + 11),
         outer,
     );
+    // The inner invocation's arguments are written in `vec_add1`'s body: `V, E, 0, 0`.
+    // With an empty arg list every token in the inner expansion would fall through to
+    // MacroBody, and contract 5 would pass for the wrong reason.
+    let in_body = |needle: &str, nth: usize| -> Span {
+        let a = at(hbase, &vec_h, needle, nth);
+        Span::new(a.lo, a.hi, outer)
+    };
     let inner = sm.add_expansion(
         outer,
         Some(vec_add1_ha),
         inner_site,
-        inner_site,
-        vec![],
+        // `call_extent` is the whole invocation including parens (010 §2.1).
+        Span::new(
+            inner_site.lo,
+            at(hbase, &vec_h, "vec_add1_ha (V, E, 0, 0)", 0).hi,
+            outer,
+        ),
+        vec![
+            in_body("V, E, 0, 0", 0),
+            in_body("E, 0, 0", 0),
+            in_body("0, 0", 0),
+            in_body("0)", 0),
+        ],
         ExpnKind::FunctionLike,
     );
 
@@ -155,12 +184,23 @@ fn fixture() -> Fixture {
     let a = at(cbase, &c_src, "ai", 0);
     let ai_tok = Span::new(a.lo, a.hi, outer);
 
+    let adj = at(cbase, &c_src, "adj_list", 0);
+    let adj_tok = Span::new(adj.lo, adj.hi, outer);
+    let unused = sm.add_macro(
+        "NEVER_USED",
+        at(hbase, &vec_h, "vec_add1", 0),
+        at(hbase, &vec_h, "vec_add1", 0),
+    );
+
     Fixture {
         sm,
         vec_add1,
         vec_add1_ha,
         resize_tok,
         ai_tok,
+        adj_tok,
+        unused,
+        cfile: cf,
         outer,
         inner,
     }
@@ -222,6 +262,22 @@ fn origin_distinguishes_body_from_argument() {
             arg_index: 1
         }
     );
+    // Index 0 too: an implementation returning `arg_spans.len() - 1` for any hit would
+    // otherwise pass, since every other assertion here uses the last argument.
+    assert_eq!(
+        f.sm.origin(f.adj_tok),
+        TokenOrigin::MacroArg {
+            expn: f.outer,
+            arg_index: 0
+        }
+    );
+    // A token in neither the body nor an argument is not a body token (010 §2.2).
+    let elsewhere = Span::new(f.sm.file(f.cfile).start_pos, f.ai_tok.hi, f.outer);
+    assert_ne!(
+        f.sm.origin(elsewhere),
+        TokenOrigin::MacroBody(f.vec_add1),
+        "only spans inside the replacement list are body tokens"
+    );
 
     let verbatim = Span::new(f.ai_tok.lo, f.ai_tok.hi, ExpnCtx::ROOT);
     assert!(matches!(f.sm.origin(verbatim), TokenOrigin::Verbatim(_)));
@@ -245,15 +301,22 @@ fn involves_macro_sees_through_nesting() {
 #[test]
 fn expansion_sites_are_transitive() {
     let f = fixture();
+    // **Exact** sets. Asserting only membership lets an implementation that returns
+    // every expansion in the TU for every query pass — i.e. "re-run everything for any
+    // change", which is indistinguishable from having no test selection at all.
     let direct: Vec<_> = f.sm.expansion_sites(f.vec_add1).collect();
-    assert!(direct.contains(&f.outer));
+    assert_eq!(direct, vec![f.outer], "exactly the one vec_add1 site");
 
     let transitive: Vec<_> = f.sm.expansion_sites(f.vec_add1_ha).collect();
-    assert!(
-        transitive.contains(&f.inner),
+    assert_eq!(
+        transitive,
+        vec![f.inner],
         "vec_add1_ha is expanded from inside vec_add1's body, and ip4_forward.c \
          never names it — this is the case a coverage-only tool cannot see"
     );
+
+    // A macro that is never expanded must have no sites, and must not pick up others'.
+    assert_eq!(f.sm.expansion_sites(f.unused).count(), 0);
 }
 
 /// 010 contract 8: `#define A B` / `#define B C` / `A` gives a depth-2 chain.
