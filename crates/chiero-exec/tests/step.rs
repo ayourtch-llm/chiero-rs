@@ -19,6 +19,7 @@
 
 use chiero_cir::*;
 use chiero_exec::*;
+use chiero_mem::ObjectId;
 use chiero_solver::{Sort, TermArena};
 use chiero_span::{BytePos, ExpnCtx, Span};
 
@@ -10635,5 +10636,276 @@ fn a_use_after_free_through_a_symbolic_address_is_reported() {
             .any(|f| f.contains("value is unconstrained")),
         "and the program is not blamed for an address it pinned: {:#?}",
         r.findings()
+    );
+}
+
+/// Resolves a symbolic address pinned to exactly `base_of(alloca 0) + delta`, and
+/// returns that base object's id alongside every `(base, off)` the resolution produced.
+/// Object 0 is 32 bytes; object 1 is 8 bytes, a guard gap away.
+fn resolve_pinned_at(
+    delta: u64,
+    backend: chiero_solver::SmtLib,
+) -> (ObjectId, Vec<(ObjectId, i64)>) {
+    let mut f = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Bin {
+                            op: BinOp::Add,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(1)),
+                            b: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: delta as i128,
+                            }),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(3)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(4)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    f.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Int(8), 32)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(8), 8)
+        },
+    ];
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let base0 = r
+        .states()
+        .iter()
+        .find_map(|s| match s.local(ValueId(0)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .expect("the address of alloca 0 is taken on every path");
+    let resolved = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(5)) {
+            Some(Value::Ptr(p)) => Some((p.base, p.off)),
+            _ => None,
+        })
+        .collect();
+    (base0, resolved)
+}
+
+/// **The resolution uses each object's extent.** Contracts 16 and 17 pass byte-identically
+/// with every object's size set to 0 or to `size + 1` — they only need several distinct
+/// object ids to come back, so they never exercise extent at all. Found by review as an
+/// L2/L3 mutation gap. Extent only decides anything at the two boundaries, so both are
+/// here: an address inside the object resolves to it (a size of 0 would not), and an
+/// address one byte past its end resolves to *nothing* (a size of `size + 1` would).
+#[test]
+fn an_address_inside_an_object_resolves_to_it_at_that_offset() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let (base0, resolved) = resolve_pinned_at(6, backend);
+    assert!(
+        resolved.contains(&(base0, 6)),
+        "six bytes into a 32-byte object: {resolved:?}"
+    );
+}
+
+/// The upper bound is *inclusive* — C makes a one-past-the-end pointer legal, and 021
+/// §7.1 records that treating it as wild is a false positive on conforming code — but
+/// only just: one byte further is in the guard gap and belongs to no object.
+#[test]
+fn one_past_the_end_is_inside_and_one_further_is_not() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let (base0, at_end) = resolve_pinned_at(32, backend.clone());
+    assert!(
+        at_end.contains(&(base0, 32)),
+        "one past the end of a 32-byte object is that object's own pointer: {at_end:?}"
+    );
+    let (base0, past) = resolve_pinned_at(33, backend);
+    assert!(
+        past.iter().all(|(b, _)| *b != base0),
+        "two past the end is in the guard gap, not in the object: {past:?}"
+    );
+    assert!(
+        past.iter().any(|(b, _)| *b == ObjectId::UNBOUND),
+        "and it is a wild pointer: {past:?}"
+    );
+}
+
+/// A program whose symbolic address is pinned exactly, differing only in how many
+/// *unrelated* objects exist alongside it. Returns the solver-call count.
+fn resolution_cost_with_n_objects(nobj: u32, backend: chiero_solver::SmtLib) -> u64 {
+    let mut f = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cast {
+                            kind: CastKind::PtrToInt,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Ptr,
+                            to: CTy::Int(64),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(3),
+                        rv: RValue::Bin {
+                            op: BinOp::Add,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(1)),
+                            b: Operand::Const(Const::Int { bits: 64, val: 6 }),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(4),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(2)),
+                            b: Operand::Value(ValueId(3)),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(4)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(5),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                })],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    f.allocas = (0..nobj)
+        .map(|i| AllocaDecl {
+            align: 8,
+            ..alloca(i, CTy::Int(8), 32)
+        })
+        .collect();
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert!(
+        r.states().iter().any(|s| matches!(
+            s.local(ValueId(5)),
+            Some(Value::Ptr(p)) if p.off == 6
+        )),
+        "the fixture must actually resolve, or it measures nothing"
+    );
+    r.solver_calls
+}
+
+/// **021 §5.1 forbids a per-dereference O(objects) solver sweep**, in as many words:
+/// "the search is over an interval tree keyed on base address, not a linear scan …
+/// VPP entry points may exceed 10⁴ objects". The address here is pinned to one exact
+/// value; how many *other* objects happen to exist is chiero's business, not the
+/// program's, and must not show up as solver queries. Found by review as D8.
+#[test]
+fn resolution_cost_does_not_grow_with_the_object_count() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let few = resolution_cost_with_n_objects(4, backend.clone());
+    let many = resolution_cost_with_n_objects(40, backend);
+    assert!(
+        many <= few + 4,
+        "36 more objects cost {} more solver calls ({few} -> {many}): that is the \
+         linear scan §5.1 forbids",
+        many - few
     );
 }
