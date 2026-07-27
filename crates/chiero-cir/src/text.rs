@@ -106,7 +106,10 @@ impl<'a> Parser<'a> {
     fn module(&mut self) -> Result<Module, ParseError> {
         let mut m = Module::default();
         while let Some(t) = self.next_line() {
-            match t[0].as_str() {
+            if t.is_empty() {
+                return self.err("empty line after tokenizing");
+            }
+            match self.tok(&t, 0)? {
                 "target" => {}
                 "global" => {
                     let mut g = self.global(&t)?;
@@ -131,8 +134,11 @@ impl<'a> Parser<'a> {
         Ok(Global {
             id: GlobalId(0),
             name: t[1].trim_start_matches('@').into(),
-            size: t[4].parse().map_err(|_| self.perr("bad size"))?,
-            align: t[6].parse().map_err(|_| self.perr("bad align"))?,
+            size: self.tok(t, 4)?.parse().map_err(|_| self.perr("bad size"))?,
+            align: self
+                .tok(t, 6)?
+                .parse()
+                .map_err(|_| self.perr("bad align"))?,
             is_const: false,
             span: Span::DUMMY,
         })
@@ -156,6 +162,16 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.perr(&format!("unknown function `{s}`")))
     }
 
+    /// Checked token access. The parser indexed positionally in ~20 places, so a
+    /// truncated line panicked with an index-out-of-bounds instead of returning a
+    /// `ParseError` — and a fixture format whose parser panics on malformed input is
+    /// strictly worse than one that errors, since a panic carries no line number.
+    fn tok<'t>(&self, t: &'t [String], i: usize) -> Result<&'t str, ParseError> {
+        t.get(i)
+            .map(String::as_str)
+            .ok_or_else(|| self.perr(&format!("line is too short: expected a token at {i}")))
+    }
+
     fn perr(&self, m: &str) -> ParseError {
         ParseError {
             line: self.at as u32,
@@ -169,6 +185,10 @@ impl<'a> Parser<'a> {
         let joined = self.raw.clone();
         let open = joined.find('(').ok_or_else(|| self.perr("func needs ("))?;
         let close = joined.rfind(')').ok_or_else(|| self.perr("func needs )"))?;
+        // `joined[5..open]` panics on a reversed range for input like `func(x)`.
+        if open < 5 || close < open {
+            return self.err("malformed func header");
+        }
         let name: Symbol = joined[5..open].trim().trim_start_matches('@').into();
 
         let mut params = Vec::new();
@@ -256,7 +276,10 @@ impl<'a> Parser<'a> {
             let Some(t) = self.next_line() else {
                 return self.err("unterminated function");
             };
-            let head = t[0].as_str();
+            if t.is_empty() {
+                return self.err("empty line after tokenizing");
+            }
+            let head = self.tok(&t, 0)?;
 
             if head == "}" {
                 if cur.is_some() && !terminated {
@@ -298,7 +321,10 @@ impl<'a> Parser<'a> {
             };
 
             if head == ".line" {
-                let l: u32 = t[1].parse().map_err(|_| self.perr("bad line"))?;
+                let l: u32 = self
+                    .tok(&t, 1)?
+                    .parse()
+                    .map_err(|_| self.perr("bad line"))?;
                 if !b.gcov_lines.contains(&l) {
                     b.gcov_lines.push(l);
                 }
@@ -392,20 +418,20 @@ impl<'a> Parser<'a> {
         _pending: &mut Vec<(usize, String)>,
         _idx: usize,
     ) -> Result<Option<Terminator>, ParseError> {
-        Ok(Some(match t[0].as_str() {
+        Ok(Some(match self.tok(t, 0)? {
             "ret" => Terminator::Return(match t.get(1) {
                 Some(v) => Some(self.operand(v)?),
                 None => None,
             }),
-            "goto" => Terminator::Goto(self.label_id(&t[1])?),
+            "goto" => Terminator::Goto(self.label_id(self.tok(t, 1)?)?),
             "br" => Terminator::Br {
-                cond: self.operand(&t[1])?,
-                t: self.label_id(&t[2])?,
-                f: self.label_id(&t[3])?,
+                cond: self.operand(self.tok(t, 1)?)?,
+                t: self.label_id(self.tok(t, 2)?)?,
+                f: self.label_id(self.tok(t, 3)?)?,
             },
             "switch" => {
-                let ty = self.ty(&t[1])?;
-                let scrut = self.operand(&t[2])?;
+                let ty = self.ty(self.tok(t, 1)?)?;
+                let scrut = self.operand(self.tok(t, 2)?)?;
                 // [v -> bb, ...], default bb
                 let joined = self.raw.clone();
                 let open = joined
@@ -457,7 +483,7 @@ impl<'a> Parser<'a> {
                     .map(|s| self.label_id(s.trim()))
                     .collect();
                 Terminator::IndirectGoto {
-                    addr: self.operand(&t[1])?,
+                    addr: self.operand(self.tok(t, 1)?)?,
                     targets: targets?,
                 }
             }
@@ -467,22 +493,26 @@ impl<'a> Parser<'a> {
 
     fn inst(&mut self, t: &[String]) -> Result<InstKind, ParseError> {
         // Markers.
-        match t[0].as_str() {
+        match self.tok(t, 0)? {
             ".seqpoint" => return Ok(InstKind::Marker(MarkerKind::SeqPoint)),
             ".scope" => {
-                let kind = match t[1].as_str() {
+                let kind = match self.tok(t, 1)? {
                     "enter" => ScopeKind::Enter,
                     "exit" => ScopeKind::Exit,
                     o => return self.err(format!("unknown scope event `{o}`")),
                 };
                 return Ok(InstKind::Marker(MarkerKind::Scope(ScopeEvent {
-                    scope: ScopeId(t[2].parse().map_err(|_| self.perr("bad scope"))?),
+                    scope: ScopeId(
+                        self.tok(t, 2)?
+                            .parse()
+                            .map_err(|_| self.perr("bad scope"))?,
+                    ),
                     kind,
                 })));
             }
             ".label" => {
                 return Ok(InstKind::Marker(MarkerKind::Label(
-                    t[1].trim_matches('"').into(),
+                    self.tok(t, 1)?.trim_matches('"').into(),
                 )));
             }
             d if d.starts_with('.') => {
@@ -499,7 +529,7 @@ impl<'a> Parser<'a> {
                     .map_err(|_| self.perr("bad dst"))?,
             );
             let rest = &t[2..];
-            if rest[0] == "call" {
+            if self.tok(rest, 0)? == "call" {
                 let (callee, args) = self.call_parts(rest)?;
                 return Ok(InstKind::Call {
                     dst: Some(dst),
@@ -507,25 +537,28 @@ impl<'a> Parser<'a> {
                     args,
                 });
             }
-            if rest[0] == "allocadyn" {
+            if self.tok(rest, 0)? == "allocadyn" {
                 return Ok(InstKind::AllocaDyn {
                     dst,
                     alloca: AllocaId(
-                        rest[1]
+                        self.tok(rest, 1)?
                             .trim_start_matches('%')
                             .parse()
                             .map_err(|_| self.perr("bad alloca"))?,
                     ),
-                    elem: self.ty(&rest[3])?,
-                    count: self.operand(&rest[5])?,
-                    align: rest[7].parse().map_err(|_| self.perr("bad align"))?,
+                    elem: self.ty(self.tok(rest, 3)?)?,
+                    count: self.operand(self.tok(rest, 5)?)?,
+                    align: self
+                        .tok(rest, 7)?
+                        .parse()
+                        .map_err(|_| self.perr("bad align"))?,
                 });
             }
-            if rest[0] == "vaarg" {
+            if self.tok(rest, 0)? == "vaarg" {
                 return Ok(InstKind::VaArg {
                     dst,
-                    list: self.operand(&rest[1])?,
-                    ty: self.ty(&rest[2])?,
+                    list: self.operand(self.tok(rest, 1)?)?,
+                    ty: self.ty(self.tok(rest, 2)?)?,
                 });
             }
             return Ok(InstKind::Assign {
@@ -534,12 +567,15 @@ impl<'a> Parser<'a> {
             });
         }
 
-        match t[0].as_str() {
+        match self.tok(t, 0)? {
             "store" | "storevolatile" => Ok(InstKind::Store {
-                ty: self.ty(&t[1])?,
-                val: self.operand(&t[2])?,
-                addr: self.operand(&t[4])?,
-                align: t[6].parse().map_err(|_| self.perr("bad align"))?,
+                ty: self.ty(self.tok(t, 1)?)?,
+                val: self.operand(self.tok(t, 2)?)?,
+                addr: self.operand(self.tok(t, 4)?)?,
+                align: self
+                    .tok(t, 6)?
+                    .parse()
+                    .map_err(|_| self.perr("bad align"))?,
                 vol: if t[0] == "storevolatile" {
                     Volatility::Volatile
                 } else {
@@ -547,25 +583,31 @@ impl<'a> Parser<'a> {
                 },
             }),
             "storebits" => {
-                let (off, width) = self.bits(&t[6])?;
+                let (off, width) = self.bits(self.tok(t, 6)?)?;
                 Ok(InstKind::StoreBits {
-                    unit: self.ty(&t[1])?,
-                    val: self.operand(&t[2])?,
-                    addr: self.operand(&t[4])?,
+                    unit: self.ty(self.tok(t, 1)?)?,
+                    val: self.operand(self.tok(t, 2)?)?,
+                    addr: self.operand(self.tok(t, 4)?)?,
                     bits: BitRange { off, width },
-                    align: t[8].parse().map_err(|_| self.perr("bad align"))?,
+                    align: self
+                        .tok(t, 8)?
+                        .parse()
+                        .map_err(|_| self.perr("bad align"))?,
                 })
             }
             "copymem" => Ok(InstKind::CopyMem {
-                dst: self.operand(&t[1])?,
-                src: self.operand(&t[3])?,
-                size: self.operand(&t[4])?,
-                align: t[6].parse().map_err(|_| self.perr("bad align"))?,
+                dst: self.operand(self.tok(t, 1)?)?,
+                src: self.operand(self.tok(t, 3)?)?,
+                size: self.operand(self.tok(t, 4)?)?,
+                align: self
+                    .tok(t, 6)?
+                    .parse()
+                    .map_err(|_| self.perr("bad align"))?,
             }),
             "setmem" => Ok(InstKind::SetMem {
-                dst: self.operand(&t[1])?,
-                byte: self.operand(&t[2])?,
-                size: self.operand(&t[3])?,
+                dst: self.operand(self.tok(t, 1)?)?,
+                byte: self.operand(self.tok(t, 2)?)?,
+                size: self.operand(self.tok(t, 3)?)?,
             }),
             "call" => {
                 let (callee, args) = self.call_parts(t)?;
@@ -576,14 +618,14 @@ impl<'a> Parser<'a> {
                 })
             }
             "vastart" => Ok(InstKind::VaStart {
-                list: self.operand(&t[1])?,
+                list: self.operand(self.tok(t, 1)?)?,
             }),
             "vaend" => Ok(InstKind::VaEnd {
-                list: self.operand(&t[1])?,
+                list: self.operand(self.tok(t, 1)?)?,
             }),
             "vacopy" => Ok(InstKind::VaCopy {
-                src: self.operand(&t[1])?,
-                dst: self.operand(&t[3])?,
+                src: self.operand(self.tok(t, 1)?)?,
+                dst: self.operand(self.tok(t, 3)?)?,
             }),
             other => self.err(format!("unknown instruction `{other}`")),
         }

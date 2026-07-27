@@ -193,3 +193,17 @@ fn mismatched_widths_are_rejected() {
     assert!(r.is_err(), "adding an i8 to an i32 must not build");
     let _ = a.bv(8, 1);
 }
+
+/// Bitwise complement, folded like every other constant operation.
+#[test]
+fn not_folds_and_round_trips() {
+    let mut a = TermArena::new();
+    let x = a.bv(8, 0x0f);
+    let t = a.not(x);
+    assert_eq!(a.eval_ground(t).unwrap().bits(), 0xf0);
+
+    let v = a.var(Sort::BitVec(8), "v");
+    let n1 = a.not(v);
+    let n2 = a.not(v);
+    assert_eq!(n1, n2, "hash-consed");
+}

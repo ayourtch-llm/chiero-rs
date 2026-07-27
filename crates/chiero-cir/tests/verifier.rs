@@ -74,11 +74,25 @@ fn a_wellformed_module_verifies_clean() {
 }
 
 #[track_caller]
+/// Retype the function to `void` so a bare `ret` is legal. Several fixtures neutralize
+/// the terminator to isolate a defect, and a bare `ret` from an `i32` function is itself
+/// a (correctly reported) width error.
+fn make_void(m: &mut Module) {
+    m.funcs[0].ret = CTy::Void;
+}
+
 fn assert_rejects(m: &Module, want: VerifyErrorKind) {
     let errs = verify(m);
     assert!(
         errs.iter().any(|e| e.kind == want),
         "expected {want:?}, got: {errs:#?}"
+    );
+    // At least one reported problem must actually be an *error*. Without this,
+    // `is_error()` returning false unconditionally passes the entire suite and the
+    // verifier silently becomes advisory noise while the corpus still reports clean.
+    assert!(
+        errs.iter().any(|e| e.is_error()),
+        "a rejection must produce an error, not only warnings: {errs:#?}"
     );
     // Breaking one thing must not cascade: the rule under test should be the *only*
     // kind reported, or the diagnostic points at the wrong place.
@@ -113,6 +127,7 @@ fn use_not_dominated_by_definition_is_rejected() {
         t: BlockId(1),
         f: BlockId(2),
     };
+    f.ret = CTy::Void;
     f.blocks.push(block(
         1,
         vec![inst(InstKind::Assign {
@@ -169,6 +184,7 @@ fn cmp_declared_wider_than_one_bit_is_rejected() {
         },
     });
     // A wide operand type on a Cmp is legal on its own.
+    make_void(&mut m);
     m.funcs[0].blocks[0].term = Terminator::Return(None);
     assert!(
         verify(&m).is_empty(),
@@ -231,6 +247,7 @@ fn width_changing_bitcast_is_rejected() {
         },
     });
     // Neutralize the return so the only defect is the cast itself.
+    make_void(&mut m);
     m.funcs[0].blocks[0].term = Terminator::Return(None);
     assert_rejects(&m, VerifyErrorKind::BadCast);
 }
@@ -250,8 +267,13 @@ fn width_preserving_bitcast_is_accepted() {
             },
         },
     });
+    make_void(&mut m);
     m.funcs[0].blocks[0].term = Terminator::Return(None);
-    assert!(verify(&m).is_empty(), "128 bits either way is legal");
+    assert!(
+        verify(&m).is_empty(),
+        "128 bits either way is legal: {:?}",
+        verify(&m)
+    );
 }
 
 /// Rule 7.
@@ -292,6 +314,7 @@ fn zero_alignment_is_rejected() {
 fn duplicate_switch_case_is_rejected() {
     let mut m = valid_module();
     let f = &mut m.funcs[0];
+    f.ret = CTy::Void;
     f.blocks.push(block(1, vec![], Terminator::Return(None)));
     f.blocks[0].term = Terminator::Switch {
         scrut: i32c(0),
@@ -408,6 +431,214 @@ fn alloca_dyn_against_a_static_decl_is_rejected() {
         }),
     );
     assert_rejects(&m, VerifyErrorKind::AllocaExtentMismatch);
+}
+
+/// Rule 5: operand widths must match the declared `ty`. Nothing tested this — the whole
+/// rule was unimplemented, and `add i32` over an i8 and an i64 verified clean.
+#[test]
+fn mismatched_operand_widths_are_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::Bin {
+            op: BinOp::Add,
+            a: Operand::Const(Const::Int { bits: 8, val: 1 }),
+            b: Operand::Const(Const::Int { bits: 64, val: 1 }),
+            ty: CTy::Int(32),
+        },
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+#[test]
+fn a_non_boolean_branch_condition_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0]
+        .blocks
+        .push(block(1, vec![], Terminator::Return(None)));
+    m.funcs[0].blocks[0].term = Terminator::Br {
+        cond: i32c(1), // Int(32), not Int(1)
+        t: BlockId(1),
+        f: BlockId(1),
+    };
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+#[test]
+fn a_bare_return_from_a_typed_function_is_rejected() {
+    let mut m = valid_module();
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+#[test]
+fn select_arms_must_agree() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::Select {
+            cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
+            t: i32c(1),
+            f: Operand::Const(Const::Int { bits: 8, val: 1 }),
+        },
+    });
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}
+
+/// Rule 6: memory addresses are pointer-typed. There was no test for this at all, and
+/// making `require_ptr` a no-op passed the whole suite.
+#[test]
+fn a_non_pointer_store_address_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts.insert(
+        0,
+        inst(InstKind::Store {
+            addr: i32c(0), // an integer, not a pointer
+            val: i32c(0),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        }),
+    );
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
+}
+
+/// **Through one indirection.** A value's type must survive `%1 = %0`, or rule 6 stops
+/// applying the moment a pointer is copied — which is most real code.
+#[test]
+fn pointer_typing_survives_a_use() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    let f = &mut m.funcs[0];
+    f.params.push(Param {
+        value: ValueId(9),
+        ty: CTy::Int(32),
+    });
+    f.blocks[0].insts = vec![
+        inst(InstKind::Assign {
+            dst: ValueId(0),
+            rv: RValue::Use(Operand::Value(ValueId(9))),
+        }),
+        inst(InstKind::Store {
+            addr: Operand::Value(ValueId(0)), // an i32 laundered through a Use
+            val: i32c(0),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        }),
+    ];
+    f.blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
+}
+
+/// Rule 12: lane indices are in range. Also untested before — deleting both lane checks
+/// passed the whole suite.
+#[test]
+fn an_out_of_range_lane_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    let f = &mut m.funcs[0];
+    f.params.push(Param {
+        value: ValueId(9),
+        ty: CTy::Vector {
+            elem: Box::new(CTy::Int(32)),
+            lanes: 4,
+        },
+    });
+    f.blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::ExtractLane {
+            v: Operand::Value(ValueId(9)),
+            lane: 99,
+        },
+    });
+    f.blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::BadLane);
+}
+
+/// The dominator **intersection**. The existing test uses sibling blocks with no join,
+/// so the multi-predecessor meet — the canonical dominance case — was never exercised.
+#[test]
+fn a_diamond_join_needs_the_dominator_intersection() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    let f = &mut m.funcs[0];
+    f.blocks[0].term = Terminator::Br {
+        cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
+        t: BlockId(1),
+        f: BlockId(2),
+    };
+    // bb1 defines %1; bb3 joins bb1 and bb2 and uses it. %1 does not dominate bb3.
+    f.blocks.push(block(
+        1,
+        vec![inst(InstKind::Assign {
+            dst: ValueId(1),
+            rv: RValue::Use(i32c(1)),
+        })],
+        Terminator::Goto(BlockId(3)),
+    ));
+    f.blocks
+        .push(block(2, vec![], Terminator::Goto(BlockId(3))));
+    f.blocks.push(block(
+        3,
+        vec![inst(InstKind::Assign {
+            dst: ValueId(2),
+            rv: RValue::Use(Operand::Value(ValueId(1))),
+        })],
+        Terminator::Return(None),
+    ));
+    assert_rejects(&m, VerifyErrorKind::UseNotDominated);
+}
+
+/// A value used in a **call argument** must be dominance-checked. Dropping call args
+/// from the operand walk passed the whole suite.
+#[test]
+fn call_arguments_are_dominance_checked() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts.insert(
+        0,
+        inst(InstKind::Call {
+            dst: None,
+            callee: Callee::Direct(FuncId(0)),
+            args: vec![Operand::Value(ValueId(0))], // defined *after* this line
+        }),
+    );
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::UseNotDominated);
+}
+
+/// An unreachable block is a warning even when it *uses* a value — otherwise "dead code
+/// is legal" holds only for empty dead blocks, and real lowered C has non-empty ones.
+#[test]
+fn a_nonempty_unreachable_block_is_still_only_a_warning() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    m.funcs[0].blocks.push(block(
+        7,
+        vec![inst(InstKind::Assign {
+            dst: ValueId(5),
+            rv: RValue::Use(Operand::Value(ValueId(0))),
+        })],
+        Terminator::Return(None),
+    ));
+    let errs = verify(&m);
+    assert!(
+        errs.iter().all(|e| !e.is_error()),
+        "dead code must not be an error: {errs:#?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.kind == VerifyErrorKind::UnreachableBlock)
+    );
 }
 
 /// Verification must be deterministic (001 §5).

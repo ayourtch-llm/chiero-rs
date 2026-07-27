@@ -304,6 +304,14 @@ impl TermArena {
         self.bin(BinKind::Eq, a, b)
     }
 
+    /// Bitwise complement.
+    pub fn not(&mut self, a: Term) -> Term {
+        if let Some(c) = self.as_const(a) {
+            return self.intern(Node::Const(BvConst::new(c.width(), !c.bits())));
+        }
+        self.intern(Node::Not(a))
+    }
+
     pub fn sext(&mut self, a: Term, to: u32) -> Term {
         assert!(to >= self.width(a), "sext must widen");
         self.intern(Node::Extend {

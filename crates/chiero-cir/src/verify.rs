@@ -254,7 +254,7 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     }
     for b in &f.blocks {
         for (i, inst) in b.insts.iter().enumerate() {
-            for (dst, ty) in defined_by(inst) {
+            for (dst, ty) in defined_by(inst, &types) {
                 if defs.contains_key(&dst) {
                     err(
                         out,
@@ -272,8 +272,16 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     }
 
     let doms = dominators(f);
+    // Rule 3 calls an unreachable block a *warning*, but a predecessor-less block is
+    // dominated only by itself, so any use of an entry value inside it would also raise
+    // a hard `UseNotDominated` — making "unreachable C code is legal" false for anything
+    // but an empty dead block. Skip the dominance scan there; the warning stands alone.
+    let reachable = reachable_blocks(f);
 
     for b in &f.blocks {
+        if !reachable.contains(&b.id) {
+            continue;
+        }
         for (i, inst) in b.insts.iter().enumerate() {
             for op in operands_of(inst) {
                 check_dominated(f, b.id, i + 1, op, &defs, &doms, inst.span, out);
@@ -288,9 +296,18 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     }
 }
 
-fn defined_by(i: &Inst) -> Vec<(ValueId, CTy)> {
+/// Types produced by an instruction, resolved against the environment built so far.
+///
+/// Resolution matters: an unresolved `Value` records as `Void`, and `Void` is the escape
+/// hatch that makes `require_ptr` and the lane checks silently stop checking. One `%1 =
+/// %0` would otherwise erase a pointer's type and disable rule 6 for everything downstream.
+fn defined_by(i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
     match &i.kind {
-        InstKind::Assign { dst, rv } => vec![(*dst, rvalue_type(rv))],
+        InstKind::Assign { dst, rv } => vec![(*dst, rvalue_type_in(rv, types))],
+        // A call's result type is unknown here (the callee lives in the module, not the
+        // function), so it stays Void — but a *pointer-returning* call is the common
+        // source of pointers in C, so this is recorded as a known gap rather than a
+        // silently-correct answer.
         InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)],
         InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
         InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],
@@ -300,38 +317,31 @@ fn defined_by(i: &Inst) -> Vec<(ValueId, CTy)> {
 
 /// The type an `RValue` produces. `Cmp` yields `Int(1)` regardless of its operand type
 /// — conflating the two is the mistake 020 §8 rule 5 names.
-fn rvalue_type(rv: &RValue) -> CTy {
+fn rvalue_type_in(rv: &RValue, types: &IndexMap<ValueId, CTy>) -> CTy {
+    let ot = |o: &Operand| resolve(o, types).unwrap_or(CTy::Void);
     match rv {
-        RValue::Use(o) => operand_type(o),
+        RValue::Use(o) => ot(o),
         RValue::Load { ty, .. } => ty.clone(),
         RValue::LoadBits { unit, .. } => unit.clone(),
         RValue::Bin { ty, .. } | RValue::Un { ty, .. } => ty.clone(),
         RValue::Cmp { .. } => CTy::Int(1),
         RValue::Cast { to, .. } => to.clone(),
-        RValue::Select { t, .. } => operand_type(t),
+        RValue::Select { t, .. } => ot(t),
         RValue::PtrAdd { .. }
         | RValue::AddrOfLocal { .. }
         | RValue::AddrOfGlobal { .. }
         | RValue::AddrOfFunc(_) => CTy::Ptr,
-        RValue::Shuffle { a, .. } => operand_type(a),
-        RValue::InsertLane { v, .. } => operand_type(v),
-        RValue::ExtractLane { v, .. } => match operand_type(v) {
+        RValue::Shuffle { a, .. } => ot(a),
+        RValue::InsertLane { v, .. } => ot(v),
+        RValue::ExtractLane { v, .. } => match ot(v) {
             CTy::Vector { elem, .. } => *elem,
             other => other,
         },
         RValue::Splat { elem, lanes } => CTy::Vector {
-            elem: Box::new(operand_type(elem)),
+            elem: Box::new(ot(elem)),
             lanes: *lanes,
         },
         RValue::Fresh { ty } => ty.clone(),
-    }
-}
-
-fn operand_type(o: &Operand) -> CTy {
-    match o {
-        Operand::Const(c) => const_type(c),
-        // Resolved from the environment by the caller where it matters.
-        Operand::Value(_) => CTy::Void,
     }
 }
 
@@ -533,6 +543,31 @@ fn check_bits(f: &Function, unit: &CTy, bits: BitRange, span: Span, out: &mut Ve
     }
 }
 
+/// Rule 5. Skips unresolved values (recorded as `Void`), which is a known gap rather
+/// than a claim — see `defined_by`.
+fn require_ty(
+    f: &Function,
+    o: &Operand,
+    want: &CTy,
+    types: &IndexMap<ValueId, CTy>,
+    what: &str,
+    span: Span,
+    out: &mut Vec<VerifyError>,
+) {
+    if let Some(got) = resolve(o, types)
+        && got != CTy::Void
+        && got != *want
+    {
+        err(
+            out,
+            f,
+            VerifyErrorKind::WidthMismatch,
+            span,
+            format!("{what} operand is {got:?}, declared {want:?}"),
+        );
+    }
+}
+
 fn require_ptr(
     f: &Function,
     o: &Operand,
@@ -617,6 +652,37 @@ fn check_rvalue_types(
             require_ptr(f, addr, types, "load address", span, out);
         }
         RValue::PtrAdd { base, .. } => require_ptr(f, base, types, "PtrAdd base", span, out),
+        // Rule 5: operand widths match the operation's declared `ty`. This was entirely
+        // absent — `Bin`, `Un`, `Cmp` and `Select` were never checked, so `add i32` over
+        // an i8 and an i64 verified clean.
+        RValue::Bin { op, a, b, ty: t } => {
+            let name = format!("{op:?}");
+            require_ty(f, a, t, types, &name, span, out);
+            require_ty(f, b, t, types, &name, span, out);
+        }
+        RValue::Un { op, a, ty: t } => require_ty(f, a, t, types, &format!("{op:?}"), span, out),
+        RValue::Cmp { op, a, b, ty: t } => {
+            // `ty` is the *operand* type here; the result is always Int(1).
+            let name = format!("{op:?}");
+            require_ty(f, a, t, types, &name, span, out);
+            require_ty(f, b, t, types, &name, span, out);
+        }
+        RValue::Select { cond, t: tv, f: fv } => {
+            require_ty(f, cond, &CTy::Int(1), types, "select condition", span, out);
+            if let (Some(a), Some(b)) = (resolve(tv, types), resolve(fv, types))
+                && a != CTy::Void
+                && b != CTy::Void
+                && a != b
+            {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::WidthMismatch,
+                    span,
+                    format!("select arms disagree: {a:?} vs {b:?}"),
+                );
+            }
+        }
         RValue::Cast { kind, from, to, .. } => check_cast(f, *kind, from, to, span, out),
         RValue::Shuffle { a, mask, .. } => {
             if let Some(CTy::Vector { lanes, .. }) = resolve(a, types) {
@@ -726,6 +792,29 @@ fn check_term_types(
                     format!("returns {t:?} but `{}` is declared -> {:?}", f.name, f.ret),
                 );
             }
+        }
+        Terminator::Return(None) => {
+            if f.ret != CTy::Void {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::WidthMismatch,
+                    b.span,
+                    format!("bare `ret` from `{}` declared -> {:?}", f.name, f.ret),
+                );
+            }
+        }
+        Terminator::Br { cond, .. } => require_ty(
+            f,
+            cond,
+            &CTy::Int(1),
+            types,
+            "branch condition",
+            b.span,
+            out,
+        ),
+        Terminator::Switch { scrut, ty: t, .. } => {
+            require_ty(f, scrut, t, types, "switch scrutinee", b.span, out)
         }
         Terminator::IndirectGoto { addr, .. } => {
             require_ptr(f, addr, types, "computed goto target", b.span, out)

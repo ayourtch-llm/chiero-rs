@@ -224,3 +224,52 @@ fn block_without_terminator_is_an_error() {
         e.message
     );
 }
+
+/// Malformed input must **error**, never panic. The parser indexes tokens positionally
+/// in ~20 places, and a panic on a truncated line is strictly worse than an error: it
+/// carries no line number, and in CI a panic and an error look identical.
+#[test]
+fn malformed_input_errors_rather_than_panicking() {
+    let cases = [
+        ",",
+        "func @f() -> void {\ngoto\n}\n",
+        "func @f() -> void {\nentry:\n  br %0, bb1\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  store i32 %0\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  setmem %0\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  .line\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  .scope\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  .scope enter\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  .label\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  %0 = allocadyn\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  %0 = vaarg\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  vastart\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  vacopy %0\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  copymem %0\n  ret\n}\n",
+        "func @f() -> void {\nentry:\n  storebits i32 %0\n  ret\n}\n",
+        "func @f() -> void {\n  alloca %0\nentry:\n  ret\n}\n",
+        "func(x) -> void {\nentry:\n  ret\n}\n",
+        "func @f( -> void {\nentry:\n  ret\n}\n",
+    ];
+    for src in cases {
+        let r = std::panic::catch_unwind(|| parse(src));
+        match r {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("should not have parsed: {src:?}"),
+            Err(_) => panic!("panicked instead of erroring: {src:?}"),
+        }
+    }
+}
+
+/// Contract 3's other two paths. The existing tests cover a module-level directive and
+/// an unknown *rvalue*; an unknown directive **inside a block** and an unknown **bare**
+/// instruction go through different code and were untested.
+#[test]
+fn unknown_constructs_inside_a_block_are_hard_errors() {
+    let e = parse("func @f() -> void {\nentry:\n  .frobnicate 1\n  ret\n}\n")
+        .expect_err("unknown block directive must reject");
+    assert!(e.message.contains("frobnicate"), "{}", e.message);
+
+    let e = parse("func @f() -> void {\nentry:\n  frobnicate %0\n  ret\n}\n")
+        .expect_err("unknown bare instruction must reject");
+    assert!(e.message.contains("frobnicate"), "{}", e.message);
+}
