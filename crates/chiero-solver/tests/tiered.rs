@@ -515,3 +515,183 @@ fn a_bitwise_and_of_computed_values_survives_translation() {
         other => panic!("expected Sat, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wave 10: SMT-LIB sort discipline. Every case below was confirmed by feeding the
+// emitted text to z3 and reading its error.
+// ---------------------------------------------------------------------------
+
+/// **A width-1 *bitvector* is not a `Bool`.** Every width-1 constant was emitted as
+/// `true`/`false` unconditionally, so comparing a one-bit variable against `1` produced
+/// `(= v0_flag true)` — "Sorts (_ BitVec 1) and Bool are incompatible".
+///
+/// A one-bit bitvector is exactly what `LoadBits` of a `u32 flag:1` yields, which is the
+/// case 021 §3.1 argues the whole tri-state from.
+#[test]
+fn a_one_bit_bitvector_compared_against_a_constant_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("a_one_bit_bitvector_compared_against_a_constant") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let flag = a.var(Sort::BitVec(1), "flag");
+    let one = a.bv(1, 1);
+    let e = a.eq(flag, one);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(m.get(a.var_id(flag).unwrap()).unwrap().bits(), 1);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// A width-1 constant inside a `concat` is a bit, not a truth value.
+#[test]
+fn a_one_bit_constant_concatenated_with_a_vector_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("a_one_bit_constant_concatenated_with_a_vector") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let b = a.var(Sort::BitVec(8), "b");
+    let hi = a.bv(1, 1);
+    let joined = a.concat(hi, b);
+    let want = a.bv(9, 0b1_0110_0101);
+    let e = a.eq(joined, want);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(m.get(a.var_id(b).unwrap()).unwrap().bits(), 0b0110_0101);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// **A mixed `and` — one predicate, one one-bit vector — is the hole left by the earlier
+/// fix.** That guard required *both* operands to be `Bool`, so the mixed case fell
+/// through to `bvand` over a `Bool`, which z3 rejects.
+#[test]
+fn a_mixed_boolean_and_bitvector_conjunction_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("a_mixed_boolean_and_bitvector_conjunction") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let flag = a.var(Sort::BitVec(1), "flag");
+    let c5 = a.bv(8, 5);
+    let lt = a.ult(x, c5);
+    let both = a.and(lt, flag);
+    let one = a.bv(1, 1);
+    let e = a.eq(both, one);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert!(m.get(a.var_id(x).unwrap()).unwrap().bits() < 5);
+            assert_eq!(m.get(a.var_id(flag).unwrap()).unwrap().bits(), 1);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// An `ite` whose condition is a genuine one-bit **vector** must be wrapped as
+/// `(= c #b1)` — the stated point of the earlier commit, which had no test. Only the
+/// opposite direction was covered.
+#[test]
+fn an_ite_on_a_one_bit_vector_condition_reaches_the_backend() {
+    let Some(backend) = z3_or_skip("an_ite_on_a_one_bit_vector_condition") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let flag = a.var(Sort::BitVec(1), "flag");
+    let (t, f) = (a.bv(8, 10), a.bv(8, 20));
+    let picked = a.ite(flag, t, f);
+    let want = a.bv(8, 10);
+    let e = a.eq(picked, want);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(e);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(m.get(a.var_id(flag).unwrap()).unwrap().bits(), 1);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// Nested boolean connectives. `smt_is_bool`'s recursion exists for `and(or(p, q), r)`
+/// and nesting was never tested, so a shallow check passed the suite while emitting a
+/// sort error.
+#[test]
+fn nested_boolean_connectives_reach_the_backend() {
+    let Some(backend) = z3_or_skip("nested_boolean_connectives") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let (c5, c9, c200) = (a.bv(8, 5), a.bv(8, 9), a.bv(8, 200));
+    let lo = a.ult(x, c5);
+    let mid = a.ult(c9, x);
+    let hi = a.ult(c200, x);
+    let inner = a.or(lo, mid);
+    let outer = a.and(inner, hi);
+    let y = a.var(Sort::BitVec(8), "y");
+    let p = a.mul(y, y);
+    let sq = a.bv(8, 49);
+    let e2 = a.eq(p, sq);
+
+    let mut s = TieredSolver::with_backend(backend);
+    s.assert(outer);
+    s.assert(e2);
+    match s.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            assert!(m.get(a.var_id(x).unwrap()).unwrap().bits() > 200);
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}
+
+/// **`concat` must refuse to build a term wider than the payload.** A 17-byte read folded
+/// to `BvConst::new(136, …)` and tripped the width assert *inside* the caller; the mixed
+/// concrete/symbolic case built the 136-bit term successfully and deferred the panic to
+/// evaluation. 020 permits `Int(512)` and a 32-byte AVX load is ordinary VPP, so this is
+/// a real boundary that needs an answer rather than a crash.
+#[test]
+fn concat_beyond_the_payload_width_is_refused_not_panicked() {
+    let mut a = TermArena::new();
+    let mut acc = a.bv(8, 0xAA);
+    for _ in 0..15 {
+        let b = a.bv(8, 0xBB);
+        acc = a.concat(acc, b);
+    }
+    assert_eq!(a.width(acc), 128, "16 bytes is the payload limit");
+    let one_more = a.bv(8, 0xCC);
+    assert!(
+        a.try_concat(acc, one_more).is_none(),
+        "past the limit, refusing beats panicking"
+    );
+}
