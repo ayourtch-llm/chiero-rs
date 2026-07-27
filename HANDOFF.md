@@ -1236,6 +1236,42 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *recorded* but not *applied*; and the budget test compared against `Budget::default()`,
    which an implementation ignoring the run also returns. Both traps, both mine.
 
+   **WAVE 14 — string-model review APPLIED** (`296da3e`/`f2e84e2` builtins, `2333636` red,
+   `33db3ed` green, 460 tests). Also: 024 §6 builtins and §7 harness intrinsics.
+
+   **THE CRITICAL ONE, and I caused it.** The engine read a name's `Precision`, saw
+   `Exact`, and recorded nothing — **while never dispatching the model**. So a *registered*
+   name was more trusted than an unregistered one: `strcpy` into a 4-byte buffer finished
+   `Exact` and **sealed a proof** for 024 contract 9's textbook overflow. Registering
+   `strlen`/`strcpy` in the previous wave **removed the degradation those calls had been
+   causing** — writing a correct implementation made the engine less safe.
+   **`Exact` describes the model's faithfulness *if it runs*.** `Engine::can_dispatch` is
+   now the explicit short list of what the engine can actually perform.
+
+   Also fixed: `strlen` dropped every memory fault, so a `malloc`'d buffer answered length
+   0 silently (an uninitialized byte reads as `Some([0])` **plus** a fault — the model saw
+   the zero and called it a terminator, *and* consumed the report-once memoization while
+   discarding it); an `Unterminated` finding was emitted after **zero reads**;
+   `Memory::set` materialized its fill buffer before any guard, so `calloc(1, 1<<45)`
+   aborted the process; a copy's **source** side had neither the promoted-object refusal
+   nor the symbolic-byte report, so `memcpy` laundered what `read` refuses; and `strlen`
+   measured room from `max(0, off)`, licensing a walk before the object.
+
+   *Two of my tests could not see what they claimed:* the cap test used a **uniform `'x'`
+   fixture**, so scanning 256 or 1000 bytes gave the same answer — it pinned the *label*,
+   not the bound; and every `strlen` fixture used offset 0, so reading from the object base
+   rather than the pointer was invisible.
+
+   **STILL OWED from this review:** `models::*` are still not *called* by the engine for
+   anything but the three intrinsics — real dispatch (arg translation, `ModelOutcome`
+   handling) is the next slice, and `can_dispatch` is what must grow; `is_implemented` is a
+   hand-maintained list the registry does not consult (deriving both from one dispatch
+   table would make the link structural); `longjmp` continues silently where contract 20
+   wants `Unknown` + terminate (`ModelOutcome` has no `Terminate`); `HavocSpec` is inert
+   and `fidelity_effect` ignores `self`, making contract 21c's test vacuous;
+   `ModelCtx::lift` emits `{:?}` dumps rather than spanned findings; `malloc` returns
+   `Value::Scalar` not `Value::Ptr` in the engine's eyes; `Fork` guards are all `None`.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
