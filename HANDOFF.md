@@ -703,6 +703,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      the `va_list` a real addressable `MemObject`. Cast shape rules for
      `PtrToInt`/`IntToPtr`/`FpToUi`/`FpToSi`/`UiToFp`/`SiToFp` are entirely untested.
 
+   **`chiero-mem` STARTED** (`51e4a92` red, `7b2ce6f` green, 199 tests). The concrete
+   core: `MemObject`, signed-offset bounds checking, byte contents, and the bit-indexed
+   tri-state `InitMask`. 021 contracts 1, 2, 4 and the bit-granular half of §3.1.
+
+   A mutation exposed a gap in the *tests* rather than the code: making `Cond` count as
+   initialized survived, because nothing read *through* a conditionally-written byte.
+   Storing the third state is only half of it — if a read accepts `Cond`, the model
+   behaves exactly like the two-state mask §3.1 rejects.
+
+   **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
+   offsets; lifetime plus the free/scope/leak findings (contracts 8–11); concrete address
+   assignment with guard gaps (14, 15); provenance through `IntToPtr` (12, 12b, 12c, 13);
+   arenas (13c, 13d); lazy initialization (18, 19); symbolic-base forking (16, 17).
+
+   **`chiero-cir` verifier gaps CLOSED** (`7036e35` red, `09ae8fd` green): `va_list`
+   operands are pointer-checked — `vastart 0i32` used to verify clean while 020 §4.4.1
+   makes the list a real addressable `MemObject` and VPP has 2552 `va_list *` uses — and
+   every cast kind now has both a rejection and an acceptance test, including the
+   equal-width boundary (`trunc i32 -> i32` is a `bitcast` wearing the wrong name).
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
