@@ -2030,6 +2030,36 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    17, 17b, 18, 19 need symbolic-base resolution, `max_resolutions`, lazy materialization
    and `--fork-on-alias`. That is the next substantial piece of 021, not a test gap.
 
+   **WAVE 44 — the copy-on-write review** (`a8ba8f4`; 595 tests). ✅ **The `Arc`
+   substitution itself is sound**, verified three ways: no path mutates without
+   `make_mut`, `MemObject` has no interior mutability, and `Memory` never hands out a
+   `&mut MemObject`. That was the thing I was least sure of.
+
+   ⚠️ **But `make_mut` ran before the refusal checks**, so an operation that changes
+   nothing cloned the whole object — undoing contract 20 on the refusal path, which wave 41
+   had just made the *common* case for a bit write into a symbolic byte. Quadratic again,
+   restored by the commit that reported it. `MemObject::check_bit_write` is the same code
+   the write runs, so pre-check and write cannot drift. **General rule: copy-on-write means
+   deciding every refusal before the clone, not after.**
+
+   Also: a negative-offset declared clobber reported `WildPointer` about an object it had
+   just looked up — losing the dedup key's object component and, being fatal, killing the
+   path; the special case is now **deleted** rather than corrected, since the per-byte check
+   already answers correctly and a duplicate branch is a second place to disagree. A
+   refusal reported success at `size == 0`. A bit range reaching a symbolic byte was
+   correct but unpinned (every fixture kept the symbol in the *first* byte — the
+   collection-of-one trap on a byte range). And `check_bits` filtered on `bit_width()`,
+   which `Float` and `Vector` both answer, so `LoadBits { unit: f32 }` verified clean.
+
+   **STILL OWED from wave 44:** `shares_storage_with` answers `false` for two forks of an
+   *unmaterialized* object — "not shared" conflated with "nothing to share", and neither
+   answer is pinned; `write_bits`' atomicity (a refusal leaving the object unmodified) is
+   correct and unpinned; `havoc_range`'s `Uninitialized` **success** path has no test, only
+   its three refusals; `refuse` returning an empty fault vector survives, so a clobber of
+   `const` or freed memory producing *no finding* would ship green; and `report_faults`
+   turns a `SymbolicByte` from a refused **write** into a finding whose text says a
+   concrete *read* cannot answer.
+
    **Next piece of 021, scoped but not started: §5.1 symbolic base pointers.** Contracts
    16, 17, 17b, 18, 19 all depend on it. The spec's five steps, in order: provenance or a
    registered arena short-circuits the search; otherwise ask the solver which objects the
