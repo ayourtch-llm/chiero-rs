@@ -29,6 +29,7 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         globals,
         funcs,
         value_names: IndexMap::new(),
+        alloca_names: IndexMap::new(),
         label_names: IndexMap::new(),
     }
     .module()
@@ -39,8 +40,18 @@ fn scan_names(src: &str) -> (Vec<String>, Vec<String>) {
     let (mut g, mut f) = (Vec::new(), Vec::new());
     for line in src.lines() {
         let l = line.split(';').next().unwrap_or("").trim();
-        if let Some(rest) = l.strip_prefix("global @") {
-            g.push(rest.split_whitespace().next().unwrap_or("").to_string());
+        if let Some(rest) = l.strip_prefix("global ") {
+            // `const` is optional and was not stripped here, so a const global was
+            // parsed (and given an id) but never entered the name table — desyncing the
+            // two id spaces and silently resolving `addrglobal` to the wrong global.
+            let rest = rest.strip_prefix("const ").unwrap_or(rest);
+            g.push(
+                rest.trim_start_matches('@')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            );
         } else if let Some(rest) = l.strip_prefix("func @") {
             f.push(rest.split(['(', ' ']).next().unwrap_or("").to_string());
         }
@@ -61,6 +72,11 @@ struct Parser<'a> {
     /// format humans write should not require them to allocate ids by hand. Printing
     /// canonicalizes back to `%N`/`bbN`, consistent with printing being canonicalization.
     value_names: IndexMap<String, u32>,
+    /// Allocas are a **separate** id space from values. Sharing `value_names` with an
+    /// `"alloca:"` prefix meant a named alloca could be declared but never referenced —
+    /// `addrlocal %buf` parsed the name as a number and failed — while `store … -> %slot`
+    /// minted a fresh, never-defined value instead. 020 §6's own example hit both.
+    alloca_names: IndexMap<String, u32>,
     label_names: IndexMap<String, u32>,
 }
 
@@ -167,6 +183,21 @@ impl<'a> Parser<'a> {
         let next = self.value_names.len() as u32;
         Ok(ValueId(
             *self.value_names.entry(n.to_string()).or_insert(next),
+        ))
+    }
+
+    /// `%N` is literal; `%name` is assigned an alloca id on first appearance.
+    fn alloca_id(&mut self, s: &str) -> Result<AllocaId, ParseError> {
+        let n = s.trim_start_matches('%').trim_end_matches(',');
+        if let Ok(v) = n.parse::<u32>() {
+            return Ok(AllocaId(v));
+        }
+        if n.is_empty() {
+            return Err(self.perr("empty alloca name"));
+        }
+        let next = self.alloca_names.len() as u32;
+        Ok(AllocaId(
+            *self.alloca_names.entry(n.to_string()).or_insert(next),
         ))
     }
 
@@ -306,8 +337,10 @@ impl<'a> Parser<'a> {
             span: Span::DUMMY,
         };
         if has_body {
-            // Names are function-scoped: `%tmp` in two functions is two values.
+            // Names are function-scoped: `%tmp` in two functions is two values, and an
+            // alloca named `%buf` in one is not the alloca in another.
             self.value_names = pending_names;
+            self.alloca_names.clear();
             self.label_names.clear();
             self.body(&mut f)?;
         }
@@ -429,17 +462,8 @@ impl<'a> Parser<'a> {
         // `scope` and `lifetime` are optional and default to scope 0 / Scope, so a
         // fixture that does not care about stack lifetime need not say so.
         let get = |i: usize| t.get(i).map(String::as_str).unwrap_or("");
-        let named = get(1).trim_start_matches('%').to_string();
-        let id = AllocaId(match named.parse::<u32>() {
-            Ok(v) => v,
-            Err(_) => {
-                let next = self.value_names.len() as u32;
-                *self
-                    .value_names
-                    .entry(format!("alloca:{named}"))
-                    .or_insert(next)
-            }
-        });
+        let named = get(1).to_string();
+        let id = self.alloca_id(&named)?;
         let find = |kw: &str| {
             t.iter()
                 .position(|x| x == kw)
@@ -477,6 +501,16 @@ impl<'a> Parser<'a> {
     fn operand(&mut self, s: &str) -> Result<Operand, ParseError> {
         let s = s.trim_end_matches(',');
         if s.starts_with('%') {
+            // An alloca name is **not** an operand. CIR is three-address, so a stack
+            // slot's address is produced by `addrlocal` and used as a value; accepting
+            // the name directly minted a never-defined ValueId, which is how 020 §6's
+            // example parsed into a module that then failed to verify.
+            let n = s.trim_start_matches('%');
+            if self.alloca_names.contains_key(n) {
+                return Err(self.perr(&format!(
+                    "`%{n}` names an alloca, not a value; use `addrlocal %{n}` first"
+                )));
+            }
             return Ok(Operand::Value(self.value_id(s)?));
         }
         if s == "null" {
@@ -624,12 +658,10 @@ impl<'a> Parser<'a> {
             if self.tok(rest, 0)? == "allocadyn" {
                 return Ok(InstKind::AllocaDyn {
                     dst,
-                    alloca: AllocaId(
-                        self.tok(rest, 1)?
-                            .trim_start_matches('%')
-                            .parse()
-                            .map_err(|_| self.perr("bad alloca"))?,
-                    ),
+                    alloca: {
+                        let n = self.tok(rest, 1)?.to_string();
+                        self.alloca_id(&n)?
+                    },
                     elem: self.ty(self.tok(rest, 3)?)?,
                     count: self.operand(self.tok(rest, 5)?)?,
                     align: self
@@ -814,11 +846,10 @@ impl<'a> Parser<'a> {
                 off: self.operand(g(2))?,
             },
             "addrlocal" => RValue::AddrOfLocal {
-                alloca: AllocaId(
-                    g(1).trim_start_matches('%')
-                        .parse()
-                        .map_err(|_| self.perr("bad alloca"))?,
-                ),
+                alloca: {
+                    let n = g(1).to_string();
+                    self.alloca_id(&n)?
+                },
             },
             "addrglobal" => RValue::AddrOfGlobal {
                 g: self.global_id(g(1))?,

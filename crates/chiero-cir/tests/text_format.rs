@@ -430,7 +430,8 @@ entry:
   %len_p = ptradd %v, -8i64
   %len   = load i32, %len_p align 4
   %n     = sub i32 %len, 1i32
-  store i32 %n -> %slot align 4
+  %slotp = addrlocal %slot
+  store i32 %n -> %slotp align 4
   %c     = cmp slt i32 %n, 0i32
   br %c, bb_bad, bb_ok
 bb_ok:
@@ -444,9 +445,55 @@ bb_bad:
     let m = parse(src).unwrap_or_else(|e| panic!("020 §6's example must parse: {e:?}"));
     assert_eq!(m.funcs.len(), 1);
     assert_eq!(m.funcs[0].blocks.len(), 3);
+    // **And it must verify.** Asserting only parse + round-trip let the example parse
+    // into a module containing a never-defined value — the shape of vacuity this
+    // project keeps rediscovering.
+    let errs: Vec<_> = verify(&m).into_iter().filter(|e| e.is_error()).collect();
+    assert!(errs.is_empty(), "the spec's example must verify: {errs:#?}");
     // Round-trips through its canonical form.
     let again = parse(&print(&m)).expect("reparse");
     assert_eq!(m, again);
+}
+
+/// An alloca name in operand position is a clear error pointing at `addrlocal`, not a
+/// silently-minted undefined value.
+#[test]
+fn an_alloca_name_is_not_an_operand() {
+    let src = concat!(
+        "func @f() -> void {\n",
+        "  alloca %slot : i32 x 1 align 4\n",
+        "entry:\n",
+        "  store i32 0i32 -> %slot align 4\n",
+        "  ret\n}\n"
+    );
+    let e = parse(src).expect_err("must reject");
+    assert!(e.message.contains("addrlocal"), "{}", e.message);
+}
+
+/// A const global must be visible to name resolution. It was not, so ids desynchronized
+/// and `addrglobal` silently resolved to a *different* global.
+#[test]
+fn a_const_global_resolves_by_name() {
+    let src = concat!(
+        "target x86_64-unknown-linux-gnu\n\n",
+        "global const @ro : size 4 align 4\n\n",
+        "global @rw : size 4 align 4\n\n",
+        "func @f() -> ptr {\nentry:\n  %0 = addrglobal @rw\n  ret %0\n}\n"
+    );
+    let m = parse(src).expect("parse");
+    let InstKind::Assign {
+        rv: RValue::AddrOfGlobal { g },
+        ..
+    } = &m.funcs[0].blocks[0].insts[0].kind
+    else {
+        panic!("expected addrglobal");
+    };
+    assert_eq!(
+        m.globals[g.0 as usize].name.as_ref(),
+        "rw",
+        "must resolve to @rw"
+    );
+    assert_eq!(print(&m), src);
 }
 
 /// Value names are function-scoped: `%tmp` in two functions is two values.
