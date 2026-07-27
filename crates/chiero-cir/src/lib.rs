@@ -368,7 +368,42 @@ pub enum InstKind {
     VaEnd {
         list: Operand,
     },
+    /// **Inline `asm`, and anything chiero parses but refuses to model** (020 §4.3).
+    ///
+    /// `dsts` exists because most inline asm produces values in *registers*, not memory:
+    /// `vppinfra/time.h` alone has six sites shaped like
+    /// `asm volatile ("rdtsc":"=a"(a),"=d"(d))`, and `clib_cpu_time_now()` is called from
+    /// the dispatch loop. With only `writes` there would be no way to express them, and
+    /// lowering's options would be to drop the asm, to invent an unattached `Fresh` that
+    /// a CSE pass could then merge across two `rdtsc` calls, or to refuse the function.
+    ///
+    /// Each `dst` is a fresh symbol, distinct per instruction, never CSE'd, never cached,
+    /// never reordered. Two textually identical `rdtsc` instructions yield two different
+    /// values, which is the entire point of reading a clock.
+    Opaque {
+        dsts: Vec<(ValueId, CTy)>,
+        writes: Vec<OpaqueWrite>,
+        reads: Vec<Operand>,
+        why: OpaqueReason,
+    },
     Marker(MarkerKind),
+}
+
+/// A region an `Opaque` clobbers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpaqueWrite {
+    pub addr: Operand,
+    pub size: Operand,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OpaqueReason {
+    InlineAsm,
+    UnmodeledBuiltin(Symbol),
+    /// 020 §4.3 writes this as `&'static str`, which lowering can satisfy but the
+    /// textual parser cannot: a `.cir` fixture's text is owned, not static. `Symbol` is
+    /// an `Arc<str>`, so the representation costs the same and round-trips.
+    UnsupportedConstruct(Symbol),
 }
 
 #[derive(Clone, Debug, PartialEq)]

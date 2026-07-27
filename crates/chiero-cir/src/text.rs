@@ -798,6 +798,7 @@ impl<'a> Parser<'a> {
                     self.tok(t, 1)?.trim_matches('"').into(),
                 )));
             }
+            "opaque" => return self.opaque(t),
             d if d.starts_with('.') => {
                 return self.err(format!("unknown directive `{d}`"));
             }
@@ -919,6 +920,75 @@ impl<'a> Parser<'a> {
         let off: u32 = a.parse().map_err(|_| self.perr("bad bit offset"))?;
         let hi: u32 = b.parse().map_err(|_| self.perr("bad bit end"))?;
         Ok((off, hi.saturating_sub(off)))
+    }
+
+    /// `opaque [%v:ty]… writes [addr size]… reads [op]… why <reason>` (020 §4.3).
+    ///
+    /// The section keywords are mandatory rather than optional, which is what makes the
+    /// three variable-length lists parseable by a whitespace tokenizer with no lookahead.
+    fn opaque(&mut self, t: &[String]) -> Result<InstKind, ParseError> {
+        // Every token on the line belongs to this instruction.
+        self.whole_line.set(true);
+        let mut i = 1;
+        let mut dsts = Vec::new();
+        while i < t.len() && t[i] != "writes" {
+            let (v, ty) = t[i]
+                .split_once(':')
+                .ok_or_else(|| self.perr("opaque dst needs `%v:ty`"))?;
+            let ty = self.ty(ty)?;
+            dsts.push((self.value_id(v)?, ty));
+            i += 1;
+        }
+        if i >= t.len() {
+            return self.err("opaque needs a `writes` section");
+        }
+        i += 1;
+        let mut writes = Vec::new();
+        while i < t.len() && t[i] != "reads" {
+            let addr = self.operand(&t[i].clone())?;
+            let size = t
+                .get(i + 1)
+                .ok_or_else(|| self.perr("opaque write needs an address and a size"))?
+                .clone();
+            writes.push(OpaqueWrite {
+                addr,
+                size: self.operand(&size)?,
+            });
+            i += 2;
+        }
+        if i >= t.len() {
+            return self.err("opaque needs a `reads` section");
+        }
+        i += 1;
+        let mut reads = Vec::new();
+        while i < t.len() && t[i] != "why" {
+            reads.push(self.operand(&t[i].clone())?);
+            i += 1;
+        }
+        if i >= t.len() {
+            return self.err("opaque needs a `why`");
+        }
+        let name = || -> Result<Symbol, ParseError> {
+            Ok(self
+                .raw
+                .rsplit_once('"')
+                .and_then(|(l, _)| l.rsplit_once('"').map(|(_, n)| n))
+                .ok_or_else(|| self.perr("opaque reason needs a quoted name"))?
+                .into())
+        };
+        let why = match t.get(i + 1).map(String::as_str) {
+            Some("asm") => OpaqueReason::InlineAsm,
+            Some("builtin") => OpaqueReason::UnmodeledBuiltin(name()?),
+            Some("unsupported") => OpaqueReason::UnsupportedConstruct(name()?),
+            Some(o) => return self.err(format!("unknown opaque reason `{o}`")),
+            None => return self.err("opaque needs a `why`"),
+        };
+        Ok(InstKind::Opaque {
+            dsts,
+            writes,
+            reads,
+            why,
+        })
     }
 
     fn call_parts(&mut self, t: &[String]) -> Result<(Callee, Vec<Operand>), ParseError> {
@@ -1419,6 +1489,36 @@ fn print_inst(m: &Module, k: &InstKind, o: &mut String) {
     // form the parser rejects — contract 1 broken for a whole class of operand.
     let op = |x: &Operand| opm(m, x);
     match k {
+        InstKind::Opaque {
+            dsts,
+            writes,
+            reads,
+            why,
+        } => {
+            // Section keywords are always printed, even when empty: they delimit the
+            // variable-length lists, and a canonical form with optional delimiters would
+            // need lookahead the whitespace tokenizer cannot do.
+            o.push_str("opaque");
+            for (v, t) in dsts {
+                o.push_str(&format!(" %{}:{}", v.0, ty(t)));
+            }
+            o.push_str(" writes");
+            for w in writes {
+                o.push_str(&format!(" {} {}", op(&w.addr), op(&w.size)));
+            }
+            o.push_str(" reads");
+            for rd in reads {
+                o.push_str(&format!(" {}", op(rd)));
+            }
+            o.push_str(" why ");
+            match why {
+                OpaqueReason::InlineAsm => o.push_str("asm"),
+                OpaqueReason::UnmodeledBuiltin(n) => o.push_str(&format!("builtin \"{n}\"")),
+                OpaqueReason::UnsupportedConstruct(n) => {
+                    o.push_str(&format!("unsupported \"{n}\""))
+                }
+            }
+        }
         InstKind::Assign { dst, rv } => {
             o.push_str(&format!("%{} = ", dst.0));
             print_rvalue(m, rv, o);

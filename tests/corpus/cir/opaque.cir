@@ -1,0 +1,19 @@
+target x86_64-unknown-linux-gnu
+
+func @cpu_time_now() -> i64 {
+entry:
+  .line 82
+  opaque %0:i32 %1:i32 writes reads why asm
+  %2 = zext i32 %1 to i64
+  %3 = shl i64 %2, 32i64
+  %4 = zext i32 %0 to i64
+  %5 = or i64 %3, %4
+  ret %5
+}
+
+func @barrier(%0: ptr, %1: i64) -> void {
+entry:
+  .line 41
+  opaque writes %0 %1 reads %0 why builtin "__sync_synchronize"
+  ret
+}

@@ -115,6 +115,7 @@ fn the_corpus_covers_the_load_bearing_constructs() {
         "bitcast",
         ".scope", // stack lifetime (015 §4)
         ".line",  // the coverage join (015 §5)
+        "opaque", // inline asm — 015 §7 forbids treating it as a skip
     ] {
         assert!(
             tokens.contains(construct),

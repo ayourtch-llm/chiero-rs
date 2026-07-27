@@ -354,6 +354,7 @@ entry:
   vastart %1
   vacopy %1 -> %1
   vaend %1
+  opaque %15:i64 %16:i64 writes %5 8i64 reads %1 why unsupported "computed goto"
   .seqpoint
   .label "retry"
   .scope exit 0
@@ -463,6 +464,7 @@ const ALL_INST_NAMES: &[&str] = &[
     "VaStart",
     "VaCopy",
     "VaEnd",
+    "Opaque",
     "Marker",
 ];
 const ALL_RVALUE_NAMES: &[&str] = &[
@@ -516,6 +518,7 @@ fn inst_name(k: &InstKind) -> &'static str {
         InstKind::VaStart { .. } => "VaStart",
         InstKind::VaCopy { .. } => "VaCopy",
         InstKind::VaEnd { .. } => "VaEnd",
+        InstKind::Opaque { .. } => "Opaque",
         InstKind::Marker(_) => "Marker",
     }
 }
@@ -1010,4 +1013,80 @@ fn unordered_float_predicates_exist_and_round_trip() {
         }
         assert_eq!(print(&m), printed, "`{name}` does not print back");
     }
+}
+
+/// **020 §4.3 / §7: inline `asm` is `Opaque` with declared outputs, not a skip.**
+///
+/// `Opaque` was specified but absent from `InstKind`, which left lowering only the three
+/// options §4.3 forbids: drop the asm, invent an unattached `Fresh` that a CSE pass could
+/// then merge across two `rdtsc` calls, or refuse the function. 31 VPP files use inline
+/// asm and `clib_cpu_time_now()` is on the dispatch loop, so "refuse the function" is not
+/// a real option either.
+#[test]
+fn an_rdtsc_shaped_opaque_round_trips() {
+    use chiero_cir::*;
+    let src = "func @now() -> i64 {\n\
+               entry:\n  \
+               opaque %0:i32 %1:i32 writes reads why asm\n  \
+               %2 = zext i32 %0 to i64\n  \
+               ret %2\n\
+               }\n";
+    let m = parse(src).expect("an rdtsc-shaped opaque must parse");
+    match &m.funcs[0].blocks[0].insts[0].kind {
+        InstKind::Opaque {
+            dsts, why, writes, ..
+        } => {
+            // `rdtsc` writes two registers, which is the whole reason `dsts` exists:
+            // with only memory `writes` there is no way to express it.
+            assert_eq!(dsts.len(), 2, "both register outputs must survive");
+            assert_eq!(dsts[0], (ValueId(0), CTy::Int(32)));
+            assert_eq!(dsts[1], (ValueId(1), CTy::Int(32)));
+            assert!(writes.is_empty());
+            assert_eq!(*why, OpaqueReason::InlineAsm);
+        }
+        other => panic!("expected an Opaque, got {other:?}"),
+    }
+    assert_eq!(
+        print(&m),
+        format!("target x86_64-unknown-linux-gnu\n\n{src}"),
+        "opaque must print back canonically"
+    );
+    assert_eq!(m, parse(&print(&m)).unwrap());
+}
+
+/// A clobbered memory region and a named unmodeled builtin. 020 contract 32 pairs a
+/// declared write with a `dst`; this is the representational half of it.
+#[test]
+fn an_opaque_with_writes_and_reads_round_trips() {
+    use chiero_cir::*;
+    let src = "func @clobber(%0: ptr, %1: i64) -> void {\n\
+               entry:\n  \
+               opaque %2:i64 writes %0 8i64 %0 %1 reads %1 why builtin \"__sync_synchronize\"\n  \
+               ret\n\
+               }\n";
+    let m = parse(src).expect("parse");
+    match &m.funcs[0].blocks[0].insts[0].kind {
+        InstKind::Opaque {
+            dsts,
+            writes,
+            reads,
+            why,
+        } => {
+            assert_eq!(dsts.len(), 1);
+            assert_eq!(writes.len(), 2, "two clobbered regions");
+            assert_eq!(writes[0].addr, Operand::Value(ValueId(0)));
+            assert_eq!(
+                writes[0].size,
+                Operand::Const(Const::Int { bits: 64, val: 8 })
+            );
+            assert_eq!(writes[1].size, Operand::Value(ValueId(1)));
+            assert_eq!(reads, &vec![Operand::Value(ValueId(1))]);
+            match why {
+                OpaqueReason::UnmodeledBuiltin(n) => assert_eq!(&**n, "__sync_synchronize"),
+                other => panic!("expected a named builtin, got {other:?}"),
+            }
+        }
+        other => panic!("expected an Opaque, got {other:?}"),
+    }
+    assert_eq!(m, parse(&print(&m)).unwrap());
 }

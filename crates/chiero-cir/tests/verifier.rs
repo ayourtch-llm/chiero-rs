@@ -1023,3 +1023,41 @@ fn a_function_whose_id_is_not_its_index_is_rejected() {
     m.funcs.swap(0, 1); // ids are now [1, 0]; both still unique
     assert_rejects(&m, VerifyErrorKind::IdNotIndex);
 }
+
+/// `Opaque`'s declared writes are memory regions: rule 6 applies to the address and
+/// rule 5 to the size, exactly as they do for `copymem`. An `Opaque` that havocs a
+/// region described by an integer "address" would leave the memory model guessing.
+#[test]
+fn an_opaque_write_to_a_non_pointer_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts = vec![inst(InstKind::Opaque {
+        dsts: vec![],
+        writes: vec![OpaqueWrite {
+            addr: i32c(4), // not a pointer
+            size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+        }],
+        reads: vec![],
+        why: OpaqueReason::InlineAsm,
+    })];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::BadPointerOperand);
+}
+
+/// **020 §4.3: `Opaque` must never be silently equivalent to a no-op** — a no-op would
+/// let a checker "prove" something about code it did not understand. An `Opaque` that
+/// declares nothing at all is that no-op written down, so it is rejected rather than
+/// accepted and quietly ignored.
+#[test]
+fn an_opaque_that_declares_no_effect_at_all_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    m.funcs[0].blocks[0].insts = vec![inst(InstKind::Opaque {
+        dsts: vec![],
+        writes: vec![],
+        reads: vec![],
+        why: OpaqueReason::InlineAsm,
+    })];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::OpaqueWithoutEffect);
+}

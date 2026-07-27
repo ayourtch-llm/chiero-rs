@@ -29,6 +29,9 @@ pub enum VerifyErrorKind {
     /// resolves references positionally and the verifier resolves them by `.id`, so
     /// a permuted table prints the wrong name for every reference.
     IdNotIndex,
+    /// 020 §4.3: an `Opaque` with no declared effect is a no-op, which would let a
+    /// checker reason about code chiero refused to model.
+    OpaqueWithoutEffect,
     /// Rule 3: a *warning*. Unreachable C code exists and is legal.
     UnreachableBlock,
 }
@@ -585,6 +588,9 @@ fn defined_by(i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
         InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)],
         InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
         InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],
+        // Unlike a call, an `Opaque` *declares* the type of each output, so these are
+        // known rather than a gap.
+        InstKind::Opaque { dsts, .. } => dsts.clone(),
         _ => Vec::new(),
     }
 }
@@ -646,6 +652,12 @@ fn operands_of(i: &Inst) -> Vec<Operand> {
             v.extend([dst.clone(), src.clone(), size.clone()])
         }
         InstKind::SetMem { dst, byte, size } => v.extend([dst.clone(), byte.clone(), size.clone()]),
+        InstKind::Opaque { writes, reads, .. } => {
+            for w in writes {
+                v.extend([w.addr.clone(), w.size.clone()]);
+            }
+            v.extend(reads.iter().cloned());
+        }
         InstKind::Call { callee, args, .. } => {
             if let Callee::Indirect(o) = callee {
                 v.push(o.clone());
@@ -946,6 +958,31 @@ fn check_inst_types(
             require_int(f, size, types, "memset size", i.span, out);
         }
         InstKind::AllocaDyn { align, .. } => check_align(f, *align, i.span, out),
+        InstKind::Opaque {
+            dsts,
+            writes,
+            reads,
+            ..
+        } => {
+            for w in writes {
+                require_ptr(f, &w.addr, types, "opaque write address", i.span, out);
+                require_int(f, &w.size, types, "opaque write size", i.span, out);
+            }
+            // **020 §4.3: an `Opaque` must never be silently equivalent to a no-op.**
+            // A no-op would let a checker "prove" something about code it did not
+            // understand — the exact failure the construct exists to prevent — so an
+            // `Opaque` declaring no outputs, no clobbers and no inputs is rejected
+            // rather than accepted and quietly ignored.
+            if dsts.is_empty() && writes.is_empty() && reads.is_empty() {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::OpaqueWithoutEffect,
+                    i.span,
+                    "opaque declares no dsts, no writes and no reads, so it is a no-op".to_string(),
+                );
+            }
+        }
         _ => {}
     }
 }
