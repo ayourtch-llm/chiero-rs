@@ -410,10 +410,10 @@ are complete; verticals are in progress.
 
 - [x] `042-conformance-recipes.md` — **added mid-flight** (§4.13c #4); recipe DSL,
       two-tier evaluation, mandatory fixtures, LLM propose→adjudicate loop
-- [ ] `050-tool-interface.md` — §4.11 **+ `propose_recipe`/`validate_recipe`/`apply_recipe`**
-- [ ] `060-vpp-integration.md` — §4.12
-- [ ] `070-testing-and-tdd-protocol.md` — §4.13 + the red/green/review loop (§8)
-- [ ] `080-roadmap.md` — milestones + exit criteria
+- [x] `050-tool-interface.md` — §4.11 + recipe ops; **one result envelope with fidelity/proven/blind_spots** so an LLM cannot read "[]" as "safe"
+- [x] `060-vpp-integration.md` — §4.12; multiarch 1:N, real vppinfra code not summaries, node tables narrow indirect calls, staged adoption
+- [x] `070-testing-and-tdd-protocol.md` — §4.13 + red/green/review loop + the consolidated CI gate table
+- [x] `080-roadmap.md` — M0–M8 with checkable exit gates; M1/M2 run in parallel
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
@@ -437,31 +437,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-**You are here:** frontend + symbolic-core blocks done; verticals in progress
-(**18 of 24** written: 030, 031, 032, 042 done). **6 specs remain.**
+**You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
+complete at draft-1. ~4600 lines across `docs/specs/`, every document ending in numbered
+`## Testable contracts`.
 
-1. **Write the remaining 6 specs** in §7 order: `040-defect-checkers`,
-   `041-optimization-analysis`, then `050`/`060`, then `070`/`080`.
-   Note `041` is now load-bearing for `032`: test selection's strongest refinement is
-   `prove_equivalent(before, after)`, and 032 contract 5 requires it to report fidelity
-   honestly, so `041` must define that primitive before `080` sequences the milestones.
-   Cross-references the core block already promises and the verticals MUST honor:
-   - `041` owes the **cache-line/locality analysis** (§4.13c #2) — 014 §1 already added
-     `TargetConfig::cache_line_bytes` and 021 §7 already points at 041 for it.
-   - `040` owes the `union-pun` checker (off by default) and the order-dependence checker
-     (020 §7), and the concurrency findings list in 025 §3 is `chiero-check`'s to
-     implement — but the checker must stay target-agnostic (025 contract 14/15).
-   - `050` owes `propose_recipe`/`validate_recipe`/`apply_recipe` (§4.13c #4).
-   - `060` owes the VPP `.recipe` catalogue as **data** (042 §4.3 lists the intended
-     rules) and the vppinfra lock/thread models that 025 §3 depends on.
-   - `070` owes the `trybuild` compile-fail test for the fidelity token (023 contract 13),
-     the differential harness that makes 023 contract 21 real, and the recipe-fixture
-     gate (042 contract 4).
-   - `080`'s milestones must now account for two added verticals (025's discipline
-     checker, 042's recipe engine). Suggested placement: recipe engine is an *early*
-     vertical — its tier-1 sweep needs only the frontend, delivers value across all of
-     VPP without the engine being mature, and is the best early demo of the LLM
-     propose→adjudicate loop.
+**⛔ YOU ARE AT THE USER'S REVIEW GATE (§2 decision 3). DO NOT START IMPLEMENTING.**
+The next action is the user's, not yours: present the spec set, offer the adversarial
+subagent review, and wait for approval. If a fresh context lands here and the user has
+not yet approved, ask — do not infer approval from the specs being finished.
+
+1. ~~Write the specs~~ — done. If the user asks for changes, amend in place with a
+   `spec:` commit; the specs are normative and the README says deviations are amended in
+   the same commit as the deviation.
+   All cross-crate promises made by earlier specs were discharged by later ones and
+   spot-checked: 041 delivers the locality analysis 014/021 point at; 040 carries the
+   `union-pun` + order-dependence checkers and implements 025 §3's findings
+   target-agnostically; 050 exposes the recipe ops; 060 ships the `.recipe` catalogue as
+   data plus the lock/thread models 025 needs; 070 owns the `trybuild` fidelity test,
+   the differential harness and the recipe-fixture gate; 080 places the recipe engine
+   early (M3) since its tier-1 sweep needs only the frontend.
 
 **Empirically verified while writing 030 — do not re-derive (§4.1's premise is now a
 measured fact, not a claim):** with gcc 13.3, a macro defined in a header and expanded in
@@ -475,16 +469,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 (NOT `<src>.gcov.json.gz`), and JSON `branches[]` entries carry only
 `{count, throw, fallthrough}` — **no target block**, which is precisely why the native
 `.gcno` path is required for arc-level work.
-2. Every spec ends with `## Testable contracts` — numbered, checkable. These become the
-   RED tests. Style: dense, decisive, concrete Rust sketches, no filler.
-3. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at block boundaries
-   (after the core block, after the verticals). **Update §7 checkboxes and commit this
-   file first, every time.**
-4. When all 23 are written: commit with `spec:` prefix, then **STOP and present the spec
-   set to the user for the review gate.** Offer an adversarial subagent review of the
-   specs at that point.
-5. Only after approval: begin the TDD loop at Milestone 1 (symbolic core — CIR, memory,
-   solver-lite, engine, all tested against **hand-written CIR**; frontend comes after).
+2. **Offer the adversarial subagent review of the spec set** (the §8 carve-out covers it).
+   Highest-value targets, in order: 020/021 (CIR↔memory interface — bitfield init
+   tracking and `LoadBits` are the newest and least settled), 022 (the "lite may only
+   answer Sat with a validated model" rule is the project's main soundness hinge),
+   032 (recall is the metric that matters and the refinement rules are subtle),
+   041 (the observational-equivalence definition — each choice changes the answer).
+3. **Only after the user approves**: begin the TDD loop at **M1** in
+   [080](docs/specs/080-roadmap.md) — the symbolic core against **hand-written `.cir`**,
+   no C parsed. M1 and M2 are deliberately parallelizable (12 cores); that independence
+   is the whole reason for the CIR contract boundary.
+4. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at milestone
+   boundaries. **Update §7/§9 and commit this file first, every time.**
 6. ~~Re-verify clang/z3~~ — **done**, both verified working (§3). `070`'s oracle section
    can assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 

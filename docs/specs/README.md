@@ -58,5 +58,22 @@ spec is amended in the same commit as the deviation.
 
 ## Status
 
-All documents are at **draft-1**, written 2026-07-26, pending review before
-implementation begins.
+All 23 documents are at **draft-1**, written 2026-07-26/27, **pending review before
+implementation begins**.
+
+Two documents were added during drafting in response to review, and are worth calling out
+because they changed the shape of the system rather than filling in detail:
+
+- **[025](025-concurrency-and-threading.md)** — a one-line "concurrency is a non-goal" was
+  inadequate for a codebase whose hot path is worker threads. Measuring VPP's actual
+  discipline (467 files index by `thread_index`; only ~70 use explicit synchronization)
+  showed that a path-sensitive *discipline* checker is tractable even though interleaving
+  exploration is not.
+- **[042](042-conformance-recipes.md)** — mechanically checking that code follows a
+  prescribed ritual, from declarative recipes. VPP has 1187 CLI command registrations
+  whose cleanup ritual is hand-repeated on every return path with no enforcement anywhere.
+
+Every document ends with **`## Testable contracts`** — numbered, checkable assertions.
+Those are the source of the RED tests in [070 §3](070-testing-and-tdd-protocol.md), and
+the contract-coverage report ([070 §6](070-testing-and-tdd-protocol.md)) tracks which are
+implemented.
