@@ -352,6 +352,14 @@ impl MemObject {
     }
 
     /// The symbolic byte at `b`, if the overlay holds one.
+    /// Forget everything about the contents: no bytes, no overlay, nothing initialized.
+    /// The object stays the same size and identity — this is invalidation, not a free.
+    pub fn clear_contents(&mut self, size: u64) {
+        self.data = vec![0; size as usize];
+        self.init = InitMask::new(size);
+        self.sym.clear();
+    }
+
     /// Place a symbolic byte at a concrete offset, without the checks
     /// `Memory::write_sym_byte` makes — the caller has already bounds-checked. Used by
     /// `copy`, which has to reinstate the overlay `write_bytewise` cleared.
@@ -755,6 +763,23 @@ impl AddressSpace {
 // The access API and object lifetime (021 §4, §5).
 // ---------------------------------------------------------------------------
 
+/// How a havoc fills what it invalidates (024 §2.1). **No safe default**: `Symbolic`
+/// marks bytes initialized-with-unknown-value, which can mask a genuine
+/// uninitialized-read bug; `Uninitialized` produces a false-positive storm on any buffer
+/// the callee legitimately filled. The caller states which, so the choice is visible
+/// rather than folkloric.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum HavocFill {
+    Symbolic,
+    Uninitialized,
+}
+
+/// How far a havoc's pointer scan reads into an object before giving up. A havoc'd
+/// object can be 64 MiB and the range search is linear in the object count, so the
+/// product is not something to run unbounded — but a cap that nobody hears about reads as
+/// "followed everything", which is why `havoc` returns whether it was hit.
+pub const HAVOC_SCAN_BYTES: u64 = 1 << 16;
+
 /// What a byte-wise read hands back: the bytes, their per-bit initialization, and the
 /// symbolic overlay. All three travel together — carrying the bytes without the overlay
 /// is what turned a `memcpy` of a symbolic field into a fabricated constant.
@@ -1000,6 +1025,9 @@ struct Entry {
 pub struct Memory {
     space: AddressSpace,
     entries: Vec<(ObjectId, Entry)>,
+    /// Names the arrays a havoc installs. Per-`Memory` and monotone, so two havocs are
+    /// two unrelated unknowns and a re-run produces the same names (001 §5).
+    havoc_seq: u64,
 }
 
 impl Memory {
@@ -1007,6 +1035,7 @@ impl Memory {
         Memory {
             space: AddressSpace::new(),
             entries: Vec::new(),
+            havoc_seq: 0,
         }
     }
 
@@ -1433,6 +1462,127 @@ impl Memory {
                 AccessResult {
                     value: None,
                     faults,
+                }
+            }
+        }
+    }
+
+    /// 024 §2.1. Invalidate `objects` and, to `depth`, whatever they point at. Returns
+    /// every object actually invalidated, so the caller can say what it gave up on.
+    ///
+    /// Breadth-first with a visited set: a linked structure that points back at itself is
+    /// the normal case for the VPP pools §2 targets, and a depth counter alone would walk
+    /// it `depth` times.
+    pub fn havoc(
+        &mut self,
+        a: &mut TermArena,
+        objects: &[ObjectId],
+        depth: u32,
+        fill: HavocFill,
+        at: Span,
+    ) -> Vec<ObjectId> {
+        let mut seen: Vec<ObjectId> = Vec::new();
+        let mut frontier: Vec<ObjectId> = objects.to_vec();
+        for _ in 0..=depth {
+            let mut next = Vec::new();
+            for id in std::mem::take(&mut frontier) {
+                if seen.contains(&id) {
+                    continue;
+                }
+                seen.push(id);
+                // Read the pointees **before** the fill, since the fill is what destroys
+                // the addresses they were found through.
+                next.extend(self.pointees(id));
+                self.havoc_object(a, id, fill, at);
+            }
+            frontier = next;
+        }
+        seen
+    }
+
+    /// The address `id` was placed at. `Memory` owns the address space, so a caller that
+    /// needs to *store* a pointer — which is how a linked structure is built — cannot get
+    /// at it otherwise.
+    pub fn addr_of(&self, id: ObjectId) -> Option<u64> {
+        self.space.addr_of(id)
+    }
+
+    /// Objects reachable from `id`'s bytes. Provenance is not stored in bytes, so this is
+    /// the same range search `int_to_ptr` falls back to: an aligned pointer-sized word
+    /// whose value lands inside a live object. Wrong in both directions in principle — an
+    /// integer that happens to look like an address is followed, and a pointer split
+    /// across a union is not — which is why 021 §7.1 keeps it a *fallback*. For a havoc
+    /// over-approximating is the safe direction.
+    pub fn pointees(&self, id: ObjectId) -> Vec<ObjectId> {
+        let Some(e) = self.entry(id) else {
+            return Vec::new();
+        };
+        // A promoted object has no byte view to scan. Its contents are symbolic, so no
+        // concrete address can be recovered from them at all.
+        let Some(o) = e.obj.as_ref().filter(|_| e.repr == Repr::Bytes) else {
+            return Vec::new();
+        };
+        let limit = e.size.min(HAVOC_SCAN_BYTES);
+        let mut out = Vec::new();
+        let mut b = 0u64;
+        while b + 8 <= limit {
+            // Only *initialized, concrete* words: an uninitialized word is whatever the
+            // allocator left there, and following it would invent a reference.
+            let concrete = (b..b + 8).all(|k| o.sym_at(k).is_none())
+                && o.init.first_no(b * 8, 64).is_none()
+                && o.init.first_cond(b * 8, 64).is_none();
+            if concrete {
+                let mut w = [0u8; 8];
+                for (k, slot) in w.iter_mut().enumerate() {
+                    *slot = o.raw_byte(b + k as u64);
+                }
+                let p = self.space.int_to_ptr(IntVal::Const(u64::from_le_bytes(w)));
+                if p.base != ObjectId::UNBOUND && p.base != ObjectId::NULL && p.base != id {
+                    out.push(p.base);
+                }
+            }
+            b += 8;
+        }
+        out
+    }
+
+    /// Invalidate one object's contents. `Symbolic` replaces them with an unconstrained
+    /// array — the array representation is what makes this O(1) rather than one fresh
+    /// variable per byte — and `Uninitialized` clears the init mask instead, leaving the
+    /// bytes unreadable rather than unknown.
+    pub fn havoc_object(&mut self, a: &mut TermArena, id: ObjectId, fill: HavocFill, at: Span) {
+        if let Some(f) = self.state_fault(id, 0, at) {
+            // Havocking freed memory is not an access the program made, so there is
+            // nothing to report — and nothing to invalidate either.
+            let _ = f;
+            return;
+        }
+        let Some(e) = self.entry(id) else { return };
+        let size = e.size;
+        if e.obj.is_none() {
+            return;
+        }
+        match fill {
+            HavocFill::Symbolic => {
+                self.havoc_seq += 1;
+                let data = a.array_var(64, 8, &format!("havoc{}", self.havoc_seq));
+                let init = a.array_const(64, 1, 1);
+                if let Some(e) = self.entry_mut(id) {
+                    e.repr = Repr::Array;
+                    e.arr = Some(ArrayContents {
+                        data,
+                        init,
+                        idx_bits: 64,
+                    });
+                }
+            }
+            HavocFill::Uninitialized => {
+                if let Some(e) = self.entry_mut(id) {
+                    e.repr = Repr::Bytes;
+                    e.arr = None;
+                    if let Some(o) = e.obj.as_mut() {
+                        o.clear_contents(size);
+                    }
                 }
             }
         }

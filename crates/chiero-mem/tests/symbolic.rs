@@ -1383,7 +1383,7 @@ fn a_havoc_follows_stored_pointers_to_the_declared_depth() {
     let inner = m.alloc(ObjKind::Heap, 8, 8, sp(1));
     let outer = m.alloc(ObjKind::Heap, 8, 8, sp(2));
     m.set(ptr(inner, 0), 0xCD, 8, sp(3));
-    let addr = m.ptr_to_int(ptr(inner, 0)).addr();
+    let addr = m.addr_of(inner).expect("placed");
     m.write(ptr(outer, 0), &addr.to_le_bytes(), sp(4));
 
     let mut shallow = m.clone();

@@ -13,8 +13,11 @@
 //! not have.
 
 use chiero_cir::*;
-use chiero_mem::{Memory, ObjKind, Pointer};
-use chiero_model::{AllocPolicy, ModelCtx, ModelOutcome, ModelRegistry, Precision, StringPolicy};
+use chiero_mem::{HavocFill, Memory, ObjKind, ObjectId, Pointer};
+use chiero_model::{
+    AllocPolicy, HavocInit, HavocSpec, ModelCtx, ModelOutcome, ModelRegistry, Precision,
+    StringPolicy,
+};
 use chiero_solver::{CheckResult, SmtLib, Solver, Term, TermArena, TieredSolver};
 use chiero_span::Span;
 use indexmap::IndexMap;
@@ -754,6 +757,7 @@ impl<'m> Engine<'m> {
                         span,
                         &format!("`{name}` is modeled approximately: {why}"),
                     );
+                    self.havoc_args(a, s, &name, args, span);
                 }
                 // **An exact model is only faithful if it actually runs.** Reading the
                 // precision and recording nothing made a registered name *more* trusted
@@ -774,6 +778,7 @@ impl<'m> Engine<'m> {
                              it yet, so the call was not performed"
                         ),
                     );
+                    self.havoc_args(a, s, &name, args, span);
                 }
                 None => {
                     self.note_once(
@@ -782,6 +787,7 @@ impl<'m> Engine<'m> {
                         span,
                         &format!("`{name}` has no body and no model"),
                     );
+                    self.havoc_args(a, s, &name, args, span);
                 }
             }
             if noreturn {
@@ -1164,6 +1170,53 @@ impl<'m> Engine<'m> {
             // engine not knowing.
             other => return self.lowering_gap(s, span, &format!("{other:?}")),
         })
+    }
+
+    /// 023 §5 / 024 §1 step 4: **a call chiero did not perform invalidates what it was
+    /// handed.** Without this, `int x = 0; unknown(&x); if (x == 0) …` leaves the engine
+    /// believing `x` is still zero and pruning the real path — the findings on the
+    /// surviving paths are false and the absences are wrong. Fidelity was already
+    /// `Approximated`, so nothing was *sealed*; the reports were simply untrue.
+    ///
+    /// `Symbolic` is 024 §2.1's default for an unmodeled extern: a callee that wrote
+    /// something meaningful is the common case, and `Uninitialized` would fire on every
+    /// buffer a callee legitimately filled.
+    fn havoc_args(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) {
+        let spec = HavocSpec::unmodeled_extern();
+        let objs: Vec<ObjectId> = args
+            .iter()
+            .filter_map(|o| match self.operand(a, s, o) {
+                Some(Value::Ptr(p)) => Some(p.base),
+                _ => None,
+            })
+            .collect();
+        if objs.is_empty() {
+            return;
+        }
+        let fill = match spec.init {
+            HavocInit::Symbolic => HavocFill::Symbolic,
+            HavocInit::Uninitialized => HavocFill::Uninitialized,
+        };
+        let hit = s.mem.havoc(a, &objs, spec.reachable_depth, fill, span);
+        // 024 contract 21c: the havoc's *own* reason, so a reader can tell "chiero threw
+        // away what it knew about these objects" from "the model was imprecise".
+        self.note_once(
+            s,
+            AssumptionKind::ModelApproximate,
+            span,
+            &format!(
+                "`{name}` was not performed, so {} — {} object(s) invalidated",
+                spec.describe(),
+                hit.len()
+            ),
+        );
     }
 
     /// Run a model and fold its result back into the state.

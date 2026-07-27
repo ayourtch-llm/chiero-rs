@@ -3107,3 +3107,85 @@ fn ptr_add_keeps_the_object_and_takes_a_signed_offset() {
         s.assumptions()
     );
 }
+
+/// **023 §5 and 024 §1 step 4, end to end.** An unmodeled extern handed a pointer
+/// invalidates the pointee. Before this the callee's writes were invisible, so
+/// `memset(buf,'x',8); mystery(buf); strlen(buf)` still saw eight concrete `'x'` bytes and
+/// `int x = 0; unknown(&x); if (x == 0)` pruned the real path. Fidelity was already
+/// `Approximated`, so nothing was *sealed* — the reports were simply untrue, which is the
+/// harder failure to notice.
+///
+/// The assertion is on a *later read*, not on an assumption: an assumption saying "I
+/// invalidated it" while the bytes stayed put is exactly the vacuous instrument to avoid.
+#[test]
+fn an_unmodeled_extern_invalidates_the_pointer_it_was_handed() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 32, val: 120 }),
+                        Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "mystery", vec![CTy::Ptr], CTy::Void),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let mut mem = r.states()[0].mem.clone();
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let after = mem.read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY);
+    assert_ne!(
+        after.value,
+        Some(vec![120, 120, 120, 120]),
+        "the callee's writes are not invisible"
+    );
+    // ...and it is a *known unknown*, not an uninitialized read: 024 §2.1's default fill
+    // for an unmodeled extern is `Symbolic`, because the callee most likely wrote
+    // something meaningful.
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("havoc") && x.detail.contains("symbolic")),
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+}
