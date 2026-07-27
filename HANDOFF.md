@@ -1143,11 +1143,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    decoration. The crate defines its own `Symbol` rather than borrowing the IR's, since a
    model registry is upstream of the IR.
 
-   **STILL OWED in `chiero-model`:** the models are declarations only — no `Model` trait
-   impls, no `ModelOutcome`, no `ModelCtx`, so nothing actually *executes* yet. Contracts
-   3–17 and 20–22 (calloc zeroing, overflow detection, the string models and their
-   `max_string_scan` bound, builtins, harness intrinsics, `printf` format checking) are
-   untouched, and the engine does not consult the registry.
+   **Memory models EXECUTE** (`f4c98b2` red, `e15a997` green, 415 tests): `ModelOutcome`,
+   `ModelCtx`, and `malloc`/`calloc`/`free`/`memcpy`/`memmove`/`memset`. Contracts 1–5
+   and 10.
+
+   *`ModelCtx` is deliberately narrow* — memory, arena, span, findings, but **not** the
+   engine's state. That is what keeps 024's models independent of 023's searcher and
+   threading choices, and why they test without an interpreter.
+
+   *`memcpy` reports overlap and still performs the copy* — reporting is not refusing. My
+   first test ran `memmove` on the object `memcpy` had already rewritten and compared
+   against the wrong bytes; the memmove case needs a fresh object.
+
+   *One mutation's answer was to delete code:* the model duplicated `Memory::free`'s NULL
+   check. Two copies of one rule is how `readonly` came to hold on one write path of three.
+
+   **STILL OWED in `chiero-model`:** the **string models** and `max_string_scan`
+   (contracts 6–9), `realloc`, builtins (13, 14), harness intrinsics (15, 16), `longjmp`
+   (20), `printf` format checking (22), and `ModelImpl::Cir`. **The engine still does not
+   consult the registry** — every extern is treated as unmodeled, so contracts 11 and 12
+   are unreachable.
 
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
