@@ -31,13 +31,34 @@ not mid-edit.** Always re-commit an updated HANDOFF.md before refreshing.
 
 | Decision | Chosen | Rejected | Why it matters |
 |---|---|---|---|
-| **C frontend** | **Own preprocessor + own parser** | clang/libclang-backed; own-pp + `lang-c` | Full macro-expansion provenance must be first-class. Do NOT retreat to clang when the parser gets hard — provenance is the whole point. |
+| **C frontend** | **Own preprocessor + own parser** | clang/libclang-backed; own-pp + `lang-c` | See the corrected rationale below — the decision stands, the original reason did not. |
 | **Build order** | **Symbolic core first** | gcov→test-selection first (my rec.); logic-errors first | User overrode my recommendation. Honor it: IR + memory + solver + engine proven on small C before the coverage verticals. |
 | **Autonomy** | **Spec gate, then run free** | fully autonomous now; checkpoint every milestone | Specs get user review BEFORE implementation. After approval: no check-ins until the first vertical is green. |
 
-**There is a pending user gate**: specs must be reviewed before any implementation
-commit. Do not start the TDD loop until the user approves. Writing/committing the
-specs themselves is fine and expected.
+**Gate discharged 2026-07-27** — see §9.
+
+### 2.1 ⚠️ The frontend rationale was wrong — corrected 2026-07-27
+
+The Fable reviewer tested the claim and it does not hold. **clang 18.1.3 does provide
+macro provenance**, verified on this machine: a diagnostic inside a nested expansion
+prints the *full* chain (`expanded from macro 'vec_add1'` → `'vec_add1_ha'`) with both
+definition sites; `isMacroArgExpansion`/`isMacroBodyExpansion` give per-token argument
+attribution; libclang emits `MACRO_DEFINITION`/`MACRO_INSTANTIATION` records (nested
+expansions need `PPCallbacks` from the C++ API).
+
+So "clang cannot give us macro provenance" was **false**, and 010 §1.1 now says so
+explicitly rather than quietly dropping it.
+
+**The decision still stands**, on the reason §3 already records as a hard constraint:
+chiero must be a pure-Rust library that links nothing and runs with
+`--no-default-features`. Depending on libclang for a *core* capability forfeits that.
+Secondary reasons: diffing two revisions including non-compiling ones, `Span` as a 12-byte
+`Copy` value rather than a handle into a foreign object graph, and owning lowering.
+
+**Do not restore the old taboo.** A clang-subprocess provenance extractor is a legitimate
+fallback *for the impact/selection vertical specifically*, and 010 §1.1 records it as
+such. M2 is the riskiest milestone; a contingency resting on a claim that fails a
+five-minute experiment is worse than no contingency.
 
 ## 3. Environment facts (verified, don't re-derive)
 
@@ -52,8 +73,9 @@ specs themselves is fine and expected.
   `z3` **4.8.12 at `/usr/bin/z3`, working** — `z3 -in -smt2` over stdin smoke-tested
   (`sat` + model returned). `libz3.so`/`libz3-dev` also present, so the later
   off-by-default `z3-sys` feature is buildable. The user confirmed "z3 is in btw".
-- **This does NOT change the frontend decision.** Provenance is still why we own the
-  preprocessor; do not retreat to clang. What it changes:
+- **This does not change the frontend decision** — but read **§2.1**: "provenance is why
+  we own the preprocessor" was tested and is false; the real reason is the pure-Rust
+  no-link constraint in the last bullet here. What clang and z3 being present changes:
   - clang becomes a **differential oracle**: `clang -E` for preprocessor conformance,
     `-ast-dump` for parser cross-checking, alongside gcc.
   - z3 becomes a **first-class solver backend** and a cross-check for `solver-lite`,
@@ -68,8 +90,12 @@ specs themselves is fine and expected.
 
 ## 4. Design digest
 
-This is the condensed form of the full design. The specs in `docs/specs/` are the
-normative expansion of it. If a spec is missing, write it from this.
+> ⚠️ **SUPERSEDED WHERE IT CONFLICTS.** All 24 specs are now written; `docs/specs/` is
+> normative and this digest is a historical summary that has *already drifted* (§4.2's
+> `Expansion` shape, §4.4's CIR sketch, and §4.13b's `x/0` rule are all out of date).
+> Read the spec, not this, for anything you are about to implement. The instruction
+> "if a spec is missing, write it from this" no longer applies — none are missing.
+> §4.13b/c below remain useful as a record of *decisions and their reasons*.
 
 ### 4.1 The differentiating idea
 
@@ -383,9 +409,10 @@ chiero-rs/
 
 ## 7. Spec set — status
 
-Planned **24** documents in `docs/specs/` (025 and 042 were added mid-flight in response
-to user review — see §4.13c). **Written so far: 16.** Frontend and symbolic-core blocks
-are complete; verticals are in progress.
+**All 25 documents written.** (025 and 042 were added in response to user review — §4.13c;
+015 was added in response to the Fable review, which found that no document owned C→CIR
+lowering or the computation of `Block::gcov_lines`, while M1's hand-written fixtures would
+have entrenched conventions real lowering then had to match.)
 
 - [x] `README.md` — index + reading order + status
 - [x] `000-overview.md` — goals, 4 capabilities, design commitments, non-goals, glossary
@@ -395,6 +422,8 @@ are complete; verticals are in progress.
 - [x] `012-preprocessor.md` — phase 4, expansion w/ provenance, `#if` eval, includes
 - [x] `013-parser.md` — C11 + GNU extensions, **grounded in measured VPP usage** (below)
 - [x] `014-semantics-and-types.md` — types, layout/ABI, name resolution, const-eval
+- [x] `015-lowering.md` — **added after Fable review**; AST→CIR conventions, scope-marker
+      placement, and §5 **owns `Block::gcov_lines`** (must be settled before M1 fixtures)
 - [x] `020-cir.md` — §4.4; +textual format, verifier, PtrAdd-not-Add, order-sensitivity
 - [x] `021-memory-model.md` — §4.5; +vec negative-offset worked example, lazy init, CoW
 - [x] `022-solver.md` — §4.6; z3 4.8.12 verified as tier-2 subprocess + paranoid oracle
@@ -457,8 +486,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 ## 9. Next actions
 
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
-complete at draft-1. ~4600 lines across `docs/specs/`, every document ending in numbered
-`## Testable contracts`.
+complete at draft-2 (post-review). ~6750 lines, 24 numbered documents + index, 482
+numbered testable contracts.
 
 **✅ SPEC GATE PASSED — 2026-07-27.** The user read the specs ("looks reasonable to me")
 and granted **full autonomy**. §2 decision 3 is now discharged: run free, no check-ins
@@ -491,16 +520,40 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 (NOT `<src>.gcov.json.gz`), and JSON `branches[]` entries carry only
 `{count, throw, fallthrough}` — **no target block**, which is precisely why the native
 `.gcno` path is required for arc-level work.
-2. **Adversarial spec review — IN PROGRESS as of 2026-07-27.** The user chose this over
-   starting implementation. Run in waves of ≤3 (§8.1).
+2. **Adversarial spec review — WAVE 1 COMPLETE, findings applied 2026-07-27.**
 
-   **Wave 1 (running):** (a) 020+021 CIR↔memory interface; (b) 022+023+024+025 solver
-   soundness + engine fidelity; (c) **Fable** — challenge the load-bearing architecture
-   decisions (own-frontend-vs-clang, CIR contract boundary, non-SSA, build order, total
-   scope) **plus** cross-document contradictions, dangling forward references, and the
-   central claim's chain of custody.
+   Three reviewers reported. Their empirical claims were **re-verified here before acting**
+   and every one held (clang's nested backtrace; `bvsdiv -5 0 == 1` and
+   `bvurem/bvsrem x 0 == x`; the wraparound case being SAT; `vlib_buffer_ptr_from_index`;
+   `rdtsc` register outputs; 2552 `va_list *`; zero real computed gotos in VPP).
+   Applied across commits `b86983f`, `8eed056`, `c8c978d`, `306da36`.
 
-   **Wave 2 (QUEUED — launch after wave 1 reports):**
+   **The findings that mattered most**, so a fresh context knows what nearly shipped:
+   - **`bvsdiv`/`bvurem`/`bvsrem` by zero** were specified as all-ones; only `bvudiv` is.
+     The independent evaluator would have shared the folder's error and *validated* models
+     built on it — invisible to model validation, detectable only via z3.
+   - **`solver-lite`'s `Unsat` had nothing backing it.** `Sat` self-certifies via model
+     evaluation; `Unsat` doesn't, so it needed a syntactic fragment restriction plus a
+     wrap-safety rule. A saturating interval domain reports false `Unsat` on
+     `x>250 ∧ y=x+10 ∧ y<10`, which is satisfiable.
+   - **Independence slicing rested on an unstated invariant** (all other components known
+     satisfiable) that chiero breaks in three places by adding unproven constraints.
+   - **The whole-tree expansion index dangled**: dropping per-TU tables while keeping
+     `by_macro` left `ExpnCtx` handles into freed storage — the headline feature broken at
+     exactly the scale where it matters.
+   - **`Finding` was defined twice**, incompatibly, and the `chiero-check` copy was
+     illegal under the layering rules.
+   - **025 contract 11 said `fidelity <= Bounded`**, which given `Exact < Bounded`
+     *permits* `Exact` — the sign was inverted and it forbade nothing.
+   - **`Precision::Approximate` had no mechanical effect**, so a run calling `scanf` could
+     finish `Exact` and report "no bugs exist" as a proof.
+   - **`PtrToInt`/`IntToPtr` laundered provenance** into a *different real object* when
+     the OOB distance exceeded the guard gap.
+   - **Unconstrained pointers were concretized and reported `Bounded`**, which would have
+     analysed the wrong memory for a whole function — and it fires on `vlib_get_buffer`,
+     the most-executed function in VPP's data plane. Hence arenas (021 §5.2).
+
+   **Wave 2 (QUEUED — nothing cached, relaunch fresh):**
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -508,16 +561,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      destructor attributes (51 VPP files) run before `main`. Conditional-compilation
      branches not taken in the analyzed config. Multiarch 1:N holes. Also: how many of
      032's 21 contracts does a trivial "always select every test" selector pass?
-   - **040+041+042+050** — findings, equivalence, recipes, tool surface. Specific leads:
-     is the compile-and-ASan replay harness (040 §3) actually achievable for findings in
-     static functions / deep in VPP init / with UCSE objects, or does it quietly become
-     vestigial? **Likely real bug**: under 021 §7's deterministic addresses, do two
-     versions that allocate differently yield different pointer values and so spuriously
-     `Differs` in `prove_equivalent`? Which 041 contracts does an always-`Unknown`
-     implementation pass?
-
-   Original briefs for wave 2 are reconstructable from the above; the agents were
-   launched once and killed to respect the concurrency limit, so nothing is cached.
+   - **040+041+042+050** — findings, equivalence, recipes, tool surface. Note the two
+     leads originally listed here were *already found and fixed* by the Fable pass
+     (static-function replay → 040 §3.1; the allocation-address `Differs` bug → 041 §1.1
+     object bijection), so brief this agent on what remains: 042's DSL expressiveness
+     (try writing 2–3 of the promised VPP rules in it), whether tier-1 candidate filtering
+     can drop a function tier 2 would have flagged (a recall hole), and 050's truncation /
+     cancelled-job paths as overclaim vectors.
+   - **A second Fable pass over the *revised* specs.** The first pass found the most, and
+     the specs changed substantially under it; the fixes themselves deserve adversarial
+     review, especially 021 §3.1's tri-state `InitMask`, 021 §5.2 arenas, and 015 (brand
+     new, never reviewed).
 
 3. **Apply the findings as `spec:` commits** before any implementation. Judge them — a
    subagent finding is a claim, not a verdict; several will be wrong, and adopting a

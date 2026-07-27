@@ -24,6 +24,7 @@ spec is amended in the same commit as the deviation.
 | [012](012-preprocessor.md) | Preprocessor | Phase 4, macro expansion with full provenance |
 | [013](013-parser.md) | Parser | C11 + the GNU extensions VPP actually uses |
 | [014](014-semantics-and-types.md) | Semantics & types | Type system, layout/ABI, name resolution, const-eval |
+| [015](015-lowering.md) | Lowering | AST → CIR conventions, scope markers, and who computes `gcov_lines` |
 
 ### Symbolic core
 

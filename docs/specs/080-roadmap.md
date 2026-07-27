@@ -27,6 +27,16 @@ Everything is tested against `.cir` fixtures. **No C is parsed in this milestone
 is the point of the CIR contract boundary, and the discipline that must not slip: if a
 frontend dependency appears here, the build order has silently collapsed.
 
+**Prerequisite: [015](015-lowering.md) must be settled before the fixtures are written.**
+Hand-written `.cir` encodes conventions — marker placement, block shape, line attribution
+— and if they are invented fixture-by-fixture, M2's real lowering will not reproduce them
+and the core will turn out subtly wrong for real C. 015 exists to fix them on paper first.
+
+**M1's oracles are weaker than the rest of the project's**, and that is worth stating
+rather than discovering: the differential-against-gcc oracle (070 §1.1, the primary one)
+cannot run until M2 lands, so M1 relies on `.cir` fixtures, property tests, and the z3
+cross-check. This is a second reason to run M1 and M2 concurrently rather than serially.
+
 **Exit:**
 - [020](020-cir.md) contracts 1–30, [021](021-memory-model.md) 1–22,
   [022](022-solver.md) 1–20, [023](023-execution-engine.md) 1–21,
@@ -127,6 +137,13 @@ the CIR contract boundary's reason for existing — and with 12 cores available,
 them concurrently is the single biggest schedule lever. M4's gcov decoder depends on
 neither and can start any time.
 
+**M4 can finish before M1.** Its exit gates — native gcov decode, macro attribution, the
+headline selection demonstration, recall on the replay corpus — require the frontend and
+the coverage/impact stack, not the symbolic engine; §3.1's equivalence refinement is
+explicitly optional there. So a slipping M1 must not be allowed to block the headline
+demo. This is also the honest reading of the build-order decision: the core-first order
+runs *concurrently* with the vertical order rather than in front of it.
+
 **What must not be reordered.** [025](025-concurrency-and-threading.md)'s `Sharing`
 classification is an input to M6's false-sharing analysis. M6's `prove_equivalent` is
 M4's strongest refinement — M4 ships without it and gains precision when M6 lands, which
@@ -140,6 +157,38 @@ product. The mitigations are that parser coverage is measured continuously from 
 extension budget is already known from measurement
 ([HANDOFF §4.12b](../../HANDOFF.md)), and unparseable constructs degrade to skipped
 functions with diagnostics rather than to wrong answers.
+
+## Scope pressure, and what gives first
+
+Honest accounting: this spec set describes a C frontend with compiler-grade layout, a
+KLEE-class engine with ~25 checkers and a sanitizer-validated replay pipeline, a gcov
+decoder plus impact and selection with recall gates, a relational equivalence prover, a
+locality analyzer, a typestate recipe language, a concurrency-discipline checker, and an
+MCP server — 21 crates and ~400 contracts, each contractually costing four commits under
+[070 §3](070-testing-and-tdd-protocol.md). That is more than one product.
+
+Two things have already been cut on correctness grounds, not schedule:
+[032 §3.3](032-test-selection.md) observability refinement (unbuildable as specified), and
+[041 §3](041-optimization-analysis.md)'s profile-dependent findings are now opt-in and
+absent by default.
+
+If more must give, this is the order and the reasoning — **cut from the tail, not the
+middle**:
+
+1. **[042](042-conformance-recipes.md)'s tier-2 typestate DSL.** Keep the tier-1
+   structural sweep, which is M3's early value and cheap. Ship the ritual checks first as
+   Rust `Checker`s through 042's own escape hatch, and grow the DSL from checks that
+   already work — a grammar, metavariable binding, typestate automata and escape analysis
+   is a compiler-sized sub-project to build speculatively.
+2. **[025 §3](025-concurrency-and-threading.md)'s lock-order-inversion graph**, which
+   needs cross-entry-point accumulation infrastructure. The per-path discipline findings
+   are independent and stay.
+3. **[041 §3](041-optimization-analysis.md)'s locality analysis entirely**, to v2.
+
+What must **not** be cut, because other things depend on them:
+`prove_equivalent` ([032 §3.1](032-test-selection.md) and the whole LLM story rest on it)
+and the replay/sanitizer loop (it is the credibility mechanism — without it a finding is
+an assertion).
 
 ## Definition of done for v1
 
