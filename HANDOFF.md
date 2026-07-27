@@ -1107,13 +1107,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `(refuted, undecided)` arm is unreachable under tier 1 (which yields `(No, Yes)`) but
    kept: it guards against unsoundness with a backend that gives up under an rlimit.
 
-   **STILL OWED in `chiero-exec`:** `ExactWitness` is forgeable downstream — `State`
-   exposes `pub fidelity` and `RunResult` has no private field, so a degraded run can be
-   sealed by mutating the struct (the reviewer confirmed this from a separate crate);
-   there are **two** functions reading fidelity to gate a proof against §7.1's "the ONLY
-   function"; contract 13a's `trybuild` compile-fail test does not exist anywhere;
-   `PathTrace` is absent so fork order is not observable even in principle (both "make it
-   BFS" and "delete the sort" survive); `AssumptionKind::matches` → `true` survives;
+   **PROOF SURFACE SEALED** (`b7866a5` red, `6a34485` green, 399 tests + a third gate).
+   `State::fidelity` and `RunResult`'s fields are private with read-only accessors;
+   `RunResult` has a private field so it cannot be literal-built. **`seal` is now the only
+   function reading fidelity** — gating in `witness()` too had made `seal`'s own check
+   unreachable, which is why contract 13b could not be written. `PathTrace` and completion
+   order make exploration order observable. `AssumptionKind::matches` is pinned per level.
+
+   **`cargo xtask check-proof-surface`** is contract 13a: four forgery attempts compiled
+   with `rustc`, each required to be rejected. *Getting it honest took three tries and
+   every failure was the gate passing for the wrong reason:* `CARGO_MANIFEST_DIR` is baked
+   in at compile time, so a copy of the tree probed the **original**; a bare `--extern`
+   left several rlib candidates so every probe failed before reaching the code; and one
+   probe tested two seals at once. It now resolves explicit rlib paths, **checks the
+   failure was a visibility error**, and was verified by opening the hole.
+
+   **Standing lesson:** a gate that can only pass is worse than no gate. Verify a new gate
+   by *breaking* the thing it guards, before trusting a green result.
+
+   **STILL OWED in `chiero-exec`:** ~~`ExactWitness` is forgeable downstream~~ DONE. Remaining:
    indirect calls, searchers and checkers are unimplemented; `chiero-model` is empty.
 
    **Standing note on mutation testing** (three instances this session): a mutation that
