@@ -1604,6 +1604,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      address gets that object back, bypassing the `Unknown` degrade exactly when it should
      fire. Both doc comments claim the opposite. `address_term` made the table far denser
      by adding every pointer *store* to it.
+
+     **The fix, worked out but not landed** (next slice, start here): key provenance on
+     the **`ValueId`**, not the `Term`. Dataflow is what provenance follows; a term is a
+     *value*, and two ways of computing the same address are the same term by
+     construction — hash-consing guarantees the bug. So:
+     - `State::ptr_ints` becomes `IndexMap<ValueId, Pointer>`, per frame like `locals`
+       (a `ValueId` is only meaningful inside its activation).
+     - `PtrToInt` cannot record it from inside `eval`, which does not know `dst`. Record
+       in `exec_inst`'s `InstKind::Assign` arm instead: after `eval`, if the `RValue` was
+       `Cast { kind: PtrToInt, a }` and `a` resolved to a `Value::Ptr`, insert
+       `dst -> that pointer`. A pointer-typed `Load` records the same way.
+     - `IntToPtr` looks up `Operand::Value(v)` in the map. A `Bin`/`Un` result is a
+       *different* `ValueId` with no entry, so arithmetic loses provenance — which is the
+       behaviour both doc comments already claim.
+     - The existing round-trip test still passes (the operand is the direct `PtrToInt`
+       result); the reviewer's laundering probe starts failing, which is the point.
+     - Keep the `Unknown` degrade on the fallback path unchanged.
+     Write the laundering case as the RED test first: `(uintptr_t)&a + ((uintptr_t)&b -
+     (uintptr_t)&a)` must **not** come back as `&b` at `Exact`.
    - **C7** no `Status::Errored` site calls `degrade`, so `State::fidelity()` is `Exact`
      for a state that gave up; only one untested line in `RunResult::fidelity` prevents a
      PROVEN seal. (One path is now pinned; the other six sites are not.)
