@@ -77,11 +77,11 @@ global @g : size 8 align 8
 func @extern_fn(%0: ptr) -> i32
 
 func @f(%0: ptr, %1: i32) -> i32 {
-  alloca %a : i32 x 4 align 4 scope 0 lifetime scope "buf"
+  alloca %0 : i32 x 4 align 4 scope 0 lifetime scope "buf"
 entry:
   .line 7
   .scope enter 0
-  %2 = addrlocal %a
+  %2 = addrlocal %0
   %3 = addrglobal @g
   %4 = addrfunc @extern_fn
   %5 = load i32, %2 align 4
@@ -156,7 +156,7 @@ fn multiple_line_directives_accumulate_sorted() {
 /// round trip — 020 §8 rule 10 makes the distinction a verifier error.
 #[test]
 fn declared_function_stays_declared() {
-    let src = "func @ext(%0: i32) -> i32\n";
+    let src = "target x86_64-unknown-linux-gnu\n\nfunc @ext(%0: i32) -> i32\n";
     let m = parse(src).unwrap();
     assert_eq!(m.funcs[0].body, Body::Declared);
     assert!(m.funcs[0].blocks.is_empty());
@@ -167,7 +167,9 @@ fn declared_function_stays_declared() {
 /// information.
 #[test]
 fn constants_round_trip_exactly() {
-    let src = r#"func @c() -> void {
+    let src = r#"target x86_64-unknown-linux-gnu
+
+func @c() -> void {
 entry:
   %0 = add i32 -2147483648i32, -1i32
   %1 = add i64 9223372036854775807i64, 1i64
@@ -184,7 +186,7 @@ entry:
 /// contract 2 cannot hold for anything a human typed.
 #[test]
 fn noncanonical_input_normalizes_to_canonical() {
-    let messy = "target   x86_64-unknown-linux-gnu\n\n\n\nfunc @add(%0: i32, %1: i32) -> i32 {\n\nentry:\n    .line 12\n      %2   =   add   i32   %0,   %1\n  ret %2\n}\n";
+    let messy = "target   x86_64-unknown-linux-gnu\n\nglobal   @counts  :  size 32   align 8\n\n\nfunc @add(%0: i32, %1: i32) -> i32 {\n\nentry:\n    .line 12\n      %2   =   add   i32   %0,   %1\n  ret %2\n}\n";
     let m = parse(messy).expect("parse");
     assert_eq!(print(&m), CANONICAL, "printing is canonicalizing");
 }
