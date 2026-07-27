@@ -1792,3 +1792,63 @@ fn a_bit_range_whose_end_overflows_is_rejected() {
         "an overflowing range is malformed, not permitted"
     );
 }
+
+/// **A bitfield unit that is not an integer is rejected.** `check_bits` filtered on
+/// `bit_width()`, which `CTy::Float` and `CTy::Vector` both answer — so
+/// `LoadBits { unit: f32, bits: 0..32 }` verified clean. C has no float bitfields at all,
+/// and the engine would then read bits out of a value 023 §7 says it only approximates.
+/// The contract-27 work fixed both call sites of this function and left this branch of it
+/// untested. Found by review.
+#[test]
+fn a_bitfield_unit_must_be_an_integer() {
+    for (unit, ok) in [
+        (CTy::Int(32), true),
+        (CTy::Float(FloatKind::F32), false),
+        (
+            CTy::Vector {
+                elem: Box::new(CTy::Int(8)),
+                lanes: 4,
+            },
+            false,
+        ),
+    ] {
+        let mut m = valid_module();
+        m.funcs[0].allocas = vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 1,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }];
+        m.funcs[0].blocks[0].insts.insert(
+            0,
+            inst(InstKind::Assign {
+                dst: ValueId(5),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            }),
+        );
+        m.funcs[0].blocks[0].insts.insert(
+            1,
+            inst(InstKind::Assign {
+                dst: ValueId(6),
+                rv: RValue::LoadBits {
+                    addr: Operand::Value(ValueId(5)),
+                    unit: unit.clone(),
+                    bits: BitRange { off: 0, width: 8 },
+                    signed: false,
+                    align: 4,
+                },
+            }),
+        );
+        assert_eq!(
+            verify(&m).iter().all(|e| !e.kind.is_error()),
+            ok,
+            "unit {unit:?}"
+        );
+    }
+}

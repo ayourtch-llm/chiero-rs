@@ -526,18 +526,20 @@ impl MemObject {
     /// Bit-addressed rather than byte-addressed, because that is the whole reason
     /// `StoreBits` is a distinct instruction — two fields in the same byte must be
     /// independently tracked.
-    pub fn write_bits(&mut self, lo_bit: u64, n_bits: u64, v: u128) -> Result<(), AccessError> {
+    /// Everything `write_bits` will refuse, decided without mutating. Kept beside it so
+    /// the caller can avoid a copy-on-write clone for a write that will not happen, and
+    /// factored out rather than duplicated so the two cannot drift.
+    pub fn check_bit_write(&self, lo_bit: u64, n_bits: u64) -> Result<(), AccessError> {
         self.check_bits(lo_bit, n_bits)?;
         self.check_writable((lo_bit / 8) as i64)?;
-        // **The bit API and the overlay have to agree.** Writing only `data` left the
-        // symbolic byte in place, so the write vanished and the *neighbouring* bitfield
-        // read back as a definite constant — a proof about bits chiero knew nothing
-        // about. A bit-granular write into a symbolic byte cannot be represented, so it
-        // refuses rather than half-happening; 021 §3.1's `Cond` machinery is what would
-        // let it, and it does not reach here.
         if let Some(b) = self.first_symbolic_bit_byte(lo_bit, n_bits) {
             return Err(AccessError::SymbolicByte { off: b as i64 });
         }
+        Ok(())
+    }
+
+    pub fn write_bits(&mut self, lo_bit: u64, n_bits: u64, v: u128) -> Result<(), AccessError> {
+        self.check_bit_write(lo_bit, n_bits)?;
         for i in 0..n_bits {
             let bit = lo_bit + i;
             let (byte, sh) = ((bit / 8) as usize, bit % 8);
@@ -1748,12 +1750,24 @@ impl Memory {
             .align_fault(p.base, p.off, n_bits.div_ceil(8), at)
             .into_iter()
             .collect();
-        let Some(e) = self.entry_mut(p.base) else {
+        let Some(e) = self.entry(p.base) else {
             return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
         };
-        let obj = e
-            .obj
-            .as_mut()
+        // **Ask before cloning.** `MemObject::write_bits` refuses an out-of-range or
+        // symbolic write, and calling `make_mut` first paid for a private copy of the
+        // object on every refusal — the common case for a bit write into a symbolic byte.
+        // The check is the same code the write runs, so the two cannot disagree.
+        let obj = e.obj.as_ref().expect("materialized");
+        if let Err(err) = obj.check_bit_write(b, n_bits) {
+            faults.push(lift(err, p.base, at));
+            return AccessResult {
+                value: None,
+                faults,
+            };
+        }
+        let obj = self
+            .entry_mut(p.base)
+            .and_then(|e| e.obj.as_mut())
             .map(std::sync::Arc::make_mut)
             .expect("materialized");
         match obj.write_bits(b, n_bits, v) {
@@ -2013,7 +2027,11 @@ impl Memory {
         fill: HavocFill,
         at: Span,
     ) -> bool {
-        self.havoc_range_reporting(a, p, size, fill, at).value == Some(size)
+        // **A refusal is not a success, whatever the size.** `refuse` reports `Some(0)`,
+        // which equalled `Some(size)` at `size == 0` — so every refusal (freed, read-only,
+        // promoted, wild) reported success for a zero-byte range.
+        let r = self.havoc_range_reporting(a, p, size, fill, at);
+        r.value == Some(size) && r.faults.is_empty()
     }
 
     /// As `havoc_range`, but says **how many bytes it managed** and carries the faults it
@@ -2033,9 +2051,16 @@ impl Memory {
             value: Some(0),
             faults: vec![f],
         };
-        if self.entry(p.base).is_none() || p.off < 0 {
+        if self.entry(p.base).is_none() {
             return refuse(MemFault::WildPointer { off: p.off, at });
         }
+        // **A negative offset is left to the per-byte check**, which already reports
+        // `OutOfBounds` *and names the object*. The original `WildPointer` here said
+        // "matching no known object" about an object it had just looked up, lost the
+        // object component of 023 §6.1's dedup key, and — being fatal — killed the path so
+        // nothing after the asm block was analysed. A special case that duplicates the
+        // loop's answer is worse than none: it is a second place for the two write paths
+        // to disagree.
         // **The same refusals `havoc_object` makes.** They were on the `Symbolic` path
         // only, and by accident — `write_sym_byte` happens to check — so `Uninitialized`
         // mutated read-only and freed objects, and on a promoted one reported success
@@ -2365,10 +2390,15 @@ impl Memory {
         if let Some(f) = self.promoted_fault(p, at) {
             return AccessResult::fault(f);
         }
-        let Some(e) = self.entry_mut(p.base) else {
+        // **Every refusal decided before `make_mut`.** Cloning first meant an operation
+        // that changes nothing still paid for a private copy of the object — which undoes
+        // contract 20 on the refusal path, and refusals are the common case for a bit
+        // write into a symbolic byte.
+        let Some(e) = self.entry(p.base) else {
             return AccessResult::fault(MemFault::WildPointer { off: p.off, at });
         };
-        let Some(o) = e.obj.as_mut().map(std::sync::Arc::make_mut) else {
+        let obj_size = e.size;
+        let Some(o) = e.obj.as_ref() else {
             return AccessResult::fault(MemFault::AllocationTooLarge {
                 obj: p.base,
                 size: 0,
@@ -2380,7 +2410,7 @@ impl Memory {
                 obj: p.base,
                 off: p.off,
                 size: 1,
-                obj_size: e.size,
+                obj_size,
                 at,
             });
         }
@@ -2391,6 +2421,11 @@ impl Memory {
                 at,
             });
         }
+        let o = self
+            .entry_mut(p.base)
+            .and_then(|e| e.obj.as_mut())
+            .map(std::sync::Arc::make_mut)
+            .expect("checked above");
         o.sym.insert(p.off as u64, t);
         o.init.set_range(p.off as u64 * 8, 8, InitBit::Yes);
         AccessResult {

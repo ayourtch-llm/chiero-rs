@@ -1711,3 +1711,69 @@ fn an_uninitialized_havoc_range_refuses_what_it_cannot_do() {
          nothing is what 020 §4.3 forbids"
     );
 }
+
+/// **A declared clobber at a negative offset is out of bounds, not a wild pointer.**
+/// Folding the two together said "matching no known object" about an object it had just
+/// looked up, lost the object component of 023 §6.1's dedup key — `WildPointer` has none —
+/// and, because `WildPointer` is fatal, **killed the path**, so nothing after the asm block
+/// was analysed. vppinfra's vector header lives below the user pointer, so this is the
+/// ordinary shape, not a corner. Found by review.
+#[test]
+fn a_havoc_range_below_the_object_is_out_of_bounds() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let r = m.havoc_range_reporting(&mut a, ptr(o, -8), 4, HavocFill::Symbolic, sp(2));
+    let f = r.faults.first().expect("a fault");
+    assert_eq!(f.kind(), "out-of-bounds", "{:#?}", r.faults);
+    assert_eq!(
+        f.object(),
+        Some(o),
+        "and it names the object, so the dedup key keeps its component"
+    );
+    assert!(!f.is_fatal() || f.kind() == "out-of-bounds");
+}
+
+/// **A refusal is not a success, whatever the size.** `havoc_range`'s bool wrapper compared
+/// the byte count against the requested size, and a refusal reports zero — so at `size ==
+/// 0` every refusal, including freed and read-only memory, reported success. Found by
+/// review.
+#[test]
+fn a_zero_size_havoc_range_refusal_is_still_a_refusal() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.free(o, sp(2));
+    assert!(
+        !m.havoc_range(&mut a, ptr(o, 0), 0, HavocFill::Symbolic, sp(3)),
+        "freed memory is not successfully clobbered, even zero bytes of it"
+    );
+}
+
+/// **A bit range spanning into a symbolic byte is refused.** The check looked at the
+/// range's bytes, but every fixture kept the symbol in the *first* one — so a mutation
+/// examining only that byte survived. `struct S { unsigned a : 12; }` spans two bytes, and
+/// a write to `a` reaching a symbolic second byte is the same defect 020 contract 25 fixed,
+/// one byte over. The collection-of-one trap again, on a byte range. Found by review.
+#[test]
+fn a_bit_range_reaching_a_symbolic_byte_is_refused() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 4, 4, sp(1));
+    // Byte 0 concrete, byte 1 symbolic.
+    m.set(ptr(o, 0), 0, 1, sp(2));
+    let x = a.var(Sort::BitVec(8), "x");
+    m.write_sym_byte(ptr(o, 1), x, sp(3));
+
+    // A 12-bit field starting at bit 0 reaches into byte 1.
+    let w = m.write_bits(ptr(o, 0), 0, 12, 0x123, sp(4));
+    assert!(
+        w.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the range reaches a byte chiero cannot represent a bit write into: {:#?}",
+        w.faults
+    );
+    // And the concrete byte is untouched: a refusal is not a partial write.
+    assert_eq!(m.read(ptr(o, 0), 1, sp(5)).value, Some(vec![0]));
+}
