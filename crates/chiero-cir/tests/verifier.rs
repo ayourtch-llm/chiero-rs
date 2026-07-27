@@ -1274,3 +1274,192 @@ fn rule_one_accepts_a_dominated_use_in_the_same_positions() {
         "a dominated use must be accepted: {errs:#?}"
     );
 }
+
+/// **`va_list` operands are never pointer-checked**, so `vastart 0i32` verifies clean.
+/// 020 §4.4.1 makes the `va_list` a real addressable `MemObject`, and VPP has 2552
+/// `va_list *` uses — an integer where the list should be is not a hypothetical.
+#[test]
+fn valist_operands_must_be_pointers() {
+    let cases: Vec<(&str, InstKind)> = vec![
+        ("vastart", InstKind::VaStart { list: i32c(0) }),
+        ("vaend", InstKind::VaEnd { list: i32c(0) }),
+        (
+            "vacopy dst",
+            InstKind::VaCopy {
+                dst: i32c(0),
+                src: Operand::Const(Const::Null),
+            },
+        ),
+        (
+            "vacopy src",
+            InstKind::VaCopy {
+                dst: Operand::Const(Const::Null),
+                src: i32c(0),
+            },
+        ),
+        (
+            "vaarg list",
+            InstKind::VaArg {
+                dst: ValueId(20),
+                list: i32c(0),
+                ty: CTy::Int(32),
+            },
+        ),
+    ];
+    for (what, kind) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(kind)];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        let errs = verify(&m);
+        assert!(
+            errs.iter()
+                .any(|e| e.kind == VerifyErrorKind::BadPointerOperand),
+            "{what} accepted a non-pointer va_list; got: {errs:#?}"
+        );
+    }
+}
+
+/// Cast shape (rule 12) at every `CastKind`. The rules were implemented and correct;
+/// nothing exercised six of the ten, so a refactor could invert one silently. The
+/// width-changing cases also need their *boundary*: `trunc i32 -> i32` must be rejected,
+/// because "narrows" means strictly, and an equal-width `trunc` is a `bitcast` wearing
+/// the wrong name.
+#[test]
+fn every_cast_kind_rejects_the_wrong_shape() {
+    let f32t = CTy::Float(FloatKind::F32);
+    let f64t = CTy::Float(FloatKind::F64);
+    let cases: Vec<(&str, CastKind, CTy, CTy)> = vec![
+        // Width-changing casts at the equal-width boundary.
+        (
+            "trunc equal width",
+            CastKind::Trunc,
+            CTy::Int(32),
+            CTy::Int(32),
+        ),
+        (
+            "zext equal width",
+            CastKind::ZExt,
+            CTy::Int(32),
+            CTy::Int(32),
+        ),
+        ("sext narrowing", CastKind::SExt, CTy::Int(32), CTy::Int(8)),
+        (
+            "fptrunc widening",
+            CastKind::FpTrunc,
+            f32t.clone(),
+            f64t.clone(),
+        ),
+        (
+            "fpext narrowing",
+            CastKind::FpExt,
+            f64t.clone(),
+            f32t.clone(),
+        ),
+        (
+            "bitcast width change",
+            CastKind::Bitcast,
+            CTy::Int(32),
+            CTy::Int(64),
+        ),
+        // Shape casts, each given the reverse of its legal direction.
+        (
+            "ptrtoint from int",
+            CastKind::PtrToInt,
+            CTy::Int(64),
+            CTy::Int(64),
+        ),
+        ("ptrtoint to ptr", CastKind::PtrToInt, CTy::Ptr, CTy::Ptr),
+        ("inttoptr from ptr", CastKind::IntToPtr, CTy::Ptr, CTy::Ptr),
+        (
+            "inttoptr to int",
+            CastKind::IntToPtr,
+            CTy::Int(64),
+            CTy::Int(64),
+        ),
+        (
+            "fptoui from int",
+            CastKind::FpToUi,
+            CTy::Int(32),
+            CTy::Int(32),
+        ),
+        (
+            "fptosi to float",
+            CastKind::FpToSi,
+            f64t.clone(),
+            f64t.clone(),
+        ),
+        (
+            "uitofp from float",
+            CastKind::UiToFp,
+            f64t.clone(),
+            f64t.clone(),
+        ),
+        (
+            "sitofp to int",
+            CastKind::SiToFp,
+            CTy::Int(32),
+            CTy::Int(32),
+        ),
+    ];
+    for (what, kind, from, to) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(InstKind::Assign {
+            dst: ValueId(21),
+            rv: RValue::Cast {
+                kind,
+                a: Operand::Const(Const::Undef(from.clone())),
+                from,
+                to,
+            },
+        })];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        let errs = verify(&m);
+        assert!(
+            errs.iter().any(|e| e.kind == VerifyErrorKind::BadCast),
+            "{what} was accepted; got: {errs:#?}"
+        );
+    }
+}
+
+/// The companion: every cast kind must *accept* its legal shape, or the test above is
+/// satisfied by a verifier that rejects all casts.
+#[test]
+fn every_cast_kind_accepts_the_right_shape() {
+    let f32t = CTy::Float(FloatKind::F32);
+    let f64t = CTy::Float(FloatKind::F64);
+    let cases: Vec<(&str, CastKind, CTy, CTy)> = vec![
+        ("trunc", CastKind::Trunc, CTy::Int(32), CTy::Int(8)),
+        ("zext", CastKind::ZExt, CTy::Int(8), CTy::Int(32)),
+        ("sext", CastKind::SExt, CTy::Int(8), CTy::Int(32)),
+        ("fptrunc", CastKind::FpTrunc, f64t.clone(), f32t.clone()),
+        ("fpext", CastKind::FpExt, f32t.clone(), f64t.clone()),
+        ("bitcast", CastKind::Bitcast, CTy::Int(32), f32t.clone()),
+        ("ptrtoint", CastKind::PtrToInt, CTy::Ptr, CTy::Int(64)),
+        ("inttoptr", CastKind::IntToPtr, CTy::Int(64), CTy::Ptr),
+        ("fptoui", CastKind::FpToUi, f64t.clone(), CTy::Int(32)),
+        ("fptosi", CastKind::FpToSi, f64t.clone(), CTy::Int(32)),
+        ("uitofp", CastKind::UiToFp, CTy::Int(32), f64t.clone()),
+        ("sitofp", CastKind::SiToFp, CTy::Int(32), f64t.clone()),
+    ];
+    for (what, kind, from, to) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].blocks[0].insts = vec![inst(InstKind::Assign {
+            dst: ValueId(21),
+            rv: RValue::Cast {
+                kind,
+                a: Operand::Const(Const::Undef(from.clone())),
+                from,
+                to,
+            },
+        })];
+        m.funcs[0].blocks[0].term = Terminator::Return(None);
+        let errs: Vec<_> = verify(&m)
+            .into_iter()
+            .filter(|e| e.kind == VerifyErrorKind::BadCast)
+            .collect();
+        assert!(errs.is_empty(), "{what} was rejected: {errs:#?}");
+    }
+}
