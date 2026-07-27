@@ -212,7 +212,7 @@ pub struct Frame {
     /// The arguments past the declared parameters of a variadic call, in order. 020 §4.4.1
     /// puts the `va_list` in *memory* so `va_list *` can cross a function boundary; this
     /// is the argument area it iterates, which belongs to the activation that received it.
-    varargs: Vec<Value>,
+    varargs: Vec<Option<Value>>,
     /// How wide one lane of a vector-valued local is. `ExtractLane` and `InsertLane` carry
     /// no element type, and a total width cannot say how it is divided — 32 bits is four
     /// `u8` lanes or two `u16` lanes, and the two give different answers.
@@ -1057,6 +1057,18 @@ impl<'m> Engine<'m> {
                 let zero = a.bv(64, 0);
                 let r = s.mem.write_term(a, p, zero, 8, Endian::Little, i.span);
                 self.report_faults(s, &r.faults, i.span);
+                // **Which frame owns the arguments**, in the object's second word. 020
+                // §4.4.1's ABI layout has room for it, and without it `va_arg` asked the
+                // *current* frame — which is the callee's, and empty, whenever a
+                // `va_list *` crosses a boundary. That is contract 37, and the whole
+                // reason the list lives in memory.
+                let owner = a.bv(64, s.stack.len().saturating_sub(1) as u128);
+                let at8 = Pointer {
+                    base: p.base,
+                    off: p.off + 8,
+                };
+                let r = s.mem.write_term(a, at8, owner, 8, Endian::Little, i.span);
+                self.report_faults(s, &r.faults, i.span);
             }
             InstKind::VaArg { dst, list, ty } => {
                 let Some(Value::Ptr(p)) = self.operand(a, s, list) else {
@@ -1074,14 +1086,41 @@ impl<'m> Engine<'m> {
                     self.lowering_gap(s, i.span, "a va_list cursor chiero cannot read");
                     return;
                 };
-                // **Past the end is not a value.** C leaves it undefined, and handing back
-                // a fresh symbol would let a `printf` with too few arguments look like it
-                // read something real.
-                let Some(v) = s.stack.last().and_then(|fr| fr.varargs.get(n)).copied() else {
-                    self.lowering_gap(s, i.span, "va_arg past the end of the variadic arguments");
+                // The owning frame, not the current one — see `VaStart`.
+                let at8 = Pointer {
+                    base: p.base,
+                    off: p.off + 8,
+                };
+                let own = s.mem.read_term(a, at8, 8, Endian::Little, i.span);
+                self.report_faults(s, &own.faults, i.span);
+                let Some(owner) = own
+                    .value
+                    .filter(|_| !unusable(&own.faults))
+                    .and_then(|t| a.eval_ground(t).ok())
+                    .map(|c| c.bits() as usize)
+                else {
+                    self.lowering_gap(s, i.span, "a va_list with no owning frame");
                     return;
                 };
-                let _ = ty;
+                // **Past the end is not a value**, and neither is a hole. C leaves both
+                // undefined, and handing back a fresh symbol would let a `printf` with too
+                // few arguments — or one whose float chiero cannot represent — look like
+                // it read something real.
+                let Some(Some(v)) = s.stack.get(owner).and_then(|fr| fr.varargs.get(n)).copied()
+                else {
+                    self.lowering_gap(s, i.span, "va_arg of an argument chiero does not have");
+                    return;
+                };
+                // **The declared type decides the width.** Handing the caller's value back
+                // verbatim put a 64-bit term in a local the verifier believes is `i32`,
+                // and comparing it panicked the solver.
+                let v = match (v, bits_of_cty(ty)) {
+                    (Value::Scalar(t), Some(w)) if a.width(t) > w => {
+                        Value::Scalar(a.extract(t, w - 1, 0))
+                    }
+                    (Value::Scalar(t), Some(w)) if a.width(t) < w => Value::Scalar(a.zext(t, w)),
+                    (other, _) => other,
+                };
                 s.set_local(*dst, v);
                 let next = a.bv(64, n as u128 + 1);
                 let r = s.mem.write_term(a, p, next, 8, Endian::Little, i.span);
@@ -1096,7 +1135,10 @@ impl<'m> Engine<'m> {
                     self.lowering_gap(s, i.span, "va_copy on a non-pointer");
                     return;
                 };
-                let r = s.mem.copy(d, sp, 8, chiero_mem::Overlap::Forbidden, i.span);
+                // Both words: the cursor *and* the owning frame.
+                let r = s
+                    .mem
+                    .copy(d, sp, 16, chiero_mem::Overlap::Forbidden, i.span);
                 self.report_faults(s, &r.faults, i.span);
             }
             // `va_end` has no effect chiero can observe: the object's lifetime is the
@@ -1279,10 +1321,13 @@ impl<'m> Engine<'m> {
         // area the callee's `va_list` iterates. Kept as `Value`s rather than bytes so a
         // pointer argument keeps its object — `format_function_t` takes `u8 *` and
         // `va_list *`, so varargs *are* pointers in the VPP paths this exists for.
-        let varargs: Vec<Value> = if f.variadic {
+        // **A hole, not an absence.** `filter_map` compacted the area, so an argument
+        // chiero cannot represent — a float, which `operand` documents as a gap — silently
+        // handed the *next* one back to the following `va_arg`.
+        let varargs: Vec<Option<Value>> = if f.variadic {
             args.iter()
                 .skip(f.params.len())
-                .filter_map(|o| self.operand(a, s, o))
+                .map(|o| self.operand(a, s, o))
                 .collect()
         } else {
             Vec::new()
@@ -1925,9 +1970,20 @@ impl<'m> Engine<'m> {
                 if mask.is_empty() || a.width(xv) != a.width(yv) {
                     return self.lowering_gap(s, span, "a shuffle of mismatched vectors");
                 }
-                let lanes = mask.len() as u32;
-                let Some(w) = (a.width(xv)).checked_div(lanes).filter(|w| *w > 0) else {
-                    return self.lowering_gap(s, span, "a shuffle whose mask does not fit");
+                // **The lane count comes from the operand, not the mask.** 020 rule 12
+                // reads `lanes` from the operand's declared vector type, and nothing
+                // requires the mask to be that long — the mask length is the *result*
+                // length, as in `__builtin_shufflevector`. Using `mask.len()` as the
+                // divisor made a widening shuffle read nibbles, and using it as the a/b
+                // split meant `b` was never read at all.
+                let Some(w) = (match x {
+                    Operand::Value(id) => s.lane_width_of(*id),
+                    _ => None,
+                }) else {
+                    return self.lowering_gap(s, span, "a shuffle of a vector of unknown shape");
+                };
+                let Some(lanes) = a.width(xv).checked_div(w).filter(|l| *l > 0) else {
+                    return self.lowering_gap(s, span, "a shuffle whose lanes do not fit");
                 };
                 let mut out: Option<Term> = None;
                 for &m in mask {
@@ -2049,10 +2105,11 @@ impl<'m> Engine<'m> {
         match rv {
             RValue::Splat { elem, .. } => self.scalar(a, s, elem).map(|t| a.width(t)),
             RValue::InsertLane { val, .. } => self.scalar(a, s, val).map(|t| a.width(t)),
-            RValue::Shuffle { a: x, mask, .. } => {
-                let t = self.scalar(a, s, x)?;
-                a.width(t).checked_div(mask.len() as u32).filter(|w| *w > 0)
-            }
+            // The result's lanes are the *operand's* width, however long the mask is.
+            RValue::Shuffle {
+                a: Operand::Value(id),
+                ..
+            } => s.lane_width_of(*id),
             RValue::Use(Operand::Value(v)) => s.lane_width_of(*v),
             _ => None,
         }
