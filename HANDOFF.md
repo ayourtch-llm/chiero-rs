@@ -1565,8 +1565,15 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      hand-written fixture has `Span::DUMMY` everywhere so the key collapses without it.
    - `sort_of` still falls through to `BitVec(64)` for a *faulting* `f32` load, which is a
      narrower version of the same defect.
-   - Execution continues past a definite crash and **later findings are false**:
-     `int x; *(int*)0 = 1; return x;` reports the unreachable uninitialized read.
+   - ~~Execution continues past a definite crash~~ **DONE** (`dba99e2`, 531 tests).
+     `MemFault::is_fatal` ends the path; findings before it stay, fidelity is untouched
+     because chiero modeled the crash exactly. ⚠️ **The boundary is the whole design**: it
+     excludes `BadRange`, `AllocationTooLarge`, `SymbolicByte`, `MaybeUninitialized` and
+     `OutOfBoundsMaybe`, which are chiero's limits or *possibilities* rather than facts
+     about the program — ending a path on one would silently drop the analysis of code that
+     runs fine, which is worse than the bug this fixes. Mutation caught the quiet half:
+     dropping `OutOfBounds` from the set survived, and that is the case where continuing is
+     least visible, since nothing traps and the write is simply lost.
    - `models::scanf` applies `.skip(1)` to the *filtered* pointer list, so an unresolvable
      format argument eats the first real output pointer. Not hypothetical:
      `AddrOfGlobal`-shaped `scanf("%d", &x)` has exactly this form. It must skip argument
