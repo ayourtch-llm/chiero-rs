@@ -134,6 +134,10 @@ pub enum TermReason {
     /// 023 §8: a *documented* budget was exceeded. Findings on this state are real;
     /// absence of findings proves nothing beyond the bound.
     Budget,
+    /// The program would not have continued: a null dereference, a use-after-free, a
+    /// definite out-of-bounds access. Distinct from `Unsupported`, which is about chiero,
+    /// and from `Unreachable`, which is a claim the *CIR* made.
+    Crashed,
     /// The path met something chiero cannot follow and cannot bound — 024 contract 20's
     /// `longjmp`. Distinct from `Budget`, which is a limit chiero chose, and from
     /// `Unreachable`, which is a claim about the *program*.
@@ -1727,6 +1731,14 @@ impl<'m> Engine<'m> {
                 span,
                 "a memory access could not produce the program's value",
             );
+        }
+        // **The path ends at a definite crash.** Everything reported before it is real;
+        // everything after it would be about a program that does not exist. Fidelity is
+        // untouched — chiero modeled the crash exactly, and this is the one place where
+        // ending a path is the *precise* answer rather than a retreat.
+        if let Some(f) = faults.iter().find(|f| f.is_fatal()) {
+            s.status = Status::Terminated(TermReason::Crashed);
+            let _ = f;
         }
     }
 

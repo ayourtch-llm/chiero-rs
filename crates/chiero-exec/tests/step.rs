@@ -5844,3 +5844,68 @@ fn nothing_is_reported_after_a_definite_crash() {
         "the load never ran"
     );
 }
+
+/// **A definite out-of-bounds access ends the path too**, and this is the case where
+/// continuing is quietest: the write is simply dropped, memory keeps its old contents, and
+/// everything downstream reasons about a program that did not perform it. Nothing crashes,
+/// so nothing looks wrong.
+///
+/// The *maybe* out-of-bounds fault is deliberately not fatal — it is a possibility, not a
+/// fact, and ending the path on one would drop the analysis of code that runs fine.
+#[test]
+fn a_definite_out_of_bounds_store_ends_the_path() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 64 }),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(1)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Use(i32c(7)),
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("out-of-bounds")),
+        "{:#?}",
+        r.findings()
+    );
+    assert!(
+        r.states()[0].local(ValueId(2)).is_none(),
+        "the instruction after the write never ran"
+    );
+}

@@ -1002,6 +1002,31 @@ impl MemFault {
         }
     }
 
+    /// Whether the program **cannot continue** past this access.
+    ///
+    /// Not the same question as `yields_unknown_value`, and the two are almost complements:
+    /// that one asks whether the *value* is trustworthy, this one whether the *path* still
+    /// exists. A null dereference traps; a use-after-free or a definite out-of-bounds write
+    /// is undefined behaviour with no defined continuation, so anything chiero reports
+    /// afterwards is about a program that does not exist.
+    ///
+    /// Deliberately excludes the "chiero cannot answer" faults — `BadRange`,
+    /// `AllocationTooLarge`, `SymbolicByte`, `MaybeUninitialized`, `OutOfBoundsMaybe`. Those
+    /// are chiero's limits or *possibilities*, not facts about the program, and ending the
+    /// path on one would silently drop the analysis of code that runs fine.
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self,
+            MemFault::NullDeref { .. }
+                | MemFault::UseAfterFree { .. }
+                | MemFault::DoubleFree { .. }
+                | MemFault::UseAfterScope { .. }
+                | MemFault::OutOfBounds { .. }
+                | MemFault::BadFree { .. }
+                | MemFault::WildPointer { .. }
+        )
+    }
+
     /// Whether the value this access produced is **not the program's**.
     ///
     /// The distinction matters for fidelity: a null dereference or a bad free is a
