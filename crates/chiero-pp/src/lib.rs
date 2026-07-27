@@ -3,7 +3,9 @@
 use chiero_lex::{EncPrefix, LexConfig, LexSession, PpToken, PpTokenKind, Punct, Symbol};
 use chiero_span::{ExpnCtx, ExpnKind, FileId, MacroId, SourceMap, Span};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigId(pub u64);
@@ -104,6 +106,125 @@ pub fn preprocess_str(path: impl AsRef<Path>, src: &str, config: Config) -> Prep
     Engine::new(path.as_ref(), src, config).run()
 }
 
+pub trait FileLoader {
+    fn load(&mut self, path: &Path) -> io::Result<String>;
+}
+
+pub fn preprocess_with_loader<L: FileLoader>(
+    path: impl AsRef<Path>,
+    src: &str,
+    config: Config,
+    loader: &mut L,
+) -> PreprocessedTu {
+    let mut state = IncludeState::default();
+    let combined = expand_includes(path.as_ref(), src, loader, &mut state);
+    let mut tu = Engine::new(path.as_ref(), &combined, config).run();
+    for (dep_path, dep_src) in state.loaded {
+        let file = tu.source_map.add_file(dep_path, dep_src);
+        tu.deps.push(file);
+    }
+    tu.diagnostics.extend(state.diagnostics);
+    tu
+}
+
+#[derive(Default)]
+struct IncludeState {
+    macros: BTreeMap<String, String>,
+    guards: BTreeMap<PathBuf, String>,
+    once: BTreeSet<PathBuf>,
+    loaded: Vec<(PathBuf, String)>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn expand_includes<L: FileLoader>(
+    current: &Path,
+    src: &str,
+    loader: &mut L,
+    state: &mut IncludeState,
+) -> String {
+    let mut output = String::new();
+    for line in src.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("#define ") {
+            let mut parts = rest.trim().splitn(2, char::is_whitespace);
+            if let Some(name) = parts.next() {
+                state
+                    .macros
+                    .insert(name.into(), parts.next().unwrap_or("").trim().into());
+            }
+            output.push_str(line);
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("#undef ") {
+            state.macros.remove(rest.trim());
+            output.push_str(line);
+            continue;
+        }
+        if trimmed.starts_with("#pragma once") {
+            state.once.insert(current.to_path_buf());
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("#include ") else {
+            output.push_str(line);
+            continue;
+        };
+        let mut header = rest.trim();
+        if !header.starts_with('"')
+            && let Some(expanded) = state.macros.get(header)
+        {
+            header = expanded;
+        }
+        let Some(name) = header.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+            state.diagnostics.push(Diagnostic {
+                span: Span::DUMMY,
+                message: format!("invalid computed include: {header}"),
+            });
+            continue;
+        };
+        let parent = current.parent().unwrap_or_else(|| Path::new(""));
+        let resolved = parent.join(name);
+        if state.once.contains(&resolved)
+            || state
+                .guards
+                .get(&resolved)
+                .is_some_and(|guard| state.macros.contains_key(guard))
+        {
+            continue;
+        }
+        match loader.load(&resolved) {
+            Ok(included) => {
+                if let Some(guard) = detect_guard(&included) {
+                    state.guards.insert(resolved.clone(), guard);
+                }
+                if included.lines().any(|line| line.trim() == "#pragma once") {
+                    state.once.insert(resolved.clone());
+                }
+                state.loaded.push((resolved.clone(), included.clone()));
+                output.push_str(&expand_includes(&resolved, &included, loader, state));
+            }
+            Err(error) => state.diagnostics.push(Diagnostic {
+                span: Span::DUMMY,
+                message: format!("cannot include {}: {error}", resolved.display()),
+            }),
+        }
+    }
+    output
+}
+
+fn detect_guard(src: &str) -> Option<String> {
+    let mut directives = src.lines().map(str::trim).filter(|line| !line.is_empty());
+    let guard = directives.next()?.strip_prefix("#ifndef ")?.trim();
+    let defined = directives.next()?.strip_prefix("#define ")?.trim();
+    (guard == defined).then(|| guard.to_owned())
+}
+
+#[derive(Copy, Clone)]
+struct Conditional {
+    parent_active: bool,
+    active: bool,
+    taken: bool,
+}
+
 struct Engine {
     config: Config,
     source_map: SourceMap,
@@ -120,11 +241,9 @@ impl Engine {
         let mut source_map = SourceMap::new();
         let file = source_map.add_file(path, src);
         let lexed = LexSession::new().lex(&source_map, file, LexConfig::default());
-        let mut diagnostics = Vec::new();
-        diagnostics.extend(lexed.diagnostics().iter().map(|d| Diagnostic {
-            span: d.span,
-            message: d.message.clone(),
-        }));
+        // 012 contract 10: inactive branches are lexed but not analyzed. Lexer
+        // diagnostics cannot be promoted until conditional activity is known.
+        let diagnostics = Vec::new();
         let input = lexed
             .tokens()
             .iter()
@@ -158,7 +277,8 @@ impl Engine {
     }
 
     fn run(mut self) -> PreprocessedTu {
-        let mut ordinary = Vec::new();
+        let mut output = Vec::new();
+        let mut conditionals = Vec::new();
         let mut i = 0;
         while i < self.input.len() {
             let end = (i + 1..self.input.len())
@@ -168,15 +288,14 @@ impl Engine {
             if line.first().is_some_and(|t| {
                 t.token.bol && matches!(t.token.kind, PpTokenKind::Punct(Punct::Hash))
             }) {
-                self.directive(&line);
-            } else {
-                ordinary.extend(line);
+                self.directive(&line, &mut conditionals);
+            } else if conditionals.last().is_none_or(|frame| frame.active) {
+                output.extend(self.expand(line));
             }
             i = end;
         }
-        let expanded = self.expand(ordinary);
-        let tokens = expanded.iter().map(|t| t.token.clone()).collect();
-        let spellings = expanded.into_iter().map(|t| t.text).collect();
+        let tokens = output.iter().map(|t| t.token.clone()).collect();
+        let spellings = output.into_iter().map(|t| t.text).collect();
         PreprocessedTu {
             tokens,
             source_map: self.source_map,
@@ -210,8 +329,56 @@ impl Engine {
         self.by_name.insert(name.into(), index);
     }
 
-    fn directive(&mut self, line: &[Tok]) {
-        match line.get(1).map(|t| t.text.as_str()) {
+    fn directive(&mut self, line: &[Tok], conditionals: &mut Vec<Conditional>) {
+        let directive = line.get(1).map(|t| t.text.as_str());
+        let active = conditionals.last().is_none_or(|frame| frame.active);
+        match directive {
+            Some("if") => {
+                let parent_active = active;
+                let value = parent_active && self.eval_if(&line[2..]);
+                conditionals.push(Conditional {
+                    parent_active,
+                    active: value,
+                    taken: value,
+                });
+            }
+            Some("ifdef" | "ifndef") => {
+                let parent_active = active;
+                let defined = line
+                    .get(2)
+                    .is_some_and(|name| self.by_name.contains_key(&name.text));
+                let value = parent_active
+                    && if directive == Some("ifdef") {
+                        defined
+                    } else {
+                        !defined
+                    };
+                conditionals.push(Conditional {
+                    parent_active,
+                    active: value,
+                    taken: value,
+                });
+            }
+            Some("elif") => {
+                let should_eval = conditionals
+                    .last()
+                    .is_some_and(|frame| frame.parent_active && !frame.taken);
+                let value = should_eval && self.eval_if(&line[2..]);
+                if let Some(frame) = conditionals.last_mut() {
+                    frame.active = value;
+                    frame.taken |= value;
+                }
+            }
+            Some("else") => {
+                if let Some(frame) = conditionals.last_mut() {
+                    frame.active = frame.parent_active && !frame.taken;
+                    frame.taken = true;
+                }
+            }
+            Some("endif") => {
+                conditionals.pop();
+            }
+            _ if !active => {}
             Some("define") => self.define(line),
             Some("undef") => {
                 if let Some(name) = line.get(2)
@@ -220,12 +387,43 @@ impl Engine {
                     self.macros[index].def.undef_span = Some(name.token.span);
                 }
             }
+            Some("pragma") => {}
             Some(other) => self.diagnostics.push(Diagnostic {
                 span: line[1].token.span,
                 message: format!("unsupported preprocessing directive #{other}"),
             }),
             None => {}
         }
+    }
+
+    fn eval_if(&mut self, tokens: &[Tok]) -> bool {
+        let mut prepared = Vec::new();
+        let mut i = 0;
+        while i < tokens.len() {
+            if tokens[i].text == "defined" {
+                let parenthesized = tokens.get(i + 1).is_some_and(|t| t.text == "(");
+                let name_index = i + if parenthesized { 2 } else { 1 };
+                let value = tokens
+                    .get(name_index)
+                    .is_some_and(|name| self.by_name.contains_key(&name.text));
+                prepared.push(synthetic_number(
+                    if value { "1" } else { "0" },
+                    tokens[i].token.span,
+                ));
+                i = name_index + if parenthesized { 2 } else { 1 };
+            } else {
+                prepared.push(tokens[i].clone());
+                i += 1;
+            }
+        }
+        let expanded = self.expand(prepared);
+        let mut parser = ExprParser {
+            tokens: &expanded,
+            pos: 0,
+            diagnostics: &mut self.diagnostics,
+            pedantic: self.config.pedantic,
+        };
+        parser.logical_or(true) != 0
     }
 
     fn define(&mut self, line: &[Tok]) {
@@ -694,5 +892,181 @@ fn classify_paste(text: &str) -> PpTokenKind {
         PpTokenKind::Number
     } else {
         PpTokenKind::Ident(Symbol(0))
+    }
+}
+
+fn synthetic_number(text: &str, at: Span) -> Tok {
+    Tok {
+        token: PpToken {
+            kind: PpTokenKind::Number,
+            span: at,
+            leading_space: false,
+            bol: false,
+        },
+        text: text.into(),
+        hide: BTreeSet::new(),
+    }
+}
+
+struct ExprParser<'a> {
+    tokens: &'a [Tok],
+    pos: usize,
+    diagnostics: &'a mut Vec<Diagnostic>,
+    pedantic: bool,
+}
+
+impl ExprParser<'_> {
+    fn logical_or(&mut self, live: bool) -> i128 {
+        let mut left = self.logical_and(live);
+        while self.take("||") {
+            let right = self.logical_and(live && left == 0);
+            left = i128::from(left != 0 || right != 0);
+        }
+        left
+    }
+
+    fn logical_and(&mut self, live: bool) -> i128 {
+        let mut left = self.equality(live);
+        while self.take("&&") {
+            let right = self.equality(live && left != 0);
+            left = i128::from(left != 0 && right != 0);
+        }
+        left
+    }
+
+    fn equality(&mut self, live: bool) -> i128 {
+        let mut left = self.relational(live);
+        loop {
+            if self.take("==") {
+                left = i128::from(left == self.relational(live));
+            } else if self.take("!=") {
+                left = i128::from(left != self.relational(live));
+            } else {
+                return left;
+            }
+        }
+    }
+
+    fn relational(&mut self, live: bool) -> i128 {
+        let mut left = self.additive(live);
+        loop {
+            if self.take("<") {
+                left = i128::from(left < self.additive(live));
+            } else if self.take(">") {
+                left = i128::from(left > self.additive(live));
+            } else if self.take("<=") {
+                left = i128::from(left <= self.additive(live));
+            } else if self.take(">=") {
+                left = i128::from(left >= self.additive(live));
+            } else {
+                return left;
+            }
+        }
+    }
+
+    fn additive(&mut self, live: bool) -> i128 {
+        let mut left = self.multiplicative(live);
+        loop {
+            if self.take("+") {
+                left = left.wrapping_add(self.multiplicative(live));
+            } else if self.take("-") {
+                left = left.wrapping_sub(self.multiplicative(live));
+            } else {
+                return left;
+            }
+        }
+    }
+
+    fn multiplicative(&mut self, live: bool) -> i128 {
+        let mut left = self.unary(live);
+        loop {
+            if self.take("*") {
+                left = left.wrapping_mul(self.unary(live));
+            } else if self.take("/") {
+                let operator = self.tokens.get(self.pos.saturating_sub(1));
+                let right = self.unary(live);
+                if right == 0 {
+                    if live {
+                        self.diagnostics.push(Diagnostic {
+                            span: operator.map_or(Span::DUMMY, |t| t.token.span),
+                            message: "division by zero in #if".into(),
+                        });
+                    }
+                    left = 0;
+                } else {
+                    left = left.wrapping_div(right);
+                }
+            } else if self.take("%") {
+                let operator = self.tokens.get(self.pos.saturating_sub(1));
+                let right = self.unary(live);
+                if right == 0 {
+                    if live {
+                        self.diagnostics.push(Diagnostic {
+                            span: operator.map_or(Span::DUMMY, |t| t.token.span),
+                            message: "modulo by zero in #if".into(),
+                        });
+                    }
+                    left = 0;
+                } else {
+                    left = left.wrapping_rem(right);
+                }
+            } else {
+                return left;
+            }
+        }
+    }
+
+    fn unary(&mut self, live: bool) -> i128 {
+        if self.take("!") {
+            return i128::from(self.unary(live) == 0);
+        }
+        if self.take("-") {
+            return self.unary(live).wrapping_neg();
+        }
+        if self.take("+") {
+            return self.unary(live);
+        }
+        self.primary(live)
+    }
+
+    fn primary(&mut self, live: bool) -> i128 {
+        if self.take("(") {
+            let value = self.logical_or(live);
+            self.take(")");
+            return value;
+        }
+        let Some(token) = self.tokens.get(self.pos) else {
+            return 0;
+        };
+        self.pos += 1;
+        if matches!(token.token.kind, PpTokenKind::Ident(_)) {
+            if live && self.pedantic {
+                self.diagnostics.push(Diagnostic {
+                    span: token.token.span,
+                    message: format!("undefined identifier `{}` in #if", token.text),
+                });
+            }
+            return 0;
+        }
+        let digits = token
+            .text
+            .trim_end_matches(|ch: char| ch.is_ascii_alphabetic());
+        if let Some(hex) = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
+            i128::from_str_radix(hex, 16).unwrap_or(0)
+        } else {
+            digits.parse().unwrap_or(0)
+        }
+    }
+
+    fn take(&mut self, text: &str) -> bool {
+        if self.tokens.get(self.pos).is_some_and(|t| t.text == text) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
 }

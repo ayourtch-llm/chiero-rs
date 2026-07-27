@@ -4,8 +4,9 @@
 
 - 011 contracts 1–14: implemented and tested. The 50 MB throughput assertion is an
   explicit ignored release-mode performance gate; it passed on the reference machine.
-- 012 contracts 1–9, 15, 18, 19: implemented and tested.
-- 012 contracts 10–14, 16, 17: pending directives, includes, and corpus work.
+- 012 contracts 1–19: implemented and cited by tests. Contract 17's external
+  `compile_commands.json` smoke test is explicit but ignored because this checkout has
+  no VPP build directory or compilation database.
 
 ## Findings
 
@@ -14,6 +15,11 @@
 - `chiero-span::SourceFile` does not expose the splice-position list described by 011
   §2.2. `chiero-lex` therefore keeps a private physical-to-logical mapping while lexing
   and a spelling side table in `LexedFile`; no shared API addition is required yet.
+- `/home/ubuntu/vpp/build-root/compile_commands.json` does not exist, and `find
+  /home/ubuntu/vpp -name compile_commands.json` returns no alternatives. Contract 17's
+  full configured-TU regression metric therefore cannot run in this environment.
+- A representative macro/conditional/builtin fixture is compared token-for-token with
+  both `gcc -E -P` and `clang -E -P`; all three agree.
 
 ## Mutation checks
 
@@ -23,3 +29,5 @@
   fail before its timing assertion.
 - Substituting raw arguments at ordinary parameter uses changed `xstr(__LINE__)` to
   `"__LINE__"`; the contract-4 test expected `"3"` and failed.
+- Evaluating the right side of a false `&&` as live made `#if 0 && 1/0` diagnose;
+  the contract-11 short-circuit test failed.

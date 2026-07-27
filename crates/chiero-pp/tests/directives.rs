@@ -55,8 +55,10 @@ fn defined_and_unknown_identifiers_evaluate_false() {
     assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["good"]);
     assert!(tu.diagnostics.is_empty());
 
-    let mut config = Config::default();
-    config.pedantic = true;
+    let config = Config {
+        pedantic: true,
+        ..Config::default()
+    };
     let pedantic = preprocess_str("fixture.c", "#if UNKNOWN\nbad\n#endif\n", config);
     assert_eq!(pedantic.diagnostics.len(), 1);
 }
