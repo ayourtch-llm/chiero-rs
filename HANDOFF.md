@@ -691,8 +691,15 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      specifically about `AllocaDyn::count` and nothing exercises it. Same shape for rules
      5/6/7/11, each pinned at one call site. `va_list` operands are never pointer-checked
      at all. One table-driven test per operand position kills ~25 survivors.
-   - **The round-trip fixture supplies the identity/default value for nearly every scalar
-     field**, so printer and parser can drop or invert a field *in lockstep* and the
+   - ~~**The round-trip fixture supplies the identity/default value for nearly every
+     scalar field**~~ DONE (`afd29da`, 178 tests): `tests/roundtrip_property.rs` generates
+     random modules with a distinct non-default value in every field and asserts
+     *structural* equality, plus a guard test on the generator itself. It found a missed
+     `AllocaDecl::span` in the span commit on its first run. **One correction to the
+     finding:** a *symmetric* inversion (printer and parser both transposing a pair)
+     round-trips by construction and **no** round-trip test can see it — transposing
+     `BitRange` is caught only because the verifier rejects the result. Encoding symmetry
+     needs an independent oracle. Original finding text:, so printer and parser can drop or invert a field *in lockstep* and the
      byte-exact round trip still passes. `vacopy`'s src/dst can be swapped on both sides
      and nothing notices. The variant-coverage guard measures variant *reachability*, not
      field *fidelity*. A second fixture with distinct non-default values everywhere, or a
