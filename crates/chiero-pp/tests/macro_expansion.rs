@@ -3,6 +3,7 @@
 use chiero_pp::{Config, ConfigId, preprocess_str};
 use chiero_span::TokenOrigin;
 use std::collections::BTreeSet;
+use std::process::Command;
 
 fn texts(src: &str) -> Vec<String> {
     let tu = preprocess_str("fixture.c", src, Config::default());
@@ -258,4 +259,33 @@ fn deterministic_context_numbering_covers_nested_user_macros() {
             >= 4,
         "fixture must exercise nested and repeated user expansion contexts"
     );
+}
+
+#[test]
+fn expansion_chain_child() {
+    if std::env::var_os("CHIERO_DEEP_EXPANSION_CHILD").is_none() {
+        return;
+    }
+    let mut src = String::new();
+    for index in 0..20_000 {
+        src.push_str(&format!("#define M{index} M{}\n", index + 1));
+    }
+    src.push_str("M0\n");
+    let tu = preprocess_str("deep.c", &src, Config::default());
+    assert!(
+        tu.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expansion depth")),
+        "a bounded expansion must explain why it stopped"
+    );
+}
+
+#[test]
+fn deep_macro_chain_does_not_abort_the_process() {
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "expansion_chain_child"])
+        .env("CHIERO_DEEP_EXPANSION_CHILD", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "deep expansion child aborted: {status}");
 }
