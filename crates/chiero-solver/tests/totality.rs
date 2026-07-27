@@ -122,8 +122,11 @@ fn no_zero_case_is_an_error() {
         Some(b) => TieredSolver::with_backend(b),
         None => TieredSolver::new(),
     };
+    // **`Sat`, not "anything but `Unsat`".** The weaker form is satisfied by `Unknown`,
+    // which is what a run with no backend installed returns — so it passed without ever
+    // testing what its message claimed. Found by review.
     assert!(
-        !matches!(s.check(&mut a, &[eq]), CheckResult::Unsat),
+        matches!(s.check(&mut a, &[eq]), CheckResult::Sat(_)),
         "`y / 0 == 0xff` holds for every y, so it is satisfiable"
     );
 }
@@ -136,7 +139,10 @@ fn no_zero_case_is_an_error() {
 /// an *unparseable* one has to be pinned rather than assumed.
 #[test]
 fn a_backend_emitting_garbage_is_an_error_not_an_answer() {
-    let dir = std::env::temp_dir().join("chiero-garbage-backend");
+    // A path unique to this process: a fixed shared one races two concurrent runs of the
+    // suite against each other, and the loser reads a half-written script. Found by
+    // review.
+    let dir = std::env::temp_dir().join(format!("chiero-garbage-backend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let script = dir.join("garbage.sh");
     std::fs::write(&script, "#!/bin/sh\necho 'not an smt answer'\nexit 0\n").expect("write");
@@ -171,3 +177,12 @@ fn a_backend_emitting_garbage_is_an_error_not_an_answer() {
         "tier 1 still decides what it could decide before"
     );
 }
+
+// ⚠️ **Owed: contract 15's other two causes.** `backend_errors` documents itself as
+// counting three things — unparseable output, a model that failed independent evaluation,
+// and a dead process — and only the first is pinned here, so dropping the increment on
+// the second passes the whole suite (review demonstrated it). Testing it needs a backend
+// that speaks the SMT-LIB session protocol correctly and *lies* — answers `sat` with a
+// model that does not satisfy the query — and a first attempt with a shell script hung,
+// because a fake that does not answer every command exactly is indistinguishable from a
+// slow one. The honest note is better than the test that was going to be written badly.

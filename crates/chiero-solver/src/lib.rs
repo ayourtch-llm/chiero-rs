@@ -233,11 +233,29 @@ pub struct TermArena {
     nodes: Vec<Node>,
     interned: IndexMap<Node, Term>,
     vars: Vec<(String, Sort)>,
+    /// See [`TermArena::id`]. Assigned on first use, never reused within the process.
+    id: std::cell::Cell<u64>,
 }
 
 impl TermArena {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A process-unique identity for this arena.
+    ///
+    /// §6.2 says caches are per-`TermArena`, and a `Term` is a bare index into one — so a
+    /// cache holding ids from arena A must be able to notice arena B. Nothing else needs
+    /// this; it exists so the solver can refuse rather than answer confidently about
+    /// terms it has never seen. Assigned lazily so `Default` stays derivable and an arena
+    /// nobody asks about costs nothing.
+    pub fn id(&self) -> u64 {
+        if self.id.get() == 0 {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            self.id
+                .set(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        }
+        self.id.get()
     }
 
     fn intern(&mut self, n: Node) -> Term {
@@ -1712,6 +1730,10 @@ pub struct TieredSolver {
     ///   so a lookup costs time proportional to the *query* rather than to the cache.
     ///   §6 requires this: without it, the rules are correct and quadratic, and contracts
     ///   10–11 are specified at ≥1000 entries precisely to keep the scale honest.
+    ///
+    /// `arena` is which `TermArena` those ids belong to (§6.2) — see
+    /// `counterexample_cache` for why a cache of bare indices has to know.
+    arena: Option<u64>,
     sat_sets: Vec<(Vec<u32>, Model)>,
     unsat_sets: Vec<Vec<u32>>,
     containing: IndexMap<u32, Vec<CacheSlot>>,
@@ -1729,8 +1751,6 @@ impl TieredSolver {
         }
     }
 
-    /// Send every tier-1 answer to tier 2 as well and assert agreement (022 §6).
-    /// Too slow for production, mandatory in CI.
     /// 022 §6's counterexample cache. `None` means "ask someone else".
     ///
     /// Every rule here is an implication about *sets*, and each is one line to justify:
@@ -1741,6 +1761,24 @@ impl TieredSolver {
     fn counterexample_cache(&mut self, a: &mut TermArena, all: &[Term]) -> Option<CheckResult> {
         if all.is_empty() {
             return None;
+        }
+        // **The arena has to be the one the ids came from** (§6.2: "caches are
+        // per-`TermArena`"). `check` takes an arena per call and every key is a bare
+        // `Term` id, so a second arena's `Term(3)` is a different term with the same
+        // name — and the subset rules turn that from an exact-collision hazard into a
+        // subset one. Found by review; latent today because `Engine::run` consumes the
+        // engine, and cheap to keep impossible.
+        match self.arena {
+            Some(id) if id == a.id() => {}
+            Some(_) => {
+                self.sat_sets.clear();
+                self.unsat_sets.clear();
+                self.containing.clear();
+                self.cache.clear();
+                self.arena = Some(a.id());
+                return None;
+            }
+            None => self.arena = Some(a.id()),
         }
         let mut want: Vec<u32> = all.iter().map(|t| t.0).collect();
         want.sort_unstable();
@@ -1760,8 +1798,14 @@ impl TieredSolver {
         cand.sort_unstable();
         cand.dedup();
 
-        // Rule: a **superset** of a known-`Unsat` set is `Unsat`.
-        for c in cand.iter().filter(|c| !c.sat) {
+        // Rule: a **superset** of a known-`Unsat` set is `Unsat`. Capped for the same
+        // reason as the sat side, and the subset test is cheap enough that the cap is
+        // generous.
+        for c in cand
+            .iter()
+            .filter(|c| !c.sat)
+            .take(Self::MAX_CANDIDATES * 8)
+        {
             let set = &self.unsat_sets[c.idx];
             if set.iter().all(|id| want.binary_search(id).is_ok()) {
                 return Some(CheckResult::Unsat);
@@ -1773,7 +1817,14 @@ impl TieredSolver {
         // first, and both are settled by *evaluating* the model rather than by trusting
         // the set relation — which is what keeps a returned model honest about the query
         // it is returned for.
-        for c in cand.iter().filter(|c| c.sat) {
+        //
+        // **Bounded evaluation.** Sibling states share long path-condition prefixes by
+        // design (023 §1), so a shared term puts *every* cached set in `containing[id]`
+        // and the index that made enumeration cheap does nothing for evaluation. Measured
+        // before this cap: 14.7 s for 1000 states against 0.13 s with the lookup removed,
+        // roughly cubic — on an engine that budgets 10 000 live states. A miss costs one
+        // backend call; an unbounded scan costs the run. Found by review.
+        for c in cand.iter().filter(|c| c.sat).take(Self::MAX_CANDIDATES) {
             let m = &self.sat_sets[c.idx].1;
             if all
                 .iter()
@@ -1785,7 +1836,24 @@ impl TieredSolver {
         None
     }
 
+    /// How many cached sets a lookup may evaluate before giving up and asking a backend.
+    const MAX_CANDIDATES: usize = 32;
+
+    /// How many sets of each kind the counterexample cache holds. §6.2: "the
+    /// counterexample cache is bounded by a documented entry count with LRU eviction — it
+    /// is a known memory hog in KLEE, and 'cleared with the arena' is not a policy."
+    /// A `Model` per satisfiable set is the memory here, so the number is modest.
+    const MAX_SETS: usize = 4096;
+
     /// Record a decided set in the subsumption index.
+    ///
+    /// ⚠️ **This becomes coupled to §6.1 the moment slicing lands.** Today every stored
+    /// set is a full assertion set, so the superset rule is monotone and correct whatever
+    /// produced the contradiction — which is why `possibly_infeasible` being unimplemented
+    /// is not an unsoundness yet. With slicing, `remember` would be storing *components*,
+    /// and a component-level `Unsat` applied to a full query is exactly what §6.1 forbids:
+    /// "while it is set, slicing and the subset/superset cache rules are disabled". The
+    /// next wave will not see that coupling unless it is written here.
     fn remember(&mut self, ids: Vec<u32>, model: Option<Model>) {
         // **The slot carries which vector it indexes.** A bare `usize` made entry 3 of
         // `sat_sets` and entry 3 of `unsat_sets` the same candidate, so a query could be
@@ -1804,8 +1872,22 @@ impl TieredSolver {
             Some(m) => self.sat_sets.push((ids, m)),
             None => self.unsat_sets.push(ids),
         }
+        // **Eviction is wholesale, not least-recently-used.** `CacheSlot` is a positional
+        // index into these vectors, so dropping one entry would invalidate every slot
+        // after it in `containing`; a true LRU needs stable ids, which is a bigger change
+        // than this bound is worth. Clearing at the bound keeps the memory claim honest
+        // and loses only speed — every rule is a *shortcut*, never the only route to an
+        // answer. §6.2 asks for a documented entry count with eviction; this is the
+        // count, and the eviction is documented as the blunt one it is.
+        if self.sat_sets.len() > Self::MAX_SETS || self.unsat_sets.len() > Self::MAX_SETS {
+            self.sat_sets.clear();
+            self.unsat_sets.clear();
+            self.containing.clear();
+        }
     }
 
+    /// Send every tier-1 answer to tier 2 as well and assert agreement (022 §6).
+    /// Too slow for production, mandatory in CI.
     pub fn set_paranoid(&mut self, on: bool) {
         self.paranoid = on;
     }
@@ -1971,10 +2053,6 @@ impl Solver for TieredSolver {
                 None => CheckResult::Unsat,
             };
         }
-        if let Some(r) = self.counterexample_cache(a, &all) {
-            return r;
-        }
-
         let mut lite = SolverLite::new();
         for t in &all {
             lite.assert(*t);
@@ -1984,6 +2062,15 @@ impl Solver for TieredSolver {
         let decided = match &tier1 {
             CheckResult::Unknown(_) => {
                 self.stats.tier1_unknown += 1;
+                // **The counterexample cache sits between the tiers, not above them.**
+                // Above tier 1 it could answer a query tier 1 decides — including one
+                // outside §3.2's fragment, where it was assigning a truth value to a
+                // non-predicate term that both tiers would have refused. §6 puts the
+                // caches "below escalation"; this is that, one level finer. Found by
+                // review.
+                if let Some(r) = self.counterexample_cache(a, &all) {
+                    return r;
+                }
                 match self.ask_backend(a, &all) {
                     Some(r) => r,
                     None => tier1,

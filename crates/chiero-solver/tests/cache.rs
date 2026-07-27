@@ -12,12 +12,16 @@
 //! All of them are tested at **≥1000 cached entries**, as §6 requires in as many words:
 //! "at 1 entry they pass against an implementation that remembers only the last query".
 //!
-//! ⚠️ Two traps this file exists to avoid. Every constraint here is **nonlinear**, so
-//! tier 1 returns `Unknown` and a backend call is what a cache miss looks like — over
-//! linear constraints tier 1 answers everything and `backend_calls` stays at zero whether
-//! the cache works or not. And terms are *reused* rather than rebuilt: `TermArena::var`
-//! mints a fresh `VarId` per call, so two `var(BitVec(32), "x0")` are two variables and a
-//! "contradiction" built that way is satisfiable.
+//! ⚠️ Three traps this file exists to avoid. Every constraint a rule is *measured* on is
+//! **nonlinear**, so tier 1 returns `Unknown` and a backend call is what a cache miss
+//! looks like — over linear constraints tier 1 answers everything and `backend_calls`
+//! stays at zero whether the cache works or not. (The thousand *filler* constraints are
+//! linear on purpose, for speed; an earlier version of this header claimed every
+//! constraint was nonlinear, which was false of about 99% of them.) Terms are *reused*
+//! rather than rebuilt: `TermArena::var` mints a fresh `VarId` per call, so two
+//! `var(BitVec(32), "x0")` are two variables and a "contradiction" built that way is
+//! satisfiable. And `fill` runs **between** the decisive query and the lookup, or a cache
+//! that remembers only the last query passes every one of these.
 
 use chiero_solver::*;
 
@@ -47,6 +51,11 @@ fn solver() -> Option<TieredSolver> {
 
 /// A thousand distinct entries, so no rule below can pass against a memory of one query.
 ///
+/// **Call this between the decisive query and the lookup, not before it.** Filling first
+/// leaves the decisive set as the most recently remembered one, so an implementation that
+/// keeps only the last query passes — which is the exact implementation §6.2 names when it
+/// asks for ≥1000 entries. Review demonstrated that mutant surviving. Found by review.
+///
 /// The filler constraints are **linear** on purpose: tier 1 decides them, so filling the
 /// cache costs no backend calls and the file runs in a second rather than a minute. What
 /// they have to be is *many and distinct*; what the measured queries have to be is hard.
@@ -74,9 +83,9 @@ fn a_subset_of_a_satisfiable_set_is_satisfiable_with_no_backend_call() {
     };
     let mut a = TermArena::new();
     let (cs, _prods) = hard_constraints(&mut a, 64);
-    fill(&mut s, &mut a);
     let big: Vec<Term> = cs.clone();
     assert!(matches!(s.check(&mut a, &big), CheckResult::Sat(_)));
+    fill(&mut s, &mut a);
 
     let before = s.stats().backend_calls;
     for lo in [0usize, 7, 31] {
@@ -105,7 +114,6 @@ fn a_superset_of_an_unsatisfiable_set_is_unsatisfiable_but_a_subset_is_not() {
     };
     let mut a = TermArena::new();
     let (cs, _prods) = hard_constraints(&mut a, 64);
-    fill(&mut s, &mut a);
 
     // `x * y == 7` with both factors below 2: the products are 0 and 1, never 7.
     let x = a.var(Sort::BitVec(32), "px");
@@ -121,6 +129,7 @@ fn a_superset_of_an_unsatisfiable_set_is_unsatisfiable_but_a_subset_is_not() {
         matches!(s.check(&mut a, &contradiction), CheckResult::Unsat),
         "the fixture must actually be unsatisfiable"
     );
+    fill(&mut s, &mut a);
 
     let before = s.stats().backend_calls;
     let superset = [prod, xs, ys, cs[5], cs[9]];
@@ -154,10 +163,10 @@ fn a_cached_model_that_satisfies_a_new_query_answers_it() {
     };
     let mut a = TermArena::new();
     let (cs, prods) = hard_constraints(&mut a, 64);
-    fill(&mut s, &mut a);
 
     // A set whose model pins the first sixteen pairs…
     assert!(matches!(s.check(&mut a, &cs[..16]), CheckResult::Sat(_)));
+    fill(&mut s, &mut a);
     let before = s.stats().backend_calls;
     // …and a query that is *not* a subset of it: a fresh constraint about the same
     // variables that the model in hand already satisfies. `x3 * y3 == 7` and
@@ -224,5 +233,96 @@ fn a_cached_model_that_fails_the_query_is_not_used_as_an_answer() {
     assert!(
         matches!(s.check(&mut a, &[cs[3], other]), CheckResult::Unsat),
         "7 and 8 are not the same number"
+    );
+}
+
+/// **The sat rule's soundness rests entirely on `eval` being total-or-error**, and
+/// nothing here held that in place: in every other fixture the candidate model covers the
+/// whole query, so "the model says nothing about this variable" never happens. Two
+/// mutations that treat an eval *error* as satisfied survived the whole suite, and both
+/// return `Sat` for an unsatisfiable query. Found by review.
+///
+/// The query has to be one **tier 1 cannot decide** — the cache sits below tier 1, so a
+/// contradiction tier 1 sees never reaches it — and has to share a term with a cached set,
+/// or there is no candidate to mis-evaluate.
+#[test]
+fn a_variable_the_cached_model_does_not_assign_is_not_treated_as_satisfied() {
+    let Some(mut s) = solver() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let (cs, _) = hard_constraints(&mut a, 4);
+    assert!(matches!(s.check(&mut a, &cs[0..=0]), CheckResult::Sat(_)));
+
+    // `u * v == 7 ∧ u <u 2 ∧ v <u 2` — unsatisfiable, and nonlinear so tier 1 cannot say
+    // so. `u` and `v` appear in no cached set, so the model of `cs[0]` has no value for
+    // them; an implementation reading "no value" as "satisfied" answers `Sat` for a
+    // contradiction, and `cs[0]` in the query is what makes that model a candidate.
+    let u = a.var(Sort::BitVec(32), "u");
+    let v = a.var(Sort::BitVec(32), "v");
+    let p = a.mul(u, v);
+    let seven = a.bv(32, 7);
+    let two = a.bv(32, 2);
+    let prod = a.eq(p, seven);
+    let us = a.ult(u, two);
+    let vs = a.ult(v, two);
+    assert!(
+        matches!(s.check(&mut a, &[cs[0], prod, us, vs]), CheckResult::Unsat),
+        "the products of 0 and 1 are 0 and 1, whatever the cached model says about x0"
+    );
+}
+
+/// **The assertion stack is part of the query.** Every other test here calls `check` with
+/// an empty stack, so two mutations survived: one where the cache looks at the assumptions
+/// alone — answering from a set that says nothing about what the stack constrains — and
+/// one where `remember` stores only the assumption ids, so an `Unsat` proved *under* a
+/// stack is recorded against a subset of what actually conflicted and the superset rule
+/// then answers `Unsat` for that subset alone. The second is the catastrophic direction.
+/// Found by review.
+#[test]
+fn the_assertion_stack_is_part_of_what_the_cache_remembers_and_answers() {
+    let Some(mut s) = solver() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "sx");
+    let y = a.var(Sort::BitVec(32), "sy");
+    let p = a.mul(x, y);
+    let seven = a.bv(32, 7);
+    let two = a.bv(32, 2);
+    let prod = a.eq(p, seven);
+    let xs = a.ult(x, two);
+    let ys = a.ult(y, two);
+
+    // Warm the cache with `{prod}` satisfiable, so there is a model to answer from.
+    assert!(matches!(s.check(&mut a, &[prod]), CheckResult::Sat(_)));
+
+    // Under a stack that bounds both factors, the same assumption is unsatisfiable.
+    // Reading the assumption alone finds the cached model and answers `Sat`.
+    s.push();
+    s.assert(xs);
+    s.assert(ys);
+    assert!(
+        matches!(s.check(&mut a, &[prod]), CheckResult::Unsat),
+        "the stack constrains the query asked under it"
+    );
+
+    // Pop it. The set that was unsatisfiable was `{prod, xs, ys}`; `prod` alone is
+    // satisfiable, and a cache that recorded the contradiction against `prod` only
+    // answers `Unsat` here — for a query it has already answered `Sat` once.
+    s.pop(1);
+    // **A query the exact cache has not seen**, or it answers from the earlier `Sat` and
+    // the counterexample cache is never consulted — which is what let this mutant live
+    // through the first version of this test. `prod` plus an unrelated satisfiable
+    // constraint is a *superset* of `{prod}`, so a contradiction recorded against `prod`
+    // alone fires the superset rule here.
+    let z = a.var(Sort::BitVec(32), "sz");
+    let three = a.bv(32, 3);
+    let other = a.eq(z, three);
+    assert!(
+        matches!(s.check(&mut a, &[prod, other]), CheckResult::Sat(_)),
+        "x * y == 7 has solutions once the bounds are gone, and z == 3 does not change it"
     );
 }
