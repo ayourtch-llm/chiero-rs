@@ -68,6 +68,11 @@ fn review_torture_matrix_matches_both_compilers() {
         ),
         ("char-if", "#if 'A' == 65\nyes\n#endif\n"),
         (
+            "escaped-char-if",
+            "#if '\\x41' == 65 && '\\101' == 65\nyes\n#endif\n",
+        ),
+        ("multichar-if", "#if 'AB' == 0x4142\nyes\n#endif\n"),
+        (
             "elifdef",
             "#define X 1\n#if 0\nno\n#elifdef X\nyes\n#endif\n",
         ),

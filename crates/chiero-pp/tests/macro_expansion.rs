@@ -291,6 +291,32 @@ fn line_builtin_uses_expansion_location_not_macro_spelling() {
 }
 
 #[test]
+fn stringize_and_paste_tokens_are_synthesized_and_relexed() {
+    let stringized = preprocess_str(
+        "origin.c",
+        "#define str(x) #x\nstr(value)\n",
+        Config::default(),
+    );
+    assert!(matches!(
+        stringized.source_map.origin(stringized.tokens[0].span),
+        TokenOrigin::Synthesized
+    ));
+
+    let pasted = preprocess_str(
+        "kind.c",
+        "#define cat(a,b) a##b\ncat(L,\"wide\")\n",
+        Config::default(),
+    );
+    assert_eq!(pasted.token_texts().collect::<Vec<_>>(), ["L\"wide\""]);
+    assert!(matches!(
+        pasted.tokens[0].kind,
+        chiero_lex::PpTokenKind::StringLit {
+            prefix: chiero_lex::EncPrefix::Wide
+        }
+    ));
+}
+
+#[test]
 fn deep_macro_chain_does_not_abort_the_process() {
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "expansion_chain_child"])

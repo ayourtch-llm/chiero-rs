@@ -274,6 +274,22 @@ fn leading_whitespace_hash_still_starts_a_directive() {
 }
 
 #[test]
+fn has_include_queries_the_configured_search() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("inc/present.h"), "present\n".into());
+    let config = Config {
+        include_paths: vec![PathBuf::from("inc")],
+        ..Config::default()
+    };
+    let src = "#if __has_include(<present.h>)\nyes\n#else\nno\n#endif\n";
+    let tu = preprocess_with_loader("main.c", src, config, &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["yes"]);
+}
+
+#[test]
 fn computed_include_is_expanded_before_resolution() {
     let mut files = MemoryFiles::default();
     files
