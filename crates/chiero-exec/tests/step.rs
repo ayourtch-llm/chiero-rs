@@ -6220,3 +6220,82 @@ fn a_models_fault_in_a_loop_is_one_finding() {
         .collect();
     assert_eq!(oob.len(), 1, "{:#?}", r.findings());
 }
+
+/// **Two objectless faults in two functions are two findings.** `FindingKey` had no
+/// function component, and `object()` is `None` for `NullDeref`, `WildPointer` and
+/// `BadRange` — so with `Span::DUMMY` everywhere the key was identical for all of them and
+/// distinct bugs merged. The commit that added the object component argued exactly this
+/// for the faults that *have* an object and left the three that do not uncovered.
+///
+/// Merging is the dangerous direction: a duplicate is noise, a dropped finding is a missed
+/// bug. `BadRange` is the usable probe because it is not fatal, so both can happen on one
+/// path. Found by review.
+#[test]
+fn objectless_faults_in_two_functions_do_not_merge() {
+    let wide_load = |v: u32| {
+        vec![
+            inst(InstKind::Assign {
+                dst: ValueId(v),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            }),
+            inst(InstKind::Assign {
+                dst: ValueId(v + 1),
+                rv: RValue::Load {
+                    addr: Operand::Value(ValueId(v)),
+                    ty: CTy::Vector {
+                        elem: Box::new(CTy::Int(64)),
+                        lanes: 4,
+                    },
+                    align: 32,
+                    vol: Volatility::Normal,
+                },
+            }),
+        ]
+    };
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            {
+                let mut v = vec![inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                })];
+                v.extend(wide_load(0));
+                v
+            },
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 32,
+        ..alloca(0, CTy::Int(8), 32)
+    }];
+    let mut callee = defined(
+        1,
+        "other",
+        vec![block(0, wide_load(0), Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    callee.allocas = vec![AllocaDecl {
+        align: 32,
+        ..alloca(0, CTy::Int(8), 32)
+    }];
+    let m = Module {
+        funcs: vec![caller, callee],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let wide: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("unsupported-access-width"))
+        .collect();
+    assert_eq!(wide.len(), 2, "two functions, two reports: {:#?}", wide);
+}
