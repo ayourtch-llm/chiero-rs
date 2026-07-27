@@ -2395,17 +2395,24 @@ impl<'m> Engine<'m> {
         candidates: &[chiero_mem::ObjectId],
         cap: usize,
     ) -> bool {
-        let mut probed = 0;
-        for (id, base, size) in ranges.iter().copied() {
-            if probed >= cap {
-                break;
+        // **From both ends, alternating.** A constraint that bounds an address —
+        // `x < &d`, `p >= base` — rules out objects at one *end* of the address space, so
+        // probing the first `cap` in placement order can spend every query on the objects
+        // most likely to be feasible and conclude nothing. 021 contract 17's own fixture
+        // is exactly that shape.
+        let mut rest: Vec<(chiero_mem::ObjectId, u64, u64)> = ranges
+            .iter()
+            .copied()
+            .filter(|(id, _, _)| !candidates.contains(id))
+            .collect();
+        let mut order: Vec<(chiero_mem::ObjectId, u64, u64)> = Vec::new();
+        while !rest.is_empty() {
+            order.push(rest.remove(0));
+            if let Some(last) = rest.pop() {
+                order.push(last);
             }
-            // A candidate is known feasible already; probing it would spend a query to
-            // learn nothing.
-            if candidates.contains(&id) {
-                continue;
-            }
-            probed += 1;
+        }
+        for (_, base, size) in order.into_iter().take(cap) {
             let lo = a.bv(64, base as u128);
             let hi = a.bv(64, base.wrapping_add(size) as u128);
             let below = a.ult(addr, lo);

@@ -1860,9 +1860,19 @@ impl Memory {
     /// — `state_fault` is what turns the resolution into the finding.
     pub fn resolvable_ranges(&self) -> Vec<(ObjectId, u64, u64)> {
         let at = self.placements();
-        self.entries
-            .iter()
-            .filter_map(|(id, e)| at.get(id).map(|a| (*id, *a, e.size)))
+        // **`NULL` is one of them.** 021 §1 gives it address 0 and size 0, and
+        // `AddressSpace::int_to_ptr` has special-cased a *concrete* zero since the day
+        // "matching no known object" turned up as the report for a plain null
+        // dereference. A symbolic address the path pins to 0 has the same right to the
+        // same answer: without an entry here the search finds nothing at 0, and
+        // `WildPointer` carries `Unknown` where `NullDeref` is a definite finding.
+        // Found by review.
+        std::iter::once((ObjectId::NULL, 0, 0))
+            .chain(
+                self.entries
+                    .iter()
+                    .filter_map(|(id, e)| at.get(id).map(|a| (*id, *a, e.size))),
+            )
             .collect()
     }
 

@@ -9823,10 +9823,17 @@ fn a_constrained_symbolic_base_forks_per_candidate_plus_one_wild() {
     assert_eq!(uniq.len(), resolved.len(), "{resolved:?}");
     // **Exactly one state per candidate, plus the wild one.** `>= 2` was satisfied by the
     // wild state and a single candidate, so "forks *per candidate*" was unpinned — taking
-    // only the first sibling survived. Three objects are below `&d`, so three plus wild.
+    // only the first sibling survived. Three objects are below `&d`, and so is **`NULL`**:
+    // the guard is `x < &d`, which `x = 0` satisfies, and a program reaching this line
+    // with a null pointer is the case a reader most wants a state for. Three plus null
+    // plus wild.
+    assert!(
+        resolved.contains(&chiero_mem::ObjectId::NULL),
+        "zero satisfies `x < &d`, so one state has the null pointer: {resolved:?}"
+    );
     assert_eq!(
         resolved.len(),
-        4,
+        5,
         "one per candidate plus wild: {resolved:?}"
     );
     // **Every forked path records how its pointer was obtained.** The degrade ran on the
@@ -11274,4 +11281,96 @@ fn a_cut_enumeration_of_an_unnarrowed_pointer_is_still_step_four() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// **A symbolic address the path pins to zero is `NULL`, not a wild pointer.**
+///
+/// `AddressSpace::int_to_ptr` has special-cased a *concrete* zero since the day
+/// "matching no known object" turned up as the report for a plain null dereference. The
+/// symbolic path had no such case: `resolvable_ranges` held no entry at address 0, so the
+/// search found nothing there and the access reported `WildPointer` with
+/// `Fidelity::Unknown` where `NullDeref` is a definite finding. Found by review.
+#[test]
+fn a_symbolic_address_pinned_to_zero_is_the_null_pointer() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut f = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::Fresh { ty: CTy::Int(64) },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(64),
+                            a: Operand::Value(ValueId(0)),
+                            b: Operand::Const(Const::Int { bits: 64, val: 0 }),
+                        },
+                    }),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Cast {
+                            kind: CastKind::IntToPtr,
+                            a: Operand::Value(ValueId(0)),
+                            from: CTy::Int(64),
+                            to: CTy::Ptr,
+                        },
+                    }),
+                    inst(InstKind::Store {
+                        addr: Operand::Value(ValueId(2)),
+                        val: i32c(1),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(2, vec![], Terminator::Return(Some(i32c(1)))),
+        ],
+        CTy::Int(32),
+    );
+    f.allocas = vec![alloca(0, CTy::Int(8), 32)];
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let bases: Vec<_> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(2)) {
+            Some(Value::Ptr(p)) => Some(p.base),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bases.contains(&chiero_mem::ObjectId::NULL),
+        "the address is zero on this path: {bases:?}"
+    );
+    assert!(
+        r.findings().iter().any(|f| f.contains("null")),
+        "and storing through it is a null dereference, not a wild pointer: {:#?}",
+        r.findings()
+    );
 }

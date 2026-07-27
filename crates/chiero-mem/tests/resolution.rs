@@ -92,14 +92,17 @@ fn an_address_inside_an_object_gets_no_region() {
     assert_eq!(m.wild_region_around(a0 + 32), (a0 + 32, a0 + 32));
 }
 
-/// With no objects at all, everything is wild — and the region is the whole space rather
-/// than an empty or inverted one, which a search would read as "nothing to exclude" and
-/// then never terminate.
+/// With no objects allocated, everything above `NULL` is wild — and the region is the
+/// rest of the space rather than an empty or inverted one, which a search would read as
+/// "nothing to exclude" and then never terminate. Address 0 is not in it: `NULL` owns it,
+/// and a region swallowing it would rule out the one answer that makes a symbolic null
+/// dereference a definite finding rather than a wild pointer.
 #[test]
-fn with_no_objects_the_region_is_the_whole_address_space() {
+fn with_no_objects_the_region_is_everything_above_null() {
     let m = Memory::new();
-    assert!(m.resolvable_ranges().is_empty());
-    assert_eq!(m.wild_region_around(0x4000), (0, u64::MAX));
+    assert_eq!(m.resolvable_ranges(), vec![(ObjectId::NULL, 0, 0)]);
+    assert_eq!(m.wild_region_around(0x4000), (1, u64::MAX));
+    assert_eq!(m.wild_region_around(0), (0, 0), "address 0 is NULL's own");
 }
 
 /// `resolvable_ranges` reports each object's **entry** size, which is what the search
@@ -114,8 +117,16 @@ fn resolvable_ranges_reports_each_objects_own_extent() {
         .into_iter()
         .map(|(id, _, size)| (id, size))
         .collect();
-    assert_eq!(got, vec![(ids[0], 1), (ids[1], 4096), (ids[2], 7)]);
-    for (id, addr, _) in m.resolvable_ranges() {
+    assert_eq!(
+        got,
+        vec![
+            (ObjectId::NULL, 0),
+            (ids[0], 1),
+            (ids[1], 4096),
+            (ids[2], 7)
+        ]
+    );
+    for (id, addr, _) in m.resolvable_ranges().into_iter().skip(1) {
         assert_eq!(Some(addr), m.addr_of(id), "at the address it was placed at");
     }
 }
