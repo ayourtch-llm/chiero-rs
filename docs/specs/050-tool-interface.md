@@ -101,9 +101,15 @@ variants, so a caller cannot conflate them by reading one key.
 
 | Operation | Returns |
 |---|---|
-| `propose_recipe(description, examples)` | Draft recipe text plus generated fixtures. |
 | `validate_recipe(recipe)` | Load errors and fixture verdicts. **Runs first, always.** |
-| `apply_recipe(recipe, scope)` | Findings, plus candidate and escalation counts. |
+| `apply_recipe(recipe, scope)` | Findings, plus candidate, filtered and escalated counts. |
+
+### Jobs
+
+| Operation | Returns |
+|---|---|
+| `get_job(id)` | The job's current envelope (§5). |
+| `cancel_job(id)` | Partial results as a full envelope. |
 
 `apply_recipe` **refuses** a recipe that has not passed `validate_recipe`
 ([042 §5](042-conformance-recipes.md)). The failure this prevents is specific and likely:
@@ -115,8 +121,16 @@ reports the codebase compliant.
 - **Progressive disclosure.** Every list result is summarized first with a `cursor` for
   detail. `expansion_sites` on a vppinfra macro returns 1043 entries; dumping them wastes
   the context that would have been used to reason about them.
-- **Truncation is explicit and counted.** `"shown": 50, "total": 1043`. Silent truncation
-  reads as completeness.
+- **Truncation is explicit, counted, and per-list.** `"truncation": { "findings":
+  {"shown": 50, "total": 1043, "cursor": "…"} }`. A single envelope-level truncation
+  object cannot say *which* list was cut, and a response has several — `result.*`,
+  `assumptions`, `blind_spots`, `budgets.hit`.
+  **`assumptions`, `blind_spots` and `budgets.hit` are never truncated.** They are the
+  lists carrying the anti-overclaim information; truncating them silently would put the
+  hole inside the mechanism built to prevent it. Silent truncation reads as completeness.
+- **Per-finding fidelity is surfaced.** The envelope's `fidelity` is the worst over the
+  run, so it is never optimistic — but a caller should be able to tell which of ten
+  findings came off an `Approximated` path, so each finding carries its own.
 - **Stable IDs.** Findings, proposals and entities have IDs stable within a session, so
   follow-up calls (`explain_finding`) do not re-transmit state.
 - **Spans render as `file:line:col`** with the macro backtrace attached — the form an LLM
@@ -131,20 +145,42 @@ reports the codebase compliant.
 Symbolic execution takes minutes. Blocking an MCP call for that long is not acceptable, so
 operations above a threshold return a job handle:
 
+**A job response is a full envelope**, not a special shape. §2 says *every* operation
+returns one, and an earlier draft's job payload omitted `fidelity`, `proven`,
+`assumptions` and `blind_spots` — exactly the keys that stop a caller reading
+`findings: []` as "safe":
+
 ```jsonc
-{ "job": "job_7f3a", "status": "running", "progress": {"states": 4102, "findings": 3},
-  "partial": { /* findings so far */ } }
+{ "job": "job_7f3a", "status": "running", "incomplete": true,
+  "progress": {"states": 4102, "findings": 3},
+  "result": { /* findings so far */ },
+  "fidelity": "Bounded", "proven": false,
+  "assumptions": [{"kind":"incomplete","detail":"exploration in progress"}],
+  "blind_spots": [ … ], "budgets": { … }, "determinism_key": "…" }
 ```
 
-`get_job(id)` polls, `cancel_job(id)` stops. **Cancellation returns partial results with
-`fidelity: Bounded`** rather than discarding work — a cancelled 90%-complete run with
-three findings is valuable, and throwing it away encourages callers to set reckless
-budgets.
+**Any response with `status != "complete"` has `proven: false` and `fidelity` at worst
+`Bounded`, regardless of what the completed states computed.** This is not belt-and-braces:
+`Fidelity` is the worst over *contributing* states ([023 §7](023-execution-engine.md)),
+and it has no value meaning "still exploring" — incompleteness is only representable once
+a budget is hit, and an unfinished job has hit none. So a job 5% through whose finished
+states are all `Exact` would otherwise compute `Exact` → `proven: true` → `findings: []`,
+a catastrophic overclaim reachable by a *correct* implementation of both specs.
+
+`get_job(id)` polls, `cancel_job(id)` stops; both appear in §3's catalogue and are
+covered by contract 18's CLI/MCP parity check. **Cancellation returns partial results**
+rather than discarding work — a cancelled 90%-complete run with three findings is
+valuable, and throwing it away encourages callers to set reckless budgets.
+
+**The job threshold must be deterministic.** "Operations above a threshold return a job
+handle" cannot mean elapsed time, or the response *shape* varies with machine load, which
+contract 16 forbids and no schema test would catch. The threshold is a declared input
+flag or a deterministic budget (instruction count), never wall clock.
 
 ## 6. Safety
 
 This surface executes code. `chiero-replay` compiles and runs a harness
-([040 §3.1](040-defect-checkers.md)), and that harness is derived from the analysed
+([040 §3.2](040-defect-checkers.md)), and that harness is derived from the analysed
 program.
 
 - **Read-only by default.** No operation modifies the analysed repository. There is no
@@ -174,7 +210,18 @@ visible.
 3. A `find_bugs` run that hits a budget returns `proven: false`, a non-empty `budgets.hit`,
    and text containing "within"; the string "no defects found" never appears unqualified
    in any rendering (golden test over the corpus).
-4. `blind_spots` is non-empty in every response from a v1 build.
+4. `blind_spots` names **every `Assumption::kind` that actually occurred on the run**,
+   plus v1's standing blind spots — not a hardcoded constant, which a fixed string would
+   satisfy forever. A run that hit an unmodeled extern lists it; one that did not, does
+   not.
+4b. **An always-degenerate implementation must fail this suite.** One that always answers
+    `proven: false, fidelity: "Bounded"` while doing real work otherwise satisfies every
+    other contract here and can never license a negative claim — and per
+    [042](042-conformance-recipes.md) §3, `Bounded` is the *realistic* default, so this
+    is the likely implementation, not a strawman. The corpus therefore contains, for each
+    operation, at least one input reaching `fidelity: "Exact", proven: true`, and the
+    per-operation `Exact` rate is a tracked CI metric that fails on regression. (This
+    mirrors [041](041-optimization-analysis.md) contract 13b, which is the model.)
 5. `check_reachable` returns structurally distinct variants for unreachable-with-proof and
    not-shown-reachable; a fixture forcing each asserts they are not conflatable.
 6. `explain_macro_expansion` on the `vec_add1` fixture returns the full chain with each
@@ -195,10 +242,20 @@ visible.
 13. An operation naming a path outside the project root returns an error.
 14. No operation writes to the analysed repository — verified by hashing the tree before
     and after the full corpus run.
-15. A long-running operation returns a job handle, and `cancel_job` yields partial results
-    with `fidelity: Bounded` and the findings collected so far.
-16. Two runs of any operation on identical input produce identical `determinism_key` and
-    byte-identical results.
+15. A long-running operation returns a job handle whose response is a **full envelope**;
+    a mid-run `get_job` poll and a `cancel_job` result both carry `incomplete: true`,
+    `proven: false` and `fidelity` at worst `Bounded` — **even when every completed state
+    was `Exact`**, which is the case that would otherwise overclaim.
+15b. Whether an operation returns inline or as a job is determined by a declared input,
+     not by elapsed time: the same request yields the same response *shape* on a loaded
+     and an idle machine.
+16. With `wall_clock: None` ([023 §8.1](023-execution-engine.md)), two runs of any
+    operation on identical input produce identical `determinism_key` and byte-identical
+    results. With a wall clock set, the response carries `nondeterministic_abort: true`
+    and **must not be cached on `determinism_key`** — the key hashes inputs, so it cannot
+    distinguish two runs that aborted at different points.
+16b. Truncation is per-list, and `assumptions`, `blind_spots` and `budgets.hit` are never
+     truncated (asserted on a response with 400 assumptions).
 17. Every error response has a machine `code` and a `retryable` flag.
 18. The CLI and the MCP surface expose the same operation set with the same names —
     checked mechanically, so the two cannot drift.

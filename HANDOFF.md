@@ -375,7 +375,9 @@ re-open them, but do keep them satisfied as later specs are written.
    a *required* reason for adoption; **no severity-downgrade knob**. `chiero-recipe`
    contains zero VPP content — the catalogue is `.recipe` data in `chiero-vpp`.
    This is also the cleanest instance of §4.11's "LLM proposes, chiero adjudicates", so
-   **050 owes `propose_recipe`/`validate_recipe`/`apply_recipe`**.
+   **050 owes `validate_recipe`/`apply_recipe`.** (`propose_recipe` was specified and then
+   removed on review: chiero generating recipe text inverts §1's "LLM proposes, chiero
+   adjudicates" and it has no language model.)
 
 ### 4.13 Testing strategy
 

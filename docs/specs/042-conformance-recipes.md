@@ -93,13 +93,30 @@ repo ──▶│ + provenance queries         │ idates │ over those functio
 
 Tier 1 alone answers structural recipes (signatures, forbidden APIs, argument
 constraints) across the entire codebase in one pass. For a semantic recipe, tier 1 is a
-**candidate filter**: only functions that match the recipe's `scope` and contain its
-acquisition pattern are escalated. For the CLI recipe that is 140 files out of 1552.
+**candidate filter**.
 
-Both counts — candidates found and candidates escalated — appear in the run summary. A
-recipe that silently examined 3 of 140 candidates because it hit a budget must say so;
-per [023 §7](023-execution-engine.md), an unescalated candidate makes the result
-`Bounded`, and "conforms" is only reportable at `Exact`.
+### 3.1 The filter is a closure, not a conjunction
+
+The obvious filter — functions matching `scope` **and** containing the acquisition — has
+a demonstrated recall hole. In `vnet/interface_cli.c`, `show_hw_interfaces` and
+`clear_hw_interfaces` are the registered handlers and each body is a single delegating
+call; the acquisition and all the frees live in `show_or_clear_hw_interfaces`, which is
+not itself registered. The handlers match `scope` but contain no acquisition; the helper
+contains the acquisition but is out of scope. **Neither becomes a candidate, and tier 2
+would have analysed it correctly had it been escalated.** The same shape appears in
+`plugins/vrrp/vrrp_cli.c`, `vnet/classify/in_out_acl.c` and several unit-test drivers.
+
+So the candidate set is the **transitive callee closure** of the scope-matching
+functions, bounded by `max_candidate_depth` (default 3) and reported.
+
+**A function excluded by the filter is exactly as unexamined as one that was never
+escalated**, and must degrade the result identically. An earlier draft only counted
+unescalated candidates toward `Bounded`, so a function filtered out before escalation was
+invisible — the recipe would report "conforms" over a set it never looked at. Both counts
+are reported and both force `Bounded`.
+
+For the CLI recipe the closure is roughly 140 files out of 1552. Candidates found,
+candidates filtered out, and candidates escalated all appear in the run summary.
 
 ## 4. The recipe language
 
@@ -124,16 +141,28 @@ recipe cli_line_input_freed {
 
     unowned -> owned  on `unformat_user($_, unformat_line_input, $li)` returning nonzero
     owned   -> freed  on `unformat_free($li)`
-    freed   -> freed  on `unformat_free($li)`  report double_free
+    freed   -> freed  on `unformat_free($li)`     // idempotent here; see below
   }
 
   require on_all_paths { at return: state($li) != owned }
-  forbid  use($li) when state($li) == freed
 
   fixture good "fixtures/cli_ok.c"
   fixture bad  "fixtures/cli_leak.c" expect 1 at "cli_leak.c:22"
 }
 ```
+
+Two things this example deliberately does **not** do, both of which an earlier draft got
+wrong:
+
+- **No `double_free` report on the second `unformat_free`.** `vppinfra/format.h`'s
+  `unformat_free` ends with `clib_memset (i, 0, sizeof (i[0]))`, so a second call is a
+  no-op. Shipping a rule that fires on safe code is how a rule suite gets switched off.
+  Whether repeated release is a defect is a per-API fact, not a DSL default.
+- **No `forbid use($li) when state($li) == freed` alongside that transition.** The
+  release call is itself a use, so the two clauses would both match one event and produce
+  two findings that [040 §4](040-defect-checkers.md)'s dedup key would not merge, their
+  kinds differing. **A call that drives a transition is not additionally a `use`** — that
+  is a language rule, stated here because the interaction is not obvious.
 
 ### 4.1 Patterns
 
@@ -174,18 +203,109 @@ otherwise. The chosen mode is printed in `--explain`.
 | `forbid use($e) when <cond>` | 2 | Use-after-state. |
 
 An escape hatch exists: a recipe may name a Rust `Checker` implementation instead of a
-typestate block, for rules the DSL cannot express. It is expected to be rare, and a
-recipe that uses it must still supply fixtures.
+typestate block, for rules the DSL cannot express (§4.3 lists which, and it is a third of
+the catalogue, not a rare case). A recipe that uses it must still supply fixtures.
 
-### 4.3 The recipe catalogue this enables for VPP
+### 4.2.1 What a tracked entity *is*
 
-Shipped as data in `chiero-vpp`, not as code: CLI line-input freeing; `vec_free` on all
-paths for CLI-local vectors; `pool_get`/`pool_put` pairing; `clib_error_return` results
-either returned or freed (3350 sites); `VLIB_CLI_COMMAND` callback signature conformance
-(1187 sites); barrier sync/release pairing (112 sites, overlapping
-[025 §3](025-concurrency-and-threading.md)); `VLIB_NODE_FN` returning
-`frame->n_vectors`; forbidden raw `malloc`/`strcpy` in favour of `clib_mem_alloc`/
-`clib_memcpy`; `unformat` format-string/argument agreement.
+`$e`'s identity domain must be stated, because each plausible choice breaks a different
+real rule:
+
+- An **AST declaration** breaks aliasing (`p = line_input; unformat_free(p);` becomes a
+  false leak) and misfires in `vnet/ip/punt.c`, where a stack-local is named `input` and
+  the caller-owned parameter is `input__`.
+- An **`ObjectId`** breaks the flagship rule outright: `line_input` points at a *stack
+  local* (`unformat_input_t _line_input, *line_input = &_line_input;`, 366 occurrences
+  tree-wide), and `unformat_free` frees a heap vector *inside* the struct. The object's
+  `ObjState` never becomes `Freed`, so a typestate keyed on memory-model liveness sees
+  nothing happen. It also cannot express pool slots, which are offsets within one vector.
+
+So an entity is **`(ObjectId, byte range)`** — the object plus the sub-range the rule
+tracks — with two explicit transition kinds for the cases pointers alone cannot follow:
+
+```
+alias        $b = $a          // a second name for the same (object, range)
+reinterpret  $b = $a via <pattern>   // e.g. index round-trip through pool_elt_at_index
+```
+
+`reinterpret` is what lets `pool_get(P, e); i = e - P; … e2 = pool_elt_at_index(P, i)`
+keep one identity across the pointer→integer→pointer round trip.
+
+### 4.2.2 `on_all_paths` and abnormal termination
+
+`require on_all_paths { at return: <cond> }` must say what happens on paths that never
+reach a `return`, or the rule is either a flood or a hole:
+
+| Termination | Treatment |
+|---|---|
+| Normal `return` | The obligation applies. |
+| Budget (`max_loop_iters`, depth, state cap) | **Not** a violation, but forces `Bounded` and is counted. Treating it as violating would flood every input-driven loop. |
+| `noreturn` (`clib_panic`, `os_panic`) | Excluded — the path does not return. |
+| Infeasible | Excluded. |
+| `Action::Kill` by another checker | Excluded, recorded. |
+| `longjmp` | Unsupported ([024 §5](024-environment-models.md)); recorded assumption, `Unknown`. |
+
+`<point>` is `return` (function return), `exit` (process termination), or
+`call <pattern>`.
+
+**A violation is reported once, at the acquisition site**, listing the offending return
+paths as `sites` — mirroring [040 §4](040-defect-checkers.md)'s macro grouping, where one
+fix addresses all of them. This also makes the finding location agree with §6's baseline
+key `(recipe, file, entity)`: five per-branch findings would collapse to one baseline row,
+so baselining four and un-fixing one would keep CI green.
+
+### 4.3 What the DSL can and cannot express
+
+An earlier draft advertised a nine-rule VPP catalogue. Attempting to write three of them
+in the grammar above showed that **only one is expressible**, and the two that are not are
+the two with the largest site counts. Recording that honestly, because a DSL advertised
+against a catalogue it cannot express would be discovered at implementation time.
+
+**Expressible today** — the *single-entity, single-function, acquire/release* shape:
+
+| Rule | Sites |
+|---|---|
+| CLI `unformat_free` on every path (the §4 example) | 407 |
+| `barrier_sync`/`_release` pairing | 112 |
+| `VLIB_CLI_COMMAND` callback signature (tier 1) | 1187 |
+| `VLIB_NODE_FN` returns `frame->n_vectors` (tier 1) | 568 |
+| Forbidden raw `malloc`/`strcpy` (tier 1) | — |
+| `unformat` format/argument agreement (tier 1) | — |
+
+**Not expressible — and why**, measured against the real tree:
+
+- **`clib_error_return` returned-or-freed** (3350 sites). Five separate gaps. There is no
+  binder for a *call's result* — every pattern form binds in argument position — yet
+  **1638 of 3350 sites are `return clib_error_return(...)` inline**, where the entity is
+  an unnamed temporary. There is no `returned($e)` predicate, so the obligation
+  "freed **or** returned" is unwritable, and `at return: state($e) != owned` would flag
+  the commonest correct idiom in VPP. The sinks are assignment macros, not calls
+  (`#define clib_error_free(e) e = clib_error_free_vector(e)`), which neither `via macro`
+  nor `expanded` has a defined meaning for. `clib_error_return(e, …)` both consumes `e`
+  and produces a new error, which needs a multi-entity transition. And six producer
+  variants need alternation the grammar lacks.
+- **`pool_get`/`pool_put` pairing** (635/548 sites). Measured: 94 functions contain both,
+  320 only `pool_get`, 335 only `pool_put` — **77% of allocating functions never free**,
+  because the canonical shape is `x_create_if`/`x_delete_if` in different functions.
+  Every clause in §4.2 is function-scoped, so the rule as specified would emit ~320 false
+  positives and find nothing. It also needs cross-representation identity: `pool_put`
+  expands to pointer subtraction with no call to match, and the tracked entity round-trips
+  through an integer index via `pool_elt_at_index`.
+- **`vec_free` on CLI-local vectors.** The acquisition is the address of a *variadic*
+  argument whose ownership depends on the format string's conversion specifier
+  (`unformat (li, "filename %s", &f)`), and the grammar has no way to bind a metavariable
+  in a variadic position conditioned on a `%` conversion.
+
+**These three ship as Rust `Checker`s through §4.2's escape hatch**, not as recipes. That
+is the honest allocation of work, and it is why contract 21 requires the escape hatch to
+be exercised: it is not a rare fallback, it is where the hardest third of the catalogue
+lives.
+
+**Growing the DSL to cover them** needs, in rough order of value: return-value binding
+and a `returned($e)` predicate; alternation over patterns; a `scope program` with
+cross-function summaries; assignment patterns; multi-entity transitions. That is a
+significant language design effort and is explicitly v2
+([080](080-roadmap.md) records the sequencing).
 
 ## 5. Fixtures are mandatory
 
@@ -224,10 +344,11 @@ This vertical is the clearest instance of the project's core principle
 ([050](050-tool-interface.md)): **the LLM proposes, chiero adjudicates.**
 
 Describing a ritual in prose is exactly what an LLM is good at, and verifying that a rule
-actually holds across 1552 files is exactly what it is bad at. So the tool surface is:
+actually holds across 1552 files is exactly what it is bad at. So the tool surface is —
+note that chiero does **not** generate recipes, which would put it on the proposing side
+of its own principle:
 
 ```
-propose_recipe(description, examples)  -> recipe text + generated fixtures
 validate_recipe(recipe)                -> fixture results, load errors
 apply_recipe(recipe, scope)            -> findings + candidate/escalation counts
 ```
@@ -255,17 +376,50 @@ would otherwise be the most tempting place to hard-code VPP knowledge.
 3. A recipe whose `bad` fixture produces no finding, or a finding at the wrong location,
    fails to load (under-matching).
 4. The whole shipped recipe catalogue passes its own fixtures in CI; this is a gate.
-5. `cli_line_input_freed` on the `plugins/memif/cli.c` ritual reports **zero** violations
-   (it is correct code), and on a copy with `unformat_free` deleted from the `else` branch
-   reports exactly one, at that branch, with a witness path reaching it.
+5. `cli_line_input_freed` on **`memif_socket_filename_create_command_fn`** reports zero
+   violations, and on a copy with `unformat_free` deleted reports exactly one, at the
+   acquisition, listing the offending return path.
+
+   Named by *function*, not by file: `plugins/memif/cli.c` also contains
+   `memif_create_command_fn`, which leaks `args.secret` on five error paths (lines 169,
+   176, 179, 184, 186 — `memif_create_if` does `vec_dup`, so the caller retains
+   ownership). Anchoring "correct code" to the file would bake a false assumption into
+   the gate under the `vec_free` rule.
+5b. That leak is a **positive fixture** for the `vec_free`-on-all-paths rule: five real
+    findings in shipped code, which is the strongest available demonstration that the
+    vertical works on something nobody hand-planted.
+5c. **Each shipped rule is pinned to a golden set of real-VPP findings.** For
+    `cli_line_input_freed` that set includes the 29 functions that acquire a `line_input`
+    and never call `unformat_free` (`plugins/tracenode/cli.c`, four in `vnet/bfd/bfd_cli.c`,
+    four in `vlib/log.c`, two in `plugins/quic/quic_cli.c`, and others). A rule that finds
+    none of them passes every fixture-based contract while covering nothing.
+5d. **Match-count baseline**: the number of tier-1 matches per recipe over the VPP corpus
+    is recorded, and a drop beyond a threshold fails CI. This, not fixtures, is the
+    anti-rot mechanism — fixtures pin the fixture. A new `pool_get_aligned_zero` variant
+    or a renamed sink adds sites the fixture never contained, so the `bad` fixture keeps
+    failing while the rule silently stops covering a third of the tree.
 6. The same recipe on a variant where the missing-free path is provably unreachable
    (guarded by an always-false condition) reports **zero** — feasibility is honoured.
 7. Tier 1 sweep over all of VPP completes within a documented time budget on 12 cores and
    reports candidate counts per recipe.
-8. For `cli_line_input_freed`, the candidate set is exactly the functions containing an
-   `unformat_line_input` acquisition, and tier 2 runs on those and no others.
-9. If tier 2 escalation is cut by budget, the result is `Bounded`, names the number of
-   unescalated candidates, and cannot be rendered as "conforms".
+8. The candidate set is the **transitive callee closure** of the scope-matching functions
+   (§3.1). Specifically, `show_hw_interfaces` in `vnet/interface_cli.c` — a registered
+   handler whose body is one delegating call — yields `show_or_clear_hw_interfaces` as a
+   candidate, and a leak planted there is found. Under the earlier
+   scope-AND-acquisition filter neither function was a candidate and the leak was missed
+   silently.
+9. Both **unescalated** and **filtered-out** candidates force `Bounded`, are counted
+   separately in the result, and prevent rendering as "conforms". A function excluded
+   before escalation is exactly as unexamined as one excluded after it.
+9b. `require on_all_paths` treats a budget-terminated path as non-violating but
+    `Bounded`-forcing, and a `noreturn`-terminated path as excluded (§4.2.2) — verified
+    with a fixture whose loop exceeds `max_loop_iters` and one that ends in `clib_panic`.
+9c. **The realistic fidelity of a semantic recipe is recorded, not assumed.** Every CLI
+    handler loops on `unformat_check_input` until symbolic input is exhausted, hitting
+    `max_loop_iters`, and the acquisition itself is an indirect call into another TU —
+    so `Exact` is not the normal outcome. The `Exact`/`Bounded`/`Approximated`
+    distribution over the VPP candidate set is a tracked metric, like
+    [041](041-optimization-analysis.md) contract 13b.
 10. A recipe matching `pool_get` `via macro` matches invocations of the macro and does
     **not** match a function coincidentally named `pool_get`; with `expanded` the
     behaviour inverts. Both are pinned by fixtures.
@@ -275,9 +429,36 @@ would otherwise be the most tempting place to hard-code VPP knowledge.
     callback whose prototype deviates, and zero for conforming ones.
 13. `format_args_match` reports a `clib_error_return` whose format string and arguments
     disagree, and is silent on agreeing ones.
-14. A typestate entity that escapes the function (stored into a global, returned) exits
-    tracking with a recorded assumption rather than a spurious "not freed" finding.
+14. **Escape is split into discharge and unknown, and the recipe declares which is
+    which.** An earlier single rule — "escaping exits tracking with an assumption" —
+    made the `clib_error_return` rule impossible, because *being returned is the correct
+    discharge there*, not an escape; treating it as one leaves `return err;` and a
+    dropped `err` indistinguishable. So:
+    (a) an escape the recipe names as a discharge (`returned($e)`,
+    `escapes_to($e, <sink>)`) satisfies the obligation;
+    (b) any other escape exits tracking with a recorded assumption.
+    Pinned with the `plugins/tap` shape, where the same struct field is discharged by one
+    caller (`cli.c` returns `args.error`) and leaked by another (`tapv2_api.c`).
+14b. Storing into a **struct field** is an escape and is neither "global" nor "returned";
+     it is the dominant transfer in VPP (56 sites). It is covered by (b) unless the
+     recipe declares the field a sink.
 15. A `chiero:allow` with no reason is itself exactly one violation.
+15b. **Suppression scope**: `/* chiero:allow(rule) reason: … */` applies to the next
+     *statement*; `chiero:allow-function(rule)` applies to the enclosing function. A
+     suppression whose scope does not contain the finding does not suppress it and is
+     reported stale — scope determines both false negatives and staleness, and "the next
+     line" is not even well-defined for a finding located at the acquisition.
+21. **The Rust escape hatch is exercised by the shipped catalogue**, not merely
+    available: the three rules §4.3 lists as inexpressible ship as `Checker`s and pass
+    the same fixture gate as recipes. A design where the escape hatch is where a third of
+    the work lives must have that path tested.
+22. Every construct in the grammar round-trips parse→print, and every syntax error
+    carries a machine code and a span ([050 §4](050-tool-interface.md) promises
+    structured errors, and `validate_recipe` is specified against this grammar).
+23. A recipe finding names its `ConfigId` and march variant. `VLIB_CLI_COMMAND` is
+    `#ifndef CLIB_MARCH_VARIANT`, so `registered_via VLIB_CLI_COMMAND` matches nothing
+    under a march-variant configuration — the sweep must state which configurations it
+    covers rather than silently sweeping one.
 16. A `chiero:allow` matching no finding is reported as stale.
 17. A baseline recorded on a violating tree makes CI green; introducing one new violation
     makes it red; moving an existing violation to a different line keeps it green.

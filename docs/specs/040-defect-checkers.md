@@ -142,7 +142,7 @@ The sharp edges, each handled explicitly rather than discovered during M5:
 change behaviour (duplicate symbols, different inlining) and would make the harness a
 different program from the one analysed.
 
-### 3.1 Self-validation — the part that matters
+### 3.2 Self-validation — the part that matters
 
 The harness is not just emitted; it is **compiled and run under sanitizers**, and the
 result is recorded on the finding:

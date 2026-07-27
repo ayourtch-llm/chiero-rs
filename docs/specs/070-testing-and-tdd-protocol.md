@@ -73,7 +73,7 @@ every tier-1 answer over the whole corpus.
 ### 1.5 Sanitizers as a finding oracle
 
 Every emitted replay harness is compiled and run under ASan/UBSan
-([040 §3.1](040-defect-checkers.md)). This closes the loop between "the solver says this
+([040 §3.2](040-defect-checkers.md)). This closes the loop between "the solver says this
 input reaches the bug" and "this input reaches the bug", using an implementation that
 shares no code with chiero.
 

@@ -154,8 +154,11 @@ pub enum Event<'a> {
     MemFault   { st: &'a State, fault: &'a MemFault },
     ArithEvent { st: &'a State, kind: ArithKind, inst: &'a Inst },   // overflow, shift, div0
     Fork       { st: &'a State, cond: Term, feasible: (bool, bool) },
-    Call       { st: &'a State, callee: FuncId, args: &'a [Term] },
-    Return     { st: &'a State, val: Option<Term> },
+    Call       { st: &'a State, callee: Callee, args: &'a [Value] },
+    /// Fired **in the caller** once the callee's result exists, for defined, modeled
+    /// and unmodeled callees alike.
+    CallReturn { st: &'a State, callee: Callee, ret: Option<Value>, dst: Option<ValueId> },
+    Return     { st: &'a State, val: Option<Value> },
     Terminated { st: &'a State, why: &'a TermReason },
 }
 
@@ -166,6 +169,22 @@ pub enum Action {
     Fork(Term),           // explore both sides of a checker-invented condition
 }
 ```
+
+Two things about this event set are load-bearing for [042](042-conformance-recipes.md)
+and were wrong in an earlier draft:
+
+**Arguments are `Value`, not `Term`.** §1.1 argues at length that a bare `Term` cannot
+carry pointer provenance, then an earlier `Event::Call` took `&[Term]` anyway. A checker
+that cannot tell *which tracked object* an argument refers to cannot implement
+`unformat_free($li)`, `free(p)`, or `memcpy` overlap detection — and 021 §7's guard gaps
+make recovering it by address search lossy by construction.
+
+**`CallReturn` exists because `Call` fires too early.** A typestate transition guarded on
+a call's *result* — `on unformat_user(…, $li) returning nonzero`, the guard in the only
+worked example in 042 — has no hook otherwise: `Event::Call` precedes the result, and
+`Event::Return` fires in the callee's frame and never fires at all for an unmodeled
+extern, which produces a `Fresh` value with no return instruction. `CallReturn` fires in
+the caller for every callee kind.
 
 Checkers see everything and decide nothing about execution order. `CheckerCtx` gives them
 solver access (`may(cond)`, `must(cond)`) and a `witness()` that extracts a concrete model
@@ -433,4 +452,8 @@ results (contract 17).
 22. A stateful checker's `CheckerState` is cloned on fork: a lock acquired before a fork
     is held in both children, and released in one leaves it held in the other.
 23. A `Value::Ptr` survives being stored to a local, loaded back, and passed to a model:
-    `free(p)` after such a round trip identifies the same `ObjectId`.
+    `free(p)` after such a round trip identifies the same `ObjectId`, and the pointer
+    reaching a `Checker` through `Event::Call { args }` carries the same `ObjectId`.
+24. `CallReturn` fires in the caller for all three callee kinds — a defined function, a
+    modeled extern, and an **unmodeled** extern whose fresh return value has no return
+    instruction — and carries the value the caller will observe.
