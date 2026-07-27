@@ -1126,7 +1126,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    by *breaking* the thing it guards, before trusting a green result.
 
    **STILL OWED in `chiero-exec`:** ~~`ExactWitness` is forgeable downstream~~ DONE. Remaining:
-   indirect calls, searchers and checkers are unimplemented; `chiero-model` is empty.
+   indirect calls, searchers and checkers are unimplemented.
+
+   **`chiero-model` STARTED** (`4b5ed89` red, `81ef917` green, 407 tests) — **every M1
+   crate now has code in it.** Registry, `Precision`, `HavocSpec`, `AllocPolicy`, and the
+   builtin model list. 024 contracts 1, 2, 18, 19, 21, 21c and §2.1.
+
+   *§2.1 is the load-bearing rule:* `Approximate` **degrades by being dispatched**, not by
+   anyone remembering to record it — otherwise a run calling `scanf` finishes `Exact`,
+   mints a witness and reports "no bugs exist" as a proof. The unmodeled path was already
+   loud; the *modeled* one is worse because it looks deliberate. The reason string needs
+   ≥8 non-whitespace chars because the obvious non-empty check is satisfied by `" "`.
+
+   *Contract 19's guard matches whole tokens* — a substring grep would let the identifier
+   match a comment explaining why the rule exists, which is how such a guard becomes
+   decoration. The crate defines its own `Symbol` rather than borrowing the IR's, since a
+   model registry is upstream of the IR.
+
+   **STILL OWED in `chiero-model`:** the models are declarations only — no `Model` trait
+   impls, no `ModelOutcome`, no `ModelCtx`, so nothing actually *executes* yet. Contracts
+   3–17 and 20–22 (calloc zeroing, overflow detection, the string models and their
+   `max_string_scan` bound, builtins, harness intrinsics, `printf` format checking) are
+   untouched, and the engine does not consult the registry.
 
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
