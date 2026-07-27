@@ -1410,6 +1410,58 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    still an unreachable branch; a model choosing its own `HavocSpec` (024 §2.1's `scanf`)
    is owed.
 
+   **WAVE 16 — the havoc review, applied.** The reviewer pinned `99dc29d`, ran ~35
+   mutants (18 killed, 17 survived), and reported eight defects plus fourteen coverage
+   gaps. Every claim was re-probed here; all eight held, and **one correction landed on
+   me**: I had recorded `c.bits()` vs `c.signed()` for a `PtrAdd` offset as a no-op
+   mutation because they agree at 64 bits. Nothing makes the offset 64-bit — 020 §8 rule 6
+   constrains only the *base*. At 32 bits `-4` reads as `4294967292`, and the C that
+   matters is `container_of` (020 contract 28). The same-answer trap **misfiled as a
+   no-op**, which is a new failure mode worth naming: a survivor dismissed on reasoning
+   rather than on a probe.
+
+   `9c440ff`: `scanf` returns its own `HavocSpec` (024 §2.1's example) naming only the
+   pointers it writes — the fallback would throw away the format string too. An
+   approximate model with an engine arm is now dispatched, since recording a reason and
+   doing nothing was worse than having no model. **The `ModelOutcome` match has no
+   catch-all**, so a new variant is a compile error — that catch-all is how `Finding`'s
+   payload was dropped and how `Havoc` was swallowed, both found by review.
+
+   `483a121`, the six defects: a call passing `can_dispatch` by *name* and then failing
+   per-call translation now havocs (`strcpy`'s overflow arm reported the overflow while
+   still believing the destination intact); read-only objects are skipped; `havoc` returns
+   `Havocked { objects, truncated }` counting only what it invalidated; `pointees` returns
+   `(found, complete)` because "nothing there" and "could not look" differ; a `PtrAdd`
+   offset is signed at its own width and wider-than-pointer is a gap.
+
+   `7055b1d` **spec**: 021 §3 now names a symbolic havoc as a *second* promotion trigger.
+   The deviation shipped unamended in the havoc commit; the README requires amending in
+   the same commit, so this is late. The costs are written down — a promoted object has no
+   byte view, so a second havoc cannot follow its pointers.
+
+   `5e339ba`: eight of the fourteen gap-mutants now die. The sharpest was a **same-answer
+   trap in the fixture**: every `copy` test used `dst.off == 0`, so the offset arithmetic
+   in both the overlay and the init reinstatement was correct and entirely unpinned.
+
+   **WAVE 17 — the gap underneath** (`8bb168a` red, `6b4ddc7` green, 510 tests).
+   ⚠️ **`Load` and `Store` were not implemented at all.** Every fixture in the suite wrote
+   memory through `memset` because there was no other way, and the workaround was uniform
+   enough to read as house style. It surfaced only because a mutation of the havoc's
+   `reachable_depth` could not be killed without a *stored* pointer.
+
+   Two arena folds came with it and are load-bearing: a whole-width extract is the value
+   itself, and adjacent slices of one value are one slice. Without them `*p = x; y = *p;`
+   rebuilds `x` as a `Concat` of `Extract`s *equivalent* to `x` but not identical — and
+   the caller compares terms, not models, so every constraint relating `y` to `x` was
+   lost. Also new: **a finding is not automatically a degradation.** A null dereference is
+   a definite fact chiero modeled exactly; `MemFault::yields_unknown_value` draws the line
+   at values chiero *invented*.
+
+   **STILL OWED from wave 16:** the engine's use of `reachable_depth` is unpinned (needs a
+   stored pointer — now possible, since `Store` exists); a store through NULL produces a
+   finding and **execution continues**, where the program would have crashed; `HavocSpec`'s
+   `ranges` field is still unused.
+
    **STILL OWED from wave 15's review:** the
    symbolic sizes degrade though 024 §3 permits them; `AllocPolicy` is engine-global where
    024 §3 wants it per allocator; `State::findings()` has no direct test; `HavocSpec`'s
