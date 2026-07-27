@@ -273,3 +273,139 @@ fn unknown_constructs_inside_a_block_are_hard_errors() {
         .expect_err("unknown bare instruction must reject");
     assert!(e.message.contains("frobnicate"), "{}", e.message);
 }
+
+/// 020 contract 1, **structurally**. The corpus test compares `print(m)` with
+/// `print(parse(print(m)))`, which is text-to-text and therefore invariant under any
+/// field the printer never prints. Six were dropped silently: `variadic`, all four
+/// `FnAttrs`, and `is_const`.
+#[test]
+fn round_trip_preserves_every_semantic_field() {
+    let src = r#"target x86_64-unknown-linux-gnu
+
+global const @ro : size 4 align 4
+
+func @variadic_noreturn(%0: i32, ...) -> void noreturn order_sensitive {
+entry:
+  .line 5
+  ret
+}
+"#;
+    let m = parse(src).expect("parse");
+    assert!(m.funcs[0].variadic, "variadic must survive");
+    assert!(m.funcs[0].attrs.noreturn);
+    assert!(m.funcs[0].attrs.order_sensitive);
+    assert!(m.globals[0].is_const);
+
+    let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(m, again, "round trip must preserve the module structurally");
+    assert_eq!(print(&m), src);
+}
+
+/// Every enum variant must survive the round trip. This is a `match` rather than a list
+/// so that **adding a variant fails to compile here** until it is considered — the
+/// alternative is a fixture that silently stops covering new constructs.
+#[test]
+fn every_variant_is_accounted_for() {
+    fn ty_covered(t: &CTy) -> bool {
+        match t {
+            CTy::Void | CTy::Int(_) | CTy::Float(_) | CTy::Ptr | CTy::Vector { .. } => true,
+        }
+    }
+    fn konst_covered(c: &Const) -> bool {
+        match c {
+            Const::Int { .. }
+            | Const::Wide { .. }
+            | Const::Float(..)
+            | Const::Null
+            | Const::GlobalAddr { .. }
+            | Const::FuncAddr(_)
+            | Const::Undef(_) => true,
+        }
+    }
+    fn term_covered(t: &Terminator) -> bool {
+        match t {
+            Terminator::Goto(_)
+            | Terminator::Br { .. }
+            | Terminator::Switch { .. }
+            | Terminator::Return(_)
+            | Terminator::IndirectGoto { .. }
+            | Terminator::Unreachable(_) => true,
+        }
+    }
+    assert!(ty_covered(&CTy::Void) && konst_covered(&Const::Null));
+    assert!(term_covered(&Terminator::Return(None)));
+
+    // The constructs the previous fixture omitted, all of which printed but did not
+    // parse back.
+    let src = r#"target x86_64-unknown-linux-gnu
+
+global @g : size 8 align 8
+
+func @other() -> void
+
+func @gaps(%0: <4 x i32>, %1: ptr) -> void {
+entry:
+  .line 6
+  %2 = extractlane %0, 3
+  %3 = insertlane %0, 1, 7i32
+  %4 = shuffle %0, %0, [0, 5, 2, 7]
+  %5 = splat 3i32, 4
+  %6 = undef i64
+  %7 = ptrdiff 4 %1, %1
+  %8 = bitcast <4 x i32> %0 to i128
+  %9 = fresh f64
+  %10 = globaladdr @g, 8
+  %11 = funcaddr @other
+  %12 = wide i256 0x00000000000000000000000000000000000000000000000000000000deadbeef
+  %13 = fconst f64 0x3ff0000000000000
+  .label "retry"
+  vastart %1
+  vacopy %1 -> %1
+  vaend %1
+  %14 = vaarg %1, i32
+  unreachable builtin
+}
+"#;
+    let m = parse(src).expect("parse");
+    assert_eq!(print(&m), src, "every construct must survive byte-exactly");
+    let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(m, again);
+}
+
+/// Every `UnreachableReason` is distinct on the round trip. 020 §5 gives `LoweringGap`
+/// (`Fidelity::Unknown`) and `BuiltinUnreachable` (genuinely dead) different meanings,
+/// so collapsing them loses a semantic distinction rather than a label.
+#[test]
+fn unreachable_reasons_are_distinct() {
+    for (text, want) in [
+        ("noreturn", UnreachableReason::AfterNoreturn),
+        ("exhaustive", UnreachableReason::ExhaustiveSwitch),
+        ("builtin", UnreachableReason::BuiltinUnreachable),
+        ("gap", UnreachableReason::LoweringGap),
+    ] {
+        let src = format!("func @f() -> void {{\nentry:\n  unreachable {text}\n}}\n");
+        let m = parse(&src).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        assert_eq!(m.funcs[0].blocks[0].term, Terminator::Unreachable(want));
+    }
+}
+
+/// A function whose entry is not `BlockId(0)` must round-trip without aliasing. The
+/// printer wrote `entry` for `f.entry` while the parser hardcoded `entry -> BlockId(0)`,
+/// so a sibling `BlockId(0)` reparsed into two blocks both numbered 0.
+#[test]
+fn a_nonzero_entry_block_does_not_alias() {
+    let src = "func @f() -> void {\nbb3:\n  goto bb0\nbb0:\n  ret\n}\n";
+    let m = parse(src).expect("parse");
+    let ids: Vec<_> = m.funcs[0].blocks.iter().map(|b| b.id).collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "block ids must stay distinct");
+    let again = parse(&print(&m)).expect("reparse");
+    assert_eq!(m, again);
+}
+
+/// A duplicated block label is malformed input, not two blocks with one id.
+#[test]
+fn a_duplicate_block_label_is_an_error() {
+    let src = "func @f() -> void {\nentry:\n  ret\nentry:\n  ret\n}\n";
+    assert!(parse(src).is_err());
+}

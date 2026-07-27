@@ -420,7 +420,7 @@ pub enum UnreachableReason {
     LoweringGap,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub id: BlockId,
     pub insts: Vec<Inst>,
@@ -434,7 +434,7 @@ pub struct Block {
 /// Sentinel for `AllocaDecl::count` meaning "extent supplied by an `AllocaDyn`".
 pub const DYNAMIC_EXTENT: u64 = u64::MAX;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AllocaDecl {
     pub id: AllocaId,
     pub ty: CTy,
@@ -454,13 +454,13 @@ pub enum Lifetime {
     Function,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub value: ValueId,
     pub ty: CTy,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FnAttrs {
     pub noreturn: bool,
     pub no_side_effects: bool,
@@ -474,7 +474,7 @@ pub enum Body {
     Declared,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Function {
     pub id: FuncId,
     pub name: Symbol,
@@ -495,7 +495,7 @@ impl Function {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Global {
     pub id: GlobalId,
     pub name: Symbol,
@@ -505,7 +505,7 @@ pub struct Global {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Module {
     pub funcs: Vec<Function>,
     pub globals: Vec<Global>,
