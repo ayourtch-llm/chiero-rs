@@ -891,9 +891,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    proceeded at hardcoded **offset 0**, so a read with `i == 4` pinned returned byte 0 —
    bounds-checked and thrown away, the wrong answer wearing the checking as credentials.
 
-   **STILL OWED:** `Repr::Array` records the promotion decision but the array-theory
-   read/write paths are not implemented — **so contract 6's "the two paths agree" cannot
-   be tested and the current test compares the Bytes path to itself**; the promotion test
+   **Array theory ADDED to the solver** (`955d3ec` red, `ccfe632` green, 330 tests):
+   `Sort::Array`, `select`/`store`/`array_const`, SMT-LIB emission, evaluation by walking
+   the store chain, and folding on **syntactic identity** (hash-consing makes `si == i`
+   decidable at construction, and `v[i] = x; use v[i]` is the commonest shape there is).
+
+   *The load-bearing bug was the envelope, not the terms:* every query announced
+   **`QF_BV`**, which excludes arrays, so z3 rejected the whole script — surfacing as
+   "backend gave no usable answer", which reads like a solver problem. Now `QF_ABV`.
+
+   *Two of my test expectations were wrong and the code was right.* I asserted a
+   satisfiable array query must return `Unknown` because `Model` cannot hold an array
+   assignment; it returns **`Sat`**, correctly, because the model pins the *index* and the
+   evaluator resolves the select by walking the store chain without needing the array's
+   value. And the `Sat` direction cannot pin the emission at all — an unvalidatable model
+   and a **malformed script** both give `Unknown`, so `(_ BitVec 0)` for the array sort
+   passed it. The `Unsat` case distinguishes them. **Sixth same-answer instance**, this
+   time between a real answer and a failure to answer.
+
+   **STILL OWED:** `Repr::Array` records the promotion decision but `chiero-mem` does not
+   yet *use* the solver's array terms — **so contract 6's "the two paths agree" still
+   cannot be tested and the current test compares the Bytes path to itself**; the promotion test
    is also self-defeating (its `before` pass calls `read`, which memoizes, so it mutates
    what it measures); `InitBit::Cond` drops the `Term` the spec's `Cond(Term)` carries, so
    `MaybeUninitialized` has no guard to discharge and §3.1's "collapses when the guard
