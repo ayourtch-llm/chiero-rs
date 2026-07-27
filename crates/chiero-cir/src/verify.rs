@@ -81,6 +81,33 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         body: Body::Declared,
         span: Span::DUMMY,
     };
+    // 020 §3: the tables are *indexed by* `GlobalId`/`FuncId`. That was a convention
+    // rather than an invariant, and the crate's two halves disagreed about it — the
+    // printer resolves references positionally, the verifier resolves them by `.id`.
+    // A permuted table verifies clean and then prints the wrong name for every
+    // reference, so make the convention checkable.
+    for (i, g) in m.globals.iter().enumerate() {
+        if g.id.0 as usize != i {
+            err(
+                out,
+                &anon,
+                VerifyErrorKind::IdNotIndex,
+                g.span,
+                format!("global `{}` has {:?} but sits at index {i}", g.name, g.id),
+            );
+        }
+    }
+    for (i, f) in m.funcs.iter().enumerate() {
+        if f.id.0 as usize != i {
+            err(
+                out,
+                &anon,
+                VerifyErrorKind::IdNotIndex,
+                f.span,
+                format!("function `{}` has {:?} but sits at index {i}", f.name, f.id),
+            );
+        }
+    }
     let mut gids: Vec<GlobalId> = Vec::new();
     let mut gnames: Vec<&str> = Vec::new();
     for g in &m.globals {
@@ -521,18 +548,23 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
     let reachable = reachable_blocks(f);
 
     for b in &f.blocks {
-        if !reachable.contains(&b.id) {
-            continue;
-        }
+        // Reachability gates *dominance only*. Alignment, cast shape and bit ranges
+        // have nothing to do with it, and dead code is legal, so it reaches the
+        // engine's data structures like any other block.
+        let live = reachable.contains(&b.id);
         for (i, inst) in b.insts.iter().enumerate() {
-            for op in operands_of(inst) {
-                check_dominated(f, b.id, i + 1, op, &defs, &doms, inst.span, out);
+            if live {
+                for op in operands_of(inst) {
+                    check_dominated(f, b.id, i + 1, op, &defs, &doms, inst.span, out);
+                }
             }
             check_inst_types(f, inst, &types, out);
         }
-        for op in term_operands(&b.term) {
-            // A terminator is positioned after every instruction in its block.
-            check_dominated(f, b.id, usize::MAX, op, &defs, &doms, b.span, out);
+        if live {
+            for op in term_operands(&b.term) {
+                // A terminator is positioned after every instruction in its block.
+                check_dominated(f, b.id, usize::MAX, op, &defs, &doms, b.span, out);
+            }
         }
         check_term_types(f, b, &types, out);
     }
@@ -664,6 +696,11 @@ fn term_operands(t: &Terminator) -> Vec<Operand> {
 /// Lengauer-Tarjan here.
 fn dominators(f: &Function) -> IndexMap<BlockId, Vec<BlockId>> {
     let ids: Vec<BlockId> = f.blocks.iter().map(|b| b.id).collect();
+    // Unreachable predecessors are excluded from the meet (Cooper-Harvey-Kennedy).
+    // A dead block is dominated by nothing but itself, so meeting `{dead}` into a live
+    // join empties the set and a value defined in entry stops dominating its use — a
+    // hard error on the ubiquitous C shape of dead code falling into a live join.
+    let reachable = reachable_blocks(f);
     let mut dom: IndexMap<BlockId, Vec<BlockId>> = IndexMap::new();
     for &b in &ids {
         dom.insert(
@@ -685,7 +722,7 @@ fn dominators(f: &Function) -> IndexMap<BlockId, Vec<BlockId>> {
             let preds: Vec<BlockId> = f
                 .blocks
                 .iter()
-                .filter(|p| p.term.successors().contains(&b))
+                .filter(|p| reachable.contains(&p.id) && p.term.successors().contains(&b))
                 .map(|p| p.id)
                 .collect();
             let mut new: Vec<BlockId> = match preds.first() {
@@ -810,6 +847,30 @@ fn require_ty(
     }
 }
 
+/// Rule 5: a size operand is an integer. Which width is target-dependent, so only
+/// the *kind* is checked here.
+fn require_int(
+    f: &Function,
+    o: &Operand,
+    types: &IndexMap<ValueId, CTy>,
+    what: &str,
+    span: Span,
+    out: &mut Vec<VerifyError>,
+) {
+    if let Some(t) = resolve(o, types)
+        && t != CTy::Void
+        && !matches!(t, CTy::Int(_))
+    {
+        err(
+            out,
+            f,
+            VerifyErrorKind::WidthMismatch,
+            span,
+            format!("{what} must be integer-typed, got {t:?}"),
+        );
+    }
+}
+
 fn require_ptr(
     f: &Function,
     o: &Operand,
@@ -840,12 +901,23 @@ fn check_inst_types(
 ) {
     match &i.kind {
         InstKind::Assign { rv, .. } => check_rvalue_types(f, rv, types, i.span, out),
-        InstKind::Store { addr, align, .. } => {
+        // Rule 5 reaches the *value* too. A `store i32` of an i64 leaves the memory
+        // model to invent a truncation rule, which is exactly the malformed IR the
+        // verifier exists to stop before it becomes a confusing wrong answer.
+        InstKind::Store {
+            addr,
+            val,
+            ty,
+            align,
+            ..
+        } => {
             check_align(f, *align, i.span, out);
             require_ptr(f, addr, types, "store address", i.span, out);
+            require_ty(f, val, ty, types, "store value", i.span, out);
         }
         InstKind::StoreBits {
             addr,
+            val,
             unit,
             bits,
             align,
@@ -854,16 +926,24 @@ fn check_inst_types(
             check_align(f, *align, i.span, out);
             check_bits(f, unit, *bits, i.span, out);
             require_ptr(f, addr, types, "store address", i.span, out);
+            require_ty(f, val, unit, types, "bitfield store value", i.span, out);
         }
         InstKind::CopyMem {
-            dst, src, align, ..
+            dst,
+            src,
+            size,
+            align,
+            ..
         } => {
             check_align(f, *align, i.span, out);
             require_ptr(f, dst, types, "copy destination", i.span, out);
             require_ptr(f, src, types, "copy source", i.span, out);
+            require_int(f, size, types, "copy size", i.span, out);
         }
-        InstKind::SetMem { dst, .. } => {
-            require_ptr(f, dst, types, "memset destination", i.span, out)
+        InstKind::SetMem { dst, byte, size } => {
+            require_ptr(f, dst, types, "memset destination", i.span, out);
+            require_ty(f, byte, &CTy::Int(8), types, "memset fill", i.span, out);
+            require_int(f, size, types, "memset size", i.span, out);
         }
         InstKind::AllocaDyn { align, .. } => check_align(f, *align, i.span, out),
         _ => {}

@@ -389,11 +389,13 @@ fn zero_width_bitfield_is_rejected() {
 #[test]
 fn unreachable_block_is_a_warning_not_an_error() {
     let mut m = valid_module();
+    // The dead block must be *well-typed*, or it now (correctly) also raises a width
+    // error: `ret` with no value from an `i32` function is wrong wherever it appears.
     m.funcs[0]
         .blocks
-        .push(block(7, vec![], Terminator::Return(None)));
+        .push(block(7, vec![], Terminator::Return(Some(i32c(0)))));
     let errs = verify(&m);
-    assert_eq!(errs.len(), 1);
+    assert_eq!(errs.len(), 1, "{errs:#?}");
     assert_eq!(errs[0].kind, VerifyErrorKind::UnreachableBlock);
     assert!(
         !errs[0].is_error(),
@@ -740,12 +742,16 @@ fn module_level_identity_is_checked() {
         span: Span::DUMMY,
     };
 
-    // Two globals sharing an id.
+    // Two globals sharing an id. Since ids must equal indices, this is necessarily
+    // *two* defects — the second global is both a duplicate and out of position — so
+    // the one-defect-one-kind rule does not apply and both kinds must appear.
     let mut m = valid_module();
     make_void(&mut m);
     m.funcs[0].blocks[0].term = Terminator::Return(None);
     m.globals = vec![g(0, "a"), g(0, "b")];
-    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+    let kinds: Vec<_> = verify(&m).iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&VerifyErrorKind::DuplicateId), "{kinds:?}");
+    assert!(kinds.contains(&VerifyErrorKind::IdNotIndex), "{kinds:?}");
 
     // Two functions sharing a name — `func_id` resolves to the first, silently.
     let mut m = valid_module();

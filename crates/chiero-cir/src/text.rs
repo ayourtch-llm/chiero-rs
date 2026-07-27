@@ -31,6 +31,9 @@ pub fn parse(src: &str) -> Result<Module, ParseError> {
         value_names: IndexMap::new(),
         alloca_names: IndexMap::new(),
         label_names: IndexMap::new(),
+        tok_hi: std::cell::Cell::new(0),
+        tok_base: std::cell::Cell::new(0),
+        whole_line: std::cell::Cell::new(false),
         name_base: 0,
         label_base: 0,
     }
@@ -82,6 +85,14 @@ struct Parser<'a> {
     label_names: IndexMap<String, u32>,
     /// One past the largest literal `%N` in the current function, so named values
     /// cannot collide with numeric ones.
+    /// High-water mark of token indices read while parsing one instruction, so
+    /// trailing junk can be rejected (020 §6) without every arm counting by hand.
+    tok_hi: std::cell::Cell<usize>,
+    /// Offset of the sub-slice `tok` indices are currently relative to.
+    tok_base: std::cell::Cell<usize>,
+    /// Set by parsers that read the raw line instead of tokens (calls), for which the
+    /// high-water mark under-counts.
+    whole_line: std::cell::Cell<bool>,
     name_base: u32,
     /// One past the largest literal `bbN`, likewise for labels.
     label_base: u32,
@@ -205,7 +216,10 @@ impl<'a> Parser<'a> {
         if n.is_empty() {
             return Err(self.perr("empty alloca name"));
         }
-        let next = self.alloca_names.len() as u32;
+        // Named allocas start above every literal `%N` in the function, for the same
+        // reason values do: without it `%buf` and a literal `%0` alloca are the same
+        // object. `name_base` bounds every literal `%N`, whichever id space it names.
+        let next = self.name_base + self.alloca_names.len() as u32;
         Ok(AllocaId(
             *self.alloca_names.entry(n.to_string()).or_insert(next),
         ))
@@ -286,6 +300,8 @@ impl<'a> Parser<'a> {
     /// `ParseError` — and a fixture format whose parser panics on malformed input is
     /// strictly worse than one that errors, since a panic carries no line number.
     fn tok<'t>(&self, t: &'t [String], i: usize) -> Result<&'t str, ParseError> {
+        self.tok_hi
+            .set(self.tok_hi.get().max(self.tok_base.get() + i + 1));
         t.get(i)
             .map(String::as_str)
             .ok_or_else(|| self.perr(&format!("line is too short: expected a token at {i}")))
@@ -384,17 +400,26 @@ impl<'a> Parser<'a> {
         if has_body {
             // Names are function-scoped: `%tmp` in two functions is two values, and an
             // alloca named `%buf` in one is not the alloca in another.
-            self.value_names = pending_names;
             self.alloca_names.clear();
             self.label_names.clear();
             let (vb, lb) = self.scan_literal_ids();
-            self.name_base = vb.max(
-                self.value_names
-                    .values()
-                    .copied()
-                    .max()
-                    .map_or(0, |m| m + 1),
-            );
+            // Named parameters were interned at 0..k-1 while parsing the signature,
+            // *before* the literal scan could run — so a body's `%0` silently resolved
+            // to the first parameter instead of being a distinct value. Rebase them
+            // above the literals now that the bound is known.
+            let named: Vec<u32> = pending_names.values().copied().collect();
+            self.value_names = pending_names
+                .into_iter()
+                .map(|(n, old)| (n, vb + old))
+                .collect();
+            // Only the *named* parameters move. A numerically-spelled `%0: i32` is a
+            // literal id like any other and must stay exactly where the text put it.
+            for p in &mut f.params {
+                if named.contains(&p.value.0) {
+                    p.value = ValueId(vb + p.value.0);
+                }
+            }
+            self.name_base = vb + self.value_names.len() as u32;
             self.label_base = lb;
             self.body(&mut f)?;
         }
@@ -504,7 +529,20 @@ impl<'a> Parser<'a> {
                 terminated = true;
                 continue;
             }
+            self.tok_hi.set(0);
+            self.tok_base.set(0);
+            self.whole_line.set(false);
             let inst = self.inst(&t)?;
+            // 020 §6: unknown input is a hard parse error. The rule was enforced for
+            // mnemonics but not operands — every arm indexes fixed token positions and
+            // dropped the rest, which is how `fresh i32 "input"` silently lost its
+            // reason string. Anything the arm did not read is junk.
+            if !self.whole_line.get() && self.tok_hi.get() < t.len() {
+                return self.err(format!(
+                    "unexpected trailing token `{}`",
+                    t[self.tok_hi.get()]
+                ));
+            }
             b.insts.push(Inst {
                 kind: inst,
                 span: Span::DUMMY,
@@ -763,6 +801,7 @@ impl<'a> Parser<'a> {
                 self.value_id(&d)?
             };
             let rest = &t[2..];
+            self.tok_base.set(2);
             if self.tok(rest, 0)? == "call" {
                 let (callee, args) = self.call_parts(rest)?;
                 return Ok(InstKind::Call {
@@ -874,6 +913,9 @@ impl<'a> Parser<'a> {
 
     fn call_parts(&mut self, t: &[String]) -> Result<(Callee, Vec<Operand>), ParseError> {
         let _ = t;
+        // Reads the raw line rather than tokens, so the high-water mark cannot see how
+        // far it got. A call consumes through its closing paren, which ends the line.
+        self.whole_line.set(true);
         // Everything from `call` onward on the raw line, so commas survive.
         let joined = match self.raw.find("call ") {
             Some(i) => self.raw[i..].to_string(),
@@ -904,8 +946,14 @@ impl<'a> Parser<'a> {
     }
 
     fn rvalue(&mut self, t: &[String]) -> Result<RValue, ParseError> {
-        let g = |i: usize| t.get(i).map(String::as_str).unwrap_or("");
-        Ok(match g(0) {
+        // A local high-water mark, merged into the parser's on the way out. It cannot
+        // borrow `self.tok_hi` directly because the arms need `&mut self`.
+        let hi = std::cell::Cell::new(0usize);
+        let g = |i: usize| {
+            hi.set(hi.get().max(i + 1));
+            t.get(i).map(String::as_str).unwrap_or("")
+        };
+        let r = match g(0) {
             "load" | "loadvolatile" => RValue::Load {
                 ty: self.ty(g(1))?,
                 addr: self.operand(g(2))?,
@@ -918,7 +966,9 @@ impl<'a> Parser<'a> {
             },
             "loadbits" => {
                 let (off, width) = self.bits(g(4))?;
+                // Scanned across the whole operand list, so nothing after it is junk.
                 let signed = t.iter().any(|x| x == "signed");
+                hi.set(t.len());
                 RValue::LoadBits {
                     unit: self.ty(g(1))?,
                     addr: self.operand(g(2))?,
@@ -973,6 +1023,8 @@ impl<'a> Parser<'a> {
             "addrfunc" => RValue::AddrOfFunc(self.func_id(g(1))?),
             "fresh" => RValue::Fresh { ty: self.ty(g(1))? },
             "shuffle" => {
+                // The mask is read off the raw line, through `]` at end of line.
+                hi.set(t.len());
                 let joined = self.raw.clone();
                 let open = joined
                     .find('[')
@@ -1088,7 +1140,10 @@ impl<'a> Parser<'a> {
                 RValue::Use(self.operand(other)?)
             }
             other => return Err(self.perr(&format!("unknown instruction `{other}`"))),
-        })
+        };
+        self.tok_hi
+            .set(self.tok_hi.get().max(self.tok_base.get() + hi.get()));
+        Ok(r)
     }
 }
 
