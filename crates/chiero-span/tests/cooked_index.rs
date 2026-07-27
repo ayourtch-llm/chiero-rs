@@ -43,7 +43,14 @@ fn cook_tu(
         BytePos(cbase + off + 4),
         ExpnCtx::ROOT,
     );
-    sm.add_expansion(ExpnCtx::ROOT, Some(m), call, call, vec![], ExpnKind::FunctionLike);
+    sm.add_expansion(
+        ExpnCtx::ROOT,
+        Some(m),
+        call,
+        call,
+        vec![],
+        ExpnKind::FunctionLike,
+    );
 
     index.cook_tu(interner, &sm);
     // `sm` is dropped here. Everything the index needs must already be resolved.
@@ -105,7 +112,11 @@ fn redefinition_at_a_new_line_is_a_distinct_entity() {
     let f = sm.add_file("h.h", src);
     let base = sm.file(f).start_pos.0;
     let at = |off: u32, len: u32| {
-        Span::new(BytePos(base + off), BytePos(base + off + len), ExpnCtx::ROOT)
+        Span::new(
+            BytePos(base + off),
+            BytePos(base + off + len),
+            ExpnCtx::ROOT,
+        )
     };
     let first = sm.add_macro("M", at(8, 1), at(10, 1));
     let second = sm.add_macro("M", at(29, 1), at(31, 1));

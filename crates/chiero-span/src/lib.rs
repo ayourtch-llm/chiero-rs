@@ -440,3 +440,71 @@ impl SourceMap {
         }
     }
 }
+
+/// Cross-TU identity for a macro: `(defining file, name, definition line)`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MacroEntity(pub u32);
+
+/// A globally interned file, valid after the owning `SourceMap` is dropped.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GlobalFileId(pub u32);
+
+/// Cross-TU interners, owned by the driver (010 §6.2).
+#[derive(Debug, Default)]
+pub struct GlobalInterner {
+    files: indexmap::IndexMap<PathBuf, GlobalFileId>,
+    paths: Vec<PathBuf>,
+    macros: indexmap::IndexMap<(GlobalFileId, Arc<str>, u32), MacroEntity>,
+}
+
+/// One resolved expansion site. Self-contained: no `ExpnCtx`, no per-TU ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CookedSite {
+    pub file: GlobalFileId,
+    pub line: u32,
+    pub depth: u32,
+}
+
+/// The retained whole-tree artifact (010 §6.2).
+#[derive(Debug, Default)]
+pub struct CookedExpansionIndex {
+    sites: indexmap::IndexMap<MacroEntity, Vec<CookedSite>>,
+}
+
+impl GlobalInterner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn intern_file(&mut self, _path: &Path) -> GlobalFileId {
+        todo!("green")
+    }
+
+    pub fn path(&self, _id: GlobalFileId) -> &Path {
+        todo!("green")
+    }
+
+    pub fn lookup_macro(&self, _file: &str, _name: &str) -> Option<MacroEntity> {
+        todo!("green")
+    }
+
+    pub fn macro_count(&self) -> usize {
+        self.macros.len()
+    }
+}
+
+impl CookedExpansionIndex {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resolve every expansion site in `sm` to `(global file, line)` **before** the
+    /// per-TU tables are dropped, and merge them into the whole-tree index.
+    pub fn cook_tu(&mut self, _interner: &mut GlobalInterner, _sm: &SourceMap) {
+        todo!("green")
+    }
+
+    pub fn sites(&self, _m: MacroEntity) -> impl Iterator<Item = &CookedSite> + '_ {
+        std::iter::empty()
+    }
+}
