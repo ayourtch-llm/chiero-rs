@@ -95,6 +95,14 @@ impl InitMask {
         }
     }
 
+    /// Set one bit's status verbatim, bypassing the join. Only for copying an existing
+    /// mask (`realloc`), where the destination has no prior state to join with.
+    pub fn set_exact(&mut self, bit: u64, to: InitBit) {
+        if let Some(slot) = self.bits.get_mut(bit as usize) {
+            *slot = to;
+        }
+    }
+
     /// The first bit in the range that is not *definitely* initialized. `Cond` counts as
     /// not-definitely: the point of the third state is that it decides neither way.
     pub fn first_not_yes(&self, lo_bit: u64, n_bits: u64) -> Option<u64> {
@@ -185,6 +193,27 @@ impl MemObject {
 
     pub fn init_bit(&self, bit: u64) -> InitBit {
         self.init.get(bit)
+    }
+
+    /// The bounds check on its own, so a caller can order it ahead of the alignment
+    /// check the way 021 §5 requires.
+    pub fn check_only(&self, off: i64, size: u64) -> Result<(), AccessError> {
+        self.check(off, size).map(|_| ())
+    }
+
+    /// Bytes without the initialization check, so an uninitialized read can still hand
+    /// back a value alongside its fault (021 §5). Bounds still apply.
+    pub fn raw_bytes(&self, off: i64, size: u64) -> Option<Vec<u8>> {
+        let at = self.check(off, size).ok()?;
+        Some(self.data[at..at + size as usize].to_vec())
+    }
+
+    /// Copy an initialization range verbatim, so `realloc` preserves the *pair* of value
+    /// and initialization status rather than silently marking the copy initialized.
+    pub fn restore_init(&mut self, lo_bit: u64, bits: &[InitBit]) {
+        for (i, b) in bits.iter().enumerate() {
+            self.init.set_exact(lo_bit + i as u64, *b);
+        }
     }
 
     /// Bounds check for `[off, off + size)`.
@@ -515,5 +544,562 @@ impl AddressSpace {
             Some(s) => p.off >= 0 && p.off as u64 + size <= s,
             None => false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The access API and object lifetime (021 §4, §5).
+// ---------------------------------------------------------------------------
+
+/// Above this, an object is not materialized and every access to it faults.
+///
+/// `MemObject` allocates `size` bytes plus eight times that for the init mask, so an
+/// unconstrained `clib_mem_alloc(n)` used to abort the process — and an abort is not
+/// something `catch_unwind` can contain. 023 §10 concretizes symbolic sizes from a solver
+/// model, which can hand back anything the constraints allow.
+pub const MAX_MATERIALIZED_BYTES: u64 = 1 << 30;
+
+/// 021 §4. Objects are **never deleted**; only this changes.
+///
+/// Keeping a freed object is what lets a dangling access name which object ended and
+/// where. Deleting it would leave only an address matching nothing, indistinguishable
+/// from a wild pointer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ObjState {
+    Live,
+    Freed(Span),
+    OutOfScope(Span),
+}
+
+/// What went wrong, or merely what was noticed. Reported by the memory model; the engine
+/// decides what a fault *means* (021 §5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemFault {
+    OutOfBounds {
+        obj: ObjectId,
+        off: i64,
+        size: u64,
+        obj_size: u64,
+        at: Span,
+    },
+    Uninitialized {
+        obj: ObjectId,
+        off: i64,
+        bit: u64,
+        at: Span,
+    },
+    /// Recorded on every misaligned access; a *finding* only in `ub-strict` mode, since
+    /// x86-64 tolerates it and VPP relies on that in places.
+    Misaligned {
+        obj: ObjectId,
+        off: i64,
+        want: u64,
+        at: Span,
+    },
+    UseAfterFree {
+        obj: ObjectId,
+        freed_at: Span,
+        at: Span,
+    },
+    DoubleFree {
+        obj: ObjectId,
+        freed_at: Span,
+        at: Span,
+    },
+    UseAfterScope {
+        obj: ObjectId,
+        scope_ended_at: Span,
+        at: Span,
+    },
+    ReadOnly {
+        obj: ObjectId,
+        off: i64,
+        at: Span,
+    },
+    /// A chiero payload limit rather than a program error.
+    BadRange {
+        want_bits: u64,
+        max_bits: u64,
+        at: Span,
+    },
+    AllocationTooLarge {
+        obj: ObjectId,
+        size: u64,
+        at: Span,
+    },
+    NullDeref {
+        off: i64,
+        at: Span,
+    },
+}
+
+/// **Faults alongside a value, not instead of one** (021 §5).
+///
+/// `Result<_, MemFault>` cannot express the normal case: an uninitialized read yields a
+/// value *and* a finding, a misaligned access is recorded *and* succeeds, a may-OOB
+/// access reports *and* continues on the in-bounds branch. Several faults per access are
+/// possible — misaligned and partially uninitialized is ordinary — so this is a vector.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AccessResult<T> {
+    pub value: Option<T>,
+    pub faults: Vec<MemFault>,
+}
+
+impl<T> AccessResult<T> {
+    fn fault(f: MemFault) -> AccessResult<T> {
+        AccessResult {
+            value: None,
+            faults: vec![f],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leak {
+    pub obj: ObjectId,
+    pub allocated_at: Span,
+}
+
+#[derive(Clone, Debug)]
+struct Entry {
+    obj: Option<MemObject>,
+    kind: ObjKind,
+    size: u64,
+    align: u64,
+    state: ObjState,
+    readonly: bool,
+    origin: Span,
+    /// Objects this one holds pointers to, for reachability (021 §4's leak rule).
+    points_to: Vec<ObjectId>,
+    root: bool,
+}
+
+/// The object store: lifetime, access, and leak reachability.
+#[derive(Clone, Debug, Default)]
+pub struct Memory {
+    space: AddressSpace,
+    entries: Vec<(ObjectId, Entry)>,
+}
+
+impl Memory {
+    pub fn new() -> Memory {
+        Memory {
+            space: AddressSpace::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn alloc(&mut self, kind: ObjKind, size: u64, align: u64, at: Span) -> ObjectId {
+        let id = self
+            .space
+            .alloc(kind, size.min(MAX_MATERIALIZED_BYTES), align, at);
+        // Oversized objects are recorded but not materialized: every access faults, which
+        // is a finding rather than a dead process.
+        let obj =
+            (size <= MAX_MATERIALIZED_BYTES).then(|| MemObject::new(id, kind, size, align, at));
+        self.entries.push((
+            id,
+            Entry {
+                obj,
+                kind,
+                size,
+                align,
+                state: ObjState::Live,
+                readonly: false,
+                origin: at,
+                points_to: Vec::new(),
+                root: false,
+            },
+        ));
+        id
+    }
+
+    fn entry_mut(&mut self, id: ObjectId) -> Option<&mut Entry> {
+        self.entries
+            .iter_mut()
+            .find(|(i, _)| *i == id)
+            .map(|(_, e)| e)
+    }
+
+    fn entry(&self, id: ObjectId) -> Option<&Entry> {
+        self.entries.iter().find(|(i, _)| *i == id).map(|(_, e)| e)
+    }
+
+    pub fn set_readonly(&mut self, id: ObjectId) {
+        if let Some(e) = self.entry_mut(id) {
+            e.readonly = true;
+        }
+    }
+
+    pub fn set_root(&mut self, id: ObjectId) {
+        if let Some(e) = self.entry_mut(id) {
+            e.root = true;
+        }
+    }
+
+    pub fn point_at(&mut self, from: ObjectId, to: ObjectId) {
+        if let Some(e) = self.entry_mut(from) {
+            e.points_to.push(to);
+        }
+    }
+
+    /// **021 §5 step 1.** Runs before anything touches contents, so a dangling access
+    /// never reads stale bytes and never *also* reports "uninitialized" about memory it
+    /// had no business touching.
+    fn state_fault(&self, id: ObjectId, at: Span) -> Option<MemFault> {
+        if id == ObjectId::NULL {
+            return Some(MemFault::NullDeref { off: 0, at });
+        }
+        let e = self.entry(id)?;
+        match e.state {
+            ObjState::Live => None,
+            ObjState::Freed(freed_at) => Some(MemFault::UseAfterFree {
+                obj: id,
+                freed_at,
+                at,
+            }),
+            ObjState::OutOfScope(scope_ended_at) => Some(MemFault::UseAfterScope {
+                obj: id,
+                scope_ended_at,
+                at,
+            }),
+        }
+    }
+
+    /// **021 §5 step 3.** Always recorded; whether it is a *finding* is `ub-strict`'s
+    /// call, not the memory model's.
+    fn align_fault(&self, id: ObjectId, off: i64, size: u64, at: Span) -> Option<MemFault> {
+        let e = self.entry(id)?;
+        let want = e.align.min(size.max(1)).max(1);
+        (!off.unsigned_abs().is_multiple_of(want)).then_some(MemFault::Misaligned {
+            obj: id,
+            off,
+            want,
+            at,
+        })
+    }
+
+    fn too_large(&self, id: ObjectId, at: Span) -> Option<MemFault> {
+        let e = self.entry(id)?;
+        e.obj.is_none().then_some(MemFault::AllocationTooLarge {
+            obj: id,
+            size: e.size,
+            at,
+        })
+    }
+
+    pub fn read(&mut self, p: Pointer, size: u64, at: Span) -> AccessResult<Vec<u8>> {
+        if let Some(f) = self.state_fault(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        let Some(e) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
+        };
+        let obj = e.obj.as_ref().expect("materialized");
+        // 021 §5's order is state, **bounds**, alignment, init. Bounds first is not
+        // cosmetic: a concrete must-OOB access does not happen, so reporting its
+        // alignment alongside would describe an access that never occurs.
+        if let Err(err @ AccessError::OutOfBounds { .. }) = obj.read_bytes(p.off, size) {
+            return AccessResult::fault(lift(err, p.base, at));
+        }
+        let mut faults: Vec<MemFault> = self
+            .align_fault(p.base, p.off, size, at)
+            .into_iter()
+            .collect();
+        let Some(e) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
+        };
+        let obj = e.obj.as_ref().expect("materialized");
+        match obj.read_bytes(p.off, size) {
+            Ok(v) => AccessResult {
+                value: Some(v),
+                faults,
+            },
+            Err(AccessError::Uninitialized { off, bit }) => {
+                faults.push(MemFault::Uninitialized {
+                    obj: p.base,
+                    off,
+                    bit,
+                    at,
+                });
+                // **A value as well as a fault.** The engine gets a fresh symbol here;
+                // the concrete core hands back the bytes so it has something to carry.
+                AccessResult {
+                    value: obj.raw_bytes(p.off, size),
+                    faults,
+                }
+            }
+            Err(e) => {
+                faults.push(lift(e, p.base, at));
+                // Out of bounds under every model: there is no in-bounds branch left to
+                // continue on (contract 2).
+                AccessResult {
+                    value: None,
+                    faults,
+                }
+            }
+        }
+    }
+
+    pub fn write(&mut self, p: Pointer, bytes: &[u8], at: Span) -> AccessResult<()> {
+        if let Some(f) = self.state_fault(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(e) = self.entry(p.base)
+            && let Some(o) = e.obj.as_ref()
+            && let Err(err @ AccessError::OutOfBounds { .. }) =
+                o.check_only(p.off, bytes.len() as u64)
+        {
+            return AccessResult::fault(lift(err, p.base, at));
+        }
+        let mut faults: Vec<MemFault> = self
+            .align_fault(p.base, p.off, bytes.len() as u64, at)
+            .into_iter()
+            .collect();
+        let ro = self.entry(p.base).is_some_and(|e| e.readonly);
+        let Some(e) = self.entry_mut(p.base) else {
+            return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
+        };
+        if ro {
+            faults.push(MemFault::ReadOnly {
+                obj: p.base,
+                off: p.off,
+                at,
+            });
+            return AccessResult {
+                value: None,
+                faults,
+            };
+        }
+        let obj = e.obj.as_mut().expect("materialized");
+        match obj.write_bytes(p.off, bytes) {
+            Ok(()) => AccessResult {
+                value: Some(()),
+                faults,
+            },
+            Err(err) => {
+                faults.push(lift(err, p.base, at));
+                AccessResult {
+                    value: None,
+                    faults,
+                }
+            }
+        }
+    }
+
+    /// Bit-granular access at a **signed** byte offset (021 §3.1 with §1's premise).
+    ///
+    /// The byte offset is signed and the bit offset within it is not, which is what makes
+    /// `((vec_header_t *)v)[-1].flags` expressible — the founding case the old
+    /// unsigned-only bit API could not spell.
+    pub fn read_bits(
+        &mut self,
+        p: Pointer,
+        lo_bit: u64,
+        n_bits: u64,
+        at: Span,
+    ) -> AccessResult<u128> {
+        if let Some(f) = self.state_fault(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        let Some(e) = self.entry(p.base) else {
+            return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
+        };
+        let obj = e.obj.as_ref().expect("materialized");
+        match abs_bit(p.off, lo_bit) {
+            None => AccessResult::fault(MemFault::OutOfBounds {
+                obj: p.base,
+                off: p.off,
+                size: n_bits.div_ceil(8),
+                obj_size: e.size,
+                at,
+            }),
+            Some(b) => match obj.read_bits(b, n_bits) {
+                Ok(v) => AccessResult {
+                    value: Some(v),
+                    faults: vec![],
+                },
+                Err(err) => AccessResult::fault(lift(err, p.base, at)),
+            },
+        }
+    }
+
+    pub fn write_bits(
+        &mut self,
+        p: Pointer,
+        lo_bit: u64,
+        n_bits: u64,
+        v: u128,
+        at: Span,
+    ) -> AccessResult<()> {
+        if let Some(f) = self.state_fault(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        let size = self.entry(p.base).map_or(0, |e| e.size);
+        let Some(e) = self.entry_mut(p.base) else {
+            return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
+        };
+        let obj = e.obj.as_mut().expect("materialized");
+        match abs_bit(p.off, lo_bit) {
+            None => AccessResult::fault(MemFault::OutOfBounds {
+                obj: p.base,
+                off: p.off,
+                size: n_bits.div_ceil(8),
+                obj_size: size,
+                at,
+            }),
+            Some(b) => match obj.write_bits(b, n_bits, v) {
+                Ok(()) => AccessResult {
+                    value: Some(()),
+                    faults: vec![],
+                },
+                Err(err) => AccessResult::fault(lift(err, p.base, at)),
+            },
+        }
+    }
+
+    pub fn free(&mut self, id: ObjectId, at: Span) -> AccessResult<()> {
+        match self.entry(id).map(|e| e.state) {
+            Some(ObjState::Freed(freed_at)) => AccessResult::fault(MemFault::DoubleFree {
+                obj: id,
+                freed_at,
+                at,
+            }),
+            Some(_) => {
+                self.entry_mut(id).unwrap().state = ObjState::Freed(at);
+                AccessResult {
+                    value: Some(()),
+                    faults: vec![],
+                }
+            }
+            None => AccessResult::fault(MemFault::NullDeref { off: 0, at }),
+        }
+    }
+
+    pub fn exit_scope(&mut self, id: ObjectId, at: Span) -> AccessResult<()> {
+        if let Some(e) = self.entry_mut(id) {
+            e.state = ObjState::OutOfScope(at);
+        }
+        AccessResult {
+            value: Some(()),
+            faults: vec![],
+        }
+    }
+
+    /// 021 §4: allocate-new + copy the retained prefix + free-old.
+    ///
+    /// Modeling it this way is what makes `vec_resize` analysable — the old pointer
+    /// becomes dangling and any surviving copy of it is reported, which is a real and
+    /// frequent VPP bug class. The new tail is **not** zeroed, because `realloc` does not
+    /// zero and a model that did would hide every read-of-uninitialized-tail bug.
+    pub fn realloc(&mut self, old: ObjectId, new_size: u64, at: Span) -> ObjectId {
+        let (kind, align, keep) = match self.entry(old) {
+            Some(e) => (e.kind, e.align, e.size.min(new_size)),
+            None => (ObjKind::Heap, 8, 0),
+        };
+        let new = self.alloc(kind, new_size, align, at);
+        if keep > 0
+            && let Some(src) = self
+                .entry(old)
+                .and_then(|e| e.obj.as_ref())
+                .and_then(|o| o.raw_bytes(0, keep))
+        {
+            let init = self
+                .entry(old)
+                .and_then(|e| e.obj.as_ref())
+                .map(|o| (0..keep * 8).map(|b| o.init_bit(b)).collect::<Vec<_>>());
+            if let Some(e) = self.entry_mut(new)
+                && let Some(o) = e.obj.as_mut()
+            {
+                let _ = o.write_bytes(0, &src);
+                if let Some(init) = init {
+                    o.restore_init(0, &init);
+                }
+            }
+        }
+        self.free(old, at);
+        new
+    }
+
+    /// 021 §4: `Live` heap objects unreachable from a root are leaks.
+    ///
+    /// Reachability is transitive, or every linked list reports every node but its head.
+    /// A freed object is not a leak — reporting both would double-count every correct
+    /// malloc/free pair — and neither is a stack object, or every return reports every
+    /// local.
+    pub fn leaks(&self) -> Vec<Leak> {
+        let mut reachable: Vec<ObjectId> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.root)
+            .map(|(i, _)| *i)
+            .collect();
+        let mut i = 0;
+        while i < reachable.len() {
+            let cur = reachable[i];
+            i += 1;
+            if let Some(e) = self.entry(cur) {
+                for &t in &e.points_to {
+                    if !reachable.contains(&t) {
+                        reachable.push(t);
+                    }
+                }
+            }
+        }
+        self.entries
+            .iter()
+            .filter(|(id, e)| {
+                e.kind == ObjKind::Heap && e.state == ObjState::Live && !reachable.contains(id)
+            })
+            .map(|(id, e)| Leak {
+                obj: *id,
+                allocated_at: e.origin,
+            })
+            .collect()
+    }
+}
+
+/// A signed byte offset plus an unsigned bit offset within it. `None` when the byte
+/// offset is negative, which the object-relative bit index cannot represent — the caller
+/// turns that into an out-of-bounds fault rather than wrapping.
+fn abs_bit(off: i64, lo_bit: u64) -> Option<u64> {
+    (off >= 0).then(|| off as u64 * 8 + lo_bit)
+}
+
+fn lift(e: AccessError, obj: ObjectId, at: Span) -> MemFault {
+    match e {
+        AccessError::OutOfBounds {
+            off,
+            size,
+            obj_size,
+        } => MemFault::OutOfBounds {
+            obj,
+            off,
+            size,
+            obj_size,
+            at,
+        },
+        AccessError::Uninitialized { off, bit } => MemFault::Uninitialized { obj, off, bit, at },
+        AccessError::BadRange {
+            want_bits,
+            max_bits,
+        } => MemFault::BadRange {
+            want_bits,
+            max_bits,
+            at,
+        },
+        AccessError::ReadOnly { off } => MemFault::ReadOnly { obj, off, at },
     }
 }

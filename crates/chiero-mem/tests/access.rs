@@ -105,7 +105,11 @@ fn a_misaligned_access_is_recorded_and_still_succeeds() {
         vec![2, 3, 4, 5],
         "the access must succeed; only the alignment is noted"
     );
-    assert!(r.faults.iter().any(|f| matches!(f, MemFault::Misaligned { .. })));
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Misaligned { .. }))
+    );
 }
 
 /// **021 contract 2: a concrete must-OOB access terminates.** It is out of bounds under
@@ -117,7 +121,10 @@ fn a_concrete_out_of_bounds_access_reports_and_yields_no_value() {
     let mut m = Memory::new();
     let o = m.alloc(ObjKind::Stack, 16, 8, sp(10));
     let r = m.read(ptr(o, 61), 4, sp(20));
-    assert!(r.value.is_none(), "there is no in-bounds branch to continue on");
+    assert!(
+        r.value.is_none(),
+        "there is no in-bounds branch to continue on"
+    );
     assert_eq!(r.faults.len(), 1);
     assert!(matches!(r.faults[0], MemFault::OutOfBounds { .. }));
 }
@@ -131,7 +138,12 @@ fn a_freed_object_is_checked_before_its_contents() {
     m.free(o, sp(200));
     let r = m.read(ptr(o, 0), 4, sp(300));
     assert!(r.value.is_none(), "no stale bytes");
-    assert_eq!(r.faults.len(), 1, "one fault, not also 'uninitialized': {:#?}", r.faults);
+    assert_eq!(
+        r.faults.len(),
+        1,
+        "one fault, not also 'uninitialized': {:#?}",
+        r.faults
+    );
     match r.faults[0] {
         MemFault::UseAfterFree { freed_at, at, .. } => {
             assert_eq!(freed_at, sp(200), "must name the free site");
@@ -150,11 +162,7 @@ fn a_second_free_is_a_double_free() {
     assert!(m.free(o, sp(200)).faults.is_empty());
     let r = m.free(o, sp(400));
     match &r.faults[..] {
-        [MemFault::DoubleFree {
-            freed_at,
-            at,
-            ..
-        }] => {
+        [MemFault::DoubleFree { freed_at, at, .. }] => {
             assert_eq!(*freed_at, sp(200));
             assert_eq!(*at, sp(400));
         }
@@ -186,11 +194,11 @@ fn use_after_scope_names_the_scope_that_ended() {
     m.write(ptr(o, 0), &[7; 4], sp(20));
     m.exit_scope(o, sp(50));
     match m.read(ptr(o, 0), 4, sp(60)).faults[..] {
-        [MemFault::UseAfterScope {
-            scope_ended_at,
-            at,
-            ..
-        }] => {
+        [
+            MemFault::UseAfterScope {
+                scope_ended_at, at, ..
+            },
+        ] => {
             assert_eq!(scope_ended_at, sp(50));
             assert_eq!(at, sp(60));
         }
@@ -227,7 +235,10 @@ fn a_readonly_object_rejects_writes_without_altering_bytes() {
     m.set_readonly(g);
     let r = m.write(ptr(g, 0), &[0xEE], sp(10));
     assert!(matches!(r.faults[..], [MemFault::ReadOnly { .. }]));
-    assert_eq!(m.read(ptr(g, 0), 4, sp(15)).value.unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(
+        m.read(ptr(g, 0), 4, sp(15)).value.unwrap(),
+        vec![1, 2, 3, 4]
+    );
 }
 
 /// **021 contract 9: `realloc` preserves the retained prefix and dangles the old
@@ -342,6 +353,44 @@ fn a_bitfield_below_the_user_pointer_is_expressible() {
     let r = m.read_bits(ptr(o, user - 8), 0, 5, sp(20));
     assert_eq!(r.value.unwrap(), 0b10110);
     assert!(r.faults.is_empty());
+
+    // `user - 8` *evaluates* to 0, so the case above cannot tell a signed byte offset
+    // apart from an implementation that ignores it — the same-answer trap that has now
+    // caught me three times. A bit access at a genuinely non-zero byte offset can.
+    let w = m.write_bits(ptr(o, 5), 3, 4, 0b1011, sp(30));
+    assert!(w.faults.is_empty(), "{:#?}", w.faults);
+    assert_eq!(m.read_bits(ptr(o, 5), 3, 4, sp(40)).value.unwrap(), 0b1011);
+    assert!(
+        m.read_bits(ptr(o, 0), 3, 4, sp(50))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "byte 0's bits were not the ones written"
+    );
+}
+
+/// **`realloc` preserves the value *and* the initialization status**, not just the bytes.
+///
+/// 021 contract 6 makes the point about symbolic offsets — the two paths must agree on
+/// the `(value, initialization-status)` pair, not merely the value — and it applies here
+/// too: copying bytes while marking them all initialized would silently launder an
+/// uninitialized prefix into a clean one, hiding exactly the bug `vec_resize` analysis
+/// exists to find.
+#[test]
+fn realloc_preserves_initialization_status_not_just_bytes() {
+    let mut m = Memory::new();
+    let old = m.alloc(ObjKind::Heap, 16, 8, sp(100));
+    // Only bytes 4..8 are written; 0..4 are never touched.
+    m.write(ptr(old, 4), &[1, 2, 3, 4], sp(110));
+    let new = m.realloc(old, 16, sp(200));
+    assert!(
+        m.read(ptr(new, 0), 4, sp(210))
+            .faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Uninitialized { .. })),
+        "the uninitialized prefix must stay uninitialized after realloc"
+    );
+    assert!(m.read(ptr(new, 4), 4, sp(220)).faults.is_empty());
 }
 
 /// A hostile or merely unconstrained allocation size must produce a fault, not kill the
