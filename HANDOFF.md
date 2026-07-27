@@ -863,8 +863,45 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    solver never gave would prune the path escalation exists to explore; reporting would
    invent a finding. Nothing exercised that branch until mutation showed it.
 
+   **WAVE 10 — symbolic-layer review COMPLETE and applied** (39% escape; `2b7d4eb`/
+   `d812223` solver, `f547b50`/`0a339d4` mem, `e9d2df5` witness; 323 tests).
+
+   *Solver — five emissions z3 rejects outright, all from one guess.* `to_smtlib` inferred
+   a term's sort from its **width**, which cannot work: predicates are stored width-1, so a
+   one-bit bitvector and a `Bool` are indistinguishable. Now constants are always
+   bit-vectors and **coercion happens where the context knows what it needs** (`smt_bool`
+   wraps as `(= t #b1)`, `smt_bv` as `(ite t #b1 #b0)`). Two of the five were holes in my
+   own earlier fix: a **mixed** conjunction fell through to `bvand` over a `Bool` because
+   the guard demanded *both* operands be boolean, and `smt_is_bool` never recursed through
+   nested connectives. `try_concat` bounds the payload width.
+
+   *Memory — the unifying defect was two views of one object.* Concrete `data` and the
+   `sym` overlay were never reconciled: a concrete write left a stale symbol behind (wrong
+   **value**, not a missing finding) and a concrete read of a symbolic byte returned zero
+   with no fault, which §3 names as the commonest way a symbolic executor is confidently
+   wrong. Also fixed: a write past the threshold **promoted and discarded the write**, then
+   reported those bytes as definitely uninitialized — manufacturing the false-positive
+   class §3.1 exists to prevent, from inside the code meant to prevent it; `memoize_fresh`
+   upgraded `Cond` to `Yes` as a side effect of reading a *neighbour*; OOB candidates were
+   dropped silently when a feasible set spilling past the end **is** the overflow; the
+   candidate constant was masked to `width(off)`, turning candidate 300 into `off == 44`;
+   `readonly` held on one write path of three.
+
+   *And my newest commit's own bug:* `read_sym`/`write_sym` computed a witness and then
+   proceeded at hardcoded **offset 0**, so a read with `i == 4` pinned returned byte 0 —
+   bounds-checked and thrown away, the wrong answer wearing the checking as credentials.
+
    **STILL OWED:** `Repr::Array` records the promotion decision but the array-theory
-   read/write paths are not implemented; symbolic *base* pointers and the fork sink
+   read/write paths are not implemented — **so contract 6's "the two paths agree" cannot
+   be tested and the current test compares the Bytes path to itself**; the promotion test
+   is also self-defeating (its `before` pass calls `read`, which memoizes, so it mutates
+   what it measures); `InitBit::Cond` drops the `Term` the spec's `Cond(Term)` carries, so
+   `MaybeUninitialized` has no guard to discharge and §3.1's "collapses when the guard
+   folds to a constant" is unimplementable as built; `read_term` does not memoize (so one
+   uninitialized byte is reported on every read, and the byte API and term API disagree
+   about the same byte); contract 6b is enforced only for the byte API, not the bit API;
+   `to_smtlib` has **no DAG sharing** — a 22-node shared DAG serializes to ~54 MB, which
+   `--dump-queries` and every backend query pay; symbolic *base* pointers and the fork sink
    (§5.1, contracts 16, 17); lazy initialization (§6, contracts 18, 19); arenas (13c, 13d);
    §7.2's symbolic base addresses and `PointerBitInspection` (17b).
 
