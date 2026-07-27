@@ -178,11 +178,67 @@ fn a_backend_emitting_garbage_is_an_error_not_an_answer() {
     );
 }
 
-// ⚠️ **Owed: contract 15's other two causes.** `backend_errors` documents itself as
-// counting three things — unparseable output, a model that failed independent evaluation,
-// and a dead process — and only the first is pinned here, so dropping the increment on
-// the second passes the whole suite (review demonstrated it). Testing it needs a backend
-// that speaks the SMT-LIB session protocol correctly and *lies* — answers `sat` with a
-// model that does not satisfy the query — and a first attempt with a shell script hung,
-// because a fake that does not answer every command exactly is indistinguishable from a
-// slow one. The honest note is better than the test that was going to be written badly.
+/// **022 contract 15, the second of its three causes.** `backend_errors` documents itself
+/// as counting unparseable output, **a model that failed independent evaluation**, and a
+/// dead process; only the first was pinned, so deleting the increment on the second passed
+/// the whole suite. Found by review.
+///
+/// A backend that returns a *wrong model* is the failure tier 2 cannot reason its way out
+/// of — §3's independent evaluator exists for exactly it — so the counter is how a run
+/// that quietly stopped deciding anything is told from a run over a hard program.
+///
+/// The fake has to speak the session protocol *correctly* and lie only in its answer: a
+/// first attempt in shell hung, because a fake that does not answer every command exactly
+/// is indistinguishable from a slow one.
+#[test]
+fn a_model_that_fails_validation_is_counted_as_a_backend_error() {
+    let dir = std::env::temp_dir().join(format!("chiero-liar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let script = dir.join("liar.py");
+    // Answers `sat`, then hands back a syntactically valid model that does **not** satisfy
+    // the query: every variable is zero, for a query that says one of them is 7.
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env python3
+import sys
+decls = []
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("(declare-const "):
+        decls.append(line.split()[1])
+    elif line == "(check-sat)":
+        print("sat", flush=True)
+    elif line == "(get-model)":
+        body = " ".join(
+            "(define-fun %s () (_ BitVec 32) #x00000000)" % d for d in decls
+        )
+        print("(%s)" % body, flush=True)
+"#,
+    )
+    .expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let y = a.var(Sort::BitVec(32), "y");
+    let seven = a.bv(32, 7);
+    let eq = a.eq(x, seven);
+    // Nonlinear, so tier 1 gives up and the liar is consulted.
+    let p = a.mul(x, y);
+    let hard = a.eq(p, seven);
+    let mut s = TieredSolver::with_backend(SmtLib::at(&script));
+    let r = s.check(&mut a, &[eq, hard]);
+    assert!(
+        matches!(r, CheckResult::Unknown(UnknownReason::BackendError(_))),
+        "a model that does not satisfy the query is not an answer: {r:?}"
+    );
+    assert_eq!(
+        s.stats().backend_errors,
+        1,
+        "and it is counted, like the unparseable case"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
