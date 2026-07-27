@@ -4925,3 +4925,138 @@ fn a_global_has_its_own_object_and_const_means_readonly() {
         r.findings()
     );
 }
+
+/// **`LoadBits`/`StoreBits` are why 021 §3.1's init mask is bit-granular at all.** A
+/// per-byte mask can only answer "yes" for a whole bitfield word — missing every real
+/// uninitialized-bitfield read — or "no", firing on every correct one. The mask has been
+/// bit-granular from the start and the engine had no instruction that could reach it.
+///
+/// `session_types.h` packs nine bitfields into one `u32`, several of them unnamed padding
+/// nobody writes, so this is the shape that decides whether VPP is analysable.
+#[test]
+fn bitfields_are_read_and_written_at_bit_granularity() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // Write only bits 4..7 of the word. Everything else stays untouched —
+                // which is the point: a byte-granular implementation would initialize
+                // the whole byte and lose the finding below.
+                inst(InstKind::StoreBits {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0b1011,
+                    }),
+                    unit: CTy::Int(32),
+                    bits: BitRange { off: 4, width: 4 },
+                    align: 4,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::LoadBits {
+                        addr: Operand::Value(ValueId(0)),
+                        unit: CTy::Int(32),
+                        bits: BitRange { off: 4, width: 4 },
+                        signed: false,
+                        align: 4,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    assert_eq!(r.states()[0].return_value_bits(&mut a), Some(0b1011));
+}
+
+/// **The neighbouring bits are still uninitialized**, and reading them is a finding. This
+/// is the half a byte-granular mask cannot express: bits 4..7 were written and bits 0..3
+/// of the same byte were not, so an implementation that rounded to bytes reports nothing
+/// here and a real uninitialized-bitfield read goes missing.
+#[test]
+fn a_neighbouring_bitfield_is_still_uninitialized() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::StoreBits {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Int {
+                        bits: 32,
+                        val: 0b1011,
+                    }),
+                    unit: CTy::Int(32),
+                    bits: BitRange { off: 4, width: 4 },
+                    align: 4,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::LoadBits {
+                        addr: Operand::Value(ValueId(0)),
+                        unit: CTy::Int(32),
+                        bits: BitRange { off: 0, width: 4 },
+                        signed: false,
+                        align: 4,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings()
+            .iter()
+            .any(|f| f.contains("uninitialized-read")),
+        "{:#?}",
+        r.findings()
+    );
+    assert_ne!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(0),
+        "a fresh symbol, not the backing store's zero"
+    );
+}
