@@ -582,11 +582,18 @@ pub mod models {
         };
         // The terminator is part of the string, so the destination needs `n + 1`.
         let need = n + 1;
-        let have = cx
-            .mem()
-            .size_of_pub(dst.base)
-            .unwrap_or(0)
-            .saturating_sub(dst.off.max(0) as u64);
+        // From the **pointer**, not the base. `max(0)` measured a negative offset as
+        // the whole object, so a copy starting before the object reported success — the
+        // same mistake `strlen` had, on the other side of the call.
+        let have = match u64::try_from(dst.off) {
+            Ok(off) => cx
+                .mem()
+                .size_of_pub(dst.base)
+                .unwrap_or(0)
+                .saturating_sub(off),
+            // Before the object there is no room at all, whatever the object's size.
+            Err(_) => 0,
+        };
         if need > have {
             let msg = format!(
                 "strcpy: destination holds {have} bytes and the source needs {need} \

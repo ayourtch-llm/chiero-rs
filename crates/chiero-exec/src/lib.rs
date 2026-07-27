@@ -1138,6 +1138,27 @@ impl<'m> Engine<'m> {
                 };
                 Value::Ptr(Pointer { base, off: 0 })
             }
+            // 020 §4.1 keeps this distinct from `Add` so provenance survives the
+            // arithmetic: the object comes through untouched and only the offset moves.
+            // The offset is **signed** — vppinfra's vector header sits below the user
+            // pointer, so a forward-only walk cannot express `vec_len(v)`.
+            RValue::PtrAdd { base, off } => {
+                let Some(Value::Ptr(p)) = self.operand(a, s, base) else {
+                    return self.lowering_gap(s, span, "PtrAdd on a non-pointer base");
+                };
+                let Some(t) = self.scalar(a, s, off) else {
+                    return self.lowering_gap(s, span, "PtrAdd with a non-scalar offset");
+                };
+                let Ok(c) = a.eval_ground(t) else {
+                    // A symbolic offset is 021 §7's territory and is owed; guessing a
+                    // concrete one here would be a fabricated address.
+                    return self.lowering_gap(s, span, "PtrAdd with a symbolic offset");
+                };
+                Value::Ptr(Pointer {
+                    base: p.base,
+                    off: p.off.wrapping_add(c.signed() as i64),
+                })
+            }
             // 023 §7's table puts a `LoweringGap` under **`Unknown`**, not
             // `Approximated`: an unimplemented lowering is not a modeling lie, it is the
             // engine not knowing.
@@ -1216,8 +1237,15 @@ impl<'m> Engine<'m> {
                             let t = cx.arena().bv(64, n as u128);
                             chiero_model::ModelOutcome::Value(Some(chiero_model::Value::Scalar(t)))
                         }
-                        // A length nobody established is not a number to hand back.
-                        _ => chiero_model::ModelOutcome::Value(None),
+                        // A length nobody established is not a number to hand back —
+                        // and `Value(None)` was not the way to say so. It left
+                        // `translated` true, so the `dst` fallback minted a *fresh
+                        // unconstrained* symbol and the run stayed `Exact`. `Finding`
+                        // carries the reason and marks the gap.
+                        other => chiero_model::ModelOutcome::Finding(format!(
+                            "strlen: no length was established ({other:?}), so the result \
+                             is unknown"
+                        )),
                     }
                 }),
                 "strcpy" => match (ptr(0), ptr(1)) {
@@ -1248,6 +1276,13 @@ impl<'m> Engine<'m> {
                             translated = false;
                         }
                     }
+                }
+                // The payload is the *whole point* of `Finding`; matching only `Value`
+                // dropped it. It is still a gap — the call did not produce a value — so
+                // `translated` stays false and the assumption is recorded too.
+                Some(ModelOutcome::Finding(msg)) => {
+                    findings.push(msg);
+                    translated = false;
                 }
                 Some(_) => translated = false,
                 None => translated = false,

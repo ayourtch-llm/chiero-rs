@@ -352,6 +352,13 @@ impl MemObject {
     }
 
     /// The symbolic byte at `b`, if the overlay holds one.
+    /// Place a symbolic byte at a concrete offset, without the checks
+    /// `Memory::write_sym_byte` makes — the caller has already bounds-checked. Used by
+    /// `copy`, which has to reinstate the overlay `write_bytewise` cleared.
+    pub fn set_sym_at(&mut self, b: u64, t: Term) {
+        self.sym.insert(b, t);
+    }
+
     pub fn sym_at(&self, b: u64) -> Option<Term> {
         self.sym.get(&b).copied()
     }
@@ -747,6 +754,11 @@ impl AddressSpace {
 // ---------------------------------------------------------------------------
 // The access API and object lifetime (021 §4, §5).
 // ---------------------------------------------------------------------------
+
+/// What a byte-wise read hands back: the bytes, their per-bit initialization, and the
+/// symbolic overlay. All three travel together — carrying the bytes without the overlay
+/// is what turned a `memcpy` of a symbolic field into a fabricated constant.
+type RawBytes = (Vec<u8>, Vec<InitBit>, Vec<Option<Term>>);
 
 /// Above this, an object is not materialized and every access to it faults.
 ///
@@ -1440,7 +1452,7 @@ impl Memory {
         // written, so a copy out of freed memory is a use-after-free like any other.
         let read = self.read_raw(src, size, at);
         let mut faults = read.faults;
-        let Some((bytes, init)) = read.value else {
+        let Some((bytes, init, sym)) = read.value else {
             return AccessResult {
                 value: None,
                 faults,
@@ -1475,6 +1487,14 @@ impl Memory {
             && let Some(o) = e.obj.as_mut()
         {
             o.restore_init(dst.off as u64 * 8, &init);
+            // The **triple** carries across. `write_bytewise` cleared the destination's
+            // overlay for every byte it touched, which is right for the concrete ones and
+            // exactly wrong for these.
+            for (i, t) in sym.iter().enumerate() {
+                if let Some(t) = t {
+                    o.set_sym_at(dst.off as u64 + i as u64, *t);
+                }
+            }
         }
         AccessResult {
             value: Some(()),
@@ -1507,12 +1527,7 @@ impl Memory {
     /// memoizing would mark the source initialized, defeating the propagation this
     /// function exists for. The finding belongs at the eventual *use* of the destination,
     /// which is why the status is carried rather than consumed.
-    fn read_raw(
-        &mut self,
-        p: Pointer,
-        size: u64,
-        at: Span,
-    ) -> AccessResult<(Vec<u8>, Vec<InitBit>)> {
+    fn read_raw(&mut self, p: Pointer, size: u64, at: Span) -> AccessResult<RawBytes> {
         // Byte-wise, so no alignment fault here — but every *other* check `read` makes
         // still applies. Omitting them let a copy launder what a read refuses: a promoted
         // object served its frozen `Bytes` view, and a symbolic byte came back concrete
@@ -1543,16 +1558,15 @@ impl Memory {
         let init = (0..size * 8)
             .map(|b| obj.init_bit(p.off as u64 * 8 + b))
             .collect::<Vec<_>>();
-        let mut faults = Vec::new();
-        if let Some(b) = obj.first_symbolic(p.off, size) {
-            faults.push(MemFault::SymbolicByte {
-                obj: p.base,
-                off: b as i64,
-                at,
-            });
-        }
+        // The overlay comes **with** the bytes. Reporting a `SymbolicByte` fault and then
+        // handing back the stale concrete byte behind it stopped the copy being *silent*
+        // without stopping it being a *constant* — the destination held a fabricated
+        // value and read clean forever after. A byte-wise copy is exactly the operation
+        // that can answer for a symbolic byte, which is what a scalar read cannot do.
+        let sym: Vec<Option<Term>> = (0..size).map(|b| obj.sym_at(p.off as u64 + b)).collect();
+        let faults = Vec::new();
         AccessResult {
-            value: Some((bytes, init)),
+            value: Some((bytes, init, sym)),
             faults,
         }
     }

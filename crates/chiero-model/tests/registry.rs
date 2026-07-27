@@ -1016,10 +1016,7 @@ fn strcpy_measures_destination_room_from_the_pointer_not_the_base() {
     let mut cx = ctx(&mut m, &mut a);
     let out = models::strcpy(
         &mut cx,
-        Pointer {
-            base: dst,
-            off: -4,
-        },
+        Pointer { base: dst, off: -4 },
         Pointer { base: src, off: 0 },
         StringPolicy::default(),
     );

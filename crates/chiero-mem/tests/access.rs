@@ -988,7 +988,7 @@ fn a_copys_source_side_refuses_what_a_read_refuses() {
     let mut a = chiero_solver::TermArena::new();
     let mut m = Memory::new();
     let src = m.alloc(ObjKind::Heap, 16, 8, sp(1));
-    let dst = m.alloc(ObjKind::Heap, 16, 8, sp(2));
+    let _dst = m.alloc(ObjKind::Heap, 16, 8, sp(2));
     m.set(ptr(src, 0), 1, 16, sp(3));
     let x = a.var(chiero_solver::Sort::BitVec(8), "x");
     m.write_sym_byte(ptr(src, 2), x, sp(4));

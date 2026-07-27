@@ -3039,3 +3039,71 @@ fn a_findings_only_outcome_still_reports() {
         r.findings()
     );
 }
+
+/// **`PtrAdd` was a lowering gap** — every pointer walk in a program degraded the run to
+/// `Unknown`, which is why building a string in the contract-9 fixture needed a second
+/// `memset` that never landed. 020 §4.1 keeps `PtrAdd` distinct from `Add` precisely so
+/// provenance survives arithmetic, so the object has to come through unchanged.
+///
+/// The offset is **signed** (021 §2): vppinfra's vector header lives below the user
+/// pointer, so a model that could only step forward could not express `vec_len(v)` at all.
+#[test]
+fn ptr_add_keeps_the_object_and_takes_a_signed_offset() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 12 }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(1)),
+                        off: Operand::Const(Const::Int { bits: 64, val: -4 }),
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    let base = match s.local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        s.local(ValueId(1)),
+        Some(Value::Ptr(chiero_mem::Pointer { base, off: 12 }))
+    );
+    assert_eq!(
+        s.local(ValueId(2)),
+        Some(Value::Ptr(chiero_mem::Pointer { base, off: 8 }))
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "pointer arithmetic is not an approximation: {:#?}",
+        s.assumptions()
+    );
+}
