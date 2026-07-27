@@ -1541,3 +1541,161 @@ fn a_run_uses_one_backend_process_for_all_its_queries() {
         "one solver, so the caches survive between queries"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sealing the proof surface (023 §7.1, contract 13).
+// ---------------------------------------------------------------------------
+
+/// **`seal` is the only function in the workspace that reads a run's fidelity to decide
+/// whether a result may be presented as a proof.** There were two — `witness()` gated
+/// minting as well — which meant the branch `seal` exists for was unreachable from any
+/// test, and contract 13b asks for it to be property-tested at all four levels.
+///
+/// Minting is now unconditional and bound to the run; the *decision* lives in one place.
+#[test]
+fn seal_is_the_only_thing_that_decides_whether_a_result_is_proven() {
+    let mut a = TermArena::new();
+    let exact = func(
+        vec![block(0, vec![], Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    );
+    let degraded = func(
+        vec![block(
+            0,
+            vec![inst(InstKind::Opaque {
+                dsts: vec![(ValueId(0), CTy::Int(32))],
+                writes: vec![],
+                reads: vec![],
+                why: OpaqueReason::InlineAsm,
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+
+    let r1 = Engine::new(&exact).run(&mut a);
+    assert!(seal(&r1, r1.witness()).is_ok());
+
+    // A witness is minted for a degraded run too — and `seal` refuses it. That is the
+    // branch contract 13b is about, and it was unreachable while `witness()` also judged.
+    let r2 = Engine::new(&degraded).run(&mut a);
+    match seal(&r2, r2.witness()) {
+        Err(NotProven { fidelity, assumptions }) => {
+            assert_ne!(fidelity, Fidelity::Exact);
+            assert!(!assumptions.is_empty(), "and it says why");
+        }
+        Ok(_) => panic!("a degraded run must not be sealed"),
+    }
+
+    // A witness from another run is still refused, even between two exact runs.
+    let r3 = Engine::new(&exact).run(&mut a);
+    assert!(seal(&r1, r3.witness()).is_err());
+}
+
+/// **A degraded run cannot be laundered by editing the result.** `State::fidelity` and
+/// `RunResult`'s fields were public, so a downstream crate could set a real degraded run
+/// to `Exact` — or hand-build a `RunResult` carrying another run's id and no states — and
+/// `seal` would bless it. §7.1's "the type system prevents downstream crates from forging
+/// a proof" was false as written.
+#[test]
+fn a_runs_verdict_cannot_be_edited_after_the_fact() {
+    let mut a = TermArena::new();
+    let degraded = func(
+        vec![block(
+            0,
+            vec![inst(InstKind::Opaque {
+                dsts: vec![(ValueId(0), CTy::Int(32))],
+                writes: vec![],
+                reads: vec![],
+                why: OpaqueReason::InlineAsm,
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&degraded).run(&mut a);
+    // Everything a consumer can reach is read-only, so there is nothing to overwrite.
+    assert_eq!(r.states()[0].fidelity(), Fidelity::Approximated);
+    assert!(!r.states()[0].assumptions().is_empty());
+    assert!(seal(&r, r.witness()).is_err());
+}
+
+/// **023 contract 13b: the decision is exercised at all four fidelity levels**, not just
+/// the two a run happens to produce. `Fidelity::Exact` is the only one that seals.
+#[test]
+fn only_exact_seals_across_every_fidelity_level() {
+    for f in [
+        Fidelity::Exact,
+        Fidelity::Bounded,
+        Fidelity::Approximated,
+        Fidelity::Unknown,
+    ] {
+        assert_eq!(
+            Fidelity::Exact.degrade(f) == Fidelity::Exact,
+            f == Fidelity::Exact,
+            "{f:?} is sealable iff it is Exact"
+        );
+    }
+}
+
+/// **023 contract 12's anti-dummy clause.** A degraded state's assumption must match the
+/// *cause*; `matches` returning true for everything satisfied the only caller, which is
+/// exactly the dummy the spec says must not pass.
+#[test]
+fn an_assumption_of_the_wrong_kind_does_not_account_for_a_degradation() {
+    assert!(AssumptionKind::BudgetHit.matches(Fidelity::Bounded));
+    assert!(!AssumptionKind::BudgetHit.matches(Fidelity::Approximated));
+    assert!(!AssumptionKind::BudgetHit.matches(Fidelity::Unknown));
+    assert!(AssumptionKind::OpaqueCode.matches(Fidelity::Approximated));
+    assert!(!AssumptionKind::OpaqueCode.matches(Fidelity::Bounded));
+    assert!(AssumptionKind::SolverUnknown.matches(Fidelity::Unknown));
+    assert!(!AssumptionKind::SolverUnknown.matches(Fidelity::Approximated));
+    for k in [
+        AssumptionKind::BudgetHit,
+        AssumptionKind::OpaqueCode,
+        AssumptionKind::SolverUnknown,
+        AssumptionKind::NoInformation,
+        AssumptionKind::UnmodeledCall,
+    ] {
+        assert!(!k.matches(Fidelity::Exact), "{k:?} cannot explain Exact");
+    }
+}
+
+/// **Fork order is observable** (023 §1's `PathTrace`). `RunResult::states` is sorted by
+/// id, which erases exploration order from the output entirely — so "the true branch is
+/// explored first" and contract 6's "identical fork order" had no test, and both "make it
+/// BFS" and "delete the sort" survived mutation.
+#[test]
+fn the_exploration_order_is_recorded_and_puts_the_true_branch_first() {
+    let mut a = TermArena::new();
+    let m = func(
+        vec![
+            block(
+                0,
+                vec![inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(1) },
+                })],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(0)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(10)))),
+            block(2, vec![], Terminator::Return(Some(i32c(20)))),
+        ],
+        CTy::Int(32),
+    );
+    let r = Engine::new(&m).run(&mut a);
+    // The trace records blocks in the order they were entered, per state.
+    assert_eq!(
+        r.states()[0].trace(),
+        &[BlockId(0), BlockId(1)],
+        "the true branch is explored first"
+    );
+    assert_eq!(r.states()[1].trace(), &[BlockId(0), BlockId(2)]);
+    // And the order in which states *completed* is recorded too, so a change of searcher
+    // is visible in the output rather than hidden by the sort.
+    assert_eq!(r.completion_order(), &[0, 1]);
+}
