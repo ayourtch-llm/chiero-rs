@@ -697,12 +697,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    defaulting to `Unreachable`, which would silently accept a truncated block that then
    verifies clean.
 
-   **Next in `chiero-cir`:** the remaining 020 contracts — the optional passes
-   (`mem2reg`, `simplify_cfg`, `const_fold`) with their observational-transparency
-   requirement (§9), and the corpus of `.cir` fixtures under `tests/corpus/cir/` that
-   contracts 1 and 5 quantify over ("every module in the corpus"), which currently has
-   no files. **Then `chiero-solver`**, which is the next crate on M1's critical path and
-   the one with the heaviest validation burden (022 §7).
+   **`.cir` corpus DONE** (`95291f7` red, `3d7c594` green). Seven fixtures under
+   `tests/corpus/cir/`, five tests, 020 contracts 1/2/5 no longer vacuous. Two guards:
+   a count guard and a **coverage guard naming the constructs the engine will be built
+   against**, so "every module in the corpus" is a strong quantifier and not merely a
+   large one. Verified the guard bites by deleting the fixtures on a scratch copy.
+
+   **The corpus found a verifier bug on its first run**: parameters did not dominate
+   instruction 0 of the entry block (both at position 0, strict `<`), so the commonest
+   shape in real CIR was reported as an undominated use. It survived 21 verifier tests
+   because every one was hand-built around constants. *Write fixtures the way lowering
+   will emit CIR, not the way a unit test is convenient.*
+
+   **Next in `chiero-cir`:** the optional passes (§9) with their
+   observational-transparency requirement, and the remaining 020 contracts (31–44:
+   `Opaque` dsts, vector ops, varargs, `AllocaDyn`, `Undef`, volatile stores).
+   **Then `chiero-solver`** — the next crate on M1's critical path and the one with the
+   heaviest validation burden (022 §7): `solver-lite`'s `Unsat` may only come from the
+   §3.2 fragment, every `Sat` needs an independently-evaluated model, and contract 7b's
+   exhaustive small-width enumeration is the check that closes the asymmetry without
+   needing z3.
 
    **Still owed in `chiero-span`**: `Diagnostic` (010 §7) with macro-backtrace rendering,
    which 001 §5 says lives here; contract 11 (re-lex round trip, needs a lexer);
