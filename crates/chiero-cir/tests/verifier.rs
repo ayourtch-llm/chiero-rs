@@ -1061,3 +1061,216 @@ fn an_opaque_that_declares_no_effect_at_all_is_rejected() {
     m.funcs[0].blocks[0].term = Terminator::Return(None);
     assert_rejects(&m, VerifyErrorKind::OpaqueWithoutEffect);
 }
+
+/// **Rule 1 at every operand position.**
+///
+/// The rule was *applied* at twelve operand positions and *tested* at two. Nine
+/// mutations that deleted an operand from the dominance walk all survived — including
+/// `AllocaDyn::count`, which 020 contract 40 is written specifically about: "`AllocaDyn`'s
+/// `count` operand is subject to verifier rule 1 like any other use, and a module where
+/// it is defined in a non-dominating block is rejected." The code happened to be right
+/// and nothing proved it, which is the same thing as not having the rule.
+///
+/// Each case plants a value defined in `bb1` into one operand position in `entry`. Since
+/// `entry` precedes `bb1`, the definition cannot dominate the use.
+#[test]
+fn rule_one_applies_at_every_operand_position() {
+    // The undominated value, defined in bb1 and used in entry.
+    let far = ValueId(50);
+    let far_op = Operand::Value(far);
+
+    let cases: Vec<(&str, Vec<Inst>, Terminator)> = vec![
+        (
+            "store value",
+            vec![inst(InstKind::Store {
+                addr: Operand::Const(Const::Null),
+                val: far_op.clone(),
+                ty: CTy::Int(32),
+                align: 4,
+                vol: Volatility::Normal,
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "copymem size",
+            vec![inst(InstKind::CopyMem {
+                dst: Operand::Const(Const::Null),
+                src: Operand::Const(Const::Null),
+                size: far_op.clone(),
+                align: 8,
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "setmem fill byte",
+            vec![inst(InstKind::SetMem {
+                dst: Operand::Const(Const::Null),
+                byte: far_op.clone(),
+                size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            // 020 contract 40, by name.
+            "allocadyn count",
+            vec![inst(InstKind::AllocaDyn {
+                dst: ValueId(30),
+                alloca: AllocaId(0),
+                elem: CTy::Int(8),
+                count: far_op.clone(),
+                align: 8,
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "bin rhs",
+            vec![inst(InstKind::Assign {
+                dst: ValueId(31),
+                rv: RValue::Bin {
+                    op: BinOp::Add,
+                    a: i32c(2),
+                    b: far_op.clone(),
+                    ty: CTy::Int(32),
+                },
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "select cond",
+            vec![inst(InstKind::Assign {
+                dst: ValueId(32),
+                rv: RValue::Select {
+                    cond: far_op.clone(),
+                    t: i32c(1),
+                    f: i32c(2),
+                },
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "ptradd offset",
+            vec![inst(InstKind::Assign {
+                dst: ValueId(33),
+                rv: RValue::PtrAdd {
+                    base: Operand::Const(Const::Null),
+                    off: far_op.clone(),
+                },
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "opaque write address",
+            vec![inst(InstKind::Opaque {
+                dsts: vec![],
+                writes: vec![OpaqueWrite {
+                    addr: far_op.clone(),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                }],
+                reads: vec![],
+                why: OpaqueReason::InlineAsm,
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "opaque read",
+            vec![inst(InstKind::Opaque {
+                dsts: vec![],
+                writes: vec![],
+                reads: vec![far_op.clone()],
+                why: OpaqueReason::InlineAsm,
+            })],
+            Terminator::Goto(BlockId(1)),
+        ),
+        (
+            "switch scrutinee",
+            vec![],
+            Terminator::Switch {
+                ty: CTy::Int(32),
+                scrut: far_op.clone(),
+                cases: vec![(1, BlockId(1))],
+                default: BlockId(1),
+            },
+        ),
+        (
+            "branch condition",
+            vec![],
+            Terminator::Br {
+                cond: far_op.clone(),
+                t: BlockId(1),
+                f: BlockId(1),
+            },
+        ),
+    ];
+
+    for (what, insts, term) in cases {
+        let mut m = valid_module();
+        make_void(&mut m);
+        m.funcs[0].allocas = vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(8),
+            count: 4,
+            align: 8,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }];
+        m.funcs[0].blocks[0].insts = insts;
+        m.funcs[0].blocks[0].term = term;
+        // bb1 defines the value, *after* entry has already used it.
+        m.funcs[0].blocks.push(block(
+            1,
+            vec![inst(InstKind::Assign {
+                dst: far,
+                rv: RValue::Bin {
+                    op: BinOp::Add,
+                    a: i32c(1),
+                    b: i32c(1),
+                    ty: CTy::Int(32),
+                },
+            })],
+            Terminator::Return(None),
+        ));
+
+        let errs = verify(&m);
+        assert!(
+            errs.iter()
+                .any(|e| e.kind == VerifyErrorKind::UseNotDominated),
+            "rule 1 does not reach the {what} operand; got: {errs:#?}"
+        );
+    }
+}
+
+/// The companion property: rule 1 must not fire on a *dominated* use in any of the same
+/// positions. Without this, a verifier that reported `UseNotDominated` unconditionally
+/// would pass the test above — and the whole corpus would stop verifying, which is a
+/// louder failure but not one the test itself could distinguish.
+#[test]
+fn rule_one_accepts_a_dominated_use_in_the_same_positions() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    let near = Operand::Value(ValueId(0)); // defined by valid_module in entry
+    m.funcs[0].blocks[0].insts.push(inst(InstKind::Store {
+        addr: Operand::Const(Const::Null),
+        val: near.clone(),
+        ty: CTy::Int(32),
+        align: 4,
+        vol: Volatility::Normal,
+    }));
+    m.funcs[0].blocks[0].term = Terminator::Br {
+        cond: near,
+        t: BlockId(1),
+        f: BlockId(1),
+    };
+    m.funcs[0]
+        .blocks
+        .push(block(1, vec![], Terminator::Return(None)));
+    let errs: Vec<_> = verify(&m)
+        .into_iter()
+        .filter(|e| e.kind == VerifyErrorKind::UseNotDominated)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "a dominated use must be accepted: {errs:#?}"
+    );
+}
