@@ -1107,12 +1107,16 @@ fn nothing_unmodeled_can_end_at_exact() {
             ),
         ),
         (
-            "a dropped store",
+            // A store *through an integer* is still a gap — there is no object to write
+            // to. A store through `Const::Null` used to be here and no longer belongs:
+            // stores are implemented now, so that one is a definite null-dereference
+            // finding with nothing approximate about it.
+            "a store through a non-pointer address",
             func(
                 vec![block(
                     0,
                     vec![inst(InstKind::Store {
-                        addr: Operand::Const(Const::Null),
+                        addr: i32c(4096),
                         val: i32c(7),
                         ty: CTy::Int(32),
                         align: 4,
@@ -2606,7 +2610,10 @@ fn free_of_a_stack_object_is_found_through_the_engine() {
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
     let m = Module {
         funcs: vec![caller, extern_fn(1, "free", vec![CTy::Ptr], CTy::Void)],
         ..Default::default()
@@ -4417,7 +4424,10 @@ fn a_store_is_visible_to_a_later_load() {
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
     let m = Module {
         funcs: vec![caller],
         ..Default::default()
@@ -4431,6 +4441,18 @@ fn a_store_is_visible_to_a_later_load() {
         r.states()[0].assumptions()
     );
     assert_eq!(r.states()[0].return_value_bits(&mut a), Some(0x01020304));
+    // **And the bytes are concrete afterwards.** Routing a ground value through the
+    // symbolic overlay reads back the same through `read_term`, so the term-level
+    // assertion above cannot see it — but a *concrete* read then refuses the bytes as
+    // symbolic, and every string model works on concrete reads.
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = r.states()[0].mem.clone();
+    let bytes = mem.read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY);
+    assert!(bytes.faults.is_empty(), "{:#?}", bytes.faults);
+    assert_eq!(bytes.value, Some(vec![4, 3, 2, 1]), "little-endian");
 }
 
 /// **A load of memory nobody wrote is a finding, not a zero.** 021 §3.1 names reading
@@ -4465,7 +4487,10 @@ fn a_load_of_unwritten_memory_reports_rather_than_reading_zero() {
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
     let m = Module {
         funcs: vec![caller],
         ..Default::default()
@@ -4538,7 +4563,10 @@ fn a_symbolic_store_reads_back_as_the_same_unknown() {
         )],
         CTy::Int(32),
     );
-    caller.allocas = vec![alloca(0, CTy::Int(32), 1)];
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
     let m = Module {
         funcs: vec![caller],
         ..Default::default()
@@ -4551,9 +4579,17 @@ fn a_symbolic_store_reads_back_as_the_same_unknown() {
         "{:#?}",
         r.states()[0].assumptions()
     );
+    // The arena is hash-consed, so the *same* unknown is the same `Term`. `x - x` would
+    // have been the tidier assertion if the arena folded it, and it does not — asserting
+    // on a fold that does not happen would have tested the arena, not the store.
+    let s = &r.states()[0];
     assert_eq!(
-        r.states()[0].return_value_bits(&mut a),
-        Some(0),
+        s.local(ValueId(2)),
+        s.local(ValueId(1)),
         "the value that came back is the value that went in"
+    );
+    assert!(
+        !matches!(s.local(ValueId(2)), Some(Value::Scalar(t)) if a.eval_ground(t).is_ok()),
+        "and it is still an unknown, not the model's bytes"
     );
 }

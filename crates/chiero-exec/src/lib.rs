@@ -13,7 +13,7 @@
 //! not have.
 
 use chiero_cir::*;
-use chiero_mem::{HavocFill, Memory, ObjKind, ObjectId, Pointer};
+use chiero_mem::{Endian, HavocFill, Memory, ObjKind, ObjectId, Pointer};
 use chiero_model::{
     AllocPolicy, HavocInit, HavocSpec, ModelCtx, ModelOutcome, ModelRegistry, Precision,
     StringPolicy,
@@ -723,6 +723,26 @@ impl<'m> Engine<'m> {
             InstKind::Call { dst, callee, args } => {
                 self.call(a, s, *dst, callee, args, i.span);
             }
+            // 020 §4: the memory instructions. Every fixture in the suite wrote memory
+            // through `memset` before these existed, which is how they stayed missing.
+            InstKind::Store {
+                addr,
+                val,
+                ty,
+                align,
+                ..
+            } => {
+                let (Some(Value::Ptr(p)), Some(t)) =
+                    (self.operand(a, s, addr), self.scalar(a, s, val))
+                else {
+                    self.lowering_gap(s, i.span, "a store through a non-pointer address");
+                    return;
+                };
+                let _ = align;
+                let size = size_of_cty(ty);
+                let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
             InstKind::Marker(_) => {}
             other => {
                 self.lowering_gap(s, i.span, &format!("{other:?}"));
@@ -1188,6 +1208,34 @@ impl<'m> Engine<'m> {
                     None => return self.lowering_gap(s, span, &format!("{op:?}")),
                 }
             }
+            // A load of memory nobody wrote is a **finding plus a fresh symbol**, never
+            // a zero — 021 §3.1 names reading uninitialized bytes as zero the single most
+            // common way a symbolic executor produces confidently wrong results, and the
+            // backing store really does read as zero, so this is where it happens.
+            RValue::Load { addr, ty, .. } => {
+                let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
+                    return self.lowering_gap(s, span, "a load through a non-pointer address");
+                };
+                let size = size_of_cty(ty);
+                let r = s.mem.read_term(a, p, size, Endian::Little, span);
+                self.report_faults(s, &r.faults, span);
+                match r.value {
+                    Some(t) => Value::Scalar(t),
+                    None => {
+                        // The access produced nothing, so the caller gets a symbol chiero
+                        // made up — which is exactly the case §7 puts under `Unknown`.
+                        self.fresh_count += 1;
+                        let t = a.var(sort_of(ty), &format!("load{}", self.fresh_count));
+                        s.degrade(
+                            Fidelity::Unknown,
+                            AssumptionKind::NoInformation,
+                            span,
+                            "a load produced no value, so its result is invented",
+                        );
+                        Value::Scalar(t)
+                    }
+                }
+            }
             RValue::Fresh { ty } => {
                 // Named per state and per position, so two `Fresh` values are two
                 // symbols and repeating one is not.
@@ -1275,6 +1323,30 @@ impl<'m> Engine<'m> {
             .iter()
             .find(|(_, v)| **v == o)
             .map(|(k, _)| *k)
+    }
+
+    /// Memory faults from an instruction become findings and degrade, the same way a
+    /// model's do. A fault that only reached the memory model is a bug chiero found and
+    /// did not report.
+    fn report_faults(&mut self, s: &mut State, faults: &[chiero_mem::MemFault], span: Span) {
+        for f in faults {
+            self.finding_seq += 1;
+            s.findings.push((self.finding_seq, f.to_string()));
+        }
+        // **A finding is not automatically a degradation.** A null dereference or a bad
+        // free is a definite fact about the program that chiero modeled exactly; saying
+        // the run is less than `Exact` there would claim chiero was unsure when it was
+        // not, and 023 §7 rule 3 wants degradations to mean something. What does degrade
+        // is a value chiero *invented* — an uninitialized read is right about the bug and
+        // wrong about the bytes, so everything computed from it is unsound.
+        if faults.iter().any(|f| f.yields_unknown_value()) {
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "a memory access could not produce the program's value",
+            );
+        }
     }
 
     /// 023 §5 / 024 §1 step 4: **a call chiero did not perform invalidates what it was

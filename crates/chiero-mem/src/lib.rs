@@ -990,6 +990,26 @@ impl MemFault {
         }
     }
 
+    /// Whether the value this access produced is **not the program's**.
+    ///
+    /// The distinction matters for fidelity: a null dereference or a bad free is a
+    /// definite fact about the program, and chiero modeled it exactly — the finding is
+    /// the product, and degrading would say chiero was unsure when it was not. A read of
+    /// uninitialized memory is the opposite: the report is right *and* whatever came back
+    /// was invented, so anything computed from it is unsound.
+    pub fn yields_unknown_value(&self) -> bool {
+        matches!(
+            self,
+            MemFault::Uninitialized { .. }
+                | MemFault::MaybeUninitialized { .. }
+                | MemFault::SymbolicByte { .. }
+                | MemFault::OutOfBoundsMaybe { .. }
+                | MemFault::BadRange { .. }
+                | MemFault::WildPointer { .. }
+                | MemFault::AllocationTooLarge { .. }
+        )
+    }
+
     /// Where the access was. The second component of 023 §6.1's dedup key.
     pub fn at(&self) -> Span {
         match self {
@@ -1700,6 +1720,56 @@ impl Memory {
     /// at it otherwise.
     pub fn addr_of(&self, id: ObjectId) -> Option<u64> {
         self.space.addr_of(id)
+    }
+
+    /// Write a term of `size` bytes at a concrete pointer, in target byte order.
+    ///
+    /// A ground term goes down as concrete bytes; anything else goes into the overlay one
+    /// `Extract` per byte, which is what keeps `*p = x; y = *p;` giving back the *same*
+    /// unknown rather than a fresh one. Writing the model's bytes behind a symbol would
+    /// lose every constraint derived from it.
+    pub fn write_term(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        t: Term,
+        size: u64,
+        e: Endian,
+        at: Span,
+    ) -> AccessResult<()> {
+        if let Ok(c) = a.eval_ground(t) {
+            let v = c.bits();
+            let mut bytes: Vec<u8> = (0..size).map(|i| (v >> (8 * i)) as u8).collect();
+            if e == Endian::Big {
+                bytes.reverse();
+            }
+            return self.write(p, &bytes, at);
+        }
+        // Bounds and state are checked once, by a zero-fill write of the whole range —
+        // going byte by byte would report the same out-of-bounds `size` times.
+        let probe = self.write(p, &vec![0u8; size as usize], at);
+        if probe.value.is_none() {
+            return probe;
+        }
+        let mut faults = probe.faults;
+        for i in 0..size {
+            let idx = if e == Endian::Big { size - 1 - i } else { i };
+            let lo = (idx * 8) as u32;
+            let byte = a.extract(t, lo + 7, lo);
+            let w = self.write_sym_byte(
+                Pointer {
+                    base: p.base,
+                    off: p.off + i as i64,
+                },
+                byte,
+                at,
+            );
+            faults.extend(w.faults);
+        }
+        AccessResult {
+            value: Some(()),
+            faults,
+        }
     }
 
     /// Put bytes down **without** marking them initialized — the state fresh heap memory

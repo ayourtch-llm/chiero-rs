@@ -371,6 +371,28 @@ impl TermArena {
             let v = (x.bits() << y.width()) | y.bits();
             return self.bv(w, v);
         }
+        // Adjacent slices of the same value are one slice. This is what makes a
+        // byte-wise store and load round-trip to the original term rather than to
+        // something merely equivalent — equivalent is not enough, because the caller
+        // compares terms, not models.
+        if let (
+            Node::Extract {
+                a: x,
+                hi: xh,
+                lo: xl,
+            },
+            Node::Extract {
+                a: y,
+                hi: yh,
+                lo: yl,
+            },
+        ) = (&self.nodes[hi.0 as usize], &self.nodes[lo.0 as usize])
+            && x == y
+            && *xl == *yh + 1
+        {
+            let (x, xh, yl) = (*x, *xh, *yl);
+            return self.extract(x, xh, yl);
+        }
         self.intern(Node::Concat { hi, lo })
     }
 
@@ -502,6 +524,31 @@ impl TermArena {
 
     pub fn extract(&mut self, a: Term, hi: u32, lo: u32) -> Term {
         assert!(hi >= lo && hi < self.width(a), "extract out of range");
+        // A whole-width extract is the value itself. Without this a byte-wise store
+        // followed by a load rebuilds `x` as a `Concat` of `Extract`s that no longer
+        // *is* `x`, so `*p = x; y = *p;` loses the identity between `y` and `x` — and
+        // every constraint the caller derives from it.
+        if lo == 0 && hi == self.width(a) - 1 {
+            return a;
+        }
+        if let Some(c) = self.as_const(a) {
+            let w = hi - lo + 1;
+            let mask = if w >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << w) - 1
+            };
+            return self.bv(w, (c.bits() >> lo) & mask);
+        }
+        // Extracting out of an extract is one extract, or a byte-wise round trip nests
+        // them one level deeper per operation.
+        if let Node::Extract {
+            a: inner, lo: l2, ..
+        } = &self.nodes[a.0 as usize]
+        {
+            let (inner, l2) = (*inner, *l2);
+            return self.extract(inner, hi + l2, lo + l2);
+        }
         self.intern(Node::Extract { a, hi, lo })
     }
 
