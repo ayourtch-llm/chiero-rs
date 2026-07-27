@@ -138,8 +138,11 @@ test red, and vice versa.
 5. **`chiero-span` depends on nothing** outside the standard library and small utility
    crates.
 6. Verticals do not depend on each other except: `chiero-select` → `chiero-gcov`,
-   `chiero-diff`; `chiero-opt` → `chiero-check` (for report types); `chiero-recipe` →
-   `chiero-check` (for report types).
+   `chiero-diff`, `chiero-opt`; `chiero-opt` → `chiero-check`; `chiero-recipe` →
+   `chiero-check` (both for `TriagedFinding` and the replay emitter).
+   Note the direction: the base `Finding` type lives in **`chiero-exec`**, not in
+   `chiero-check` — the engine produces findings, so rule 2 requires the core to own the
+   type, and `chiero-check` wraps it ([040 §2](040-defect-checkers.md)).
 7. `chiero-recipe` and `chiero-diff` may depend on frontend crates (they need the typed
    AST); no other vertical may. The core still may not.
 
@@ -157,13 +160,34 @@ message, and optional notes. Rendering (including macro-expansion backtraces) li
 **Arenas and IDs.** Interned IDs (`FileId`, `MacroId`, `ExpnCtx`, `ValueId`, `BlockId`,
 `ObjectId`) are newtypes over `u32`, `Copy`, and dense. No `Rc<RefCell<…>>` graphs.
 
+`FileId`, `MacroId` and `ExpnCtx` are **per translation unit** and must never outlive it;
+anything crossing a TU boundary uses the cross-TU identities in
+[010 §6.2](010-source-and-provenance.md).
+
+**`ConfigId` is owned by `chiero-pp`** and defined as a BLAKE3 hash of a canonical
+normal form of the *preprocessor-relevant* build flags — the `-D`/`-U` set in order-
+independent normalized form, the include search path in order, `-std`, and the target
+triple. Flags that cannot change preprocessing or layout (`-O`, `-g`, warning flags) are
+excluded, so a rebuild at a different optimization level does not invalidate coverage.
+
+Every artifact that can differ between configurations carries one: `PreprocessedTu`,
+`Module` (`config: Option<ConfigId>` — `None` for hand-written `.cir`, which legitimately
+has no configuration), `CookedSite`, and `IngestRecord`. Coverage joins to a config by
+matching the object path against `compile_commands.json`
+([060 §1](060-vpp-integration.md)). Without a single owner and definition, "present no
+result without its `ConfigId`" ([012 §3.3](012-preprocessor.md)) is unimplementable.
+
 **Determinism is mandatory.** Identical input must produce byte-identical output,
 including diagnostic and path-exploration order. No `HashMap` iteration in any output
 path — use `IndexMap`/`BTreeMap`. This is what makes golden tests and the differential
 harness viable, and it is a hard requirement, not a preference.
 
-**Feature flags.** Default features are minimal and pure-Rust. Anything requiring an
-external binary or FFI (`smtlib-subprocess`, `z3-sys`) is opt-in.
+**Feature flags.** Default features are minimal and pure-Rust. Anything requiring
+**FFI or a build-time dependency** (`z3-sys`) is opt-in. A backend that shells out to a
+binary needs nothing at build time, so `smtlib-subprocess` is *compiled in by default* and
+*activated by runtime discovery* — the workspace still builds and runs with no solver
+installed ([022 §4](022-solver.md)). A Cargo feature cannot be conditionally enabled at
+runtime, and conflating the two is how the earlier wording contradicted itself.
 
 **MSRV.** Rust 1.97. Edition 2024.
 

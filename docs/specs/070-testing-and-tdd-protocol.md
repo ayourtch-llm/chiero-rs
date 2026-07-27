@@ -35,6 +35,18 @@ Both gcc and clang are used. Where they disagree with each other, the program is
 unspecified or UB, and the case is reclassified rather than failing chiero. That
 three-way comparison is more informative than either compiler alone.
 
+**A third routing rule is required, and it is not optional.** chiero defines UB where
+hardware does something else: `Shl` by ≥ width yields 0 (SMT-LIB), while x86 *masks* the
+shift count — so gcc and clang agree with each other at both `-O0` and `-O2`, and produce
+a value chiero deliberately does not. Both existing UB detectors stay silent and the case
+is scored as a chiero bug. The same applies to division by zero
+([020 §4.1](020-cir.md)).
+
+So: **a program for which chiero emitted an arithmetic-UB event is excluded from result
+comparison** (or compared only up to the point the event fired) and routed to the UB
+corpus instead, where the assertion is that the event was emitted at all. Without this
+rule the differential oracle systematically punishes chiero for being right.
+
 This oracle is cheap, unlimited, and catches real semantic bugs — wrong integer
 promotion, wrong struct offset, wrong evaluation order — that a hand-written expected
 value would have encoded incorrectly in the first place.

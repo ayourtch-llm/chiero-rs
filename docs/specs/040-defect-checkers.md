@@ -51,15 +51,24 @@ pub struct Report {
     pub blind_spots: Vec<BlindSpot>,   // always non-empty: v1 has known ones
 }
 
-pub struct Finding {
-    pub kind: FindingKind, pub severity: Severity, pub confidence: Confidence,
-    pub span: Span, pub backtrace: Vec<ExpnFrame>,
-    pub object: Option<ObjectOrigin>,  // where the memory came from
-    pub witness: Option<Witness>,
+/// An engine `Finding` (023 §9) plus everything triage adds. This crate does **not**
+/// redefine `Finding`; it wraps it.
+pub struct TriagedFinding {
+    pub base: chiero_exec::Finding,    // kind, span, backtrace, trace, witness, object, fidelity
+    pub severity: Severity,
+    pub confidence: Confidence,
     pub replay: Option<Replay>,        // §3
     pub narrative: Vec<NarrativeStep>, // the path, in source terms
+    pub sites: Vec<Loc>,               // other expansion sites of the same macro-body bug
 }
 ```
+
+**One `Finding` type, defined in the core.** An earlier draft declared a second,
+field-incompatible `Finding` here, which was not merely duplication: `Action::Report`
+([023 §6](023-execution-engine.md)) puts the type in `chiero-exec`, and
+[001 §4](001-architecture.md) rule 2 forbids the core from depending on a vertical — so a
+`Finding` owned by `chiero-check` could not be named by the engine that produces it. The
+enrichment direction (core defines, vertical wraps) is the only one the layering permits.
 
 `backtrace` carries the macro expansion chain, so a bug inside `vec_add1` reports both
 the expansion site in the `.c` file and the offending line in `vec.h` — the same
@@ -102,10 +111,36 @@ Construction rules:
   assumed is the aliasing the replay has.
 - Unmodeled extern calls become stubs returning the values the engine chose, in call
   order.
-- The harness compiles standalone against the original translation unit's headers, using
-  the `compile_commands.json` flags for that TU ([060](060-vpp-integration.md)) so
-  layout, `-D` flags and `march` variant match. A harness compiled with different flags
-  can reproduce a different program.
+- The harness compiles using the `compile_commands.json` flags for that TU
+  ([060](060-vpp-integration.md)) so layout, `-D` flags and `march` variant match. A
+  harness compiled with different flags can reproduce a different program.
+
+### 3.1 Reaching the target — `static` is the common case, not the exception
+
+An `extern` declaration plus separate compilation only works for externally-linked
+functions, and chiero's analysis targets in VPP are overwhelmingly **not** that: `static`
+helpers, `static inline` functions in headers, and `march`-suffixed variants. A harness
+template that assumes external linkage would pass the corpus and fail on VPP's first real
+finding, so the mechanism is specified now:
+
+**The harness `#include`s the target `.c` file** and is compiled as a single TU with the
+original flags. That makes every `static` function reachable and every `static inline`
+header function instantiable, with layout and macro configuration identical by
+construction.
+
+The sharp edges, each handled explicitly rather than discovered during M5:
+
+| Hazard | Handling |
+|---|---|
+| The TU has its own `main` | Harness entry is `#define main chiero_orig_main` before the include, and defines its own `main`. |
+| `__attribute__((constructor))` runs first (51 VPP files) | Allowed to run; the harness records that it did, since suppressing it would change the state the finding depends on. |
+| Static state persists between the constructor and the target call | The witness includes the values of any `static` the path read, restored before the call. |
+| The target is `static inline` in a header | The harness includes the header and calls it directly; no `.c` include needed. |
+| The finding is inside a macro body | The harness calls the *expansion site*'s enclosing function, not the macro. |
+
+`-Dstatic=` is explicitly rejected: it changes linkage across the whole TU, which can
+change behaviour (duplicate symbols, different inlining) and would make the harness a
+different program from the one analysed.
 
 ### 3.1 Self-validation — the part that matters
 
@@ -173,6 +208,13 @@ this is enforced by the compiler rather than by reviewer discipline.
 3. Every finding in the corpus has a `Witness`, or an explicit recorded reason for none.
 4. **Every finding in the corpus emits a replay harness that compiles** under the TU's own
    flags. A harness that fails to build fails CI.
+4b. A finding in a **`static`** function, and one in a **`static inline`** header
+    function, each emit a harness that compiles and runs (§3.1). The corpus contains both,
+    because a corpus of only externally-linked functions would pass contract 4 and tell us
+    nothing about VPP.
+4c. A harness for a TU that defines its own `main` compiles and runs the harness's `main`.
+4d. A finding whose path depends on a value set by a `constructor` function reproduces
+    with that constructor having run.
 5. For every memory-safety finding in the corpus with a sanitizer that can detect it, the
    replay is `Confirmed` by ASan or UBSan at the predicted line.
 6. A `NotReproduced` replay lowers confidence, keeps the finding, records the reason, and

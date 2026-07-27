@@ -325,8 +325,12 @@ pub struct RunResult {
     pub coverage: BlockCoverage,     // blocks/edges reached — feeds 032
 }
 
+/// Produced by the engine. `chiero-check` *enriches* this into a `Report::Finding`
+/// (040 §2) with severity, confidence, replay verdict and narrative — it does not
+/// define a second, incompatible type.
 pub struct Finding { pub kind: FindingKind, pub span: Span, pub backtrace: Vec<ExpnFrame>,
-                     pub trace: PathTrace, pub witness: Option<Witness>, pub fidelity: Fidelity }
+                     pub trace: PathTrace, pub witness: Option<Witness>,
+                     pub object: Option<ObjOrigin>, pub fidelity: Fidelity }
 ```
 
 `Witness` is a concrete assignment for every symbolic input on the path: parameter values,

@@ -55,8 +55,8 @@ the frontend, so the entire symbolic core can be built and tested against hand-w
 CIR before the C parser exists. This is what makes the chosen build order — symbolic
 core first — actually tractable.
 
-**Real compilers are the oracle.** gcc 13.3 is present; clang 18 and z3 are being
-installed. The primary correctness test for the engine is differential: run a C program
+**Real compilers are the oracle.** gcc 13.3.0, clang 18.1.3 and z3 4.8.12 are all
+installed and verified. The primary correctness test for the engine is differential: run a C program
 under gcc with concrete inputs, run it under chiero with the same inputs concretized,
 compare. Layout and constant evaluation are checked by generating `_Static_assert`s and
 compiling them ([014 §7](014-semantics-and-types.md)); the preprocessor is checked
@@ -82,9 +82,17 @@ deliberate constraint: the moment a core capability requires an external toolcha
   build VPP.
 - **Automatic patching.** Optimization analysis emits proposals with proof obligations.
   Applying them is a human or LLM decision.
-- **Concurrency.** VPP is heavily threaded, but the initial engine executes a single
-  thread of control. Data-race detection is explicitly out of scope for v1 and noted as
-  a known blind spot in every report.
+- **Interleaving exploration, weak memory, and lock-free verification.** Execution is
+  sequential and sequentially consistent. A race whose only symptom is a torn or stale
+  read will not be found, and this is declared in every report.
+
+  "No concurrency support" would be the wrong summary, though: VPP *partitions* rather
+  than shares — 467 files index by `thread_index` while only ~70 use explicit
+  synchronization — which makes a path-sensitive **discipline** checker tractable where
+  interleaving exploration is not. v1 ships one, finding unguarded shared writes, lock
+  leaks on error-return paths, lock-order inversions and missing barriers around
+  config-time mutation. Any result touching shared state is held to
+  `Fidelity ≥ Bounded`. See [025](025-concurrency-and-threading.md).
 
 ## 5. Glossary
 

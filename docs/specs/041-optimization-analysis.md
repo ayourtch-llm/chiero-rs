@@ -53,6 +53,22 @@ observable but allocation/free *events* are; the order of two independent extern
 **is** observable (C fixes it, and reordering visible I/O is not a safe refactor);
 divergence in resource consumption is not observable.
 
+"Allocation addresses are not observable" needs enforcement, not just assertion.
+[021 §7](021-memory-model.md) assigns deterministic addresses from a bump allocator, so
+two versions that allocate a different number of objects — or the same objects in a
+different order — would produce *different pointer values* for corresponding objects and
+be reported `Differs` for a difference no C program can detect. That would make
+`prove_equivalent` useless on exactly the refactors it is meant to bless.
+
+So comparison is **up to an object bijection**: the two runs' objects are matched by
+allocation order within each origin class, and pointer values are compared as
+`(matched object, offset)` pairs rather than as integers. A divergence in a pointer
+*value* whose `(object, offset)` pair matches is not a divergence. A program that
+*observes* raw pointer bits (via `PtrToInt`, per
+[021 §7.2](021-memory-model.md)'s `PointerBitInspection`) is the exception: there the
+comparison is genuinely undecidable under this definition, and the result is `Unknown`
+with that reason, never `Equivalent`.
+
 ### 1.2 Method
 
 Relational (product) execution: both functions run against the **same** symbolic inputs
@@ -112,9 +128,28 @@ frequency is knowable from symbolic execution and coverage, so these are real fi
 rather than guesses.
 
 Inputs: `RecordLayout` ([014 §3](014-semantics-and-types.md)),
-`TargetConfig::cache_line_bytes`, per-field access counts from execution, coverage counts
-([030](030-coverage-gcov.md)) as a weight, and the `Sharing` classification from
-[025 §3](025-concurrency-and-threading.md).
+`TargetConfig::cache_line_bytes`, coverage counts ([030](030-coverage-gcov.md)) as a
+weight, the `Sharing` classification from [025 §3](025-concurrency-and-threading.md), and
+per-field access counts — which **nothing produced** in an earlier draft. `RunResult`
+carried only `BlockCoverage`, and [020 §4.4](020-cir.md) declares `AccessPath`
+reporting-only, so the obvious source was barred too. Both are fixed here rather than left
+as a dangling input:
+
+```rust
+// Added to RunResult (023 §9), populated only when `profile_fields` is enabled.
+pub struct FieldAccessProfile {
+    /// (record, field offset) -> (reads, writes), summed over executed paths.
+    pub counts: IndexMap<(RecordId, u64), (u64, u64)>,
+    pub sharing: IndexMap<(RecordId, u64), Sharing>,   // for false sharing
+}
+```
+
+`AccessPath`'s reporting-only rule is narrowed rather than broken: **no analysis may branch
+on an `AccessPath` to decide program semantics**, but aggregating them into a profile that
+feeds *advisory* proposals is permitted, because a wrong profile yields a bad suggestion
+rather than a wrong answer. Profiling is off by default; with it off, benefit is
+`Unquantified` and the hot/cold and false-sharing findings are not produced at all rather
+than being produced from nothing.
 
 | Analysis | Finding |
 |---|---|
@@ -169,6 +204,18 @@ explicit advisory label.
 12. Solver timeout yields `Unknown` with a reason — never `Equivalent`.
 13. `prove_equivalent` is symmetric: swapping the arguments yields the same verdict and a
     correspondingly swapped witness.
+13b. **An always-`Unknown` implementation must fail this suite.** Contracts 1, 2, 3, 5 and
+     7 each require a definite `Equivalent`, and 3, 4, 6, 7 and 8 each require a definite
+     `Differs` with a witness — so neither degenerate answer passes. A tracked metric
+     records the `Unknown` rate over the corpus and fails CI on regression.
+13c. A rewrite that allocates two objects where the original allocated one, but is
+     otherwise identical and returns the same values, is `Equivalent` — pointer values are
+     compared up to the object bijection (§1.1), not as integers.
+13d. A rewrite that changes only the *order* of two independent allocations is
+     `Equivalent`; one that changes which object a returned pointer points *into* is
+     `Differs`.
+13e. A function whose result depends on raw pointer bits (`(uword)p & 63`) yields
+     `Unknown` naming pointer-bit observation — never `Equivalent`.
 
 ### Opportunity detection
 

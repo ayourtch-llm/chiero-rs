@@ -76,15 +76,24 @@ the block containing the change cannot observe it. This is bookkeeping rather th
 solving, and it matters because line-level coverage attributes a whole line — including a
 multi-statement macro expansion — to a test that only executed part of it.
 
-### 3.3 Observability refinement (path-level)
+### 3.3 Observability refinement — deferred to v2, deliberately
 
-For a test that does reach the change: reconstruct the constraint implied by its recorded
-arc coverage, and ask whether old and new differ under it. If the solver proves they
-cannot, the test is dropped.
+An earlier draft specified a third refinement: reconstruct the constraint implied by a
+test's recorded arc coverage, and drop the test if old and new provably cannot differ
+under it.
 
-This is the most expensive and the most likely to return `Unknown`, so it runs last,
-under a budget, and only for tests that survived §3.1 and §3.2. Budget exhaustion keeps
-the test — never drops it.
+**It is cut from v1 because it is not buildable as described.** The recorded arcs are
+gcc's `.gcno` CFG — post-gimplification, with gcc's own lowering of short-circuit
+operators and switches. The constraints live in chiero's CIR CFG. Corresponding the two
+edge-by-edge is not an engineering detail but a research problem: two independent
+compilers' CFGs for one function do not correspond block-to-block, and no document owned
+the bridge — [030](030-coverage-gcov.md) stops at `(FuncKey, ArcId)`, and
+[023](023-execution-engine.md)'s `BlockCoverage` is in CIR blocks.
+
+§3.1 and §3.2 already deliver the safe wins, and §3.1 (entity-level equivalence) is the
+one that removes whole entities rather than individual tests. Recording the cut here
+rather than deleting it silently, because the idea is sound and the obstacle is specific:
+it needs a line-granularity bridge, not an arc-granularity one.
 
 Every dropped test records **why**, with the proof's fidelity, so a selection can be
 audited after a regression escapes.
@@ -196,6 +205,11 @@ delta chiero adds rather than asserting it.
 7. Reachability refinement drops a test that covers the changed line but not the changed
    block, and only when arc-level coverage is available; with line-only coverage the same
    test is kept.
+7b. **A trivial "select everything" selector must fail this suite.** Contracts 3, 5 and 7
+    each assert a specific test is *absent* from the selection, and contract 19's
+    reduction figure has a floor. Recall alone is trivially satisfiable by running the
+    whole suite, so every contract that only checks recall is paired with one that checks
+    exclusion.
 8. Every excluded test carries a proof record naming the refinement and its fidelity.
 9. A test with no coverage data is always selected.
 10. A test present in the tree but absent from the index is always selected and labelled

@@ -178,6 +178,22 @@ are **different coverage entities**; merging them by name would attribute one va
 tests to another's code. `start_line` disambiguates `static` helpers that repeat across
 files, consistent with [014 §4](014-semantics-and-types.md).
 
+**`march` is not a field in any gcov artifact** — it is encoded in the symbol name.
+VPP's `CLIB_MULTIARCH_FN` token-pastes `fn##_##CLIB_MARCH_VARIANT`, so the coverage
+records contain `ip4_lookup_node_fn_avx2` and decoding that back to
+`(ip4_lookup_node_fn, avx2)` is VPP knowledge, which [001 §4](001-architecture.md) rule 4
+forbids this crate from holding. So it is an extension point:
+
+```rust
+pub trait MarchResolver { fn split(&self, symbol: &str) -> (Symbol, Option<Symbol>); }
+```
+
+Default implementation returns `(symbol, None)` — no variants. `chiero-vpp` registers one
+that knows the suffix set from `compile_commands.json`. A resolver must never guess from
+a bare suffix pattern: silently collapsing `foo_avx2` into `foo` would attribute the
+vector variant's coverage to the scalar path, which is exactly the misattribution
+`FuncKey` exists to prevent.
+
 Queries:
 
 ```rust
