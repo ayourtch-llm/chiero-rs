@@ -660,7 +660,8 @@ impl Engine {
                 i += 1;
             }
         }
-        let body = line.get(body_start..).unwrap_or_default().to_vec();
+        let mut body = line.get(body_start..).unwrap_or_default().to_vec();
+        strip_va_opt(&mut body, &mut self.diagnostics);
         let body_extent = extent(&body).unwrap_or(Span::new(
             name_tok.token.span.hi,
             name_tok.token.span.hi,
@@ -737,7 +738,7 @@ impl Engine {
                         Vec::new(),
                         ExpnKind::ObjectLike,
                     );
-                    let mut replacement: Vec<_> = def
+                    let replacement: Vec<_> = def
                         .body
                         .iter()
                         .cloned()
@@ -748,6 +749,7 @@ impl Engine {
                             body
                         })
                         .collect();
+                    let mut replacement = self.paste(replacement, expn);
                     // C11 §6.10.3.4 ¶1: rescan the replacement list *together with all
                     // subsequent source tokens*. This is what lets `#define A B` turn
                     // `A(1)` into an invocation of function-like `B`.
@@ -872,9 +874,20 @@ impl Engine {
             ExpnKind::FunctionLike,
         );
 
+        let mut expansion_order = def.params.clone();
+        if def.std_variadic || def.variadic_name.is_some() {
+            expansion_order.push(
+                def.variadic_name
+                    .clone()
+                    .unwrap_or_else(|| "__VA_ARGS__".into()),
+            );
+        }
         let mut expanded_by_name = BTreeMap::new();
-        for (name, raw) in &raw_by_name {
-            expanded_by_name.insert(name.clone(), self.expand(raw.clone()));
+        for name in expansion_order {
+            if needs_preexpansion(&def.body, &name) {
+                let raw = raw_by_name.get(&name).cloned().unwrap_or_default();
+                expanded_by_name.insert(name, self.expand(raw));
+            }
         }
         let mut replacement = Vec::new();
         let mut i = 0;
@@ -957,8 +970,8 @@ impl Engine {
         let expn = self.source_map.add_expansion(
             parent,
             Some(macro_id),
-            Span::DUMMY,
-            Span::DUMMY,
+            Span::new(operator.token.span.lo, operator.token.span.hi, parent),
+            Span::new(operator.token.span.lo, operator.token.span.hi, parent),
             Vec::new(),
             ExpnKind::Stringize,
         );
@@ -1004,6 +1017,15 @@ impl Engine {
                     i += 2;
                     continue;
                 }
+                // GNU `, ## args`: `##` suppresses the comma only for an empty
+                // variadic argument. With tokens present it is not ordinary token
+                // pasting; retain comma and argument as two pp-tokens.
+                if matches!(left.token.kind, PpTokenKind::Punct(Punct::Comma)) {
+                    output.push(left);
+                    output.push(right);
+                    i += 2;
+                    continue;
+                }
                 if left.text.is_empty() {
                     output.push(right);
                     i += 2;
@@ -1013,8 +1035,8 @@ impl Engine {
                 let expn = self.source_map.add_expansion(
                     parent,
                     None,
-                    Span::DUMMY,
-                    Span::DUMMY,
+                    input[i].token.span,
+                    input[i].token.span,
                     Vec::new(),
                     ExpnKind::Paste,
                 );
@@ -1034,6 +1056,7 @@ impl Engine {
                 i += 1;
             }
         }
+        output.retain(|token| !token.text.is_empty());
         output
     }
 }
@@ -1051,6 +1074,59 @@ fn extent(tokens: &[Tok]) -> Option<Span> {
         tokens.last()?.token.span.hi,
         tokens.first()?.token.span.ctx,
     ))
+}
+
+fn needs_preexpansion(body: &[Tok], parameter: &str) -> bool {
+    body.iter().enumerate().any(|(index, token)| {
+        if token.text != parameter {
+            return false;
+        }
+        let stringized =
+            index > 0 && matches!(body[index - 1].token.kind, PpTokenKind::Punct(Punct::Hash));
+        let pasted = (index > 0
+            && matches!(
+                body[index - 1].token.kind,
+                PpTokenKind::Punct(Punct::HashHash)
+            ))
+            || body
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.token.kind, PpTokenKind::Punct(Punct::HashHash)));
+        !stringized && !pasted
+    })
+}
+
+fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
+    let mut index = 0;
+    while index < body.len() {
+        if body[index].text != "__VA_OPT__" {
+            index += 1;
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            span: body[index].token.span,
+            message: "__VA_OPT__ is outside chiero's v1 preprocessing scope".into(),
+        });
+        let mut end = index + 1;
+        if body.get(end).is_some_and(|token| token.text == "(") {
+            let mut depth = 0_u32;
+            while end < body.len() {
+                match body[end].token.kind {
+                    PpTokenKind::Punct(Punct::LParen) => depth += 1,
+                    PpTokenKind::Punct(Punct::RParen) => {
+                        depth -= 1;
+                        end += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                end += 1;
+            }
+        }
+        body.drain(index..end);
+    }
 }
 
 fn parse_args(input: &[Tok], open: usize) -> Option<(Vec<Vec<Tok>>, usize)> {

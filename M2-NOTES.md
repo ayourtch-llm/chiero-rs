@@ -42,6 +42,16 @@
   promotes lexer diagnostics line-by-line only while the conditional state is active.
 - REVIEW-1 finding 13's quadratic token spelling lookup was removed from the pipeline
   by adding indexed `LexedFile::text_at`; header lexing now uses the engine's cache.
+- Findings 3–5, 10, and 15 reproduced: object paste was skipped, nonempty GNU varargs
+  became a `,1` token, raw-only operands still consumed `__COUNTER__`, argument effects
+  ran in name order, and operator expansion locations resolved to line 1. Object and
+  function paste now share one placemarker-aware path, raw-only operands are not
+  pre-expanded, arguments expand left-to-right, and `#`/`##` carry real operator sites.
+- The new argument-blue-paint and nested function-parent discriminators pass without an
+  implementation change, so those two mutation claims do not reproduce against the
+  reviewed tree; the tests remain to prevent regressions.
+- Per the updated 012 §2.3, `__VA_OPT__` is removed with a diagnostic rather than passed
+  through.
 
 ## Mutation checks
 
