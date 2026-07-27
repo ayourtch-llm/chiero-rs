@@ -46,9 +46,16 @@ fn solver() -> Option<TieredSolver> {
 }
 
 /// A thousand distinct entries, so no rule below can pass against a memory of one query.
-fn fill(s: &mut TieredSolver, a: &mut TermArena, cs: &[Term]) {
+///
+/// The filler constraints are **linear** on purpose: tier 1 decides them, so filling the
+/// cache costs no backend calls and the file runs in a second rather than a minute. What
+/// they have to be is *many and distinct*; what the measured queries have to be is hard.
+fn fill(s: &mut TieredSolver, a: &mut TermArena) {
     for i in 0..1000 {
-        let _ = s.check(a, &cs[i..=i]);
+        let v = a.var(Sort::BitVec(32), &format!("f{i}"));
+        let c = a.bv(32, i as u128);
+        let e = a.eq(v, c);
+        let _ = s.check(a, &[e]);
     }
     assert!(
         s.stats().cache_entries >= 1000,
@@ -66,9 +73,9 @@ fn a_subset_of_a_satisfiable_set_is_satisfiable_with_no_backend_call() {
         return;
     };
     let mut a = TermArena::new();
-    let (cs, _prods) = hard_constraints(&mut a, 1000);
-    fill(&mut s, &mut a, &cs);
-    let big: Vec<Term> = cs[..64].to_vec();
+    let (cs, _prods) = hard_constraints(&mut a, 64);
+    fill(&mut s, &mut a);
+    let big: Vec<Term> = cs.clone();
     assert!(matches!(s.check(&mut a, &big), CheckResult::Sat(_)));
 
     let before = s.stats().backend_calls;
@@ -97,8 +104,8 @@ fn a_superset_of_an_unsatisfiable_set_is_unsatisfiable_but_a_subset_is_not() {
         return;
     };
     let mut a = TermArena::new();
-    let (cs, _prods) = hard_constraints(&mut a, 1000);
-    fill(&mut s, &mut a, &cs);
+    let (cs, _prods) = hard_constraints(&mut a, 64);
+    fill(&mut s, &mut a);
 
     // `x * y == 7` with both factors below 2: the products are 0 and 1, never 7.
     let x = a.var(Sort::BitVec(32), "px");
@@ -146,8 +153,8 @@ fn a_cached_model_that_satisfies_a_new_query_answers_it() {
         return;
     };
     let mut a = TermArena::new();
-    let (cs, prods) = hard_constraints(&mut a, 1000);
-    fill(&mut s, &mut a, &cs);
+    let (cs, prods) = hard_constraints(&mut a, 64);
+    fill(&mut s, &mut a);
 
     // A set whose model pins the first sixteen pairs…
     assert!(matches!(s.check(&mut a, &cs[..16]), CheckResult::Sat(_)));
@@ -192,4 +199,30 @@ fn a_model_returned_from_the_cache_satisfies_the_query_it_answers() {
             "the returned model must satisfy every constraint it is offered for"
         );
     }
+}
+
+/// **A candidate is not an answer.** A cached set sharing a constraint with the query
+/// makes its model a *candidate*; whether it answers the query is settled by evaluating
+/// it. Skipping that returns `Sat` for an unsatisfiable query — the cache would be
+/// inventing satisfying assignments, and every finding built on one is fiction.
+#[test]
+fn a_cached_model_that_fails_the_query_is_not_used_as_an_answer() {
+    let Some(mut s) = solver() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let (cs, prods) = hard_constraints(&mut a, 8);
+    fill(&mut s, &mut a);
+    // `x3 * y3 == 7` is satisfiable, and its model is now in the cache.
+    assert!(matches!(s.check(&mut a, &cs[3..=3]), CheckResult::Sat(_)));
+
+    // The same product cannot also be 8. The query *shares* `cs[3]`, so the cached model
+    // is a candidate — and it does not satisfy the second constraint.
+    let eight = a.bv(32, 8);
+    let other = a.eq(prods[3], eight);
+    assert!(
+        matches!(s.check(&mut a, &[cs[3], other]), CheckResult::Unsat),
+        "7 and 8 are not the same number"
+    );
 }

@@ -303,7 +303,20 @@ fn a_killed_backend_is_restarted_and_the_stack_replayed() {
     let mut t = TieredSolver::with_backend(backend);
     t.assert(prod);
     t.assert(gx);
-    assert!(matches!(t.check(&mut a, &[]), CheckResult::Sat(_)));
+    let CheckResult::Sat(first) = t.check(&mut a, &[]) else {
+        panic!("1001 = 7 * 11 * 13 has factorizations");
+    };
+    // **Rule out the model already in hand.** §6's counterexample cache answers any query
+    // a cached model satisfies, which is sound and would short-circuit this test: the
+    // post-restart query would be answered from the cache, no backend would be consulted,
+    // and "the process was restarted" would fail on a solver that restarts perfectly
+    // well. Excluding that one model forces the query to the backend, which is the thing
+    // under test.
+    let xv = first.get(a.var_id(x).unwrap()).unwrap().bits();
+    let seen = a.bv(16, xv);
+    let is_seen = a.eq(x, seen);
+    let not_seen = a.not(is_seen);
+    t.assert(not_seen);
     let spawns_before = t.stats().backend_spawns;
 
     t.kill_backend_for_test();

@@ -1678,6 +1678,13 @@ pub struct SolverStats {
     pub backend_errors: u64,
 }
 
+/// Which cached set a candidate refers to. See `TieredSolver::remember`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheSlot {
+    sat: bool,
+    idx: usize,
+}
+
 /// Tier 1, escalating to tier 2 on `Unknown`, with the caches of 022 §6.
 #[derive(Debug, Default)]
 pub struct TieredSolver {
@@ -1691,6 +1698,23 @@ pub struct TieredSolver {
     /// caching only the verdict meant a cached `Sat` still had to re-derive a model,
     /// which sent the query straight back to the backend and defeated the cache.
     cache: IndexMap<(Vec<u32>, Vec<u32>), Option<Model>>,
+    /// 022 §6's **counterexample cache**, as three separate structures because the three
+    /// rules are separate claims:
+    ///
+    /// - `sat_sets` — constraint sets known satisfiable, each with the model that showed
+    ///   it. A **subset** of one is satisfiable (the same model does it), and a model
+    ///   here that happens to satisfy an unrelated query answers that too.
+    /// - `unsat_sets` — sets known unsatisfiable. A **superset** of one is unsatisfiable.
+    ///   The subset direction is *not* a rule: dropping the conflicting constraint can
+    ///   leave a satisfiable set, and answering `Unsat` there reports bugs that do not
+    ///   exist.
+    /// - `containing` — the inverted index from a term id to the cached sets holding it,
+    ///   so a lookup costs time proportional to the *query* rather than to the cache.
+    ///   §6 requires this: without it, the rules are correct and quadratic, and contracts
+    ///   10–11 are specified at ≥1000 entries precisely to keep the scale honest.
+    sat_sets: Vec<(Vec<u32>, Model)>,
+    unsat_sets: Vec<Vec<u32>>,
+    containing: IndexMap<u32, Vec<CacheSlot>>,
 }
 
 impl TieredSolver {
@@ -1707,6 +1731,81 @@ impl TieredSolver {
 
     /// Send every tier-1 answer to tier 2 as well and assert agreement (022 §6).
     /// Too slow for production, mandatory in CI.
+    /// 022 §6's counterexample cache. `None` means "ask someone else".
+    ///
+    /// Every rule here is an implication about *sets*, and each is one line to justify:
+    /// a superset of a contradiction is a contradiction; a model satisfying a superset
+    /// satisfies this query. What is deliberately absent is the converse of the first —
+    /// §6 calls a wrong direction here "silent and catastrophic", and the subset of an
+    /// `Unsat` set is exactly where it would be wrong.
+    fn counterexample_cache(&mut self, a: &mut TermArena, all: &[Term]) -> Option<CheckResult> {
+        if all.is_empty() {
+            return None;
+        }
+        let mut want: Vec<u32> = all.iter().map(|t| t.0).collect();
+        want.sort_unstable();
+        want.dedup();
+
+        // **Candidates come from the inverted index**, never from the whole cache: a set
+        // that subsumes or is subsumed by this query shares at least one term with it, so
+        // the work is proportional to the query rather than to the cache. §6 requires
+        // this, and contracts 10–11 are specified at ≥1000 entries to keep it honest —
+        // a scan is correct and turns a 100 ms suite into a 90 s one.
+        let mut cand: Vec<CacheSlot> = want
+            .iter()
+            .filter_map(|id| self.containing.get(id))
+            .flatten()
+            .copied()
+            .collect();
+        cand.sort_unstable();
+        cand.dedup();
+
+        // Rule: a **superset** of a known-`Unsat` set is `Unsat`.
+        for c in cand.iter().filter(|c| !c.sat) {
+            let set = &self.unsat_sets[c.idx];
+            if set.iter().all(|id| want.binary_search(id).is_ok()) {
+                return Some(CheckResult::Unsat);
+            }
+        }
+
+        // Rule: a **subset** of a known-`Sat` set is `Sat` with that set's model, and any
+        // cached model that satisfies this query answers it. The second subsumes the
+        // first, and both are settled by *evaluating* the model rather than by trusting
+        // the set relation — which is what keeps a returned model honest about the query
+        // it is returned for.
+        for c in cand.iter().filter(|c| c.sat) {
+            let m = &self.sat_sets[c.idx].1;
+            if all
+                .iter()
+                .all(|t| a.eval(m, *t).map(|v| v.bits() != 0) == Ok(true))
+            {
+                return Some(CheckResult::Sat(m.clone()));
+            }
+        }
+        None
+    }
+
+    /// Record a decided set in the subsumption index.
+    fn remember(&mut self, ids: Vec<u32>, model: Option<Model>) {
+        // **The slot carries which vector it indexes.** A bare `usize` made entry 3 of
+        // `sat_sets` and entry 3 of `unsat_sets` the same candidate, so a query could be
+        // answered from the wrong one — the silent direction, by a different route.
+        let slot = CacheSlot {
+            sat: model.is_some(),
+            idx: match &model {
+                Some(_) => self.sat_sets.len(),
+                None => self.unsat_sets.len(),
+            },
+        };
+        for id in &ids {
+            self.containing.entry(*id).or_default().push(slot);
+        }
+        match model {
+            Some(m) => self.sat_sets.push((ids, m)),
+            None => self.unsat_sets.push(ids),
+        }
+    }
+
     pub fn set_paranoid(&mut self, on: bool) {
         self.paranoid = on;
     }
@@ -1872,6 +1971,9 @@ impl Solver for TieredSolver {
                 None => CheckResult::Unsat,
             };
         }
+        if let Some(r) = self.counterexample_cache(a, &all) {
+            return r;
+        }
 
         let mut lite = SolverLite::new();
         for t in &all {
@@ -1909,12 +2011,17 @@ impl Solver for TieredSolver {
         // **`Unknown` is never cached.** A tier-1 `Unknown` cached above escalation would
         // stop tier 2 ever being consulted for any sibling state sharing that prefix, and
         // `Unknown(Timeout)` is a fact about the clock rather than the formula.
+        let mut ids: Vec<u32> = all.iter().map(|t| t.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
         match &decided {
             CheckResult::Sat(m) => {
                 self.cache.insert(key, Some(m.clone()));
+                self.remember(ids, Some(m.clone()));
             }
             CheckResult::Unsat => {
                 self.cache.insert(key, None);
+                self.remember(ids, None);
             }
             CheckResult::Unknown(_) => {}
         }
