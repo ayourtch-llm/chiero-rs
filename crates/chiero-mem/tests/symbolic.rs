@@ -1032,3 +1032,39 @@ fn promotion_respects_object_state() {
         r.faults
     );
 }
+
+/// **A conditional write must not downgrade bits that were already definite** — even
+/// when only *part* of the byte was.
+///
+/// The guard for this only matters when a byte's bits differ in state, which nothing
+/// else in the suite produces: every other test writes whole bytes, so the byte-level
+/// decision and the bit-level one agree and the guard is invisible. A bitfield write
+/// leaves exactly that mixed byte, and it is the shape §3.1 argues the tri-state from.
+#[test]
+fn a_symbolic_write_does_not_downgrade_the_definite_bits_of_a_mixed_byte() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    // Bits 0..4 of byte 0 definitely written; 4..8 never touched.
+    m.write_bits(ptr(o, 0), 0, 4, 0b1011, sp(2));
+    assert_eq!(m.init_bit_of(o, 0), InitBit::Yes);
+    assert_eq!(m.init_bit_of(o, 4), InitBit::No);
+
+    let off = a.var(Sort::BitVec(8), "off");
+    let val = a.bv(8, 0x7F);
+    m.write_at_symbolic_offset(&mut a, o, off, &[0], val, sp(3));
+
+    for bit in 0..4 {
+        assert_eq!(
+            m.init_bit_of(o, bit),
+            InitBit::Yes,
+            "bit {bit} was definitely written and a guarded write cannot unwrite it"
+        );
+    }
+    for bit in 4..8 {
+        assert!(
+            matches!(m.init_bit_of(o, bit), InitBit::Cond(_)),
+            "bit {bit} is written only when the guard holds"
+        );
+    }
+}

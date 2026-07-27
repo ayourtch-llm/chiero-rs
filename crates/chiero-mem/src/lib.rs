@@ -1141,6 +1141,11 @@ impl Memory {
         {
             return AccessResult::fault(lift(err, p.base, at));
         }
+        // A promoted object's contents live in its arrays; writing the frozen `Bytes`
+        // view would be invisible, which is the same drift `read` refuses on its side.
+        if let Some(f) = self.promoted_fault(p, at) {
+            return AccessResult::fault(f);
+        }
         let mut faults: Vec<MemFault> = self
             .align_fault(p.base, p.off, bytes.len() as u64, at)
             .into_iter()
@@ -1266,6 +1271,9 @@ impl Memory {
             return AccessResult::fault(f);
         }
         if let Some(f) = self.too_large(p.base, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.promoted_fault(p, at) {
             return AccessResult::fault(f);
         }
         let obj_size = self.entry(p.base).map_or(0, |e| e.size);
@@ -1415,6 +1423,17 @@ impl Memory {
         }
     }
 
+    /// A promoted object cannot be served by an arena-free byte or bit API.
+    fn promoted_fault(&self, p: Pointer, at: Span) -> Option<MemFault> {
+        self.entry(p.base)
+            .filter(|e| e.repr == Repr::Array)
+            .map(|_| MemFault::SymbolicByte {
+                obj: p.base,
+                off: p.off,
+                at,
+            })
+    }
+
     /// Whether this object is still on the `Bytes` fast path (021 §3).
     pub fn is_bytes(&self, id: ObjectId) -> bool {
         self.entry(id).is_some_and(|e| e.repr == Repr::Bytes)
@@ -1452,6 +1471,9 @@ impl Memory {
     /// Place a symbolic byte at a concrete offset (021 §3's `sym` overlay).
     pub fn write_sym_byte(&mut self, p: Pointer, t: Term, at: Span) -> AccessResult<()> {
         if let Some(f) = self.state_fault(p.base, p.off, at) {
+            return AccessResult::fault(f);
+        }
+        if let Some(f) = self.promoted_fault(p, at) {
             return AccessResult::fault(f);
         }
         let Some(e) = self.entry_mut(p.base) else {
@@ -1554,7 +1576,7 @@ impl Memory {
             // the same value and not a second finding. `read` did this and `read_term`
             // did not, which left the two APIs disagreeing about the same byte.
             if p.off >= 0 {
-                self.memoize(p.base, p.off as u64 * 8, size * 8);
+                self.memoize_via(a, p.base, p.off as u64 * 8, size * 8);
             }
         } else if let Some(bit) = first_cond {
             faults.push(MemFault::MaybeUninitialized {
@@ -1682,6 +1704,11 @@ impl Memory {
             let kc = a.bv(w, k as u128);
             let cond = a.eq(off, kc);
             let new_v = a.ite(cond, val, old);
+            // 021 §3.1: `Cond` collapses whenever its guard folds to a constant. A write
+            // at a *concrete* offset produces `k == k` or `k == j`, both of which fold —
+            // leaving the tag `Cond` made a definitely-written byte report
+            // `MaybeUninitialized`, and disagreed with the array path, which does collapse.
+            let folded = a.eval_ground(cond).ok().map(|v| v.bits() != 0);
             match arr.as_mut() {
                 Some(arr) => {
                     let i = a.bv(arr.idx_bits, k as u128);
@@ -1705,7 +1732,29 @@ impl Memory {
             // initialized, so the result is `Yes`. The guard travels with the bit, so the
             // engine has something to discharge and promotion has something to map.
             if arr.is_none() {
-                o.init.set_range(k * 8, 8, InitBit::Cond(cond));
+                // **Per bit, not per byte.** Deciding once from bit 0 and applying it to
+                // all eight let a bitfield-initialized half decide the untouched half —
+                // and 021 §3.1 argues the whole tri-state from bitfields, so a byte whose
+                // bits differ in state is the case, not a corner of it.
+                for b in k * 8..k * 8 + 8 {
+                    let next = match (o.init.get(b), folded) {
+                        // Already definite: a guarded write cannot unwrite it, and both
+                        // branches of the `ite` are then initialized.
+                        (InitBit::Yes, _) => InitBit::Yes,
+                        (_, Some(true)) => InitBit::Yes,
+                        (prev, Some(false)) => prev,
+                        // **The join of two guarded writes is the disjunction of their
+                        // guards.** Keeping only the newer loses initialization: after
+                        // `v[i] = x` then `v[j] = y` at one candidate, the model
+                        // `i = k, j ≠ k` holds `x` while the guard would have said nobody
+                        // wrote it.
+                        (InitBit::Cond(prev), None) => InitBit::Cond(a.or(prev, cond)),
+                        (InitBit::No, None) => InitBit::Cond(cond),
+                    };
+                    // `set_exact`, because `set_range`'s lattice join cannot see the
+                    // disjunction that was just built.
+                    o.init.set_exact(b, next);
+                }
             }
         }
         if let Some(arr) = arr
@@ -1726,16 +1775,37 @@ impl Memory {
     /// form is a promise about how *future* symbolic-offset accesses are answered, and
     /// contract 6 requires the `(value, initialization-status)` pair to survive the
     /// change unaltered.
-    pub fn promote_to_array(&mut self, a: &mut TermArena, id: ObjectId) {
+    pub fn promote_to_array(&mut self, a: &mut TermArena, id: ObjectId) -> AccessResult<()> {
+        let ok = AccessResult {
+            value: Some(()),
+            faults: vec![],
+        };
+        // Promotion is a state change and obeys the state check like any other.
+        if let Some(f) = self.state_fault(id, 0, Span::DUMMY) {
+            return AccessResult::fault(f);
+        }
         // One-way: an object already promoted keeps the contents it has, or a second
         // promotion would rebuild the arrays from the stale `Bytes` view and silently
         // discard everything written since.
         if self.entry(id).is_some_and(|e| e.repr == Repr::Array) {
-            return;
+            return ok;
         }
-        let Some(e) = self.entry(id) else { return };
+        let Some(e) = self.entry(id) else {
+            return AccessResult::fault(MemFault::WildPointer {
+                off: 0,
+                at: Span::DUMMY,
+            });
+        };
         let size = e.size;
-        let Some(o) = e.obj.as_ref() else { return };
+        // An unmaterialized object has nothing to promote *from*. Returning silently left
+        // the caller believing a promotion had happened.
+        let Some(o) = e.obj.as_ref() else {
+            return AccessResult::fault(MemFault::AllocationTooLarge {
+                obj: id,
+                size,
+                at: Span::DUMMY,
+            });
+        };
         let idx_bits = 64u32;
         let mut data = a.array_const(idx_bits, 8, 0);
         let mut init = a.array_const(idx_bits, 1, 0);
@@ -1773,6 +1843,7 @@ impl Memory {
                 idx_bits,
             });
         }
+        ok
     }
 
     /// **021 §5's justification for `&mut self` on `read`.**
@@ -1786,6 +1857,24 @@ impl Memory {
             && let Some(o) = e.obj.as_mut()
         {
             o.memoize_fresh(lo_bit, n_bits);
+        }
+    }
+
+    /// The same, for a promoted object — whose initialization lives in an array, so
+    /// writing the mask was a no-op there and contract 26 held on one representation
+    /// only.
+    fn memoize_via(&mut self, a: &mut TermArena, id: ObjectId, lo_bit: u64, n_bits: u64) {
+        let Some(mut arr) = self.entry(id).and_then(|e| e.arr) else {
+            self.memoize(id, lo_bit, n_bits);
+            return;
+        };
+        let one = a.bv(1, 1);
+        for bit in lo_bit..lo_bit + n_bits {
+            let i = a.bv(arr.idx_bits, bit as u128);
+            arr.init = a.store(arr.init, i, one);
+        }
+        if let Some(e) = self.entry_mut(id) {
+            e.arr = Some(arr);
         }
     }
 
