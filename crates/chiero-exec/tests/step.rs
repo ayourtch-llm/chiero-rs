@@ -7013,3 +7013,149 @@ fn an_entry_parameter_is_an_object_not_a_hole() {
         r.findings()
     );
 }
+
+/// **A zeroed pointer field is a null pointer.** The canonical C bug —
+/// `struct node *n = calloc(1, sizeof *n); n->next->x = 1;` — reported *nothing*, because
+/// a `CTy::Ptr` load consulted only the table `address_term` seeds, and bytes written by
+/// `calloc`, `memset`, a `memcpy` of a zeroed struct or a `.bss` global are not in it. The
+/// field reloaded as a scalar and the dereference became a lowering gap. Zero recall on a
+/// bug class this tool exists for. Found by review.
+#[test]
+fn a_zeroed_pointer_field_dereferences_as_null() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // The whole struct zeroed, as `calloc` leaves it.
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0 }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Ptr,
+                        align: 8,
+                        vol: Volatility::Normal,
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(1)),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Ptr, 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("null-dereference")),
+        "{:#?}",
+        r.findings()
+    );
+}
+
+/// **Null-ness does not depend on what happened earlier on the path.** Because an address
+/// term is hash-consed, an unrelated `q = NULL` stored anywhere earlier seeded the table
+/// that made a zero word read back as a pointer — so the *same* program answered
+/// differently depending on code that had nothing to do with it. Found by review.
+#[test]
+fn a_zero_word_reads_as_null_whatever_came_before() {
+    let build = |with_prior_null: bool| {
+        let mut insts = vec![
+            inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            }),
+            inst(InstKind::Assign {
+                dst: ValueId(1),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(1),
+                },
+            }),
+        ];
+        if with_prior_null {
+            insts.push(inst(InstKind::Store {
+                addr: Operand::Value(ValueId(1)),
+                val: Operand::Const(Const::Null),
+                ty: CTy::Ptr,
+                align: 8,
+                vol: Volatility::Normal,
+            }));
+        }
+        insts.push(inst(InstKind::SetMem {
+            dst: Operand::Value(ValueId(0)),
+            byte: Operand::Const(Const::Int { bits: 8, val: 0 }),
+            size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+        }));
+        insts.push(inst(InstKind::Assign {
+            dst: ValueId(2),
+            rv: RValue::Load {
+                addr: Operand::Value(ValueId(0)),
+                ty: CTy::Ptr,
+                align: 8,
+                vol: Volatility::Normal,
+            },
+        }));
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![
+            AllocaDecl {
+                align: 8,
+                ..alloca(0, CTy::Ptr, 1)
+            },
+            AllocaDecl {
+                align: 8,
+                ..alloca(1, CTy::Ptr, 1)
+            },
+        ];
+        Module {
+            funcs: vec![caller],
+            ..Default::default()
+        }
+    };
+    let kind = |m: &Module| {
+        let mut a = TermArena::new();
+        let r = Engine::new(m).run(&mut a);
+        match r.states()[0].local(ValueId(2)) {
+            Some(Value::Ptr(p)) => format!("ptr:{:?}", p.base),
+            Some(Value::Scalar(_)) => "scalar".to_string(),
+            other => format!("{other:?}"),
+        }
+    };
+    assert_eq!(
+        kind(&build(false)),
+        kind(&build(true)),
+        "an unrelated `q = NULL` changed how a zero word reads"
+    );
+    assert!(kind(&build(false)).starts_with("ptr:"));
+}
