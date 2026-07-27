@@ -749,7 +749,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    **Next in `chiero-cir`:** the optional passes (§9) with their
    observational-transparency requirement, and the remaining 020 contracts (31–44:
    `Opaque` dsts, vector ops, varargs, `AllocaDyn`, `Undef`, volatile stores).
-   **`chiero-solver` STARTED** (`33b9136` red, `de3f33a` green): `Sort`, `BvConst`,
+   **`chiero-solver`: `solver-lite` DONE** (`8bb010f` red, `0220059` green). The
+   `Solver` trait, three-valued `CheckResult`, and tier 1's interval + known-bits
+   product domain — 20 tests. 022 contracts 3, 4, 5, 6, 7, 7b, 7c, 16.
+
+   The asymmetry is enforced structurally: `Unsat` is reachable only through `as_atom`
+   (a conjunction of comparison atoms; anything else is `Unknown`), and `Sat` only after
+   the model is evaluated against every assertion. Transfers are wrap-safe — saturating
+   would report the verified-satisfiable `x>250 ∧ y=x+10 ∧ y<10` as `Unsat`. Signed
+   comparison is deliberately unmodeled: incompleteness is fine, treating it as unsigned
+   is not. **Contract 7b** (3000 random sets, exhaustive 256-assignment enumeration of
+   every `Unsat`, plus a guard that ≥50 `Unsat`s were seen) is what makes the `Unsat`
+   half trustworthy without z3. Three cases were also cross-checked against z3 directly.
+
+   **Next in `chiero-solver`:** the SMT-LIB2 subprocess backend (022 §4) — a long-lived
+   `z3 -in -smt2` process with `push`/`pop` replay after a watchdog kill; `TieredSolver`
+   with escalation on `Unknown` and the `paranoid` cross-check; and the three caches of
+   §6.2 with the `possibly_infeasible` guard on slicing. Note 022 contract 2 requires the
+   suite to run with z3 **absent** — tier-2 tests skip with a printed reason rather than
+   silently passing.
+
+   *(earlier)* **`chiero-solver` STARTED** (`33b9136` red, `de3f33a` green): `Sort`, `BvConst`,
    hash-consed `TermArena` with folding at construction, and the independent evaluator
    with SMT-LIB semantics — including the four non-uniform division-by-zero cases
    (022 contracts 19a–19d). 11 tests. **Next: `solver-lite`** — and the one with the
