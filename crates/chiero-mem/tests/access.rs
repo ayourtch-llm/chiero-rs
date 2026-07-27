@@ -1058,3 +1058,30 @@ fn a_copy_carries_a_symbolic_byte_rather_than_a_stale_constant() {
     assert!(plain.faults.is_empty(), "{:#?}", plain.faults);
     assert_eq!(plain.value, Some(vec![1, 1]));
 }
+
+/// **A partly readable string is not a string.** `c_string_at` backs the reason text a
+/// harness passes to `chiero_mark_fidelity`, and a truncated or invented prefix would go
+/// into a report reading as the whole thing. Uninitialized bytes and a missing terminator
+/// both give `None`, and only a genuinely complete string gives `Some`.
+#[test]
+fn a_c_string_is_only_read_when_all_of_it_is_there() {
+    let mut m = Memory::new();
+    let good = m.alloc(ObjKind::Heap, 8, 1, sp(1));
+    m.write(ptr(good, 0), b"why\0", sp(2));
+    assert_eq!(m.c_string_at(ptr(good, 0)), Some("why".to_string()));
+    // From the middle, too — the offset is where the string starts, not the object.
+    assert_eq!(m.c_string_at(ptr(good, 2)), Some("y".to_string()));
+
+    let unterminated = m.alloc(ObjKind::Heap, 4, 1, sp(3));
+    m.write(ptr(unterminated, 0), b"abcd", sp(4));
+    assert_eq!(m.c_string_at(ptr(unterminated, 0)), None);
+
+    let partly = m.alloc(ObjKind::Heap, 8, 1, sp(5));
+    m.write(ptr(partly, 0), b"ab", sp(6));
+    assert_eq!(
+        m.c_string_at(ptr(partly, 0)),
+        None,
+        "the byte after 'ab' was never written; reading it as a terminator would invent \
+         the string's end"
+    );
+}

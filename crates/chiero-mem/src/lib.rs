@@ -1507,6 +1507,37 @@ impl Memory {
         self.space.addr_of(id)
     }
 
+    /// The NUL-terminated string at `p`, if every byte of it is concrete and
+    /// initialized. `None` for anything else — a *partly* readable string is not a
+    /// string, and guessing at the readable prefix would put a truncated reason in a
+    /// report that reads as the whole one.
+    ///
+    /// Bounded by the object, so an unterminated buffer gives `None` rather than a walk.
+    pub fn c_string_at(&mut self, p: Pointer) -> Option<String> {
+        let size = self.size_of_pub(p.base)?;
+        let from = u64::try_from(p.off).ok()?;
+        let mut out = Vec::new();
+        for i in from..size {
+            let r = self.read(
+                Pointer {
+                    base: p.base,
+                    off: i as i64,
+                },
+                1,
+                Span::DUMMY,
+            );
+            if !r.faults.is_empty() {
+                return None;
+            }
+            match r.value.as_deref() {
+                Some([0]) => return String::from_utf8(out).ok(),
+                Some([b]) => out.push(*b),
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// Objects reachable from `id`'s bytes. Provenance is not stored in bytes, so this is
     /// the same range search `int_to_ptr` falls back to: an aligned pointer-sized word
     /// whose value lands inside a live object. Wrong in both directions in principle — an

@@ -768,6 +768,13 @@ impl<'m> Engine<'m> {
                 let t = a.var(sort_of(&ret_ty), &format!("extern{}", self.fresh_count));
                 s.set_local(d, Value::Scalar(t));
             }
+            // 024 §1 step 3. gcc emits the `__builtin_` spelling for anything it
+            // recognises, so without this every optimized translation unit hits unmodeled
+            // externs for exactly the functions chiero models best — and an unmodeled
+            // call now havocs its buffer, which turns the most common calls in a codebase
+            // into the biggest holes. The *declaration* keeps its own name; only the
+            // lookup is aliased.
+            let name = Symbol::from(resolve_builtin(&name));
             match self.models.lookup(&name).map(|e| e.precision.clone()) {
                 // 024 §2.1: dispatching an approximate model degrades *mechanically*, and
                 // the model's own reason travels into the report.
@@ -1427,7 +1434,18 @@ impl<'m> Engine<'m> {
         let out = match name {
             "chiero_assume" => intrinsics::assume(cond),
             "chiero_assert" => intrinsics::assert_(cond),
-            _ => intrinsics::mark_fidelity("harness marked this region approximate"),
+            // The harness's own words. A fixed sentence made the one mechanism an author
+            // has for saying *why* a region is approximate say the same thing every time.
+            _ => {
+                let why = args
+                    .first()
+                    .and_then(|o| match self.operand(a, s, o) {
+                        Some(Value::Ptr(p)) => s.mem.c_string_at(p),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "harness marked this region approximate".to_string());
+                intrinsics::mark_fidelity(&why)
+            }
         };
         match out {
             IntrinsicOutcome::Continue | IntrinsicOutcome::Constrain => {}
@@ -1453,7 +1471,7 @@ impl<'m> Engine<'m> {
     /// a model becomes dispatchable when the code to call it exists, not when it is
     /// registered, and conflating the two is what let a registration mint a proof.
     fn can_dispatch(&self, name: &str) -> bool {
-        chiero_model::dispatchable().contains(&name)
+        chiero_model::dispatchable().contains(&resolve_builtin(name))
     }
 
     /// An indirect call: fork per candidate, **plus one unresolvable state**.
@@ -1593,6 +1611,18 @@ enum Feas {
     Yes,
     No,
     Unknown,
+}
+
+/// 024 §1 step 3: `__builtin_x` is `x`, when `x` is something chiero models.
+///
+/// Not a blanket strip. `__builtin_expect`, `__builtin_frame_address` and friends have no
+/// non-prefixed counterpart, and aliasing them to a name that does not exist would turn a
+/// clear "no model" into a confusing lookup miss for a different symbol.
+fn resolve_builtin(name: &str) -> &str {
+    match name.strip_prefix("__builtin_") {
+        Some(base) if chiero_model::dispatchable().contains(&base) => base,
+        _ => name,
+    }
 }
 
 fn lift_value(v: chiero_model::Value) -> Value {
