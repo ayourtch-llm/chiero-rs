@@ -774,6 +774,20 @@ pub enum HavocFill {
     Uninitialized,
 }
 
+/// What a havoc actually did. A bare `Vec<ObjectId>` could say what it reached and not
+/// what it *failed* to reach, so a scan cut short by `HAVOC_SCAN_BYTES` — or one over an
+/// object whose bytes are gone — read as "followed everything".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Havocked {
+    /// Objects genuinely invalidated. Skipped ones — read-only, freed, `NULL`,
+    /// `UNBOUND`, unmaterialized — are **not** here: a count that includes skips reads
+    /// as coverage.
+    pub objects: Vec<ObjectId>,
+    /// Some object's pointer scan did not finish, so reachable objects may have been
+    /// missed and still hold stale contents.
+    pub truncated: bool,
+}
+
 /// How far a havoc's pointer scan reads into an object before giving up. A havoc'd
 /// object can be 64 MiB and the range search is linear in the object count, so the
 /// product is not something to run unbounded — but a cap that nobody hears about reads as
@@ -1639,24 +1653,33 @@ impl Memory {
         depth: u32,
         fill: HavocFill,
         at: Span,
-    ) -> Vec<ObjectId> {
-        let mut seen: Vec<ObjectId> = Vec::new();
+    ) -> Havocked {
+        let mut out = Havocked::default();
+        // Visited is separate from `out.objects`: an object that was *skipped* must not
+        // be reported as invalidated, but it still must not be walked twice.
+        let mut visited: Vec<ObjectId> = Vec::new();
         let mut frontier: Vec<ObjectId> = objects.to_vec();
         for _ in 0..=depth {
             let mut next = Vec::new();
             for id in std::mem::take(&mut frontier) {
-                if seen.contains(&id) {
+                if visited.contains(&id) {
                     continue;
                 }
-                seen.push(id);
+                visited.push(id);
                 // Read the pointees **before** the fill, since the fill is what destroys
                 // the addresses they were found through.
-                next.extend(self.pointees(id));
-                self.havoc_object(a, id, fill, at);
+                let (found, complete) = self.pointees(id);
+                next.extend(found);
+                if self.havoc_object(a, id, fill, at) {
+                    out.objects.push(id);
+                    // Only an object that was actually invalidated can have lost
+                    // reachability; a skip loses nothing.
+                    out.truncated |= !complete;
+                }
             }
             frontier = next;
         }
-        seen
+        out
     }
 
     /// The address `id` was placed at. `Memory` owns the address space, so a caller that
@@ -1703,14 +1726,20 @@ impl Memory {
     /// integer that happens to look like an address is followed, and a pointer split
     /// across a union is not — which is why 021 §7.1 keeps it a *fallback*. For a havoc
     /// over-approximating is the safe direction.
-    pub fn pointees(&self, id: ObjectId) -> Vec<ObjectId> {
+    ///
+    /// The second half of the pair is whether the scan was **complete**. "Nothing there"
+    /// and "could not look" are different answers, and only one of them means the
+    /// reachable set is closed.
+    pub fn pointees(&self, id: ObjectId) -> (Vec<ObjectId>, bool) {
         let Some(e) = self.entry(id) else {
-            return Vec::new();
+            return (Vec::new(), true);
         };
         // A promoted object has no byte view to scan. Its contents are symbolic, so no
-        // concrete address can be recovered from them at all.
+        // concrete address can be recovered from them at all — which is *incomplete*,
+        // not empty: a second havoc of the same object would otherwise silently stop
+        // following the pointers the first one followed.
         let Some(o) = e.obj.as_ref().filter(|_| e.repr == Repr::Bytes) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let limit = e.size.min(HAVOC_SCAN_BYTES);
         let mut out = Vec::new();
@@ -1733,24 +1762,42 @@ impl Memory {
             }
             b += 8;
         }
-        out
+        (out, limit == e.size)
     }
 
     /// Invalidate one object's contents. `Symbolic` replaces them with an unconstrained
     /// array — the array representation is what makes this O(1) rather than one fresh
     /// variable per byte — and `Uninitialized` clears the init mask instead, leaving the
     /// bytes unreadable rather than unknown.
-    pub fn havoc_object(&mut self, a: &mut TermArena, id: ObjectId, fill: HavocFill, at: Span) {
+    ///
+    /// Returns whether anything was invalidated: freed, read-only, unmaterialized and
+    /// unknown objects are all skipped, and the caller must not count them.
+    pub fn havoc_object(
+        &mut self,
+        a: &mut TermArena,
+        id: ObjectId,
+        fill: HavocFill,
+        at: Span,
+    ) -> bool {
         if let Some(f) = self.state_fault(id, 0, at) {
             // Havocking freed memory is not an access the program made, so there is
             // nothing to report — and nothing to invalidate either.
             let _ = f;
-            return;
+            return false;
         }
-        let Some(e) = self.entry(id) else { return };
+        let Some(e) = self.entry(id) else {
+            return false;
+        };
         let size = e.size;
         if e.obj.is_none() {
-            return;
+            return false;
+        }
+        // **Read-only objects are not written, by anyone.** Every other write path
+        // refuses; a callee writing through a `const char *` is UB, so invalidating here
+        // would discard what the standard guarantees — and since `Symbolic` promotes, the
+        // object would come back unreadable rather than merely changed.
+        if e.readonly {
+            return false;
         }
         match fill {
             HavocFill::Symbolic => {
@@ -1768,14 +1815,22 @@ impl Memory {
             }
             HavocFill::Uninitialized => {
                 if let Some(e) = self.entry_mut(id) {
-                    e.repr = Repr::Bytes;
-                    e.arr = None;
                     if let Some(o) = e.obj.as_mut() {
                         o.clear_contents(size);
+                    }
+                    // 021 §3: promotion is **one-way within a state**. Clearing `arr`
+                    // here de-promoted a promoted object and discarded its array
+                    // contents, so a read after it answered from stale bytes.
+                    if e.repr == Repr::Array {
+                        let init = a.array_const(64, 1, 0);
+                        if let Some(arr) = e.arr.as_mut() {
+                            arr.init = init;
+                        }
                     }
                 }
             }
         }
+        true
     }
 
     /// 021 contract 22. `Overlap::Forbidden` is `memcpy`; `Overlap::Allowed` is

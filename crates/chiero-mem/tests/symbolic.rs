@@ -1388,7 +1388,9 @@ fn a_havoc_follows_stored_pointers_to_the_declared_depth() {
 
     let mut shallow = m.clone();
     assert_eq!(
-        shallow.havoc(&mut a, &[outer], 0, HavocFill::Uninitialized, sp(5)),
+        shallow
+            .havoc(&mut a, &[outer], 0, HavocFill::Uninitialized, sp(5))
+            .objects,
         vec![outer],
         "depth 0 stops at the object itself"
     );
@@ -1399,7 +1401,7 @@ fn a_havoc_follows_stored_pointers_to_the_declared_depth() {
 
     let reached = m.havoc(&mut a, &[outer], 1, HavocFill::Uninitialized, sp(7));
     assert!(
-        reached.contains(&inner),
+        reached.objects.contains(&inner),
         "depth 1 reaches the pointee: {reached:?}"
     );
     assert!(

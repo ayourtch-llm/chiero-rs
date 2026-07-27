@@ -1230,9 +1230,18 @@ impl<'m> Engine<'m> {
                     // concrete one here would be a fabricated address.
                     return self.lowering_gap(s, span, "PtrAdd with a symbolic offset");
                 };
+                // **Signed, at the offset's own width.** 020 §8 rule 6 constrains the
+                // *base* to pointer width, not the offset: a 32-bit `-4` read as unsigned
+                // is `4294967292`, and `p + (int)-offsetof(S, m)` is `container_of`.
+                let Ok(off) = i64::try_from(c.signed()) else {
+                    // Wider than a pointer. Truncating turned `2^64 + 4` into `+4`, so a
+                    // wildly out-of-bounds walk became in-bounds with no assumption and
+                    // no degradation, and `seal` would have minted a proof over it.
+                    return self.lowering_gap(s, span, "PtrAdd offset wider than a pointer");
+                };
                 Value::Ptr(Pointer {
                     base: p.base,
-                    off: p.off.wrapping_add(c.signed() as i64),
+                    off: p.off.wrapping_add(off),
                 })
             }
             // 023 §7's table puts a `LoweringGap` under **`Unknown`**, not
@@ -1333,9 +1342,29 @@ impl<'m> Engine<'m> {
             &format!(
                 "`{name}`: {} — {} object(s) invalidated",
                 spec.describe(),
-                hit.len()
+                hit.objects.len()
             ),
         );
+        // A pointer scan that did not finish means reachable objects may still hold
+        // stale contents, which is a strictly worse kind of ignorance than the havoc
+        // itself: the havoc is recorded and this would not be.
+        if hit.truncated {
+            self.note_once(
+                s,
+                AssumptionKind::NoInformation,
+                span,
+                &format!(
+                    "`{name}`: the havoc's pointer scan did not finish, so objects \
+                     reachable from these may still hold stale contents"
+                ),
+            );
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                span,
+                "an incomplete havoc cannot bound what it missed",
+            );
+        }
     }
 
     /// Run a model and fold its result back into the state.
@@ -1535,6 +1564,12 @@ impl<'m> Engine<'m> {
                 span,
                 &format!("`{name}` could not be dispatched with these arguments"),
             );
+            // **A call that was not performed invalidates what it was handed**, and
+            // `can_dispatch` is a *name* check — passing it and then failing per-call
+            // translation is a call chiero did not perform. `memcpy(buf, src, n)` with a
+            // non-constant `n` left `buf` believed intact, and `strcpy`'s overflow arm
+            // reported the overflow while still believing the destination was fine.
+            self.havoc_args(a, s, name, args, span);
         }
     }
 
