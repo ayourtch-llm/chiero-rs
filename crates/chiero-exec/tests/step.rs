@@ -8907,18 +8907,38 @@ fn an_opaque_write_invalidates_exactly_what_it_declares() {
         other => panic!("{other:?}"),
     };
     let mut mem = s.mem.clone();
-    assert_ne!(
-        mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY)
-            .value,
-        Some(vec![0xAB; 8]),
-        "the declared region was invalidated"
+    // A concrete read of the clobbered range refuses it — the bytes are a known unknown
+    // now. Comparing `.value` alone is not enough: 021 §5 hands back a value *alongside*
+    // a fault, and the stale bytes are still what sits behind the overlay.
+    let clobbered = mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY);
+    assert!(
+        clobbered.faults.iter().any(|f| f.kind() == "symbolic-byte"),
+        "the declared region was invalidated: {:#?}",
+        clobbered.faults
     );
-    assert_eq!(
-        mem.read(chiero_mem::Pointer { base, off: 8 }, 8, Span::DUMMY)
-            .value,
-        Some(vec![0xAB; 8]),
-        "and nothing past it was"
+    // **And the untouched half is still *readable*.** Comparing `.value` alone would pass
+    // even if these bytes had been clobbered too, because the stale bytes sit behind the
+    // overlay — the same trap as above, one assertion over.
+    let intact = mem.read(chiero_mem::Pointer { base, off: 8 }, 8, Span::DUMMY);
+    assert!(intact.faults.is_empty(), "{:#?}", intact.faults);
+    assert_eq!(intact.value, Some(vec![0xAB; 8]), "and nothing past it was");
+    // Each clobbered byte is its *own* unknown: one shared symbol would make
+    // `buf[0] == buf[1]` provably true of memory chiero knows nothing about.
+    let b0 = mem.read_term(
+        &mut a,
+        chiero_mem::Pointer { base, off: 0 },
+        1,
+        chiero_mem::Endian::Little,
+        Span::DUMMY,
     );
+    let b1 = mem.read_term(
+        &mut a,
+        chiero_mem::Pointer { base, off: 1 },
+        1,
+        chiero_mem::Endian::Little,
+        Span::DUMMY,
+    );
+    assert_ne!(b0.value, b1.value, "two clobbered bytes are two unknowns");
 }
 
 /// **020 contract 31.** An `rdtsc`-shaped `Opaque` with two `dsts` yields two values, and

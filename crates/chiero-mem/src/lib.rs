@@ -183,6 +183,15 @@ impl InitMask {
         }
     }
 
+    /// Force a run of bits back to `No`, bypassing the join — the one operation the
+    /// lattice deliberately does not offer, because `join(old, No) == old`. Only for
+    /// *invalidation*, where forgetting is the point.
+    pub fn set_exact_range_uninit(&mut self, lo_bit: u64, n_bits: u64) {
+        for b in lo_bit..lo_bit + n_bits {
+            self.set_exact(b, InitBit::No);
+        }
+    }
+
     /// Set one bit's status verbatim, bypassing the join. Only for copying an existing
     /// mask (`realloc`), where the destination has no prior state to join with.
     pub fn set_exact(&mut self, bit: u64, to: InitBit) {
@@ -1922,6 +1931,57 @@ impl Memory {
             b += 8;
         }
         (out, limit == e.size)
+    }
+
+    /// Invalidate **exactly** `[p, p + size)`, leaving the rest of the object alone.
+    ///
+    /// Distinct from `havoc_object` because 020 §4.3's `Opaque` declares a *range*: an
+    /// inline-asm block that says it clobbers eight bytes has said something precise, and
+    /// widening that to the whole object would throw away the declaration's whole value.
+    /// Returns whether the range was placed at all.
+    ///
+    /// `Symbolic` fills byte by byte through the overlay rather than promoting, so the
+    /// object keeps its byte view and the *untouched* bytes stay concrete — promotion
+    /// would take them with it.
+    pub fn havoc_range(
+        &mut self,
+        a: &mut TermArena,
+        p: Pointer,
+        size: u64,
+        fill: HavocFill,
+        at: Span,
+    ) -> bool {
+        if self.entry(p.base).is_none() || p.off < 0 {
+            return false;
+        }
+        for i in 0..size {
+            let q = Pointer {
+                base: p.base,
+                off: p.off + i as i64,
+            };
+            match fill {
+                HavocFill::Symbolic => {
+                    self.havoc_seq += 1;
+                    let t = a.var(
+                        chiero_solver::Sort::BitVec(8),
+                        &format!("clobber{}", self.havoc_seq),
+                    );
+                    let r = self.write_sym_byte(q, t, at);
+                    if r.value.is_none() {
+                        return false;
+                    }
+                }
+                HavocFill::Uninitialized => {
+                    if let Some(e) = self.entry_mut(p.base)
+                        && let Some(o) = e.obj.as_mut()
+                    {
+                        o.init.set_exact_range_uninit(q.off as u64 * 8, 8);
+                        o.sym.remove(&(q.off as u64));
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Invalidate one object's contents. `Symbolic` replaces them with an unconstrained

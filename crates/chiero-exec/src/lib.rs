@@ -900,12 +900,35 @@ impl<'m> Engine<'m> {
                     }
                 }
             }
-            InstKind::Opaque { dsts, why, .. } => {
+            InstKind::Opaque {
+                dsts, writes, why, ..
+            } => {
                 // 020 §4.3: never silently a no-op. Each output is a fresh symbol,
                 // distinct per instruction, and the path is a modeling lie from here on.
                 for (v, ty) in dsts {
                     let t = a.var(sort_of(ty), &format!("opaque_{}", v.0));
                     s.set_local(*v, Value::Scalar(t));
+                }
+                // **A declared write is a write.** Ignoring `writes` left inline asm that
+                // says it clobbers a buffer with chiero still believing the old bytes —
+                // the same failure as a call that does not invalidate what it was handed.
+                // Only the declared range: 020 §4.3 makes the declaration the point, and
+                // invalidating everything would be no better than not modelling it.
+                for w in writes {
+                    let (Some(Value::Ptr(p)), Some(n)) = (
+                        self.operand(a, s, &w.addr),
+                        self.concrete_size(a, s, &w.size),
+                    ) else {
+                        self.lowering_gap(s, i.span, "an opaque write chiero cannot place");
+                        continue;
+                    };
+                    // `Symbolic`, as for an unmodeled call: the code wrote *something*,
+                    // and `Uninitialized` would fire on every buffer it legitimately
+                    // filled.
+                    let hit = s.mem.havoc_range(a, p, n, HavocFill::Symbolic, i.span);
+                    if !hit {
+                        self.lowering_gap(s, i.span, "an opaque write outside any object");
+                    }
                 }
                 s.degrade(
                     Fidelity::Approximated,
