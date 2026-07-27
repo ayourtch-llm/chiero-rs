@@ -2540,6 +2540,41 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `CookedSite.config` has nowhere to come from yet. Left alone deliberately rather than
    solved by putting the type in the wrong crate. Worth settling at merge time.
 
+   **WAVE 66** (`6adb437`, xtask fix; 683 tests) — **the M2 branch went through the merge
+   gate and did not pass.** The review built a differential harness against **both** `gcc
+   -E -P` and `clang -E -P` (which agreed with each other on all 20 torture cases), plus a
+   25-mutation campaign: **13 of 20 cases diverge, 12 of 25 mutations survive.** Full
+   report handed to the M2 agent as `REVIEW-1.md` in its worktree; it is working through
+   it now.
+
+   The lexer is sound (six real VPP headers tokenize identically to gcc *and* clang) and
+   010 §3.2's provenance model reproduces exactly — the hardest part to retrofit is right.
+   The preprocessor is not: expansion runs **per line**, so a macro call spanning two lines
+   never expands (**2996 such sites in VPP**); rescanning does not see following tokens;
+   `#if` silently picks the wrong branch on `&`, `?:`, hex, octal and char literals; and
+   `#include` is a textual pre-pass, so `__FILE__`/`__LINE__` are wrong in every header —
+   which poisons exactly the 030/032 keying provenance exists for.
+
+   **Three findings were about my side, and are fixed here:**
+   - `contract-coverage` excluded files by `Path::ends_with("contracts.rs")`, which matches
+     the final *component* — so a crate's own `tests/contracts.rs` would have had all its
+     citations silently dropped. Harmless until I extended the gate to 010–015 last wave;
+     a live landmine after. Now excluded by full path.
+   - `spec:` **012 §2.3** — `__VA_OPT__` is out of v1 scope *explicitly*, with a
+     diagnostic rather than a silent pass-through. Measured: VPP uses `__VA_ARGS__` 230
+     times and `__VA_OPT__` **zero**. Same line now also states that GNU comma-swallowing
+     deletes the comma only when the variadic argument is **empty**.
+   - `spec:` **070 §4** — a contract cited only by an `#[ignore]`d test counts as
+     **uncovered**. The review found three such citations, one of which returns early when
+     its input file is missing (it is). *A green number that says a human has looked, when
+     nobody has, is worse than a blank.*
+
+   ⚠️ *Method note, the most valuable one this wave:* the review's most damning evidence was
+   not a failing assertion but a **differential harness against two independent oracles that
+   agree**. Every M1 review has had to argue from the spec; this one could point at gcc.
+   That asymmetry is why 080 says M1's oracles are weaker "rather than discovering" it —
+   and it is worth remembering when M1 work *feels* well-tested.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
