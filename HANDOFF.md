@@ -2030,6 +2030,26 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    17, 17b, 18, 19 need symbolic-base resolution, `max_resolutions`, lazy materialization
    and `--fork-on-alias`. That is the next substantial piece of 021, not a test gap.
 
+   **Next piece of 021, scoped but not started: §5.1 symbolic base pointers.** Contracts
+   16, 17, 17b, 18, 19 all depend on it. The spec's five steps, in order: provenance or a
+   registered arena short-circuits the search; otherwise ask the solver which objects the
+   value can fall in, capped at `max_resolutions` (8); one → continue; several → **fork per
+   object plus one wild state**; wholly unconstrained → `Unknown` + `UnresolvablePointer`
+   and the path **stops**; merely over the cap → concretize to the model + `Approximated`.
+   ⚠️ **Steps 4 and 5 must stay distinct** — 021 says an earlier draft merged them, so an
+   unconstrained pointer was concretized to an arbitrary object and reported `Bounded`,
+   which reads as "we looked and bounded it" when nothing was known.
+
+   Two accessors are missing before contract 25 (promotion preserves initialization) can be
+   tested honestly: after promotion the byte API refuses the object, so comparing the three
+   init states before and after needs an array-aware way to ask "is this bit `No`, `Cond`
+   or `Yes`". I started that test and backed it out rather than assert something weaker
+   than the contract.
+
+   Contracts 30 and 39 need **scope markers**: `InstKind::Marker(_)` is a no-op, so
+   `Scope(Exit)` retires nothing and `Lifetime::Function` versus `Lifetime::Scope` is
+   currently indistinguishable.
+
    **STILL OWED from wave 41:** E5 — every `OpaqueWrite` fixture has exactly one entry, so
    "each declared write is honoured" is untested. Plus the suspicions the review left open:
    a faulting `LoadBits` invents an unconstrained `w`-bit symbol where the field's range is
