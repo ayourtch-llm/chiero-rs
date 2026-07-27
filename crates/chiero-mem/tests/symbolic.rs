@@ -1322,3 +1322,88 @@ fn an_offset_of_any_width_is_usable_against_the_array() {
         "a mis-sorted index makes the whole script unparseable"
     );
 }
+
+/// **024 §2.1's havoc, `Symbolic`.** The object's contents become unconstrained: a read
+/// no longer answers with the byte that was there. It must **not** become an
+/// uninitialized-read finding — `Symbolic` means known-unknown, and 021 §3.1's whole
+/// point is that symbolic is not uninitialized.
+#[test]
+fn a_symbolic_havoc_forgets_the_contents_without_inventing_a_finding() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 8, sp(2));
+    m.havoc_object(&mut a, o, HavocFill::Symbolic, sp(3));
+    let r = m.read_term(&mut a, ptr(o, 0), 4, Endian::Little, sp(4));
+    assert!(
+        r.faults.is_empty(),
+        "symbolic is not uninitialized: {:#?}",
+        r.faults
+    );
+    let t = r.value.expect("a term comes back");
+    assert!(
+        a.eval_ground(t).is_err(),
+        "the old 0xAB bytes are gone, not preserved"
+    );
+}
+
+/// **024 §2.1's havoc, `Uninitialized`.** The mirror: reading now *is* a finding. The two
+/// fills have to be distinguishable, or the choice 024 calls out as having "no safe
+/// default" would be decoration.
+#[test]
+fn an_uninitialized_havoc_makes_the_next_read_a_finding() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 8, sp(2));
+    m.havoc_object(&mut a, o, HavocFill::Uninitialized, sp(3));
+    let r = m.read(ptr(o, 0), 4, sp(4));
+    assert!(
+        r.faults.iter().any(|f| {
+            matches!(
+                f,
+                MemFault::Uninitialized { .. } | MemFault::MaybeUninitialized { .. }
+            )
+        }),
+        "the bytes are gone and chiero says so: {:#?}",
+        r.faults
+    );
+}
+
+/// **024 contract 21d.** A havoc follows pointers stored *inside* the object. Provenance
+/// is not kept in bytes, so this is the same range search `int_to_ptr` falls back to —
+/// an aligned word whose value lands inside a live object.
+///
+/// Depth 0 must **not** follow them, or the parameter is decoration and the conservative
+/// default cannot be distinguished from the cheap one.
+#[test]
+fn a_havoc_follows_stored_pointers_to_the_declared_depth() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let inner = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    let outer = m.alloc(ObjKind::Heap, 8, 8, sp(2));
+    m.set(ptr(inner, 0), 0xCD, 8, sp(3));
+    let addr = m.ptr_to_int(ptr(inner, 0)).addr();
+    m.write(ptr(outer, 0), &addr.to_le_bytes(), sp(4));
+
+    let mut shallow = m.clone();
+    assert_eq!(
+        shallow.havoc(&mut a, &[outer], 0, HavocFill::Uninitialized, sp(5)),
+        vec![outer],
+        "depth 0 stops at the object itself"
+    );
+    assert!(
+        shallow.read(ptr(inner, 0), 4, sp(6)).faults.is_empty(),
+        "the pointee is untouched"
+    );
+
+    let reached = m.havoc(&mut a, &[outer], 1, HavocFill::Uninitialized, sp(7));
+    assert!(
+        reached.contains(&inner),
+        "depth 1 reaches the pointee: {reached:?}"
+    );
+    assert!(
+        !m.read(ptr(inner, 0), 4, sp(8)).faults.is_empty(),
+        "and invalidates it"
+    );
+}
