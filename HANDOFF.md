@@ -630,10 +630,67 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    alloca scope/lifetime, and the spec was amended for `GlobalInit`, which is genuinely
    not implemented.
 
-   **Still owed in `chiero-cir`:** `GlobalInit` in the textual format; `Marker::Line` at
-   instruction position (currently folded into `gcov_lines` on reparse, so `insts.len()`
-   drops); call arity and dangling `FuncId`/`GlobalId` checks; the optional passes (020
-   §9); and `cargo xtask fmt-corpus`, which `tests/corpus.rs` names but does not exist.
+   **Still owed in `chiero-cir`** (updated after wave 7): `GlobalInit`/`Linkage` in the
+   textual format; `Marker::Line` at instruction position (folded into `gcov_lines` on
+   reparse, so `insts.len()` drops — and `ALL_MARKER_NAMES` has a hand-written exemption
+   for exactly the variant that does not work); the optional passes (020 §9); and
+   `cargo xtask fmt-corpus`, which `tests/corpus.rs` names but does not exist.
+
+   **Wave 7 — third `chiero-cir` mutation review COMPLETE** (35% escape, flat vs wave 6,
+   but the survivors clustered rather than scattered: earlier passes pinned each verifier
+   rule at exactly *one* call site). Eight fixes applied in `acf0744` (red) / `7896cfa`
+   (green), each mutation-tested individually; two further claims were probed and did not
+   survive (`verify` does check every function; unknown function attributes already
+   error) and became pinning tests instead.
+
+   The critical one: **an unreachable predecessor destroyed dominance for a live block.**
+   `dom[dead] = {dead}`, so meeting it into a live join emptied the set and a value
+   defined in entry stopped dominating its use — a *hard error* on dead code falling into
+   a live join, which is ubiquitous in real C. `chiero-lower` would have tripped on its
+   first real function. The crate had gone out of its way to tolerate unreachable C by
+   skipping the scan *inside* dead blocks, and never fixed the lattice underneath.
+
+   **Judged valid but not yet applied** (in rough value order):
+   - **Spans do not round-trip.** Nothing prints or parses them; every `span` becomes
+     `Span::DUMMY`. Contracts 1 and 015/22 hold *only* because every fixture has dummy
+     spans, and `every_corpus_module_round_trips` compares `print(m)` to
+     `print(parse(print(m)))`, which is invariant under anything the printer omits.
+     020 §1.5 calls provenance "the product". **This breaks the moment `chiero-lower`
+     emits real CIR, and it breaks silently.** Highest-value remaining item.
+   - **Unordered float predicates are absent from `CmpOp`.** C's `isnan` idiom `x != x`
+     needs one; `FONe` is *ordered* not-equal, which is **false** for NaN — the opposite
+     of C. This is a wrong-answer bug, not a coverage gap.
+   - `InstKind::Opaque` still absent (015 §7 forbids the workarounds); also missing:
+     `ShuffleDyn`, `Fresh.why`, `MarkerKind::Assume`, `AccessPath`/`PtrAdd.path`,
+     `CopyMem.overlap` (memmove vs memcpy is inexpressible), `Call.conv`,
+     `Module.target`/`source_map`, `Body::Modeled`. Conversely `Module::config` and
+     `Module::metadata` exist in code, appear nowhere in 020 §3, and are destroyed by a
+     round trip.
+   - **Verification is quadratic-to-cubic**, measured in release: doubling blocks
+     quadruples time; `check_module_identity` is O(G²)+O(F²) with *string* comparison,
+     and VPP whole-program is ~50k functions. 020 §8 claims O(size). Every containment
+     test is `Vec::contains`; `successors()` heap-allocates per call inside the dominator
+     fixpoint. Fix with `IndexSet`/`IndexMap` and a prebuilt predecessor map.
+   - Rule 1 is applied at 12 operand positions but *tested* at 2. Contract 40 is written
+     specifically about `AllocaDyn::count` and nothing exercises it. Same shape for rules
+     5/6/7/11, each pinned at one call site. `va_list` operands are never pointer-checked
+     at all. One table-driven test per operand position kills ~25 survivors.
+   - **The round-trip fixture supplies the identity/default value for nearly every scalar
+     field**, so printer and parser can drop or invert a field *in lockstep* and the
+     byte-exact round trip still passes. `vacopy`'s src/dst can be swapped on both sides
+     and nothing notices. The variant-coverage guard measures variant *reachability*, not
+     field *fidelity*. A second fixture with distinct non-default values everywhere, or a
+     random-module property test asserting `parse(print(m)) == m`, is the single
+     highest-leverage test change available.
+   - 020 §5 says the verifier *sorts* switch cases; it takes `&Module` so it structurally
+     cannot. Either add `canonicalize(&mut Module)` or amend the spec. Contract 13 is
+     satisfied trivially today, and `successors()` order is pinned only by a
+     single-element list, where `rev()` is the identity.
+
+   **Design judgements worth acting on eventually:** `AllocaDecl::count` uses `u64::MAX`
+   as an in-band sentinel where `enum Extent { Static(u64), Dynamic }` costs nothing;
+   `Block::id` duplicates its index (now that `IdNotIndex` exists for funcs/globals, the
+   same argument applies); `VerifyError.detail` is formatted eagerly for every warning.
 
    **Wave 6 — `chiero-cir` re-review COMPLETE, criticals applied in `87a1b2a`.**
    151 mutations, **54 survived (36%**, down from 45%) — but the escapes clustered in the
