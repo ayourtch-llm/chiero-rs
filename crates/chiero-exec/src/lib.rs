@@ -1677,9 +1677,18 @@ impl<'m> Engine<'m> {
         p: Pointer,
         span: Span,
     ) -> Option<Term> {
-        let Some(base) = s.mem.addr_of(p.base) else {
-            self.lowering_gap(s, span, "the address of an unplaced object");
-            return None;
+        // **`NULL` is address zero**, and it is not in the address space — ids start at
+        // 1, so `addr_of` will never answer for it. Without this, `p->next = NULL` was a
+        // lowering gap: the store never happened and the reload invented an
+        // uninitialized-read about memory the program had just written.
+        let base = if p.base == ObjectId::NULL {
+            0
+        } else {
+            let Some(b) = s.mem.addr_of(p.base) else {
+                self.lowering_gap(s, span, "the address of an unplaced object");
+                return None;
+            };
+            b
         };
         let t = a.bv(64, base.wrapping_add(p.off as u64) as u128);
         s.remember_provenance(t, p);
