@@ -34,6 +34,7 @@ spec is amended in the same commit as the deviation.
 | [022](022-solver.md) | Solver | `Solver` trait, term language, tiered backends, caching |
 | [023](023-execution-engine.md) | Execution engine | States, forking, searchers, path-explosion control |
 | [024](024-environment-models.md) | Environment models | libc, builtins, and the model registry |
+| [025](025-concurrency-and-threading.md) | Concurrency | Thread context, the discipline checker, and the declared blind spot |
 
 ### Capability verticals
 
@@ -43,7 +44,7 @@ spec is amended in the same commit as the deviation.
 | [031](031-change-impact.md) | Change impact | Diff → affected entities, incl. macro-body changes |
 | [032](032-test-selection.md) | Test selection | Impact closure ∩ coverage, symbolic refinement |
 | [040](040-defect-checkers.md) | Defect checkers | Logic errors, with replayable counterexamples |
-| [041](041-optimization-analysis.md) | Optimization analysis | Provable rewrite opportunities |
+| [041](041-optimization-analysis.md) | Optimization analysis | Provable rewrite opportunities, plus cache-line/locality analysis |
 | [050](050-tool-interface.md) | Tool interface | The LLM-facing surface, incl. `prove_equivalent` |
 | [060](060-vpp-integration.md) | VPP integration | compile_commands, vppinfra models, multiarch |
 

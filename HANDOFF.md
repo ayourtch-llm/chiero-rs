@@ -48,10 +48,10 @@ specs themselves is fine and expected.
   Scale: 1552 `.c`, 924 `.h`, ~1.01M lines, **754 distinct `foreach_*` X-macros**,
   340 `VLIB_REGISTER_NODE` sites.
 - `gcc`/`gcov` **13.3.0** present.
-- **clang 18.1.3 + libz3 4.8.12 were being installed by the user at 2026-07-26** (debs
-  were in `/var/cache/apt/archives`, `dpkg -l` still empty). **VERIFY before relying on
-  them.** Note the z3 debs were `libz3-4`/`libz3-dev` — the *library*, not the `z3` CLI
-  binary; the SMT-LIB2 subprocess backend needs `apt install z3` as well.
+- **VERIFIED 2026-07-26 (do not re-check):** `clang` 18.1.3 at `/usr/bin/clang`, working.
+  `z3` **4.8.12 at `/usr/bin/z3`, working** — `z3 -in -smt2` over stdin smoke-tested
+  (`sat` + model returned). `libz3.so`/`libz3-dev` also present, so the later
+  off-by-default `z3-sys` feature is buildable. The user confirmed "z3 is in btw".
 - **This does NOT change the frontend decision.** Provenance is still why we own the
   preprocessor; do not retreat to clang. What it changes:
   - clang becomes a **differential oracle**: `clang -E` for preprocessor conformance,
@@ -259,6 +259,76 @@ analysis semantics**; the rest are recorded and ignored.
 Top builtins: shufflevector 25, shuffle 9, prefetch 9, expect 4, clzll 4, unreachable 3,
 frame_address 3, ctz 3, constant_p 3, clz 3, object_size 2, mul_overflow 2, bswap64 2.
 
+### 4.13b Decisions locked while writing the core block (020–024) — do not re-litigate
+
+- **CIR pointers are untyped**; the pointee type lives on `Load`/`Store`. Signedness is a
+  property of the *op* (`SDiv`/`UDiv`, `SExt`/`ZExt`), not of `Int(N)`.
+- **No aggregate values** in CIR; struct assignment is `CopyMem`.
+- **`PtrAdd` is a distinct RValue**, never integer `Add` — that is what preserves
+  provenance and lets OOB fire on the arithmetic.
+- **CIR arithmetic is total and defined** (wrapping, `x/0` = all-ones). UB is *reported as
+  a finding*, never encoded as IR partiality or solver "no value".
+- **Textual `.cir` format is normative**; core tests are `.cir` fixtures; round-trip is a
+  contract; unknown directives are a hard parse error.
+- **Memory `Contents` starts as `Bytes` + init bitmask**, promotes to SMT `Array` only on
+  a symbolic-offset write past `ite_threshold` (16). Symbolic ≠ uninitialized — conflating
+  them makes UCSE a false-positive storm.
+- **Objects get deterministic concrete addresses** with 4096-byte guard gaps (globals
+  `0x1_0000_0000` up, heap `0x2_0000_0000` up, stack `0x7fff_0000_0000` down, lazy
+  `0x4_0000_0000` up). No randomization, ever.
+- **Lazy objects are distinct by default** (`--fork-on-alias` opt-in), and the assumption
+  is recorded in every report.
+- **solver-lite may only answer `Sat` with a model that passes independent concrete
+  evaluation, and `Unsat` only from a real emptiness/congruence proof.** Everything else
+  is `Unknown`. That is what makes incompleteness safe.
+- **z3 is tier 2 via a long-lived `z3 -in -smt2` subprocess** (never linked), plus a
+  `paranoid` mode that cross-checks every tier-1 answer. CI runs `--no-default-features`.
+- **Fidelity rule is type-enforced**: proof-carrying results need an `ExactWitness` token
+  only the engine can mint, so "no bug found" cannot be stated as "no bug exists". There
+  is a `trybuild` compile-fail test for it.
+- **Unmodeled externs havoc loudly** (invalidate pointees, fresh return, `Approximated`,
+  named in `assumptions`). There is no quiet default. `longjmp` is diagnosed unsupported.
+- **Harness intrinsics** (`chiero_make_symbolic`/`assume`/`assert`) compile to no-ops
+  under gcc, so one corpus file serves both chiero and the differential oracle.
+
+### 4.13c User challenges raised 2026-07-26/27 and how they were answered
+
+The user reviewed 020 mid-writing and raised three gaps. All three are now spec'd; do not
+re-open them, but do keep them satisfied as later specs are written.
+
+1. **"How does CIR capture VPP's rich union / layout-dependent semantics?"**
+   Answer: it falls out of three existing commitments — no aggregate values, untyped
+   pointers (access type on the access), byte-level memory with no strict-aliasing
+   assumption. Written up as **020 §4.5**. *Real gap found and fixed*: bitfields needed
+   dedicated `LoadBits`/`StoreBits` + `BitRange` (020 §4.5.1), because byte-granular
+   lowering both clobbers neighbouring bitfields' symbolic bytes and produces spurious
+   uninitialized-read findings on adjacent fields. That forced **bit-granular init
+   tracking** for partially-written bytes in 021 §3.1. Also added: `union-pun` checker is
+   **off by default** (VPP relies on gcc-defined punning); `PathStep::UnionMember { view }`
+   so reports name which union view was used; endian-conditional bitfield layouts are two
+   `ConfigId`s, not a CIR concern.
+2. **"Do cache behaviours need modeling?"**
+   Answer: **no, not semantically** — caches are coherent, so no load's value depends on
+   them; 021 §7 now states addresses are logical with no timing/physical meaning.
+   **But yes as a performance analysis**: `TargetConfig::cache_line_bytes` added in 014 §1,
+   consumed by **041** for cache-line straddling, hot/cold field placement, false sharing,
+   prefetch distance. VPP touches `CLIB_CACHE_LINE_BYTES` in 257 files and
+   `CLIB_CACHE_LINE_ALIGN_MARK` in 124 — this is a real capability, not a footnote.
+   **041 must deliver it.**
+3. **"Workers run multi-threaded."**
+   Answer: the one-line non-goal was too glib. New spec **025-concurrency-and-threading.md**
+   (spec count is now **23**, not 22). Measured VPP discipline: `thread_index` in 467
+   files but `clib_spinlock_t` only 69, `clib_atomic_*` 73, barrier 54, `clib_rwlock_t` 10,
+   `__thread` 20 — i.e. VPP *partitions* rather than shares, and explicit sync is rare and
+   localized. So v1 ships a **path-sensitive concurrency-discipline checker** (unguarded
+   shared write/RMW, inconsistent guarding, lock leak on error-return paths, lock-order
+   inversion, barrier-protected state touched from a worker, per-thread key mismatch,
+   missing barrier around config-time `vec_`/`pool_` mutation) plus a `ThreadCtx`
+   (Main | Worker{symbolic index} | Barrier | Unspecified) — **not** an interleaving
+   explorer. Hard rule: any result touching a `Shared` object is capped at `Bounded`.
+   v2 hooks: IR needs no change, state is already the scheduling unit, `Searcher` already
+   abstracts order, and the `Sharing` lattice is exactly DPOR's input.
+
 ### 4.13 Testing strategy
 
 **Primary oracle is differential against gcc** (gcc 13.3 is installed, clang is not):
@@ -271,9 +341,12 @@ Csmith-style fuzzing noted as later work.
 
 Soundness-as-a-verifier; full C23 or any complete compiler dialect (target = C11 + the
 GNU extensions VPP actually uses); C++; being a compiler (no codegen backend);
-replacing the build system; automatic patching; **concurrency/data races** (VPP is
-heavily threaded — v1 is single-threaded execution, and this must be declared as a known
-blind spot in every report).
+replacing the build system; automatic patching; **interleaving exploration / weak memory /
+lock-free verification** (v1 executes sequentially; see 025 and §4.13c #3 — the blind spot
+is declared in every report AND caps fidelity at `Bounded`, but v1 does still ship a
+concurrency-discipline checker, so "no concurrency support" is now the wrong summary);
+**cache/timing semantics** (coherent, no semantic effect — but cache-*layout* analysis is
+in scope for 041, see §4.13c #2).
 
 ## 6. Repo layout
 
@@ -288,7 +361,8 @@ chiero-rs/
 
 ## 7. Spec set — status
 
-Planned 22 documents in `docs/specs/`. **Written so far: 8 (frontend block complete).**
+Planned **23** documents in `docs/specs/` (025 was added mid-flight, see §4.13c).
+**Written so far: 14 (frontend + symbolic-core blocks complete).**
 
 - [x] `README.md` — index + reading order + status
 - [x] `000-overview.md` — goals, 4 capabilities, design commitments, non-goals, glossary
@@ -298,16 +372,19 @@ Planned 22 documents in `docs/specs/`. **Written so far: 8 (frontend block compl
 - [x] `012-preprocessor.md` — phase 4, expansion w/ provenance, `#if` eval, includes
 - [x] `013-parser.md` — C11 + GNU extensions, **grounded in measured VPP usage** (below)
 - [x] `014-semantics-and-types.md` — types, layout/ABI, name resolution, const-eval
-- [ ] `020-cir.md` — §4.4
-- [ ] `021-memory-model.md` — §4.5
-- [ ] `022-solver.md` — §4.6
-- [ ] `023-execution-engine.md` — §4.7, incl. fidelity
-- [ ] `024-environment-models.md` — libc/builtins model registry
+- [x] `020-cir.md` — §4.4; +textual format, verifier, PtrAdd-not-Add, order-sensitivity
+- [x] `021-memory-model.md` — §4.5; +vec negative-offset worked example, lazy init, CoW
+- [x] `022-solver.md` — §4.6; z3 4.8.12 verified as tier-2 subprocess + paranoid oracle
+- [x] `023-execution-engine.md` — §4.7; fidelity enforced by an unconstructible-token type
+- [x] `024-environment-models.md` — libc/builtins registry, harness intrinsics
+- [x] `025-concurrency-and-threading.md` — **added mid-flight** (§4.13c #3); ThreadCtx +
+      discipline checker + declared blind spot + v2 hooks
 - [ ] `030-coverage-gcov.md` — §4.9
 - [ ] `031-change-impact.md` — §4.8 steps 1–2
 - [ ] `032-test-selection.md` — §4.8 steps 3–6
 - [ ] `040-defect-checkers.md` — §4.10 checkers + replay
-- [ ] `041-optimization-analysis.md` — §4.10 optimization
+- [ ] `041-optimization-analysis.md` — §4.10 optimization **+ cache-line/locality analysis
+      (§4.13c #2): straddling, hot/cold field placement, false sharing, prefetch distance**
 - [ ] `050-tool-interface.md` — §4.11
 - [ ] `060-vpp-integration.md` — §4.12
 - [ ] `070-testing-and-tdd-protocol.md` — §4.13 + the red/green/review loop (§8)
@@ -335,24 +412,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-**You are here:** frontend spec block done and committed. 14 specs remain.
+**You are here:** frontend **and symbolic-core** spec blocks done and committed
+(14 of 23). **9 specs remain.**
 
-1. **Write the remaining 14 specs** in §7 order, from the §4 digest. Next up is the
-   symbolic-core block: `020-cir`, `021-memory-model`, `022-solver`,
-   `023-execution-engine`, `024-environment-models`. Then the verticals
-   (`030`–`041`), then `050`/`060`, then `070`/`080`.
+1. **Write the remaining 9 specs** in §7 order. Next up is the verticals block:
+   `030-coverage-gcov`, `031-change-impact`, `032-test-selection`, `040-defect-checkers`,
+   `041-optimization-analysis`. Then `050`/`060`, then `070`/`080`.
+   Cross-references the core block already promises and the verticals MUST honor:
+   - `041` owes the **cache-line/locality analysis** (§4.13c #2) — 014 §1 already added
+     `TargetConfig::cache_line_bytes` and 021 §7 already points at 041 for it.
+   - `040` owes the `union-pun` checker (off by default) and the order-dependence checker
+     (020 §7), and the concurrency findings list in 025 §3 is `chiero-check`'s to
+     implement — but the checker must stay target-agnostic (025 contract 14/15).
+   - `030` must use `SourceMap::expansion_loc`, never `spelling_loc` (020 §3 `gcov_lines`).
+   - `070` owes the `trybuild` compile-fail test for the fidelity token (023 contract 13)
+     and the differential harness that makes 023 contract 21 real.
 2. Every spec ends with `## Testable contracts` — numbered, checkable. These become the
    RED tests. Style: dense, decisive, concrete Rust sketches, no filler.
 3. Refresh context via `mcp__tttt__tttt_clear_and_read_handoff_md` at block boundaries
    (after the core block, after the verticals). **Update §7 checkboxes and commit this
    file first, every time.**
-4. When all 22 are written: commit with `spec:` prefix, then **STOP and present the spec
+4. When all 23 are written: commit with `spec:` prefix, then **STOP and present the spec
    set to the user for the review gate.** Offer an adversarial subagent review of the
    specs at that point.
 5. Only after approval: begin the TDD loop at Milestone 1 (symbolic core — CIR, memory,
    solver-lite, engine, all tested against **hand-written CIR**; frontend comes after).
-6. Re-verify clang/z3 availability (§3) before writing `022`'s backend section or `070`'s
-   oracle section — the install was in flight.
+6. ~~Re-verify clang/z3~~ — **done**, both verified working (§3). `070`'s oracle section
+   can assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 
 ## 10. Standing reminders
 

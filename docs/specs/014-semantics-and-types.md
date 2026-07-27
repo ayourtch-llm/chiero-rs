@@ -23,8 +23,16 @@ pub struct TargetConfig {
     pub long_double: LongDoubleKind,  // X87_80 on x86-64
     pub enum_underlying: EnumRule,    // gcc: int unless values require wider
     pub bitfield_abi: BitfieldAbi,    // gcc x86-64 rules
+    pub cache_line_bytes: u32,        // 64 on x86-64, 128 on some aarch64 (VPP: CLIB_CACHE_LINE_BYTES)
 }
 ```
+
+`cache_line_bytes` has **no semantic effect** — caches are coherent, so no load's value
+depends on them, and the memory model ignores the field entirely
+([021 §7](021-memory-model.md)). It is here because struct layout is the only place the
+number is knowable, and the locality analysis in
+[041](041-optimization-analysis.md) consumes it: cache-line straddling, hot/cold field
+placement, and false sharing are layout properties, and VPP tunes them deliberately.
 
 Default target is `x86_64-unknown-linux-gnu`. VPP also builds for `aarch64`, where
 `char_signed` flips — a difference that silently changes the sign of comparisons in
