@@ -2086,10 +2086,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    is step 4, not step 3. **Lesson: when a new test fails, check whether the fixture
    exercises the case the contract names** — I nearly "fixed" correct behaviour.
 
-   **STILL OWED on §5.1:** contract 16 (a base *constrained* to three of several objects
-   forking into 3 + 1) needs a fixture that puts a real constraint on the address — e.g. a
-   `Br` on `ult(addr, PtrToInt(&last))` so the path condition excludes some objects. The
-   fork machinery is implemented and unexercised. Contract 17 (`max_resolutions = 2`
+   **WAVE 47 — correcting wave 46** (`f29457b`; 601 tests). ⚠️ **Wave 46 claimed §5.1 step
+   4 was pinned and it was not.** With `solver-lite`, `addr ∈ [base, base+size]` over a
+   variable falls outside §3.2's fragment and returns `Unknown`, so *every* unresolved
+   pointer took the step-4 branch and reported "the value is unconstrained" — blaming the
+   **program** for what the **tier** could not see. That is the same conflation 021 records
+   against an earlier draft of its own §5.1, one level up, and I reproduced it.
+
+   `Feas::Unknown` now marks the resolution undecided and reports `SolverUnknown`. **Step
+   4's own detection is unreachable with this tier and is not claimed as covered** — the
+   test says so rather than asserting whatever text appeared.
+
+   *General lesson, and the second time in two waves:* a test that passes tells you nothing
+   about **why**. Both of wave 46's tests passed; one was reporting the wrong cause.
+
+   **STILL OWED on §5.1:** contract 16 (fork into candidates + 1 wild) and step 4's own
+   detection **both need a solver tier that can decide range queries over a variable**. The
+   `Br`-on-`ult` fixture exists and reaches only `SolverUnknown`. The fork machinery is
+   implemented and unexercised — that is the honest status, not "done". Contract 17 (`max_resolutions = 2`
    concretizes at `Approximated`) needs the same fixture with a smaller cap. Contracts 17b,
    18, 19 need `PointerBitInspection`, lazy materialization and `--fork-on-alias`, none of
    which exist.
