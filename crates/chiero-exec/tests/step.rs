@@ -6453,3 +6453,118 @@ fn two_kinds_of_fault_on_one_object_are_two_findings() {
         r.findings()
     );
 }
+
+/// **`p->next = NULL` must land.** `address_term` asks the memory model for the address of
+/// the stored pointer's object, and `addr_of(ObjectId::NULL)` is always `None` because ids
+/// start at 1 — so the store hit the lowering gap, the run degraded to `Unknown`, and the
+/// reload manufactured a false uninitialized-read. That is verbatim the failure the
+/// pointer-store commit says it fixed: fixed for `p->next = q`, not for `p->next = NULL`.
+/// Found by review.
+#[test]
+fn storing_a_null_pointer_lands_like_any_other() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Value(ValueId(0)),
+                    val: Operand::Const(Const::Null),
+                    ty: CTy::Ptr,
+                    align: 8,
+                    vol: Volatility::Normal,
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Ptr,
+                        align: 8,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Ptr, 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "writing NULL is not a bug: {:#?}",
+        r.findings()
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    // And it reads back as the null pointer, not as some other object.
+    match r.states()[0].local(ValueId(1)) {
+        Some(Value::Ptr(p)) => assert_eq!(p.base, chiero_mem::ObjectId::NULL),
+        Some(Value::Scalar(t)) => {
+            assert_eq!(a.eval_ground(t).ok().map(|c| c.bits()), Some(0))
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **An errored state is not an exact state, at any of the sites that can error.** None of
+/// the `Status::Errored` assignments calls `degrade`, so `State::fidelity()` answers
+/// `Exact` for a state that gave up — and only one line in `RunResult::fidelity`, which
+/// special-cases the status, stands between that and a PROVEN seal. The review's mutation
+/// removed that line and `seal` returned PROVEN for a function containing a construct the
+/// engine cannot execute.
+#[test]
+fn every_errored_state_degrades_itself() {
+    // A call to a function id the module does not define.
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Call {
+                dst: None,
+                callee: Callee::Direct(FuncId(7)),
+                args: vec![],
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert!(matches!(s.status, Status::Errored(_)), "{:?}", s.status);
+    assert_ne!(
+        s.fidelity(),
+        Fidelity::Exact,
+        "the state itself says so, not only the run"
+    );
+    assert!(
+        s.assumptions().iter().any(|x| x.kind.matches(s.fidelity())),
+        "and names a cause of the right kind: {:#?}",
+        s.assumptions()
+    );
+}
