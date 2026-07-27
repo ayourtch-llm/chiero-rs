@@ -3736,3 +3736,97 @@ fn an_externs_fresh_value_has_the_declared_width() {
         other => panic!("{other:?}"),
     }
 }
+
+/// **024 contract 21c.** A havoc degrades identically whether it came from the default
+/// unmodeled-extern fallback or from a registered model.
+///
+/// **This was written expecting RED and arrived green**, which is worth recording rather
+/// than quietly keeping: since the previous commit *both* paths reach the same
+/// `havoc_args` fallback, so they agree by construction rather than by two mechanisms
+/// coinciding. What it genuinely pins is that registering an approximate model does not
+/// *remove* the invalidation — the failure mode this project already hit once, when
+/// registering `strlen` and `strcpy` removed the degradation their calls had been causing.
+/// The `assert_ne!` is what makes it non-vacuous: with the havoc off, both sides still
+/// agree and that assertion still fails.
+///
+/// The half it does not reach is `ModelOutcome::Havoc` returned *by a model*, which
+/// `dispatch` still treats as an untranslatable gap. No model produces one today, so the
+/// branch is unreachable rather than wrong; a model that chooses its own `HavocSpec` —
+/// `scanf` writing through every pointer it is handed is 024 §2.1's example — is owed.
+#[test]
+fn a_registered_models_havoc_degrades_like_the_default_one() {
+    let build = |callee: &str| {
+        let mut caller = defined(
+            0,
+            "main",
+            vec![block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Const(Const::Int { bits: 32, val: 120 }),
+                            Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        ],
+                    }),
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Value(ValueId(0))],
+                    }),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            )],
+            CTy::Int(32),
+        );
+        caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+        Module {
+            funcs: vec![
+                caller,
+                extern_fn(1, callee, vec![CTy::Ptr], CTy::Int(32)),
+                extern_fn(
+                    2,
+                    "memset",
+                    vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                    CTy::Ptr,
+                ),
+            ],
+            ..Default::default()
+        }
+    };
+    let run = |m: &Module| {
+        let mut a = TermArena::new();
+        let r = Engine::new(m).run(&mut a);
+        let base = match r.states()[0].local(ValueId(0)) {
+            Some(Value::Ptr(p)) => p.base,
+            other => panic!("{other:?}"),
+        };
+        let mut mem = r.states()[0].mem.clone();
+        let bytes = mem
+            .read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY)
+            .value;
+        (r.fidelity(), bytes)
+    };
+    let modeled = build("scanf");
+    let unmodeled = build("some_function_chiero_has_never_heard_of");
+    let (f_modeled, b_modeled) = run(&modeled);
+    let (f_unmodeled, b_unmodeled) = run(&unmodeled);
+    assert_eq!(
+        f_modeled, f_unmodeled,
+        "a havoc degrades the same wherever it came from"
+    );
+    assert_ne!(
+        b_modeled,
+        Some(vec![120u8; 4]),
+        "the registered model invalidated the buffer too"
+    );
+    assert_eq!(b_modeled, b_unmodeled, "and to the same effect");
+}
