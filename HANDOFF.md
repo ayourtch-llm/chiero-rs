@@ -909,9 +909,29 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    passed it. The `Unsat` case distinguishes them. **Sixth same-answer instance**, this
    time between a real answer and a failure to answer.
 
-   **STILL OWED:** `Repr::Array` records the promotion decision but `chiero-mem` does not
-   yet *use* the solver's array terms — **so contract 6's "the two paths agree" still
-   cannot be tested and the current test compares the Bytes path to itself**; the promotion test
+   **THE ARRAY PATH IS REAL** (`9abbbf1` red, `e06be4f` green, 335 tests). `InitBit::Cond`
+   carries its guard as 021 §3.1 writes it; promotion builds real SMT arrays with the
+   mapping `No → 0`, `Yes → 1`, `Cond(t) → ite(t, 1, 0)`; `read_term`,
+   `write_at_symbolic_offset` and `init_bit_via` consult them. The init array is
+   **bit-indexed** so `LoadBits` keeps its resolution across promotion.
+
+   **The byte API refuses a promoted object** — it has no arena, and answering from the
+   frozen `Bytes` view is the drift the representation exists to prevent.
+
+   *Evidence this mattered:* the mutation "promotion marks every never-written byte
+   initialized" **used to pass**, because the old contract-6 test compared the `Bytes`
+   path to itself *and* its `before` pass memoized every `No` into a `Yes` before
+   measuring. It now fails, as do dropping the overlay, dropping the guards, and
+   rebuilding on a second promotion.
+
+   *Two things the tests had to learn:* guards compare **semantically**, not by term
+   identity (the array path says `select(init, bit) == 1`, a different term meaning the
+   same thing — identity would fail a correct implementation); and one-way promotion means
+   a second promotion is a **no-op, not a rebuild** — rebuilding from the frozen view
+   discards everything written since, and checking only that the flag stayed set does not
+   distinguish the two.
+
+   **STILL OWED:** the promotion test
    is also self-defeating (its `before` pass calls `read`, which memoizes, so it mutates
    what it measures); `InitBit::Cond` drops the `Term` the spec's `Cond(Term)` carries, so
    `MaybeUninitialized` has no guard to discharge and §3.1's "collapses when the guard
