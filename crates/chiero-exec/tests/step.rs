@@ -5772,3 +5772,75 @@ fn a_zero_sized_load_is_not_fabricated() {
         r.states()[0].assumptions()
     );
 }
+
+/// **Execution does not continue past a definite crash.** `int x; *(int *)0 = 1; return x;`
+/// reported the null dereference *and* an uninitialized read of `x` — but `return x` is
+/// unreachable, so the second finding is about a path the program does not have. Found by
+/// review, which noted it costs a false positive and not merely fidelity.
+///
+/// The findings *before* the fault are real and stay; what ends is the path. chiero cannot
+/// model what happens after undefined behaviour, and inventing a continuation is how a
+/// tool produces confident reports about code that never runs.
+#[test]
+fn nothing_is_reported_after_a_definite_crash() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Store {
+                    addr: Operand::Const(Const::Null),
+                    val: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                    ty: CTy::Int(32),
+                    align: 4,
+                    vol: Volatility::Normal,
+                }),
+                // Unreachable: the program crashed above.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Load {
+                        addr: Operand::Value(ValueId(0)),
+                        ty: CTy::Int(32),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(32), 1)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().iter().any(|f| f.contains("null-dereference")),
+        "the real bug is reported: {:#?}",
+        r.findings()
+    );
+    assert!(
+        !r.findings()
+            .iter()
+            .any(|f| f.contains("uninitialized-read")),
+        "and nothing after it is: {:#?}",
+        r.findings()
+    );
+    assert!(
+        r.states()[0].local(ValueId(1)).is_none(),
+        "the load never ran"
+    );
+}
