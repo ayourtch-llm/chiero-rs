@@ -134,7 +134,14 @@ pub fn measure(root: &Path) -> std::io::Result<Coverage> {
     // counted them: `023 contract 10`, `023 contract 13a` and `020 contracts 19 and 20`
     // were covered by the scanner describing itself. A measuring instrument must not be
     // part of what it measures.
-    sources.retain(|p| !p.ends_with("contracts.rs"));
+    // `ends_with` matches the final *component*, so this excluded **any** file named
+    // `contracts.rs` anywhere in the tree — including a crate's own
+    // `tests/contracts.rs`, whose citations would then be silently dropped and the
+    // contracts reported uncited. Harmless while only 020–024 were measured and no such
+    // file existed; a live landmine the moment the frontend's tests land. The exclusion
+    // is this one file, by path. Found by the M2 review.
+    let me = root.join("xtask").join("src").join("contracts.rs");
+    sources.retain(|p| *p != me);
     // **Only tests and gates count.** Prose in `src/` mentioning a contract is not a test
     // of it: `024 contract 22` was "covered" by a doc comment about deduplication that
     // happened to list it, and `021 contract 3` by a sentence explaining why it is

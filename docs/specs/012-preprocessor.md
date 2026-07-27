@@ -83,7 +83,15 @@ relationship backwards inverts the backtrace, which is contract 7.
 - `a ## b` produces a token lexed from the concatenation, with `ExpnKind::Paste`. If the
   result is not a single valid pp-token, that is UB; chiero emits a diagnostic and keeps
   both tokens (gcc's behavior).
-- GNU `, ## __VA_ARGS__` comma-swallowing is supported (§4).
+- GNU `, ## __VA_ARGS__` comma-swallowing is supported (§4). The comma is deleted only
+  when the variadic argument is **empty**; with a non-empty argument it stays a separate
+  token, and fusing it into the argument produces a token that is not a pp-token at all.
+- **`__VA_OPT__` is out of scope for v1**, explicitly rather than by omission. VPP uses
+  `__VA_ARGS__` 230 times across `src/**.h` and `__VA_OPT__` **zero** times (measured),
+  and the C23 feature adds a second, subtler emptiness rule to the one above. A
+  preprocessor that silently passes `__VA_OPT__` through as four literal tokens is worse
+  than one that refuses it, so encountering it is a diagnostic, not a no-op. Revisit when
+  a corpus record needs it.
 
 Pasted and stringized tokens have no contiguous source text, so their `lo..hi` is
 zero-width at the operator's position and their real text lives in the side table

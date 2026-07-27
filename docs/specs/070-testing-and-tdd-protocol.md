@@ -192,6 +192,15 @@ Collected from the specs; all must pass:
 | Tool envelope schema; `proven` only when `Exact` | [050](050-tool-interface.md) 1–2 |
 | VPP parser coverage percentage does not regress | [060](060-vpp-integration.md) 17 |
 
+**A contract cited only by an `#[ignore]`d test counts as uncovered.** The coverage gate
+reads citations from comments, so an ignored test citing a contract reports it green while
+running nothing — which is strictly worse than leaving it uncited, because the number then
+says a human has looked. An ignored test is a fine thing to write for an environment that
+cannot run it (a missing compilation database, a machine-dependent throughput bound); what
+it may not do is claim the contract. Move the `Covers:` line off it and list the contract
+as owed. *(Found by the M2 review: three contracts were cited by tests that could not
+fail, one of which returns early when its input file is absent — and it is absent.)*
+
 **Gates name documents, never contract ranges.** A numeric range silently excludes every
 contract added after it was written, which is how the review-wave fixes ended up outside
 [080](080-roadmap.md)'s M1 gate. If a subset is genuinely intended, name the excluded
