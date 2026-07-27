@@ -1,1 +1,515 @@
-//! `chiero-cir` — see `docs/specs/`.
+//! CIR — chiero's intermediate representation. See `docs/specs/020-cir.md`.
+//!
+//! **This crate depends on no frontend crate** (001 §3). That is the single most
+//! important structural rule in the project: it is what lets the entire symbolic core be
+//! built and tested against hand-written `.cir` before a line of C is parsed.
+
+use chiero_span::Span;
+use indexmap::IndexMap;
+use smallvec::SmallVec;
+use std::sync::Arc;
+
+pub mod verify;
+
+pub use verify::{VerifyError, VerifyErrorKind, verify};
+
+/// A name. Not interned yet — CIR names are cold, and an interner belongs in
+/// `chiero-span` once more than one crate needs it.
+pub type Symbol = Arc<str>;
+
+/// Lowered types. No typedefs, no qualifiers, no field names (020 §2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CTy {
+    Void,
+    /// Bit width. `_Bool` is `Int(1)`, `__int128` is `Int(128)`.
+    Int(u32),
+    Float(FloatKind),
+    /// Opaque: pointers are address-sized and untyped. The pointee type lives on the
+    /// access, because C's type punning makes a typed-pointer IR a source of lies.
+    Ptr,
+    Vector {
+        elem: Box<CTy>,
+        lanes: u32,
+    },
+}
+
+impl CTy {
+    /// Total width in bits, or `None` for `Void` and `Ptr` — a pointer's width is
+    /// target-dependent and so is not a property of the type alone.
+    pub fn bit_width(&self) -> Option<u32> {
+        match self {
+            CTy::Int(b) => Some(*b),
+            CTy::Float(f) => Some(f.bits()),
+            CTy::Vector { elem, lanes } => elem.bit_width().map(|w| w * lanes),
+            CTy::Void | CTy::Ptr => None,
+        }
+    }
+
+    pub fn is_int(&self) -> bool {
+        matches!(self, CTy::Int(_))
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FloatKind {
+    F32,
+    F64,
+    X87_80,
+}
+
+impl FloatKind {
+    pub fn bits(self) -> u32 {
+        match self {
+            FloatKind::F32 => 32,
+            FloatKind::F64 => 64,
+            FloatKind::X87_80 => 80,
+        }
+    }
+}
+
+macro_rules! id_type {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(pub u32);
+    };
+}
+
+id_type!(/// Index into `Function::blocks`.
+    BlockId);
+id_type!(/// Single-assignment temporary within a function.
+    ValueId);
+id_type!(/// Index into `Function::allocas`.
+    AllocaId);
+id_type!(/// Index into `Module::funcs`.
+    FuncId);
+id_type!(/// Index into `Module::globals`.
+    GlobalId);
+id_type!(/// Lexical scope, for stack-object lifetime (020 §4.4).
+    ScopeId);
+
+/// A bit range within a storage unit, for bitfields (020 §4.5.1).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BitRange {
+    pub off: u32,
+    pub width: u32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Volatility {
+    Normal,
+    Volatile,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Const {
+    /// Stored sign-extended; interpretation is per-operation.
+    Int {
+        bits: u32,
+        val: i128,
+    },
+    /// Widths above 128 bits — AVX-512 vectors and masks. Little-endian limbs.
+    Wide {
+        bits: u32,
+        words: Vec<u64>,
+    },
+    /// Raw bits, so NaN payloads survive a round trip.
+    Float(FloatKind, u64),
+    Null,
+    GlobalAddr {
+        g: GlobalId,
+        off: i64,
+    },
+    FuncAddr(FuncId),
+    Undef(CTy),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Operand {
+    Value(ValueId),
+    Const(Const),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    UDiv,
+    SDiv,
+    URem,
+    SRem,
+    And,
+    Or,
+    Xor,
+    Shl,
+    LShr,
+    AShr,
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+    FRem,
+    PtrDiff { elem_size: u64 },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+    Not,
+    FNeg,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    ULt,
+    ULe,
+    UGt,
+    UGe,
+    SLt,
+    SLe,
+    SGt,
+    SGe,
+    FOEq,
+    FONe,
+    FOLt,
+    FOLe,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CastKind {
+    Trunc,
+    ZExt,
+    SExt,
+    FpTrunc,
+    FpExt,
+    FpToUi,
+    FpToSi,
+    UiToFp,
+    SiToFp,
+    PtrToInt,
+    IntToPtr,
+    Bitcast,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RValue {
+    Use(Operand),
+    Load {
+        addr: Operand,
+        ty: CTy,
+        align: u64,
+        vol: Volatility,
+    },
+    LoadBits {
+        addr: Operand,
+        unit: CTy,
+        bits: BitRange,
+        signed: bool,
+        align: u64,
+    },
+    Bin {
+        op: BinOp,
+        a: Operand,
+        b: Operand,
+        ty: CTy,
+    },
+    Un {
+        op: UnOp,
+        a: Operand,
+        ty: CTy,
+    },
+    Cmp {
+        op: CmpOp,
+        a: Operand,
+        b: Operand,
+        ty: CTy,
+    },
+    Cast {
+        kind: CastKind,
+        a: Operand,
+        from: CTy,
+        to: CTy,
+    },
+    Select {
+        cond: Operand,
+        t: Operand,
+        f: Operand,
+    },
+    /// Distinct from integer `Add` so pointer provenance survives arithmetic
+    /// (020 §4.1, 021 §2).
+    PtrAdd {
+        base: Operand,
+        off: Operand,
+    },
+    AddrOfLocal {
+        alloca: AllocaId,
+    },
+    AddrOfGlobal {
+        g: GlobalId,
+    },
+    AddrOfFunc(FuncId),
+    Shuffle {
+        a: Operand,
+        b: Operand,
+        mask: Vec<u32>,
+    },
+    InsertLane {
+        v: Operand,
+        lane: u32,
+        val: Operand,
+    },
+    ExtractLane {
+        v: Operand,
+        lane: u32,
+    },
+    Splat {
+        elem: Operand,
+        lanes: u32,
+    },
+    Fresh {
+        ty: CTy,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MarkerKind {
+    Line(u32),
+    SeqPoint,
+    Scope(ScopeEvent),
+    Label(Symbol),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ScopeEvent {
+    pub scope: ScopeId,
+    pub kind: ScopeKind,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScopeKind {
+    Enter,
+    Exit,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstKind {
+    Assign {
+        dst: ValueId,
+        rv: RValue,
+    },
+    Store {
+        addr: Operand,
+        val: Operand,
+        ty: CTy,
+        align: u64,
+        vol: Volatility,
+    },
+    StoreBits {
+        addr: Operand,
+        val: Operand,
+        unit: CTy,
+        bits: BitRange,
+        align: u64,
+    },
+    CopyMem {
+        dst: Operand,
+        src: Operand,
+        size: Operand,
+        align: u64,
+    },
+    SetMem {
+        dst: Operand,
+        byte: Operand,
+        size: Operand,
+    },
+    Call {
+        dst: Option<ValueId>,
+        callee: Callee,
+        args: Vec<Operand>,
+    },
+    /// VLA / `alloca()`: a stack allocation with a runtime size, at a real program point
+    /// so ordinary dominance applies to `count` (020 §3).
+    AllocaDyn {
+        dst: ValueId,
+        alloca: AllocaId,
+        elem: CTy,
+        count: Operand,
+        align: u64,
+    },
+    /// An instruction, not an `RValue`: it advances the list (020 §4.4.1).
+    VaArg {
+        dst: ValueId,
+        list: Operand,
+        ty: CTy,
+    },
+    VaStart {
+        list: Operand,
+    },
+    VaCopy {
+        dst: Operand,
+        src: Operand,
+    },
+    VaEnd {
+        list: Operand,
+    },
+    Marker(MarkerKind),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Callee {
+    Direct(FuncId),
+    Indirect(Operand),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Inst {
+    pub kind: InstKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Terminator {
+    Goto(BlockId),
+    Br {
+        cond: Operand,
+        t: BlockId,
+        f: BlockId,
+    },
+    Switch {
+        scrut: Operand,
+        ty: CTy,
+        cases: Vec<(i128, BlockId)>,
+        default: BlockId,
+    },
+    Return(Option<Operand>),
+    IndirectGoto {
+        addr: Operand,
+        targets: Vec<BlockId>,
+    },
+    Unreachable(UnreachableReason),
+}
+
+impl Terminator {
+    /// Successor blocks, in the deterministic order exploration must follow.
+    pub fn successors(&self) -> Vec<BlockId> {
+        match self {
+            Terminator::Goto(b) => vec![*b],
+            Terminator::Br { t, f, .. } => vec![*t, *f],
+            Terminator::Switch { cases, default, .. } => {
+                let mut v: Vec<BlockId> = cases.iter().map(|(_, b)| *b).collect();
+                v.push(*default);
+                v
+            }
+            Terminator::IndirectGoto { targets, .. } => targets.clone(),
+            Terminator::Return(_) | Terminator::Unreachable(_) => Vec::new(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnreachableReason {
+    AfterNoreturn,
+    ExhaustiveSwitch,
+    BuiltinUnreachable,
+    /// Reaching this is `Fidelity::Unknown` and a diagnostic — never a licence to treat
+    /// the path as infeasible (020 §5).
+    LoweringGap,
+}
+
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub id: BlockId,
+    pub insts: Vec<Inst>,
+    pub term: Terminator,
+    /// Lines gcov attributes to this block. Computed via `expansion_loc`, never
+    /// `spelling_loc` (015 §5).
+    pub gcov_lines: SmallVec<[u32; 4]>,
+    pub span: Span,
+}
+
+/// Sentinel for `AllocaDecl::count` meaning "extent supplied by an `AllocaDyn`".
+pub const DYNAMIC_EXTENT: u64 = u64::MAX;
+
+#[derive(Clone, Debug)]
+pub struct AllocaDecl {
+    pub id: AllocaId,
+    pub ty: CTy,
+    /// Static element count, or `DYNAMIC_EXTENT` when an `AllocaDyn` supplies it.
+    pub count: u64,
+    pub align: u64,
+    pub scope: ScopeId,
+    pub lifetime: Lifetime,
+    pub name: Option<Symbol>,
+    pub span: Span,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Lifetime {
+    Scope,
+    /// `alloca()` lives until *function* return, unlike a VLA (020 §3).
+    Function,
+}
+
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub value: ValueId,
+    pub ty: CTy,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FnAttrs {
+    pub noreturn: bool,
+    pub no_side_effects: bool,
+    pub order_sensitive: bool,
+    pub march_variant: Option<Symbol>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Body {
+    Defined,
+    Declared,
+}
+
+#[derive(Clone, Debug)]
+pub struct Function {
+    pub id: FuncId,
+    pub name: Symbol,
+    pub params: Vec<Param>,
+    pub ret: CTy,
+    pub variadic: bool,
+    pub allocas: Vec<AllocaDecl>,
+    pub blocks: Vec<Block>,
+    pub entry: BlockId,
+    pub attrs: FnAttrs,
+    pub body: Body,
+    pub span: Span,
+}
+
+impl Function {
+    pub fn block(&self, id: BlockId) -> Option<&Block> {
+        self.blocks.iter().find(|b| b.id == id)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Global {
+    pub id: GlobalId,
+    pub name: Symbol,
+    pub size: u64,
+    pub align: u64,
+    pub is_const: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Module {
+    pub funcs: Vec<Function>,
+    pub globals: Vec<Global>,
+    /// `None` for hand-written `.cir`, which legitimately has no build configuration.
+    pub config: Option<u64>,
+    /// `IndexMap`, not `HashMap`: 001 §5 makes determinism a hard requirement.
+    pub metadata: IndexMap<String, String>,
+}
