@@ -1080,6 +1080,42 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      no `SizeVal::Sym`; no symbolic-offset *read* API, so `ITE_THRESHOLD` is write-only;
      no unpinned symbolic store (`idx_bits` is hardcoded 64, unrelated to `width(off)`).
 
+   **WAVE 12 — engine review APPLIED** (`47ef3f9` red, `df63974` green, 395 tests).
+   **12 of 15 mutants had survived.** The central finding was the worst class there is:
+   the engine was **confidently wrong at `Fidelity::Exact`**. `bin` implemented 4 of 19
+   `BinOp`s and defaulted the rest to *addition* (`5 - 3 == 8`); `cmp` implemented 2 of 15
+   and defaulted to `Eq`, which **inverts `Ne`**. Both now total, with **no default** — an
+   unmodeled op records a `LoweringGap`.
+
+   **One rule closed a family of holes:** no path ends at `Exact` unless everything on it
+   was modeled. An unsupported terminator, a discarded `LoweringGap` reason, a dropped
+   `Store`, and an unrepresentable `Const::Float` each minted a **proof for an unexecuted
+   program** — what §7 rule 4 says the crate must be structurally incapable of.
+
+   Also fixed: a **refuted** branch was explored alongside an undecided one; `Goto` to a
+   missing block **spun forever** (nothing allocated, so not even the OOM killer);
+   allocas were `count * 8`, making `char buf[4]` a 32-byte object — 8× too permissive
+   for exactly the buffers overflows happen in; `DYNAMIC_EXTENT` overflowed that multiply;
+   `max_depth` counted edges not instructions; and a fresh `TieredSolver` per query
+   spawned a process per escalation and discarded the caches.
+
+   *Three testing lessons:* **every solver query the suite made had an empty path
+   condition** — nothing had two sequential symbolic branches, so the mechanism that makes
+   this symbolic execution rather than enumeration was untested. `backend_spawns` cannot
+   distinguish one solver from many (a fresh solver reports 1 for its own first query),
+   so **count solver constructions** — the same-answer trap in the *metric*. And the
+   `(refuted, undecided)` arm is unreachable under tier 1 (which yields `(No, Yes)`) but
+   kept: it guards against unsoundness with a backend that gives up under an rlimit.
+
+   **STILL OWED in `chiero-exec`:** `ExactWitness` is forgeable downstream — `State`
+   exposes `pub fidelity` and `RunResult` has no private field, so a degraded run can be
+   sealed by mutating the struct (the reviewer confirmed this from a separate crate);
+   there are **two** functions reading fidelity to gate a proof against §7.1's "the ONLY
+   function"; contract 13a's `trybuild` compile-fail test does not exist anywhere;
+   `PathTrace` is absent so fork order is not observable even in principle (both "make it
+   BFS" and "delete the sort" survive); `AssumptionKind::matches` → `true` survives;
+   indirect calls, searchers and checkers are unimplemented; `chiero-model` is empty.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
