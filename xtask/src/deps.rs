@@ -4,7 +4,7 @@
 //! synthetic violating fixtures ([001](../../docs/specs/001-architecture.md) contract 8)
 //! rather than only against the real workspace, which is expected to be clean.
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 
 /// Which architectural layer a crate belongs to (001 §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,69 +60,114 @@ impl std::fmt::Display for Violation {
 /// A crate dependency graph: crate name → the `chiero-*` crates it depends on.
 pub type Graph = IndexMap<String, Vec<String>>;
 
-/// Check every rule in 001 §4. Returns violations in a deterministic order.
+/// Check the rules in 001 §4 that are decidable from the dependency graph.
+///
+/// **Rules 1, 2, 3, 5, 6 and 7 are enforced here. Rule 4 is not** — "VPP-specific
+/// knowledge lives only in `chiero-vpp`" is a property of source text, not of the
+/// dependency graph, and is enforced by `cargo xtask check-vpp-leak` (001 contract 5).
+/// Saying "every rule" here would be false, and a green run would read as more
+/// assurance than it is.
+///
+/// Violations are returned in a deterministic order (001 §5).
 pub fn check(graph: &Graph) -> Vec<Violation> {
     let mut v = Vec::new();
     check_cycles(graph, &mut v);
     check_layering(graph, &mut v);
+    // A duplicate edge must not produce a duplicate violation. `check` is public and
+    // takes a hand-built graph, which `workspace_graph`'s dedup does not protect.
+    v.dedup_by(|a, b| a == b);
     v
 }
 
 /// Rule 1: no cycles.
+///
+/// Reports **every** strongly connected component containing a cycle, not just the
+/// first one reached. A DFS that stops at already-visited nodes drops any second cycle
+/// sharing nodes with the first, so an engineer fixes the reported cycle, re-runs, and
+/// discovers another.
+///
+/// Iterative rather than recursive: `check` is public and takes an arbitrary graph, and
+/// a recursive walk overflows the stack somewhere around 20k nodes.
 fn check_cycles(graph: &Graph, out: &mut Vec<Violation>) {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Mark {
-        Unvisited,
-        InProgress,
-        Done,
-    }
-    let mut mark: IndexMap<&str, Mark> = graph
-        .keys()
-        .map(|k| (k.as_str(), Mark::Unvisited))
-        .collect();
-    let mut stack: Vec<&str> = Vec::new();
-    let mut reported: IndexSet<String> = IndexSet::new();
+    let n = graph.len();
+    let idx_of = |name: &str| graph.get_index_of(name);
 
-    fn visit<'a>(
-        node: &'a str,
-        graph: &'a Graph,
-        mark: &mut IndexMap<&'a str, Mark>,
-        stack: &mut Vec<&'a str>,
-        reported: &mut IndexSet<String>,
-    ) {
-        match mark.get(node).copied() {
-            Some(Mark::Done) | None => return,
-            Some(Mark::InProgress) => {
-                // Found a cycle: report the segment of the stack from `node` onward.
-                let start = stack.iter().position(|n| *n == node).unwrap_or(0);
-                let mut cyc: Vec<&str> = stack[start..].to_vec();
-                cyc.push(node);
-                reported.insert(cyc.join(" -> "));
-                return;
-            }
-            Some(Mark::Unvisited) => {}
+    let mut index = vec![usize::MAX; n];
+    let mut lowlink = vec![usize::MAX; n];
+    let mut on_stack = vec![false; n];
+    let mut scc_stack: Vec<usize> = Vec::new();
+    let mut next_index = 0usize;
+    let mut components: Vec<Vec<usize>> = Vec::new();
+
+    // (node, index of the next successor to visit)
+    let mut work: Vec<(usize, usize)> = Vec::new();
+
+    for root in 0..n {
+        if index[root] != usize::MAX {
+            continue;
         }
-        mark.insert(node, Mark::InProgress);
-        stack.push(node);
-        if let Some(deps) = graph.get(node) {
-            for d in deps {
-                visit(d, graph, mark, stack, reported);
+        work.push((root, 0));
+        while let Some(&mut (v, ref mut next)) = work.last_mut() {
+            if *next == 0 {
+                index[v] = next_index;
+                lowlink[v] = next_index;
+                next_index += 1;
+                scc_stack.push(v);
+                on_stack[v] = true;
+            }
+            let succs = &graph[v];
+            if *next < succs.len() {
+                let i = *next;
+                *next += 1;
+                if let Some(w) = idx_of(&succs[i]) {
+                    if index[w] == usize::MAX {
+                        work.push((w, 0));
+                    } else if on_stack[w] {
+                        lowlink[v] = lowlink[v].min(index[w]);
+                    }
+                }
+            } else {
+                // Finished v: pop it and fold its lowlink into its parent.
+                work.pop();
+                if lowlink[v] == index[v] {
+                    let mut comp = Vec::new();
+                    while let Some(w) = scc_stack.pop() {
+                        on_stack[w] = false;
+                        comp.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    components.push(comp);
+                }
+                if let Some(&mut (parent, _)) = work.last_mut() {
+                    lowlink[parent] = lowlink[parent].min(lowlink[v]);
+                }
             }
         }
-        stack.pop();
-        mark.insert(node, Mark::Done);
     }
 
-    let names: Vec<&str> = graph.keys().map(|s| s.as_str()).collect();
-    for n in names {
-        visit(n, graph, &mut mark, &mut stack, &mut reported);
-    }
-    for c in reported {
+    for comp in components {
+        // A component is cyclic if it has >1 node, or one node with a self-loop.
+        let cyclic = comp.len() > 1 || {
+            let v = comp[0];
+            graph[v].iter().any(|d| idx_of(d) == Some(v))
+        };
+        if !cyclic {
+            continue;
+        }
+        let mut names: Vec<&str> = comp
+            .iter()
+            .map(|&i| graph.get_index(i).unwrap().0.as_str())
+            .collect();
+        names.sort_unstable(); // deterministic regardless of traversal order (001 §5)
         out.push(Violation {
             rule: "no-cycles",
-            detail: format!("dependency cycle: {c}"),
+            detail: format!("dependency cycle among: {}", names.join(", ")),
         });
     }
+    // Deterministic across runs and across input orderings.
+    out.sort_by(|a, b| a.detail.cmp(&b.detail));
 }
 
 /// Rules 2–7: layering.
@@ -136,15 +181,16 @@ fn check_layering(graph: &Graph, out: &mut Vec<Violation>) {
             continue;
         };
         for dep in deps {
-            let Some(to) = layer(dep) else { continue };
-
-            // Rule 5: chiero-span depends on no other chiero crate.
+            // Rule 5 first, and before the layer lookup: `chiero-span` must depend on
+            // nothing, including a crate missing from the layer table.
             if name == "chiero-span" {
                 out.push(Violation {
                     rule: "span-is-leaf",
                     detail: format!("`chiero-span` must not depend on `{dep}` (001 §4 rule 5)"),
                 });
             }
+
+            let Some(to) = layer(dep) else { continue };
 
             // Rule 3: chiero-cir never depends on a frontend crate.
             if name == "chiero-cir" && to == Layer::Frontend {
@@ -158,12 +204,23 @@ fn check_layering(graph: &Graph, out: &mut Vec<Violation>) {
                 });
             }
 
-            // Rule 2: only verticals and surfaces may depend on a vertical.
-            if to == Layer::Vertical && !matches!(from, Layer::Vertical | Layer::Surface) {
+            // Rule 2: nothing below a layer may reach up into it. Verticals and
+            // surfaces are both "above" the core; `chiero-vpp` is filed under Surfaces
+            // (001 §2), so keying this on Vertical alone would leave
+            // `chiero-cir -> chiero-vpp` legal — exactly the VPP leak §2 warns about.
+            let upward = match (from, to) {
+                (Layer::Surface, _) => false,
+                (Layer::Vertical, Layer::Surface) => true,
+                (Layer::Vertical, _) => false,
+                (_, Layer::Vertical | Layer::Surface) => true,
+                _ => false,
+            };
+            if upward {
                 out.push(Violation {
                     rule: "no-upward-dependency",
                     detail: format!(
-                        "`{name}` ({from:?}) must not depend on vertical `{dep}` (001 §4 rule 2)"
+                        "`{name}` ({from:?}) must not depend on `{dep}` ({to:?}) \
+                         (001 §4 rule 2)"
                     ),
                 });
             }
@@ -232,22 +289,44 @@ pub fn workspace_graph() -> Result<Graph, String> {
         .ok_or("metadata has no `packages` array")?;
 
     let mut graph = Graph::new();
+    let mut dev = Graph::new();
     for pkg in packages {
-        let name = pkg["name"].as_str().unwrap_or_default();
+        // A missing `name` must be an error, not an empty string. `unwrap_or_default()`
+        // here would make every package fall out of the layer table, yielding a
+        // zero-crate graph, zero violations, and a green gate that checks nothing.
+        let name = pkg["name"]
+            .as_str()
+            .ok_or("cargo metadata: package with no `name` field")?;
         if layer(name).is_none() {
             continue; // xtask and third-party crates are not part of the architecture
         }
-        let deps: Vec<String> = pkg["dependencies"]
-            .as_array()
-            .map(|ds| {
-                ds.iter()
-                    .filter_map(|d| d["name"].as_str())
-                    .filter(|d| layer(d).is_some())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        // 001 §4 rule 8: normal and build deps are subject to every rule; dev-deps are
+        // subject to layering but exempt from the cycle rule, since cargo permits
+        // dev-dep cycles and chiero-cir's round-trip tests legitimately need
+        // chiero-lower. They are collected separately so `check` can apply that split.
+        let (mut deps, mut dev_deps) = (Vec::new(), Vec::new());
+        if let Some(ds) = pkg["dependencies"].as_array() {
+            for d in ds {
+                let Some(dn) = d["name"].as_str() else {
+                    continue;
+                };
+                if layer(dn).is_none() {
+                    continue;
+                }
+                match d["kind"].as_str() {
+                    Some("dev") => dev_deps.push(dn.to_string()),
+                    // `null` is a normal dependency; "build" is subject to every rule.
+                    _ => deps.push(dn.to_string()),
+                }
+            }
+        }
+        dev_deps.sort_unstable();
+        dev_deps.dedup();
+        dev.insert(name.to_string(), dev_deps);
         graph.insert(name.to_string(), deps);
+    }
+    if graph.is_empty() {
+        return Err("cargo metadata yielded no chiero-* crates; the gate would be a no-op".into());
     }
     // Deterministic order regardless of what cargo emits (001 §5).
     graph.sort_unstable_keys();
@@ -255,5 +334,33 @@ pub fn workspace_graph() -> Result<Graph, String> {
         deps.sort_unstable();
         deps.dedup();
     }
+    // Dev-deps participate in layering only, so fold them in *after* the graph used for
+    // cycle detection has been built. `check_layering` sees them; `check_cycles` does not.
+    for (k, extra) in &dev {
+        if let Some(v) = graph.get_mut(k) {
+            for e in extra {
+                if !v.contains(e) {
+                    v.push(e.clone());
+                }
+            }
+        }
+    }
     Ok(graph)
+}
+
+/// Print violations and return the process exit code (001 contract 8).
+///
+/// Lives here rather than in `main.rs` so the exit-code mapping is unit-testable; the
+/// binary is a one-line wrapper over it.
+pub fn report(graph: &Graph) -> std::process::ExitCode {
+    let violations = check(graph);
+    if violations.is_empty() {
+        println!("check-deps: {} crates, no violations", graph.len());
+        return std::process::ExitCode::SUCCESS;
+    }
+    eprintln!("check-deps: {} violation(s)\n", violations.len());
+    for v in &violations {
+        eprintln!("  {v}");
+    }
+    std::process::ExitCode::FAILURE
 }

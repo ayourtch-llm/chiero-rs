@@ -2,3 +2,4 @@
 //! `docs/specs/070-testing-and-tdd-protocol.md` §4.
 
 pub mod deps;
+pub mod vpp_leak;

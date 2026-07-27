@@ -579,8 +579,9 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    the spec; where it is wrong, say so and move on.
 
 3.5. **M0 IS DONE** (commits `04d3b90` red, `dbc68e2` green). Workspace of 21 crates per
-   001 §6, `xtask check-deps` enforcing all seven 001 §4 rules with synthetic violating
-   fixtures, CI running fmt + clippy-deny-warnings + `--no-default-features` + the
+   001 §6, `xtask check-deps` enforcing the six *graph-decidable* 001 §4 rules (1,2,3,5,6,7)
+   with synthetic violating fixtures, plus `xtask check-vpp-leak` for rule 4, which is a
+   property of source text and cannot be decided from the dependency graph, CI running fmt + clippy-deny-warnings + `--no-default-features` + the
    dependency gate + tests. `clippy.toml` denies `HashMap`/`HashSet` workspace-wide since
    001 §5 makes determinism a hard requirement.
    *Process note*: I wrote the checker before its test, then backed it out to a stub to

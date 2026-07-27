@@ -169,8 +169,15 @@ fn frontend_use_is_restricted() {
 fn vertical_edges_are_allowlisted() {
     assert_new_rules("chiero-gcov", "chiero-check", &["vertical-edge-allowlist"]);
     assert_new_rules("chiero-check", "chiero-opt", &["vertical-edge-allowlist"]);
-    // A permitted edge that is not already in `legal()` is accepted.
-    assert_new_rules("chiero-select", "chiero-check", &[]);
+    // `chiero-select -> chiero-check` is NOT in rule 6's allowlist, despite looking
+    // plausible; the allowlist is exhaustive by design.
+    assert_new_rules(
+        "chiero-select",
+        "chiero-check",
+        &["vertical-edge-allowlist"],
+    );
+    // All five permitted vertical edges are present in `legal()`, which is clean —
+    // `legal_graph_has_no_violations` is the positive case for the allowlist.
 }
 
 /// 001 §4 rule 1 / contract 1.
@@ -193,18 +200,40 @@ fn cycles_are_detected() {
     let self_loop = graph(&[("chiero-cir", &["chiero-cir"])]);
     assert!(rules(&self_loop).contains("no-cycles"));
 
-    // Every distinct cycle is reported, not just the first one found. An engineer
-    // who fixes the reported cycle and re-runs should not discover a new one.
-    let two_cycles = graph(&[
+    // Overlapping cycles are reported as one strongly connected component naming
+    // every crate involved — not as the single first cycle found, which would hide
+    // chiero-solver's involvement and send the engineer round the loop twice.
+    let overlapping = graph(&[
         ("chiero-cir", &["chiero-mem", "chiero-solver"]),
         ("chiero-mem", &["chiero-cir"]),
         ("chiero-solver", &["chiero-mem"]),
     ]);
-    let cycles = check(&two_cycles);
+    let cycles: Vec<_> = check(&overlapping)
+        .into_iter()
+        .filter(|v| v.rule == "no-cycles")
+        .collect();
+    assert_eq!(cycles.len(), 1, "one SCC, got: {cycles:#?}");
+    for c in ["chiero-cir", "chiero-mem", "chiero-solver"] {
+        assert!(
+            cycles[0].detail.contains(c),
+            "SCC must name {c}: {}",
+            cycles[0].detail
+        );
+    }
+
+    // Two genuinely disjoint cycles are two separate reports.
+    let disjoint = graph(&[
+        ("chiero-cir", &["chiero-mem"]),
+        ("chiero-mem", &["chiero-cir"]),
+        ("chiero-gcov", &["chiero-diff"]),
+        ("chiero-diff", &["chiero-gcov"]),
+    ]);
     assert_eq!(
-        cycles.iter().filter(|v| v.rule == "no-cycles").count(),
-        2,
-        "both cycles must be reported, got: {cycles:#?}"
+        check(&disjoint)
+            .iter()
+            .filter(|v| v.rule == "no-cycles")
+            .count(),
+        2
     );
 }
 
@@ -238,9 +267,76 @@ fn violation_order_is_deterministic() {
 #[test]
 fn the_real_workspace_is_clean() {
     let g = xtask::deps::workspace_graph().expect("cargo metadata");
+
+    // Assert the node set first. Without this the test passes vacuously on an empty
+    // graph — and an empty graph is one `cargo metadata` schema change away, which
+    // would silently turn the architecture gate into a no-op.
+    let on_disk: BTreeSet<String> = std::fs::read_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("crates"),
+    )
+    .expect("crates/ directory")
+    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+    .collect();
+    let in_graph: BTreeSet<String> = g.keys().cloned().collect();
+    assert_eq!(in_graph, on_disk, "graph must cover every crate in crates/");
+    assert!(
+        g.len() >= 21,
+        "expected the full workspace, got {}",
+        g.len()
+    );
+
     let v = check(&g);
     assert!(
         v.is_empty(),
         "workspace violates its own architecture:\n{v:#?}"
     );
+}
+
+/// 001 contract 8: the CLI exits non-zero when a rule is violated. Nothing previously
+/// executed the binary, so the exit-code mapping — the actual subject of contract 8 —
+/// was unverified.
+#[test]
+fn cli_exit_code_reflects_violations() {
+    let exe = env!("CARGO_BIN_EXE_xtask");
+    let ok = std::process::Command::new(exe)
+        .arg("check-deps")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run xtask");
+    assert!(ok.status.success(), "clean workspace must exit 0");
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("no violations"));
+
+    let bad = std::process::Command::new(exe)
+        .arg("no-such-task")
+        .output()
+        .expect("run xtask");
+    assert!(!bad.status.success(), "unknown task must exit non-zero");
+}
+
+/// The violation → exit-code mapping itself, on a graph we control.
+#[test]
+fn report_maps_violations_to_failure() {
+    use std::process::ExitCode;
+    // `ExitCode` is opaque, so compare debug representations against known-good ones.
+    let clean = format!("{:?}", xtask::deps::report(&legal()));
+    let dirty = format!(
+        "{:?}",
+        xtask::deps::report(&with_edge("chiero-cir", "chiero-ast"))
+    );
+    assert_eq!(clean, format!("{:?}", ExitCode::SUCCESS));
+    assert_eq!(dirty, format!("{:?}", ExitCode::FAILURE));
+    assert_ne!(clean, dirty);
+}
+
+/// A graph with no chiero crates is an error, not a silent pass.
+#[test]
+fn empty_graph_is_not_a_silent_pass() {
+    let empty = Graph::new();
+    assert!(check(&empty).is_empty(), "nothing to violate");
+    // ...but `workspace_graph` must never *produce* one, which is where the danger is.
+    let g = xtask::deps::workspace_graph().expect("cargo metadata");
+    assert!(!g.is_empty());
 }

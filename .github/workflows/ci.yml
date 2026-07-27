@@ -31,9 +31,13 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      # 001 contract 8.
+      # 001 contract 8 (graph rules 1,2,3,5,6,7).
       - name: Dependency rules
         run: cargo xtask check-deps
+
+      # 001 contract 5 / §4 rule 4 — not graph-decidable, so a separate gate.
+      - name: VPP leak check
+        run: cargo xtask check-vpp-leak
 
       - name: Test
         run: cargo test --workspace

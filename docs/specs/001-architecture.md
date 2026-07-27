@@ -129,8 +129,14 @@ test red, and vice versa.
 ## 4. Dependency rules
 
 1. **No cycles.** Enforced in CI by `cargo-deny`-style check in `xtask`.
-2. **No crate depends on a vertical.** Verticals depend on the core; the core never
-   reaches upward.
+2. **Nothing depends upward.** A crate may depend only on crates in its own layer or
+   below: Foundation → Frontend/Core → Verticals → Surfaces. Surfaces may depend on each
+   other; nothing below a surface may depend on one.
+
+   Stated as a target rather than a source allowlist, because the earlier wording ("no
+   crate depends on a *vertical*") left surfaces uncovered: §2 files `chiero-vpp` under
+   Surfaces, so `chiero-cir → chiero-vpp` satisfied the old rule while being exactly the
+   leak §2 warns about when it says all VPP knowledge lives in one crate.
 3. **`chiero-cir` never depends on `chiero-ast`, `chiero-parse`, `chiero-sema`, or
    `chiero-lower`.** Checked mechanically (§7 contract 3).
 4. **VPP-specific knowledge lives only in `chiero-vpp`.** Other crates expose the
@@ -145,6 +151,13 @@ test red, and vice versa.
    type, and `chiero-check` wraps it ([040 §2](040-defect-checkers.md)).
 7. `chiero-recipe` and `chiero-diff` may depend on frontend crates (they need the typed
    AST); no other vertical may. The core still may not.
+8. **Dependency kinds.** Normal and build dependencies are subject to every rule above.
+   **Dev-dependencies are subject to the layering rules but exempt from rule 1
+   (no cycles)** — cargo permits dev-dependency cycles, and `chiero-cir`'s round-trip
+   tests (§3) legitimately need `chiero-lower` as a dev-dependency, which is a cycle in
+   the package graph but not in the compiled one. The exemption is narrow and
+   deliberate: a dev-dependency that violated *layering* would still let frontend types
+   leak into core test code and drift the contract boundary.
 
 ## 5. Cross-cutting conventions
 
@@ -211,15 +224,26 @@ Version numbers are unified across the workspace and bumped together.
 ## 7. Testable contracts
 
 1. `cargo metadata` yields a dependency graph with no cycles.
-2. No crate in `crates/` other than `chiero-{gcov,diff,select,check,opt,recipe,vpp,tool,cli}`
-   depends on a vertical crate.
+2. No crate depends on one in a higher layer, **including on a Surface crate**.
+   Verified by a fixture per direction, notably `chiero-cir → chiero-vpp`, which the
+   earlier vertical-only wording permitted.
 3. `chiero-cir`'s transitive dependency set contains none of `chiero-ast`,
    `chiero-parse`, `chiero-sema`, `chiero-lower`.
 4. `chiero-span`'s transitive dependency set contains no other `chiero-*` crate.
-5. Grepping `crates/` excluding `chiero-vpp/` for `vec_add1|vlib_|vnet_|clib_` yields no
-   hits outside comments and test fixtures.
+5. `xtask check-vpp-leak` finds no VPP identifiers in `crates/` outside `chiero-vpp`,
+   excluding comments. Verified in both directions: the real workspace is clean, **and**
+   a planted leak in a fixture crate is detected while the same identifier inside
+   `chiero-vpp` is not. (A scan that finds nothing because it looks nowhere would
+   otherwise pass forever.)
 6. Building the workspace with `--no-default-features` succeeds and links no external
    solver.
 7. Running any analysis twice on identical input produces byte-identical stdout.
-8. `xtask check-deps` exits non-zero when a rule in §4 is violated (verified by a
-   fixture that deliberately violates one).
+8. `xtask check-deps` exits non-zero when a rule is violated and zero when clean —
+   verified by executing the binary, not only by calling the checker, since the exit-code
+   mapping is what the contract is about. Each violating fixture asserts the **exact**
+   set of rule names it triggers: a checker that reports every rule name for every
+   violation would otherwise satisfy an "is the expected rule present" assertion while
+   telling an engineer nothing.
+9. `check-deps` covers §4 rules 1, 2, 3, 5, 6, 7 (graph-decidable). **Rule 4 is not
+   graph-decidable** and is covered by contract 5's separate gate; neither gate may claim
+   to enforce the other's rule.
