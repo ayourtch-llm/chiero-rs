@@ -5390,3 +5390,82 @@ fn a_load_wider_than_chiero_can_carry_faults_rather_than_aborting() {
     );
     assert_ne!(r.fidelity(), Fidelity::Exact);
 }
+
+/// **`scanf` must skip an argument *position*, not a surviving pointer.** The model takes
+/// the pointers `dispatch` resolved, which is an already-*filtered* list — so an argument
+/// that did not resolve to a `Value::Ptr` shifts everything left and `.skip(1)` eats the
+/// first real output buffer. Found by review, and not hypothetical: a format string is
+/// usually a global, and `scanf("%d", &x)` then has exactly this shape.
+#[test]
+fn scanf_skips_a_position_not_a_resolved_pointer() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0xCD,
+                        }),
+                        Operand::Const(Const::Int { bits: 64, val: 4 }),
+                    ],
+                }),
+                // The format argument is a bare integer, which resolves to no pointer at
+                // all — so the output buffer is the only survivor of the filter.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Const(Const::Int { bits: 64, val: 0 }),
+                        Operand::Value(ValueId(0)),
+                    ],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 4,
+        ..alloca(0, CTy::Int(8), 4)
+    }];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "scanf", vec![CTy::Ptr, CTy::Ptr], CTy::Int(32)),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    let base = match s.local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = s.mem.clone();
+    assert_ne!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 4, Span::DUMMY)
+            .value,
+        Some(vec![0xCD; 4]),
+        "the output buffer is still invalidated"
+    );
+}
