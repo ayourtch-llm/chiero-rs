@@ -331,3 +331,35 @@ fn a_killed_backend_is_restarted_and_the_stack_replayed() {
         "the process must actually have been restarted"
     );
 }
+
+/// Both terms must survive the round trip to the backend, or tier 2 cannot answer any
+/// query the memory model produces. Checked through the tier-1 evaluator's agreement
+/// with a real solver where one is available.
+#[test]
+fn concat_and_ite_reach_the_backend() {
+    let Some(backend) = z3_or_skip("concat_and_ite_reach_the_backend") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let c = a.concat(x, y);
+    let target = a.bv(16, 0xABCD);
+    let e = a.eq(c, target);
+    // Multiplication forces escalation past tier 1.
+    let p = a.mul(x, y);
+    let prod = a.bv(8, 0x0F);
+    let e2 = a.eq(p, prod);
+
+    let mut t = TieredSolver::with_backend(backend);
+    t.assert(e);
+    t.assert(e2);
+    match t.check(&mut a, &[]) {
+        CheckResult::Sat(m) => {
+            let xv = m.get(a.var_id(x).unwrap()).unwrap().bits();
+            let yv = m.get(a.var_id(y).unwrap()).unwrap().bits();
+            assert_eq!((xv, yv), (0xAB, 0xCD), "the backend must honour the concat");
+        }
+        other => panic!("expected Sat, got {other:?}"),
+    }
+}

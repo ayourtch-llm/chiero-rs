@@ -207,3 +207,100 @@ fn not_folds_and_round_trips() {
     let n2 = a.not(v);
     assert_eq!(n1, n2, "hash-consed");
 }
+
+// ---------------------------------------------------------------------------
+// `Concat` and `Ite` — required by 021 §3 before the memory model can be symbolic.
+// ---------------------------------------------------------------------------
+
+/// **021 contract 5 needs `Concat`.** A read of `Int(32)` over four bytes where two are
+/// concrete and two symbolic must produce a `Concat` term rather than forcing the object
+/// into array theory. That is what makes type punning and partial overwrites exact, and
+/// it is the single most common shape in packet code.
+#[test]
+fn concat_has_the_summed_width_and_smtlib_byte_order() {
+    let mut a = TermArena::new();
+    let hi = a.bv(8, 0xAB);
+    let lo = a.bv(8, 0xCD);
+    let c = a.concat(hi, lo);
+    assert_eq!(a.width(c), 16);
+    // SMT-LIB `concat` puts the first argument in the *high* bits.
+    let m = Model::new();
+    assert_eq!(a.eval(&m, c).unwrap().bits(), 0xABCD);
+}
+
+/// Concatenation is associative in value but the arena need not flatten it; what must
+/// hold is that nesting either way evaluates identically.
+#[test]
+fn nested_concat_evaluates_associatively() {
+    let mut a = TermArena::new();
+    let (x, y, z) = (a.bv(8, 0x12), a.bv(8, 0x34), a.bv(8, 0x56));
+    let left = {
+        let t = a.concat(x, y);
+        a.concat(t, z)
+    };
+    let right = {
+        let t = a.concat(y, z);
+        a.concat(x, t)
+    };
+    let m = Model::new();
+    assert_eq!(a.eval(&m, left).unwrap().bits(), 0x123456);
+    assert_eq!(a.eval(&m, right).unwrap().bits(), 0x123456);
+}
+
+/// `extract` over a `concat` recovers the original halves. Without this the memory
+/// model's byte assembly and its byte-granular writes disagree.
+#[test]
+fn extract_recovers_the_halves_of_a_concat() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let c = a.concat(x, y);
+    let hi = a.extract(c, 15, 8);
+    let lo = a.extract(c, 7, 0);
+    let mut m = Model::new();
+    m.set(a.var_id(x).unwrap(), BvConst::new(8, 0xAB));
+    m.set(a.var_id(y).unwrap(), BvConst::new(8, 0xCD));
+    assert_eq!(a.eval(&m, hi).unwrap().bits(), 0xAB);
+    assert_eq!(a.eval(&m, lo).unwrap().bits(), 0xCD);
+}
+
+/// **021 §3.1 needs `Ite`.** A write at a symbolic offset that stays in `Bytes` writes
+/// each candidate byte as `ite(off == k, val, old)`; without the term there is no way to
+/// express a conditional write at all, and the tri-state init mask has nothing to point
+/// at.
+#[test]
+fn ite_selects_on_a_one_bit_condition() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let k = a.bv(8, 3);
+    let cond = a.eq(x, k);
+    let t = a.bv(32, 111);
+    let f = a.bv(32, 222);
+    let sel = a.ite(cond, t, f);
+    assert_eq!(a.width(sel), 32);
+
+    let mut m = Model::new();
+    m.set(a.var_id(x).unwrap(), BvConst::new(8, 3));
+    assert_eq!(a.eval(&m, sel).unwrap().bits(), 111);
+    m.set(a.var_id(x).unwrap(), BvConst::new(8, 4));
+    assert_eq!(a.eval(&m, sel).unwrap().bits(), 222);
+}
+
+/// A constant condition folds at construction, so the common case — a guard the solver
+/// already decided — costs nothing downstream. 022 §2 folds at construction precisely so
+/// that concrete subterms never reach the backend.
+#[test]
+fn a_constant_condition_folds_the_ite_away() {
+    let mut a = TermArena::new();
+    let one = a.bv(1, 1);
+    let zero = a.bv(1, 0);
+    let t = a.bv(32, 111);
+    let f = a.bv(32, 222);
+    assert_eq!(a.ite(one, t, f), t);
+    assert_eq!(a.ite(zero, t, f), f);
+    // And a concrete concat folds to a constant.
+    let (x, y) = (a.bv(8, 0xAB), a.bv(8, 0xCD));
+    let c = a.concat(x, y);
+    assert_eq!(c, a.bv(16, 0xABCD));
+}
+
