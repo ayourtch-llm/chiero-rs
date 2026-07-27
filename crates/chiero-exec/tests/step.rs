@@ -8846,3 +8846,118 @@ fn writing_one_bitfield_leaves_its_neighbour_uninitialized() {
         r.findings()
     );
 }
+
+/// **020 contract 11.** An `Opaque` with a declared write of `[p, p+8)` invalidates
+/// exactly those 8 bytes and leaves `[p+8, …)` intact, and marks the state
+/// `Fidelity::Approximated`. The engine matched on `dsts` and `why` and ignored `writes`
+/// entirely — so inline asm that declares it clobbers a buffer left chiero believing the
+/// buffer was untouched, which is the same "a call chiero did not perform must invalidate
+/// what it was handed" rule one construct over.
+///
+/// The "leaves the rest intact" half is what stops the fix being a blanket havoc: 020 §4.3
+/// makes the *declaration* the point, and an `Opaque` that invalidated everything would be
+/// no better than not modelling it.
+#[test]
+fn an_opaque_write_invalidates_exactly_what_it_declares() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 16 }),
+                }),
+                inst(InstKind::Opaque {
+                    dsts: vec![],
+                    writes: vec![OpaqueWrite {
+                        addr: Operand::Value(ValueId(0)),
+                        size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                    }],
+                    reads: vec![],
+                    why: OpaqueReason::InlineAsm,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![AllocaDecl {
+        align: 8,
+        ..alloca(0, CTy::Int(8), 16)
+    }];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Approximated);
+    let s = &r.states()[0];
+    let base = match s.local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = s.mem.clone();
+    assert_ne!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY)
+            .value,
+        Some(vec![0xAB; 8]),
+        "the declared region was invalidated"
+    );
+    assert_eq!(
+        mem.read(chiero_mem::Pointer { base, off: 8 }, 8, Span::DUMMY)
+            .value,
+        Some(vec![0xAB; 8]),
+        "and nothing past it was"
+    );
+}
+
+/// **020 contract 31.** An `rdtsc`-shaped `Opaque` with two `dsts` yields two values, and
+/// **two such instructions with identical operands yield four pairwise-distinct symbols**.
+/// Two reads of the cycle counter are not the same number, and a pass that merged them
+/// would turn `end - start` into a constant zero — which is exactly the measurement code
+/// this construct exists for.
+#[test]
+fn two_opaque_instructions_yield_four_distinct_symbols() {
+    let mk = |a: u32, b: u32| {
+        inst(InstKind::Opaque {
+            dsts: vec![(ValueId(a), CTy::Int(32)), (ValueId(b), CTy::Int(32))],
+            writes: vec![],
+            reads: vec![],
+            why: OpaqueReason::InlineAsm,
+        })
+    };
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![mk(0, 1), mk(2, 3)],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    let vals: Vec<_> = (0..4).map(|v| s.local(ValueId(v))).collect();
+    assert!(vals.iter().all(|v| v.is_some()), "{vals:?}");
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            assert_ne!(vals[i], vals[j], "%{i} and %{j} are the same symbol");
+        }
+    }
+}
