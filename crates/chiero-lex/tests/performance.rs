@@ -1,4 +1,4 @@
-//! Covers: 011 contracts 11, 12, 13.
+//! Covers: 011 contracts 11, 13.
 
 use chiero_lex::{LexConfig, LexSession};
 use chiero_span::SourceMap;
@@ -62,6 +62,9 @@ fn warm_header_cache_avoids_lexing_work() {
 
 /// Run explicitly on the reference machine: debug instrumentation is not a meaningful
 /// throughput measurement.
+///
+/// Performance evidence for 011 contract 12. Ignored tests do not carry contract
+/// coverage credit under 070 §4.
 #[test]
 #[ignore = "performance gate: run with cargo test --release -- --ignored"]
 fn fifty_megabytes_lex_above_100_mb_per_second() {

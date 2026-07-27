@@ -2,11 +2,12 @@
 
 ## Status
 
-- 011 contracts 1–14: implemented and tested. The 50 MB throughput assertion is an
-  explicit ignored release-mode performance gate; it passed on the reference machine.
-- 012 contracts 1–19: implemented and cited by tests. Contract 17's external
-  `compile_commands.json` smoke test is explicit but ignored because this checkout has
-  no VPP build directory or compilation database.
+- 011 contracts 1–11, 13–14: covered by non-ignored tests.
+- 011 contract 12: owed under updated 070 §4. Its ignored release performance test
+  passes, but ignored evidence no longer counts as coverage.
+- 012 contracts 1–16, 18–19: covered by non-ignored tests, subject to REVIEW-1 fixes.
+- 012 contract 17: owed. Its external test is ignored and the required VPP compilation
+  database is absent.
 
 ## Findings
 

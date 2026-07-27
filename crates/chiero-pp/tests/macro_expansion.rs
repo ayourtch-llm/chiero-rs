@@ -107,3 +107,33 @@ fn builtins_are_repeatable_except_for_monotonic_counter() {
     );
     assert_ne!(first.config, ConfigId::default());
 }
+
+#[test]
+fn invocation_can_span_logical_lines() {
+    let src = "#define f(a,b) < a , b >\nf(1,\n2)\n";
+    assert_eq!(texts(src), ["<", "1", ",", "2", ">"]);
+}
+
+#[test]
+fn replacement_rescan_includes_following_source_tokens() {
+    let src = "#define B(x) [x]\n#define A B\nA(1)\n";
+    assert_eq!(texts(src), ["[", "1", "]"]);
+}
+
+#[test]
+fn nested_parentheses_stay_inside_one_argument() {
+    let src = "#define pair(a,b) [ a ] [ b ]\npair((1,2),3)\n";
+    assert_eq!(
+        texts(src),
+        ["[", "(", "1", ",", "2", ")", "]", "[", "3", "]"]
+    );
+}
+
+#[test]
+fn taken_if_skips_else_and_elif_is_evaluated() {
+    assert_eq!(texts("#if 1\nfirst\n#else\nwrong\n#endif\n"), ["first"]);
+    assert_eq!(
+        texts("#if 0\nwrong\n#elif 1\nsecond\n#else\nwrong2\n#endif\n"),
+        ["second"]
+    );
+}

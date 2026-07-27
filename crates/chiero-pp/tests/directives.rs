@@ -1,4 +1,4 @@
-//! Covers: 012 contracts 10, 11, 12, 13, 14, 16, 17.
+//! Covers: 012 contracts 10, 11, 12, 13, 14, 16.
 
 use chiero_pp::{Config, FileLoader, preprocess_str, preprocess_with_loader};
 use std::collections::BTreeMap;
@@ -97,6 +97,8 @@ fn computed_include_is_expanded_before_resolution() {
 
 #[test]
 #[ignore = "external corpus regression metric"]
+/// External evidence for 012 contract 17. Ignored tests do not carry contract coverage
+/// credit under 070 §4.
 fn every_vpp_compile_command_preprocesses_without_panicking() {
     let compile_commands = Path::new("/home/ubuntu/vpp/build-root/compile_commands.json");
     if !compile_commands.exists() {
