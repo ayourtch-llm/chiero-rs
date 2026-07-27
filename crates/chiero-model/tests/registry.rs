@@ -11,6 +11,18 @@
 
 use chiero_model::*;
 
+/// A model's message, from wherever it legitimately travels: `report` for something it
+/// noticed and continued past, `ModelOutcome::Finding` for something it gave up on. It is
+/// one or the other — putting a message on both routes delivered it to the run twice with
+/// two ids, which no deduplication can merge.
+fn messages(cx: &ModelCtx, out: &ModelOutcome) -> Vec<String> {
+    let mut v: Vec<String> = cx.findings().to_vec();
+    if let ModelOutcome::Finding(m) = out {
+        v.push(m.clone());
+    }
+    v
+}
+
 /// **024 contract 18.** Registering a name twice is an error; `replace` is the way to
 /// override. Silent last-wins registration would make which model you got depend on link
 /// order, and 001 §5 makes determinism a hard requirement.
@@ -257,14 +269,19 @@ fn calloc_reports_the_multiplication_overflow() {
     let mut a = TermArena::new();
     let mut cx = ctx(&mut m, &mut a);
     let out = models::calloc(&mut cx, u64::MAX, 2, AllocPolicy { may_fail: false });
-    match out {
+    match &out {
         ModelOutcome::Finding(f) => assert!(
             f.contains("overflow"),
             "the finding must name the cause: {f}"
         ),
         other => panic!("expected one overflow finding, got {other:?}"),
     }
-    assert_eq!(cx.findings().len(), 1, "exactly one: {:#?}", cx.findings());
+    assert_eq!(
+        messages(&cx, &out).len(),
+        1,
+        "exactly one, on one route: {:#?}",
+        messages(&cx, &out)
+    );
 }
 
 /// **024 contract 5.** `free(NULL)` is a no-op producing no findings; freeing a non-heap
@@ -616,17 +633,18 @@ fn strcpy_into_a_short_destination_is_one_finding() {
     let src = m.alloc(ObjKind::Heap, 16, 1, Span::DUMMY);
     m.write(Pointer { base: src, off: 0 }, b"0123456789\0", Span::DUMMY);
     let mut cx = ctx(&mut m, &mut a);
-    models::strcpy(
+    let out = models::strcpy(
         &mut cx,
         Pointer { base: dst, off: 0 },
         Pointer { base: src, off: 0 },
         StringPolicy::default(),
     );
-    assert_eq!(cx.findings().len(), 1, "{:#?}", cx.findings());
+    let msgs = messages(&cx, &out);
+    assert_eq!(msgs.len(), 1, "{msgs:#?}");
     assert!(
-        cx.findings()[0].contains("destination"),
+        msgs[0].contains("destination"),
         "the finding is about the destination, not the source: {}",
-        cx.findings()[0]
+        msgs[0]
     );
 }
 
@@ -673,14 +691,14 @@ fn the_destination_must_hold_the_terminator_too() {
         let src = m.alloc(ObjKind::Heap, 8, 1, Span::DUMMY);
         m.write(Pointer { base: src, off: 0 }, b"abc\0", Span::DUMMY);
         let mut cx = ctx(&mut m, &mut a);
-        models::strcpy(
+        let out = models::strcpy(
             &mut cx,
             Pointer { base: dst, off: 0 },
             Pointer { base: src, off: 0 },
             StringPolicy::default(),
         );
         assert_eq!(
-            !cx.findings().is_empty(),
+            !messages(&cx, &out).is_empty(),
             expect_finding,
             "\"abc\" needs 4 bytes; a {size}-byte destination"
         );
@@ -1021,13 +1039,15 @@ fn strcpy_measures_destination_room_from_the_pointer_not_the_base() {
         StringPolicy::default(),
     );
     assert!(
-        matches!(out, ModelOutcome::Finding(_)),
+        matches!(&out, ModelOutcome::Finding(_)),
         "a copy that starts before the object is not a success: {out:?}"
     );
     assert!(
-        cx.findings().iter().any(|f| f.contains("destination")),
+        messages(&cx, &out)
+            .iter()
+            .any(|f| f.contains("destination")),
         "reported at the destination: {:#?}",
-        cx.findings()
+        messages(&cx, &out)
     );
 }
 

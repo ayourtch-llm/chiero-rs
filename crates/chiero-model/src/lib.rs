@@ -358,6 +358,11 @@ impl<'a> ModelCtx<'a> {
     pub fn findings(&self) -> &[String] {
         &self.findings
     }
+    /// Report something the model noticed and is *continuing* past.
+    ///
+    /// A model that gives up returns `ModelOutcome::Finding`, which already carries its
+    /// message to the engine — doing both put the same sentence on two independent routes
+    /// with two sequence ids, which no deduplication can merge.
     pub fn report(&mut self, what: impl Into<String>) {
         self.findings.push(what.into());
     }
@@ -473,7 +478,6 @@ pub mod models {
     pub fn calloc(cx: &mut ModelCtx, n: u64, m: u64, policy: AllocPolicy) -> ModelOutcome {
         let Some(size) = n.checked_mul(m) else {
             let msg = format!("calloc({n}, {m}): size computation overflows");
-            cx.report(msg.clone());
             return ModelOutcome::Finding(msg);
         };
         let at = cx.span();
@@ -637,7 +641,6 @@ pub mod models {
                 "strcpy: destination holds {have} bytes and the source needs {need} \
                  including the terminator"
             );
-            cx.report(msg.clone());
             return ModelOutcome::Finding(msg);
         }
         let at = cx.span();
