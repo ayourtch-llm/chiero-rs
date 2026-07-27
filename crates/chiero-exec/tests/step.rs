@@ -8348,3 +8348,79 @@ fn va_copy_advances_independently_of_its_source() {
     );
     assert_eq!(r.fidelity(), Fidelity::Exact);
 }
+
+/// **A model that gives up inside a loop reports once.** `ModelOutcome::Finding` is pushed
+/// with no key, so it falls back to fork identity and produces one copy per iteration —
+/// the exact shape already fixed for *lifted* faults and missed on this path. A `strcpy`
+/// overflow inside a loop over `VLIB_FRAME_SIZE` buffers is 256 copies of one bug. Raised
+/// as a suspicion by review; confirmed here.
+#[test]
+fn a_model_that_gives_up_in_a_loop_reports_once() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![
+            block(
+                0,
+                vec![
+                    inst(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    }),
+                    inst(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(1),
+                        },
+                    }),
+                    // 'x' with no terminator, so `strcpy`'s source scan gives up and the
+                    // model returns a bare `Finding`.
+                    inst(InstKind::Call {
+                        dst: None,
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![
+                            Operand::Value(ValueId(1)),
+                            Operand::Const(Const::Int { bits: 8, val: 120 }),
+                            Operand::Const(Const::Int { bits: 64, val: 16 }),
+                        ],
+                    }),
+                ],
+                Terminator::Goto(BlockId(1)),
+            ),
+            block(
+                1,
+                vec![inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                })],
+                Terminator::Goto(BlockId(1)),
+            ),
+        ],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 4), alloca(1, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "strcpy", vec![CTy::Ptr, CTy::Ptr], CTy::Ptr),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let gave_up: Vec<_> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("strcpy"))
+        .collect();
+    assert_eq!(gave_up.len(), 1, "{gave_up:#?}");
+}
