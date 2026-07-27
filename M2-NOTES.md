@@ -29,6 +29,10 @@
   until a directive boundary and rescans replacements together with the source suffix.
 - The suggested nested-parenthesis, taken-`#else`, and evaluated-`#elif` discriminators
   already passed before implementation changes; they are now permanent regression tests.
+- Findings 6 and 7 reproduced: hexadecimal constants selected the wrong branch and both
+  `#elifdef` forms fell through. `#if` now implements the complete C operator precedence
+  table used by integer constant expressions, hexadecimal/octal/binary and character
+  constants, short-circuiting, and signed/unsigned 64-bit usual conversions.
 
 ## Mutation checks
 

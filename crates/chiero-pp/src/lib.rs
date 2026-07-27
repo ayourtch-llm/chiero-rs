@@ -375,6 +375,31 @@ impl Engine {
                     frame.taken |= value;
                 }
             }
+            Some("elifdef" | "elifndef") => {
+                let should_eval = conditionals
+                    .last()
+                    .is_some_and(|frame| frame.parent_active && !frame.taken);
+                let defined = line
+                    .get(2)
+                    .is_some_and(|name| self.by_name.contains_key(&name.text));
+                let value = should_eval
+                    && if directive == Some("elifdef") {
+                        defined
+                    } else {
+                        !defined
+                    };
+                if let Some(frame) = conditionals.last_mut() {
+                    frame.active = value;
+                    frame.taken |= value;
+                }
+                self.diagnostics.push(Diagnostic {
+                    span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
+                    message: format!(
+                        "#{} is a C23 extension accepted in C11 mode",
+                        directive.unwrap_or_default()
+                    ),
+                });
+            }
             Some("else") => {
                 if let Some(frame) = conditionals.last_mut() {
                     frame.active = frame.parent_active && !frame.taken;
@@ -423,13 +448,26 @@ impl Engine {
             }
         }
         let expanded = self.expand(prepared);
-        let mut parser = ExprParser {
-            tokens: &expanded,
-            pos: 0,
-            diagnostics: &mut self.diagnostics,
-            pedantic: self.config.pedantic,
+        let (value, parsed) = {
+            let mut parser = ExprParser {
+                tokens: &expanded,
+                pos: 0,
+                diagnostics: &mut self.diagnostics,
+                pedantic: self.config.pedantic,
+            };
+            let value = parser.expression(true);
+            (value, parser.pos)
         };
-        parser.logical_or(true) != 0
+        if parsed != expanded.len() {
+            self.diagnostics.push(Diagnostic {
+                span: expanded[parsed].token.span,
+                message: format!(
+                    "unsupported token `{}` in #if expression",
+                    expanded[parsed].text
+                ),
+            });
+        }
+        value.truth()
     }
 
     fn define(&mut self, line: &[Tok]) {
@@ -926,100 +964,238 @@ struct ExprParser<'a> {
     pedantic: bool,
 }
 
+#[derive(Copy, Clone)]
+struct IfValue {
+    bits: u64,
+    unsigned: bool,
+}
+
+impl IfValue {
+    const ZERO: Self = Self {
+        bits: 0,
+        unsigned: false,
+    };
+
+    fn signed(value: i64) -> Self {
+        Self {
+            bits: value as u64,
+            unsigned: false,
+        }
+    }
+
+    fn boolean(value: bool) -> Self {
+        Self::signed(i64::from(value))
+    }
+
+    fn truth(self) -> bool {
+        self.bits != 0
+    }
+
+    fn usual(self, other: Self) -> (Self, Self, bool) {
+        let unsigned = self.unsigned || other.unsigned;
+        (
+            Self { unsigned, ..self },
+            Self { unsigned, ..other },
+            unsigned,
+        )
+    }
+}
+
 impl ExprParser<'_> {
-    fn logical_or(&mut self, live: bool) -> i128 {
+    fn expression(&mut self, live: bool) -> IfValue {
+        let mut value = self.conditional(live);
+        while self.take(",") {
+            value = self.conditional(live);
+        }
+        value
+    }
+
+    fn conditional(&mut self, live: bool) -> IfValue {
+        let condition = self.logical_or(live);
+        if !self.take("?") {
+            return condition;
+        }
+        let yes = self.expression(live && condition.truth());
+        if !self.take(":") {
+            return yes;
+        }
+        let no = self.conditional(live && !condition.truth());
+        if condition.truth() { yes } else { no }
+    }
+
+    fn logical_or(&mut self, live: bool) -> IfValue {
         let mut left = self.logical_and(live);
         while self.take("||") {
-            let right = self.logical_and(live && left == 0);
-            left = i128::from(left != 0 || right != 0);
+            let right = self.logical_and(live && !left.truth());
+            left = IfValue::boolean(left.truth() || right.truth());
         }
         left
     }
 
-    fn logical_and(&mut self, live: bool) -> i128 {
-        let mut left = self.equality(live);
+    fn logical_and(&mut self, live: bool) -> IfValue {
+        let mut left = self.bitwise_or(live);
         while self.take("&&") {
-            let right = self.equality(live && left != 0);
-            left = i128::from(left != 0 && right != 0);
+            let right = self.bitwise_or(live && left.truth());
+            left = IfValue::boolean(left.truth() && right.truth());
         }
         left
     }
 
-    fn equality(&mut self, live: bool) -> i128 {
+    fn bitwise_or(&mut self, live: bool) -> IfValue {
+        let mut left = self.bitwise_xor(live);
+        while self.take("|") {
+            let right = self.bitwise_xor(live);
+            let unsigned = left.unsigned || right.unsigned;
+            left = IfValue {
+                bits: left.bits | right.bits,
+                unsigned,
+            };
+        }
+        left
+    }
+
+    fn bitwise_xor(&mut self, live: bool) -> IfValue {
+        let mut left = self.bitwise_and(live);
+        while self.take("^") {
+            let right = self.bitwise_and(live);
+            let unsigned = left.unsigned || right.unsigned;
+            left = IfValue {
+                bits: left.bits ^ right.bits,
+                unsigned,
+            };
+        }
+        left
+    }
+
+    fn bitwise_and(&mut self, live: bool) -> IfValue {
+        let mut left = self.equality(live);
+        while self.take("&") {
+            let right = self.equality(live);
+            let unsigned = left.unsigned || right.unsigned;
+            left = IfValue {
+                bits: left.bits & right.bits,
+                unsigned,
+            };
+        }
+        left
+    }
+
+    fn equality(&mut self, live: bool) -> IfValue {
         let mut left = self.relational(live);
         loop {
             if self.take("==") {
-                left = i128::from(left == self.relational(live));
+                let right = self.relational(live);
+                left = IfValue::boolean(left.bits == right.bits);
             } else if self.take("!=") {
-                left = i128::from(left != self.relational(live));
+                let right = self.relational(live);
+                left = IfValue::boolean(left.bits != right.bits);
             } else {
                 return left;
             }
         }
     }
 
-    fn relational(&mut self, live: bool) -> i128 {
-        let mut left = self.additive(live);
+    fn relational(&mut self, live: bool) -> IfValue {
+        let mut left = self.shift(live);
         loop {
             if self.take("<") {
-                left = i128::from(left < self.additive(live));
+                let right = self.shift(live);
+                left = IfValue::boolean(compare(left, right, |a, b| a < b, |a, b| a < b));
             } else if self.take(">") {
-                left = i128::from(left > self.additive(live));
+                let right = self.shift(live);
+                left = IfValue::boolean(compare(left, right, |a, b| a > b, |a, b| a > b));
             } else if self.take("<=") {
-                left = i128::from(left <= self.additive(live));
+                let right = self.shift(live);
+                left = IfValue::boolean(compare(left, right, |a, b| a <= b, |a, b| a <= b));
             } else if self.take(">=") {
-                left = i128::from(left >= self.additive(live));
+                let right = self.shift(live);
+                left = IfValue::boolean(compare(left, right, |a, b| a >= b, |a, b| a >= b));
             } else {
                 return left;
             }
         }
     }
 
-    fn additive(&mut self, live: bool) -> i128 {
+    fn shift(&mut self, live: bool) -> IfValue {
+        let mut left = self.additive(live);
+        loop {
+            if self.take("<<") {
+                let right = self.additive(live);
+                left.bits = left.bits.wrapping_shl((right.bits & 63) as u32);
+            } else if self.take(">>") {
+                let right = self.additive(live);
+                let count = (right.bits & 63) as u32;
+                left.bits = if left.unsigned {
+                    left.bits >> count
+                } else {
+                    ((left.bits as i64) >> count) as u64
+                };
+            } else {
+                return left;
+            }
+        }
+    }
+
+    fn additive(&mut self, live: bool) -> IfValue {
         let mut left = self.multiplicative(live);
         loop {
             if self.take("+") {
-                left = left.wrapping_add(self.multiplicative(live));
+                let right = self.multiplicative(live);
+                let (a, b, unsigned) = left.usual(right);
+                left = IfValue {
+                    bits: a.bits.wrapping_add(b.bits),
+                    unsigned,
+                };
             } else if self.take("-") {
-                left = left.wrapping_sub(self.multiplicative(live));
+                let right = self.multiplicative(live);
+                let (a, b, unsigned) = left.usual(right);
+                left = IfValue {
+                    bits: a.bits.wrapping_sub(b.bits),
+                    unsigned,
+                };
             } else {
                 return left;
             }
         }
     }
 
-    fn multiplicative(&mut self, live: bool) -> i128 {
+    fn multiplicative(&mut self, live: bool) -> IfValue {
         let mut left = self.unary(live);
         loop {
             if self.take("*") {
-                left = left.wrapping_mul(self.unary(live));
+                let right = self.unary(live);
+                let (a, b, unsigned) = left.usual(right);
+                left = IfValue {
+                    bits: a.bits.wrapping_mul(b.bits),
+                    unsigned,
+                };
             } else if self.take("/") {
                 let operator = self.tokens.get(self.pos.saturating_sub(1));
                 let right = self.unary(live);
-                if right == 0 {
+                if right.bits == 0 {
                     if live {
                         self.diagnostics.push(Diagnostic {
                             span: operator.map_or(Span::DUMMY, |t| t.token.span),
                             message: "division by zero in #if".into(),
                         });
                     }
-                    left = 0;
+                    left = IfValue::ZERO;
                 } else {
-                    left = left.wrapping_div(right);
+                    left = divide(left, right, false);
                 }
             } else if self.take("%") {
                 let operator = self.tokens.get(self.pos.saturating_sub(1));
                 let right = self.unary(live);
-                if right == 0 {
+                if right.bits == 0 {
                     if live {
                         self.diagnostics.push(Diagnostic {
                             span: operator.map_or(Span::DUMMY, |t| t.token.span),
                             message: "modulo by zero in #if".into(),
                         });
                     }
-                    left = 0;
+                    left = IfValue::ZERO;
                 } else {
-                    left = left.wrapping_rem(right);
+                    left = divide(left, right, true);
                 }
             } else {
                 return left;
@@ -1027,12 +1203,23 @@ impl ExprParser<'_> {
         }
     }
 
-    fn unary(&mut self, live: bool) -> i128 {
+    fn unary(&mut self, live: bool) -> IfValue {
         if self.take("!") {
-            return i128::from(self.unary(live) == 0);
+            return IfValue::boolean(!self.unary(live).truth());
+        }
+        if self.take("~") {
+            let value = self.unary(live);
+            return IfValue {
+                bits: !value.bits,
+                unsigned: value.unsigned,
+            };
         }
         if self.take("-") {
-            return self.unary(live).wrapping_neg();
+            let value = self.unary(live);
+            return IfValue {
+                bits: value.bits.wrapping_neg(),
+                unsigned: value.unsigned,
+            };
         }
         if self.take("+") {
             return self.unary(live);
@@ -1040,14 +1227,14 @@ impl ExprParser<'_> {
         self.primary(live)
     }
 
-    fn primary(&mut self, live: bool) -> i128 {
+    fn primary(&mut self, live: bool) -> IfValue {
         if self.take("(") {
-            let value = self.logical_or(live);
+            let value = self.expression(live);
             self.take(")");
             return value;
         }
         let Some(token) = self.tokens.get(self.pos) else {
-            return 0;
+            return IfValue::ZERO;
         };
         self.pos += 1;
         if matches!(token.token.kind, PpTokenKind::Ident(_)) {
@@ -1057,19 +1244,9 @@ impl ExprParser<'_> {
                     message: format!("undefined identifier `{}` in #if", token.text),
                 });
             }
-            return 0;
+            return IfValue::ZERO;
         }
-        let digits = token
-            .text
-            .trim_end_matches(|ch: char| ch.is_ascii_alphabetic());
-        if let Some(hex) = digits
-            .strip_prefix("0x")
-            .or_else(|| digits.strip_prefix("0X"))
-        {
-            i128::from_str_radix(hex, 16).unwrap_or(0)
-        } else {
-            digits.parse().unwrap_or(0)
-        }
+        parse_if_literal(token)
     }
 
     fn take(&mut self, text: &str) -> bool {
@@ -1079,5 +1256,88 @@ impl ExprParser<'_> {
         } else {
             false
         }
+    }
+}
+
+fn compare(
+    left: IfValue,
+    right: IfValue,
+    signed: impl FnOnce(i64, i64) -> bool,
+    unsigned: impl FnOnce(u64, u64) -> bool,
+) -> bool {
+    let (left, right, use_unsigned) = left.usual(right);
+    if use_unsigned {
+        unsigned(left.bits, right.bits)
+    } else {
+        signed(left.bits as i64, right.bits as i64)
+    }
+}
+
+fn divide(left: IfValue, right: IfValue, remainder: bool) -> IfValue {
+    let (left, right, unsigned) = left.usual(right);
+    let bits = if unsigned {
+        if remainder {
+            left.bits % right.bits
+        } else {
+            left.bits / right.bits
+        }
+    } else {
+        let left = left.bits as i64;
+        let right = right.bits as i64;
+        if remainder {
+            left.checked_rem(right).unwrap_or(0) as u64
+        } else {
+            left.checked_div(right).unwrap_or(i64::MIN) as u64
+        }
+    };
+    IfValue { bits, unsigned }
+}
+
+fn parse_if_literal(token: &Tok) -> IfValue {
+    if matches!(token.token.kind, PpTokenKind::CharLit { .. }) {
+        return IfValue::signed(parse_char_constant(&token.text));
+    }
+    let unsigned = token.text.bytes().any(|byte| matches!(byte, b'u' | b'U'));
+    let digits = token.text.trim_end_matches(['u', 'U', 'l', 'L']);
+    let (radix, digits) = if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        (16, hex)
+    } else if let Some(binary) = digits
+        .strip_prefix("0b")
+        .or_else(|| digits.strip_prefix("0B"))
+    {
+        (2, binary)
+    } else if digits.len() > 1 && digits.starts_with('0') {
+        (8, &digits[1..])
+    } else {
+        (10, digits)
+    };
+    IfValue {
+        bits: u64::from_str_radix(digits, radix).unwrap_or(0),
+        unsigned,
+    }
+}
+
+fn parse_char_constant(text: &str) -> i64 {
+    let inside = text
+        .find('\'')
+        .and_then(|start| text.rfind('\'').map(|end| &text[start + 1..end]))
+        .unwrap_or("");
+    let mut chars = inside.chars();
+    match chars.next() {
+        Some('\\') => match chars.next() {
+            Some('n') => i64::from(b'\n'),
+            Some('r') => i64::from(b'\r'),
+            Some('t') => i64::from(b'\t'),
+            Some('0') => 0,
+            Some('\\') => i64::from(b'\\'),
+            Some('\'') => i64::from(b'\''),
+            Some(other) => other as i64,
+            None => 0,
+        },
+        Some(ch) => ch as i64,
+        None => 0,
     }
 }
