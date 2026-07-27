@@ -725,6 +725,54 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    the `<=` boundary in the fallback was never reached. Both now have a case where the two
    designs differ.
 
+   **WAVE 8 — `chiero-mem` mutation review COMPLETE and applied.** Escape rate **39%**
+   on `chiero-mem` vs **17%** on the `chiero-cir` verifier changes; the gap was real and
+   the cause was mine — I wrote the memory model's tests around the happy path and around
+   offset zero. Nine findings probed, confirmed and fixed across `239c823`/`09fa7b4`
+   (mem) and `ecd0e0b`/`13312b1` (cir), 227 tests.
+
+   Confirmed defects fixed:
+   - **The bounds check did not bound.** `size as i64` is a wrapping cast, so a 16-exabyte
+     overflow reported as an *uninitialized read* — a real buffer overflow silently
+     reclassified. Trigger is `clib_memcpy(d, s, a - b)` with `a < b`. Now `i128`.
+   - **A conditional write downgraded a definitely-initialized byte.** `InitMask` now
+     **joins** over `No < Cond < Yes` instead of assigning. `memset` then a guarded write
+     was producing the exact false-positive storm the tri-state exists to prevent.
+   - **Over-wide bitfields and integers corrupted memory silently** (Rust masks shift
+     amounts without overflow checks: `v >> 128` is `v >> 0`). Now `BadRange`, which is
+     deliberately distinct from `OutOfBounds` — a chiero limit, not a program error.
+   - **`check_bits` overflowed before comparing** → panic instead of a finding.
+   - **`readonly` was inert**: a `pub` field that looked like a safety property.
+   - **A `Cast`'s declared `from` was never checked against its operand** — the same hole
+     closed for `va_list`, left open on the `PtrToInt`/`IntToPtr` pair that 021 §7.1 makes
+     carry provenance. Fixing it immediately caught a real type error in
+     `FULL_COVERAGE_FIXTURE` (`zext i32` of a comparison result, which is `i1`).
+   - **Width casts ignored the int/float domain**: `trunc f64 -> i32` is `fptosi` wearing
+     the wrong name and computes a different value.
+   - **`vaarg %x : void`** minted a universal type-checking wildcard, disabling rules 5
+     and 6 downstream. A gap in the arm added one commit earlier.
+
+   **STILL OWED from wave 8 — judged valid, not yet applied:**
+   - **The error type is the one 021 §5 says cannot work.** §5 states in bold that
+     `Result<Term, MemFault>` cannot express the normal case, because an uninitialized
+     read yields a value **and** a finding, and specifies `AccessResult { value, faults }`.
+     The crate is `Result<Vec<u8>, AccessError>` throughout: it returns no value on a
+     fault and can report only one. **Contracts 7, 26 and 2 are unreachable through this
+     API**, and fixing it later is a signature change on every method. Do this before
+     building more on top.
+   - **The bit API takes `lo_bit: u64` while the byte API takes `off: i64`** — so a
+     `LoadBits` of a bitfield *below* the user pointer is not representable, which is the
+     crate's own founding premise. `check_bits` even reports `off: (lo_bit / 8) as i64`,
+     acknowledging the signed domain it cannot accept.
+   - **Alignment is stored and never checked** (021 §5 step 3: misalignment "is always
+     recorded"); `MemObject::new` accepts `align = 0` and non-powers-of-two.
+   - **A large object size aborts the process**: `new` eagerly allocates `size` bytes plus
+     `8 * size` mask bytes, so an unconstrained `clib_mem_alloc(n)` kills the run instead
+     of producing a finding. `catch_unwind` cannot contain it.
+   - **The init mask costs 8× the object** (`Vec<InitBit>`, 1-byte tag per *bit*), paid
+     even for objects never bit-accessed. With 021 §8's ~10⁴ objects and VPP's ~2.5 KB
+     buffers this is the dominant cost.
+
    **Still owed for 021:** `Contents::Array` promotion and the `ite_threshold`; symbolic
    offsets; lifetime plus the free/scope/leak findings (contracts 8–11); arenas (13c,
    13d); lazy initialization (18, 19); symbolic-base forking (16, 17); §7.2's symbolic
