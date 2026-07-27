@@ -605,7 +605,7 @@ impl RunResult {
     pub fn reports(&self) -> Vec<Finding> {
         let mut seen: Vec<u64> = Vec::new();
         let mut out = Vec::new();
-        let mut keys: Vec<FindingKey> = Vec::new();
+        let mut keys: Vec<(StateId, FindingKey)> = Vec::new();
         for (st, f) in self
             .states
             .iter()
@@ -615,11 +615,24 @@ impl RunResult {
             // 023 §6.1's key when there is one, the report's identity otherwise. The id
             // alone recognises the copies a *fork* makes and cannot recognise the copies
             // a *loop* makes, because those are genuinely separate reports of one bug.
-            match key {
-                Some(k) if keys.contains(k) => continue,
-                Some(k) => keys.push(k.clone()),
-                None if seen.contains(id) => continue,
-                None => {}
+            // **The id is what recognises a fork's copies**, and it is the only thing
+            // that may deduplicate *across* paths: two paths that fault differently are
+            // two reports, and 023 contract 20 says the engine does not deduplicate —
+            // §6.1 delegates the real key to 040. Keying across states collapsed
+            // `buf + 64` and `buf + 128` into one finding and threw away the second's
+            // witness, so a reader saw one of two bugs and no sign of the other.
+            // Found by review.
+            if seen.contains(id) {
+                continue;
+            }
+            // Within *one* path, the same fault at the same place about the same object
+            // is one report however many times the path runs through it — that is what
+            // a loop does, and 024's "exactly one" wording is about the program.
+            if let Some(k) = key {
+                if keys.iter().any(|(sid, kk)| *sid == st.id && kk == k) {
+                    continue;
+                }
+                keys.push((st.id, k.clone()));
             }
             seen.push(*id);
             out.push(Finding {

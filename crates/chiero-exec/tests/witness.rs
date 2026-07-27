@@ -1043,3 +1043,161 @@ fn a_wrong_kind_at_the_right_span_diverges_once() {
         diverged[0]
     );
 }
+
+/// **Two faults are two reports, each with its own witness.**
+///
+/// `int buf[4]; long i = (x > 10) ? 64 : 128; *(int *)((char *)buf + i) = 1;` — two paths,
+/// two out-of-bounds writes at two offsets. Deduplicating across paths on
+/// `(kind, span, object, func)` collapsed them into one and discarded the other's witness,
+/// so a reader saw one of two bugs and no sign of the other. 023 contract 20: "the engine
+/// does not deduplicate"; §6.1 delegates the real key to 040, which has the checker
+/// component this key lacks. Found by review.
+#[test]
+fn two_faults_at_one_site_on_two_paths_are_two_reports() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(32),
+            count: 4,
+            align: 4,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: at(5),
+        }],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        10,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Cmp {
+                                op: CmpOp::SGt,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(10),
+                            },
+                        },
+                        20,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::AddrOfLocal {
+                                alloca: AllocaId(0),
+                            },
+                        },
+                        25,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                1,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(3),
+                            rv: RValue::PtrAdd {
+                                base: Operand::Value(ValueId(2)),
+                                off: Operand::Const(Const::Int { bits: 64, val: 64 }),
+                            },
+                        },
+                        30,
+                    ),
+                    inst(
+                        InstKind::Store {
+                            addr: Operand::Value(ValueId(3)),
+                            val: i32c(1),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                        40,
+                    ),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+            block(
+                2,
+                vec![
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(4),
+                            rv: RValue::PtrAdd {
+                                base: Operand::Value(ValueId(2)),
+                                off: Operand::Const(Const::Int { bits: 64, val: 128 }),
+                            },
+                        },
+                        30,
+                    ),
+                    inst(
+                        InstKind::Store {
+                            addr: Operand::Value(ValueId(4)),
+                            val: i32c(1),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                        40,
+                    ),
+                ],
+                Terminator::Return(Some(i32c(0))),
+            ),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    let oob: Vec<_> = r
+        .reports()
+        .into_iter()
+        .filter(|f| f.message.contains("out-of-bounds"))
+        .collect();
+    assert_eq!(oob.len(), 2, "two writes, two reports: {:#?}", r.findings());
+    assert!(
+        oob.iter().any(|f| f.message.contains("offset 64"))
+            && oob.iter().any(|f| f.message.contains("offset 128")),
+        "at both offsets: {:#?}",
+        oob.iter().map(|f| &f.message).collect::<Vec<_>>()
+    );
+    // Each with the input value that reaches *it* — one witness for two bugs is one bug
+    // reported and one lost.
+    let vals: Vec<i32> = oob
+        .iter()
+        .filter_map(|f| f.witness.as_ref())
+        .flat_map(|w| w.bindings.iter().map(|b| b.value as i32))
+        .collect();
+    assert!(
+        vals.iter().any(|v| *v > 10) && vals.iter().any(|v| *v <= 10),
+        "the two paths need different inputs: {vals:?}"
+    );
+}
