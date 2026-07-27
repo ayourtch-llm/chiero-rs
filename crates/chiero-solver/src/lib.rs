@@ -984,6 +984,9 @@ fn parse_model(a: &TermArena, text: &str, vars: &[VarId]) -> Model {
 #[derive(Clone, Debug, Default)]
 pub struct SolverStats {
     pub backend_calls: u64,
+    /// How many times a backend **process** was started. 022 §4 wants this to stay at
+    /// one for a whole run; a per-query spawn shows up here immediately.
+    pub backend_spawns: u64,
     pub cache_entries: usize,
     pub tier1_unknown: u64,
 }
@@ -1022,6 +1025,11 @@ impl TieredSolver {
 
     pub fn stats(&self) -> &SolverStats {
         &self.stats
+    }
+
+    /// Kill the backend process, for contract 14's restart-and-replay test.
+    pub fn kill_backend_for_test(&mut self) {
+        todo!("green")
     }
 
     fn ask_backend(&mut self, a: &TermArena, all: &[Term]) -> Option<CheckResult> {

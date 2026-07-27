@@ -247,3 +247,80 @@ fn no_solver_is_linked() {
         );
     }
 }
+
+/// 022 §4 requires a **long-lived** process: `push`/`pop` map to real incremental
+/// solving, because process startup dominates short queries and a per-query spawn makes
+/// tier 2 useless at the scale the engine will run it.
+#[test]
+fn the_backend_process_is_reused_across_queries() {
+    let Some(backend) = z3_or_skip("the_backend_process_is_reused_across_queries") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let y = a.var(Sort::BitVec(32), "y");
+    let p = a.mul(x, y);
+
+    let mut t = TieredSolver::with_backend(backend);
+    for k in 1..=8u128 {
+        let c = a.bv(32, 100 + k);
+        let e = a.eq(p, c);
+        t.push();
+        t.assert(e);
+        let _ = t.check(&mut a, &[]);
+        t.pop(1);
+    }
+    assert!(
+        t.stats().backend_calls >= 8,
+        "each distinct query should reach the backend"
+    );
+    assert_eq!(
+        t.stats().backend_spawns,
+        1,
+        "one process for all of them, not one per query"
+    );
+}
+
+/// 022 contract 14: killing the subprocess mid-query yields `Unknown`, restarts it,
+/// **replays the assertion stack**, and the next query answers as if nothing happened.
+/// Replay is the part that is easy to get wrong and impossible to notice.
+#[test]
+fn a_killed_backend_is_restarted_and_the_stack_replayed() {
+    let Some(backend) = z3_or_skip("a_killed_backend_is_restarted_and_the_stack_replayed") else {
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let c5 = a.bv(8, 5);
+    let c3 = a.bv(8, 3);
+    let lt5 = a.ult(x, c5);
+    let gt3 = a.ult(c3, x);
+
+    let mut t = TieredSolver::with_backend(backend);
+    t.assert(lt5);
+    t.assert(gt3);
+    // Establish the answer with a healthy process.
+    let before = matches!(t.check(&mut a, &[]), CheckResult::Sat(_));
+    assert!(before, "x is 4");
+
+    t.kill_backend_for_test();
+    let spawns_before = t.stats().backend_spawns;
+
+    // A fresh query on the same stack: only correct if the assertions were replayed.
+    let c9 = a.bv(8, 9);
+    let lt9 = a.ult(x, c9);
+    match t.check(&mut a, &[lt9]) {
+        CheckResult::Sat(m) => {
+            let v = m.get(a.var_id(x).unwrap()).unwrap().bits();
+            assert_eq!(
+                v, 4,
+                "the replayed stack must still constrain x to 4, got {v}"
+            );
+        }
+        other => panic!("expected Sat after restart, got {other:?}"),
+    }
+    assert!(
+        t.stats().backend_spawns > spawns_before,
+        "the process must actually have been restarted"
+    );
+}
