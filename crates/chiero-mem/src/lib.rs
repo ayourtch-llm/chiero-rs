@@ -747,6 +747,16 @@ impl AddressSpace {
             return from;
         }
         let a = v.addr();
+        // **Zero is `NULL`.** C spells the null pointer `((void *)0)`, so an `IntToPtr` of
+        // a literal zero is the commonest pointer constant there is — falling through to
+        // `UNBOUND` reported "matching no known object" for a plain null dereference, and
+        // `WildPointer` carries `Unknown` where `NullDeref` is a definite finding.
+        if a == 0 {
+            return Pointer {
+                base: ObjectId::NULL,
+                off: 0,
+            };
+        }
         for (id, base, size) in &self.objs {
             // `<=` on the upper bound: one-past-the-end is a legal C pointer.
             if a >= *base && a <= base + size {

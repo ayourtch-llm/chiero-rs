@@ -643,7 +643,15 @@ impl<'m> Engine<'m> {
         // about a program the CIR does not describe, and the failures are silent
         // (a narrow value zero-extended) or fatal (a panic in `extract`) rather than
         // reported.
-        let errs = chiero_cir::verify(self.module);
+        // **`is_error`, not "any diagnostic".** 020 rule 3 makes `UnreachableBlock` a
+        // warning because unreachable C code exists and is legal, and wave 7 fixed the
+        // dominance lattice precisely so a live join after dead code would work. Gating on
+        // emptiness turned every `default:` after an exhaustive switch into a module
+        // chiero refused to run.
+        let errs: Vec<_> = chiero_cir::verify(self.module)
+            .into_iter()
+            .filter(|e| e.kind.is_error())
+            .collect();
         if !errs.is_empty() {
             let mut bad = State {
                 id: self.new_id(),
