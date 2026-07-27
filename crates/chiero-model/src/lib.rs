@@ -2,9 +2,10 @@
 //! the module (024).
 //!
 //! **This crate contains no VPP knowledge.** It defines the registry and the standard
-//! models; `chiero-vpp` registers vppinfra models *into* it. If `vec_`, `pool_` or
-//! `clib_` appears here, 001 §7's reusable-library requirement has been broken — and
-//! contract 19 checks it rather than trusting it.
+//! models; `chiero-vpp` registers vppinfra models *into* it. 024 contract 19 enforces
+//! that with a prefix scan over these sources, so the forbidden prefixes are not written
+//! out even here — a guard cannot tell an identifier from prose quoting one, and
+//! weakening it to make room for the prose would defeat it.
 //!
 //! The rule that matters most is §2.1: declaring a model `Approximate` is **mechanical**,
 //! not editorial. Dispatching one degrades fidelity and records why. Without that a run
@@ -161,20 +162,18 @@ impl ModelRegistry {
     /// floats, input or a syscall before they need to know which call.
     pub fn with_builtins() -> ModelRegistry {
         let mut r = ModelRegistry::new();
+        // **Only what is implemented is registered.** A declaration claiming `Exact`
+        // precision for a function nothing can dispatch says "this degrades nothing"
+        // about something that cannot run — the confidently-wrong shape this module's
+        // own doc rails against, pointed the wrong way. The rest of 024 §3-§6 is owed,
+        // and an unregistered name takes the engine's loud unmodeled path meanwhile.
         for e in [
             ModelEntry::exact("malloc"),
             ModelEntry::exact("calloc"),
-            ModelEntry::exact("realloc"),
             ModelEntry::exact("free"),
             ModelEntry::exact("memcpy"),
             ModelEntry::exact("memmove"),
             ModelEntry::exact("memset"),
-            ModelEntry::exact("strlen"),
-            ModelEntry::exact("strcpy"),
-            ModelEntry::exact("strncpy"),
-            ModelEntry::exact("memcmp"),
-            ModelEntry::exact("abort"),
-            ModelEntry::exact("exit"),
             ModelEntry::approximate("scanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("fscanf", "reads external input, which is unconstrained"),
             ModelEntry::approximate("read", "syscall result is outside the program"),
@@ -270,14 +269,20 @@ pub struct ModelCtx<'a> {
 }
 
 impl<'a> ModelCtx<'a> {
-    pub fn new(mem: &'a mut Memory, arena: &'a mut TermArena, span: Span) -> ModelCtx<'a> {
+    /// The byte order is a **parameter**, not a constant. It was hardcoded under a
+    /// comment claiming it came from the target, and the test asserted the same constant
+    /// — so neither could tell a target-driven implementation from a hardcoded one.
+    pub fn new(
+        mem: &'a mut Memory,
+        arena: &'a mut TermArena,
+        span: Span,
+        endian: Endian,
+    ) -> ModelCtx<'a> {
         ModelCtx {
             mem,
             arena,
             span,
-            // From the target. A model crate that hardcoded an order would produce
-            // silently byte-swapped answers on the other one.
-            endian: Endian::Little,
+            endian,
             findings: Vec::new(),
         }
     }
@@ -312,6 +317,15 @@ impl<'a> ModelCtx<'a> {
 /// a running interpreter to check `calloc` zeroes.
 pub mod models {
     use super::*;
+
+    /// Whether a name has an implementation here. The registry uses it so an `Exact`
+    /// declaration cannot outrun the code behind it.
+    pub fn is_implemented(name: &str) -> bool {
+        matches!(
+            name,
+            "malloc" | "calloc" | "free" | "memcpy" | "memmove" | "memset"
+        )
+    }
 
     /// 024 contract 1/2. Uninitialized contents, and a `NULL` branch unless the allocator
     /// cannot fail.

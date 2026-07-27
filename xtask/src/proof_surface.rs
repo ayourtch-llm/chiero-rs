@@ -41,6 +41,16 @@ const PROBES: &[(&str, &str)] = &[
         }"#,
     ),
     (
+        "build a Proven literal",
+        r#"fn main() {
+            let m = chiero_cir::Module::default();
+            let mut a = chiero_solver::TermArena::new();
+            let r = chiero_exec::Engine::new(&m).run(&mut a);
+            // `seal` must be the only route to a `Proven`; a struct literal was a second.
+            let _ = chiero_exec::Proven { result: &r };
+        }"#,
+    ),
+    (
         "clone a witness to reuse it",
         r#"fn main() {
             let m = chiero_cir::Module::default();

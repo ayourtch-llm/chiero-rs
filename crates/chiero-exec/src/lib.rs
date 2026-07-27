@@ -161,6 +161,11 @@ pub struct Frame {
     ret_to: Option<(FuncId, BlockId, usize)>,
     ret_dst: Option<ValueId>,
     locals: IndexMap<ValueId, Value>,
+    /// **Per activation** (023 §1). `AllocaId` is unique only *within* a function, so
+    /// one map per state made a callee's local *be* the caller's object of the same id —
+    /// writes aliasing and bounds wrong in both directions, silently. Recursion has the
+    /// same shape: each activation needs its own objects.
+    frame_objs: IndexMap<AllocaId, chiero_mem::ObjectId>,
 }
 
 #[derive(Clone, Debug)]
@@ -184,18 +189,59 @@ pub struct State {
     /// is a counter rather than a heuristic.
     stack: Vec<Frame>,
     ret: Option<Value>,
-    frame_objs: IndexMap<AllocaId, chiero_mem::ObjectId>,
-    /// How often each back edge has been taken on *this* path.
-    edge_counts: IndexMap<(BlockId, BlockId), u32>,
+    /// How often each back edge has been taken on *this* path, keyed by **function** too
+    /// (023 §8) — two functions that both loop `b2 -> b1` are not one loop.
+    edge_counts: IndexMap<(FuncId, BlockId, BlockId), u32>,
     steps: u32,
 }
 
 impl State {
     pub fn object_size_for_test(&self) -> Option<u64> {
-        self.frame_objs
+        self.stack
+            .last()?
+            .frame_objs
             .values()
             .next()
             .and_then(|o| self.mem.size_of_pub(*o))
+    }
+
+    /// The loop-counter keys, so a test can see that two functions with identical block
+    /// numbering get two counters rather than one. The *note* names the function from
+    /// `s.func()`, which is a different source than the key — so asserting on the note
+    /// cannot tell a per-function key from a global one.
+    pub fn loop_keys_for_test(&self) -> Vec<(FuncId, BlockId, BlockId)> {
+        self.edge_counts.keys().copied().collect()
+    }
+
+    /// Every live activation's alloca sizes, so a test can see that two frames have two
+    /// objects rather than one shared by id.
+    pub fn alloca_sizes_for_test(&self) -> Vec<u64> {
+        self.stack
+            .iter()
+            .flat_map(|f| f.frame_objs.values())
+            .filter_map(|o| self.mem.size_of_pub(*o))
+            .collect()
+    }
+
+    fn errored(id: StateId, why: &str) -> State {
+        State {
+            id,
+            mem: Memory::new(),
+            pc: (BlockId(0), 0),
+            path: Vec::new(),
+            fidelity: Fidelity::Unknown,
+            assumptions: vec![Assumption {
+                kind: AssumptionKind::NoInformation,
+                span: Span::DUMMY,
+                detail: why.to_string(),
+            }],
+            status: Status::Errored(why.to_string()),
+            trace: Vec::new(),
+            stack: Vec::new(),
+            ret: None,
+            edge_counts: IndexMap::new(),
+            steps: 0,
+        }
     }
 
     pub fn fidelity(&self) -> Fidelity {
@@ -257,9 +303,20 @@ pub struct NotProven {
     pub assumptions: Vec<Assumption>,
 }
 
+/// **Not constructible outside this crate.** All fields public and no marker meant a
+/// struct literal was a second route to a `Proven` — so `seal` was not the only way to
+/// get one, and a downstream crate could produce a proof for a run of any fidelity
+/// without a witness or a runtime check.
 #[derive(Debug)]
 pub struct Proven<'a> {
-    pub result: &'a RunResult,
+    result: &'a RunResult,
+    _seal: Sealed,
+}
+
+impl<'a> Proven<'a> {
+    pub fn result(&self) -> &'a RunResult {
+        self.result
+    }
 }
 
 /// **The only function in the workspace that reads a run's fidelity to decide whether a
@@ -269,7 +326,10 @@ pub struct Proven<'a> {
 /// trivial `return 0` cannot bless a different one even though both are `Exact`.
 pub fn seal(r: &RunResult, w: ExactWitness) -> Result<Proven<'_>, NotProven> {
     if w.run == r.id && r.fidelity() == Fidelity::Exact {
-        Ok(Proven { result: r })
+        Ok(Proven {
+            result: r,
+            _seal: Sealed,
+        })
     } else {
         Err(NotProven {
             fidelity: r.fidelity(),
@@ -401,7 +461,20 @@ impl<'m> Engine<'m> {
     }
 
     pub fn run(mut self, a: &mut TermArena) -> RunResult {
-        let f = &self.module.funcs[0];
+        // **An empty module is an error, not a panic.** `Module::default()` is what three
+        // of the four proof-surface probes construct.
+        let Some(f) = self.module.funcs.first() else {
+            let s = State::errored(self.new_id(), "the module defines no functions");
+            return RunResult {
+                id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                states: vec![s],
+                solver_calls: 0,
+                backend_spawns: 0,
+                solver_inits: 0,
+                completion_order: vec![0],
+                _seal: Sealed,
+            };
+        };
         let mut mem = Memory::new();
         let mut frame_objs = IndexMap::new();
         for d in &f.allocas {
@@ -432,9 +505,9 @@ impl<'m> Engine<'m> {
                 ret_to: None,
                 ret_dst: None,
                 locals: IndexMap::new(),
+                frame_objs,
             }],
             ret: None,
-            frame_objs,
             edge_counts: IndexMap::new(),
             steps: 0,
         };
@@ -554,7 +627,7 @@ impl<'m> Engine<'m> {
         s: &mut State,
         dst: Option<ValueId>,
         callee: &Callee,
-        _args: &[Operand],
+        args: &[Operand],
         span: Span,
     ) {
         let Callee::Direct(id) = callee else {
@@ -619,10 +692,10 @@ impl<'m> Engine<'m> {
             }
             return;
         }
-        if noreturn {
-            s.status = Status::Terminated(TermReason::Return);
-            return;
-        }
+        // A `noreturn` function with a *body* still runs it: §5's rule is that the call
+        // does not return, not that a body which exists is discarded. Skipping it made
+        // every bug inside `__attribute__((noreturn)) void die(…) { … }` invisible.
+        // The `ret_to: None` below is what makes the call not return.
         // 023 §5: bounded per `FuncId` in the *active stack*, so mutual recursion counts
         // against each participant rather than against a global depth.
         let depth = s.stack.iter().filter(|fr| fr.func == *id).count() as u32;
@@ -641,12 +714,38 @@ impl<'m> Engine<'m> {
         }
         // The return address is the instruction *after* the call; `step` has not advanced
         // `pc` yet, so it is one past the current index.
-        let ret_to = Some((s.func(), s.pc.0, s.pc.1 + 1));
+        let ret_to = if noreturn {
+            None
+        } else {
+            Some((s.func(), s.pc.0, s.pc.1 + 1))
+        };
+        // **Arguments reach the callee.** They were accepted and discarded, so
+        // `int id(int x)` called with 42 returned nothing.
+        let mut locals = IndexMap::new();
+        for (p, o) in f.params.iter().zip(args.iter()) {
+            if let Some(v) = self.operand(a, s, o) {
+                locals.insert(p.value, v);
+            }
+        }
+        // Each activation gets its **own** objects: `AllocaId` is unique only within a
+        // function, so sharing them by id makes a callee's local be the caller's.
+        let mut frame_objs = IndexMap::new();
+        for d in &f.allocas.clone() {
+            let elem = size_of_cty(&d.ty);
+            let bytes = if d.count == chiero_cir::DYNAMIC_EXTENT {
+                0
+            } else {
+                d.count.saturating_mul(elem)
+            };
+            let obj = s.mem.alloc(ObjKind::Stack, bytes, d.align, d.span);
+            frame_objs.insert(d.id, obj);
+        }
         s.stack.push(Frame {
             func: *id,
             ret_to,
             ret_dst: dst,
-            locals: IndexMap::new(),
+            locals,
+            frame_objs,
         });
         s.pc = (f.entry, 0);
         // `step` increments the index after this returns, which would skip the callee's
@@ -657,7 +756,18 @@ impl<'m> Engine<'m> {
     fn exec_term(&mut self, a: &mut TermArena, s: &mut State, t: &Terminator) -> Option<State> {
         match t {
             Terminator::Return(v) => {
-                let val = v.as_ref().and_then(|o| self.operand(a, s, o));
+                let val = match v {
+                    None => None,
+                    Some(o) => match self.operand(a, s, o) {
+                        Some(x) => Some(x),
+                        // The one consumer of `operand` that dropped `None` silently, so
+                        // `ret %0` with `%0` unassigned sealed as a proof.
+                        None => {
+                            self.lowering_gap(s, Span::DUMMY, "a return operand");
+                            None
+                        }
+                    },
+                };
                 // Returning from an inner frame resumes the caller; returning from the
                 // outermost one ends the state.
                 // The outermost frame is **not** popped: its locals are the result of the
@@ -719,7 +829,8 @@ impl<'m> Engine<'m> {
             return None;
         }
         if to.0 <= from.0 {
-            let n = s.edge_counts.entry((from, to)).or_insert(0);
+            let fid = s.func();
+            let n = s.edge_counts.entry((fid, from, to)).or_insert(0);
             *n += 1;
             if *n > self.budget.max_loop_iters {
                 s.status = Status::Terminated(TermReason::Budget);
@@ -728,8 +839,13 @@ impl<'m> Engine<'m> {
                     AssumptionKind::BudgetHit,
                     Span::DUMMY,
                     &format!(
-                        "max_loop_iters ({}) reached on the back edge {:?} -> {:?}",
-                        self.budget.max_loop_iters, from, to
+                        "max_loop_iters ({}) reached on the back edge {from:?} -> {to:?} in `{}`",
+                        self.budget.max_loop_iters,
+                        self.module
+                            .funcs
+                            .iter()
+                            .find(|f| f.id == fid)
+                            .map_or("?", |f| &f.name),
                     ),
                 );
                 return None;
@@ -913,7 +1029,12 @@ impl<'m> Engine<'m> {
             }
             RValue::AddrOfLocal { alloca } => {
                 // The local keeps the *object*, not an address — §1.1's whole point.
-                let Some(base) = s.frame_objs.get(alloca).copied() else {
+                let Some(base) = s
+                    .stack
+                    .last()
+                    .and_then(|f| f.frame_objs.get(alloca))
+                    .copied()
+                else {
                     return self.lowering_gap(s, span, "an alloca with no object");
                 };
                 Value::Ptr(Pointer { base, off: 0 })

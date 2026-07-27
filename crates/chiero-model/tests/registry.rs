@@ -459,7 +459,10 @@ fn no_vpp_prefix_appears_anywhere_in_the_crate_source() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut hits = Vec::new();
     walk(&src, &mut hits);
-    assert!(hits.is_empty(), "VPP identifiers in chiero-model: {hits:#?}");
+    assert!(
+        hits.is_empty(),
+        "VPP identifiers in chiero-model: {hits:#?}"
+    );
 }
 
 /// `replace` on a name nobody registered is an error, not a silent insert — otherwise a

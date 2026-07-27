@@ -1957,7 +1957,10 @@ fn each_activation_materializes_its_own_allocas() {
                         alloca: AllocaId(0),
                     },
                 })],
-                Terminator::Return(Some(i32c(0))),
+                // The callee does **not** return, so both frames are still live when the
+                // run ends. Otherwise its frame is popped and the test can only see one,
+                // which is what a shared map looks like from outside.
+                Terminator::Unreachable(UnreachableReason::BuiltinUnreachable),
             )],
             CTy::Int(32),
         );
@@ -1990,10 +1993,17 @@ fn alloca(id: u32, ty: CTy, count: u64) -> AllocaDecl {
 
 /// **Loop budgets are per `(function, back edge)`** (023 §8). One map keyed on block ids
 /// alone made two functions that both loop `b2 -> b1` share a counter — a false "not found
-/// within a bound" on a program that is comfortably inside it, and a lost proof.
+/// within a bound" on a program comfortably inside it, and a lost proof.
 #[test]
 fn two_functions_with_the_same_block_numbers_do_not_share_a_loop_budget() {
-    // Each function loops its back edge three times, under a bound of five.
+    // A back edge taken exactly **once**, so the state survives to reach the second
+    // function. `br true` loops forever and the bound terminates the state before the
+    // caller's own edge is ever taken — which is what the first draft of this test did.
+    //
+    //   b0 -> b2  (forward)
+    //   b2 -> b1  (back edge: 1 <= 2, counted once)
+    //   b1 -> b3  (forward)
+    //   b3: return
     let mk = |id: u32, name: &str, call: Option<FuncId>| {
         let mut b0 = vec![];
         if let Some(c) = call {
@@ -2007,16 +2017,8 @@ fn two_functions_with_the_same_block_numbers_do_not_share_a_loop_budget() {
             id,
             name,
             vec![
-                block(0, b0, Terminator::Goto(BlockId(1))),
-                block(
-                    1,
-                    vec![],
-                    Terminator::Br {
-                        cond: Operand::Const(Const::Int { bits: 1, val: 1 }),
-                        t: BlockId(2),
-                        f: BlockId(3),
-                    },
-                ),
+                block(0, b0, Terminator::Goto(BlockId(2))),
+                block(1, vec![], Terminator::Goto(BlockId(3))),
                 block(2, vec![], Terminator::Goto(BlockId(1))),
                 block(3, vec![], Terminator::Return(Some(i32c(0)))),
             ],
@@ -2024,38 +2026,30 @@ fn two_functions_with_the_same_block_numbers_do_not_share_a_loop_budget() {
         )
     };
     let mut a = TermArena::new();
-    let budget = Budget {
-        max_loop_iters: 3,
-        ..Budget::default()
-    };
-    // Solo: the bound is hit once, in this function.
-    let solo = Engine::new(&Module {
-        funcs: vec![mk(0, "solo", None)],
-        ..Default::default()
-    })
-    .with_budget(budget)
-    .run(&mut a);
-    let solo_note = solo.states()[0]
-        .assumptions()
-        .iter()
-        .filter(|x| x.kind == AssumptionKind::BudgetHit)
-        .count();
-    assert_eq!(solo_note, 1);
-
-    // Paired: the callee's loop must get its own counter, not inherit the caller's.
-    let paired = Engine::new(&Module {
+    let r = Engine::new(&Module {
         funcs: vec![mk(0, "outer", Some(FuncId(1))), mk(1, "inner", None)],
         ..Default::default()
     })
-    .with_budget(budget)
+    .with_budget(Budget {
+        max_loop_iters: 3,
+        ..Budget::default()
+    })
     .run(&mut a);
-    assert!(
-        paired.states()[0]
-            .assumptions()
-            .iter()
-            .any(|x| x.detail.contains("inner")),
-        "the budget note must name the function whose loop was cut: {:#?}",
-        paired.states()[0].assumptions()
+
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "one traversal each is inside the bound"
+    );
+    // The keys are what distinguishes a per-function counter from a global one. A budget
+    // *note* would name the function from `s.func()` — a different source than the key —
+    // so asserting on the note cannot tell the two apart.
+    let keys = r.states()[0].loop_keys_for_test();
+    let funcs: std::collections::BTreeSet<_> = keys.iter().map(|(f, _, _)| f.0).collect();
+    assert_eq!(
+        funcs.len(),
+        2,
+        "both functions traverse `b2 -> b1`; one key means one shared budget: {keys:?}"
     );
 }
 
