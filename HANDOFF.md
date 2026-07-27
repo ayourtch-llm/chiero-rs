@@ -2280,6 +2280,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
       legal one-past-the-end pointer 021 §7.1 names by hand. **A helper reached only
       through a happy path is untested however many tests call into it.**
 
+   **WAVE 57** (`7d5afd4`, `38a580c`; 642 tests, 110/161 cited) — **scope markers are
+   semantic now** (021 contracts 30 and 39). `InstKind::Marker(_)` was a no-op, so
+   `Scope(Exit)` retired nothing, the two `Lifetime`s were indistinguishable, and a
+   pointer to a dead block read as live memory.
+
+   `Scope(Exit)` retires **this activation's** objects declaring **that scope** with
+   **`Lifetime::Scope`** — each qualifier earns its place, and dropping any one of them is
+   killed by a test: `AllocaId` is unique only within a function, retiring by anything
+   coarser than the alloca's own `ScopeId` fires on every nested block, and 020 §4.4 says
+   retiring `alloca()` memory with the scope reports use-after-scope on a program that has
+   none. Function **return** retires the popped frame's objects, both lifetimes — the
+   classic `return &local` reported *nothing* before. Lifetime faults now name **both**
+   spans (024 contracts 8 and 10 ask for it, and the faults carried the second one all
+   along while `Display` dropped it).
+
+   ⚠️ *Method note:* the use-after-return test first asserted the run must not be `Exact`.
+   That was habit, not 023 §7 — a write through a pointer to a dead frame is a **definite
+   fact modeled exactly**, and degrading would claim chiero was unsure when it was not.
+   The engine already says so for null dereferences and bad frees. *An assertion about
+   fidelity needs a sentence of the spec behind it, not an intuition that bugs are fuzzy.*
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2357,7 +2378,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **636 tests, 109/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **642 tests, 110/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
