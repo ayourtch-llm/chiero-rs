@@ -3478,3 +3478,155 @@ fn one_bad_free_is_one_finding_however_many_states_survive() {
         .collect();
     assert_eq!(bad.len(), 1, "{:#?}", r.findings());
 }
+
+/// **024 §7 and contract 21: `chiero_mark_fidelity` carries the harness's own words.**
+/// The engine hardcoded "harness marked this region approximate" and discarded the
+/// `const char *why` the call passed, so the one mechanism a harness author has for
+/// saying *why* a region is approximate reported the same sentence for every use.
+#[test]
+fn mark_fidelity_reports_the_reason_the_harness_gave() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // "hw\0" — three stores would be clearer in C, but the CIR spelling of a
+                // string literal is bytes, and `memset` is the byte writer to hand.
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int { bits: 32, val: 104 }),
+                        Operand::Const(Const::Int { bits: 64, val: 3 }),
+                    ],
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 3 }),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(2)),
+                    args: vec![
+                        Operand::Value(ValueId(1)),
+                        Operand::Const(Const::Int { bits: 32, val: 0 }),
+                        Operand::Const(Const::Int { bits: 64, val: 1 }),
+                    ],
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![Operand::Value(ValueId(0))],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 8)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(1, "chiero_mark_fidelity", vec![CTy::Ptr], CTy::Void),
+            extern_fn(
+                2,
+                "memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("hhh")),
+        "the harness's reason, not a fixed sentence: {:#?}",
+        r.states()[0].assumptions()
+    );
+}
+
+/// **024 §1 step 3.** `__builtin_memset` is `memset`. gcc emits the `__builtin_` spelling
+/// for anything it recognises, so without the alias every VPP translation unit compiled
+/// with optimization hits unmodeled externs for the functions chiero models best — and
+/// each one now havocs its buffer, turning the most common calls in the codebase into
+/// lost information.
+#[test]
+fn a_builtin_alias_reaches_the_model_of_the_same_name() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Value(ValueId(0)),
+                        Operand::Const(Const::Int {
+                            bits: 32,
+                            val: 0xAB,
+                        }),
+                        Operand::Const(Const::Int { bits: 64, val: 6 }),
+                    ],
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![
+            caller,
+            extern_fn(
+                1,
+                "__builtin_memset",
+                vec![CTy::Ptr, CTy::Int(32), CTy::Int(64)],
+                CTy::Ptr,
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+    let base = match r.states()[0].local(ValueId(0)) {
+        Some(Value::Ptr(p)) => p.base,
+        other => panic!("{other:?}"),
+    };
+    let mut mem = r.states()[0].mem.clone();
+    assert_eq!(
+        mem.read(chiero_mem::Pointer { base, off: 0 }, 6, Span::DUMMY)
+            .value,
+        Some(vec![0xAB; 6]),
+        "the model ran, it was not merely not-degraded"
+    );
+}
