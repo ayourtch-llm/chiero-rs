@@ -586,7 +586,22 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *Process note*: I wrote the checker before its test, then backed it out to a stub to
    get a genuine RED (8 failures, all value mismatches). Don't repeat that — red first.
 
-4. **Begin the TDD loop at **M1** in
+3.6. **M1 STARTED.** `chiero-span` core types done red→green (`890b042`, `5aae0bd`):
+   `BytePos`, `ExpnCtx` (ROOT == 0, `Default`), `Span` (12 bytes, `Copy`, half-open,
+   `DUMMY`). 010 contracts 1–2 covered. Next in `chiero-span`: `SourceFile`/`SourceMap`
+   with the global `BytePos` space and binary-search file lookup, then `Expansion` +
+   the §3.1 queries (`spelling_loc`, `expansion_loc`, `expansion_backtrace`,
+   `involves_macro`, `origin`), then the §6.2 cooked cross-TU index. **Do 010 contract 9
+   (`expansion_loc` never allocates) as a real test with a counting allocator** — it is
+   the most-called query in the coverage vertical.
+
+   Working rhythm that is going well: write the test file first, stub the impl with
+   `todo!()` so failures are behavioural not missing-symbol, commit `red:` with the
+   observed failure output pasted in, implement, commit `green:` with the non-obvious
+   decisions recorded. Keep `cargo fmt --all` + `cargo clippy --all-targets` clean before
+   each commit; CI denies warnings.
+
+4. **Continue the TDD loop at **M1** in
    [080](docs/specs/080-roadmap.md) — the symbolic core against **hand-written `.cir`**,
    no C parsed. M1 and M2 are deliberately parallelizable (12 cores); that independence
    is the whole reason for the CIR contract boundary.
