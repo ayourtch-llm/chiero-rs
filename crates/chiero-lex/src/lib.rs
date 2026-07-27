@@ -4,14 +4,15 @@
 //! token stream and diagnostics are reserved for constructs whose boundary is known.
 
 use chiero_span::{BytePos, FileId, SourceMap, Span};
-use std::cell::RefCell;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(pub u32);
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LexConfig {
     /// 011 §1: trigraphs are available, but off by default because real strings
     /// contain `??!` and VPP does not require them.
@@ -163,6 +164,17 @@ impl Interner {
 #[derive(Debug, Default)]
 pub struct LexSession {
     interner: RefCell<Interner>,
+    cache: RefCell<BTreeMap<CacheKey, Arc<LexedFile>>>,
+    cache_hits: Cell<u64>,
+    cache_misses: Cell<u64>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheKey {
+    file: FileId,
+    content_hash: u64,
+    start: BytePos,
+    config: LexConfig,
 }
 
 impl LexSession {
@@ -199,16 +211,66 @@ impl LexSession {
             symbols: self.interner.borrow().strings.clone(),
         }
     }
+
+    /// Reuse a lexed header. The key includes the content hash required by 011 §5:
+    /// `FileId` alone is per-map and a file can change between incremental sessions.
+    pub fn lex_cached(&self, map: &SourceMap, file: FileId, config: LexConfig) -> Arc<LexedFile> {
+        let source_file = map.file(file);
+        let key = CacheKey {
+            file,
+            content_hash: stable_hash(source_file.src().as_bytes()),
+            start: source_file.start_pos,
+            config,
+        };
+        if let Some(hit) = self.cache.borrow().get(&key).cloned() {
+            self.cache_hits.set(self.cache_hits.get() + 1);
+            return hit;
+        }
+        let lexed = Arc::new(self.lex(map, file, config));
+        self.cache.borrow_mut().insert(key, lexed.clone());
+        self.cache_misses.set(self.cache_misses.get() + 1);
+        lexed
+    }
+
+    /// `(hits, misses)`, exposed so performance tests verify that a quick second call
+    /// is a cache hit rather than a conveniently fast fixture.
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (self.cache_hits.get(), self.cache_misses.get())
+    }
 }
 
-struct Cooked {
-    bytes: Vec<u8>,
-    starts: Vec<usize>,
-    ends: Vec<usize>,
+fn stable_hash(bytes: &[u8]) -> u64 {
+    // FNV-1a is deterministic, small, and sufficient for a cache key. A collision only
+    // reuses lexing work; provenance still keys on FileId and global start position.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
-impl Cooked {
-    fn new(raw: &[u8], config: LexConfig) -> Self {
+struct Cooked<'a> {
+    bytes: Cow<'a, [u8]>,
+    starts: Option<Vec<usize>>,
+    ends: Option<Vec<usize>>,
+}
+
+impl<'a> Cooked<'a> {
+    fn new(raw: &'a [u8], config: LexConfig) -> Self {
+        let has_splice = raw.windows(2).any(|pair| pair == b"\\\n")
+            || raw.windows(3).any(|triple| triple == b"\\\r\n");
+        let has_trigraph = config.trigraphs
+            && raw.windows(3).any(|triple| {
+                triple[0] == b'?' && triple[1] == b'?' && trigraph(triple[2]).is_some()
+            });
+        if !has_splice && !has_trigraph {
+            return Self {
+                bytes: Cow::Borrowed(raw),
+                starts: None,
+                ends: None,
+            };
+        }
         let mut phase1 = Vec::with_capacity(raw.len());
         let mut starts = Vec::with_capacity(raw.len());
         let mut ends = Vec::with_capacity(raw.len());
@@ -256,9 +318,9 @@ impl Cooked {
             i += 1;
         }
         Self {
-            bytes,
-            starts: out_starts,
-            ends: out_ends,
+            bytes: Cow::Owned(bytes),
+            starts: Some(out_starts),
+            ends: Some(out_ends),
         }
     }
 }
@@ -279,7 +341,7 @@ fn trigraph(byte: u8) -> Option<u8> {
 }
 
 struct Lexer<'a> {
-    cooked: &'a Cooked,
+    cooked: &'a Cooked<'a>,
     source: &'a str,
     start: BytePos,
     pos: usize,
@@ -317,9 +379,10 @@ impl Lexer<'_> {
         let pos = self
             .cooked
             .ends
-            .last()
+            .as_ref()
+            .and_then(|positions| positions.last())
             .copied()
-            .unwrap_or(self.source.len());
+            .unwrap_or(self.cooked.bytes.len());
         self.tokens.push(PpToken {
             kind: PpTokenKind::Eof,
             span: Span::new(
@@ -357,7 +420,7 @@ impl Lexer<'_> {
         }
         let text = String::from_utf8_lossy(&self.cooked.bytes[begin..self.pos]);
         let symbol = self.interner.borrow_mut().intern(&text);
-        self.push(begin, self.pos, PpTokenKind::Ident(symbol), Some(&text));
+        self.push(begin, self.pos, PpTokenKind::Ident(symbol), None);
     }
 
     fn number(&mut self) {
@@ -520,14 +583,14 @@ impl Lexer<'_> {
         let lo = self
             .cooked
             .starts
-            .get(begin)
-            .copied()
-            .unwrap_or(self.source.len());
-        let hi = end
-            .checked_sub(1)
-            .and_then(|i| self.cooked.ends.get(i))
-            .copied()
-            .unwrap_or(lo);
+            .as_ref()
+            .map_or(begin, |positions| positions[begin]);
+        let hi = self.cooked.ends.as_ref().map_or(end, |positions| {
+            end.checked_sub(1)
+                .and_then(|i| positions.get(i))
+                .copied()
+                .unwrap_or(lo)
+        });
         Span::new(
             BytePos(self.start.0 + lo as u32),
             BytePos(self.start.0 + hi as u32),
@@ -540,10 +603,12 @@ impl Lexer<'_> {
         let index = self.tokens.len();
         let raw_lo = span.lo.0.saturating_sub(self.start.0) as usize;
         let raw_hi = span.hi.0.saturating_sub(self.start.0) as usize;
-        let cooked = cooked_text
-            .map(str::to_owned)
-            .unwrap_or_else(|| String::from_utf8_lossy(&self.cooked.bytes[begin..end]).into());
-        if self.source.get(raw_lo..raw_hi) != Some(cooked.as_str()) {
+        let logical = &self.cooked.bytes[begin..end];
+        let raw = self.source.as_bytes().get(raw_lo..raw_hi);
+        if cooked_text.is_some() || raw != Some(logical) {
+            let cooked = cooked_text
+                .map(str::to_owned)
+                .unwrap_or_else(|| String::from_utf8_lossy(logical).into_owned());
             self.spellings.insert(index, cooked);
         }
         self.tokens.push(PpToken {
