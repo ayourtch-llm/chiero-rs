@@ -653,19 +653,18 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    `name_base` and the undefined-label check still passed the whole suite because no test
    exercised either.
 
-   **STILL OWED from wave 6 — ranked, all verified by the reviewer:**
-   - **`verify` is function-local** — it never sees the `Module`, so duplicate
-     `GlobalId`/`FuncId`, duplicate function *names*, dangling `Callee::Direct`/
-     `AddrOfGlobal`/`AddrOfFunc`, and **call arity** are all unchecked.
-   - **Constants in non-rvalue operand positions print unparseably** — `print_inst` uses
-     `op()` not `opm()`, so `undef`/`wide`/`fconst`/`globaladdr`/`funcaddr` as a store
-     value or call argument round-trip to a parse error.
-   - `gcov_lines` order is not preserved (`[30,10]` reparses as `[10,30]`), so
-     `parse(print(m)) != m` for any unsorted lowered module.
-   - Rules 5/6 are implemented but thinly tested (~15 surviving mutations); `Cmp`/`Un`
-     widths, select condition, switch scrutinee, and most `require_ptr` sites are unpinned.
-   - `Terminator::successors()` dropping the switch `default` survives — that would make
-     every default target unreachable for rule 3.
+   **Wave-6 debt: ALL 9 DISCHARGED** (`e60d05c`, `cc3d64c`, `1855b7a`, `ab01822`,
+   `bdc7296`). The tautological variant guard; `Function::entry` round-tripping and its
+   vacuous test; named/numeric id collision; undefined-label aliasing; module-level
+   verification (duplicate `GlobalId`/`FuncId`, duplicate global and function *names*,
+   dangling `Callee::Direct`/`AddrOfFunc`/`AddrOfGlobal`, call arity with variadic
+   handling, rule 7 for globals); `successors()` including the switch default;
+   constants in every operand position; and `gcov_lines` order.
+
+   Constants are now **single-token** (`undef:i64`, `globaladdr:@g:8`,
+   `wide:i256:0x…`) — a space-separated form cannot appear in operand position at all,
+   because the tokenizer splits before the operand parser runs. Same constraint that
+   made vectors print `<4xi32>`.
 
    **Method note, now standing:** *mutation-test every fix before claiming it.* Revert
    the fix on a scratch copy and confirm a test fails. Twice this round a fix was correct
@@ -675,6 +674,10 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    replacement with an assertion on the anchor, and always verify the edit landed.
 
    **Wave 7 (QUEUED):**
+   - **A third `chiero-cir` pass.** Two passes ran 45% then 36% escape rates, and every
+     finding is now fixed with each fix mutation-verified. A third pass is the test of
+     whether the rate is actually falling or whether the reviews were only finding what
+     they were pointed at.
    - **030+031+032** — the coverage→impact→selection chain. Brief: hunt *recall holes*
      (a missed test is a shipped regression). Specific leads worth chasing: can a change
      be misclassified `Cosmetic` when line position is semantically observable
@@ -783,9 +786,11 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    because every one was hand-built around constants. *Write fixtures the way lowering
    will emit CIR, not the way a unit test is convenient.*
 
-   **Next in `chiero-cir`:** the optional passes (§9) with their
-   observational-transparency requirement, and the remaining 020 contracts (31–44:
-   `Opaque` dsts, vector ops, varargs, `AllocaDyn`, `Undef`, volatile stores).
+   **Next in `chiero-cir`:** the optional passes (020 §9) with their
+   observational-transparency requirement; `Opaque` (declared in the spec with `dsts`,
+   but **not yet in the `InstKind` enum at all** — inline asm cannot be represented);
+   `GlobalInit` and `Linkage` in the text format; and `Marker::Line` at instruction
+   position, which reparses into `gcov_lines` and drops the instruction.
    **`chiero-solver`: `solver-lite` DONE** (`8bb010f` red, `0220059` green). The
    `Solver` trait, three-valued `CheckResult`, and tier 1's interval + known-bits
    product domain — 20 tests. 022 contracts 3, 4, 5, 6, 7, 7b, 7c, 16.
