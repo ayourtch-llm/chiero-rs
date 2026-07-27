@@ -779,6 +779,35 @@ impl<'m> Engine<'m> {
                 let r = s.mem.set(d, b as u8, n, i.span);
                 self.report_faults(s, &r.faults, i.span);
             }
+            // 021 §3.1's bit-granular init exists for exactly this pair. A byte-rounded
+            // implementation would initialize the neighbouring bitfields too, and every
+            // real uninitialized-bitfield read would go missing.
+            InstKind::StoreBits {
+                addr,
+                val,
+                bits,
+                unit,
+                ..
+            } => {
+                let _ = unit;
+                let (Some(Value::Ptr(p)), Some(t)) =
+                    (self.operand(a, s, addr), self.scalar(a, s, val))
+                else {
+                    self.lowering_gap(s, i.span, "a bitfield store through a non-pointer");
+                    return;
+                };
+                let Ok(v) = a.eval_ground(t) else {
+                    // A symbolic bitfield value needs `InitBit::Cond` plumbing that the
+                    // bit API does not have yet; writing a concretization would put a
+                    // made-up value in the program's memory.
+                    self.lowering_gap(s, i.span, "a symbolic bitfield store");
+                    return;
+                };
+                let r = s
+                    .mem
+                    .write_bits(p, bits.off as u64, bits.width as u64, v.bits(), i.span);
+                self.report_faults(s, &r.faults, i.span);
+            }
             InstKind::Marker(_) => {}
             other => {
                 self.lowering_gap(s, i.span, &format!("{other:?}"));
@@ -1255,7 +1284,7 @@ impl<'m> Engine<'m> {
                 let size = size_of_cty(ty);
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
                 self.report_faults(s, &r.faults, span);
-                match r.value {
+                match r.value.filter(|_| !unusable(&r.faults)) {
                     Some(t) => Value::Scalar(t),
                     None => {
                         // The access produced nothing, so the caller gets a symbol chiero
@@ -1340,6 +1369,52 @@ impl<'m> Engine<'m> {
             RValue::AddrOfGlobal { g } => {
                 let base = self.global_object(s, *g);
                 Value::Ptr(Pointer { base, off: 0 })
+            }
+            RValue::LoadBits {
+                addr,
+                bits,
+                signed,
+                unit,
+                ..
+            } => {
+                let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
+                    return self.lowering_gap(s, span, "a bitfield load through a non-pointer");
+                };
+                let r = s.mem.read_bits(p, bits.off as u64, bits.width as u64, span);
+                self.report_faults(s, &r.faults, span);
+                let w = bits_of_cty(unit).unwrap_or(bits.width);
+                // **A value that arrived with a fault is not the program's.** 021 §5
+                // hands back faults *alongside* a value, and for an uninitialized read
+                // that value is the backing store's zero — the exact answer 021 §3.1
+                // calls the most common way a symbolic executor is confidently wrong.
+                match r.value.filter(|_| !unusable(&r.faults)) {
+                    Some(v) => {
+                        let narrow = a.bv(bits.width, v);
+                        // A signed bitfield's high bit is a sign bit: `int x : 4` holding
+                        // `0b1011` is -5, and zero-extending it gives 11 with nothing to
+                        // say which was meant.
+                        let t = if *signed {
+                            a.sext(narrow, w)
+                        } else {
+                            a.zext(narrow, w)
+                        };
+                        Value::Scalar(t)
+                    }
+                    None => {
+                        self.fresh_count += 1;
+                        let t = a.var(
+                            chiero_solver::Sort::BitVec(w),
+                            &format!("bits{}", self.fresh_count),
+                        );
+                        s.degrade(
+                            Fidelity::Unknown,
+                            AssumptionKind::NoInformation,
+                            span,
+                            "a bitfield load produced no value, so its result is invented",
+                        );
+                        Value::Scalar(t)
+                    }
+                }
             }
             RValue::Fresh { ty } => {
                 // Named per state and per position, so two `Fresh` values are two
@@ -2053,6 +2128,13 @@ fn size_of_cty(t: &CTy) -> u64 {
 /// The **bit** width of an integer-ish type. `None` for anything a bit-vector cast cannot
 /// express — floats and vectors are 023 §7's approximated territory, and returning a
 /// plausible width for them would silently reinterpret a `double` as an integer.
+/// Whether an access's faults mean the value it returned must not be used. See
+/// `MemFault::yields_unknown_value`: a definite bug is a fact about the program, but an
+/// invented value poisons everything computed from it.
+fn unusable(faults: &[chiero_mem::MemFault]) -> bool {
+    faults.iter().any(|f| f.yields_unknown_value())
+}
+
 fn bits_of_cty(t: &CTy) -> Option<u32> {
     match t {
         CTy::Int(b) => Some(*b),
