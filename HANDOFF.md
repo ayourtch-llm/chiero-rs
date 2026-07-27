@@ -2199,6 +2199,36 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    That note is now stale and the assertion names step 4's own cause. A tolerant assertion
    left in place after the tolerance is gone is a test that has stopped testing.
 
+   **WAVE 54** (`b19ddf9`, `dbdff8b`, `cb0692e`; 625 tests, 108/161 cited) — the report
+   renderer and **witnesses**, both M1 exit items.
+
+   `render(&RunResult)` (023 contracts 12 and 14) is the first thing here whose contract
+   is about *text a person reads*: rule 4 governs a sentence, and a run can carry every
+   assumption correctly and still print one that overclaims. It prints the fidelity, then
+   either the findings with their own text or the one sentence chiero may say about an
+   absence — two forms differing by exactly what rule 4 makes them differ by — then every
+   assumption's own text, then the bounds whether or not they were hit. The words "no bugs
+   exist" and "safe" appear nowhere and are *asserted* absent.
+
+   `Witness` (023 §9, contract 15) — every `a.var` in the engine now goes through
+   `Engine::input`, which records the symbol with an `InputOrigin`. All six sites moved at
+   once rather than only the one the test needed: a witness that omits an input looks
+   complete, and a harness built from it supplies every value but that one, so the bug does
+   not reproduce and reads as *refuted*. Computed when the state finishes — the path is
+   append-only, so a model of the final path replays through every finding on the way.
+   It refuses to fabricate an absence (no inputs → the **empty** witness, not `None`) and
+   refuses to guess (an input the model leaves free is `pinned: false`, not silently zero).
+   Findings are a real type now: `reports()` returns `Finding`, and `findings()` is its
+   projection to text so the two cannot disagree.
+
+   The M1 exit item "an OOB finding **with a witness**" is done: `buf[16] = 1` behind
+   `if (x > 10)`, one finding on the one path that has it, witness pinning `x`.
+
+   ⚠️ *Method note:* the step-4 test asserted `solver_calls == 0`, and the witness query
+   broke it. The assertion was about the *sweep* and had been written as a total — rewritten
+   to compare the cost at 4 objects and at 40. A whole-run counter standing in for a
+   per-object property holds only until anything else in the run costs a query.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2276,7 +2306,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **614 tests, 106/161
+   **M1's instruction set is complete**, but M1's *exit* is not — **625 tests, 108/161
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
