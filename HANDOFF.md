@@ -972,6 +972,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    fails to compile — grepping for `test result: FAILED` never sees it. Four of five
    apparent survivors were actually killed. **Check the exit code**, not the output.
 
+   **`chiero-exec` STARTED** (`82edd1e` red, `de469a9` green, 351 tests) — the last M1
+   crate but one. 023 contracts 1, 2, 3, 4, 11, 12 and §7.1's `ExactWitness`: `Value`
+   (pointers keep their `ObjectId`), zero solver calls on constant conditions and
+   straight-line arithmetic, deterministic true-branch-first forking, and the fidelity
+   rule. An undecidable branch is taken on **both** sides with `Unknown` (not
+   `Approximated`) plus an assumption naming the cause. `seal` is the single function that
+   decides whether a negative result is a proof, and the witness is bound to its run.
+
+   *Also owed here:* `read_term` memoization and bit-API contract 6b are **done**
+   (`d9c9cc3`/`bde8fe9`). `chiero-exec` still lacks: tier-2 escalation (a symbolic branch
+   is `Unknown` under tier 1 alone, so most forks degrade), loops and `max_loop_iters`
+   (contract 5), calls and recursion (9), indirect calls (10), searchers and budgets (§4,
+   §8), checkers (§6), and `chiero-model` entirely.
+
+   **FIFTH mutation false-negative mode:** a **no-op mutation** — I wrote
+   `if false { return None; }`, which changes nothing, and read its survival as a coverage
+   gap. Verify the mutation actually alters behaviour, not just the text.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
