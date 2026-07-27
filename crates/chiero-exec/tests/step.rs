@@ -9325,3 +9325,100 @@ fn the_solver_evaluates_division_by_zero_the_same_way_the_engine_does() {
         );
     }
 }
+
+/// **020 contract 32's execution half, and E5: every declared write is honoured.** An
+/// `Opaque` with a declared write *and* a `dst` both havocs the region and produces the
+/// value — "dropping either half fails the test", which is only true if the test exercises
+/// both. A parser test cites contract 32 and honestly labels itself "the representational
+/// half"; nothing ran it.
+///
+/// Every `OpaqueWrite` fixture in this file had exactly **one** entry, so `writes.take(1)`
+/// survived: "each declared write is honoured" was untested. Two regions, two checks.
+#[test]
+fn an_opaque_honours_every_declared_write_and_still_produces_its_value() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(1),
+                    },
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(0)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                }),
+                inst(InstKind::SetMem {
+                    dst: Operand::Value(ValueId(1)),
+                    byte: Operand::Const(Const::Int { bits: 8, val: 0xCD }),
+                    size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                }),
+                inst(InstKind::Opaque {
+                    dsts: vec![(ValueId(2), CTy::Int(32))],
+                    writes: vec![
+                        OpaqueWrite {
+                            addr: Operand::Value(ValueId(0)),
+                            size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        },
+                        OpaqueWrite {
+                            addr: Operand::Value(ValueId(1)),
+                            size: Operand::Const(Const::Int { bits: 64, val: 8 }),
+                        },
+                    ],
+                    reads: vec![],
+                    why: OpaqueReason::InlineAsm,
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![
+        AllocaDecl {
+            align: 8,
+            ..alloca(0, CTy::Int(8), 8)
+        },
+        AllocaDecl {
+            align: 8,
+            ..alloca(1, CTy::Int(8), 8)
+        },
+    ];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    // The `dst` half: a value came out.
+    assert!(
+        matches!(s.local(ValueId(2)), Some(Value::Scalar(_))),
+        "the output was produced: {:?}",
+        s.local(ValueId(2))
+    );
+    // The write half, for *both* declared regions.
+    let mut mem = s.mem.clone();
+    for v in [0u32, 1] {
+        let base = match s.local(ValueId(v)) {
+            Some(Value::Ptr(p)) => p.base,
+            other => panic!("{other:?}"),
+        };
+        let read = mem.read(chiero_mem::Pointer { base, off: 0 }, 8, Span::DUMMY);
+        assert!(
+            read.faults.iter().any(|f| f.kind() == "symbolic-byte"),
+            "region {v} was declared clobbered: {:#?}",
+            read.faults
+        );
+    }
+}
