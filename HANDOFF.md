@@ -957,6 +957,21 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    every cast kind now has both a rejection and an acceptance test, including the
    equal-width boundary (`trunc i32 -> i32` is a `bitcast` wearing the wrong name).
 
+   **DAG sharing DONE** (`ca8217b` red, `7f7e5b7` green, 340 tests): a 22-node shared
+   chain went from **54,525,943 bytes to 620**, and a 2.5 KB buffer's init array (20k
+   nested stores) now serializes linearly instead of aborting.
+
+   *Two problems wore one symptom:* shared subterms were expanded (size) **and** the
+   renderer recursed (abort). `let`-binding fixes one, an iterative post-order the other.
+   **Sharing alone is not enough** — a long *unshared* chain, which is exactly what one
+   `store` per bit produces, has refcount 1 everywhere, so above a small size every
+   non-trivial node is bound. Bindings **nest**, because SMT-LIB `let` binds in parallel.
+
+   **FOURTH mutation false-negative mode found:** a mutation that makes the process
+   **abort** (stack overflow, SIGABRT) reports zero failing tests, exactly like one that
+   fails to compile — grepping for `test result: FAILED` never sees it. Four of five
+   apparent survivors were actually killed. **Check the exit code**, not the output.
+
    **Standing note on mutation testing** (three instances this session): a mutation that
    **does not compile** reports as "no failing tests" and is indistinguishable from an
    unpinned fix. Deleting an arm from an exhaustive match is a *type error*, not a
