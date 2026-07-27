@@ -5060,3 +5060,122 @@ fn a_neighbouring_bitfield_is_still_uninitialized() {
         "a fresh symbol, not the backing store's zero"
     );
 }
+
+/// **021 §7.1: `IntToPtr` is provenance-first.** The range search is the *fallback* and it
+/// is wrong in both directions — an integer that happens to land in an object is followed
+/// to it, and a pointer whose object has been freed resolves to whatever now occupies the
+/// address. So a round trip through `uintptr_t` must come back as the **same pointer**,
+/// recovered from where it came from rather than from what its bits look like.
+///
+/// The fixture puts a second object at a known address so "recovered the origin" and
+/// "found something at that address" are different answers.
+#[test]
+fn a_pointer_round_trips_through_an_integer_by_provenance() {
+    let mut caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![
+                inst(InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::AddrOfLocal {
+                        alloca: AllocaId(0),
+                    },
+                }),
+                // Four bytes in: an offset the range search could reach from either
+                // neighbour if it were guessing.
+                inst(InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: 4 }),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Cast {
+                        kind: CastKind::PtrToInt,
+                        a: Operand::Value(ValueId(1)),
+                        from: CTy::Ptr,
+                        to: CTy::Int(64),
+                    },
+                }),
+                inst(InstKind::Assign {
+                    dst: ValueId(3),
+                    rv: RValue::Cast {
+                        kind: CastKind::IntToPtr,
+                        a: Operand::Value(ValueId(2)),
+                        from: CTy::Int(64),
+                        to: CTy::Ptr,
+                    },
+                }),
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    caller.allocas = vec![alloca(0, CTy::Int(8), 16), alloca(1, CTy::Int(8), 16)];
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let s = &r.states()[0];
+    assert_eq!(
+        s.local(ValueId(3)),
+        s.local(ValueId(1)),
+        "the same pointer, object and offset"
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "provenance is not a guess: {:#?}",
+        s.assumptions()
+    );
+}
+
+/// **An integer with no provenance is not silently resolved.** 021 §7.1 keeps the range
+/// search as a fallback, and a fallback that answers `Exact` is indistinguishable from
+/// knowing. `(char *)0x1000` is a real thing to write — memory-mapped registers — and
+/// chiero must say it is guessing.
+#[test]
+fn an_integer_with_no_provenance_degrades() {
+    let caller = defined(
+        0,
+        "main",
+        vec![block(
+            0,
+            vec![inst(InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Cast {
+                    kind: CastKind::IntToPtr,
+                    a: Operand::Const(Const::Int {
+                        bits: 64,
+                        val: 0x1000,
+                    }),
+                    from: CTy::Int(64),
+                    to: CTy::Ptr,
+                },
+            })],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        CTy::Int(32),
+    );
+    let m = Module {
+        funcs: vec![caller],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_ne!(r.fidelity(), Fidelity::Exact);
+    assert!(
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("provenance")),
+        "{:#?}",
+        r.states()[0].assumptions()
+    );
+}
