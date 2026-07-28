@@ -253,6 +253,15 @@ struct Gen {
     /// The record and helper definitions this program needs, emitted as its prelude.
     records: Vec<Rec>,
     funs: Vec<Fun>,
+    /// File-scope objects, as (name, type). Wave 132's pointer-global defect — reading
+    /// `int *gp` as a value yielded the address *of* `gp` rather than the one it holds —
+    /// lived here and is unreachable from a function-body-only grammar, which is why
+    /// `agree_with` grew a prelude parameter in the first place.
+    globals: Vec<Var>,
+    /// A file-scope array, as (name, element type, length).
+    global_arrays: Vec<(String, Ty, usize)>,
+    /// A file-scope pointer and the array it is aimed at.
+    global_ptrs: Vec<(String, Ty, String, usize)>,
 }
 
 impl Gen {
@@ -267,6 +276,9 @@ impl Gen {
             depth: 0,
             records: Vec::new(),
             funs: Vec::new(),
+            globals: Vec::new(),
+            global_arrays: Vec::new(),
+            global_ptrs: Vec::new(),
         }
     }
 
@@ -344,11 +356,48 @@ impl Gen {
                 },
             });
         }
+        // **File-scope objects.** A global is a different lookup path from a local at
+        // every stage — sema resolves it through the global table, lowering emits
+        // `AddrOfGlobal` rather than `AddrOfLocal` — and wave 132 found the two disagreeing.
+        let ng = 1 + self.rng.below(3);
+        for _ in 0..ng {
+            let t = *self.rng.pick(&Ty::ALL);
+            let t = if t == Ty::Bool { Ty::Int } else { t };
+            let name = format!("g{}", self.next_id);
+            self.next_id += 1;
+            self.globals.push(Var { name, ty: t });
+        }
+        if self.rng.chance(2) {
+            let t = *self.rng.pick(&Ty::ALL);
+            let t = if t == Ty::Bool { Ty::Int } else { t };
+            let len = 2 + self.rng.below(3);
+            let name = format!("ga{}", self.next_id);
+            self.next_id += 1;
+            self.global_arrays.push((name.clone(), t, len));
+            // A **file-scope pointer aimed at it**, initialised with an address constant —
+            // which is its own path through 020 §6's `GlobalInit`.
+            if self.rng.chance(2) {
+                let pname = format!("gp{}", self.next_id);
+                self.next_id += 1;
+                self.global_ptrs.push((pname, t, name, len));
+            }
+        }
         self.render_prelude()
     }
 
     fn render_prelude(&mut self) -> String {
         let mut out = String::new();
+        for v in &self.globals.clone() {
+            let init = self.konst(v.ty);
+            let _ = writeln!(out, "{} {} = {init};", v.ty.c(), v.name);
+        }
+        for (name, ty, len) in &self.global_arrays.clone() {
+            let vals: Vec<String> = (0..*len).map(|_| self.konst(*ty)).collect();
+            let _ = writeln!(out, "{} {name}[{len}] = {{{}}};", ty.c(), vals.join(", "));
+        }
+        for (pname, ty, arr, _) in &self.global_ptrs.clone() {
+            let _ = writeln!(out, "{} *{pname} = {arr};", ty.c());
+        }
         for r in &self.records.clone() {
             let kw = if r.is_union { "union" } else { "struct" };
             let _ = writeln!(out, "{kw} {} {{", r.tag);
@@ -564,6 +613,24 @@ impl Gen {
     }
 
     fn leaf(&mut self, want: Ty) -> String {
+        // **Through the file-scope pointer**, which is the shape wave 132 broke: reading
+        // `gp` as a value must give the address it holds, not its own.
+        if !self.global_ptrs.is_empty() && self.rng.chance(5) {
+            let (pname, _, _, len) = self.global_ptrs[0].clone();
+            let i = self.rng.below(len);
+            let a = self.access(&pname, i);
+            return format!("({}){a}", want.c());
+        }
+        if !self.globals.is_empty() && self.rng.chance(4) {
+            let v = self.globals[self.rng.below(self.globals.len())].clone();
+            return format!("({}){}", want.c(), v.name);
+        }
+        if !self.global_arrays.is_empty() && self.rng.chance(4) {
+            let (name, _, len) = self.global_arrays[0].clone();
+            let i = self.rng.below(len);
+            let a = self.access(&name, i);
+            return format!("({}){a}", want.c());
+        }
         if !self.arrays.is_empty() && self.rng.chance(3) {
             let (name, _, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
             let i = self.rng.below(len);
@@ -630,6 +697,20 @@ impl Gen {
                     vals.join(", ")
                 );
                 self.arrays.push((name, ty, len));
+            }
+            3 if !self.globals.is_empty() && self.rng.chance(2) => {
+                // Writing a global, which is `AddrOfGlobal` plus a store rather than the
+                // local path — the two disagreed for six waves.
+                let v = self.globals[self.rng.below(self.globals.len())].clone();
+                let e = self.expr(v.ty);
+                let _ = writeln!(self.body, "  {} = {e};", v.name);
+            }
+            4 if !self.global_arrays.is_empty() && self.rng.chance(2) => {
+                let (name, ty, len) = self.global_arrays[0].clone();
+                let i = self.rng.below(len);
+                let lhs = self.access(&name, i);
+                let e = self.expr(ty);
+                let _ = writeln!(self.body, "  {lhs} = {e};");
             }
             1 if !self.arrays.is_empty() => {
                 // A write **through one of the spellings**, so the store path sees them all
@@ -784,6 +865,19 @@ impl Gen {
     /// same reason, one fixture at a time.
     fn finish(mut self) -> String {
         let _ = writeln!(self.body, "  long acc = 0;");
+        // File-scope objects are part of the program's state and are checksummed like any
+        // other: a helper that writes one, or a store that lands on the wrong global,
+        // changes the answer.
+        let globals = self.globals.clone();
+        for v in &globals {
+            let _ = writeln!(self.body, "  acc = acc * 31 + (long)({});", v.name);
+        }
+        let garrays = self.global_arrays.clone();
+        for (name, _, len) in &garrays {
+            for i in 0..*len {
+                let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}[{i}]);");
+            }
+        }
         let vars = self.vars.clone();
         for (i, v) in vars.iter().enumerate() {
             let _ = writeln!(

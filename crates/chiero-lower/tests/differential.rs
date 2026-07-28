@@ -429,6 +429,66 @@ fn a_bool_read_modify_write_converts_rather_than_truncates() {
     agree("_Bool b = 1; b ^= 1; return b;");
 }
 
+/// **A file-scope pointer initialized with an address holds that address.**
+///
+/// `GlobalInit` has `Zero`, `Bytes` and `Extern` and no form for an *address*, so
+/// `encode_init` returns `None` for `int *gp = &g;` and lowering falls back to `Zero`. The
+/// comment there reasons that `Zero` "is at least not a fabrication" — true of a partial
+/// encoding, and not true here: **`gp == 0` answers 1** for a pointer that is definitely
+/// not null. A null check on a validly-initialized global reports null.
+///
+/// An address cannot be bytes. 021's model gives a pointer an *object*, and a byte pattern
+/// carries no provenance — which is exactly why this needs its own `GlobalInit` variant
+/// rather than a cleverer `encode_init`.
+///
+/// Found by the generator once file-scope declarations entered the grammar. Function
+/// pointers already worked (`int (*fp)(int) = twice;` calls correctly), so the asymmetry
+/// was there to be noticed and nothing had looked.
+#[test]
+fn a_file_scope_pointer_holds_the_address_it_was_given() {
+    // The null check, which is the case that answers *wrongly* rather than not at all.
+    agree_with("int g = 5;\nint *gp = &g;\n", "return gp == 0;");
+    agree_with("int g = 5;\nint *gp = &g;\n", "return gp != 0;");
+    // Reading through it.
+    agree_with("int g = 5;\nint *gp = &g;\n", "return *gp;");
+    agree_with(
+        "int ga[3] = {10, 20, 30};\nint *gp = ga;\n",
+        "return gp[1];",
+    );
+    agree_with(
+        "int ga[3] = {10, 20, 30};\nint *gp = ga;\n",
+        "return *(gp + 2);",
+    );
+    agree_with(
+        "int ga[3] = {10, 20, 30};\nint *gp = &ga[1];\n",
+        "return *gp;",
+    );
+    // Writing through it, and seeing the write in the *other* name for the same object —
+    // which is what makes it an address rather than a copy.
+    agree_with("int g = 5;\nint *gp = &g;\n", "*gp = 9; return g;");
+    agree_with(
+        "int ga[3] = {10, 20, 30};\nint *gp = ga;\n",
+        "gp[1] = 7; return ga[1];",
+    );
+    agree_with(
+        "int ga[3] = {10, 20, 30};\nint *gp = ga;\n",
+        "ga[1] = 7; return gp[1];",
+    );
+    // A pointer to a pointer, so the initializer's target is itself a pointer.
+    agree_with(
+        "int g = 5;\nint *gp = &g;\nint **gpp = &gp;\n",
+        "return **gpp;",
+    );
+    // **The cases that already work must keep working**: a function pointer at file scope,
+    // and a global with no initializer at all, which C11 6.7.9p10 zero-initializes.
+    agree_with(
+        "int twice(int x) { return x + x; }\nint (*fp)(int) = twice;\n",
+        "return fp(3);",
+    );
+    agree_with("int g;\n", "return g;");
+    agree_with("int *gp;\n", "return gp == 0;");
+}
+
 /// **A braced initializer stores a bit-field as bits, not as its storage unit.**
 ///
 /// 015 contract 7 says a bit-field access uses the `BitRange` from `RecordLayout`, and
