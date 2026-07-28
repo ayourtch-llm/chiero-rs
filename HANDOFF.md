@@ -2701,13 +2701,30 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    3. **A one-byte concrete prefix disabled the fork**, because dispatch gated it on the
       concrete walk having scanned *zero* bytes.
 
-   **STILL OWED from this review** (all real, none applied yet): the `pop_if` guard removal
-   and two guard-algebra mutations survive because the fixture has **no branch after the
-   call** — the "fixture whose paths agree" trap again; the cap branch leaves `dst` unbound
-   so the first *use* of the result errors instead of terminating `Bounded` (§4 step 3);
-   a first branch that is a `Finding`/`Bounded` leaks its report onto every sibling (dead
-   code today, and wrong if reached); `Bounded` is not pinned as `Bounded`; three unguarded
-   `strlen_symbolic` edge cases; and 024 c21e's middle clause and c21d are unpinned.
+   **WAVE 72** (`c756de2`; 701 tests) — the rest of that review, applied.
+   - The three **guard mutations** lived because the fixture had no branch after the call,
+     so contradictory and overlapping paths looked identical to correct ones. The new
+     fixture branches on the **bytes** (`if (p[0] == 0)`) and asserts no state is
+     self-contradictory, each length implies its side, and no length appears twice.
+   - **A value-less branch terminates its state.** §4 step 3 wants the cap to terminate
+     with `Bounded`; the state carried on with `dst` unbound and the first *use* hit
+     "branch condition is not a scalar" — 023 §3's marker for a bug in chiero — pinning the
+     run at `Unknown`. The test now asserts `Bounded` **exactly**, where `!= Exact` had been
+     satisfied by `Unknown`.
+   - **This state's report is applied after its siblings are cloned** — the guard was undone
+     per sibling, a finding and a degradation were not.
+   - **Three edge guards pinned**, plus `-p.off` panicking at `i64::MIN`.
+   ⚠️ *Method note:* the fault-guard test first used a **freed** object, where the read
+   yields no value at all — so the fault check was never the deciding factor and dropping it
+   changed nothing. An **uninitialized** read is the case that distinguishes it: a value
+   *and* a fault. **Pick the fixture where the guard is the only thing standing between you
+   and the wrong answer.**
+
+   **Still owed from that review:** 024 c21e's middle clause (a fixture where
+   `HavocInit::Uninitialized` *does* produce a finding) and c21d (`reachable_depth`), and
+   `a_run_that_called_scanf_cannot_be_sealed_as_a_proof` cannot tell the *modeled* path from
+   the unmodeled one — its assertion matches both strings, and 024 §2.1's whole point is
+   that the modeled path is the dangerous one.
    ⚠️ Also: **three claims in my wave-68 commit message are false** — `len` is a constant
    so a later `if (len == 2)` folds regardless of guards (the guards matter for branches
    over the *bytes*), `malloc`'s branches never changed, and the concrete fast path does
@@ -2790,7 +2807,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **696 tests, 137/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **701 tests, 137/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
