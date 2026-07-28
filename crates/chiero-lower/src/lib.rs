@@ -2521,13 +2521,29 @@ impl Lowerer<'_> {
         if op.is_none()
             && let Some(size) = self.aggregate_size(lhs)
         {
-            let dst = match self.lvalue_addr(lhs, span) {
-                Some(a) => a,
-                None => return Operand::Const(Const::Undef(CTy::Ptr)),
+            // **The destination must be an lvalue** — C says so, and if lowering cannot
+            // name it, 020 §5's rule applies: a gap is a diagnostic, not a licence. Silent
+            // `Undef` here dropped the whole assignment and read as a program that never
+            // wrote anything.
+            let Some(dst) = self.lvalue_addr(lhs, span) else {
+                self.diagnostics.push(LowerDiagnostic {
+                    span,
+                    message: "an aggregate assignment to something with no address".into(),
+                });
+                return Operand::Const(Const::Undef(CTy::Ptr));
             };
+            // **The source need not be one.** `y = mk(1, 2)`, `y = (0, x)`, `y = c ? x : z`
+            // and `w = y = x` all have a right-hand side that is not an lvalue, and each
+            // silently emitted *no* `CopyMem` at all — the assignment vanished from the CIR
+            // along with the side effects of whatever was on the right.
+            //
+            // `expr` is the right fallback rather than a second special case: wave 132 made
+            // it yield the *address* for an aggregate, which is exactly what `CopyMem`
+            // wants, and it is what `local_decl` has always used — which is why the
+            // initializer form `struct S y = (0, x);` worked while the assignment did not.
             let src = match self.lvalue_addr(rhs, span) {
                 Some(a) => a,
-                None => return Operand::Const(Const::Undef(CTy::Ptr)),
+                None => self.expr(rhs),
             };
             let align = self.aggregate_align(lhs).unwrap_or(1).max(1);
             self.emit(

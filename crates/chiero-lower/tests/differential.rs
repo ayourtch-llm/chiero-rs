@@ -571,6 +571,62 @@ fn a_struct_parameter_is_the_callees_own_copy() {
     );
 }
 
+/// **"No value form" means vectors and function designators too, not just records.**
+///
+/// `is_aggregate` matches `Ty::Record | Ty::Array`, while `cty`, `aggregate_size` and
+/// `aggregate_size_of_ty` all include `Ty::Vector` — three predicates in one file that
+/// disagree about the same type. So a vector reproduces, exactly, the defect wave 132
+/// exists to kill: `v4si b = a;` emits `load ptr` of the vector's first eight bytes and
+/// stores eight bytes where sixteen belong. `elem_size_of` knows only `Array | Ptr`, so
+/// vector indexing scales by **one byte** — `a[1]` writes byte 1.
+///
+/// A **function designator** is the third thing CIR has no value form for (C11 6.3.2.1p4
+/// makes it decay to a pointer, exactly as an array does), and `(*fp)(3)` emits `load ptr`
+/// *at the function's address*. `fns[0](3)` and `s.f(3)` work, so it is the deref spelling
+/// specifically.
+///
+/// `is_aggregate_expr`'s own doc comment says "something CIR has no value form for". The
+/// rule was right and covered two of its three cases.
+#[test]
+fn a_vector_and_a_function_designator_have_no_value_form_either() {
+    const V: &str = "typedef int v4si __attribute__((vector_size(16)));\n";
+    // Copy-initialization, the shape that loaded eight of sixteen bytes.
+    agree_with(
+        V,
+        "v4si a; a[0] = 1; a[1] = 2; v4si b = a; return b[0] * 10 + b[1];",
+    );
+    // **The high half**, which an eight-byte copy drops entirely.
+    agree_with(
+        V,
+        "v4si a; v4si b; a[0] = 1; a[3] = 4; b = a; return b[0] + b[3];",
+    );
+    // Indexing, which scaled by one byte rather than by the element size.
+    agree_with(V, "v4si a; a[2] = 7; return a[2];");
+    agree_with(
+        V,
+        "v4si a; a[0] = 1; a[1] = 2; a[2] = 3; return a[1] * 10 + a[2];",
+    );
+    // A function designator dereferenced, which is `(*fp)(x)` — legal C and common in
+    // dispatch tables written defensively.
+    agree_with(
+        "int twice(int x) { return x + x; }\n",
+        "int (*fp)(int) = twice; return (*fp)(3);",
+    );
+    agree_with(
+        "int twice(int x) { return x + x; }\n",
+        "int (*fp)(int) = twice; int (*g)(int) = *fp; return g(4);",
+    );
+    // The two spellings that already worked, so the fix extends rather than replaces.
+    agree_with(
+        "int twice(int x) { return x + x; }\n",
+        "int (*fns[2])(int); fns[0] = twice; return fns[0](3);",
+    );
+    agree_with(
+        "int twice(int x) { return x + x; }\nstruct D { int (*f)(int); };\n",
+        "struct D d; d.f = twice; return d.f(5);",
+    );
+}
+
 /// **An aggregate assignment works whatever the right-hand side is.**
 ///
 /// `assign`'s aggregate path takes `lvalue_addr(rhs)` and returns `Undef` when that is
