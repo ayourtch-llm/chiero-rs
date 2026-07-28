@@ -429,6 +429,80 @@ fn a_bool_read_modify_write_converts_rather_than_truncates() {
     agree("_Bool b = 1; b ^= 1; return b;");
 }
 
+/// **A braced initializer element is converted to its member's type.**
+///
+/// C11 6.7.9p11: the initializer for a scalar member is converted as if by assignment.
+/// sema inserts that conversion for an assignment *expression* and not for a braced
+/// element — it is not typing an assignment there — so `{3, 5}` stored a 32-bit `3` into a
+/// slot declared `i8` and the engine ended the path on the width mismatch.
+///
+/// **Every struct with a member narrower than `int` was affected**, which is most of them,
+/// and no fixture had one: `differential.rs` used `struct S { int a; int b; }` throughout.
+/// The generator produced a `signed char` member on its first program with structs in the
+/// grammar.
+///
+/// Assignment already worked — `v.a = 3` is an assignment expression and sema converts it.
+/// That pairing is why the defect is invisible from the outside: the same struct behaves
+/// correctly when filled field by field.
+#[test]
+fn a_braced_initializer_element_converts_to_its_member_type() {
+    // Narrower than `int`, first member and last, so an offset-0 special case is not it.
+    agree_with(
+        "struct S { signed char a; int b; };\n",
+        "struct S v = {3, 5}; return v.a * 10 + v.b;",
+    );
+    agree_with(
+        "struct S { int a; signed char b; };\n",
+        "struct S v = {3, 5}; return v.a * 10 + v.b;",
+    );
+    agree_with(
+        "struct S { short a; int b; };\n",
+        "struct S v = {3, 5}; return v.a * 10 + v.b;",
+    );
+    // A single narrow member, so the padding is not what makes it work.
+    agree_with(
+        "struct S { signed char a; };\n",
+        "struct S v = {3}; return v.a;",
+    );
+    // **Truncation that is visible**: 300 does not fit a `signed char`, and C says the
+    // stored value is 44.
+    agree_with(
+        "struct S { signed char a; int b; };\n",
+        "struct S v = {300, 5}; return v.a;",
+    );
+    agree_with(
+        "struct S { unsigned char a; int b; };\n",
+        "struct S v = {300, 5}; return v.a;",
+    );
+    // **Widening, and its signedness.** A negative `int` initializer into a `long` member
+    // must sign-extend; an unsigned one must not.
+    agree_with(
+        "struct S { long a; int b; };\n",
+        "struct S v = {-1, 5}; return (int)(v.a >> 32);",
+    );
+    agree_with(
+        "struct S { unsigned long a; int b; };\n",
+        "struct S v = {4294967295u, 5}; return (int)(v.a >> 16);",
+    );
+    // The compound-literal spelling reaches the same code.
+    agree_with(
+        "struct S { signed char a; int b; };\n",
+        "struct S v = (struct S){3, 5}; return v.a * 10 + v.b;",
+    );
+    // An **array** of a narrow type, which is the other shape `init_list` walks.
+    agree("signed char a[3] = {1, 2, 300}; return a[0] * 100 + a[1] * 10 + a[2];");
+    // And a nested struct, so the recursion converts too.
+    agree_with(
+        "struct I { signed char x; }; struct O { struct I i; int n; };\n",
+        "struct O o = {{300}, 5}; return o.i.x * 10 + o.n;",
+    );
+    // Assignment already worked and must keep working — it is the pairing that hid this.
+    agree_with(
+        "struct S { signed char a; int b; };\n",
+        "struct S v; v.a = 3; v.b = 5; return v.a * 10 + v.b;",
+    );
+}
+
 /// **A member can be selected off a value, not only off an lvalue.**
 ///
 /// `lvalue_addr`'s `Member` arm asks `lvalue_addr` for the base, which is `None` for

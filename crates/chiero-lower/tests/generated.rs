@@ -461,9 +461,8 @@ impl Gen {
                 // **A call, with its arguments** — including structs passed by value, which
                 // is the shape a body-only generator cannot produce at all.
                 let f = self.funs[self.rng.below(self.funs.len())].clone();
-                if f.ret_rec.is_some() {
+                if let Some(r) = f.ret_rec {
                     // A struct-returning helper is not a scalar; use it through a member.
-                    let r = f.ret_rec.unwrap();
                     let args = self.args_for(&f);
                     let fi = self.rng.below(self.records[r].fields.len());
                     format!("({}){}({args}).f{fi}", want.c(), f.name)

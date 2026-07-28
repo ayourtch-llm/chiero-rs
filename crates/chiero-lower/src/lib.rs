@@ -3322,7 +3322,22 @@ impl Lowerer<'_> {
                 let base_addr = if arrow {
                     self.expr(base)
                 } else {
-                    self.lvalue_addr(base, span)?
+                    // **`.`'s left operand may be a value, not only an lvalue** (C11
+                    // 6.5.2.3p3): `make(7).a` selects a field of a call's result, and
+                    // `(struct S){1, 2}.a` of a literal's. Requiring `lvalue_addr` to
+                    // succeed made both produce no state and no diagnostic at all.
+                    //
+                    // Since wave 132 an aggregate *expression* already evaluates to its
+                    // address — that is what "CIR has no aggregate values" (020 §1.4)
+                    // means — so the base has been available all along; this arm only ever
+                    // asked for it the one way.
+                    match self.lvalue_addr(base, span) {
+                        Some(a) => a,
+                        None if self.type_of(base).is_some_and(|t| self.is_aggregate(t)) => {
+                            self.expr(base)
+                        }
+                        None => return None,
+                    }
                 };
                 let (byte_off, _) = self.field_of(base, field, arrow)?;
                 if byte_off == 0 {
@@ -4521,6 +4536,43 @@ impl Lowerer<'_> {
         Operand::Value(dst)
     }
 
+    /// Convert a value to the type it is about to be stored as.
+    ///
+    /// Only widths and signedness — the caller has already decided *what* is being stored.
+    /// Conversion to `_Bool` is `!= 0` rather than a truncation (C11 6.3.1.2), the same
+    /// rule waves 133 and 139 needed at the cast and read-modify-write sites.
+    fn convert_for_store(&mut self, v: Operand, from: ExprId, to: &CTy, span: Span) -> Operand {
+        let CTy::Int(want) = *to else { return v };
+        let have = self.width_of(from);
+        if have == want {
+            return v;
+        }
+        if want == 1 {
+            return self.truth_of(v, CTy::Int(have), span);
+        }
+        let kind = if want < have {
+            chiero_cir::CastKind::Trunc
+        } else if self.is_signed(from) {
+            chiero_cir::CastKind::SExt
+        } else {
+            chiero_cir::CastKind::ZExt
+        };
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Cast {
+                    kind,
+                    a: v,
+                    from: CTy::Int(have),
+                    to: CTy::Int(want),
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {
         let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
             return;
@@ -4590,6 +4642,13 @@ impl Lowerer<'_> {
             }
             let v = self.expr(item.value);
             let cty = self.cty(fty);
+            // **The initializer is converted to the member's type** (C11 6.7.9p11). sema
+            // inserts that conversion for an assignment and not for a braced element — it
+            // is not typing an assignment expression — so `struct S { signed char a; int b; }
+            // s = {3, 5};` stored a 32-bit `3` into a slot declared `i8` and the engine
+            // ended the path on the width mismatch. Every struct with a member narrower
+            // than `int` was affected, which is most of them.
+            let v = self.convert_for_store(v, item.value, &cty, span);
             let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
             self.emit(
                 InstKind::Store {
