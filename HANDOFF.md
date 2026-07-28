@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 145) — 1129 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 146) — 1132 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -501,7 +501,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > arrays, pointers and six spellings of one access, and it found another; 142 gave it
 > bit-fields and unions and it found a *wrong answer*; 143 gave it file-scope declarations
 > and it found a global pointer reading as null; 144 closed the last defect on the open
-> list; 145 made lowering refuse CIR the verifier rejects**.*
+> list; 145 made lowering refuse CIR the verifier rejects;
+> 146 gave the generator a shrinker**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -627,8 +628,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   keeps a *warning* from refusing a function. Nothing in the fixture set produces a verify
 >   warning, so the mutation for it is equivalent. If a warning kind is ever added, that
 >   filter needs a fixture.
-> - **The AST shrinker** (~250 lines). Waves 139–144 each shrank by hand in a few minutes;
->   that worked because each run had one defect. It will not survive a run with five.
+> - ~~The AST shrinker.~~ **Done in wave 146**, and **line-based rather than AST-based** —
+>   the generator emits one statement per line, so line-deletion is already a valid operator
+>   over that shape, and a deletion that breaks a reference is rejected by the compile the
+>   pipeline runs anyway. The prelude reduces by whole declarations, counted by brace depth.
+>   On a reintroduced wave-142 defect it goes from a full program to four lines.
 > - **The refusal-ledger ratchet.** The ledger prints and is empty; the moment it is not, an
 >   unlisted diagnostic code has to fail CI or it becomes a suppression file.
 > - `xtask diff-soak --seed N` for open-ended search, with CI keeping the fixed batch.
@@ -662,6 +666,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A test written for a guard can be equivalent under the guard's own mutation** (wave 146).
+> `the_shrinker_refuses_to_reduce_what_does_not_fail` used an always-false predicate — under
+> which the reducer keeps nothing anyway, so deleting the guard changed nothing and the
+> mutation survived. The fixing shape is a predicate **false for the original and true for a
+> reduction**. Ask what the code would do *without* the guard, not just whether the test
+> passes with it.
+> **Point a new tool at a real failure before trusting it** (wave 146). Both defects in the
+> shrinker — deleting the trailing `return`, and printing the pre-shrink verdict beside the
+> post-shrink source — were found in the first live run and neither by reading the code.
+> The second is the sharper one: the numbers are what a reader trusts most, and they were
+> the part that was wrong.
 > **Two tests failing for two different reasons is not confirmation** (wave 145). Under the
 > reintroduced wave-141 defect, both tests in `verified.rs` went red — one because the CIR
 > was invalid, the other because `harness::lower` panics on the *diagnostic* the new guard
@@ -799,7 +814,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > class it does not know about. Running `verify` at the end of `function()` and refusing on
 > an error would turn every such defect from a silent nothing into a diagnostic.
 >
-> Owed and written down — **no open defects**, these are gaps and deferrals: the AST shrinker and the refusal ratchet are unwritten; the
+> Owed and written down — **no open defects**, these are gaps and deferrals: the refusal ratchet is unwritten; the
 > wave-117 `fork_on_offset` survivor; floats do not execute; designated and bit-field
 > initializers refused (address initializers were fixed in wave 143); a fault in a non-entry
 > frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
