@@ -1,5 +1,7 @@
 target x86_64-unknown-linux-gnu
 
+global const static @.str.0 : size 2 align 1 bytes 7800 ; span 407:410:0
+
 func @chiero_make_symbolic(%0: ptr, %1: i64, %2: ptr) -> void ; span 2550:2615:0
 
 func @chiero_assume(%3: i32) -> void ; span 2617:2645:0
@@ -59,7 +61,7 @@ entry: ; span 340:668:0
   store i32 3i32 -> %24 align 4 ; span 359:368:0
   .seqpoint ; span 359:368:0
   %25 = addrlocal %0 ; span 393:395:0
-  %26 = call @chiero_make_symbolic(%25, undef:i64, undef:i32) ; span 372:411:0
+  %26 = call @chiero_make_symbolic(%25, 4i64, globaladdr:@.str.0:0) ; span 372:411:0
   .seqpoint ; span 372:412:0
   %27 = addrlocal %0 ; span 600:601:0
   %28 = load i32, %27 align 1 ; span 600:601:0

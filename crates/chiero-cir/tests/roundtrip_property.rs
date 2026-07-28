@@ -301,6 +301,18 @@ fn gen_module(seed: u64) -> Module {
             size: 4 + 4 * r.below(8),
             align: 1u64 << (1 + r.below(3)),
             is_const: r.below(2) == 0,
+            // The round trip must carry these too: a printer that dropped a global's
+            // bytes would still round-trip every module that has none.
+            init: match r.below(3) {
+                0 => GlobalInit::Zero,
+                1 => GlobalInit::Extern,
+                _ => GlobalInit::Bytes((0..1 + r.below(6)).map(|_| r.below(256) as u8).collect()),
+            },
+            linkage: if r.below(2) == 0 {
+                Linkage::Internal
+            } else {
+                Linkage::External
+            },
             span: r.span(),
         });
     }

@@ -71,6 +71,7 @@ fn lower(
         map,
         last_stmt_value: None,
         generated_depth: 0,
+        strings: IndexMap::new(),
     };
     // **Two passes, and the first is not an optimization.** Every function is registered
     // with its real signature before any body is lowered, because a body can call a
@@ -146,6 +147,13 @@ struct FnState {
     span: Span,
 }
 
+/// The widest `case lo ... hi` range still enumerated one value at a time.
+///
+/// A policy number, not a contract: what 020 contract 14 fixes is that a wide range is
+/// *bounded*, not where the boundary sits. 64 is comfortably above every range a hand-
+/// written switch uses and far below VPP's protocol-number spans.
+const MAX_ENUMERATED_CASE_RANGE: i128 = 64;
+
 struct Lowerer<'a> {
     ast: &'a Ast,
     analysis: &'a Analysis,
@@ -167,6 +175,12 @@ struct Lowerer<'a> {
     /// wrote. A counter, not a flag: the `&&` shape's bookkeeping can nest inside a
     /// scope's, and a flag would be cleared by the inner one on the way out.
     generated_depth: u32,
+    /// One global per **distinct** string literal.
+    ///
+    /// Pooled because a string literal's value is an address: `"hi" == "hi"` is
+    /// unspecified in C, but the corpus assumes one object, and two globals would make
+    /// the engine report the addresses unequal — a difference no source line asked for.
+    strings: IndexMap<Vec<u8>, chiero_cir::GlobalId>,
 }
 
 impl Lowerer<'_> {
@@ -1216,6 +1230,48 @@ impl Lowerer<'_> {
         let node = self.ast.expr(e).clone();
         let span = node.span;
         match &node.kind {
+            // **A string literal is a global with its bytes** (020 §3/§6). Until this
+            // existed a literal lowered to `Undef`: not an unknown pointer but *no*
+            // pointer, so every `chiero_make_symbolic(&x, sizeof x, "x")` in the corpus
+            // named its variable with a value 021 could not read a byte of.
+            //
+            // Adjacent fragments are concatenated first (C11 6.4.5p5) — `"a" "b"` is one
+            // literal, and pooling on the joined bytes is what makes it equal to `"ab"`.
+            chiero_ast::ExprKind::Str { fragments } => {
+                let mut bytes = Vec::new();
+                for fr in fragments {
+                    let text = self.names.text(fr.spelling).unwrap_or("").to_owned();
+                    bytes.extend_from_slice(&unescape(unquote(&text)));
+                }
+                bytes.push(0);
+                let g = self.intern_string(bytes, span);
+                Operand::Const(Const::GlobalAddr { g, off: 0 })
+            }
+            // **`sizeof` and `_Alignof` are constants**, and lowering them to `Undef` was a
+            // silent drop the corpus golden made visible.
+            //
+            // `sizeof x` is asked of the real analysis rather than of `const_eval`: the
+            // latter builds a throwaway context that sees only file-scope declarations, so
+            // it cannot answer for a *local*, and the answer is a property of the operand's
+            // type, which the typed AST already carries.
+            chiero_ast::ExprKind::SizeofExpr(inner) => {
+                let bits = self.raw_width_of(e).max(1);
+                let n = self.type_of(*inner).and_then(|t| self.analysis.size_of(t));
+                match n {
+                    Some(v) => Operand::Const(Const::Int {
+                        bits,
+                        val: v as i128,
+                    }),
+                    None => Operand::Const(Const::Undef(CTy::Int(bits))),
+                }
+            }
+            chiero_ast::ExprKind::SizeofType(_) | chiero_ast::ExprKind::AlignofType(_) => {
+                let bits = self.raw_width_of(e).max(1);
+                match self.const_of(e) {
+                    Some(v) => Operand::Const(Const::Int { bits, val: v }),
+                    None => Operand::Const(Const::Undef(CTy::Int(bits))),
+                }
+            }
             chiero_ast::ExprKind::Number(_) | chiero_ast::ExprKind::Char { .. } => {
                 let mut diags = Vec::new();
                 let v = chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags);
@@ -2499,6 +2555,8 @@ impl Lowerer<'_> {
         self.fs().breaks.push((exit, depth));
 
         let mut cases: Vec<(i128, BlockId)> = Vec::new();
+        // Ranges too wide to enumerate, as `(lo, hi, target)`, tested ahead of the switch.
+        let mut wide_ranges: Vec<(i128, i128, BlockId)> = Vec::new();
         let mut default: Option<BlockId> = None;
         // Statements before the first label are unreachable but may still declare —
         // `switch (x) { int y; case 1: … }` is exactly that, and the declaration is why
@@ -2530,8 +2588,18 @@ impl Lowerer<'_> {
                     let hi_v = hi.and_then(|h| self.const_of(h)).unwrap_or(lo_v);
                     // A range becomes one case per value (contract 18). Kept as a single
                     // entry, the engine would take the default for every value inside it.
-                    for v in lo_v..=hi_v.max(lo_v) {
-                        cases.push((v, b));
+                    //
+                    // **But only up to a bound.** VPP writes `case 1 ... 10000` for
+                    // protocol-number ranges, and enumerating that is 10 000 `Switch`
+                    // entries the engine walks on every branch decision. Past the bound the
+                    // range becomes a *guard* the head tests before the switch, which is a
+                    // shape the engine already costs at O(1).
+                    if hi_v.saturating_sub(lo_v) > MAX_ENUMERATED_CASE_RANGE {
+                        wide_ranges.push((lo_v, hi_v, b));
+                    } else {
+                        for v in lo_v..=hi_v.max(lo_v) {
+                            cases.push((v, b));
+                        }
                     }
                     self.stmt(body);
                     cur = Some(self.fs().cur);
@@ -2600,6 +2668,26 @@ impl Lowerer<'_> {
         cases.sort_by_key(|(v, _)| *v);
         cases.dedup_by_key(|(v, _)| *v);
         self.switch_to(head);
+
+        // **Wide ranges are guards ahead of the switch**, tested in written order so a
+        // value in two overlapping ranges reaches the same case gcc would send it to.
+        // Each guard leaves a fresh block for the next test, and the last one falls
+        // through to the `Switch` itself — so a scrutinee in no range still gets the
+        // ordinary dispatch, including the default.
+        let mut sw_head = head;
+        let wide = std::mem::take(&mut wide_ranges);
+        for (lo_v, hi_v, target) in wide {
+            let next = self.generated(|s| s.new_block());
+            self.switch_to(sw_head);
+            let cond = self.generated(|s| s.range_guard(&scrut, &ty, lo_v, hi_v, span));
+            self.set_term(Terminator::Br {
+                cond,
+                t: target,
+                f: next,
+            });
+            sw_head = next;
+        }
+        self.switch_to(sw_head);
         self.set_term(Terminator::Switch {
             scrut,
             ty,
@@ -2607,6 +2695,68 @@ impl Lowerer<'_> {
             default: default.unwrap_or(exit),
         });
         self.switch_to(exit);
+    }
+
+    /// `lo <= scrut && scrut <= hi`, as one value.
+    ///
+    /// A conjunction rather than a two-block chain: the test has no side effects, so there
+    /// is nothing to short-circuit, and the extra blocks would show up in every golden of
+    /// a switch that happens to contain a wide range.
+    fn range_guard(
+        &mut self,
+        scrut: &Operand,
+        ty: &CTy,
+        lo_v: i128,
+        hi_v: i128,
+        span: chiero_span::Span,
+    ) -> Operand {
+        let bits = match ty {
+            CTy::Int(b) => *b,
+            _ => 32,
+        };
+        let konst = |val| Operand::Const(Const::Int { bits, val });
+        let ge = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: ge,
+                rv: RValue::Cmp {
+                    op: chiero_cir::CmpOp::SGe,
+                    a: scrut.clone(),
+                    b: konst(lo_v),
+                    ty: ty.clone(),
+                },
+            },
+            span,
+        );
+        let le = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: le,
+                rv: RValue::Cmp {
+                    op: chiero_cir::CmpOp::SLe,
+                    a: scrut.clone(),
+                    b: konst(hi_v),
+                    ty: ty.clone(),
+                },
+            },
+            span,
+        );
+        let both = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: both,
+                rv: RValue::Bin {
+                    op: chiero_cir::BinOp::And,
+                    a: Operand::Value(ge),
+                    b: Operand::Value(le),
+                    // The comparisons produce `i1`, and the conjunction is of those, not of
+                    // the scrutinee's width.
+                    ty: CTy::Int(1),
+                },
+            },
+            span,
+        );
+        Operand::Value(both)
     }
 
     /// Reserve a local's slot without emitting anything.
@@ -2629,6 +2779,31 @@ impl Lowerer<'_> {
         if let Some(n) = name {
             self.fs().locals.insert(n, (slot, cty));
         }
+    }
+
+    /// Intern a string literal's bytes as a read-only internal global, returning its id.
+    fn intern_string(&mut self, bytes: Vec<u8>, span: chiero_span::Span) -> chiero_cir::GlobalId {
+        if let Some(g) = self.strings.get(&bytes) {
+            return *g;
+        }
+        let id = chiero_cir::GlobalId(self.module.globals.len() as u32);
+        let name: chiero_cir::Symbol = format!(".str.{}", self.strings.len()).into();
+        self.module.globals.push(chiero_cir::Global {
+            id,
+            name,
+            size: bytes.len() as u64,
+            align: 1,
+            // **Read-only, and internal.** A literal a program writes through is undefined
+            // behaviour 021 should be able to *report*, which it cannot do if the object
+            // is writable; and `Internal` because the name is lowering's invention, not
+            // one another TU could ever refer to.
+            is_const: true,
+            init: chiero_cir::GlobalInit::Bytes(bytes.clone()),
+            linkage: chiero_cir::Linkage::Internal,
+            span,
+        });
+        self.strings.insert(bytes, id);
+        id
     }
 
     fn const_of(&mut self, e: ExprId) -> Option<i128> {
@@ -2808,4 +2983,58 @@ impl Lowerer<'_> {
             );
         }
     }
+}
+
+/// Strip a string literal's encoding prefix and its surrounding quotes.
+///
+/// The spelling arrives as it was written — `"hi"`, `u8"hi"`, `L"hi"` — because the lexer
+/// keeps spellings verbatim so diagnostics can point at the source. Only the byte
+/// encodings are handled here; `L`/`u`/`U` literals lose their width, which is recorded
+/// as a gap rather than guessed at.
+fn unquote(s: &str) -> &str {
+    let s = s
+        .strip_prefix("u8")
+        .or_else(|| s.strip_prefix('L'))
+        .or_else(|| s.strip_prefix('u'))
+        .or_else(|| s.strip_prefix('U'))
+        .unwrap_or(s);
+    s.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s)
+}
+
+/// Resolve C escape sequences to the bytes they denote.
+///
+/// An unknown escape keeps the escaped character, which is what gcc does for the ones it
+/// warns about — dropping the backslash *and* the character would shorten the object, and
+/// `sizeof` of a literal is a value the corpus compares against gcc.
+fn unescape(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('r') => out.push(b'\r'),
+            Some('0') => out.push(0),
+            Some('\\') => out.push(b'\\'),
+            Some('\'') => out.push(b'\''),
+            Some('"') => out.push(b'"'),
+            Some('a') => out.push(7),
+            Some('b') => out.push(8),
+            Some('f') => out.push(12),
+            Some('v') => out.push(11),
+            Some(other) => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => out.push(b'\\'),
+        }
+    }
+    out
 }

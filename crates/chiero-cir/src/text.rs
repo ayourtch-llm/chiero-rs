@@ -48,17 +48,17 @@ fn scan_names(src: &str) -> (Vec<String>, Vec<String>) {
     for line in src.lines() {
         let l = line.split(';').next().unwrap_or("").trim();
         if let Some(rest) = l.strip_prefix("global ") {
-            // `const` is optional and was not stripped here, so a const global was
-            // parsed (and given an id) but never entered the name table — desyncing the
-            // two id spaces and silently resolving `addrglobal` to the wrong global.
-            let rest = rest.strip_prefix("const ").unwrap_or(rest);
-            g.push(
-                rest.trim_start_matches('@')
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string(),
-            );
+            // **Every leading modifier is skipped, not a named list of them.** `const`
+            // was once not stripped here, so a const global was parsed (and given an id)
+            // but never entered the name table — desyncing the two id spaces and silently
+            // resolving `addrglobal` to the wrong global. Adding `static` reintroduced the
+            // identical bug one modifier later, so this now finds the `@name` rather than
+            // enumerating what precedes it.
+            let name = rest
+                .split_whitespace()
+                .find(|t| t.starts_with('@'))
+                .unwrap_or("");
+            g.push(name.trim_start_matches('@').to_string());
         } else if let Some(rest) = l.strip_prefix("func @") {
             f.push(rest.split(['(', ' ']).next().unwrap_or("").to_string());
         }

@@ -655,6 +655,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         enums: IndexMap::new(),
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
+        current_ret: None,
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -690,6 +691,7 @@ pub fn const_eval(
         enums: IndexMap::new(),
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
+        current_ret: None,
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -748,6 +750,12 @@ struct Cx<'a> {
     /// Records currently being laid out, so a struct containing itself by value is a
     /// diagnostic rather than a stack overflow.
     in_progress: Vec<Symbol>,
+    /// The return type of the function whose body is being typed, if any.
+    ///
+    /// Saved and restored rather than set once: a nested `DeclKind::Func` is refused
+    /// elsewhere, but a `None` left behind by a declaration would make the *next*
+    /// function's returns unconverted, which is the failure mode nothing would notice.
+    current_ret: Option<TyId>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
     values: IndexMap<Symbol, TyId>,
@@ -856,7 +864,14 @@ impl Cx<'_> {
                             self.out.decl_types.insert(p, t);
                         }
                     }
+                    // The return type the body's `return` statements convert to.
+                    let saved_ret = self.current_ret;
+                    self.current_ret = match self.out.types[t.0 as usize].clone() {
+                        Ty::Func { ret, .. } => Some(ret),
+                        _ => None,
+                    };
                     self.type_stmt(body);
+                    self.current_ret = saved_ret;
                     // A parameter does not outlive its function; restoring rather than
                     // removing also undoes any shadowing the body introduced.
                     self.values = saved;
@@ -2078,7 +2093,25 @@ impl Cx<'_> {
                     operands: vec![inner],
                 })
             }
-            ExprKind::SizeofExpr(_) | ExprKind::SizeofType(_) | ExprKind::AlignofType(_) => {
+            // **The operand of `sizeof` is typed, though it is not evaluated.** C's
+            // "unevaluated" is about side effects; its *type* is the whole answer. Leaving
+            // it untyped meant lowering had no type to take a size from, so `sizeof x`
+            // lowered to `Undef` and every `chiero_make_symbolic(&x, sizeof x, …)` in the
+            // corpus handed the intrinsic an unknown byte count.
+            ExprKind::SizeofExpr(inner) => {
+                let inner = *inner;
+                self.type_expr(inner);
+                let ty = self.intern(Ty::Int {
+                    signed: false,
+                    bits: (self.target.sizes.long_ * 8) as u32,
+                });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::SizeofType(_) | ExprKind::AlignofType(_) => {
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -2467,7 +2500,15 @@ impl Cx<'_> {
             }
             StmtKind::Default { body } | StmtKind::Label { body, .. } => self.type_stmt(body),
             StmtKind::Return(Some(e)) => {
-                self.type_expr(e);
+                let node = self.type_expr(e);
+                // **A returned value is converted to the function's return type.**
+                // `Conversion::Return` existed in the enum and nothing produced it, so
+                // `char f(void) { return 300; }` returned 300 — the truncation C requires
+                // happened nowhere, and 021 would report a value the program cannot
+                // produce.
+                if let Some(ret) = self.current_ret {
+                    self.coerce(node, ret, Conversion::Return, e);
+                }
             }
             StmtKind::GotoIndirect(e) => {
                 self.type_expr(e);

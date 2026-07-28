@@ -4925,6 +4925,8 @@ fn a_global_has_its_own_object_and_const_means_readonly() {
                 align: 4,
                 is_const: false,
                 span: Span::DUMMY,
+                init: Default::default(),
+                linkage: Default::default(),
             },
             Global {
                 id: GlobalId(1),
@@ -4933,6 +4935,8 @@ fn a_global_has_its_own_object_and_const_means_readonly() {
                 align: 4,
                 is_const: true,
                 span: Span::DUMMY,
+                init: Default::default(),
+                linkage: Default::default(),
             },
         ],
         ..Default::default()
@@ -7460,6 +7464,8 @@ fn a_constant_address_is_a_pointer_like_any_other() {
             align: 4,
             is_const: false,
             span: Span::DUMMY,
+            init: Default::default(),
+            linkage: Default::default(),
         }],
         ..Default::default()
     };
@@ -9498,6 +9504,8 @@ fn a_function_pointer_through_a_global_resolves_without_forking() {
             align: 8,
             is_const: false,
             span: Span::DUMMY,
+            init: Default::default(),
+            linkage: Default::default(),
         }],
         ..Default::default()
     };

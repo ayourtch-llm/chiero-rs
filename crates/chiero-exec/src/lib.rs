@@ -4565,6 +4565,31 @@ impl<'m> Engine<'m> {
             None => (0, 1, false, Span::DUMMY),
         };
         let o = s.mem.alloc(ObjKind::Global, size, align, span);
+        // **The initializer is written before the object is read-only.** C gives static
+        // storage a defined initial value — zero unless stated — and until 020 carried
+        // `GlobalInit` there was nothing to write, so every string literal's bytes read
+        // as uninitialized and `s[0]` was a finding rather than `'h'`. Writing after
+        // `set_readonly` would fault on the object's own initialization.
+        match decl.as_ref().map(|d| &d.init) {
+            Some(chiero_cir::GlobalInit::Bytes(b)) => {
+                let _ = s.mem.write_bytewise(
+                    chiero_mem::Pointer { base: o, off: 0 },
+                    &b[..b.len().min(size as usize)],
+                    span,
+                );
+            }
+            // C11 6.7.9p10: static storage with no initializer is zero.
+            Some(chiero_cir::GlobalInit::Zero) => {
+                let zeros = vec![0u8; size as usize];
+                let _ = s
+                    .mem
+                    .write_bytewise(chiero_mem::Pointer { base: o, off: 0 }, &zeros, span);
+            }
+            // `Extern` is defined in another TU: the bytes are genuinely unknown here,
+            // and leaving them uninitialized is the honest answer rather than a zero
+            // chiero invented.
+            Some(chiero_cir::GlobalInit::Extern) | None => {}
+        }
         if is_const {
             s.mem.set_readonly(o);
         }

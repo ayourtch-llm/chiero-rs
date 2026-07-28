@@ -328,6 +328,30 @@ fn goto_into_and_back_into_a_scope_computes_what_gcc_computes() {
     agree("int n = 2; if (n) goto deep; { int a = 1; { int b = 2; deep: ; return n; } } ");
 }
 
+/// **Wide case ranges and string literals**, checked for what they compute.
+///
+/// 020 contract 14 requires a guarded chain and an enumerated range to produce
+/// *identical* execution results, which is a claim about values and not about shapes —
+/// the two lower to completely different CIR.
+#[test]
+fn wide_ranges_and_string_literals_compute_what_gcc_computes() {
+    // Below the threshold: enumerated. Above it: a guarded chain. Same answers.
+    agree("int n = 3; switch (n) { case 1 ... 4: return 1; default: return 0; }");
+    agree("int n = 9; switch (n) { case 1 ... 4: return 1; default: return 0; }");
+    agree("int n = 5000; switch (n) { case 1 ... 10000: return 1; default: return 0; }");
+    agree("int n = 20000; switch (n) { case 1 ... 10000: return 1; default: return 0; }");
+    agree("int n = 1; switch (n) { case 1 ... 10000: return 1; default: return 0; }");
+    agree("int n = 10000; switch (n) { case 1 ... 10000: return 1; default: return 0; }");
+    // No probe for "an exact case beside a wide range": gcc **rejects overlapping case
+    // values**, so the question of which one wins cannot arise in legal C. The oracle
+    // established that by refusing to compile the fixture that assumed otherwise, which
+    // is what panicking on a rejected fixture is for — a skip would have hidden it.
+    // A string literal's bytes are readable.
+    agree("const char *s = \"hi\"; return s[0] + s[1];");
+    agree("const char *s = \"a\\nb\"; return s[1];");
+    agree("const char *s = \"abc\"; return s[3];");
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal

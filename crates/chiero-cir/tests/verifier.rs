@@ -741,6 +741,8 @@ fn module_level_identity_is_checked() {
         align: 8,
         is_const: false,
         span: Span::DUMMY,
+        init: Default::default(),
+        linkage: Default::default(),
     };
 
     // Two globals sharing an id. Since ids must equal indices, this is necessarily
