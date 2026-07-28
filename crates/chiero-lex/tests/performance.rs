@@ -63,8 +63,8 @@ fn warm_header_cache_avoids_lexing_work() {
 /// Run explicitly on the reference machine: debug instrumentation is not a meaningful
 /// throughput measurement.
 ///
-/// Performance evidence for 011 contract 12. Ignored tests do not carry contract
-/// coverage credit under 070 §4.
+/// Manual throughput evidence only. Ignored tests do not carry contract coverage credit
+/// under 070 §4, so this comment intentionally does not cite a contract number.
 #[test]
 #[ignore = "performance gate: run with cargo test --release -- --ignored"]
 fn fifty_megabytes_lex_above_100_mb_per_second() {
