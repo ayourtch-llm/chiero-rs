@@ -487,7 +487,72 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 121, `HEAD`) — 1086 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 122, `dd6f799`) — 1088 tests, 3 ignored, M1 165/165 by contract
+>
+> **Seven corpus files, all executing clean.** Wave 122 added a symbolic loop with a `goto`
+> out of a nested one (clean on arrival) and a symbolic `switch` — which found that **every
+> C switch with two labels on one arm was unlowerable**. `case 1: case 2:` parses as a
+> `Case` whose *body* is another `Case`, and the switch's statement loop only walked
+> top-level statements.
+>
+> ### Keep going: the corpus is the highest-yield thing in this project
+>
+> Waves 114–122 found **eleven** defects through it, one per fixture or better. Shapes it
+> still lacks:
+>
+> - **varargs** (`printf`-shaped; 020 §4.4.1's `VaArg` is implemented and no corpus file
+>   exercises it)
+> - **`static inline` across a real header** (030 attributes its lines to the header, and
+>   `gcov_lines.rs` tests that in isolation — nothing does it end to end)
+> - a **`do`/`while`** and a `continue` in a nested loop
+> - **bit-fields** read and written through a symbolic index
+> - a **recursive** function against `max_recursion_depth`
+>
+> ### Also open
+>
+> - **021 c21 untested on a real global** since wave 114 fixed `is_const`.
+> - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
+>   untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **A corpus fixture that runs is coverage; a mutation needs something sharper** (wave 122).
+> "The file lowers" does not die when one branch of a walk is deleted — the focused tests in
+> `globals.rs` do.
+> **A fix does not generalise to a second code path on its own** (wave 121).
+> **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120).
+> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture that will not lower is still evidence** (wave 119).
+> **An aggregate diagnostic hides the cause** — print diagnostics before 015 §7 truncates
+> them. Needed twice now (waves 119, 122); it is the standard first move when a corpus file
+> is "skipped".
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — nineteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so; **check a patch script printed `ok`**, and that its anchor was unique. An oracle
+> that can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: the wave-117 `fork_on_offset` survivor; designated, bit-field and
+> address initializers refused; 021 c21 untested on a real global; a fault in a non-entry
+> frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
+> sema; the parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U`
+> string literals lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered.
+>
+> ### Earlier (wave 121, `67a03a4`) — 1086 tests, 3 ignored, M1 165/165 by contract
 >
 > **Six corpus files, all executing clean**, and `tests/corpus/owed/` is empty.
 > `indirect_call.c` graduated after four defects — three in lowering, one in the engine
