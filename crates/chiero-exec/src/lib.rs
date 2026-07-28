@@ -839,7 +839,12 @@ pub enum Event<'a> {
     Call {
         st: &'a State,
         callee: Callee,
-        args: &'a [Value],
+        /// **`Option<Value>` per argument, not a compacted list.** An argument chiero
+        /// cannot represent — a float, which `operand` documents as a gap — is a *hole*,
+        /// and `filter_map`ing it away silently hands a checker the next argument in its
+        /// place. The varargs path was fixed for exactly this; this one was not. Found by
+        /// review.
+        args: &'a [Option<Value>],
     },
     /// Fired **in the caller** once the callee's result exists, for defined, modeled and
     /// unmodeled callees alike (023 contract 24). `Event::Return` fires in the callee's
@@ -892,7 +897,7 @@ enum Ev<'i> {
     },
     Call {
         callee: Callee,
-        args: Vec<Value>,
+        args: Vec<Option<Value>>,
     },
     CallReturn {
         callee: Callee,
@@ -965,6 +970,10 @@ pub struct CheckerCtx<'a, 'm> {
     module: &'m Module,
     solver: &'a mut TieredSolver,
     path: &'a [Term],
+    /// A checker's questions are solver questions. Counting them nowhere made
+    /// `RunResult::solver_calls` report zero for a run that asked several. Found by
+    /// review.
+    solver_calls: &'a mut u64,
 }
 
 impl<'a, 'm> CheckerCtx<'a, 'm> {
@@ -984,13 +993,33 @@ impl<'a, 'm> CheckerCtx<'a, 'm> {
     }
 
     /// Is `cond` possible on this path?
+    ///
+    /// **`Unknown` answers `true`**, which is the opposite of `must` and for the same
+    /// reason: each errs toward the answer that keeps a checker looking. Collapsing
+    /// `Unknown` into `false` here — the shape `matches!(.., Sat(_))` gives you for free —
+    /// tells a checker asking "may this pointer be NULL?" that it cannot be, and the bug
+    /// disappears with no finding, no assumption and no fidelity change. With the
+    /// engine's default tier-1-only solver that is every question outside 022 §3.2's
+    /// fragment, which is most of them. Found by review.
     pub fn may(&mut self, cond: Term) -> bool {
-        if let Ok(b) = self.a.eval_ground_bool(cond) {
+        if let Some(b) = self.ground_truth(cond) {
             return b;
         }
         let mut all: Vec<Term> = self.path.to_vec();
         all.push(cond);
-        matches!(self.solver.check(self.a, &all), CheckResult::Sat(_))
+        *self.solver_calls += 1;
+        !matches!(self.solver.check(self.a, &all), CheckResult::Unsat)
+    }
+
+    /// C's truth rule for a term of any width: nonzero is true.
+    ///
+    /// `eval_ground_bool` alone is `bits() != 0`, and negating a wider-than-1 term with a
+    /// *bitwise* `not` does not produce its logical negation — `must(t)` and `must(¬t)`
+    /// were both true for a 32-bit `2`, since `!2` is `0xFFFFFFFD`. `Event::Fork` hands a
+    /// checker the CIR's branch condition, whose width is whatever the program used, so
+    /// this is reachable in ordinary use. Found by review.
+    fn ground_truth(&mut self, cond: Term) -> Option<bool> {
+        self.a.eval_ground(cond).ok().map(|c| c.bits() != 0)
     }
 
     /// Is `cond` forced on this path? **`Unknown` answers `false`** — a checker asking
@@ -1003,12 +1032,17 @@ impl<'a, 'm> CheckerCtx<'a, 'm> {
     /// including "did this path return the constant I care about", which is the shape
     /// §6.1's own lock example needs.
     pub fn must(&mut self, cond: Term) -> bool {
-        if let Ok(b) = self.a.eval_ground_bool(cond) {
+        if let Some(b) = self.ground_truth(cond) {
             return b;
         }
-        let neg = self.a.not(cond);
+        // `cond == 0` — the *logical* negation. `a.not` is bitwise and is only the
+        // negation at width 1; see `ground_truth`.
+        let w = self.a.width(cond);
+        let zero = self.a.bv(w, 0);
+        let neg = self.a.eq(cond, zero);
         let mut all: Vec<Term> = self.path.to_vec();
         all.push(neg);
+        *self.solver_calls += 1;
         matches!(self.solver.check(self.a, &all), CheckResult::Unsat)
     }
 
@@ -1218,6 +1252,7 @@ impl<'m> Engine<'m> {
                 module: self.module,
                 solver: &mut *solver,
                 path: &s.path,
+                solver_calls: &mut self.solver_calls,
             };
             for act in c.on_event(&event, &mut cx) {
                 actions.push((idx, act));
@@ -1235,13 +1270,45 @@ impl<'m> Engine<'m> {
                         message,
                         span,
                     });
-                    let _ = who;
                 }
                 // **Onto the path condition, not a side list** (contract 19). A
                 // constraint the solver never sees changes nothing, and every checker
                 // written against it would appear to work.
-                Action::Assume(t) => s.path.push(t),
-                Action::Kill(why) => s.status = Status::Terminated(why),
+                //
+                // **And it degrades.** A checker's `Assume` discards paths the program
+                // has, on the analysis's own say-so — 023 §7's `Approximated`, "keeping
+                // one of several feasible values". Pushing the term alone left the run
+                // `Exact` with an empty `assumptions` list, so `seal` would mint a proof
+                // over a program half of whose paths an unaudited checker had deleted,
+                // and nothing in the rendered report would say so. Every other place the
+                // engine narrows on its own authority — `--fork-on-alias`, the distinct
+                // pointer-parameter default, 021 §5's OOB continuation — degrades and
+                // records; this is the same act. Found by review.
+                //
+                // 022 §6.1: this is a constraint added *without* a feasibility check, so
+                // it is a fourth `push_unchecked` site once `s.path` becomes a
+                // `PathCondition`.
+                Action::Assume(t) => {
+                    s.path.push(t);
+                    s.degrade(
+                        Fidelity::Approximated,
+                        AssumptionKind::OpaqueCode,
+                        span,
+                        &format!(
+                            "the `{who}` checker assumed a condition, so paths the                              program allows were not explored"
+                        ),
+                    );
+                }
+                // Same reasoning: a killed path is one nobody looked at.
+                Action::Kill(why) => {
+                    s.status = Status::Terminated(why);
+                    s.degrade(
+                        Fidelity::Approximated,
+                        AssumptionKind::OpaqueCode,
+                        span,
+                        &format!("the `{who}` checker stopped this path"),
+                    );
+                }
             }
         }
     }
@@ -1585,8 +1652,20 @@ impl<'m> Engine<'m> {
             // **Before the witness is attached**, so a report a checker makes on the way
             // out is witnessed like any other. Firing it afterwards would give the last
             // finding of every path an empty witness.
-            if let Status::Terminated(why) = s.status {
-                self.emit(a, &mut s, Span::DUMMY, Ev::Terminated(why));
+            // **`Errored` too.** Gating on `Terminated` alone meant a state that gave up
+            // — an indirect goto with no targets, a missing block — never fired the
+            // event, and those are precisely the paths where a checker's accumulated
+            // state matters most, since `give_up` also sets `Fidelity::Unknown`. Found by
+            // review.
+            match s.status {
+                Status::Terminated(why) => self.emit(a, &mut s, Span::DUMMY, Ev::Terminated(why)),
+                Status::Errored(_) => self.emit(
+                    a,
+                    &mut s,
+                    Span::DUMMY,
+                    Ev::Terminated(TermReason::Unsupported),
+                ),
+                Status::Running => {}
             }
             self.attach_witness(a, &mut s);
             done.push(s);
@@ -2456,19 +2535,16 @@ impl<'m> Engine<'m> {
         args: &[Operand],
         span: Span,
     ) {
-        let id = match callee {
-            Callee::Direct(id) => id,
-            // 023 §5. VPP's node dispatch is indirect calls through registration tables,
-            // so this is the ordinary path rather than an exotic one.
-            Callee::Indirect(op) => {
-                self.indirect(a, s, op, dst, span);
-                return;
-            }
-        };
         // **`Value`, not `Term`** (§6): a checker that cannot tell which tracked object an
         // argument refers to cannot implement `free(p)` or `memcpy` overlap detection, and
         // 021 §7's guard gaps make recovering it by address search lossy by construction.
-        let arg_vals: Vec<Value> = args.iter().filter_map(|o| self.operand(a, s, o)).collect();
+        //
+        // **Emitted before the indirect split.** After it, `Event::Call` never fired for
+        // an indirect call at all: `CallReturn` arrived unpaired, 042's typestate shape
+        // could not arm itself on VPP's node dispatch — which §5 calls "the ordinary path
+        // rather than an exotic one" — and `callee_name`'s `Indirect` arm was dead code.
+        // Found by review.
+        let arg_vals: Vec<Option<Value>> = args.iter().map(|o| self.operand(a, s, o)).collect();
         self.emit(
             a,
             s,
@@ -2478,6 +2554,13 @@ impl<'m> Engine<'m> {
                 args: arg_vals,
             },
         );
+        let id = match callee {
+            Callee::Direct(id) => id,
+            Callee::Indirect(op) => {
+                self.indirect(a, s, op, dst, span);
+                return;
+            }
+        };
         let Some(f) = self.module.funcs.iter().find(|f| f.id == *id) else {
             s.give_up("call to an unknown function".into(), span);
             return;

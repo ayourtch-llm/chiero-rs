@@ -190,7 +190,7 @@ impl Checker for WatchReturns {
 /// `Event::Return` "never fires at all" for it, which is the whole reason `CallReturn`
 /// exists.
 fn three_callee_kinds() -> Module {
-    let f = func(
+    let mut f = func(
         0,
         "f",
         vec![],
@@ -214,10 +214,47 @@ fn three_callee_kinds() -> Module {
                     },
                     span: Span::DUMMY,
                 },
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    span: Span::DUMMY,
+                },
+                Inst {
+                    kind: InstKind::Store {
+                        addr: Operand::Value(ValueId(2)),
+                        val: Operand::Const(Const::Int { bits: 8, val: 0 }),
+                        ty: CTy::Int(8),
+                        align: 1,
+                        vol: Volatility::Normal,
+                    },
+                    span: Span::DUMMY,
+                },
+                Inst {
+                    kind: InstKind::Call {
+                        dst: Some(ValueId(3)),
+                        callee: Callee::Direct(FuncId(3)),
+                        args: vec![Operand::Value(ValueId(2))],
+                    },
+                    span: Span::DUMMY,
+                },
             ],
             Terminator::Return(Some(Operand::Value(ValueId(0)))),
         )],
     );
+    f.allocas = vec![AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(8),
+        count: 1,
+        align: 1,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    }];
     let defined = func(
         1,
         "defined_one",
@@ -227,8 +264,24 @@ fn three_callee_kinds() -> Module {
     );
     let mut mystery = func(2, "mystery", vec![], CTy::Int(32), vec![]);
     mystery.body = Body::Declared;
+    // The **modeled** extern. The doc comment above claimed `strlen` stood in for it and
+    // the fixture did not contain one, so the test named three callee kinds and exercised
+    // two — the modeled path, which is the one that returns a value from a model rather
+    // than from a return instruction or a fresh symbol, was never reached. Found by
+    // review.
+    let mut modeled = func(
+        3,
+        "strlen",
+        vec![Param {
+            value: ValueId(90),
+            ty: CTy::Ptr,
+        }],
+        CTy::Int(64),
+        vec![],
+    );
+    modeled.body = Body::Declared;
     Module {
-        funcs: vec![f, defined, mystery],
+        funcs: vec![f, defined, mystery, modeled],
         ..Default::default()
     }
 }
@@ -242,6 +295,10 @@ fn three_callee_kinds() -> Module {
 #[test]
 fn call_return_fires_for_a_defined_function_and_for_an_unmodeled_extern() {
     let m = three_callee_kinds();
+    // **A module that does not verify reports the absence of everything**, which is
+    // exactly how this fixture ran zero instructions and produced an empty event list
+    // when the modeled callee was added with the wrong arity.
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
     let mut a = TermArena::new();
     let seen = Rc::new(RefCell::new(Vec::new()));
     Engine::new(&m)
@@ -253,6 +310,11 @@ fn call_return_fires_for_a_defined_function_and_for_an_unmodeled_extern() {
     assert!(
         names.contains(&"defined_one"),
         "a defined callee fires CallReturn in the caller: {names:?}"
+    );
+    assert!(
+        names.contains(&"strlen"),
+        "and so does a modeled extern, whose value comes from a model rather than from a \
+         return instruction: {names:?}"
     );
     assert!(
         names.contains(&"mystery"),
@@ -473,5 +535,361 @@ fn checker_state_forks_with_the_state_and_the_copies_are_independent() {
         vec!["[]", "[m]"],
         "one path released the lock and the other did not; a shared `CheckerState` \
          reports the same answer on both"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regressions from the wave-80 adversarial review. Each of these passed before
+// the fix, which is why they are here.
+// ---------------------------------------------------------------------------
+
+/// A checker that assumes an unsatisfiable-with-one-branch condition, to observe what the
+/// *run* claims afterwards.
+struct AssumeAndSay;
+
+impl Checker for AssumeAndSay {
+    fn name(&self) -> &'static str {
+        "assume-and-say"
+    }
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        let Event::BeforeInst { st, .. } = ev else {
+            return vec![];
+        };
+        let Some(Value::Scalar(x)) = st.local(ValueId(0)) else {
+            return vec![];
+        };
+        let five = cx.arena().bv(32, 5);
+        let is_five = cx.arena().eq(x, five);
+        vec![Action::Assume(is_five)]
+    }
+}
+
+/// **An `Assume` prunes paths, so the run is not exact and says why.**
+///
+/// Before the fix the surviving state carried `Fidelity::Exact` and an empty
+/// `assumptions` list: half the program's paths were deleted by a constraint the analysis
+/// invented, and `seal` would mint a proof over what was left with nothing in the report
+/// saying so.
+#[test]
+fn a_checker_assumption_degrades_the_run_and_is_recorded() {
+    let m = branch_on_zero();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_checker(Box::new(AssumeAndSay))
+        .run(&mut a);
+
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Approximated,
+        "paths the program allows were discarded on the analysis's own say-so"
+    );
+    let said: Vec<String> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    assert!(
+        said.iter().any(|d| d.contains("assume-and-say")),
+        "and the report names the checker that did it: {said:?}"
+    );
+    assert!(
+        seal(&r, r.witness()).is_err(),
+        "a run whose paths a checker pruned is not a proof"
+    );
+}
+
+/// A checker that kills the path it is on.
+struct Killer;
+
+impl Checker for Killer {
+    fn name(&self) -> &'static str {
+        "killer"
+    }
+    fn on_event(&mut self, ev: &Event, _cx: &mut CheckerCtx) -> Vec<Action> {
+        match ev {
+            Event::BeforeInst { .. } => vec![Action::Kill(TermReason::Unreachable)],
+            _ => vec![],
+        }
+    }
+}
+
+/// **And so does a `Kill`** — a killed path is one nobody looked at.
+#[test]
+fn a_checker_kill_degrades_the_run_and_is_recorded() {
+    let m = branch_on_zero();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_checker(Box::new(Killer)).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Approximated);
+    assert!(
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .any(|x| x.detail.contains("killer")),
+        "the report names the checker that stopped the path"
+    );
+}
+
+/// Answers `may`/`must` about a condition no tier-1 solver can decide, and records both.
+struct AsksTheSolver(Rc<RefCell<Vec<(bool, bool)>>>);
+
+impl Checker for AsksTheSolver {
+    fn name(&self) -> &'static str {
+        "asks"
+    }
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        let Event::BeforeInst { st, .. } = ev else {
+            return vec![];
+        };
+        let Some(Value::Scalar(x)) = st.local(ValueId(0)) else {
+            return vec![];
+        };
+        // `x * x == 4` — multiplication, which 022 §3.2 leaves outside tier 1's fragment.
+        let sq = cx.arena().mul(x, x);
+        let four = cx.arena().bv(32, 4);
+        let eq = cx.arena().eq(sq, four);
+        let m = cx.may(eq);
+        let mu = cx.must(eq);
+        self.0.borrow_mut().push((m, mu));
+        vec![]
+    }
+}
+
+/// **`may` errs toward `true`, `must` toward `false`.**
+///
+/// Both collapse `Unknown`, and they must collapse it in *opposite* directions — each
+/// toward the answer that keeps a checker looking. `may` returning `false` on `Unknown`
+/// tells a checker asking "may this pointer be NULL?" that it cannot be, and the bug
+/// disappears with no finding and no fidelity change. With the engine's default
+/// tier-1-only solver that is every question outside §3.2's fragment.
+#[test]
+fn may_and_must_collapse_unknown_in_opposite_directions() {
+    let m = branch_on_zero();
+    let mut a = TermArena::new();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let r = Engine::new(&m)
+        .with_checker(Box::new(AsksTheSolver(seen.clone())))
+        .run(&mut a);
+
+    let seen = seen.borrow();
+    assert!(!seen.is_empty(), "the checker ran");
+    for (may, must) in seen.iter() {
+        assert!(
+            *may,
+            "`x * x == 4` is genuinely possible for an unconstrained x, and even if the \
+             solver declines to say so, `may` must not answer `false`"
+        );
+        assert!(!*must, "and it is certainly not forced");
+    }
+    // **And the questions are counted.** A checker's queries are solver queries; reporting
+    // zero for a run that asked several makes the budget accounting a fiction.
+    assert!(
+        r.solver_calls > 0,
+        "the checker's `may`/`must` never reached `solver_calls`"
+    );
+}
+
+/// Records the callee of every `Event::Call`, and how many argument slots it carried.
+struct WatchCalls(Rc<RefCell<Vec<(String, usize)>>>);
+
+impl Checker for WatchCalls {
+    fn name(&self) -> &'static str {
+        "watch-calls"
+    }
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        if let Event::Call { callee, args, .. } = ev {
+            self.0
+                .borrow_mut()
+                .push((cx.callee_name(callee).to_string(), args.len()));
+        }
+        vec![]
+    }
+}
+
+/// **`Event::Call` fires for an indirect call too.**
+///
+/// It was emitted *after* the indirect split, so a call through a function pointer — VPP's
+/// entire node dispatch — produced a `CallReturn` with no `Call` before it, and 042's
+/// typestate shape had nothing to arm itself on.
+#[test]
+fn event_call_fires_for_an_indirect_callee() {
+    let g = func(
+        1,
+        "g",
+        vec![],
+        CTy::Int(32),
+        vec![block(0, vec![], Terminator::Return(Some(i32c(3))))],
+    );
+    let f = func(
+        0,
+        "f",
+        vec![],
+        CTy::Int(32),
+        vec![block(
+            0,
+            vec![
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfFunc(FuncId(1)),
+                    },
+                    span: Span::DUMMY,
+                },
+                Inst {
+                    kind: InstKind::Call {
+                        dst: Some(ValueId(1)),
+                        callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                        args: vec![],
+                    },
+                    span: Span::DUMMY,
+                },
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        )],
+    );
+    let m = Module {
+        funcs: vec![f, g],
+        ..Default::default()
+    };
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
+
+    let mut a = TermArena::new();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    Engine::new(&m)
+        .with_checker(Box::new(WatchCalls(seen.clone())))
+        .run(&mut a);
+    let seen = seen.borrow();
+    assert!(
+        !seen.is_empty(),
+        "an indirect call is still a call, and a checker has to see it"
+    );
+}
+
+/// **An argument chiero cannot represent is a hole, not an absence.**
+///
+/// `filter_map` compacted the list, so a checker indexing `args[1]` read `args[0]`'s
+/// neighbour. The varargs path was fixed for exactly this; `Event::Call` was not.
+#[test]
+fn event_call_arguments_keep_their_positions() {
+    let g = func(
+        1,
+        "g",
+        vec![
+            Param {
+                value: ValueId(50),
+                ty: CTy::Float(FloatKind::F64),
+            },
+            Param {
+                value: ValueId(51),
+                ty: CTy::Int(32),
+            },
+        ],
+        CTy::Void,
+        vec![block(0, vec![], Terminator::Return(None))],
+    );
+    let f = func(
+        0,
+        "f",
+        vec![],
+        CTy::Void,
+        vec![block(
+            0,
+            vec![Inst {
+                kind: InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![
+                        Operand::Const(Const::Float(FloatKind::F64, 0x3FF8_0000_0000_0000)),
+                        i32c(7),
+                    ],
+                },
+                span: Span::DUMMY,
+            }],
+            Terminator::Return(None),
+        )],
+    );
+    let m = Module {
+        funcs: vec![f, g],
+        ..Default::default()
+    };
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
+
+    let mut a = TermArena::new();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    Engine::new(&m)
+        .with_checker(Box::new(WatchCalls(seen.clone())))
+        .run(&mut a);
+    let seen = seen.borrow();
+    let (_, n) = seen.first().expect("the call was seen");
+    assert_eq!(
+        *n, 2,
+        "the float is a hole at index 0, not a missing element — compacting it hands a \
+         checker the `int` when it asks for the `double`"
+    );
+}
+
+/// A checker that only records `Terminated`.
+struct WatchEnd(Rc<RefCell<u32>>);
+
+impl Checker for WatchEnd {
+    fn name(&self) -> &'static str {
+        "watch-end"
+    }
+    fn on_event(&mut self, ev: &Event, _cx: &mut CheckerCtx) -> Vec<Action> {
+        if let Event::Terminated { .. } = ev {
+            *self.0.borrow_mut() += 1;
+        }
+        vec![]
+    }
+}
+
+/// **A state that gave up still ends.**
+///
+/// `Terminated` was gated on `Status::Terminated`, so a state that errored — an indirect
+/// goto with no targets, a missing block — never fired it. Those are exactly the paths
+/// where a checker's accumulated state matters most, since giving up also sets
+/// `Fidelity::Unknown`.
+#[test]
+fn an_errored_state_still_fires_terminated() {
+    let f = func(
+        0,
+        "f",
+        vec![],
+        CTy::Void,
+        vec![block(
+            0,
+            vec![Inst {
+                kind: InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Ptr },
+                },
+                span: Span::DUMMY,
+            }],
+            // An indirect goto with no declared targets: the engine gives up, which is
+            // `Status::Errored` rather than `Terminated`.
+            Terminator::IndirectGoto {
+                addr: Operand::Value(ValueId(0)),
+                targets: vec![],
+            },
+        )],
+    );
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
+    let mut a = TermArena::new();
+    let n = Rc::new(RefCell::new(0));
+    let r = Engine::new(&m)
+        .with_checker(Box::new(WatchEnd(n.clone())))
+        .run(&mut a);
+    assert!(
+        !matches!(r.states()[0].status, Status::Running),
+        "the fixture ends the state one way or another"
+    );
+    assert_eq!(
+        *n.borrow(),
+        1,
+        "a checker is told the path ended, whichever way it ended"
     );
 }
