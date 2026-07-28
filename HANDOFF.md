@@ -487,7 +487,52 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 103, `21f5be7`) — 980 tests, M1 159/165, frontend 113/117
+> ### ⏭️ START HERE (wave 104, `72169ce`) — 991 tests, M1 160/165, frontend 113/117
+>
+> **020 contract 23 is closed.** `AccessPath` exists — reporting-only, in a side table on
+> `Function` keyed by the address `ValueId`, with a textual form that round-trips
+> structurally. An out-of-bounds finding now reads `… through opaque as
+> l2_bridge_t.bd_index`. The memory half needed no code: 021 §3 already returns bytes
+> written through one view when read through another.
+>
+> **Nothing produces an `AccessPath` yet.** Lowering has the record layouts and the member
+> names to build them, and 015 is where that belongs; until it does, the table is empty on
+> every real module and findings say what they said before. That is the next obvious piece
+> of value in this area and it is **not** a numbered contract, so it needs a decision
+> rather than a checkbox.
+>
+> Five contracts remain in M1:
+>
+> 1. **020's 29, 30** — the union-pun checker (off by default per 040 §1: gcc defines it
+>    and VPP depends on it, so enabling it on VPP is tens of thousands of findings about
+>    working code) and the endianness `ConfigId`. Both are `chiero-check` work; wave 103
+>    left that crate with a working shape to copy.
+> 2. **021 c19**, **023's 7, 17, 21**.
+> 3. **010 contract 19**, small and unblocked since wave 84.
+>
+> **Adding a required field to a widely-constructed struct is a 30-file edit.** `Function`
+> gained `access_paths` and broke 79 literals across the test suite. Patch line-based, then
+> **`cargo test --workspace --no-run`** — `cargo build` does not compile tests, which is how
+> a mechanical rewrite once damaged five test files invisibly.
+>
+> **The recurring survivor shape, now three waves running: the fixture never reached the
+> comparison the design exists for.** Wave 104's two were `render()` never printing an
+> offset (so a round trip that lost every offset compared equal) and a fixture using one
+> `ValueId` for both the access address and the path key (so keyed-lookup and
+> fixed-lookup were indistinguishable). Before writing a mutation, ask what the *fixture*
+> would have to look like for the mutant to survive — that is usually faster than running it.
+>
+> Mutation lessons still in force: **back up to a scratch copy, never `git checkout`**; **a
+> mutant that does not compile is inconclusive, not a survivor**; **two guards only ever
+> true together are equivalent mutants**; and a mutant that is a genuine no-op is neither —
+> discard it rather than chasing a test for it.
+>
+> Owed and written down: nothing builds `AccessPath`s; the engine's own findings cite
+> `ObjectId(N)`; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
+> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 103, `21f5be7`) — 980 tests, M1 159/165, frontend 113/117
 >
 > **`chiero-check` exists.** 020 contract 18 is closed — both halves, in the two crates
 > 020 §7 assigns them to. The syntactic scan runs over the AST in `chiero-lower`; the
