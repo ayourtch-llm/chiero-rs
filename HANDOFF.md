@@ -2806,6 +2806,46 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 81** (`78f641b`; 738 tests, **149/165 cited**) — 020 contracts 12 and 22.
+
+   **Contract 12 was implemented and merely uncited**, which makes the test worthless
+   unless it pins something. Verified by mutation: loosening the shuffle bound to
+   `4 * lanes`, an off-by-one lane bound, dropping `InsertLane` from the shared lane arm,
+   and deleting the `Bitcast` width check each fail exactly one test. Both directions
+   asserted throughout — a verifier that rejects everything satisfies the rejection half,
+   which is 020's own contract-29 note read in the mirror.
+
+   **Contract 22 found two engine defects**, both silent, both in the register half:
+   - `bits_of_cty` returned `None` for `CTy::Vector` through a `_` fallthrough, so a
+     `Bitcast` between two views of one 128-bit union was a **lowering gap** — not a wrong
+     answer but *no* answer, degrading the run to `Unknown` for a construct the CIR fully
+     specifies. Arms are now written out so a new `CTy` is a compile error here.
+   - Lane width was not carried across a vector `Bitcast`, so every `ExtractLane` after
+     one could not tell how the bits divide. It comes from the **destination** type, which
+     is the whole point of the instruction.
+
+   The memory and scalar halves passed from the start; only the register half was broken,
+   which is why the contract asks for both. The scalar path is pinned as the oracle
+   separately — two views wrong the same way agree with each other perfectly.
+
+   📋 **Actionable survey of what is left** (recorded so the next wave does not re-derive
+   it). Of the 16 remaining uncited M1 contracts, most are **blocked, not skipped**:
+   - **Need the M2 frontend** (lowering from C): 020 c14, c15, c18a, c30.
+   - **Need the optimisation passes** (`chiero-opt` is a stub): 020 c16 (`mem2reg`),
+     c17 (`simplify_cfg`), c44 (no pass widens a bitfield access).
+   - **Need 040's checkers**: 020 c18b, c29 (`union-pun` off by default).
+   - **Need arenas (021 §5.2), which do not exist**: 021 c13c, c13d. This is the
+     highest-value unimplemented feature in M1 — §5.2 says that without it "every VPP node
+     analysis dies at its first buffer access", since `vlib_buffer_ptr_from_index` is a
+     pure `IntToPtr` over an unconstrained symbol. Design note for whoever takes it: the
+     element index `k = byte_off / pitch` and the within-element offset `d = byte_off %
+     pitch` are **both symbolic** in the general case, so it needs either symbolic-offset
+     pointers or an honest restriction — decide which before writing the fixture.
+   - **Doable now**: 020 c23 (two struct views of one `opaque[10]`, `UnionMember` in the
+     finding text), 023 c7 (`RandomPath` seed in `RunResult`), 023 c21 (per-witness replay
+     at line granularity vs gcov), 024 c17. 023 c17 (1/2/8 worker threads identical) needs
+     §11 parallelism, which does not exist.
+
    **WAVE 80** (`fc9414d` RED, `f9eb9c3` GREEN; 732 tests, **147/165 cited**) — 023 §6,
    **the checker interface**: `Checker`, `Event`, `Action`, `CheckerCtx`, `CheckerState`,
    `Engine::with_checker`. Contracts 19, 20, 22, 24. `chiero-check` had been an empty stub
@@ -3112,7 +3152,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **732 tests, 147/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **738 tests, 149/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
