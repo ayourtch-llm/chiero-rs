@@ -2806,6 +2806,36 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 78** (`8741781`; 721 tests, **142/165 cited**) — 022 contract 18, the random
+   differential campaign. Written, then invalidated twice by mutation before it was
+   committed; both failures are the same trap in different clothing and both are worth
+   carrying forward.
+
+   - **The differential compared tier 1 with itself.** The natural harness is
+     `TieredSolver::new()` versus `TieredSolver::with_backend(z3)`. It does not work:
+     `check` runs tier 1 *first* and consults z3 only when tier 1 answers `Unknown`, so on
+     every case where tier 1 gives a definite answer — the only cases the contract is
+     about — the "backend" side returns tier 1's answer. A tier-1 defect corrupts both
+     sides identically and they always agree. Mutating the narrowing rule to force
+     `v <= 3` on every `v <u k`, which answers `Unsat` for `4 <u v <u 200`, produced
+     **zero disagreements over 400 formulas**. §5's `paranoid` mode is the only path that
+     escalates an already-decided answer to the backend; the campaign runs through it and
+     catches the same mutant with 11. *(Checked: no other test uses that shape.)*
+   - **The generator could not reach the rule it was testing.** With the variable always
+     the left operand of a comparison, only `hi` is ever lowered; an unsigned interval
+     with a floor of zero and no ceiling cannot empty, so tier 1's sole route to `Unsat`
+     was a pair of conflicting equalities and the entire `Ult` narrowing rule was off the
+     path to any definite answer. Both operand orders now appear, constants come from a
+     small colliding pool, and `ult` is the plurality atom (50 of 400 formulas now come
+     back `Unsat`, and the test asserts that count is nonzero — a campaign that only ever
+     answers `Sat` is not testing anything, since `Sat` self-certifies).
+
+   **Sensitivity is measured, not assumed**, and the two scales are not interchangeable: a
+   wrong-end or grossly-tight narrowing fails at 400; a one-off-by-one (`v <u k` narrowing
+   to `v <= k-2`) **survives 400 and fails at 4000** with 3 disagreements, because it only
+   changes an answer when two bounds on one variable land exactly two apart. A green
+   default run is not the contract being met — `CHIERO_CAMPAIGN=10000` is.
+
    **WAVE 77** (`6bbc598`; 714 tests, **141/165 cited**) — 021 contract 17b, plus the
    wave-74 review, which **verified the most important thing and then found five defects**.
 
@@ -2963,7 +2993,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **720 tests, 141/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **721 tests, 142/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
