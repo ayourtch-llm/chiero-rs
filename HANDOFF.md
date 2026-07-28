@@ -2806,6 +2806,35 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 83** (`8474a03`; 752 tests, **150/165 cited**) — the engine now uses
+   `PathCondition`, so **022 §6 is reachable from a real run**. This closes the gap wave
+   82 flagged.
+
+   `probe` called `check`, so wave 79's independence slicing was implemented, given its
+   own test suite, and never executed. A bare `check` *cannot* slice — one flat list, no
+   way to tell which variables the question is about, which is the whole distinction
+   `check_path` exists for. `RunResult::sliced_terms_skipped` now exposes what was
+   withheld; without a number in the result there is no way to tell a run that sliced from
+   one that could not. Proven load-bearing by mutation (revert `probe` to `check` → the
+   new test fails).
+
+   **Every constraint the engine adds is now classified**, because §6.1's rule is about
+   *how* a constraint arrived and a `Vec<Term>` cannot say. The spec lists three sites;
+   the engine has six:
+   - *checked* — the three ordinary branch arms; the pointer-resolution constraints, whose
+     candidates came from feasibility probes.
+   - *unchecked* — 023 §3's three `Unknown` arms; 024 §4's `strlen` cap guard (§6.1's own
+     third example); a checker's `Action::Assume`; `chiero_assume` on a symbolic
+     condition. The last two are **new sites §6.1 does not list**, recorded per its own
+     `push_unchecked` instruction.
+
+   ⚠️ **Known limit, on the field's doc comment.** §6.1's "a single full check that returns
+   `Sat` clears it" is not implemented: the engine only asks feasibility questions *with*
+   assumptions, which prove something other than the path condition alone, and the one
+   full check left (`pinned_offset`) holds `&State`. A state downstream of one solver
+   `Unknown` stays unsliced for life — the slow direction, not the wrong one. Fixing it
+   means giving `pinned_offset` a `&mut State`.
+
    **WAVE 82** (`db7dd6f`, `ac42db6`; 751 tests, **150/165 cited**) — 024 contract 17
    (`include/chiero.h` + the corpus) and the wave-80 review applied.
 
@@ -2846,8 +2875,9 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
      `solver_calls`.
    - The contract-24 fixture **named three callee kinds and contained two**.
 
-   ⚠️ **Standing gap the review surfaced, bigger than the wave.** `grep -rn PathCondition
-   crates/ | grep -v chiero-solver` returns **nothing**. The engine's `State::path` is a
+   ⚠️ ~~**Standing gap the review surfaced, bigger than the wave.**~~ **CLOSED in wave 83.**
+   At the time: `grep -rn PathCondition crates/ | grep -v chiero-solver` returned
+   **nothing**. The engine's `State::path` is a
    bare `Vec<Term>`, so wave 79's independence slicing and `possibly_infeasible` are
    **unreachable from a real run** — the engine calls `check`, never `check_path`. 022
    §6.1's three unchecked-push sites are therefore unflagged, and `Action::Assume` plus
@@ -3208,7 +3238,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **751 tests, 150/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **752 tests, 150/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
