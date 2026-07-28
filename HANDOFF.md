@@ -487,7 +487,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 98, `75a7a4a`) — 931 tests, M1 152/165, frontend 112/117
+> ### ⏭️ START HERE (wave 99, `03f74cc`) — 934 tests, M1 153/165, frontend 113/117
+>
+> **The frontend is done.** 013, 014 and 015 are all at 100%; C source becomes verified CIR
+> that matches goldens, agrees with gcc on what it computes, and attributes lines the way
+> gcov does. What remains in 010–012 is four contracts, every one deliberately owed:
+> 010's 18 (peak memory, needs a large fixture) and 19 (per-`ConfigId` sites, unblocked
+> since wave 84), 011's 12 and 012's 17 (both `#[ignore]`d throughput/corpus metrics that
+> 070 §195 counts as uncovered on purpose).
+>
+> **The front now moves back to M1** — 153/165, twelve contracts left:
+>
+> 1. **020 c29/c30 — `GlobalInit` and `Linkage` in the text format.** Worth doing first:
+>    string literals currently lower to `Undef` because a `Global` carries no initializer,
+>    and that is the **last construct in ordinary C that lowering silently drops**.
+> 2. **020's 14, 16, 17, 18** — the optional passes (`mem2reg`, `simplify_cfg`) with their
+>    observational-transparency requirement, and 23 (`Opaque`, so inline asm is
+>    representable), 44 (`Marker::Line` at instruction position, which reparses into
+>    `gcov_lines`).
+> 3. **021 c19**, **023's 7, 17, 21**.
+> 4. **010 contract 19**, small and long-unblocked.
+>
+> Two standing instructions that have earned themselves and apply to all of the above:
+> **read a golden diff when it changes** — one that cannot be explained in a sentence is a
+> shape that moved for a reason nobody chose; and **add a `probe` fixture to
+> `differential.rs` for anything with a computable value**, because a shape assertion says
+> the instructions are arranged correctly and only gcc says the program is right.
+>
+> Owed and written down: string literals lower to `Undef` (needs `GlobalInit`); `typeof`
+> types to `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is
+> unpinned.
+>
+> ### Earlier (wave 98, `75a7a4a`) — 931 tests, frontend 112/117
 >
 > **015 is 24/25.** Only **contract 9c** remains: `goto` *into* a scope enters it exactly
 > once, and a backward `goto` that re-enters creates a **new generation** of its objects.
