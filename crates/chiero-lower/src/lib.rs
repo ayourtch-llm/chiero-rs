@@ -2570,24 +2570,59 @@ impl Lowerer<'_> {
         // **A bit-field is a different instruction, not a narrower store.** Its range
         // comes from `RecordLayout` (015 contract 7), and the check has to come before
         // the ordinary path or a 3-bit field becomes a 4-byte store over its neighbours.
-        if op.is_none()
-            && let Some((unit, bits)) = self.bitfield_of(lhs)
-        {
+        if let Some((unit, bits)) = self.bitfield_of(lhs) {
             let addr = match self.lvalue_addr(lhs, span) {
                 Some(a) => a,
                 None => return Operand::Const(Const::Undef(unit)),
             };
-            let val = self.expr(rhs);
+            let signed = self.is_signed(lhs);
+            // **A compound assignment reaches here too**, and used not to: the guard was
+            // `op.is_none()`, so `v.a += 1` fell through to the ordinary path and did a
+            // whole-`int` read-modify-write over every neighbour in the storage unit.
+            //
+            // The arithmetic happens at the **unit's** width, not the field's, because C
+            // promotes a bit-field to `int` before operating on it; `StoreBits` then
+            // truncates the result back into `bits`. That is what makes `3 + 1` in a 3-bit
+            // signed field come out −4 rather than 4.
+            let val = match op {
+                None => self.expr(rhs),
+                Some(binop) => {
+                    let old = self.load_bits(addr.clone(), unit.clone(), bits, signed, span);
+                    let r = self.expr(rhs);
+                    let dst = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::Bin {
+                                op: cir_binop(binop, signed),
+                                a: old,
+                                b: r,
+                                ty: unit.clone(),
+                            },
+                        },
+                        span,
+                    );
+                    Operand::Value(dst)
+                }
+            };
             self.emit(
                 InstKind::StoreBits {
-                    addr,
+                    addr: addr.clone(),
                     val: val.clone(),
-                    unit,
+                    unit: unit.clone(),
                     bits,
                     align: 1,
                 },
                 span,
             );
+            // **The result is the lvalue's value *after* the assignment** (C11 6.5.16.2p3),
+            // which for a bit-field is the truncated one: `int r = (v.a += 1)` with `a` a
+            // 3-bit field holding 3 is −4, not the 4 the addition produced. A plain `=`
+            // needs no reload — its right-hand side was already converted to the field's
+            // type by sema — so only the compound form pays for it.
+            if op.is_some() {
+                return self.load_bits(addr, unit, bits, signed, span);
+            }
             return val;
         }
 
@@ -2713,7 +2748,86 @@ impl Lowerer<'_> {
     ///
     /// The address is computed **once** (015 §2.2), like a compound assignment and for
     /// the same reason: `*p++ += 1` would otherwise advance `p` twice.
+    /// Read a bit-field, at its unit's width and with its own signedness.
+    ///
+    /// The one place `LoadBits` is emitted outside the plain read path — shared by
+    /// compound assignment and `++`/`--`, which are the same read-modify-write and were
+    /// two separate ways of missing it.
+    fn load_bits(
+        &mut self,
+        addr: Operand,
+        unit: CTy,
+        bits: chiero_cir::BitRange,
+        signed: bool,
+        span: Span,
+    ) -> Operand {
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::LoadBits {
+                    addr,
+                    unit,
+                    bits,
+                    signed,
+                    align: 1,
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn inc_dec(&mut self, operand: ExprId, up: bool, prefix: bool, span: Span) -> Operand {
+        // **`v.a++` is a bit-field read-modify-write**, and this function had no bit-field
+        // check at all — it loaded and stored the declared `int`, so incrementing a 3-bit
+        // field overwrote its neighbours and never wrapped. 015 contract 7 owns the range,
+        // and `assign` above already obeys it.
+        if let Some((unit, bits)) = self.bitfield_of(operand) {
+            let Some(addr) = self.lvalue_addr(operand, span) else {
+                return Operand::Const(Const::Undef(unit));
+            };
+            let signed = self.is_signed(operand);
+            let width = match &unit {
+                CTy::Int(w) => *w,
+                _ => 32,
+            };
+            let old = self.load_bits(addr.clone(), unit.clone(), bits, signed, span);
+            let new = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: new,
+                    rv: RValue::Bin {
+                        op: if up { CBinOp::Add } else { CBinOp::Sub },
+                        a: old.clone(),
+                        b: Operand::Const(Const::Int {
+                            bits: width,
+                            val: 1,
+                        }),
+                        ty: unit.clone(),
+                    },
+                },
+                span,
+            );
+            self.emit(
+                InstKind::StoreBits {
+                    addr: addr.clone(),
+                    val: Operand::Value(new),
+                    unit: unit.clone(),
+                    bits,
+                    align: 1,
+                },
+                span,
+            );
+            // Postfix yields the value read *before* the store, which `LoadBits` already
+            // truncated to the field. Prefix yields the value after it, which the addition
+            // has not truncated — so it is read back rather than reused.
+            return if prefix {
+                self.load_bits(addr, unit, bits, signed, span)
+            } else {
+                old
+            };
+        }
         let ty = self.lvalue_ty(operand);
         let Some(addr) = self.lvalue_addr(operand, span) else {
             return Operand::Const(Const::Undef(ty));

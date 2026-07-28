@@ -463,6 +463,55 @@ fn a_bitfield_read_modify_write_stays_inside_the_bitfield() {
         B,
         "struct B v; v.a = 3; v.b = 2; int r = v.a++; return r * 100 + v.a;",
     );
+    // **A compound assignment's own value is the field after the store**, truncated
+    // (C11 6.5.16.2p3) — `(v.a += 1)` on a 3-bit field holding 3 is -4, not the 4 the
+    // addition produced. An implementation that stores correctly and hands back the
+    // untruncated sum passes every case above, which is why the reload is not optional.
+    agree_with(
+        B,
+        "struct B v; v.a = 3; v.b = 2; int r = (v.a += 1); return r * 100 + v.a;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 3; v.b = 2; int s = ++v.a; return s * 100 + v.a;",
+    );
+    agree_with(
+        "struct U { unsigned a:3; unsigned b:5; };\n",
+        "struct U u; u.a = 7; u.b = 2; int r = (int)(u.a += 1); return r * 100 + (int)u.b;",
+    );
+
+    // **The load's signedness**, which `+= 1` cannot see: truncation absorbs the
+    // difference, so a mutation forcing `signed = true` survived every case above.
+    // Division and `>>` do not absorb it — 7 as a 3-bit *unsigned* field is 7 and `/= 2`
+    // is 3, while read as signed it is -1 and `/= 2` is 0. The same both ways round: -4 in
+    // a 3-bit signed field is -4 and `/= 2` is -2, but read as unsigned it is 4 and gives 2.
+    const U: &str = "struct U { unsigned a:3; unsigned b:5; };\n";
+    agree_with(
+        U,
+        "struct U u; u.a = 7; u.b = 2; u.a /= 2; return (int)(u.a * 100 + u.b);",
+    );
+    agree_with(
+        U,
+        "struct U u; u.a = 7; u.b = 2; u.a >>= 1; return (int)(u.a * 100 + u.b);",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = -4; v.b = 2; v.a /= 2; return v.a * 100 + v.b;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = -3; v.b = 2; v.a >>= 1; return v.a * 100 + v.b;",
+    );
+    // And the value `x++` hands back is the field read at its own signedness: 7 for the
+    // unsigned field, -4 for the signed one, where the wrong load gives -1 and 4.
+    agree_with(
+        U,
+        "struct U u; u.a = 7; u.b = 2; int r = (int)u.a++; return r * 100 + (int)u.a;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = -4; v.b = 2; int s = v.a++; return s * 100 + v.a;",
+    );
 }
 
 /// **`?:` and aggregate initializers**, the two constructs contract 2's goldens and
