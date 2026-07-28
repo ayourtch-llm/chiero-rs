@@ -2806,6 +2806,62 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 82** (`db7dd6f`, `ac42db6`; 751 tests, **150/165 cited**) — 024 contract 17
+   (`include/chiero.h` + the corpus) and the wave-80 review applied.
+
+   **The corpus half.** `include/chiero.h`, four files in `tests/corpus/c/`, and the tests
+   for both directions of 024 §7's dual-use property. The header's `#ifdef __CHIERO__` is
+   load-bearing and is pinned by compiling with `-D__CHIERO__` and asserting the **link
+   fails**: defining the intrinsics unconditionally is the natural way to write the header
+   and would quietly destroy the corpus, because 023 §5 says "the module's own definition
+   always wins" over a registered model — chiero would analyse a no-op
+   `chiero_make_symbolic`, every corpus program would run on one concrete path, and the
+   suite would report success over a symbolic execution that never happened.
+
+   Three defects, all producing that same silent-success shape:
+   - **`chiero_make_symbolic` and `chiero_is_symbolic` had no model at all.** The two
+     intrinsics that introduce and inspect symbolism were missing from the registry, so a
+     corpus call hit the unmodeled-extern path. Now modelled and dispatched, with the
+     harness's name travelling into the witness.
+   - **`IntrinsicOutcome::Constrain` was a no-op**, sharing an arm with `Continue`. Ground
+     conditions are decided by the `Some(true)`/`Some(false)` arms, so `Constrain` is
+     reached *only* for a symbolic condition — precisely what `chiero_assume` is for.
+     Every harness assumption over a symbolic value was discarded.
+   - A condition is now tested against zero rather than asserted as a bit (C's "nonzero is
+     true"); a wider-than-1 term negated bitwise is not its negation.
+
+   **The review half — eight defects in the checker interface, two of them soundness:**
+   - `Action::Assume` and `Action::Kill` left the run **`Exact` with no assumption**, so
+     `seal` would mint a proof over a program half of whose paths an unaudited checker had
+     deleted. Both now degrade to `Approximated` and name the checker.
+   - **`may` collapsed `Unknown` into `false`** — the anti-conservative direction, and the
+     one `matches!(.., Sat(_))` gives for free. "May this pointer be NULL?" answered *no*,
+     with no finding and no fidelity change, for every question outside §3.2's fragment.
+   - **`must(t)` and `must(¬t)` were both true above width 1** (bitwise `not` on a ground
+     fold of `bits() != 0`).
+   - `Event::Call` never fired for an **indirect** call, and **compacted its arguments**
+     with `filter_map` so `args[1]` read its neighbour — the same bug the varargs path had
+     already been fixed for, with a comment naming it.
+   - An **errored** state fired no `Terminated`; checker solver queries were invisible in
+     `solver_calls`.
+   - The contract-24 fixture **named three callee kinds and contained two**.
+
+   ⚠️ **Standing gap the review surfaced, bigger than the wave.** `grep -rn PathCondition
+   crates/ | grep -v chiero-solver` returns **nothing**. The engine's `State::path` is a
+   bare `Vec<Term>`, so wave 79's independence slicing and `possibly_infeasible` are
+   **unreachable from a real run** — the engine calls `check`, never `check_path`. 022
+   §6.1's three unchecked-push sites are therefore unflagged, and `Action::Assume` plus
+   `IntrinsicOutcome::Constrain` (this wave) make five. Wiring `State::path` to
+   `PathCondition` is the single highest-value integration task left in M1, and it is what
+   makes wave 79 more than a well-tested island.
+
+   ⚠️ **Recorded deviations from 023 §6 that are still open:** `Action::Fork(Term)` is
+   absent from the enum; `Action::Report` carries a `String` rather than a `Finding`, so a
+   checker cannot attach a kind, object or witness; and `CheckerCtx` has **no `witness()`**,
+   despite §6 resting a normative claim on it ("only through this interface, so that every
+   finding is forced to come with a counterexample or explicitly declare it has none").
+   `Event::Fork` is also emitted at only one of the engine's six fork sites.
+
    **WAVE 81** (`78f641b`; 738 tests, **149/165 cited**) — 020 contracts 12 and 22.
 
    **Contract 12 was implemented and merely uncited**, which makes the test worthless
@@ -3152,7 +3208,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **738 tests, 149/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **751 tests, 150/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
