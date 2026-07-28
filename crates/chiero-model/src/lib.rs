@@ -863,9 +863,22 @@ pub mod models {
                     .to_string(),
             );
         };
-        let mut rest = args.iter().skip(1);
-        let mut reported = 0usize;
+        // Reasons the check declined, as opposed to findings about the program.
+        let mut bounded: Vec<String> = Vec::new();
         let bytes: Vec<char> = fmt.chars().collect();
+        // **Positional forms are not checked at all.** `%2$d %1$s` reorders the
+        // arguments, and consuming them in order reports two mismatches on a call gcc
+        // accepts silently. Half-understanding a format is worse than declining it: the
+        // findings would be about chiero's parser, not the program. Found by review.
+        if has_positional(&bytes) {
+            return ModelOutcome::Bounded(
+                "printf: the format string uses positional conversions (`%n$`), which \
+                 this check does not follow, so the arguments were not checked"
+                    .to_string(),
+            );
+        }
+
+        let mut rest = args.iter().skip(1);
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] != '%' {
@@ -873,16 +886,49 @@ pub mod models {
                 continue;
             }
             i += 1;
+            // `%%` is a literal percent sign and consumes nothing.
             if i < bytes.len() && bytes[i] == '%' {
                 i += 1;
                 continue;
             }
-            // Skip flags, width and precision — none of them changes what *kind* of
-            // argument the conversion wants, which is all this checks.
-            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+            // Flags.
+            while i < bytes.len() && matches!(bytes[i], '-' | '+' | ' ' | '#' | '0' | '\'') {
                 i += 1;
             }
-            // Length modifiers, likewise.
+            // **Width and precision each consume an `int` when written `*`.** Skipping
+            // them as punctuation left every argument after the first `*` off by one, so
+            // `printf("%*s", w, s)` — ubiquitous column formatting that gcc accepts —
+            // reported a mismatch on `%s`. Found by review.
+            let mut star_args = 0usize;
+            if i < bytes.len() && bytes[i] == '*' {
+                star_args += 1;
+                i += 1;
+            } else {
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            if i < bytes.len() && bytes[i] == '.' {
+                i += 1;
+                if i < bytes.len() && bytes[i] == '*' {
+                    star_args += 1;
+                    i += 1;
+                } else {
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+            }
+            for _ in 0..star_args {
+                if rest.next().is_none() {
+                    cx.report(
+                        "format-mismatch: a `*` width or precision has no argument".to_string(),
+                    );
+                }
+            }
+            // Length modifiers change the argument's *width*, not its kind, and this
+            // checks kinds. (Checking widths too — `%ld` against an `int` — is a real
+            // gap and a false negative, not noise; it is listed as owed.)
             while i < bytes.len() && matches!(bytes[i], 'h' | 'l' | 'j' | 'z' | 't' | 'L') {
                 i += 1;
             }
@@ -890,52 +936,118 @@ pub mod models {
                 break;
             };
             i += 1;
+            // glibc's `%m` prints `strerror(errno)` and takes **no** argument. Reporting
+            // it as one short makes `"failed: %m"` — a standard idiom in exactly this kind
+            // of C — a finding. Found by review.
+            if conv == 'm' {
+                continue;
+            }
             let Some(arg) = rest.next() else {
                 cx.report(format!(
                     "format-mismatch: `%{conv}` has no argument; the call supplies fewer \
                      than the format string consumes"
                 ));
-                reported += 1;
                 continue;
             };
-            let wants_pointer = matches!(conv, 's' | 'p' | 'n');
-            match (wants_pointer, arg) {
+            let kind = conversion_kind(conv);
+            match (kind, arg) {
                 // `%s` of a pointer: the *string* has to be readable, and a bad one is a
                 // memory finding rather than a mismatch.
-                (true, Some(Value::Ptr(p))) => {
+                (ConvArg::Pointer, Some(Value::Ptr(p))) => {
                     if conv == 's' && cx.mem().c_string_at(*p).is_none() {
+                        // **A string chiero cannot read is chiero's gap.** The bytes are
+                        // symbolic — 021 §6 fills every entry pointee that way — and
+                        // reporting that as a program bug is the confusion 023 §7 exists
+                        // to prevent. It is the same rule this model already applies to an
+                        // unreadable *format* string. Found by review.
                         let at = cx.span();
                         let r = cx.mem().read(*p, 1, at);
-                        let faults = r.faults.clone();
+                        let faults: Vec<_> = r
+                            .faults
+                            .iter()
+                            .filter(|f| !matches!(f, chiero_mem::MemFault::SymbolicByte { .. }))
+                            .cloned()
+                            .collect();
                         if faults.is_empty() {
-                            cx.report(format!(
+                            bounded.push(format!(
                                 "printf: the string for `%{conv}` is not concretely \
-                                 readable"
+                                 readable, so it was not checked"
                             ));
                         } else {
                             cx.lift(&faults);
                         }
                     }
                 }
-                (false, Some(Value::Scalar(_))) => {}
-                (true, _) => {
+                (ConvArg::Scalar, Some(Value::Scalar(_))) => {}
+                (ConvArg::Pointer, Some(Value::Scalar(_))) => {
                     cx.report(format!(
                         "format-mismatch: `%{conv}` wants a pointer and the argument is \
                          not one"
                     ));
-                    reported += 1;
                 }
-                (false, _) => {
+                (ConvArg::Scalar, Some(Value::Ptr(_))) => {
                     cx.report(format!(
                         "format-mismatch: `%{conv}` wants an integer and the argument is \
                          a pointer"
                     ));
-                    reported += 1;
                 }
+                // **An argument chiero could not translate is not a wrong argument.**
+                // Saying "the argument is a pointer" about a value the engine could not
+                // represent is a false sentence, and the `scanf` model two screens away
+                // carries the same rule. Found by review.
+                (_, None) => bounded.push(format!(
+                    "printf: the argument for `%{conv}` could not be translated, so it \
+                     was not checked"
+                )),
+                // A conversion this does not know consumes its argument and claims
+                // nothing about it — `%v` and `%U` are VPP's own `format()` extensions,
+                // and `%U`'s argument really is a function pointer.
+                (ConvArg::Unknown, _) => {}
             }
         }
-        let _ = reported;
+        if !bounded.is_empty() {
+            return ModelOutcome::Bounded(bounded.join("; "));
+        }
         ModelOutcome::Value(None)
+    }
+
+    /// What kind of argument a conversion consumes.
+    ///
+    /// `Unknown` is a real answer, not a fallback: `%v` and `%U` are VPP's own `format()`
+    /// extensions, and claiming they want an integer reports a mismatch on every use.
+    enum ConvArg {
+        Scalar,
+        Pointer,
+        Unknown,
+    }
+
+    fn conversion_kind(c: char) -> ConvArg {
+        match c {
+            'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'c' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a'
+            | 'A' => ConvArg::Scalar,
+            's' | 'p' | 'n' => ConvArg::Pointer,
+            _ => ConvArg::Unknown,
+        }
+    }
+
+    /// Whether any conversion uses the positional `%n$` form.
+    fn has_positional(bytes: &[char]) -> bool {
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != '%' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 && bytes.get(j) == Some(&'$') {
+                return true;
+            }
+            i += 1;
+        }
+        false
     }
 
     /// 024 contract 20. Non-local control flow: the state ends here.
