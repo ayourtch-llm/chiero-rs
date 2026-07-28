@@ -1902,6 +1902,14 @@ impl Lowerer<'_> {
                 if matches!(op, chiero_ast::BinOp::LogAnd | chiero_ast::BinOp::LogOr) {
                     return self.short_circuit(e, *op, *lhs, *rhs, span);
                 }
+                // **`p + n` is not `add`** (020: PtrAdd-not-Add). The arm below types the
+                // whole expression as `Int(raw_width_of(e))`, which for a pointer is 32,
+                // and adds the index unscaled — so `*(a + 1)` addressed byte 1 of a
+                // 64-bit address truncated to 32 bits. The subscript path had this right
+                // all along; every other spelling of the same arithmetic did not.
+                if let Some(v) = self.ptr_arith(*op, *lhs, *rhs, span) {
+                    return v;
+                }
                 // **Left to right** (015 §2, normative): the left operand's side effects
                 // are emitted before the right's.
                 let a = self.expr(*lhs);
@@ -2560,20 +2568,37 @@ impl Lowerer<'_> {
                     span,
                 );
                 let r = self.expr(rhs);
-                let dst = self.new_value();
-                self.emit(
-                    InstKind::Assign {
-                        dst,
-                        rv: RValue::Bin {
-                            op: cir_binop(binop, self.is_signed(lhs)),
-                            a: Operand::Value(old),
-                            b: r,
-                            ty: ty.clone(),
+                // **`p += n` displaces by elements too.** The `Bin` below would add the
+                // count to the address unscaled and at the lvalue's width, which is the
+                // same defect `p + n` had — three spellings, one operation.
+                if matches!(binop, chiero_ast::BinOp::Add | chiero_ast::BinOp::Sub)
+                    && self.is_address(lhs)
+                {
+                    let idx = self.widen_to_64(r, rhs, span);
+                    let elem = self.elem_size_of(lhs).unwrap_or(1).max(1);
+                    self.displace(
+                        Operand::Value(old),
+                        idx,
+                        elem,
+                        matches!(binop, chiero_ast::BinOp::Sub),
+                        span,
+                    )
+                } else {
+                    let dst = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::Bin {
+                                op: cir_binop(binop, self.is_signed(lhs)),
+                                a: Operand::Value(old),
+                                b: r,
+                                ty: ty.clone(),
+                            },
                         },
-                    },
-                    span,
-                );
-                Operand::Value(dst)
+                        span,
+                    );
+                    Operand::Value(dst)
+                }
             }
         };
         self.emit(
@@ -2616,22 +2641,56 @@ impl Lowerer<'_> {
             CTy::Int(b) => *b,
             _ => 32,
         };
-        let new = self.new_value();
-        self.emit(
-            InstKind::Assign {
-                dst: new,
-                rv: RValue::Bin {
-                    op: if up { CBinOp::Add } else { CBinOp::Sub },
-                    a: Operand::Value(old),
-                    b: Operand::Const(Const::Int {
-                        bits: width,
-                        val: 1,
-                    }),
-                    ty: ty.clone(),
+        // **`p++` advances by one *element*.** The `Bin` below adds a literal 1 to the
+        // address — a byte, not an element, and at `_ => 32` for a pointer lvalue. Same
+        // operation as `p + 1` and `p += 1`, so the same `displace`.
+        let new = if self.is_address(operand) {
+            let elem = self.elem_size_of(operand).unwrap_or(1).max(1);
+            let d = self.displace(
+                Operand::Value(old),
+                Operand::Const(Const::Int { bits: 64, val: 1 }),
+                elem,
+                !up,
+                span,
+            );
+            match d {
+                Operand::Value(v) => v,
+                // `displace` always yields a value; this arm keeps the types honest rather
+                // than asserting.
+                other => {
+                    let v = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: v,
+                            rv: RValue::PtrAdd {
+                                base: other,
+                                off: Operand::Const(Const::Int { bits: 64, val: 0 }),
+                            },
+                        },
+                        span,
+                    );
+                    v
+                }
+            }
+        } else {
+            let new = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: new,
+                    rv: RValue::Bin {
+                        op: if up { CBinOp::Add } else { CBinOp::Sub },
+                        a: Operand::Value(old),
+                        b: Operand::Const(Const::Int {
+                            bits: width,
+                            val: 1,
+                        }),
+                        ty: ty.clone(),
+                    },
                 },
-            },
-            span,
-        );
+                span,
+            );
+            new
+        };
         self.emit(
             InstKind::Store {
                 addr,
@@ -3000,6 +3059,223 @@ impl Lowerer<'_> {
     }
 
     /// The element size of whatever `base` indexes.
+    /// Whether `e` denotes an address — a pointer, or an array that decays to one.
+    ///
+    /// `type_of` walks past the `ArrayDecay` cast to the value the source wrote, so `a` in
+    /// `a + 1` reports its `Ty::Array` rather than the `Ty::Ptr` it converts to. Both are
+    /// addresses here, and `Ty::Func` is one too — a function designator decays exactly as
+    /// an array does (C11 6.3.2.1p4).
+    fn is_address(&self, e: ExprId) -> bool {
+        self.type_of(e).is_some_and(|t| {
+            matches!(
+                self.analysis.ty(t),
+                Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. }
+            )
+        })
+    }
+
+    /// `p + n`, `n + p`, `p - n` and `p - q`, or `None` when neither operand is an address.
+    ///
+    /// C11 6.5.6: additive arithmetic on a pointer counts in **elements**, and the
+    /// difference of two pointers is a count of elements too (6.5.6p9) — not of bytes.
+    /// Nothing else in this function is a C conversion, so the widening and scaling here
+    /// are lowering's own bookkeeping, spelled once rather than at each call site.
+    fn ptr_arith(
+        &mut self,
+        op: chiero_ast::BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Option<Operand> {
+        if !matches!(op, chiero_ast::BinOp::Add | chiero_ast::BinOp::Sub) {
+            return None;
+        }
+        let (l_ptr, r_ptr) = (self.is_address(lhs), self.is_address(rhs));
+        if !l_ptr && !r_ptr {
+            return None;
+        }
+
+        // **`p - q` is a count, not a distance.** Subtract the two addresses as integers
+        // and divide by the element size — signed, because `q - p` with `q` below `p` is a
+        // negative count and C says so.
+        if l_ptr && r_ptr {
+            if !matches!(op, chiero_ast::BinOp::Sub) {
+                // `p + q` is not C and sema has already rejected it. Refusing the enclosing
+                // function (015 §7 contract 20) beats emitting an `add` of two addresses,
+                // which would run and be wrong.
+                self.diagnostics.push(LowerDiagnostic {
+                    span,
+                    message: "arithmetic on two pointers".into(),
+                });
+                return Some(Operand::Const(Const::Undef(CTy::Int(64))));
+            }
+            let a = self.expr(lhs);
+            let b = self.expr(rhs);
+            let ai = self.ptr_to_int(a, span);
+            let bi = self.ptr_to_int(b, span);
+            let diff = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: diff,
+                    rv: RValue::Bin {
+                        op: CBinOp::Sub,
+                        a: ai,
+                        b: bi,
+                        ty: CTy::Int(64),
+                    },
+                },
+                span,
+            );
+            let elem = self.elem_size_of(lhs).unwrap_or(1).max(1);
+            let out = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: out,
+                    rv: RValue::Bin {
+                        op: CBinOp::SDiv,
+                        a: Operand::Value(diff),
+                        b: Operand::Const(Const::Int {
+                            bits: 64,
+                            val: elem as i128,
+                        }),
+                        ty: CTy::Int(64),
+                    },
+                },
+                span,
+            );
+            return Some(Operand::Value(out));
+        }
+
+        // `n + p` is `p + n` (6.5.6p2 makes `+` commutative here); `n - p` is not C.
+        if !l_ptr && matches!(op, chiero_ast::BinOp::Sub) {
+            self.diagnostics.push(LowerDiagnostic {
+                span,
+                message: "an integer minus a pointer".into(),
+            });
+            return Some(Operand::Const(Const::Undef(CTy::Ptr)));
+        }
+        // **Left to right still** (015 §2, normative): the *written* order decides which
+        // side's side effects are emitted first, not which side happens to be the pointer.
+        let first = self.expr(lhs);
+        let second = self.expr(rhs);
+        let (ptr_e, base, int_e, idx) = if l_ptr {
+            (lhs, first, rhs, second)
+        } else {
+            (rhs, second, lhs, first)
+        };
+
+        // The index widens to pointer width **before** scaling, and sign-extends when it is
+        // signed: `p + (-1)` is a legal C expression, and a zero-extended −1 addresses four
+        // billion elements away.
+        let idx = self.widen_to_64(idx, int_e, span);
+        let elem = self.elem_size_of(ptr_e).unwrap_or(1).max(1);
+        Some(self.displace(base, idx, elem, matches!(op, chiero_ast::BinOp::Sub), span))
+    }
+
+    /// `base ± idx * elem`, as one `PtrAdd`.
+    ///
+    /// `idx` must already be 64 bits wide. Shared by `p + n`, `p += n` and `p++`, which are
+    /// three spellings of one operation and were three separate wrong answers.
+    fn displace(
+        &mut self,
+        base: Operand,
+        idx: Operand,
+        elem: u64,
+        subtract: bool,
+        span: Span,
+    ) -> Operand {
+        let scaled = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: scaled,
+                rv: RValue::Bin {
+                    op: CBinOp::Mul,
+                    a: idx,
+                    b: Operand::Const(Const::Int {
+                        bits: 64,
+                        val: elem as i128,
+                    }),
+                    ty: CTy::Int(64),
+                },
+            },
+            span,
+        );
+        // `p - n` is `p + (-n)`: `PtrAdd` is the only pointer-displacing instruction CIR
+        // has (020), so the sign lives in the offset rather than in the opcode.
+        let off = if subtract {
+            let neg = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: neg,
+                    rv: RValue::Bin {
+                        op: CBinOp::Sub,
+                        a: Operand::Const(Const::Int { bits: 64, val: 0 }),
+                        b: Operand::Value(scaled),
+                        ty: CTy::Int(64),
+                    },
+                },
+                span,
+            );
+            Operand::Value(neg)
+        } else {
+            Operand::Value(scaled)
+        };
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::PtrAdd { base, off },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
+    /// Widen an integer operand to 64 bits, sign-extending when `e`'s type is signed.
+    fn widen_to_64(&mut self, v: Operand, e: ExprId, span: Span) -> Operand {
+        let w = self.width_of(e);
+        if w >= 64 {
+            return v;
+        }
+        let dst = self.new_value();
+        let signed = self.is_signed(e);
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Cast {
+                    kind: if signed {
+                        chiero_cir::CastKind::SExt
+                    } else {
+                        chiero_cir::CastKind::ZExt
+                    },
+                    a: v,
+                    from: CTy::Int(w),
+                    to: CTy::Int(64),
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
+    /// An address as a 64-bit integer, for the one operation that needs it.
+    fn ptr_to_int(&mut self, a: Operand, span: Span) -> Operand {
+        let v = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: v,
+                rv: RValue::Cast {
+                    kind: chiero_cir::CastKind::PtrToInt,
+                    a,
+                    from: CTy::Ptr,
+                    to: CTy::Int(64),
+                },
+            },
+            span,
+        );
+        Operand::Value(v)
+    }
+
     fn elem_size_of(&mut self, base: ExprId) -> Option<u64> {
         let t = self.type_of(base)?;
         let elem = match self.analysis.ty(t).clone() {

@@ -1988,11 +1988,25 @@ impl Cx<'_> {
                     operands: vec![inner],
                 })
             }
-            ExprKind::Assign { lhs, rhs, .. } => {
+            ExprKind::Assign { op, lhs, rhs } => {
                 let l = self.type_expr(*lhs);
                 let lty = self.out.typed.ty_of(l);
                 let r = self.type_expr(*rhs);
-                let r = self.coerce(r, lty, Conversion::Assignment, *rhs);
+                // **`p += n` does not convert `n` to a pointer.** C11 6.5.16.2p1: for `+=`
+                // and `-=` with a pointer lvalue, the right operand stays an integer and
+                // the whole thing means `p = p + n`, which counts in elements.
+                //
+                // Coercing it produced an `IntToPtr` on the literal, so lowering received a
+                // pointer where the element count belonged and had no way to recover the
+                // count. Every other compound operator is arithmetic on both sides and does
+                // want the coercion.
+                let pointer_displacement = matches!(op, Some(BinOp::Add) | Some(BinOp::Sub))
+                    && matches!(self.out.ty(lty), Ty::Ptr(_) | Ty::Array { .. });
+                let r = if pointer_displacement {
+                    r
+                } else {
+                    self.coerce(r, lty, Conversion::Assignment, *rhs)
+                };
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty: lty,
