@@ -273,6 +273,153 @@ fn return_from_three_scopes_exits_all_three_first() {
     assert!(check_scope_balance(f).is_empty());
 }
 
+/// **Contract 9c, first half.** A `goto` *into* a nested scope enters it — exactly once,
+/// and outermost first when it enters more than one.
+///
+/// This is the mirror of contract 10's exit rule and it exists for the same reason: 021 §4
+/// creates a scope's objects on `Scope(Enter)`, so a jump that lands inside a scope
+/// without entering it leaves every object there unmaterialized. C permits the jump
+/// (C11 6.8.6.1), so "nobody writes that" is not an answer.
+#[test]
+fn a_goto_into_a_scope_enters_it_exactly_once() {
+    let m = probe("if (n) goto inner; { int a = 1; inner: return a; } return 0;");
+    let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
+    assert!(
+        check_scope_balance(f).is_empty(),
+        "the jump enters the scope it lands in:\n{}",
+        check_scope_balance(f).join("\n")
+    );
+
+    // The block holding the `goto` carries the enter, and carries it once.
+    let goto_blocks: Vec<&chiero_cir::Block> = f
+        .blocks
+        .iter()
+        .filter(|b| {
+            b.insts.iter().any(|i| {
+                matches!(
+                    &i.kind,
+                    chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        kind: ScopeKind::Enter,
+                        ..
+                    }))
+                )
+            })
+        })
+        .collect();
+    for b in &goto_blocks {
+        let mut seen: Vec<u32> = Vec::new();
+        for i in &b.insts {
+            if let chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                scope,
+                kind: ScopeKind::Enter,
+            })) = &i.kind
+            {
+                assert!(
+                    !seen.contains(&scope.0),
+                    "block {:?} enters scope {} twice",
+                    b.id,
+                    scope.0
+                );
+                seen.push(scope.0);
+            }
+        }
+    }
+
+    // Two levels: the jump enters both, **outermost first** — the mirror of contract
+    // 10's exit order, and for the same reason: an inner scope's objects live inside the
+    // outer one's storage, so creating them in the other order has nowhere to put them.
+    let m = probe("if (n) goto deep; { int a = 1; { int b = 2; deep: return a + b; } } return 0;");
+    let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
+    assert!(
+        check_scope_balance(f).is_empty(),
+        "{}",
+        check_scope_balance(f).join("\n")
+    );
+    let jump = f
+        .blocks
+        .iter()
+        .find(|b| {
+            b.insts
+                .iter()
+                .filter(|i| {
+                    matches!(
+                        &i.kind,
+                        chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                            kind: ScopeKind::Enter,
+                            ..
+                        }))
+                    )
+                })
+                .count()
+                == 2
+        })
+        .expect("one block enters two scopes: the jump");
+    let entered: Vec<u32> = jump
+        .insts
+        .iter()
+        .filter_map(|i| match &i.kind {
+            chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                scope,
+                kind: ScopeKind::Enter,
+            })) => Some(scope.0),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        entered[0] < entered[1],
+        "outermost first: scopes are numbered in the order they are opened, so the outer \
+         one has the lower id — got {entered:?}"
+    );
+}
+
+/// **Contract 9c, second half.** A **backward** `goto` that re-enters an already-entered
+/// scope creates a *new generation* of its objects.
+///
+/// 015 §4 says this matches the loop-body rule in §3, and the CIR shape is the same: the
+/// re-entering edge carries a `Scope(Enter)`, so 021 retires the old objects and creates
+/// new ones rather than reusing storage the program has left and re-entered.
+#[test]
+fn a_backward_goto_re_enters_and_starts_a_new_generation() {
+    // `inner: ;` — a label must precede a *statement*, and a declaration is not one in
+    // C11 (C23 relaxed it). The null statement is what makes the fixture legal C, which
+    // matters because the differential oracle compiles these with gcc.
+    let m = probe("{ inner: ; int a = n; n = n - 1; } if (n > 0) goto inner; return n;");
+    let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
+    assert!(
+        check_scope_balance(f).is_empty(),
+        "re-entry is balanced:\n{}",
+        check_scope_balance(f).join("\n")
+    );
+
+    // The scope is entered from **two** places: falling in at the top, and the backward
+    // jump. One enter would mean the second pass reuses objects the first pass retired.
+    let inner_scope = f
+        .allocas
+        .iter()
+        .find(|a| a.name.as_deref() == Some("a"))
+        .expect("`a`'s slot")
+        .scope;
+    let enters = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter(|i| {
+            matches!(
+                &i.kind,
+                chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope,
+                    kind: ScopeKind::Enter,
+                })) if *scope == inner_scope
+            )
+        })
+        .count();
+    assert_eq!(
+        enters, 2,
+        "the scope holding `a` is entered on both edges that reach it — the fallthrough \
+         and the backward `goto`"
+    );
+}
+
 /// **Contract 18.** `switch` with fallthrough lowers to blocks chained by `Goto`, and a
 /// `case` range of 4 expands to 4 sorted cases.
 #[test]
