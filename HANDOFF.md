@@ -2784,6 +2784,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    validation by construction, which is why 022 §2 wanted two implementations in the first
    place — and having two is worth nothing if nobody differentially tests them.
 
+   **WAVE 76** (`7573135`; 712 tests, **140/165 cited**) — 021 contract 18, the aliasing
+   policy. Neither half existed: two pointer parameters got distinct objects because they
+   were allocated separately, and **nothing said so**. That silence is the whole risk —
+   assuming two pointer parameters do not alias is how an under-constrained run stays
+   tractable, and equally how a real aliasing bug goes unseen.
+
+   The run records it, prints it, and **degrades to `Approximated`** so it cannot seal as a
+   proof: assuming away aliasing is 023 §7's "keeping one of several feasible values". That
+   last part is what the first version of the test missed — it checked the assumption's
+   *text* and not the claim, and the mutation that left the run `Exact` sailed through.
+   *An assumption recorded without the fidelity to match is one `seal` steps over.*
+
+   `--fork-on-alias` adds one state per pair, each naming what it explored. §6 describes
+   `2^(pairs)`; pairwise is the subset that answers "do *these two* alias" — the question a
+   checker asks — and grows quadratically rather than exponentially.
+
+   ⚠️ *Method note, third occurrence:* the fixture failed twice before measuring anything —
+   an 8-bit store of a 32-bit constant, then a return type that did not match the value
+   returned. **A module that does not verify reports the absence of everything**, and it
+   looks exactly like a passing negative assertion. Now written into the fixture's own
+   comments rather than only into this file.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2861,7 +2883,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **710 tests, 139/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **712 tests, 140/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
