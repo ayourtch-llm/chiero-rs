@@ -503,6 +503,14 @@ pub struct Ast {
     /// with nowhere to live; a parser that returned a bag of nodes and no roots would be
     /// unusable. Recorded as a deviation rather than smuggled in.
     items: Vec<DeclId>,
+    /// Bit-field widths: the `3` in `struct { int a:3; };`
+    ///
+    /// A side table for the same reason as [`Self::asm_labels`] — most declarations are
+    /// not members and no member outside a struct can have one. Kept as an **`ExprId`,
+    /// unevaluated**, because the width is routinely written as
+    /// `CLIB_CACHE_LINE_BYTES * 8` and folding it here would lose which macro produced
+    /// the number, which is exactly what 031 diffs.
+    bitfields: indexmap::IndexMap<DeclId, ExprId>,
     /// GNU asm labels: `extern int f (void) __asm__ ("real_name");`
     ///
     /// **A side table, not a field**, because fewer than one declaration in a thousand
@@ -573,6 +581,19 @@ impl Ast {
 
     pub fn push_item(&mut self, id: DeclId) {
         self.items.push(id);
+    }
+
+    pub fn set_bitfield(&mut self, id: DeclId, width: ExprId) {
+        self.bitfields.insert(id, width);
+    }
+
+    /// The declared bit width, if this declaration is a bit-field.
+    ///
+    /// `Some` even for a **zero**-width field, which declares no member but forces the
+    /// next one to a fresh allocation unit (014 contract 4) — so "is a bit-field" and
+    /// "has a nonzero width" are different questions and the type has to keep them apart.
+    pub fn bitfield(&self, id: DeclId) -> Option<ExprId> {
+        self.bitfields.get(&id).copied()
     }
 
     pub fn set_asm_label(&mut self, id: DeclId, label: Symbol) {

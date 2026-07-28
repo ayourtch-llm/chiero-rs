@@ -12,5 +12,9 @@ chiero-ast.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
 
+[dev-dependencies]
+chiero-parse.workspace = true
+chiero-pp.workspace = true
+
 [lints]
 workspace = true

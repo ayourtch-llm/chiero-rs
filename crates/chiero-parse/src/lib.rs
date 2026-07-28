@@ -1172,9 +1172,9 @@ impl<'a> Parser<'a> {
             let (name, ty) = self.declarator(specs.ty, true);
             // A bit-field. Its width is kept as an expression, unevaluated, because
             // `CLIB_CACHE_LINE_BYTES * 8` is the interesting case and 014 folds it.
-            if self.eat_punct(Punct::Colon) {
-                let _width = self.assignment_expr();
-            }
+            let bit_width = self
+                .eat_punct(Punct::Colon)
+                .then(|| self.conditional_expr());
             let mut attrs = Vec::new();
             self.attribute_specifiers(&mut attrs);
             if !attrs.is_empty() {
@@ -1182,6 +1182,9 @@ impl<'a> Parser<'a> {
             }
             let span = self.span_from(start);
             let d = self.finish_member(&specs, name, ty, span);
+            if let Some(w) = bit_width {
+                self.ast.set_bitfield(d, w);
+            }
             out.push(d);
             if self.eat_punct(Punct::Comma) {
                 continue;
