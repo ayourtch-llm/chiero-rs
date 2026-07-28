@@ -571,6 +571,52 @@ fn a_struct_parameter_is_the_callees_own_copy() {
     );
 }
 
+/// **Pointer arithmetic is scaled `PtrAdd`, not integer `Add`.**
+///
+/// 020 says PtrAdd-not-Add by name, and the *index* path obeys it: `a[1]` lowers to `sext`,
+/// `mul 4`, `ptradd`. The `Binary` arm of `expr` does not know its operand is a pointer at
+/// all, so `*(a + 1)` lowers to `add i32 %addr, 1i32` — thirty-two bits wide on a
+/// sixty-four-bit address, and unscaled, so it would address byte 1 rather than element 1
+/// even if the width were right.
+///
+/// Every form is broken, not just the one recorded in HANDOFF §9: `p + n`, `n + p`, `p - n`,
+/// `p - q`, `p += n` and `p++`. The array-subscript spelling is the *only* one that works,
+/// which is why nothing caught it — `a[i]` is what every fixture had been written with.
+///
+/// `p - q` is its own operation rather than a variation: C11 6.5.6p9 makes the difference of
+/// two pointers a count of *elements*, so it is a byte subtraction divided by the element
+/// size, and an implementation that returns the byte distance passes nothing here.
+#[test]
+fn pointer_arithmetic_is_scaled_and_pointer_wide() {
+    // The two spellings of the same thing, so neither operand order is special-cased.
+    agree("int a[3]; a[1] = 7; return *(a + 1);");
+    agree("int a[3]; a[1] = 7; return *(1 + a);");
+    // Through a pointer variable rather than off an array's address.
+    agree("int a[3]; a[1] = 7; int *p = a; return *(p + 1);");
+    // The pointer itself carrying the offset, so the scaling has to survive the store.
+    agree("int a[3]; a[2] = 9; int *p = a + 2; return *p;");
+    // Subtraction, and from the middle, which a fix that only handled `+` would miss.
+    agree("int a[3]; a[0] = 4; int *p = a + 2; return *(p - 2);");
+    // Compound assignment and increment, which go through their own lowering paths.
+    agree("int a[3]; a[1] = 5; int *p = a; p += 1; return *p;");
+    agree("int a[3]; a[1] = 5; int *p = a; p++; return *p;");
+    agree("int a[3]; a[1] = 6; int *p = a + 2; --p; return *p;");
+    // **The element size is not 4.** With `int` everywhere, a lowering that scaled by a
+    // hard-coded 4 — or that got the width right and the scale wrong — passes every case
+    // above. `char` scales by 1 and a struct by its layout.
+    agree("char c[4]; c[2] = 6; char *p = c + 2; return *p;");
+    agree(
+        "struct S { int a; int b; }; struct S s[3]; s[2].a = 8; struct S *p = s + 2; \
+         return p->a;",
+    );
+    // **Pointer difference**: a count of elements, not of bytes (C11 6.5.6p9). For `int`
+    // the byte answer is 8 and the right answer is 2.
+    agree("int a[4]; int *p = a + 3; int *q = a + 1; return (int)(p - q);");
+    agree("char c[4]; char *p = c + 3; char *q = c + 1; return (int)(p - q);");
+    // And a **negative** result, which pins the signedness of the division.
+    agree("int a[4]; int *p = a + 1; int *q = a + 3; return (int)(p - q);");
+}
+
 /// **Statement expressions and VLAs**, checked for what they compute.
 ///
 /// A statement expression's value is the last expression statement's, and its side
