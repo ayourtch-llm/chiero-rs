@@ -579,6 +579,67 @@ fn a_struct_parameter_is_the_callees_own_copy() {
     );
 }
 
+/// **A pointer can be tested against null, in every way C spells it.**
+///
+/// `if (p)`, `if (p == 0)`, `while (p)`, `p ? a : b`, `p && q`, `!p` — none of them work.
+/// Every one produces no state at all. `if (p == 0)` is the plainest null check in C and
+/// VPP writes it thousands of times.
+///
+/// One cause, and it is wave 132's third defect in the one path that wave did not touch:
+/// the comparison arm types its `Cmp` as `CTy::Int(width_of(lhs))`, and `width_of` reports
+/// an *integer's* width and answers 32 for everything else. So a pointer operand got
+/// `cmp ne i32`, which is a well-formed instruction about a value that is not there.
+/// `truth_of` — which C conditions all funnel through — does the same thing.
+///
+/// `truth_of`'s own doc comment already states the rule this test needs: "C conditions are
+/// compares unequal to 0, so the conversion is a comparison rather than a truncation".
+/// The rule was right. It was written for integers and never asked what a pointer is.
+///
+/// **A conversion to `_Bool` is the same question**, and gets the same wrong answer from
+/// the other direction: `cast_kind` picks `Trunc` for `Int(32) -> Int(1)`, so `b = 2` is
+/// `2 & 1` = 0 and `b = 256` is 0. C11 6.3.1.2 makes the conversion `!= 0` — a comparison,
+/// not a narrowing. `b = -1` gives 1 only because its low bit happens to be set.
+#[test]
+fn a_pointer_and_a_bool_are_tested_against_zero_not_truncated() {
+    // **The explicit comparisons**, which are not conditions at all — they are `==` and
+    // `!=` with a pointer operand, and the same `width_of` answers 32 for both.
+    agree("int x; int *p = &x; return p != 0;");
+    agree("int x; int *p = &x; return p == 0;");
+    agree("int *p = 0; return p == 0;");
+    agree("int x; int *q = &x; int *p = q; return p == q;");
+    agree("int a[2]; return &a[1] != &a[0];");
+    // Every C construct that takes a condition.
+    agree("int x; int *p = &x; if (p) return 7; return 9;");
+    agree("int *p = 0; if (p) return 7; return 9;");
+    agree("int x; int *p = &x; while (p) { return 7; } return 9;");
+    agree("int x; int *p = &x; int n = 0; for (; p; ) { n = 5; break; } return n;");
+    agree("int x; int *p = &x; return p ? 7 : 9;");
+    agree("int *p = 0; return p ? 7 : 9;");
+    agree("int x; int *p = &x; return !p;");
+    agree("int *p = 0; return !p;");
+    // Short-circuit, where the pointer is the operand that decides whether the other side
+    // runs at all — so a wrong answer here also changes what is evaluated.
+    agree("int x; int *p = &x; int *q = 0; return (p && !q) ? 1 : 0;");
+    agree("int *p = 0; int n = 0; if (p && (n = 5)) { } return n;");
+    // An **array** in a condition, which decays and is therefore never null.
+    agree("int a[2]; if (a) return 7; return 9;");
+    // **A conversion to `_Bool` is `!= 0`, not a truncation.** 256 and 2 have a zero low
+    // bit, so a truncation reports false for a plainly true value.
+    agree("_Bool b; b = 2; return b;");
+    agree("_Bool b; b = 256; return b;");
+    agree("_Bool b = 2; return b;");
+    agree("int x = 4; _Bool b = x; return b;");
+    agree("int x = 0; _Bool b = x; return b;");
+    agree("_Bool b = (_Bool)2; return b;");
+    agree("long l = 0x100000000; _Bool b = l; return b;");
+    // A pointer converted to `_Bool`, which is both halves of this test at once.
+    agree("int x; int *p = &x; _Bool b = p; return b;");
+    agree("int *p = 0; _Bool b = p; return b;");
+    // `b = -1` passes today by luck — its low bit is set. Kept so a fix that reaches only
+    // the even values is still wrong here.
+    agree("_Bool b; b = -1; return b;");
+}
+
 /// **A load yields a value of its declared width, not of the bytes it read.**
 ///
 /// The engine reads `size_of_cty(ty)` bytes and hands the term back as-is, so a load of a
