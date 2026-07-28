@@ -1166,6 +1166,15 @@ impl Lowerer<'_> {
                     // The value handed back is the caller's own pointer, so the caller's
                     // `CopyMem` (015 c6) reads bytes it owns and that are still live.
                     self.set_term(Terminator::Return(Some(Operand::Value(sret))));
+                    // **The same dead block the scalar path opens.** Without it, everything
+                    // emitted after the `return` — the enclosing compound's `Scope(Exit)`,
+                    // and wave 109's trailing exit for the parameter scope — was appended
+                    // *after* the terminator of a live block. The callee then exited each
+                    // scope twice, 021 retired its stack objects twice, and the aggregate
+                    // result resolved to no known object. Wave 128 spent a whole wave
+                    // eliminating the engine and the call ABI before this was visible.
+                    let dead = self.new_block();
+                    self.switch_to(dead);
                     return;
                 }
                 let op = v.map(|e| self.expr(e));

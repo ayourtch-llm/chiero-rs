@@ -513,3 +513,84 @@ fn a_function_falling_off_the_end_exits_its_parameter_scope() {
     assert!(enters >= 2, "the parameter scope and the body's: {enters}");
     assert_eq!(enters, exits, "every scope entered is left");
 }
+
+/// **A function ending in `return` does not exit its scopes twice.**
+///
+/// `return` unwinds every open scope on its way out (015 §3), and wave 109 added a trailing
+/// `exit_scope` after the body so a function *falling off the end* still closes its
+/// parameter scope. A body ending in `return` gets both, so the callee of
+/// `tests/corpus/owed/header_inline.c` ends with `.scope exit 1`, `.scope exit 0`,
+/// `.scope exit 1`, `.scope exit 0`.
+///
+/// It is not cosmetic: 021 retires stack objects on `Scope(Exit)`, so a scope exited twice
+/// retires its objects twice — and wave 128 narrowed a wild pointer in an aggregate return
+/// to exactly this.
+#[test]
+fn a_returning_function_exits_each_scope_once() {
+    let m = lower("int f(int n) { int t = n; return t; }");
+    let f = m.funcs.iter().find(|x| &*x.name == "f").expect("f");
+
+    let events: Vec<(u32, ScopeKind)> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent { scope, kind })) => {
+                Some((scope.0, *kind))
+            }
+            _ => None,
+        })
+        .collect();
+
+    for id in events
+        .iter()
+        .map(|(s, _)| *s)
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let enters = events
+            .iter()
+            .filter(|(s, k)| *s == id && *k == ScopeKind::Enter)
+            .count();
+        let exits = events
+            .iter()
+            .filter(|(s, k)| *s == id && *k == ScopeKind::Exit)
+            .count();
+        assert_eq!(
+            enters, exits,
+            "scope {id} is entered {enters} time(s) and exited {exits}: {events:?}"
+        );
+    }
+    assert!(
+        check_scope_balance(f).is_empty(),
+        "{:#?}",
+        check_scope_balance(f)
+    );
+}
+
+/// **And an aggregate-returning function too**, which is the shape wave 128 traced. Its
+/// `return` carries a `CopyMem` before the unwind, so the two paths differ.
+#[test]
+fn an_aggregate_returning_function_exits_each_scope_once() {
+    let m = lower(
+        "struct pair { int lo; int hi; };\n\
+         static struct pair mk(int a) { struct pair p; p.lo = a; p.hi = a; return p; }\n",
+    );
+    let f = m.funcs.iter().find(|x| &*x.name == "mk").expect("mk");
+    let events: Vec<(u32, ScopeKind)> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent { scope, kind })) => {
+                Some((scope.0, *kind))
+            }
+            _ => None,
+        })
+        .collect();
+    let exits = events.iter().filter(|(_, k)| *k == ScopeKind::Exit).count();
+    let enters = events
+        .iter()
+        .filter(|(_, k)| *k == ScopeKind::Enter)
+        .count();
+    assert_eq!(enters, exits, "one exit per enter, not two: {events:?}");
+}
