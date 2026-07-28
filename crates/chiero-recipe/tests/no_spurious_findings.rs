@@ -366,6 +366,165 @@ fn an_uninitialized_global_reads_as_zero() {
 // The corpus, executed
 // ---------------------------------------------------------------------------------------
 
+/// Lower one corpus C file, with the include path and gcc's system headers.
+fn lower_corpus(path: &std::path::Path, include: &std::path::Path) -> Option<Module> {
+    struct Disk;
+    impl chiero_pp::FileLoader for Disk {
+        fn load(&mut self, p: &std::path::Path) -> std::io::Result<String> {
+            std::fs::read_to_string(p)
+        }
+    }
+    let system = gcc_system_paths();
+    if system.is_empty() {
+        return None;
+    }
+    let src = std::fs::read_to_string(path).expect("the corpus file exists");
+    let cfg = Config {
+        include_paths: vec![include.to_path_buf()],
+        iquote_paths: vec![include.to_path_buf()],
+        system_paths: system,
+        defines: vec![("__CHIERO__".into(), "1".into())],
+        ..Config::default()
+    };
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(path, &src, cfg, &mut Disk);
+    assert!(
+        tu.diagnostics.is_empty(),
+        "{}: {:?}",
+        path.display(),
+        tu.diagnostics
+    );
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "{}: {:?}",
+        path.display(),
+        parsed.diagnostics
+    );
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{}: {:?}",
+        path.display(),
+        analysis.diagnostics
+    );
+    let lowered = chiero_lower::lower_tu(&parsed.ast, &analysis, &names);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "{}: {:?}",
+        path.display(),
+        lowered.diagnostics
+    );
+    Some(lowered.module)
+}
+
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+/// **Every corpus file runs clean.**
+///
+/// `goldens.rs` compares each corpus file's lowered *text* against a checked-in `.cir`. That
+/// pins the shape and says nothing about the values: a golden is equally stable whether the
+/// program computes the right answer or the wrong one, and it stays stable while a read
+/// silently returns `Undef`.
+///
+/// These files are written to hold. Every `chiero_assert` in them is a claim the author
+/// believed, so a finding here is either a real defect in chiero or a fixture that stopped
+/// being true — and both are worth stopping for. Wave 114 checked one file this way; this
+/// is the sweep §9 asked for.
+#[test]
+fn every_corpus_file_runs_clean() {
+    let root = workspace_root();
+    let dir = root.join("tests/corpus/c");
+    let include = root.join("include");
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("the C corpus exists")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    // Sorted: `read_dir` order is the filesystem's, and a sweep that walks it differently
+    // on another machine is a different test.
+    files.sort();
+    assert!(
+        files.len() >= 5,
+        "found {} files in {}",
+        files.len(),
+        dir.display()
+    );
+
+    let mut ran = 0;
+    for path in &files {
+        let Some(m) = lower_corpus(path, &include) else {
+            // **Announced, not silent.** An oracle that can quietly not run is not an
+            // oracle; this project has had to fix that six times.
+            eprintln!("skipping every_corpus_file_runs_clean: no gcc system include path");
+            return;
+        };
+        let errs = chiero_cir::verify::verify(&m);
+        assert!(
+            errs.iter().all(|e| !e.is_error()),
+            "{} does not verify: {errs:#?}",
+            path.display()
+        );
+        let mut a = chiero_solver::TermArena::new();
+        let r = chiero_exec::Engine::new(&m).run(&mut a);
+        assert!(
+            !r.states().is_empty(),
+            "{} produced no path at all",
+            path.display()
+        );
+        assert!(
+            r.findings().is_empty(),
+            "{} reports: {:#?}",
+            path.display(),
+            r.findings()
+        );
+
+        // **"No findings" is worth nothing on its own.** Every one of these files is
+        // written so that the *absence* of a report is the property — `array_bounds.c`
+        // says so in its own comment — and absence is exactly what a run that stopped
+        // early, ran out of budget, or invented its way past the interesting part also
+        // produces. So the run has to have got there:
+        for st in r.states() {
+            assert!(
+                matches!(
+                    st.status,
+                    chiero_exec::Status::Terminated(chiero_exec::TermReason::Return)
+                ),
+                "{} ended a path with {:?} rather than returning — the assertions after \
+                 that point were never evaluated",
+                path.display(),
+                st.status
+            );
+            assert!(
+                !st.assumptions()
+                    .iter()
+                    .any(|a| a.kind == chiero_exec::AssumptionKind::NoInformation),
+                "{} invented a value: {:?}",
+                path.display(),
+                st.assumptions()
+                    .iter()
+                    .map(|a| a.detail.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+        ran += 1;
+    }
+    assert_eq!(
+        ran,
+        files.len(),
+        "every file was executed, not skipped past"
+    );
+}
+
 /// **`tests/corpus/c/globals.c` runs clean.**
 ///
 /// Lowering it and comparing against a golden says the *shape* is stable; it says nothing
