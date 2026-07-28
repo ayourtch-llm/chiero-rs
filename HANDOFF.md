@@ -487,7 +487,62 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 113, `738a6ee`) — 1058 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 114, `7db8fc5`) — 1060 tests, 3 ignored, M1 165/165 by contract
+>
+> **The corpus has globals.** `tests/corpus/c/globals.c` — a `static const` initialized
+> table, a counter with no initializer, a file-scope struct with padding — lowers, matches
+> a golden, and **executes clean**. That closes the front waves 112 and 113 both left open.
+>
+> Reading its golden immediately found `is_const` hardcoded `false`, which had made 021 c21
+> unreachable for every global. **That is the third wave running where reading a golden or a
+> control found more than the test did.**
+>
+> ### Next, in rough order of value
+>
+> 1. **The other corpus files still have no globals**, and nothing runs *them* through the
+>    engine — `goldens.rs` only compares text. `the_globals_corpus_file_runs_clean` in
+>    `chiero-recipe` is the pattern; generalise it over `tests/corpus/c/*.c` so every corpus
+>    file's assertions are checked, not just its shape.
+> 2. **Initializer forms still refused** (each falls back to `GlobalInit::Zero`):
+>    designated (`{[2] = 5}`, `{.b = 5}` — VPP uses these heavily for node registration),
+>    bit-field members, and **an address** (`int *p = &g;`), which `GlobalInit::Bytes` has no
+>    way to express — a CIR question before it is a lowering one.
+> 3. **021 c21 is now reachable and untested on a real global.** `const int g = 1;
+>    *(int *)&g = 2;` lowers and verifies (wave 112); check it produces exactly one finding
+>    and leaves the bytes alone.
+> 4. **A fault in a non-entry frame is untested**; **`Bits` path steps are not emitted**;
+>    **023 c17** remains a milestone, not a wave (measurement in wave 110's entry).
+>
+> ### Rules earned, most recent first
+>
+> **Read the golden, not just the test result.** Wave 114's real finding was in the blessed
+> output, not in any assertion. Waves 112 and 113 found theirs by dumping a *passing*
+> control. The suite tells you what you asked; the artifact tells you what happened.
+> **A wrong answer is worse than a missing one** — when you cannot compute something, refuse
+> it whole rather than encoding the part you understood (wave 113).
+> **A survivor is not automatically a fixture gap** — remove the code and re-run to tell dead
+> code from missing coverage (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (waves 107, 112).
+> **The fixture never reached the comparison the design exists for** — twelve waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial, not a surviving gap**. An oracle that can silently not run is
+> not an oracle — **announce every skip**.
+>
+> Owed and written down: only one corpus file is executed; designated, bit-field and address
+> initializers are refused; 021 c21 untested on a real global; a fault in a non-entry frame
+> is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in sema; the
+> parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals
+> lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately
+> uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 113, `738a6ee`) — 1058 tests, 3 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: put globals in the corpus
 >
