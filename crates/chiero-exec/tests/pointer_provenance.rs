@@ -300,3 +300,104 @@ fn reading_a_lazily_materialized_parameter_is_not_an_uninitialized_read() {
         "the read produced a value"
     );
 }
+
+/// **A store through an entry pointer parameter must land** — 021 §6 says a lazily
+/// materialized object's contents are "fully symbolic and fully **initialized**", not
+/// read-only.
+///
+/// Found by review, as a regression from the fix directly above: materializing the pointee
+/// with a symbolic havoc promotes it to an array representation, and every byte-level
+/// *write* path refuses a promoted object. So `p[1] = 'a'` was dropped, and the following
+/// `if (p[1] == 'a')` explored **both** sides — one of which the program does not have.
+/// That is 023 §7's confidently-wrong answer, on the most common idiom in C.
+#[test]
+fn a_store_through_a_parameter_is_read_back_on_the_same_path() {
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    inst(
+                        InstKind::Store {
+                            addr: Operand::Value(ValueId(0)),
+                            val: i32c(0x2A),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                        10,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(1),
+                            rv: RValue::Load {
+                                addr: Operand::Value(ValueId(0)),
+                                ty: CTy::Int(32),
+                                align: 4,
+                                vol: Volatility::Normal,
+                            },
+                        },
+                        20,
+                    ),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Eq,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(1)),
+                                b: i32c(0x2A),
+                            },
+                        },
+                        30,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(1)))),
+            block(2, vec![], Terminator::Return(Some(i32c(2)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.states().len(),
+        1,
+        "what was just written is what is read back; there is no second path: {:#?}",
+        r.states()
+            .iter()
+            .map(|s| (&s.status, s.local(ValueId(1))))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        r.findings().is_empty(),
+        "and writing through a caller's pointer is not a finding: {:#?}",
+        r.findings()
+    );
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Exact,
+        "nor a reason to know less than exactly"
+    );
+}

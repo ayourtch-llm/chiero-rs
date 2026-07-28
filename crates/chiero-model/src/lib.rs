@@ -681,14 +681,37 @@ pub mod models {
         let mut branches: Vec<(Option<Term>, ModelOutcome)> = Vec::new();
         // `nonzero_prefix` accumulates "every byte before this one is non-zero".
         let mut nonzero_prefix: Option<Term> = None;
+        // **A branch whose guard is provably false is not a path.** Emitting them anyway
+        // produced impossible lengths *and* a false unterminated-string finding on an
+        // ordinary terminated string — a fabricated out-of-bounds of exactly the class
+        // §4 step 4 calls the most valuable thing these models catch. Found by review.
+        //
+        // The converse matters too: a byte that is provably *zero* ends the string, and
+        // every branch past it is unreachable. §4 step 1's concrete walk, expressed as
+        // folding rather than as a second loop over the same bytes.
+        let mut stopped = false;
         for (i, b) in bytes.iter().copied().enumerate() {
+            if stopped {
+                break;
+            }
             let is_zero = cx.arena().eq(b, zero);
             let guard = match nonzero_prefix {
                 Some(pre) => cx.arena().and(pre, is_zero),
                 None => is_zero,
             };
             let len = cx.arena().bv(64, i as u128);
-            branches.push((Some(guard), ModelOutcome::Value(Some(Value::Scalar(len)))));
+            match cx.arena().eval_ground_bool(guard) {
+                // Impossible: the concrete bytes rule this length out.
+                Ok(false) => {}
+                // Certain: the string ends here, and nothing past it is reachable.
+                Ok(true) => {
+                    branches.push((None, ModelOutcome::Value(Some(Value::Scalar(len)))));
+                    stopped = true;
+                }
+                Err(_) => {
+                    branches.push((Some(guard), ModelOutcome::Value(Some(Value::Scalar(len)))))
+                }
+            }
             let nz = cx.arena().not(is_zero);
             nonzero_prefix = Some(match nonzero_prefix {
                 Some(pre) => cx.arena().and(pre, nz),
@@ -696,8 +719,22 @@ pub mod models {
             });
         }
 
-        // The tail: no byte was zero.
+        // A provably terminated string has one answer and no tail.
+        if stopped {
+            return match branches.pop() {
+                Some((_, only)) => only,
+                None => ModelOutcome::Finding("strlen: no branch survived".to_string()),
+            };
+        }
+        // The tail: no byte was zero. If that is provably impossible — the concrete bytes
+        // already contain a NUL — there is no unterminated string to report, and emitting
+        // one is a fabricated out-of-bounds on a properly terminated string.
         let all_nonzero = nonzero_prefix;
+        if let Some(g) = all_nonzero
+            && cx.arena().eval_ground_bool(g) == Ok(false)
+        {
+            return ModelOutcome::Fork(branches);
+        }
         if limit == room {
             branches.push((
                 all_nonzero,

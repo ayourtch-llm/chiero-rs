@@ -192,3 +192,227 @@ fn the_scan_cap_does_not_manufacture_a_terminator() {
             .collect::<Vec<_>>()
     );
 }
+
+/// **A terminated string is not an unterminated one.** Review's fixture:
+/// `char buf[4]; buf[0]=x; buf[1]=0; buf[2]='b'; buf[3]='c';` — gcc over all 256 values of
+/// `x` gives length 0 or 1, never 2 or 3, and never runs off the end. chiero reported four
+/// lengths *and* a false out-of-bounds of exactly the class §4 step 4 exists to find,
+/// because it emitted branches whose guards were provably false.
+#[test]
+fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let strlen = Function {
+        id: FuncId(1),
+        name: "strlen".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(64),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let store = |off: i128, val: i128, id: u32| {
+        vec![
+            Inst {
+                kind: InstKind::Assign {
+                    dst: ValueId(id),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: off }),
+                    },
+                },
+                span: Span::DUMMY,
+            },
+            Inst {
+                kind: InstKind::Store {
+                    addr: Operand::Value(ValueId(id)),
+                    val: Operand::Const(Const::Int { bits: 8, val }),
+                    ty: CTy::Int(8),
+                    align: 1,
+                    vol: Volatility::Normal,
+                },
+                span: Span::DUMMY,
+            },
+        ]
+    };
+    let mut insts = Vec::new();
+    // buf[1] = 0, buf[2] = 'b', buf[3] = 'c'. buf[0] is whatever the caller left.
+    insts.extend(store(1, 0, 10));
+    insts.extend(store(2, 98, 11));
+    insts.extend(store(3, 99, 12));
+    insts.push(Inst {
+        kind: InstKind::Call {
+            dst: Some(ValueId(20)),
+            callee: Callee::Direct(FuncId(1)),
+            args: vec![Operand::Value(ValueId(0))],
+        },
+        span: Span::DUMMY,
+    });
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, strlen],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(backend)
+        .with_entry_param_bytes(4)
+        .run(&mut a);
+    let mut lengths: Vec<u128> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(20)) {
+            Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+            _ => None,
+        })
+        .collect();
+    lengths.sort_unstable();
+    lengths.dedup();
+    assert_eq!(
+        lengths,
+        vec![0, 1],
+        "byte 1 is a concrete NUL, so the length is 0 or 1 and nothing else"
+    );
+    assert!(
+        !r.findings().iter().any(|f| f.contains("unterminated")),
+        "the string is terminated: {:#?}",
+        r.findings()
+    );
+}
+
+/// **A concrete prefix does not disable the fork.** §4 step 1 walks while the byte is
+/// provably non-zero and step 2 forks at the first byte that *may* be zero — the prefix is
+/// not a reason to stop. Dispatch gated the symbolic fork on the concrete walk having
+/// scanned **zero** bytes, so one assigned byte before the caller's data turned the whole
+/// analysis off: chiero found neither the length nor the overrun. Found by review.
+#[test]
+fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
+    let Some(backend) = chiero_solver::SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let strlen = Function {
+        id: FuncId(1),
+        name: "strlen".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(64),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let store = |off: i128, val: i128, id: u32| {
+        vec![
+            Inst {
+                kind: InstKind::Assign {
+                    dst: ValueId(id),
+                    rv: RValue::PtrAdd {
+                        base: Operand::Value(ValueId(0)),
+                        off: Operand::Const(Const::Int { bits: 64, val: off }),
+                    },
+                },
+                span: Span::DUMMY,
+            },
+            Inst {
+                kind: InstKind::Store {
+                    addr: Operand::Value(ValueId(id)),
+                    val: Operand::Const(Const::Int { bits: 8, val }),
+                    ty: CTy::Int(8),
+                    align: 1,
+                    vol: Volatility::Normal,
+                },
+                span: Span::DUMMY,
+            },
+        ]
+    };
+    // buf[0]='a' (concrete, non-zero), buf[1] from the caller, buf[2]='b', buf[3]='c'.
+    let mut insts = Vec::new();
+    insts.extend(store(0, 97, 10));
+    insts.extend(store(2, 98, 11));
+    insts.extend(store(3, 99, 12));
+    insts.push(Inst {
+        kind: InstKind::Call {
+            dst: Some(ValueId(20)),
+            callee: Callee::Direct(FuncId(1)),
+            args: vec![Operand::Value(ValueId(0))],
+        },
+        span: Span::DUMMY,
+    });
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, strlen],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(backend)
+        .with_entry_param_bytes(4)
+        .run(&mut a);
+    let lengths: Vec<u128> = r
+        .states()
+        .iter()
+        .filter_map(|s| match s.local(ValueId(20)) {
+            Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        lengths.contains(&1),
+        "if the caller's byte is NUL the length is 1: {lengths:?}"
+    );
+    // …and if it is not, the string runs off the end of a 4-byte object.
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|f| f.contains("unterminated"))
+            .count(),
+        1,
+        "the overrun is found: {:#?}",
+        r.findings()
+    );
+}

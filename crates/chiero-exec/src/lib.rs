@@ -1006,7 +1006,25 @@ impl<'m> Engine<'m> {
                 // calls that "an uninitialized-read false-positive storm", and §3.1's
                 // whole reason for distinguishing symbolic from uninitialized is to make
                 // this expressible. Contract 27.
-                mem.havoc_object(a, obj, HavocFill::Symbolic, f.span);
+                // **Byte-wise, not `havoc_object`** (021 §6). The contents must be
+                // "fully symbolic and fully initialized", and the two obvious shortcuts
+                // are each wrong in one direction, both found by review:
+                //
+                // - `havoc_object` promotes the object to an array representation, and
+                //   every byte-level *write* path refuses a promoted object — so every
+                //   store through a pointer parameter was silently dropped and the read
+                //   after it explored a path the program does not have.
+                // - Marking the bytes initialized without giving them values leaves them
+                //   reading as the backing store's **zero**, which 021 §3.1 calls the
+                //   single most common way a symbolic executor is confidently wrong.
+                //
+                // A per-byte symbolic fill is neither: the object stays `Repr::Bytes` and
+                // writable, and every byte is a symbol nobody has claimed. It costs one
+                // term per byte, which is why `with_entry_param_bytes` exists — filling
+                // on first touch instead is the optimisation, and it is not correctness.
+                let p = Pointer { base: obj, off: 0 };
+                let n = self.entry_param_bytes;
+                mem.havoc_range_reporting(a, p, n, HavocFill::Symbolic, f.span);
                 Value::Ptr(Pointer { base: obj, off: 0 })
             } else {
                 let t = a.var(sort_of(&p.ty), &format!("param{i}"));
@@ -3707,9 +3725,16 @@ impl<'m> Engine<'m> {
                         // **The symbolic case is a fork, not a shrug** (024 §4 step 2).
                         // The concrete walk stops at the first byte it cannot read as a
                         // number; that is where the interesting strings start, not where
-                        // the analysis should. `CapReached { scanned: 0 }` here means the
-                        // scan never got going, which is exactly the symbolic case.
-                        chiero_model::StrScan::CapReached { scanned: 0 } => {
+                        // the analysis should.
+                        //
+                        // At *any* `scanned`, not only zero: gating on `scanned == 0`
+                        // meant a single concrete byte before the symbolic one — `buf[0]`
+                        // assigned, the rest from the caller — disabled the fork entirely,
+                        // and chiero found neither the length nor the overrun. §4 step 1
+                        // walks the concrete prefix and step 2 forks at the first byte
+                        // that *may* be zero; the prefix is not a reason to stop. Found by
+                        // review.
+                        chiero_model::StrScan::CapReached { .. } => {
                             models::strlen_symbolic(&mut cx, p, strp)
                         }
                         // A length nobody established is not a number to hand back —
