@@ -209,6 +209,30 @@ fn switch_break_continue_and_goto_compute_what_gcc_computes() {
     agree("int t = 1; { int a = 2; { int b = 3; t = a + b; goto out; } } out: return t;");
 }
 
+/// **Aggregates and bit-fields**, checked for what they compute.
+///
+/// A `CopyMem` of the wrong size and a `StoreBits` at the wrong offset are both
+/// structurally perfect, so §9's standing instruction applies with full force: the shape
+/// tests say the right *kind* of instruction was emitted, and only gcc says the right bits
+/// ended up in the right places.
+#[test]
+fn struct_copies_and_bitfields_compute_what_gcc_computes() {
+    agree(
+        "struct S { int a; int b; }; struct S x = {1, 2}; struct S y; y = x; return y.a * 10 + y.b;",
+    );
+    agree("struct B { int a:3; int b:5; }; struct B v; v.a = 3; v.b = 9; return v.a * 100 + v.b;");
+    // Signedness of a narrow bit-field: `int a:3` holds -4..3, so 5 reads back as -3.
+    agree("struct B { int a:3; }; struct B v; v.a = 5; return v.a;");
+    agree("struct B { unsigned a:3; }; struct B v; v.a = 5; return (int)v.a;");
+    // A bit-field straddling a byte, and one after a plain member.
+    agree("struct B { char c; int a:20; }; struct B v; v.c = 1; v.a = 12345; return v.a + v.c;");
+    agree("struct B { int a:30; int b:6; }; struct B v; v.a = 7; v.b = 3; return v.a * 10 + v.b;");
+    // Ordinary members, so the byte-offset path is checked too.
+    agree(
+        "struct P { int a; char b; int c; }; struct P v; v.a = 1; v.b = 2; v.c = 3; return v.a + v.b + v.c;",
+    );
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
