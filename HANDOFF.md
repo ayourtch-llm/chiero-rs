@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 144) — 1127 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 145) — 1129 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -501,7 +501,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > arrays, pointers and six spellings of one access, and it found another; 142 gave it
 > bit-fields and unions and it found a *wrong answer*; 143 gave it file-scope declarations
 > and it found a global pointer reading as null; 144 closed the last defect on the open
-> list**.*
+> list; 145 made lowering refuse CIR the verifier rejects**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -619,14 +619,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > everything the generator has found since, is fixed. What remains is tooling and one
 > deliberate deferral:
 >
-> - **The verifier is not run at lowering time.** Wave 141's defect emitted CIR the verifier
->   rejects and lowering refused nothing, so the engine produced no state for a reason that
->   had nothing to do with the program. 015 §7 refuses what lowering *knows* it cannot
->   represent; this is the class it does not know about. Running `verify` at the end of
->   `function()` and pushing a diagnostic on an error turns every such defect from a
->   `SilentNoState` into a `Refused`. **It has no RED today** — the generator checks the
->   verifier now and no program in its grammar produces invalid CIR — so it is a guard whose
->   test is a mutation, like wave 134's rollback.
+> - ~~The verifier is not run at lowering time.~~ **Done in wave 145.** `refuse_unverifiable`
+>   runs it over the finished module and discards any function it rejects, with a diagnostic
+>   naming the instruction — so a defect of that class is now a `Refused` rather than a
+>   `SilentNoState`. `crates/chiero-lower/tests/verified.rs` holds the invariant.
+>   **One branch of it is untested and said so in the commit**: the `is_error()` filter that
+>   keeps a *warning* from refusing a function. Nothing in the fixture set produces a verify
+>   warning, so the mutation for it is equivalent. If a warning kind is ever added, that
+>   filter needs a fixture.
 > - **The AST shrinker** (~250 lines). Waves 139–144 each shrank by hand in a few minutes;
 >   that worked because each run had one defect. It will not survive a run with five.
 > - **The refusal-ledger ratchet.** The ledger prints and is empty; the moment it is not, an
@@ -662,6 +662,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Two tests failing for two different reasons is not confirmation** (wave 145). Under the
+> reintroduced wave-141 defect, both tests in `verified.rs` went red — one because the CIR
+> was invalid, the other because `harness::lower` panics on the *diagnostic* the new guard
+> correctly produces. Only the second discriminates. **Check which test failed and why**
+> before reading a red suite as evidence for the thing you were testing.
 > **A mutation that changes the wrong thing is not evidence** (wave 144). The first attempt
 > at "does the copy happen before the scope exit" deleted `exit_scope` instead of moving the
 > copy past it, and survived — which says only that an unbalanced scope here is uncaught.
@@ -794,8 +799,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > class it does not know about. Running `verify` at the end of `function()` and refusing on
 > an error would turn every such defect from a silent nothing into a diagnostic.
 >
-> Owed and written down — **no open defects**, these are gaps and deferrals: the verifier is
-> not run at lowering time; the AST shrinker and the refusal ratchet are unwritten; the
+> Owed and written down — **no open defects**, these are gaps and deferrals: the AST shrinker and the refusal ratchet are unwritten; the
 > wave-117 `fork_on_offset` survivor; floats do not execute; designated and bit-field
 > initializers refused (address initializers were fixed in wave 143); a fault in a non-entry
 > frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
