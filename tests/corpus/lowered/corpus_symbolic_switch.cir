@@ -1,0 +1,104 @@
+target x86_64-unknown-linux-gnu
+
+global const static @.str.0 : size 3 align 1 bytes 6f7000 ; span 299:303:0
+
+func @chiero_make_symbolic(%0: ptr, %1: i64, %2: ptr) -> void ; span 2737:2802:0
+
+func @chiero_assume(%3: i32) -> void ; span 2804:2832:0
+
+func @chiero_assert(%4: i32) -> void ; span 2834:2862:0
+
+func @chiero_is_symbolic(%5: i64) -> i32 ; span 2864:2894:0
+
+func @chiero_mark_fidelity(%6: ptr) -> void ; span 2896:2938:0
+
+func @main() -> i32 { ; span 229:855:0
+  alloca %0 : i32 x 1 align 4 scope 1 lifetime scope "op" ; span 248:258:0
+  alloca %1 : i32 x 1 align 4 scope 1 lifetime scope "r" ; span 361:370:0
+entry: ; span 229:855:0
+  .line 8
+  .line 9
+  .line 10
+  .line 11
+  .line 13
+  .line 14
+  .scope enter 0 ; span 229:855:0
+  .scope enter 1 ; span 244:855:0
+  %7 = addrlocal %0 ; span 248:258:0
+  store i32 2i32 -> %7 align 4 ; span 248:258:0
+  .seqpoint ; span 248:258:0
+  %8 = addrlocal %0 ; span 283:286:0
+  %9 = call @chiero_make_symbolic(%8, 4i64, globaladdr:@.str.0:0) ; span 262:304:0
+  .seqpoint ; span 262:305:0
+  %10 = addrlocal %0 ; span 322:324:0
+  %11 = load i32, %10 align 1 ; span 322:324:0
+  %12 = cmp sge i32 %11, 0i32 ; span 322:329:0
+  %13 = zext i1 %12 to i32 ; span 322:329:0
+  %14 = call @chiero_assume(%13) ; span 308:330:0
+  .seqpoint ; span 308:331:0
+  %15 = addrlocal %0 ; span 348:350:0
+  %16 = load i32, %15 align 1 ; span 348:350:0
+  %17 = cmp sle i32 %16, 3i32 ; span 348:355:0
+  %18 = zext i1 %17 to i32 ; span 348:355:0
+  %19 = call @chiero_assume(%18) ; span 334:356:0
+  .seqpoint ; span 334:357:0
+  %20 = addrlocal %1 ; span 361:370:0
+  store i32 0i32 -> %20 align 4 ; span 361:370:0
+  .seqpoint ; span 361:370:0
+  %21 = addrlocal %0 ; span 382:384:0
+  %22 = load i32, %21 align 1 ; span 382:384:0
+  switch i32 %22, [0 -> bb2, 1 -> bb4, 2 -> bb4], default bb6
+bb1: ; span 229:855:0
+  .line 30
+  .line 31
+  .line 32
+  %26 = addrlocal %1 ; span 776:777:0
+  %27 = load i32, %26 align 1 ; span 776:777:0
+  %28 = srem i32 %27, 10i32 ; span 776:782:0
+  %29 = cmp eq i32 %28, 0i32 ; span 776:787:0
+  %30 = zext i1 %29 to i32 ; span 776:787:0
+  %31 = call @chiero_assert(%30) ; span 762:788:0
+  .seqpoint ; span 762:789:0
+  %32 = addrlocal %1 ; span 806:807:0
+  %33 = load i32, %32 align 1 ; span 806:807:0
+  %34 = cmp sge i32 %33, 10i32 ; span 806:813:0
+  %35 = zext i1 %34 to i32 ; span 806:813:0
+  %36 = call @chiero_assert(%35) ; span 792:814:0
+  .seqpoint ; span 792:815:0
+  %37 = addrlocal %1 ; span 832:833:0
+  %38 = load i32, %37 align 1 ; span 832:833:0
+  %39 = cmp sle i32 %38, 30i32 ; span 832:839:0
+  %40 = zext i1 %39 to i32 ; span 832:839:0
+  %41 = call @chiero_assert(%40) ; span 818:840:0
+  .seqpoint ; span 818:841:0
+  .scope exit 1 ; span 844:853:0
+  .scope exit 0 ; span 844:853:0
+  ret 0i32
+bb2: ; span 229:855:0
+  .line 15
+  .line 16
+  .scope enter 2 ; span 390:409:0
+  %23 = addrlocal %1 ; span 402:408:0
+  store i32 10i32 -> %23 align 1 ; span 402:408:0
+  .seqpoint ; span 402:409:0
+  .scope exit 2 ; span 414:420:0
+  goto bb1
+bb4: ; span 229:855:0
+  .line 18
+  .line 21
+  .scope enter 2 ; span 423:544:0
+  %24 = addrlocal %1 ; span 537:543:0
+  store i32 20i32 -> %24 align 1 ; span 537:543:0
+  .seqpoint ; span 537:544:0
+  .scope exit 2 ; span 549:555:0
+  goto bb1
+bb6: ; span 229:855:0
+  .line 23
+  .line 24
+  .scope enter 2 ; span 558:578:0
+  %25 = addrlocal %1 ; span 571:577:0
+  store i32 30i32 -> %25 align 1 ; span 571:577:0
+  .seqpoint ; span 571:578:0
+  .scope exit 2 ; span 583:589:0
+  goto bb1
+}

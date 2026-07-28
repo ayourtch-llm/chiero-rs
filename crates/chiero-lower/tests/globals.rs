@@ -429,3 +429,66 @@ fn an_integer_conditional_keeps_its_width() {
         f.allocas.iter().map(|a| a.ty.clone()).collect::<Vec<_>>()
     );
 }
+
+/// **Consecutive `case` labels share one block.**
+///
+/// `case 1: case 2: r = 20;` parses as a `Case` whose *body* is another `Case`, so the
+/// switch's statement loop never saw the second — it reached the generic statement path and
+/// reported "`case` or `default` outside a switch", which 015 §7 turns into refusing the
+/// whole function. **Every C switch with two labels on one arm was unlowerable**, and no
+/// corpus file had one until wave 122.
+#[test]
+fn consecutive_case_labels_share_a_block() {
+    let src = "int f(int op) { int r = 0; switch (op) { case 0: r = 10; break; \
+               case 1: case 2: r = 20; break; default: r = 30; } return r; }";
+    let e = errors(src);
+    assert!(e.is_empty(), "{e:#?}");
+
+    let m = lower(src);
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    let cases = f
+        .blocks
+        .iter()
+        .find_map(|b| match &b.term {
+            chiero_cir::Terminator::Switch { cases, .. } => Some(cases.clone()),
+            _ => None,
+        })
+        .expect("a switch");
+    assert_eq!(
+        cases.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "all three values dispatch"
+    );
+    let target = |v: i128| cases.iter().find(|(x, _)| *x == v).map(|(_, b)| *b);
+    assert_eq!(
+        target(1),
+        target(2),
+        "1 and 2 share an arm, so they share a block: {cases:?}"
+    );
+    assert_ne!(target(0), target(1), "and 0 does not");
+}
+
+/// **`case 1: default:`** — both labels on one block, which is legal C and a different arm
+/// of the same walk.
+#[test]
+fn a_case_followed_by_default_shares_its_block() {
+    let src = "int f(int op) { int r = 0; switch (op) { case 5: default: r = 7; } return r; }";
+    assert!(errors(src).is_empty(), "{:#?}", errors(src));
+    let m = lower(src);
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    let (cases, default) = f
+        .blocks
+        .iter()
+        .find_map(|b| match &b.term {
+            chiero_cir::Terminator::Switch { cases, default, .. } => {
+                Some((cases.clone(), *default))
+            }
+            _ => None,
+        })
+        .expect("a switch");
+    assert_eq!(cases.len(), 1);
+    assert_eq!(
+        cases[0].1, default,
+        "`case 5` and `default` are the same block: {cases:?} vs {default:?}"
+    );
+}
