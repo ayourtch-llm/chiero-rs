@@ -2639,13 +2639,26 @@ impl Lowerer<'_> {
         }
     }
 
-    /// Emit an `Exit` for every scope open at the jump but **not** open at the target,
-    /// innermost first.
+    /// Re-scope a jump: `Exit` every scope it leaves, then `Enter` every scope it lands
+    /// in.
     ///
-    /// Comparing the two lists rather than two depths is what makes a `goto` between
-    /// sibling scopes correct: both sides can be at depth 2 and be in *different* scopes,
-    /// and a depth comparison would emit nothing while the jump really does leave one
-    /// scope and enter another.
+    /// Comparing the two *lists* rather than two depths is what makes a `goto` between
+    /// sibling scopes correct: both sides can be at depth 2 and be in **different**
+    /// scopes, and a depth comparison would emit nothing while the jump really does leave
+    /// one and enter another.
+    ///
+    /// The **enters** are contract 9c, and they are the mirror of the exits for the same
+    /// reason 021 §4 gives: a scope's objects are created on `Scope(Enter)`, so a jump
+    /// that lands inside a scope without entering it leaves everything there
+    /// unmaterialized and the eventual exit retires objects that never existed. C permits
+    /// the jump (C11 6.8.6.1).
+    ///
+    /// Order matters in both directions and they are opposites: **exits innermost first**,
+    /// because an inner scope's objects sit inside the outer one's storage; **enters
+    /// outermost first**, because they have nowhere to go until the outer one exists.
+    /// A backward jump that re-enters a scope it is already inside emits nothing for it —
+    /// the scope is in both lists — which is why re-entry needs the *fallthrough* edge to
+    /// have entered it too, and it did.
     fn unwind_leaving(&mut self, from: &[ScopeId], to: &[ScopeId], span: Span) {
         for id in from.iter().rev() {
             if to.contains(id) {
@@ -2657,6 +2670,21 @@ impl Lowerer<'_> {
                     InstKind::Marker(MarkerKind::Scope(ScopeEvent {
                         scope: id,
                         kind: ScopeKind::Exit,
+                    })),
+                    span,
+                )
+            });
+        }
+        for id in to.iter() {
+            if from.contains(id) {
+                continue;
+            }
+            let id = *id;
+            self.generated(|s| {
+                s.emit(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: id,
+                        kind: ScopeKind::Enter,
                     })),
                     span,
                 )

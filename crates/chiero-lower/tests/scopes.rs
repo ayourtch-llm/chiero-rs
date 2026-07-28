@@ -1,4 +1,4 @@
-//! Covers: 015 contracts 9, 9b, 10, 11, 18.
+//! Covers: 015 contracts 9, 9b, 9c, 10, 11, 18.
 //!
 //! 015 §4 calls scope markers "the most error-prone part of lowering", and the reason is
 //! that a missed marker in *either* direction is a false finding later rather than a

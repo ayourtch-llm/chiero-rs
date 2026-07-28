@@ -315,6 +315,19 @@ fn statement_expressions_and_vlas_compute_what_gcc_computes() {
     );
 }
 
+/// **`goto` into and back into a scope**, checked for what it computes.
+///
+/// Contract 9c's assertions are about markers, and a marker is invisible to a program's
+/// result — so the oracle is what says the *code* on those paths still runs correctly
+/// when lowering re-scopes the jump.
+#[test]
+fn goto_into_and_back_into_a_scope_computes_what_gcc_computes() {
+    agree("int n = 1; if (n) goto inner; { int a = 5; inner: ; return n + 1; } ");
+    agree("int n = 0; if (n) goto inner; { int a = 5; inner: ; return a + 1; } ");
+    agree("int n = 3; int t = 0; { inner: ; t += n; n--; } if (n > 0) goto inner; return t;");
+    agree("int n = 2; if (n) goto deep; { int a = 1; { int b = 2; deep: ; return n; } } ");
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
