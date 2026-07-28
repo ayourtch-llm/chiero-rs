@@ -1,6 +1,6 @@
 //! Havoc initialization and the proof surface — 024 contracts 21b and 21e.
 //!
-//! Covers: 024 contracts 21b, 21e; 022 contract 11d.
+//! Covers: 024 contracts 21b, 21d, 21e; 022 contract 11d.
 //!
 //! Both are about the same failure: a run that knows less than it says. 024 §2.1 puts it
 //! plainly — the *modeled* imprecise path is more dangerous than the unmodeled one,
@@ -116,10 +116,23 @@ fn a_run_that_called_scanf_cannot_be_sealed_as_a_proof() {
                 !np.assumptions.is_empty(),
                 "and it says what stopped it being a proof"
             );
+            // **The *modeled* path, not the unmodeled fallback.** `contains("scanf")`
+            // matches both this and "`scanf` has no body and no model", so the test could
+            // not tell them apart — and 024 §2.1's whole point is that the modeled
+            // imprecise path is the more dangerous one, "because it looks deliberate".
+            // De-registering `scanf` entirely used to leave this test passing. Found by
+            // review.
             assert!(
-                np.assumptions.iter().any(|x| x.detail.contains("scanf")),
-                "naming the model: {:#?}",
-                np.assumptions.iter().map(|x| &x.detail).collect::<Vec<_>>()
+                np.assumptions.iter().any(|x| {
+                    x.kind == AssumptionKind::ModelApproximate
+                        && x.detail.contains("scanf")
+                        && x.detail.contains("reads external input")
+                }),
+                "the model ran and said why it is approximate: {:#?}",
+                np.assumptions
+                    .iter()
+                    .map(|x| (&x.kind, &x.detail))
+                    .collect::<Vec<_>>()
             );
         }
         Ok(_) => panic!("a run that called `scanf` sealed as a proof"),
@@ -311,5 +324,105 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
         r.solver_calls >= 2,
         "the fixture must reach the solver more than once: {}",
         r.solver_calls
+    );
+}
+
+/// **024 contract 21e's middle clause.** "`HavocInit::Symbolic` produces no
+/// uninitialized-read finding on the havoc'd bytes; **`Uninitialized` produces one**."
+///
+/// Only the first and third clauses were tested, so nothing distinguished the two fills at
+/// the point where they differ — the very distinction 021 §3.1 exists to make. Found by
+/// review.
+#[test]
+fn an_uninitialized_havoc_does_produce_a_finding() {
+    use chiero_mem::{HavocFill, Memory, ObjKind, Pointer};
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    // Aligned to 4: an unaligned object reports `Misaligned` on the read, which is a
+    // different fault and would make "the fixture starts clean" false for a reason that
+    // has nothing to do with initialization.
+    let id = m.alloc(ObjKind::Heap, 4, 4, Span::DUMMY);
+    let p = Pointer { base: id, off: 0 };
+    // Write the bytes first, so the object is genuinely initialized and the *havoc* is
+    // what un-initializes it — otherwise a fresh object would report anyway and the
+    // test would pass without the havoc doing anything.
+    let v = a.bv(32, 0x1234_5678);
+    m.write_term(&mut a, p, v, 4, chiero_mem::Endian::Little, Span::DUMMY);
+    assert!(
+        m.read_term(&mut a, p, 4, chiero_mem::Endian::Little, Span::DUMMY)
+            .faults
+            .is_empty(),
+        "the fixture must start initialized: {:?}",
+        m.read_term(&mut a, p, 4, chiero_mem::Endian::Little, Span::DUMMY)
+            .faults
+    );
+
+    m.havoc_range_reporting(&mut a, p, 4, HavocFill::Uninitialized, Span::DUMMY);
+    let after = m.read_term(&mut a, p, 4, chiero_mem::Endian::Little, Span::DUMMY);
+    assert!(
+        after
+            .faults
+            .iter()
+            .any(|f| matches!(f, chiero_mem::MemFault::Uninitialized { .. })),
+        "an `Uninitialized` havoc leaves bytes nobody has written: {:?}",
+        after.faults
+    );
+
+    // And the other fill, on the same fixture, does not.
+    let mut m2 = Memory::new();
+    let mut a2 = TermArena::new();
+    let id2 = m2.alloc(ObjKind::Heap, 4, 4, Span::DUMMY);
+    let p2 = Pointer { base: id2, off: 0 };
+    m2.havoc_range_reporting(&mut a2, p2, 4, HavocFill::Symbolic, Span::DUMMY);
+    let sym = m2.read_term(&mut a2, p2, 4, chiero_mem::Endian::Little, Span::DUMMY);
+    assert!(
+        sym.faults.is_empty(),
+        "a `Symbolic` havoc leaves bytes that are unknown, not unwritten: {:?}",
+        sym.faults
+    );
+}
+
+/// **024 contract 21d.** "Default havoc with `reachable_depth: 1` invalidates a pointer
+/// stored inside the havoc'd object" — the callee was handed a pointer to a structure that
+/// *contains* pointers, and it may have written through those too.
+#[test]
+fn the_default_havoc_follows_one_level_of_pointers() {
+    use chiero_mem::{HavocFill, Memory, ObjKind, Pointer};
+    let mut m = Memory::new();
+    let mut a = TermArena::new();
+    // An outer object holding a pointer to an inner one, both initialized.
+    let inner = m.alloc(ObjKind::Heap, 4, 4, Span::DUMMY);
+    let outer = m.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+    let ip = Pointer {
+        base: inner,
+        off: 0,
+    };
+    let op = Pointer {
+        base: outer,
+        off: 0,
+    };
+    let v = a.bv(32, 0xAAAA_BBBB);
+    m.write_term(&mut a, ip, v, 4, chiero_mem::Endian::Little, Span::DUMMY);
+    let addr = m.addr_of(inner).expect("placed");
+    let at = a.bv(64, addr as u128);
+    m.write_term(&mut a, op, at, 8, chiero_mem::Endian::Little, Span::DUMMY);
+    // No side table needed: `pointees` finds the inner object by reading the address out
+    // of the outer one's bytes, which is what a callee handed the outer pointer would do.
+    let _ = ip;
+
+    let hit = m.havoc(&mut a, &[outer], 1, HavocFill::Symbolic, Span::DUMMY);
+    assert!(
+        hit.objects.contains(&inner),
+        "depth 1 follows the pointer the object holds: {hit:?}"
+    );
+    // Depth 0 does not — the distinction is the contract.
+    let mut m2 = Memory::new();
+    let mut a2 = TermArena::new();
+    let inner2 = m2.alloc(ObjKind::Heap, 4, 4, Span::DUMMY);
+    let outer2 = m2.alloc(ObjKind::Heap, 8, 8, Span::DUMMY);
+    let hit0 = m2.havoc(&mut a2, &[outer2], 0, HavocFill::Symbolic, Span::DUMMY);
+    assert!(
+        !hit0.objects.contains(&inner2),
+        "depth 0 stops here: {hit0:?}"
     );
 }

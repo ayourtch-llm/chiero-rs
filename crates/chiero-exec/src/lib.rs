@@ -3602,6 +3602,13 @@ impl<'m> Engine<'m> {
         if spec.objects.is_empty() {
             return;
         }
+        // ⚠️ The `Uninitialized` arm is **unreachable today** and mutation says so: a
+        // `ModelEntry` carries only a name and a precision, so the behaviour lives in this
+        // crate's dispatch, and no built-in model returns that fill. 024 §2.1 makes the
+        // choice a model's to declare, and the memory side of it is pinned directly
+        // (`an_uninitialized_havoc_does_produce_a_finding`) — what is not pinned is this
+        // one-line translation, and it will not be until a model can declare a havoc.
+        // Recorded rather than left as an unexplained survivor.
         let fill = match spec.init {
             HavocInit::Symbolic => HavocFill::Symbolic,
             HavocInit::Uninitialized => HavocFill::Uninitialized,
