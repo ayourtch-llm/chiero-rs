@@ -7,7 +7,10 @@
 //! 014 §7 validates layout differentially against the real compiler instead of against
 //! hand-written expectations: the expectations are exactly what a layout bug corrupts.
 
-use chiero_ast::{Ast, DeclId, DeclKind, ExprId, TypeId, TypeKind};
+use chiero_ast::{
+    Ast, BinOp, DeclId, DeclKind, ExprId, ExprKind, ForInit, StmtId, StmtKind, TypeId, TypeKind,
+    UnOp,
+};
 use chiero_span::{Span, Symbol};
 use indexmap::IndexMap;
 
@@ -429,6 +432,8 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         enums: IndexMap::new(),
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
+        values: IndexMap::new(),
+        unknown_names: Default::default(),
     };
     for &item in ast.items() {
         cx.item(item);
@@ -461,6 +466,8 @@ pub fn const_eval(
         enums: IndexMap::new(),
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
+        values: IndexMap::new(),
+        unknown_names: Default::default(),
     };
     let v = cx.eval(expr);
     out.append(&mut cx.out.diagnostics);
@@ -499,6 +506,12 @@ struct Cx<'a> {
     /// Records currently being laid out, so a struct containing itself by value is a
     /// diagnostic rather than a stack overflow.
     in_progress: Vec<Symbol>,
+    /// Ordinary identifiers in scope → their type. C's five namespaces are separate
+    /// (014 §4), and this is the one expressions read.
+    values: IndexMap<Symbol, TyId>,
+    /// Names already reported as undeclared, so the complaint is per name and not per
+    /// use — contract 20.
+    unknown_names: indexmap::IndexSet<Symbol>,
 }
 
 impl Cx<'_> {
@@ -525,18 +538,32 @@ impl Cx<'_> {
 
     fn item(&mut self, id: DeclId) {
         match self.ast.decl(id).kind.clone() {
-            DeclKind::Var { ty, .. } => {
+            DeclKind::Var { name, ty, init, .. } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                if let Some(n) = name {
+                    self.values.insert(n, t);
+                }
+                self.check_complete(id, t);
+                if let Some(init) = init {
+                    let node = self.type_expr(init);
+                    // 014 §5: the initializer arrives **as the declared type**, so
+                    // lowering never has to work out what the assignment did.
+                    self.coerce(node, t, Conversion::Assignment, init);
+                }
             }
             DeclKind::Typedef { name, ty } => {
                 let t = self.ty_of(ty);
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
             }
-            DeclKind::Func { ty, .. } => {
+            DeclKind::Func { name, ty, body, .. } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                self.values.insert(name, t);
+                if let Some(body) = body {
+                    self.type_stmt(body);
+                }
             }
             DeclKind::TagDef { ty } => {
                 let t = self.ty_of(ty);
@@ -1386,4 +1413,722 @@ fn parse_char_literal(text: &str) -> Option<i128> {
         'v' => 11,
         other => other as i128,
     })
+}
+
+// ---------------------------------------------------------------------------------
+// 014 §5 — expression typing, with every conversion made explicit
+// ---------------------------------------------------------------------------------
+
+impl Cx<'_> {
+    fn push_typed(&mut self, node: TypedNode) -> TypedId {
+        let id = TypedId(self.out.typed.nodes.len() as u32);
+        self.out.typed.nodes.push(node);
+        id
+    }
+
+    /// Record `id` as the outermost node for `expr`, so `top` and `conversions_of`
+    /// answer about the value the *consumer* sees rather than the one written.
+    fn set_top(&mut self, expr: ExprId, id: TypedId) -> TypedId {
+        self.out.typed.by_expr.insert(expr, id);
+        id
+    }
+
+    /// Insert an explicit conversion, or return the operand unchanged when the types
+    /// already agree.
+    ///
+    /// **Not inserting a no-op cast is the point**, not an optimization: contract 11's
+    /// corpus check reads operand types, and a tree full of `int -> int` casts would
+    /// satisfy it while saying nothing. A `Cast` here means a real conversion happened.
+    fn convert(&mut self, node: TypedId, to: TyId, why: Conversion, span: Span) -> TypedId {
+        if self.out.typed.ty_of(node) == to {
+            return node;
+        }
+        self.push_typed(TypedNode::Cast {
+            operand: node,
+            ty: to,
+            span,
+            why,
+        })
+    }
+
+    /// The type an expression has **before** conversion, plus its typed node.
+    fn type_expr(&mut self, expr: ExprId) -> TypedId {
+        let node = self.ast.expr(expr).clone();
+        let span = node.span;
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        let id = match &node.kind {
+            ExprKind::Number(sym) => {
+                let text = self.text(*sym).unwrap_or("").to_owned();
+                let v = parse_int_literal(&text, &self.target);
+                let ty = match v {
+                    Some(v) => self.intern(Ty::Int {
+                        signed: v.signed,
+                        bits: v.bits,
+                    }),
+                    // A floating literal; 014 §2's `FloatKind` from the suffix.
+                    None => {
+                        let k = if text.ends_with('f') || text.ends_with('F') {
+                            FloatKind::F32
+                        } else {
+                            FloatKind::F64
+                        };
+                        self.intern(Ty::Float(k))
+                    }
+                };
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::Char { .. } => {
+                let ty = self.intern(Ty::Int {
+                    signed: true,
+                    bits: int_bits,
+                });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::Str { fragments } => {
+                // A string literal is `char[n]`, and it decays like any other array.
+                let elem = self.intern(Ty::Int {
+                    signed: self.target.char_signed,
+                    bits: 8,
+                });
+                let n: u64 = fragments
+                    .iter()
+                    .filter_map(|f| self.text(f.spelling).map(|t| unquote(t).len() as u64))
+                    .sum::<u64>()
+                    + 1;
+                let ty = self.intern(Ty::Array {
+                    elem,
+                    len: ArrayLen::Fixed(n),
+                });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::Ident(sym) => {
+                let ty = self
+                    .values
+                    .get(sym)
+                    .copied()
+                    .or_else(|| {
+                        self.enumerators.get(sym).map(|_| {
+                            self.out
+                                .interned
+                                .get(&Ty::Int {
+                                    signed: true,
+                                    bits: int_bits,
+                                })
+                                .copied()
+                                .unwrap_or(TyId(0))
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        // An undeclared name is reported **once per name**, not once per
+                        // use. Contract 20's rule is about the ratio: a name used forty
+                        // times is one mistake, and forty copies of the same complaint
+                        // bury the thirty-nine other things that went wrong. The type is
+                        // poison either way, so every use after the first says nothing.
+                        if self.unknown_names.insert(*sym) {
+                            let n = self.text(*sym).unwrap_or("?").to_owned();
+                            self.error(span, format!("`{n}` was not declared"));
+                        }
+                        self.intern(Ty::Error)
+                    });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let a = self.type_expr(*lhs);
+                let b = self.type_expr(*rhs);
+                self.type_binary(
+                    expr,
+                    *op,
+                    BinSides {
+                        a,
+                        b,
+                        ae: *lhs,
+                        be: *rhs,
+                    },
+                    span,
+                )
+            }
+            ExprKind::Unary { op, operand } => {
+                let inner = self.type_expr(*operand);
+                let ity = self.out.typed.ty_of(inner);
+                let (ty, inner) = match op {
+                    UnOp::AddrOf => (self.intern(Ty::Ptr(ity)), inner),
+                    UnOp::Deref => {
+                        let decayed = self.decay(inner, *operand);
+                        let dty = self.out.typed.ty_of(decayed);
+                        let pointee = match self.out.types[dty.0 as usize].clone() {
+                            Ty::Ptr(p) => p,
+                            _ => self.intern(Ty::Error),
+                        };
+                        (pointee, decayed)
+                    }
+                    UnOp::Not => (
+                        self.intern(Ty::Int {
+                            signed: true,
+                            bits: int_bits,
+                        }),
+                        inner,
+                    ),
+                    _ => {
+                        let promoted = self.promote_node(inner, *operand, span);
+                        (self.out.typed.ty_of(promoted), promoted)
+                    }
+                };
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: vec![inner],
+                })
+            }
+            ExprKind::Postfix { operand, .. } => {
+                let inner = self.type_expr(*operand);
+                let ty = self.out.typed.ty_of(inner);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: vec![inner],
+                })
+            }
+            ExprKind::Assign { lhs, rhs, .. } => {
+                let l = self.type_expr(*lhs);
+                let lty = self.out.typed.ty_of(l);
+                let r = self.type_expr(*rhs);
+                let r = self.coerce(r, lty, Conversion::Assignment, *rhs);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: lty,
+                    operands: vec![l, r],
+                })
+            }
+            ExprKind::Cond { cond, then, els } => {
+                let c = self.type_expr(*cond);
+                let t = then.map(|t| self.type_expr(t));
+                let e = self.type_expr(*els);
+                let ety = self.out.typed.ty_of(e);
+                let ty = match t {
+                    Some(t) => {
+                        let tty = self.out.typed.ty_of(t);
+                        self.common_type(tty, ety)
+                    }
+                    None => ety,
+                };
+                let mut ops = vec![c];
+                if let (Some(t), Some(te)) = (t, then.as_ref()) {
+                    let t = self.coerce(t, ty, Conversion::UsualArithmetic, *te);
+                    ops.push(t);
+                }
+                let e = self.coerce(e, ty, Conversion::UsualArithmetic, *els);
+                ops.push(e);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: ops,
+                })
+            }
+            ExprKind::Comma { lhs, rhs } => {
+                let a = self.type_expr(*lhs);
+                let b = self.type_expr(*rhs);
+                let ty = self.out.typed.ty_of(b);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: vec![a, b],
+                })
+            }
+            ExprKind::Index { base, index } => {
+                let b = self.type_expr(*base);
+                let b = self.decay(b, *base);
+                let i = self.type_expr(*index);
+                let i = self.promote_node(i, *index, span);
+                let bty = self.out.typed.ty_of(b);
+                let ty = match self.out.types[bty.0 as usize].clone() {
+                    Ty::Ptr(p) => p,
+                    _ => self.intern(Ty::Error),
+                };
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: vec![b, i],
+                })
+            }
+            ExprKind::Member { base, field, .. } => {
+                let b = self.type_expr(*base);
+                let b = self.decay(b, *base);
+                let bty = self.out.typed.ty_of(b);
+                let rec = match self.out.types[bty.0 as usize].clone() {
+                    Ty::Record(r) => Some(r),
+                    Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
+                        Ty::Record(r) => Some(r),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let ty = rec
+                    .and_then(|r| {
+                        self.out.records.get(r.0 as usize).and_then(|l| {
+                            l.fields
+                                .iter()
+                                .find(|f| f.name == Some(*field))
+                                .map(|f| f.ty)
+                        })
+                    })
+                    .unwrap_or_else(|| self.intern(Ty::Error));
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: vec![b],
+                })
+            }
+            ExprKind::Call { callee, args } => {
+                let c = self.type_expr(*callee);
+                let c = self.decay(c, *callee);
+                let cty = self.out.typed.ty_of(c);
+                let (ret, params) = match self.out.types[cty.0 as usize].clone() {
+                    Ty::Func { ret, params, .. } => (ret, params),
+                    Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
+                        Ty::Func { ret, params, .. } => (ret, params),
+                        _ => (self.intern(Ty::Error), Vec::new()),
+                    },
+                    _ => (self.intern(Ty::Error), Vec::new()),
+                };
+                let mut ops = vec![c];
+                for (i, a) in args.iter().enumerate() {
+                    let node = self.type_expr(*a);
+                    let node = match params.get(i) {
+                        // A declared parameter: convert to **its** type, not to the
+                        // promoted one. `f(long)` called with a `char` must receive a
+                        // `long`, and stopping at `int` is the bug this pins.
+                        Some(&p) => self.coerce(node, p, Conversion::Argument, *a),
+                        // Variadic or unprototyped: the default argument promotions.
+                        None => self.promote_node(node, *a, span),
+                    };
+                    ops.push(node);
+                }
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: ret,
+                    operands: ops,
+                })
+            }
+            ExprKind::Cast { ty, operand } => {
+                let inner = self.type_expr(*operand);
+                let inner = self.decay(inner, *operand);
+                let t = self.ty_of(*ty);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: t,
+                    operands: vec![inner],
+                })
+            }
+            ExprKind::SizeofExpr(_) | ExprKind::SizeofType(_) | ExprKind::AlignofType(_) => {
+                let ty = self.intern(Ty::Int {
+                    signed: false,
+                    bits: (self.target.sizes.long_ * 8) as u32,
+                });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::InitList(items) => {
+                let ops = items
+                    .iter()
+                    .map(|i| self.type_expr(i.value))
+                    .collect::<Vec<_>>();
+                let ty = self.intern(Ty::Error);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: ops,
+                })
+            }
+            ExprKind::StmtExpr(_) | ExprKind::TypeName(_) | ExprKind::Error => {
+                let ty = self.intern(Ty::Error);
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+        };
+        self.set_top(expr, id)
+    }
+
+    /// C11 §6.3.2.1: an array becomes a pointer to its first element and a function
+    /// becomes a pointer to itself. Both are explicit `Cast`s, and they are **different**
+    /// conversions because 015 emits different code for them.
+    fn decay(&mut self, node: TypedId, expr: ExprId) -> TypedId {
+        let ty = self.out.typed.ty_of(node);
+        let span = self.ast.expr(expr).span;
+        match self.out.types[ty.0 as usize].clone() {
+            Ty::Array { elem, .. } => {
+                let p = self.intern(Ty::Ptr(elem));
+                let id = self.convert(node, p, Conversion::ArrayDecay, span);
+                self.set_top(expr, id)
+            }
+            Ty::Func { .. } => {
+                let p = self.intern(Ty::Ptr(ty));
+                let id = self.convert(node, p, Conversion::FunctionDecay, span);
+                self.set_top(expr, id)
+            }
+            _ => node,
+        }
+    }
+
+    /// C11 §6.3.1.1's integer promotions, as an explicit conversion.
+    fn promote_node(&mut self, node: TypedId, expr: ExprId, span: Span) -> TypedId {
+        let node = self.decay(node, expr);
+        let ty = self.out.typed.ty_of(node);
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        let Ty::Int { bits, .. } = self.out.types[ty.0 as usize] else {
+            return node;
+        };
+        if bits >= int_bits {
+            return node;
+        }
+        let to = self.intern(Ty::Int {
+            signed: true,
+            bits: int_bits,
+        });
+        let id = self.convert(node, to, Conversion::IntegerPromotion, span);
+        self.set_top(expr, id)
+    }
+
+    /// The operands of one binary expression: their typed nodes and the syntactic ids
+    /// they came from, which conversions have to be recorded against.
+    fn type_binary(&mut self, expr: ExprId, op: BinOp, sides: BinSides, span: Span) -> TypedId {
+        let BinSides { a, b, ae, be } = sides;
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        let int_ty = self.intern(Ty::Int {
+            signed: true,
+            bits: int_bits,
+        });
+        // Shifts do **not** take the usual arithmetic conversions: each operand is
+        // promoted on its own and the result has the left operand's type. Applying the
+        // common type here would silently widen `x << 1` to whatever the shift count is.
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            let a = self.promote_node(a, ae, span);
+            let b = self.promote_node(b, be, span);
+            let ty = self.out.typed.ty_of(a);
+            return self.push_typed(TypedNode::Value {
+                expr,
+                ty,
+                operands: vec![a, b],
+            });
+        }
+        if matches!(op, BinOp::LogAnd | BinOp::LogOr) {
+            let a = self.decay(a, ae);
+            let b = self.decay(b, be);
+            return self.push_typed(TypedNode::Value {
+                expr,
+                ty: int_ty,
+                operands: vec![a, b],
+            });
+        }
+
+        let a = self.promote_node(a, ae, span);
+        let b = self.promote_node(b, be, span);
+        let aty = self.out.typed.ty_of(a);
+        let bty = self.out.typed.ty_of(b);
+
+        // Pointer arithmetic and comparisons keep their operands as they are: `p + n` has
+        // no common type, and forcing one would turn a pointer into an integer.
+        let is_ptr = |cx: &Cx, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Ptr(_));
+        if is_ptr(self, aty) || is_ptr(self, bty) {
+            let ty = match op {
+                BinOp::Sub if is_ptr(self, aty) && is_ptr(self, bty) => self.intern(Ty::Int {
+                    signed: true,
+                    bits: (self.target.sizes.long_ * 8) as u32,
+                }),
+                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne => int_ty,
+                _ if is_ptr(self, aty) => aty,
+                _ => bty,
+            };
+            // A null constant compared against a pointer becomes that pointer type, so
+            // `p == 0` does not look like a pointer/integer mismatch downstream.
+            let (a, b) = if is_ptr(self, aty) && !is_ptr(self, bty) && self.is_null_constant(be) {
+                let b = self.convert(b, aty, Conversion::NullPointer, span);
+                let b = self.set_top(be, b);
+                (a, b)
+            } else if is_ptr(self, bty) && !is_ptr(self, aty) && self.is_null_constant(ae) {
+                let a = self.convert(a, bty, Conversion::NullPointer, span);
+                let a = self.set_top(ae, a);
+                (a, b)
+            } else {
+                (a, b)
+            };
+            return self.push_typed(TypedNode::Value {
+                expr,
+                ty,
+                operands: vec![a, b],
+            });
+        }
+
+        let common = self.common_type(aty, bty);
+        let a = self.coerce(a, common, Conversion::UsualArithmetic, ae);
+        let b = self.coerce(b, common, Conversion::UsualArithmetic, be);
+        let ty = match op {
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne => int_ty,
+            _ => common,
+        };
+        self.push_typed(TypedNode::Value {
+            expr,
+            ty,
+            operands: vec![a, b],
+        })
+    }
+
+    /// Convert `node` to `to`, decaying first and recording the outermost node for
+    /// `expr` so `conversions_of` sees the whole chain.
+    fn coerce(&mut self, node: TypedId, to: TyId, why: Conversion, expr: ExprId) -> TypedId {
+        let node = self.decay(node, expr);
+        let span = self.ast.expr(expr).span;
+        // A null pointer constant assigned to a pointer is `NullPointer`, not
+        // `Assignment` — 015 lowers it to a constant rather than to a conversion, and
+        // `(void*)0` and `(int)0` are different things to lower.
+        let why =
+            if matches!(self.out.types[to.0 as usize], Ty::Ptr(_)) && self.is_null_constant(expr) {
+                Conversion::NullPointer
+            } else {
+                why
+            };
+        let id = self.convert(node, to, why, span);
+        self.set_top(expr, id)
+    }
+
+    /// C11 §6.3.2.3: an integer constant expression with value 0 is a null pointer
+    /// constant. Checked on the **written** expression, because `0` and a variable that
+    /// happens to hold zero are different things.
+    fn is_null_constant(&mut self, expr: ExprId) -> bool {
+        matches!(
+            self.ast.expr(expr).kind,
+            ExprKind::Number(_) | ExprKind::Cast { .. }
+        ) && self.eval(expr).map(|v| v.v) == Some(0)
+    }
+
+    /// C11 §6.3.1.8's usual arithmetic conversions.
+    fn common_type(&mut self, a: TyId, b: TyId) -> TyId {
+        if a == b {
+            return a;
+        }
+        let (ta, tb) = (
+            self.out.types[a.0 as usize].clone(),
+            self.out.types[b.0 as usize].clone(),
+        );
+        match (&ta, &tb) {
+            (Ty::Error, _) | (_, Ty::Error) => self.intern(Ty::Error),
+            // Floating wins over integer, and the wider float wins.
+            (Ty::Float(x), Ty::Float(y)) => {
+                let k = if float_rank(*x) >= float_rank(*y) {
+                    *x
+                } else {
+                    *y
+                };
+                self.intern(Ty::Float(k))
+            }
+            (Ty::Float(_), _) => a,
+            (_, Ty::Float(_)) => b,
+            (
+                Ty::Int {
+                    signed: sa,
+                    bits: ba,
+                },
+                Ty::Int {
+                    signed: sb,
+                    bits: bb,
+                },
+            ) => {
+                let (sa, ba, sb, bb) = (*sa, *ba, *sb, *bb);
+                if ba == bb {
+                    // Equal width: unsigned wins.
+                    self.intern(Ty::Int {
+                        signed: sa && sb,
+                        bits: ba,
+                    })
+                } else {
+                    let (ws, wb, ns) = if ba > bb { (sa, ba, sb) } else { (sb, bb, sa) };
+                    // A wider signed type represents every value of a narrower unsigned
+                    // one, so it stays signed.
+                    let _ = ns;
+                    self.intern(Ty::Int {
+                        signed: ws,
+                        bits: wb,
+                    })
+                }
+            }
+            _ => a,
+        }
+    }
+}
+
+/// One binary expression's operands, grouped so `type_binary` takes four things rather
+/// than eight positional ones — the syntactic id always travels with its typed node.
+struct BinSides {
+    a: TypedId,
+    b: TypedId,
+    ae: ExprId,
+    be: ExprId,
+}
+
+fn float_rank(k: FloatKind) -> u8 {
+    match k {
+        FloatKind::Binary16 | FloatKind::BFloat16 => 0,
+        FloatKind::F32 => 1,
+        FloatKind::F64 => 2,
+        FloatKind::X87_80 => 3,
+        FloatKind::Binary128 => 4,
+    }
+}
+
+/// The content of a string literal's spelling: everything between the first and last
+/// `"`. Only the *length* is used here — for a `char[n]` array bound — and escapes are
+/// not processed, so the bound is an upper estimate for a literal containing them. That
+/// is recorded rather than hidden: phase 5's escape evaluation is where the exact length
+/// comes from, and 013 §2's amendment leaves it to this crate to do properly later.
+fn unquote(spelling: &str) -> &str {
+    match (spelling.find('"'), spelling.rfind('"')) {
+        (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
+        _ => spelling,
+    }
+}
+
+impl Cx<'_> {
+    /// **Contract 20's single diagnostic**, emitted at the *declaration*.
+    ///
+    /// An object of incomplete type has no size, which is a type error. Reporting it here
+    /// and giving the name `Ty::Error` means every later use reads poison and says
+    /// nothing — one bad declaration is one diagnostic no matter how many times the name
+    /// appears, which is what keeps a single missing header from burying the real problem
+    /// under a hundred copies.
+    fn check_complete(&mut self, id: DeclId, ty: TyId) {
+        if !matches!(self.out.types[ty.0 as usize], Ty::Error) {
+            return;
+        }
+        let span = self.ast.decl(id).span;
+        let name = match &self.ast.decl(id).kind {
+            DeclKind::Var { name: Some(n), .. } => self.text(*n).unwrap_or("?").to_owned(),
+            _ => "?".to_owned(),
+        };
+        self.error(
+            span,
+            format!("`{name}` has an incomplete or unknown type; its uses are not checked"),
+        );
+    }
+
+    /// Walk a statement, typing every expression in it.
+    fn type_stmt(&mut self, stmt: StmtId) {
+        let kind = self.ast.stmt(stmt).kind.clone();
+        match kind {
+            StmtKind::Expr(e) => {
+                self.type_expr(e);
+            }
+            StmtKind::Decl(ds) => {
+                for d in ds {
+                    self.item(d);
+                }
+            }
+            StmtKind::Compound(ss) => {
+                for s in ss {
+                    self.type_stmt(s);
+                }
+            }
+            StmtKind::If { cond, then, els } => {
+                let c = self.type_expr(cond);
+                self.condition(c, cond);
+                self.type_stmt(then);
+                if let Some(e) = els {
+                    self.type_stmt(e);
+                }
+            }
+            StmtKind::While { cond, body } => {
+                let c = self.type_expr(cond);
+                self.condition(c, cond);
+                self.type_stmt(body);
+            }
+            StmtKind::DoWhile { body, cond } => {
+                self.type_stmt(body);
+                let c = self.type_expr(cond);
+                self.condition(c, cond);
+            }
+            StmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                match init {
+                    Some(ForInit::Decl(ds)) => {
+                        for d in ds {
+                            self.item(d);
+                        }
+                    }
+                    Some(ForInit::Expr(e)) => {
+                        self.type_expr(e);
+                    }
+                    None => {}
+                }
+                if let Some(c) = cond {
+                    let n = self.type_expr(c);
+                    self.condition(n, c);
+                }
+                if let Some(s) = step {
+                    self.type_expr(s);
+                }
+                self.type_stmt(body);
+            }
+            StmtKind::Switch { cond, body } => {
+                let c = self.type_expr(cond);
+                self.promote_node(c, cond, self.ast.expr(cond).span);
+                self.type_stmt(body);
+            }
+            StmtKind::Case { lo, hi, body } => {
+                self.type_expr(lo);
+                if let Some(h) = hi {
+                    self.type_expr(h);
+                }
+                self.type_stmt(body);
+            }
+            StmtKind::Default { body } | StmtKind::Label { body, .. } => self.type_stmt(body),
+            StmtKind::Return(Some(e)) => {
+                self.type_expr(e);
+            }
+            StmtKind::GotoIndirect(e) => {
+                self.type_expr(e);
+            }
+            StmtKind::Asm(a) => {
+                for op in a.outputs.iter().chain(a.inputs.iter()) {
+                    self.type_expr(op.expr);
+                }
+            }
+            StmtKind::Return(None)
+            | StmtKind::Goto(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Empty
+            | StmtKind::Error => {}
+        }
+    }
+
+    /// A controlling expression is compared against zero, so it decays but is not
+    /// promoted to a common type with anything.
+    fn condition(&mut self, node: TypedId, expr: ExprId) {
+        let node = self.decay(node, expr);
+        self.set_top(expr, node);
+    }
 }

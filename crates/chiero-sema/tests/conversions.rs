@@ -276,6 +276,112 @@ fn a_bad_declaration_does_not_cascade_through_its_uses() {
     );
 }
 
+/// **Contract 20, the other half.** An *undeclared* name is reported once per **name**,
+/// not once per use.
+///
+/// A mutation that reported it per use passed the incomplete-type test above, because
+/// there the name is declared — so this path had no coverage at all. The ratio is the
+/// contract: a name used four times is one mistake, and four copies of one complaint bury
+/// whatever else went wrong.
+#[test]
+fn an_undeclared_name_is_reported_once_however_often_it_is_used() {
+    let p = parse_allowing_diagnostics(
+        "int a = q + 1;\n\
+         int b = q + 2;\n\
+         int c = q * q;\n",
+        TargetConfig::x86_64_linux(),
+    );
+    assert_eq!(
+        p.analysis.diagnostics.len(),
+        1,
+        "four uses of one undeclared name is one diagnostic: {:?}",
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let q = parse_allowing_diagnostics("int a = s + t;", TargetConfig::x86_64_linux());
+    assert_eq!(
+        q.analysis.diagnostics.len(),
+        2,
+        "but two different undeclared names are two: {:?}",
+        q.analysis
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **Contract 11, shifts.** A shift does **not** take the usual arithmetic conversions:
+/// each operand is promoted on its own and the result has the *left* operand's type.
+///
+/// The corpus check deliberately skips shifts — it asserts both operands share a type,
+/// which is exactly what a shift must not do — so without this fixture the rule had no
+/// coverage anywhere and a mutation applying the common type survived. `x << 1` would
+/// silently take the width of its shift count.
+#[test]
+fn a_shift_keeps_the_left_operands_type_and_does_not_widen_the_count() {
+    let p = parse(
+        "long l; int i; long r = l << i;",
+        TargetConfig::x86_64_linux(),
+    );
+    let sym = p.symbol("r").expect("r");
+    let init = p
+        .parsed
+        .ast
+        .items()
+        .iter()
+        .find_map(|&id| match &p.parsed.ast.decl(id).kind {
+            DeclKind::Var {
+                name: Some(n),
+                init: Some(i),
+                ..
+            } if *n == sym => Some(*i),
+            _ => None,
+        })
+        .expect("initializer");
+    let ExprKind::Binary { op, lhs, rhs } = &p.parsed.ast.expr(init).kind else {
+        panic!("not binary")
+    };
+    assert_eq!(*op, BinOp::Shl);
+
+    let ty_of = |e| {
+        p.analysis
+            .typed()
+            .top(e)
+            .map(|t| p.analysis.typed().ty_of(t))
+            .expect("typed")
+    };
+    assert_eq!(
+        p.analysis.ty(ty_of(*lhs)),
+        &Ty::Int {
+            signed: true,
+            bits: 64
+        },
+        "the shifted value keeps its own width"
+    );
+    assert_eq!(
+        p.analysis.ty(ty_of(*rhs)),
+        &Ty::Int {
+            signed: true,
+            bits: 32
+        },
+        "and the count is **not** widened to match it — that is the usual arithmetic \
+         conversion, and a shift does not take it"
+    );
+    assert!(
+        !p.analysis
+            .typed()
+            .conversions_of(*rhs)
+            .contains(&Conversion::UsualArithmetic),
+        "so the count carries no arithmetic conversion: {:?}",
+        p.analysis.typed().conversions_of(*rhs)
+    );
+}
+
 /// **Contract 11 at corpus scale, and the assertion that actually carries it.**
 ///
 /// Walk every typed node produced from real VPP and require that no operation is left
