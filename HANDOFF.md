@@ -487,12 +487,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 133) — 1114 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 134) — 1115 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
-> wild pointer that waves 126–131 were chasing plus eight more defects, and emptied
-> `tests/corpus/owed/`. Wave 133 found that pointer null-testing did not work at all.*
+> wild pointer plus eight more defects and emptied `tests/corpus/owed/`; wave 133 found that
+> pointer null-testing did not work at all; wave 134 discharged the parser's speculative
+> type-name rollback — 013 now has no owed items and all 20 of its contracts are covered.*
 >
 > ## ✅ The sret wild pointer is fixed, and it was never where six waves looked
 >
@@ -652,6 +653,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Mutate each *part* of a statement, not the statement** (wave 134, and wave 133 from the
+> other side). `self.diags.truncate(before)` has two halves — that it fires, and where it
+> stops. Deleting it was caught; changing `before` to `0`, which erases diagnostics from
+> *other declarations*, survived the first draft of the very test written to pin it.
+> **A test for code that is already right is worth committing when the mutation is the RED**
+> (wave 134, wave 125). The parser's rollback was correct and had been for its whole life;
+> deleting it left 1114 tests green. Correct-and-unpinned is one careless edit from
+> wrong-and-silent.
 > **Mutation finds what review cannot** (wave 133). Two adversarial reviews and a green
 > 1113-test suite all passed over a comparison rule keyed on the left operand only. The
 > mutation that dropped the right-hand test survived — and that survival was the only signal
@@ -721,12 +730,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
 >
-> Owed and written down: the two defects above; the wave-117 `fork_on_offset` survivor;
-> floats do not execute; `Ty::Vector` is not in `is_aggregate`; designated, bit-field and
-> address initializers refused; a fault in a non-entry frame is untested; `Bits` path steps
-> are not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
-> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
-> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered.
+> Owed and written down: the four defects above; the wave-117 `fork_on_offset` survivor;
+> floats do not execute; designated, bit-field and address initializers refused; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
+> `tests/corpus/c/pointer_fields.c` is not written; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered. **013 is clear** — 20/20 contracts covered, no owed items.
 >
 > ### Earlier (wave 128, `fb966c2`) — 1100 tests, 5 ignored, M1 165/165 by contract
 >
