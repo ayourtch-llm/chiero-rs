@@ -764,7 +764,7 @@ fn writing_to_a_mutable_global_is_not_a_finding() {
 /// The memory has to be the caller's. Every VPP accessor in a header returns a struct by
 /// value, so this is the common case rather than a corner.
 #[test]
-#[ignore = "blocked in the engine: the sret lowering is correct (see `an_aggregate_return_uses_an_sret_slot`) but the run still reports a wild pointer whose address is the struct's own bytes — see HANDOFF §9"]
+#[ignore = "blocked: sret lowers correctly and the engine runs a hand-built equivalent, yet this reports a wild pointer — wave 128 eliminated both halves separately; see HANDOFF §9"]
 fn a_struct_returned_by_value_carries_its_fields() {
     let src = "struct pair { int lo; int hi; };\n\
                static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
