@@ -97,6 +97,7 @@ fn calls_g() -> Module {
                     args: vec![],
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -205,6 +206,7 @@ fn three_callee_kinds() -> Module {
                         args: vec![],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Call {
@@ -213,6 +215,7 @@ fn three_callee_kinds() -> Module {
                         args: vec![],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Assign {
@@ -222,6 +225,7 @@ fn three_callee_kinds() -> Module {
                         },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Store {
@@ -232,6 +236,7 @@ fn three_callee_kinds() -> Module {
                         vol: Volatility::Normal,
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Call {
@@ -240,6 +245,7 @@ fn three_callee_kinds() -> Module {
                         args: vec![Operand::Value(ValueId(2))],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
             ],
             Terminator::Return(Some(Operand::Value(ValueId(0)))),
@@ -389,6 +395,7 @@ fn branch_on_zero() -> Module {
                         },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 }],
                 Terminator::Br {
                     cond: Operand::Value(ValueId(1)),
@@ -734,6 +741,7 @@ fn event_call_fires_for_an_indirect_callee() {
                         rv: RValue::AddrOfFunc(FuncId(1)),
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Call {
@@ -742,6 +750,7 @@ fn event_call_fires_for_an_indirect_callee() {
                         args: vec![],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
             ],
             Terminator::Return(Some(Operand::Value(ValueId(1)))),
@@ -804,6 +813,7 @@ fn event_call_arguments_keep_their_positions() {
                     ],
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Return(None),
         )],
@@ -864,6 +874,7 @@ fn an_errored_state_still_fires_terminated() {
                     rv: RValue::Fresh { ty: CTy::Ptr },
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             // An indirect goto with no declared targets: the engine gives up, which is
             // `Status::Errored` rather than `Terminated`.
@@ -938,6 +949,7 @@ fn a_real_run_slices_its_path_condition() {
                     },
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Br {
                 cond: Operand::Value(ValueId(100 + i)),
@@ -960,6 +972,7 @@ fn a_real_run_slices_its_path_condition() {
                 },
             },
             span: Span::DUMMY,
+            generated: false,
         }],
         Terminator::Br {
             cond: Operand::Value(ValueId(200)),

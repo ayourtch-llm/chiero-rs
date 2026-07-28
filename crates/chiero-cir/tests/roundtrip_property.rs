@@ -282,7 +282,11 @@ fn gen_inst(r: &mut Rng, next_val: &mut u32, pool: &mut Vec<ValueId>) -> Inst {
             }
         }
     };
-    Inst { kind, span }
+    Inst {
+        kind,
+        span,
+        generated: false,
+    }
 }
 
 fn gen_module(seed: u64) -> Module {

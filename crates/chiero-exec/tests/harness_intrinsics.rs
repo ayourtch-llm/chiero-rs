@@ -29,6 +29,7 @@ fn assign(dst: u32, rv: RValue) -> Inst {
             rv,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -40,6 +41,7 @@ fn call(dst: Option<u32>, f: u32, args: Vec<Operand>) -> Inst {
             args,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -82,6 +84,7 @@ fn make_symbolic_then_branch(with_assume: bool, with_assert: bool) -> Module {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
         // The name string, built byte by byte: a `Global` carries no initializer (020
         // §6), so the only way to hand the intrinsic a real `const char *` without the
@@ -104,6 +107,7 @@ fn make_symbolic_then_branch(with_assume: bool, with_assert: bool) -> Module {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
         assign(
             4,
@@ -121,6 +125,7 @@ fn make_symbolic_then_branch(with_assume: bool, with_assert: bool) -> Module {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
         call(
             None,

@@ -68,6 +68,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -80,6 +81,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -95,6 +97,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -107,6 +110,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                 ],
                 Terminator::Br {

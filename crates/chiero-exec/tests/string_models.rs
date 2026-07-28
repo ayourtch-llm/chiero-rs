@@ -76,6 +76,7 @@ fn strlen_over_symbolic_bytes() -> Module {
                     args: vec![Operand::Value(ValueId(0))],
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -247,6 +248,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
                     },
                 },
                 span: Span::DUMMY,
+                generated: false,
             },
             Inst {
                 kind: InstKind::Store {
@@ -257,6 +259,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
                     vol: Volatility::Normal,
                 },
                 span: Span::DUMMY,
+                generated: false,
             },
         ]
     };
@@ -272,6 +275,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
             args: vec![Operand::Value(ValueId(0))],
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let f = Function {
         id: FuncId(0),
@@ -358,6 +362,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
                     },
                 },
                 span: Span::DUMMY,
+                generated: false,
             },
             Inst {
                 kind: InstKind::Store {
@@ -368,6 +373,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
                     vol: Volatility::Normal,
                 },
                 span: Span::DUMMY,
+                generated: false,
             },
         ]
     };
@@ -383,6 +389,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
             args: vec![Operand::Value(ValueId(0))],
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let f = Function {
         id: FuncId(0),
@@ -488,6 +495,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
                             args: vec![Operand::Value(ValueId(0))],
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     // Re-read the first byte and ask the question the guards answered.
                     Inst {
@@ -501,6 +509,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -513,6 +522,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                 ],
                 Terminator::Br {
@@ -629,6 +639,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
                         },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 // One byte *before* the object.
                 Inst {
@@ -640,6 +651,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
                         },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Call {
@@ -648,6 +660,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
                         args: vec![Operand::Value(ValueId(1))],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
             ],
             Terminator::Return(Some(i32c(0))),

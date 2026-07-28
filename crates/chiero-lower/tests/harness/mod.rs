@@ -52,6 +52,43 @@ pub fn lower(src: &str) -> Module {
     lowered.module
 }
 
+/// Lower a real file on disk, with an include path — needed by the `gcov_lines` tests,
+/// where the *file* a span resolves to is the property under test and a synthetic
+/// `preprocess_str` path would resolve to nothing on disk.
+pub fn lower_file(
+    path: &std::path::Path,
+    includes: &[std::path::PathBuf],
+) -> (Module, chiero_span::SourceMap) {
+    struct Disk;
+    impl chiero_pp::FileLoader for Disk {
+        fn load(&mut self, p: &std::path::Path) -> std::io::Result<String> {
+            std::fs::read_to_string(p)
+        }
+    }
+    let src = std::fs::read_to_string(path).expect("fixture exists");
+    let cfg = Config {
+        include_paths: includes.to_vec(),
+        iquote_paths: includes.to_vec(),
+        ..Config::default()
+    };
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(path, &src, cfg, &mut Disk);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let lowered = chiero_lower::lower_tu_with_map(&parsed.ast, &analysis, &names, &tu.source_map);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    (lowered.module, tu.source_map)
+}
+
 pub fn print(m: &Module) -> String {
     chiero_cir::text::print(m)
 }

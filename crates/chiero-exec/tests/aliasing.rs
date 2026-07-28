@@ -64,6 +64,7 @@ fn two_pointer_params() -> Module {
                         vol: Volatility::Normal,
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
                 Inst {
                     kind: InstKind::Assign {
@@ -76,6 +77,7 @@ fn two_pointer_params() -> Module {
                         },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 },
             ],
             Terminator::Return(Some(Operand::Value(ValueId(2)))),

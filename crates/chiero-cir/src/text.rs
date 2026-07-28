@@ -556,6 +556,7 @@ impl<'a> Parser<'a> {
             b.insts.push(Inst {
                 kind: inst,
                 span: inst_span,
+                generated: false,
             });
         }
 

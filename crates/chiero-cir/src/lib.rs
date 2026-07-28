@@ -416,6 +416,14 @@ pub enum Callee {
 pub struct Inst {
     pub kind: InstKind,
     pub span: Span,
+    /// **Introduced by lowering, not written in the source** — the `&&` shape's slot
+    /// store, an implicit `Scope(Exit)`, a widening the C program did not name.
+    ///
+    /// 020 contract 15 requires this to be a *recorded* property rather than a guess.
+    /// "It had no source span" is a different fact: a lowering bug that lost a span looks
+    /// identical, and 015 §5's `gcov_lines` rule turns on this flag — a block of only
+    /// generated instructions has no lines, because gcov has no counter for it either.
+    pub generated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

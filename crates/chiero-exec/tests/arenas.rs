@@ -76,6 +76,7 @@ fn assign(dst: u32, rv: RValue) -> Inst {
             rv,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -506,6 +507,7 @@ fn two_accesses_at_one_index_reach_one_object() {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
     );
     assert!(verify(&m).is_empty(), "{:?}", verify(&m));

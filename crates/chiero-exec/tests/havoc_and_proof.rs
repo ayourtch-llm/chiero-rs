@@ -36,6 +36,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
             },
         },
         span: Span::DUMMY,
+        generated: false,
     }];
     insts.push(Inst {
         kind: InstKind::Call {
@@ -44,6 +45,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
             args,
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let caller = Function {
         id: FuncId(0),
@@ -170,6 +172,7 @@ fn an_unmodeled_externs_havoc_leaves_bytes_symbolic_not_uninitialized() {
             },
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
@@ -248,6 +251,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
                             rv: RValue::Fresh { ty: CTy::Int(32) },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -255,6 +259,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
                             rv: RValue::Fresh { ty: CTy::Int(32) },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -267,6 +272,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -279,6 +285,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                 ],
                 Terminator::Br {

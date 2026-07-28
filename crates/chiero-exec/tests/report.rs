@@ -67,6 +67,7 @@ fn calling(id: u32, name: &str) -> Module {
                     args: vec![],
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Return(Some(i32c(0))),
         )],
@@ -266,6 +267,7 @@ fn inst_null_deref() -> Inst {
             vol: Volatility::Normal,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -304,6 +306,7 @@ fn one_degradation_before_a_fork_is_reported_once() {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     // Uninitialized: one `NoInformation` degradation, before any fork.
                     Inst {
@@ -317,6 +320,7 @@ fn one_degradation_before_a_fork_is_reported_once() {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                     Inst {
                         kind: InstKind::Assign {
@@ -329,6 +333,7 @@ fn one_degradation_before_a_fork_is_reported_once() {
                             },
                         },
                         span: Span::DUMMY,
+                        generated: false,
                     },
                 ],
                 Terminator::Br {
@@ -512,6 +517,7 @@ fn assumptions_from_every_path_reach_the_report() {
                         rv: RValue::Fresh { ty: CTy::Int(1) },
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 }],
                 Terminator::Br {
                     cond: Operand::Value(ValueId(0)),
@@ -531,6 +537,7 @@ fn assumptions_from_every_path_reach_the_report() {
                         args: vec![],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 }],
                 Terminator::Return(Some(i32c(0))),
             ),
@@ -544,6 +551,7 @@ fn assumptions_from_every_path_reach_the_report() {
                         args: vec![],
                     },
                     span: Span::DUMMY,
+                    generated: false,
                 }],
                 Terminator::Return(Some(i32c(0))),
             ),

@@ -48,6 +48,7 @@ fn assign(dst: u32, rv: RValue) -> Inst {
             rv,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -204,6 +205,7 @@ fn a_lane_3_word_reads_back_as_bytes_12_to_16_through_memory() {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
     ];
     for i in 0..4u32 {
@@ -282,6 +284,7 @@ fn the_scalar_path_is_the_oracle_the_two_views_agree_with() {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         },
     ];
     for i in 0..4u32 {

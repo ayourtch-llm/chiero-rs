@@ -58,6 +58,7 @@ fn call_printf(fmt: &str, extra: Vec<Inst>, args: Vec<Operand>) -> Module {
             },
         },
         span: Span::DUMMY,
+        generated: false,
     }];
     // Write the format string byte by byte, terminator included.
     for (i, b) in fmt.bytes().chain(std::iter::once(0)).enumerate() {
@@ -73,6 +74,7 @@ fn call_printf(fmt: &str, extra: Vec<Inst>, args: Vec<Operand>) -> Module {
                 },
             },
             span: Span::DUMMY,
+            generated: false,
         });
         insts.push(Inst {
             kind: InstKind::Store {
@@ -86,6 +88,7 @@ fn call_printf(fmt: &str, extra: Vec<Inst>, args: Vec<Operand>) -> Module {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         });
     }
     insts.extend(extra);
@@ -98,6 +101,7 @@ fn call_printf(fmt: &str, extra: Vec<Inst>, args: Vec<Operand>) -> Module {
             args: all,
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let f = Function {
         id: FuncId(0),
@@ -362,6 +366,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
             },
         },
         span: Span::DUMMY,
+        generated: false,
     }];
     for (i, b) in "%s".bytes().chain(std::iter::once(0)).enumerate() {
         insts.push(Inst {
@@ -376,6 +381,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
                 },
             },
             span: Span::DUMMY,
+            generated: false,
         });
         insts.push(Inst {
             kind: InstKind::Store {
@@ -389,6 +395,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
                 vol: Volatility::Normal,
             },
             span: Span::DUMMY,
+            generated: false,
         });
     }
     insts.push(Inst {
@@ -398,6 +405,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
             args: vec![Operand::Value(ValueId(1)), Operand::Value(ValueId(0))],
         },
         span: Span::DUMMY,
+        generated: false,
     });
     let f = Function {
         id: FuncId(0),

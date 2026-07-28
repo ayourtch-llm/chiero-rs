@@ -28,8 +28,32 @@ pub struct Lowered {
     pub diagnostics: Vec<LowerDiagnostic>,
 }
 
-/// Lower one translation unit (015 §§1–6).
+/// Lower one translation unit **without** a `SourceMap`.
+///
+/// `gcov_lines` is left empty: 015 §5's rule is a computation over `expansion_loc`, and
+/// without a map there is nothing to resolve. That is the honest answer rather than a
+/// guess — and it is exactly the hand-written-`.cir` case 015 §5 describes, where the
+/// `.line` directive populates the field directly instead.
 pub fn lower_tu(ast: &Ast, analysis: &Analysis, names: &dyn SymbolText) -> Lowered {
+    lower(ast, analysis, names, None)
+}
+
+/// Lower one translation unit and compute `gcov_lines` (015 §5).
+pub fn lower_tu_with_map(
+    ast: &Ast,
+    analysis: &Analysis,
+    names: &dyn SymbolText,
+    map: &chiero_span::SourceMap,
+) -> Lowered {
+    lower(ast, analysis, names, Some(map))
+}
+
+fn lower(
+    ast: &Ast,
+    analysis: &Analysis,
+    names: &dyn SymbolText,
+    map: Option<&chiero_span::SourceMap>,
+) -> Lowered {
     let mut cx = Lowerer {
         ast,
         analysis,
@@ -44,6 +68,8 @@ pub fn lower_tu(ast: &Ast, analysis: &Analysis, names: &dyn SymbolText) -> Lower
         f: None,
         next_value: 0,
         next_func: 0,
+        map,
+        generated_depth: 0,
     };
     // **Two passes, and the first is not an optimization.** Every function is registered
     // with its real signature before any body is lowered, because a body can call a
@@ -128,6 +154,11 @@ struct Lowerer<'a> {
     f: Option<FnState>,
     next_value: u32,
     next_func: u32,
+    map: Option<&'a chiero_span::SourceMap>,
+    /// Nonzero while emitting instructions lowering introduced rather than the source
+    /// wrote. A counter, not a flag: the `&&` shape's bookkeeping can nest inside a
+    /// scope's, and a flag would be cleared by the inner one on the way out.
+    generated_depth: u32,
 }
 
 impl Lowerer<'_> {
@@ -165,13 +196,31 @@ impl Lowerer<'_> {
 
     fn emit(&mut self, kind: InstKind, span: Span) {
         let cur = self.fs().cur;
+        let generated = self.generated_depth > 0;
         let fs = self.fs();
         let b = fs
             .blocks
             .iter_mut()
             .find(|b| b.id == cur)
             .expect("current block exists");
-        b.insts.push(Inst { kind, span });
+        b.insts.push(Inst {
+            kind,
+            span,
+            generated,
+        });
+    }
+
+    /// Run `f` with every instruction it emits marked compiler-generated.
+    ///
+    /// 020 contract 15 wants this **recorded** rather than inferred: "it had no source
+    /// span" is a different fact, and a lowering bug that lost a span would be
+    /// indistinguishable from a deliberately synthesized instruction.
+    fn generated<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.generated_depth;
+        self.generated_depth = saved + 1;
+        let r = f(self);
+        self.generated_depth = saved;
+        r
     }
 
     fn set_term(&mut self, t: Terminator) {
@@ -195,13 +244,15 @@ impl Lowerer<'_> {
         let id = ScopeId(fs.next_scope);
         fs.next_scope += 1;
         fs.open_scopes.push(id);
-        self.emit(
-            InstKind::Marker(MarkerKind::Scope(ScopeEvent {
-                scope: id,
-                kind: ScopeKind::Enter,
-            })),
-            span,
-        );
+        self.generated(|s| {
+            s.emit(
+                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope: id,
+                    kind: ScopeKind::Enter,
+                })),
+                span,
+            )
+        });
         id
     }
 
@@ -210,13 +261,15 @@ impl Lowerer<'_> {
         let Some(id) = self.fs().open_scopes.pop() else {
             return;
         };
-        self.emit(
-            InstKind::Marker(MarkerKind::Scope(ScopeEvent {
-                scope: id,
-                kind: ScopeKind::Exit,
-            })),
-            span,
-        );
+        self.generated(|s| {
+            s.emit(
+                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope: id,
+                    kind: ScopeKind::Exit,
+                })),
+                span,
+            )
+        });
     }
 
     /// Emit `Exit` markers for every scope down to `depth`, **innermost first**, without
@@ -229,13 +282,15 @@ impl Lowerer<'_> {
     fn unwind_to(&mut self, depth: usize, span: Span) {
         let open: Vec<ScopeId> = self.fs().open_scopes[depth..].to_vec();
         for id in open.into_iter().rev() {
-            self.emit(
-                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
-                    scope: id,
-                    kind: ScopeKind::Exit,
-                })),
-                span,
-            );
+            self.generated(|s| {
+                s.emit(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: id,
+                        kind: ScopeKind::Exit,
+                    })),
+                    span,
+                )
+            });
         }
     }
 
@@ -243,8 +298,10 @@ impl Lowerer<'_> {
         self.fs().open_scopes.len()
     }
 
+    /// A sequence point is lowering's own bookkeeping, not a statement the source
+    /// wrote — gcov has no counter for it.
     fn seq_point(&mut self, span: Span) {
-        self.emit(InstKind::Marker(MarkerKind::SeqPoint), span);
+        self.generated(|s| s.emit(InstKind::Marker(MarkerKind::SeqPoint), span));
     }
 
     fn text(&self, sym: chiero_span::Symbol) -> Option<&str> {
@@ -445,6 +502,7 @@ impl Lowerer<'_> {
 
         self.resolve_gotos();
         self.finish_blocks();
+        self.compute_gcov_lines();
         let fs = self.f.take().expect("inside a function");
         self.module.funcs[slot] = Function {
             id: fs.id,
@@ -502,6 +560,44 @@ impl Lowerer<'_> {
             ) {
                 b.term = Terminator::Return(value.clone());
             }
+        }
+    }
+
+    /// 015 §5. For each `Inst`, resolve its `Span` with **`expansion_loc`** and collect
+    /// the distinct lines.
+    ///
+    /// Three of §5's five consequences are decisions made right here:
+    ///
+    /// - **`expansion_loc`, never `spelling_loc`.** A statement inside a macro body is
+    ///   attributed to the `.c` line where the macro was *used*, because that is the only
+    ///   line gcov records (030 §1, measured). Spelling locations name header lines that
+    ///   appear in no coverage file and match nothing.
+    /// - **Lines in a header are kept.** An earlier draft dropped any line outside the
+    ///   block's own TU; 030 §1's measurement is the proof it was backwards, since a
+    ///   `static inline` in a header *does* get its own gcov entry. Dropping them would
+    ///   empty `gcov_lines` for all of `vec.h`, `pool.h` and `buffer_funcs.h` — VPP's
+    ///   entire hot layer — while contract 17's subset property reported success, because
+    ///   the empty set is a subset of everything.
+    /// - **Compiler-generated instructions contribute nothing**, because gcov has no
+    ///   counter for them either.
+    fn compute_gcov_lines(&mut self) {
+        let Some(map) = self.map else { return };
+        let fs = self.f.as_mut().expect("in a function");
+        for b in &mut fs.blocks {
+            let mut lines: Vec<u32> = Vec::new();
+            for i in &b.insts {
+                if i.generated || i.span == Span::DUMMY {
+                    continue;
+                }
+                let Some(loc) = map.expansion_loc(i.span) else {
+                    continue;
+                };
+                if !lines.contains(&loc.line) {
+                    lines.push(loc.line);
+                }
+            }
+            lines.sort_unstable();
+            b.gcov_lines = lines.into_iter().collect();
         }
     }
 
@@ -1191,6 +1287,12 @@ impl Lowerer<'_> {
         // conversion: the C expression has no `_Bool` in it at all, and §2's rule that
         // lowering never infers a conversion is about the *source* program's semantics.
         let wide = self.new_value();
+        // **Save-and-restore, not increment-and-decrement.** A mismatched pair either
+        // marks source instructions as generated or underflows the counter, and an
+        // earlier version of this function did both — the decrement had been placed in a
+        // different function entirely by a careless edit, and every fixture panicked.
+        let saved = self.generated_depth;
+        self.generated_depth = saved + 1;
         self.emit(
             InstKind::Assign {
                 dst: wide,
@@ -1204,10 +1306,14 @@ impl Lowerer<'_> {
             span,
         );
         self.store_slot(slot, Operand::Value(wide), &slot_ty, span);
+        self.generated_depth = saved;
         self.set_term(Terminator::Goto(join));
 
-        // The short-circuit block: the answer without evaluating `b` at all.
+        // The short-circuit block: the answer without evaluating `b` at all. **All of it
+        // is lowering's**, which is why 015 contract 16 expects the block to carry no
+        // `gcov_lines` — gcov has no counter for a store the programmer did not write.
         self.switch_to(short_b);
+        self.generated_depth = saved + 1;
         let short_val = i128::from(matches!(op, chiero_ast::BinOp::LogOr));
         self.store_slot(
             slot,
@@ -1218,9 +1324,11 @@ impl Lowerer<'_> {
             &slot_ty,
             span,
         );
+        self.generated_depth = saved;
         self.set_term(Terminator::Goto(join));
 
         self.switch_to(join);
+        self.generated_depth = saved + 1;
         let addr = self.new_value();
         self.emit(
             InstKind::Assign {
@@ -1242,6 +1350,7 @@ impl Lowerer<'_> {
             },
             span,
         );
+        self.generated_depth = saved;
         Operand::Value(dst)
     }
 
@@ -1874,13 +1983,16 @@ impl Lowerer<'_> {
             if to.contains(id) {
                 continue;
             }
-            self.emit(
-                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
-                    scope: *id,
-                    kind: ScopeKind::Exit,
-                })),
-                span,
-            );
+            let id = *id;
+            self.generated(|s| {
+                s.emit(
+                    InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                        scope: id,
+                        kind: ScopeKind::Exit,
+                    })),
+                    span,
+                )
+            });
         }
     }
 

@@ -22,7 +22,11 @@ fn at(lo: u32) -> Span {
 }
 
 fn inst(kind: InstKind, lo: u32) -> Inst {
-    Inst { kind, span: at(lo) }
+    Inst {
+        kind,
+        span: at(lo),
+        generated: false,
+    }
 }
 
 fn block(id: u32, insts: Vec<Inst>, term: Terminator) -> Block {

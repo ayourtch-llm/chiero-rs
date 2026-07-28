@@ -61,6 +61,7 @@ fn run_op(op: BinOp, width: u32, a_val: i128, b_val: i128) -> (RunResult, TermAr
                         },
                     },
                     span: at(10),
+                    generated: false,
                 },
                 // Reached only if the path continued.
                 Inst {
@@ -69,6 +70,7 @@ fn run_op(op: BinOp, width: u32, a_val: i128, b_val: i128) -> (RunResult, TermAr
                         rv: RValue::Use(Operand::Const(Const::Int { bits: 32, val: 99 })),
                     },
                     span: at(20),
+                    generated: false,
                 },
             ],
             Terminator::Return(Some(Operand::Value(ValueId(0)))),

@@ -15,6 +15,7 @@ fn inst(kind: InstKind) -> Inst {
     Inst {
         kind,
         span: Span::DUMMY,
+        generated: false,
     }
 }
 

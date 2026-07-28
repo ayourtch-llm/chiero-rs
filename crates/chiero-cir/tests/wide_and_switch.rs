@@ -57,6 +57,7 @@ fn a_switch_prints_the_same_case_order_twice() {
                     rv: RValue::Fresh { ty: CTy::Int(32) },
                 },
                 span: Span::DUMMY,
+                generated: false,
             }],
             Terminator::Switch {
                 scrut: Operand::Value(ValueId(0)),
@@ -117,6 +118,7 @@ fn a_512_bit_literal_round_trips_byte_exactly() {
                 })),
             },
             span: Span::DUMMY,
+            generated: false,
         }],
         Terminator::Return(None),
     )]);

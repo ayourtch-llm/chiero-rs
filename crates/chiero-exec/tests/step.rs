@@ -27,6 +27,7 @@ fn inst(kind: InstKind) -> Inst {
     Inst {
         kind,
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
@@ -37,6 +38,7 @@ fn inst_at(kind: InstKind, lo: u32) -> Inst {
     Inst {
         kind,
         span: Span::new(BytePos(lo), BytePos(lo + 1), ExpnCtx(0)),
+        generated: false,
     }
 }
 

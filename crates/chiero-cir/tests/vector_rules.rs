@@ -66,6 +66,7 @@ fn assign(dst: u32, rv: RValue) -> Inst {
             rv,
         },
         span: Span::DUMMY,
+        generated: false,
     }
 }
 
