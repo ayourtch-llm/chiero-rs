@@ -57,6 +57,7 @@ fn promotion_preserves_every_initialization_bit() {
 
     m.promote_to_array(&mut a, p.base);
 
+    let mut skipped = false;
     for (bit, was) in before.iter().enumerate() {
         let now = m.init_bit_via(&mut a, p.base, bit as u64);
         match (was, &now) {
@@ -65,17 +66,26 @@ fn promotion_preserves_every_initialization_bit() {
             // `ite(t, 1, 0) == 1`, which is a different expression with the same meaning —
             // so a `Cond` must stay a `Cond` and the two must agree on every assignment.
             (InitBit::Cond(t0), InitBit::Cond(t1)) => {
+                // **`Unsat`, not "anything but `Sat`".** The weaker form is satisfied by
+                // `Unknown`, which is what tier 1 returns for this without a backend — so
+                // with z3 absent the clause passed while an *inverted* guard survived.
+                // 022 contract 2: tier-2-only checks are "skipped with a printed reason,
+                // not silently passed". Found by review.
+                let Some(backend) = chiero_solver::SmtLib::discover() else {
+                    if !skipped {
+                        eprintln!("skipping the `Cond` half: no SMT-LIB backend (022 contract 2)");
+                        skipped = true;
+                    }
+                    continue;
+                };
                 let same = a.eq(*t0, *t1);
                 let differs = a.not(same);
-                let mut s = match chiero_solver::SmtLib::discover() {
-                    Some(b) => chiero_solver::TieredSolver::with_backend(b),
-                    None => chiero_solver::TieredSolver::new(),
-                };
+                let mut s = chiero_solver::TieredSolver::with_backend(backend);
                 use chiero_solver::Solver;
                 assert!(
-                    !matches!(
+                    matches!(
                         s.check(&mut a, &[differs]),
-                        chiero_solver::CheckResult::Sat(_)
+                        chiero_solver::CheckResult::Unsat
                     ),
                     "bit {bit}'s guard changed meaning across promotion"
                 );

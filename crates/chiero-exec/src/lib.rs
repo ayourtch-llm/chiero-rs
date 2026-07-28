@@ -315,6 +315,11 @@ pub struct Frame {
     /// *within* a function, so one map per state would let a callee's `%2` inherit the
     /// caller's provenance — and recursion has the same shape.
     ptr_vals: IndexMap<ValueId, Pointer>,
+    /// Locals whose value depends on pointer bits **below the object's guaranteed
+    /// alignment** (021 §7.2). Tracked per `ValueId` rather than per `Term` because the
+    /// arena folds `concrete_address & 63` to a constant on construction — by the time a
+    /// branch sees the condition, the structure that revealed the question is gone.
+    bit_inspected: Vec<ValueId>,
     /// The arguments past the declared parameters of a variadic call, in order. 020 §4.4.1
     /// puts the `va_list` in *memory* so `va_list *` can cross a function boundary; this
     /// is the argument area it iterates, which belongs to the activation that received it.
@@ -488,6 +493,21 @@ impl State {
     /// Record that the local `v` holds the address of `p`. Arithmetic writes a *different*
     /// local with no entry, which is how provenance is lost — the property the value-keyed
     /// table was documented to have and could not.
+    /// Record that `v`'s value came from inspecting pointer bits the allocator chose.
+    fn mark_bit_inspected(&mut self, v: ValueId) {
+        if let Some(f) = self.stack.last_mut()
+            && !f.bit_inspected.contains(&v)
+        {
+            f.bit_inspected.push(v);
+        }
+    }
+
+    fn is_bit_inspected(&self, v: ValueId) -> bool {
+        self.stack
+            .last()
+            .is_some_and(|f| f.bit_inspected.contains(&v))
+    }
+
     pub fn remember_value_provenance(&mut self, v: ValueId, p: Pointer) {
         if let Some(f) = self.stack.last_mut() {
             f.ptr_vals.insert(v, p);
@@ -1035,13 +1055,15 @@ impl<'m> Engine<'m> {
                 //   reading as the backing store's **zero**, which 021 §3.1 calls the
                 //   single most common way a symbolic executor is confidently wrong.
                 //
-                // A per-byte symbolic fill is neither: the object stays `Repr::Bytes` and
-                // writable, and every byte is a symbol nobody has claimed. It costs one
-                // term per byte, which is why `with_entry_param_bytes` exists — filling
-                // on first touch instead is the optimisation, and it is not correctness.
-                let p = Pointer { base: obj, off: 0 };
-                let n = self.entry_param_bytes;
-                mem.havoc_range_reporting(a, p, n, HavocFill::Symbolic, f.span);
+                // Marking it lazy is neither: the object stays `Repr::Bytes` and
+                // writable, and a byte becomes a symbol nobody has claimed **when it is
+                // first read**, which is what §6 says ("on first dereference"). Filling
+                // eagerly instead cost one term per byte per *state* — a fork clones the
+                // memory — measuring 1.3 GB at 8192 states and aborting the process with
+                // four pointer parameters, against a default `max_states` of 10 000. An
+                // earlier comment here called laziness "the optimisation, not the
+                // correctness", which inverted §6's own sentence. Found by review.
+                mem.mark_lazy(obj);
                 Value::Ptr(Pointer { base: obj, off: 0 })
             } else {
                 let t = a.var(sort_of(&p.ty), &format!("param{i}"));
@@ -1076,6 +1098,7 @@ impl<'m> Engine<'m> {
                 locals: entry_locals,
                 frame_objs,
                 ptr_vals: IndexMap::new(),
+                bit_inspected: Vec::new(),
                 varargs: Vec::new(),
                 lane_w: IndexMap::new(),
             }],
@@ -1555,6 +1578,72 @@ impl<'m> Engine<'m> {
         }
     }
 
+    /// 021 §7.2's `PointerBitInspection`: does this operation ask about pointer bits the
+    /// *allocator* chose rather than ones the object guarantees?
+    ///
+    /// An object aligned to `A` really does have its low `log2(A)` bits clear — a fact
+    /// about the object, so `p & 7` on a 16-byte-aligned pointer is decidable and firing
+    /// there would double the state count of every aligned-pointer test in VPP. A mask
+    /// reaching *at or above* `A` asks about bits chiero's bump allocator invented.
+    ///
+    /// **Mitigation 2 of §7.2's two.** Mitigation 1 — symbolic base addresses constrained
+    /// only by alignment and disjointness — is not implemented, and until it is, this is
+    /// what stops the allocator answering the program's question.
+    fn note_pointer_bits(&mut self, a: &TermArena, s: &mut State, dst: ValueId, rv: &RValue) {
+        // **Propagate first.** Any operation over a tainted local is tainted, which is how
+        // the `& mask` reaches the `== 0` and then the branch.
+        let mut tainted = false;
+        let mut visit = |o: &Operand| {
+            if let Operand::Value(v) = o
+                && s.is_bit_inspected(*v)
+            {
+                tainted = true;
+            }
+        };
+        match rv {
+            RValue::Bin { a: x, b: y, .. } | RValue::Cmp { a: x, b: y, .. } => {
+                visit(x);
+                visit(y);
+            }
+            RValue::Un { a: x, .. } | RValue::Cast { a: x, .. } | RValue::Use(x) => visit(x),
+            RValue::Select { cond, t, f } => {
+                visit(cond);
+                visit(t);
+                visit(f);
+            }
+            _ => {}
+        }
+        if tainted {
+            s.mark_bit_inspected(dst);
+            return;
+        }
+        // The source: `ptr_as_int & mask` where the mask reaches past the alignment.
+        let RValue::Bin {
+            op: BinOp::And,
+            a: x,
+            b: y,
+            ..
+        } = rv
+        else {
+            return;
+        };
+        for (val, other) in [(x, y), (y, x)] {
+            let Operand::Const(Const::Int { val: mask, .. }) = val else {
+                continue;
+            };
+            let Operand::Value(v) = other else { continue };
+            let Some(p) = s.value_provenance_of(*v) else {
+                continue;
+            };
+            let align = s.mem.align_of(p.base).unwrap_or(1).max(1);
+            if *mask >= i128::from(align) {
+                s.mark_bit_inspected(dst);
+                return;
+            }
+        }
+        let _ = a;
+    }
+
     /// Whether an operand is 020 §4.1's `Undef`.
     fn is_undef(&mut self, a: &mut TermArena, s: &mut State, o: &Operand) -> bool {
         matches!(self.operand(a, s, o), Some(Value::Undef))
@@ -1623,6 +1712,9 @@ impl<'m> Engine<'m> {
                 // A dropped assignment is a silent hole, so `eval` degrades on its way to
                 // returning `None` and the local simply stays unbound.
                 self.pending_dst = Some(*dst);
+                // 021 §7.2, before the value is computed: the *structure* of the
+                // operation is what reveals the question, and the arena folds it away.
+                self.note_pointer_bits(a, s, *dst, rv);
                 let evaluated = self.eval(a, s, rv, i.span);
                 self.pending_dst = None;
                 if let Some(v) = evaluated {
@@ -2182,6 +2274,7 @@ impl<'m> Engine<'m> {
             locals,
             frame_objs,
             ptr_vals: IndexMap::new(),
+            bit_inspected: Vec::new(),
             varargs,
             lane_w: IndexMap::new(),
         });
@@ -2402,6 +2495,30 @@ impl<'m> Engine<'m> {
             s.give_up("branch condition is not a scalar".into(), Span::DUMMY);
             return None;
         };
+        // **021 §7.2: chiero's bump allocator does not get to decide a branch.** A test on
+        // pointer bits *below the object's guaranteed alignment* is answered by where
+        // chiero happened to place the object — and because addresses are deterministic
+        // (contract 15) the wrong answer is stable, reproducible, and never looks flaky.
+        // `nsim_input.c`'s `((uword) ep & (CLIB_CACHE_LINE_BYTES - 1)) == 0` is the real
+        // case. Both sides are explored and the run says it could not decide.
+        if let Operand::Value(cv) = cond
+            && s.is_bit_inspected(*cv)
+        {
+            let why = "a branch tests pointer bits below the object's guaranteed \
+                       alignment: the answer would come from where chiero placed the \
+                       object, so both sides were explored";
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                Span::DUMMY,
+                why,
+            );
+            let mut sibling = s.clone();
+            sibling.id = self.new_id();
+            self.take_edge(s, bt);
+            self.take_edge(&mut sibling, bf);
+            return Some(sibling);
+        }
         // §3 step 4: a constant condition makes **no solver call**. This fast path carries
         // most of the traffic and must exist before any benchmark is believed.
         if let Ok(v) = a.eval_ground(c) {
@@ -4297,6 +4414,7 @@ impl<'m> Engine<'m> {
             locals: IndexMap::new(),
             frame_objs,
             ptr_vals: IndexMap::new(),
+            bit_inspected: Vec::new(),
             varargs: Vec::new(),
             lane_w: IndexMap::new(),
         });

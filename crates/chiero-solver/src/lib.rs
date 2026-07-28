@@ -929,6 +929,34 @@ impl TermArena {
     /// negation, or a bare non-predicate term is outside it — and being outside it means
     /// `Unknown`, never `Unsat`, because the domain's reasoning is only known sound
     /// within it.
+    /// This term's immediate operands, whatever its shape.
+    ///
+    /// A generic walk, because callers that need to ask "does this expression mention
+    /// that one" should not have to enumerate `Node`'s variants — and a caller that
+    /// enumerates them today silently stops seeing new ones. 021 §7.2's pointer-bit check
+    /// is the first such caller.
+    pub fn subterms(&self, t: Term) -> Vec<Term> {
+        match &self.nodes[t.0 as usize] {
+            Node::Const(_) | Node::Var(..) => Vec::new(),
+            Node::Bin(_, a, b) => vec![*a, *b],
+            Node::Not(a) => vec![*a],
+            Node::Extend { a, .. } | Node::Extract { a, .. } => vec![*a],
+            Node::Concat { hi, lo } => vec![*hi, *lo],
+            Node::Ite { c, t, f } => vec![*c, *t, *f],
+            Node::ArrayConst { val, .. } => vec![*val],
+            Node::Store { a, i, v } => vec![*a, *i, *v],
+            Node::Select { a, i } => vec![*a, *i],
+        }
+    }
+
+    /// A binary term's operator and operands, when it is one.
+    pub fn as_bin(&self, t: Term) -> Option<(BinKind, Term, Term)> {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(k, a, b) => Some((*k, *a, *b)),
+            _ => None,
+        }
+    }
+
     pub fn as_atom(&self, t: Term) -> Option<Atom> {
         match &self.nodes[t.0 as usize] {
             Node::Bin(k, a, b) if k.is_predicate() => Some(Atom {
@@ -1169,12 +1197,13 @@ fn independent_bin(k: BinKind, x: BvConst, y: BvConst) -> BvConst {
         // A count at or past the width shifts every bit out. Rust's `<<` is undefined
         // there, so the count is tested first rather than relied upon.
         //
-        // `>=` versus `>` is an **equivalent** mutation here and mutation testing says so:
-        // the value lives in a `u128` and is masked to `w` afterwards, so a count of
-        // exactly `w` shifts every meaningful bit past the mask either way. The guard is
-        // written `>=` because that is what SMT-LIB says, not because a test distinguishes
-        // it — worth stating, since a surviving mutant usually means a missing test and
-        // this one does not.
+        // ⚠️ An earlier comment here called `>=` versus `>` an **equivalent** mutation,
+        // reasoning that "the value is masked to `w` afterwards". That is true at 8 and 32
+        // bits and **false at 128**: `u128::wrapping_shl(128)` masks the *count* to zero
+        // and shifts nothing, so the mutant returns the operand where SMT-LIB says zero.
+        // `MAX_BV_BITS` is 128 and 020 declares `__int128`, so it is reachable. The
+        // differential test covers 128 now. Found by review — a surviving mutant declared
+        // equivalent on an argument nobody checked at every width.
         BinKind::Shl => {
             if yu >= u128::from(w) {
                 BvConst::zero(w)

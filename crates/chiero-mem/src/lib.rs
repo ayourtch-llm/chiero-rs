@@ -1337,6 +1337,16 @@ struct Entry {
     align: u64,
     state: ObjState,
     readonly: bool,
+    /// **Lazily materialized** (021 §6): the bytes were written by something outside the
+    /// analysis, so they are *unknown* rather than *unwritten*, and they are materialized
+    /// **on first dereference** rather than at entry.
+    ///
+    /// Filling eagerly instead cost one term per byte per *state* — `State` owns `Memory`
+    /// and a fork clones it — which measured 1.3 GB at 8192 states with one 4 KiB pointee
+    /// and aborted the process with four. §6 says "on first dereference" for this reason,
+    /// and a comment here once called that "the optimisation, not the correctness", which
+    /// inverted the spec's own sentence. Found by review.
+    lazy: bool,
     origin: Span,
     /// Pointers this object holds, **keyed by slot offset** (021 §4's leak rule).
     ///
@@ -1398,6 +1408,7 @@ impl Memory {
                 state: ObjState::Live,
                 readonly: false,
                 origin: at,
+                lazy: false,
                 points_to: Vec::new(),
                 root: false,
             },
@@ -1542,7 +1553,25 @@ impl Memory {
         let Some(e) = self.entry(p.base) else {
             return AccessResult::fault(MemFault::NullDeref { off: p.off, at });
         };
+        let lazy = e.lazy;
         let obj = e.obj.as_ref().expect("materialized");
+        // **A lazy object's unwritten byte is unknown, and this API cannot say so with a
+        // value.** It has no arena, so it cannot mint the symbol `read_term` would — and
+        // minting into a scratch arena would hand back a term from an arena nobody else
+        // has, which is the identity hazard 022 §6.2 warns about. `SymbolicByte` is the
+        // honest report: a concrete access cannot answer for a value the caller chose.
+        // It is *not* `Uninitialized`, because nobody failed to write these (021 §6).
+        if lazy && let Some(b) = obj.init.first_no(p.off.max(0) as u64 * 8, size * 8) {
+            faults.push(MemFault::SymbolicByte {
+                obj: p.base,
+                off: (b / 8) as i64,
+                at,
+            });
+            return AccessResult {
+                value: obj.raw_bytes(p.off, size),
+                faults,
+            };
+        }
         // A concrete read cannot *answer* for a symbolic byte — the `data` zero behind it
         // is stale — but the initialization story is still worth telling, so this is an
         // extra fault rather than a replacement. The caller wants `read_term`.
@@ -1889,6 +1918,19 @@ impl Memory {
     /// the ranges O(objects²) — on the very path §5.1 says must not be linear.
     fn placements(&self) -> indexmap::IndexMap<ObjectId, u64> {
         self.space.objs.iter().map(|(i, a, _)| (*i, *a)).collect()
+    }
+
+    /// Mark an object lazily materialized — 021 §6. See `Entry::lazy`.
+    pub fn mark_lazy(&mut self, id: ObjectId) {
+        if let Some(e) = self.entry_mut(id) {
+            e.lazy = true;
+        }
+    }
+
+    /// An object's declared alignment — 021 §7.2 needs it to tell a fact about the object
+    /// from an answer the bump allocator invented.
+    pub fn align_of(&self, id: ObjectId) -> Option<u64> {
+        self.entry(id).and_then(|e| e.obj.as_ref()).map(|o| o.align)
     }
 
     /// Every symbol this memory invented, in creation order — 023 §9's
@@ -2638,6 +2680,16 @@ impl Memory {
         // Initialization comes from whichever representation is live. A promoted object's
         // mask is frozen, so consulting it would report the state as of promotion rather
         // than the state now.
+        // **A lazy object's unwritten bytes are unknown, not unwritten** (021 §6). They
+        // are given symbols here — on first dereference, which is what §6 asks — and
+        // marked initialized, so the scan below finds nothing to report and the value is
+        // one nobody has claimed rather than the backing store's zero. Suppressing only
+        // the *finding* would leave that zero, which 021 §3.1 calls the single most
+        // common way a symbolic executor is confidently wrong.
+        if self.entry(p.base).is_some_and(|e| e.lazy) && p.off >= 0 {
+            self.materialize_fresh(a, p.base, p.off, size);
+            self.memoize_via(a, p.base, p.off as u64 * 8, size * 8);
+        }
         let range = p.off as u64 * 8..p.off as u64 * 8 + size * 8;
         let mut first_no = None;
         let mut first_cond = None;

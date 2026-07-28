@@ -29,9 +29,26 @@ use chiero_solver::*;
 #[test]
 fn the_evaluator_does_not_call_the_folder() {
     let src = include_str!("../src/lib.rs");
+    // **Both ends of the call.** Checking only `eval_node` left the evaluator free to
+    // *be* the folder: replacing `independent_bin`'s whole body with `fold(k, x, y)`
+    // satisfied this check and every other test, because `eval_node` still called
+    // `independent_bin` and the differential then compared `fold` with itself. Found by
+    // review — the one scenario contract 7d exists for.
+    for f in ["fn eval_node(", "fn independent_bin("] {
+        let body = body_of(src, f);
+        assert!(
+            !body.contains("fold("),
+            "{f} calls the constant folder, so a wrong rule in one is confirmed by the \
+             other:\n{body}"
+        );
+    }
+}
+
+/// The brace-balanced body of a function, by signature prefix.
+fn body_of<'a>(src: &'a str, sig: &str) -> &'a str {
     let start = src
-        .find("fn eval_node(")
-        .expect("the evaluator is in this file; if it moved, point this test at it");
+        .find(sig)
+        .unwrap_or_else(|| panic!("{sig} is in this file; if it moved, point this test at it"));
     // To the next top-level `fn` at the same indentation — enough to cover the body.
     // **Brace-balanced**, not "up to the next `fn`". The first version searched for a
     // following `    fn ` and found none — the next item is `pub fn` — so it took the rest
@@ -60,11 +77,7 @@ fn the_evaluator_does_not_call_the_folder() {
         body.len() < rest.len(),
         "the body was not delimited, so this would scan the whole file"
     );
-    assert!(
-        !body.contains("fold("),
-        "the independent evaluator calls the constant folder, so a wrong rule in one is \
-         confirmed by the other:\n{body}"
-    );
+    body
 }
 
 /// **022 contract 7d, the differential half.** Two implementations of one set of
@@ -109,8 +122,18 @@ fn the_folder_and_the_evaluator_agree_on_every_binary_operation() {
         }
     };
     let mut disagreements = Vec::new();
-    for w in [8u32, 32] {
-        let mask = (1u128 << w) - 1;
+    // **128 is in the list because the shift guard is not equivalent there.** A comment
+    // in the evaluator claimed `>=` versus `>` at the width boundary made no difference
+    // "because the value is masked to `w` afterwards" — true at 8 and 32, false at 128,
+    // where `u128::wrapping_shl(128)` masks the *count* to 0 and shifts nothing.
+    // `MAX_BV_BITS` is 128 and 020 declares `__int128`, so this is reachable. Found by
+    // review; two widths could not see it.
+    for w in [8u32, 32, 128] {
+        let mask = if w == 128 {
+            u128::MAX
+        } else {
+            (1u128 << w) - 1
+        };
         // **The width itself, and one either side.** A shift count is only interesting at
         // the boundary SMT-LIB defines — "at or past the width shifts every bit out" — and
         // none of the values above equals 8 or 32, so `>=` and `>` were indistinguishable.
@@ -167,8 +190,17 @@ fn both_implementations_agree_with_the_backend() {
     let cases: [(u128, u128); 6] = [(5, 0), (0xfb, 0), (0, 0), (7, 3), (0x80, 0xff), (1, 8)];
     for (x, y) in cases {
         let mut a = TermArena::new();
-        let xt = a.bv(8, x);
-        let yt = a.bv(8, y);
+        // **Variables, so the evaluator actually runs.** Built from constants, the arena
+        // folds at construction and `eval_ground` returns a `Const` without ever reaching
+        // `Node::Bin` — so this compared z3 against the *folder* and passed with the
+        // evaluator gutted to return zero. The same trap the sibling test had, in the
+        // test written to avoid it. Found by review.
+        let vx0 = a.var(Sort::BitVec(8), "ex");
+        let vy0 = a.var(Sort::BitVec(8), "ey");
+        let mut model = Model::new();
+        model.set(a.var_id(vx0).unwrap(), BvConst::new(8, x));
+        model.set(a.var_id(vy0).unwrap(), BvConst::new(8, y));
+        let (xt, yt) = (vx0, vy0);
         for (name, t) in [
             ("udiv", a.udiv(xt, yt)),
             ("sdiv", a.sdiv(xt, yt)),
@@ -177,7 +209,7 @@ fn both_implementations_agree_with_the_backend() {
             ("shl", a.shl(xt, yt)),
             ("ashr", a.ashr(xt, yt)),
         ] {
-            let want = a.eval_ground(t).expect("total").bits();
+            let want = a.eval(&model, t).expect("total").bits();
             // Ask the backend whether the term can differ from what both of ours say.
             // A variable pinned to the same operands keeps the query from being folded
             // away before it is asked.
