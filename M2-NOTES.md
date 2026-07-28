@@ -115,3 +115,10 @@
   fully expands its parenthesized operand before recognizing the required string.
   Under the complete GCC predefine set all four required VPP headers again preprocess
   with zero diagnostics.
+- Finding 15 reproduced at the exact reviewer metric: two distinct TUs including the
+  same header produced 0 hits and 4 misses. Cache hits now relocate cached token and
+  diagnostic spans to the requesting `SourceFile` instead of keying on its global start
+  offset. `LexedFile` retains only the interned spellings it actually references rather
+  than cloning the session's full interner. The discriminator now reports 1 hit and
+  3 misses with correct header provenance; the four-header GCC-predefine run reports
+  8 cross-TU hits and 808 misses.

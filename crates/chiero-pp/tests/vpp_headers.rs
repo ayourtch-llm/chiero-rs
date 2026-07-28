@@ -78,4 +78,10 @@ fn required_vppinfra_headers_preprocess_without_panicking() {
         diagnostic_counts.push((name, tu.diagnostics.len()));
     }
     eprintln!("VPP header diagnostic metric: {diagnostic_counts:?}");
+    let cache_stats = session.lex_cache_stats();
+    eprintln!("VPP header lex-cache metric: {cache_stats:?}");
+    assert!(
+        cache_stats.0 > 0,
+        "shared headers across distinct TUs must produce cache hits"
+    );
 }

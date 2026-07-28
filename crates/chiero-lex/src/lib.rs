@@ -113,7 +113,7 @@ pub struct LexedFile {
     source: Arc<str>,
     start: BytePos,
     spellings: BTreeMap<usize, String>,
-    symbols: Vec<Arc<str>>,
+    symbols: BTreeMap<Symbol, Arc<str>>,
 }
 
 impl LexedFile {
@@ -152,7 +152,28 @@ impl LexedFile {
     }
 
     pub fn symbol_text(&self, symbol: Symbol) -> Option<&str> {
-        self.symbols.get(symbol.0 as usize).map(AsRef::as_ref)
+        self.symbols.get(&symbol).map(AsRef::as_ref)
+    }
+
+    fn relocated(&self, start: BytePos) -> Self {
+        let relocate = |span: Span| {
+            let lo = start
+                .0
+                .saturating_add(span.lo.0.saturating_sub(self.start.0));
+            let hi = start
+                .0
+                .saturating_add(span.hi.0.saturating_sub(self.start.0));
+            Span::new(BytePos(lo), BytePos(hi), span.ctx)
+        };
+        let mut relocated = self.clone();
+        relocated.start = start;
+        for token in &mut relocated.tokens {
+            token.span = relocate(token.span);
+        }
+        for diagnostic in &mut relocated.diagnostics {
+            diagnostic.span = relocate(diagnostic.span);
+        }
+        relocated
     }
 }
 
@@ -187,7 +208,6 @@ pub struct LexSession {
 struct CacheKey {
     file: FileId,
     content_hash: u64,
-    start: BytePos,
     config: LexConfig,
 }
 
@@ -216,13 +236,27 @@ impl LexSession {
             lexer.run();
             (lexer.tokens, lexer.diagnostics, lexer.spellings)
         };
+        let symbols = {
+            let interner = self.interner.borrow();
+            tokens
+                .iter()
+                .filter_map(|token| match token.kind {
+                    PpTokenKind::Ident(symbol) => interner
+                        .strings
+                        .get(symbol.0 as usize)
+                        .cloned()
+                        .map(|text| (symbol, text)),
+                    _ => None,
+                })
+                .collect()
+        };
         LexedFile {
             tokens,
             diagnostics,
             source,
             start: source_file.start_pos,
             spellings,
-            symbols: self.interner.borrow().strings.clone(),
+            symbols,
         }
     }
 
@@ -233,12 +267,14 @@ impl LexSession {
         let key = CacheKey {
             file,
             content_hash: stable_hash(source_file.src().as_bytes()),
-            start: source_file.start_pos,
             config,
         };
         if let Some(hit) = self.cache.borrow().get(&key).cloned() {
             self.cache_hits.set(self.cache_hits.get() + 1);
-            return hit;
+            if hit.start == source_file.start_pos {
+                return hit;
+            }
+            return Arc::new(hit.relocated(source_file.start_pos));
         }
         let lexed = Arc::new(self.lex(map, file, config));
         self.cache.borrow_mut().insert(key, lexed.clone());
