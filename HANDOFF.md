@@ -487,7 +487,53 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 104, `72169ce`) — 991 tests, M1 160/165, frontend 113/117
+> ### ⏭️ START HERE (wave 105, `92b9328`) — 1002 tests, M1 162/165, frontend 113/117
+>
+> **020 is complete.** Contracts 29 and 30 close it: `UnionPun` exists and is deliberately
+> absent from `chiero_check::default_checkers()`, and `lower_tu_with_config` records the
+> `ConfigId` so two endianness configurations produce two distinguishable modules.
+>
+> **Three contracts remain in M1:**
+>
+> 1. **021 c19** — the memory model.
+> 2. **023's 7, 17, 21** — the execution engine.
+> 3. **010 contract 19** — per-`ConfigId` expansion sites, small, unblocked since wave 84,
+>    and now easier: wave 105 built the two-configuration fixture pattern in
+>    `chiero-lower/tests/endianness.rs`, which is the same shape 010 c19 needs.
+>
+> **Read the contract for what it says is already true.** Contract 30 needed no CIR
+> machinery at all — 020 §4.4 resolves endianness *before* CIR, so the two layouts were
+> already correct and the only defect was a hardcoded `None`. Contract 23's memory half was
+> the same. Two waves running where the spec's design meant most of the work was already
+> done and the test was the deliverable; look for that before building.
+>
+> ### The survivor pattern, now four waves running
+>
+> Every mutation survivor since wave 102 has had one shape: **the fixture never reached the
+> comparison the design exists for.** Wave 105 had four, all in one checker, each a rule the
+> fixture happened never to exercise — same-offset-narrower-width, object identity, overlap
+> as a range, and stores-are-not-reads. Each fix was a fixture one line different from an
+> existing one. No amount of reading the checker would have found them.
+>
+> So: **before running a mutation, ask what the fixture would have to look like for the
+> mutant to survive.** For every `&&` in a predicate, there should be a fixture where that
+> conjunct alone is false. That is faster than running the campaign and it finds the same
+> things.
+>
+> Mutation harness rules still in force: **back up to a scratch copy, never `git checkout`**;
+> **a mutant that does not compile is inconclusive, not a survivor**; **two guards only ever
+> true together are equivalent mutants**; a genuine no-op mutant is neither — discard it.
+> And **`cargo fmt` moves anchors** — wave 105 lost one mutation to a reformatted anchor, so
+> re-grep after formatting.
+>
+> Owed and written down: nothing builds `AccessPath`s (lowering has the layouts and member
+> names; 015 is where it belongs, and it is not a numbered contract so it needs a decision);
+> the engine's own findings cite `ObjectId(N)`; `typeof` types to `Ty::Error` in sema; the
+> parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string
+> literals lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 104, `72169ce`) — 991 tests, M1 160/165, frontend 113/117
 >
 > **020 contract 23 is closed.** `AccessPath` exists — reporting-only, in a side table on
 > `Function` keyed by the address `ValueId`, with a textual form that round-trips
