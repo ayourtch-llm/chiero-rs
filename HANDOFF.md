@@ -487,25 +487,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 130, `ce169c3`) — 1102 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 131, `934c574`) — 1102 tests, 5 ignored, M1 165/165 by contract
 >
 > ## 🔴 The sret wild pointer: the return never reaches the caller
 >
-> **Wave 130's finding, and the sharpest lead yet.** Instrumenting the engine's
-> return-to-caller path — the branch that does `s.set_local(ret_dst, val)` after popping a
-> frame — shows it **never fires at all** for the lowered aggregate fixture. Not with a
-> `None` destination, not with a `None` value: the branch is not reached.
+> **The crash is inside the callee, before it returns.** Wave 131 corrected wave 130's
+> reading: the return-to-caller branch never fires because the state is already dead when
+> `mk` reaches its terminator. `WildPointer` is fatal (`is_fatal`), so the path ends at the
+> faulting access.
 >
-> Yet the `copymem` *after* the call does execute, and reports the wild pointer. So the call
-> returns control without ever delivering a value, and the caller's `%18` is whatever an
-> unbound local resolves to.
+> Ruled out this wave: the module is well formed — `mk` is `FuncId(0)`, `Body::Defined`,
+> one block, three params, called as `Direct(FuncId(0))` with three arguments and a
+> destination. No `lowering_gap("a return operand")` fires either, so the return operand
+> itself evaluates.
 >
-> Next: find which path `mk` actually returns through. Candidates, in order —
-> `Body::Declared` being taken because the module's `mk` looks bodyless from the callee
-> lookup; `Callee::Direct` resolving to a `FuncId` that is not `mk`; or a second return
-> handler that this instrumentation missed. `grep` for every site that pops a `Frame`.
-> The same fixture as a **hand-built** module delivers its value correctly (wave 128), so
-> diffing the two modules' `FuncId`s and `Body` values is the cheap first move.
+> **So the faulting access is one of the two `CopyMem`s, and the address is `p`'s own
+> contents `{3, 7}`** — 0x700000003. In the callee that is `copymem %3 -> %16` (dst = the
+> sret parameter, src = `addrlocal p`). The next step is to print, inside the engine's
+> `CopyMem` handling, what `dst` and `src` each evaluate to for this instruction, and which
+> of the two is the faulting one. If `dst` (`%3`) resolves to `p`'s bytes rather than to the
+> caller's slot, the parameter binding is handing the callee a *value* where a pointer
+> belongs — which is the shape wave 127's surviving mutant predicted.
+>
+> The same fixture as a **hand-built** module runs correctly (wave 128), and its callee does
+> the same `CopyMem` through a pointer parameter — so diffing what the two bind for that one
+> instruction is the cheapest remaining move.
 >
 > ### Previously eliminated, each with a guarding test
 >
@@ -539,7 +545,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
-> **When instrumentation prints nothing, that is the finding** (wave 130). Two probes on the
+> **An empty log means "not reached" — then ask *why* not** (waves 130–131). Wave 130 read
+> "the return branch never fires" as "the return delivers nothing"; wave 131 found the state
+> was already dead. Both readings fit an empty log, and only one is true. Instrument the
+> *predecessor* before theorising about the site that stayed silent. Two probes on the
 > engine's return-to-caller path produced no output at all — which says more than any value
 > would have: the path is not reached. An empty log is evidence, not a failed experiment.
 > **A real defect found while hunting another is still not the cause** (wave 129). The
