@@ -487,7 +487,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 99, `03f74cc`) — 934 tests, M1 153/165, frontend 113/117
+> ### ⏭️ START HERE (wave 100, `d1c19af`) — 938 tests, M1 155/165, frontend 113/117
+>
+> **Lowering no longer drops anything in ordinary C.** Wave 100 closed 020 contract 14 and
+> the `GlobalInit` gap 020 §6 records: string literals are pooled read-only `.str.N`
+> globals carrying their bytes, `sizeof` folds instead of yielding `Undef`, wide `case`
+> ranges become guards rather than 10 000 `Switch` entries, and a returned value is
+> converted to the function's return type.
+>
+> **Correction to wave 99's list below: 020 c29/c30 are *not* `GlobalInit`.** They are the
+> union-pun checker and the endianness `ConfigId`. `GlobalInit` was an owed gap in 020 §6,
+> and it is now closed. Ten contracts remain in M1:
+>
+> 1. **020's 16, 17, 18** — the optional passes (`mem2reg`, `simplify_cfg`) with their
+>    observational-transparency requirement, and **23** (`Opaque`, so inline asm is
+>    representable), **44** (`Marker::Line` at instruction position, reparsing into
+>    `gcov_lines`).
+> 2. **020's 29, 30** — the union-pun checker and the endianness `ConfigId`.
+> 3. **021 c19**, **023's 7, 17, 21**.
+> 4. **010 contract 19**, small and unblocked since wave 84.
+>
+> **A mutation harness backs up to a scratch copy, never to git.** Wave 100's first
+> campaign reverted each mutant with `git checkout -- <file>` and destroyed every
+> uncommitted GREEN edit mid-run; worse, the mutants that followed ran against
+> already-reverted source, so four verdicts were fictional and read as real. And **a mutant
+> that fails to compile is inconclusive, not a survivor** — one read as SURVIVED for
+> exactly that reason, which would have sent me writing a test for a gap that did not
+> exist. Both checks are now in the harness.
+>
+> Two standing instructions that keep earning themselves: **read a golden diff when it
+> changes** — wave 100's `sizeof` drop was found that way, not by any test — and **add a
+> `probe` fixture to `differential.rs` for anything with a computable value**.
+>
+> Owed and written down: `typeof` types to `Ty::Error` in sema; the parser's speculative
+> type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element
+> width in `unquote` (byte encodings only); 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 99, `03f74cc`) — 934 tests, M1 153/165, frontend 113/117
 >
 > **The frontend is done.** 013, 014 and 015 are all at 100%; C source becomes verified CIR
 > that matches goldens, agrees with gcc on what it computes, and attributes lines the way
