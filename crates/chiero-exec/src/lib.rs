@@ -1695,6 +1695,8 @@ impl<'m> Engine<'m> {
         // scalar gets a fresh symbol of its declared width.
         let mut entry_locals: IndexMap<ValueId, Value> = IndexMap::new();
         let mut entry_inputs: Vec<(Term, InputOrigin)> = Vec::new();
+        // How many of the witness's bindings the entry parameters consumed.
+        let mut entry_replay_used = 0usize;
         // Which parameters got a lazily-materialized object, for 021 §6's aliasing policy.
         let mut ptr_params: Vec<(ValueId, chiero_mem::ObjectId)> = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
@@ -1733,16 +1735,41 @@ impl<'m> Engine<'m> {
                 mem.mark_lazy(obj);
                 Value::Ptr(Pointer { base: obj, off: 0 })
             } else {
-                let t = a.var(sort_of(&p.ty), &format!("param{i}"));
-                entry_inputs.push((
-                    t,
-                    InputOrigin::Param {
-                        index: i,
-                        name: String::new(),
-                        span: f.span,
-                    },
-                ));
-                Value::Scalar(t)
+                let origin = InputOrigin::Param {
+                    index: i,
+                    name: String::new(),
+                    span: f.span,
+                };
+                // **A replay binds the entry parameters too.** They were minted with
+                // `a.var` directly, which is the one path that never consults the witness
+                // — so `replaying()` concretized inputs invented *during* a run and left
+                // the entry parameters symbolic, and every branch on one still forked.
+                // "All inputs concretized" (023 contract 21) is exactly these.
+                //
+                // The state does not exist yet here, so the replay cursor is local and is
+                // handed to it below — bindings are consumed positionally and the entry
+                // parameters are the first sites, so counting them here is the same order
+                // `replayed` would have used.
+                let bound = self.replay.as_ref().and_then(|w| {
+                    w.bindings
+                        .get(entry_replay_used)
+                        .map(|b| (b.width, b.value))
+                });
+                match bound {
+                    Some((_, value)) => {
+                        entry_replay_used += 1;
+                        let w = match sort_of(&p.ty) {
+                            chiero_solver::Sort::BitVec(w) => w,
+                            _ => 64,
+                        };
+                        Value::Scalar(a.bv(w, value))
+                    }
+                    None => {
+                        let t = a.var(sort_of(&p.ty), &format!("param{i}"));
+                        entry_inputs.push((t, origin));
+                        Value::Scalar(t)
+                    }
+                }
             };
             if let Value::Ptr(q) = v {
                 ptr_params.push((p.value, q.base));
@@ -1791,7 +1818,7 @@ impl<'m> Engine<'m> {
             inputs: entry_inputs,
             ub: Vec::new(),
             effects: Vec::new(),
-            replay_used: 0,
+            replay_used: entry_replay_used,
             witness: None,
             unwitnessed: None,
             ptr_ints: IndexMap::new(),
