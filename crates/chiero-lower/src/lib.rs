@@ -69,6 +69,7 @@ fn lower(
         next_value: 0,
         next_func: 0,
         map,
+        last_stmt_value: None,
         generated_depth: 0,
     };
     // **Two passes, and the first is not an optimization.** Every function is registered
@@ -155,6 +156,13 @@ struct Lowerer<'a> {
     next_value: u32,
     next_func: u32,
     map: Option<&'a chiero_span::SourceMap>,
+    /// The operand the most recent expression *statement* produced.
+    ///
+    /// A statement expression's value is its last expression statement's (015 §2.4), and
+    /// `stmt` otherwise discards what an expression statement evaluated to — so the value
+    /// is caught on the way past rather than by re-lowering the expression, which would
+    /// run its side effects twice.
+    last_stmt_value: Option<Operand>,
     /// Nonzero while emitting instructions lowering introduced rather than the source
     /// wrote. A counter, not a flag: the `&&` shape's bookkeeping can nest inside a
     /// scope's, and a flag would be cleared by the inner one on the way out.
@@ -341,6 +349,27 @@ impl Lowerer<'_> {
         self.alloca_n(ty, 1, align, name, span)
     }
 
+    /// A slot whose extent an `AllocaDyn` supplies (020 §3's `DYNAMIC_EXTENT`).
+    fn alloca_dynamic(
+        &mut self,
+        align: u64,
+        name: Option<chiero_cir::Symbol>,
+        span: Span,
+    ) -> AllocaId {
+        self.alloca_n(CTy::Int(8), chiero_cir::DYNAMIC_EXTENT, align, name, span)
+    }
+
+    /// `(element type, count expression)` if `t` is a variable-length array.
+    fn vla_of(&mut self, t: TyId) -> Option<(TyId, ExprId)> {
+        match self.analysis.ty(t) {
+            Ty::Array {
+                elem,
+                len: chiero_sema::ArrayLen::Vla(e),
+            } => Some((*elem, *e)),
+            _ => None,
+        }
+    }
+
     fn alloca(
         &mut self,
         ty: CTy,
@@ -362,12 +391,16 @@ impl Lowerer<'_> {
         let fs = self.fs();
         let id = AllocaId(fs.next_alloca);
         fs.next_alloca += 1;
+        let scope = fs.open_scopes.last().copied().unwrap_or(ScopeId(0));
         fs.allocas.push(AllocaDecl {
             id,
             ty,
             count,
             align,
-            scope: ScopeId(0),
+            // **The scope actually open**, not a constant. 021 §4 creates and retires
+            // objects by scope, so a slot filed under scope 0 would outlive its block and
+            // a `for` index would be indistinguishable from a body local.
+            scope,
             lifetime: Lifetime::Scope,
             name,
             span,
@@ -446,6 +479,7 @@ impl Lowerer<'_> {
     ) {
         let span = self.ast.decl(decl).span;
         let cir_name = self.sym(name).unwrap_or_else(|| std::sync::Arc::from("?"));
+        let diags_before = self.diagnostics.len();
         // The declaration pass already reserved this function's slot and `FuncId`.
         let Some(slot) = self.module.funcs.iter().position(|f| f.name == cir_name) else {
             return;
@@ -458,7 +492,7 @@ impl Lowerer<'_> {
         };
         self.f = Some(FnState {
             id: fid,
-            name: cir_name,
+            name: cir_name.clone(),
             params: Vec::new(),
             ret: ret.clone(),
             variadic,
@@ -540,6 +574,24 @@ impl Lowerer<'_> {
         self.resolve_gotos();
         self.finish_blocks();
         self.compute_gcov_lines();
+
+        // **015 §7, contract 20: refuse the function whole.** If anything in the body
+        // could not be lowered, the definition is discarded and one diagnostic stands for
+        // it. A *partial* body is worse than none — every analysis downstream treats a
+        // `Body::Defined` function as complete, so a missing branch reads as a branch that
+        // cannot be taken rather than as a gap.
+        if self.diagnostics.len() > diags_before {
+            self.diagnostics.truncate(diags_before);
+            self.diagnostics.push(LowerDiagnostic {
+                span,
+                message: format!(
+                    "`{}` contains a construct lowering cannot represent, so it was skipped",
+                    &*cir_name
+                ),
+            });
+            self.f = None;
+            return;
+        }
         let fs = self.f.take().expect("inside a function");
         self.module.funcs[slot] = Function {
             id: fs.id,
@@ -731,11 +783,25 @@ impl Lowerer<'_> {
                 self.exit_scope(span);
             }
             StmtKind::Expr(e) => {
-                self.expr(e);
+                let v = self.expr(e);
+                self.last_stmt_value = Some(v);
                 self.seq_point(span);
             }
             StmtKind::Decl(ds) => {
                 for d in ds {
+                    // A **nested function definition** (013 §4 puts it in the "no"
+                    // column). One diagnostic; the enclosing function is then refused
+                    // whole by `function`.
+                    // `DeclKind::Error` is what 013 leaves where it refused a nested
+                    // function definition. Lowering cannot represent whatever was there,
+                    // so the enclosing function is refused whole by `function`.
+                    if matches!(self.ast.decl(d).kind, DeclKind::Error) {
+                        self.diagnostics.push(LowerDiagnostic {
+                            span,
+                            message: "a declaration the frontend refused".into(),
+                        });
+                        continue;
+                    }
                     self.local_decl(d);
                 }
             }
@@ -829,6 +895,10 @@ impl Lowerer<'_> {
                 step,
                 body,
             } => {
+                // **A scope enclosing the loop** (015 §3, contract 12). `i` is one object
+                // for the whole loop; putting it in the body's scope would retire and
+                // recreate it every iteration, so `&i` would change across iterations.
+                self.enter_scope(span);
                 match init {
                     Some(chiero_ast::ForInit::Decl(ds)) => {
                         for d in ds {
@@ -881,6 +951,7 @@ impl Lowerer<'_> {
                 }
                 self.set_term(Terminator::Goto(header));
                 self.switch_to(exit);
+                self.exit_scope(span);
             }
             StmtKind::Break => {
                 let Some(&(target, depth)) = self.fs().breaks.last() else {
@@ -986,6 +1057,32 @@ impl Lowerer<'_> {
         let cty = self.cty(sty);
         let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
         let text = name.and_then(|n| self.sym(n));
+
+        // **A VLA allocates where it is declared** (015 contract 14, 020 §3). The size is
+        // computed *here*, so ordinary dominance applies to it — hoisting the allocation
+        // to the entry block would reference a value that does not dominate it, which is
+        // exactly what putting `AllocaDyn` at a real program point exists to prevent.
+        if let Some((elem_ty, count_expr)) = self.vla_of(sty) {
+            let slot = self.alloca_dynamic(align, text, span);
+            if let Some(n) = name {
+                self.fs().locals.insert(n, (slot, cty.clone()));
+            }
+            let count = self.expr(count_expr);
+            let dst = self.new_value();
+            self.emit(
+                InstKind::AllocaDyn {
+                    dst,
+                    alloca: slot,
+                    elem: self.cty(elem_ty),
+                    count,
+                    align,
+                },
+                span,
+            );
+            self.seq_point(span);
+            return;
+        }
+
         let slot = self.alloca_for(sty, align, text, span);
         if let Some(n) = name {
             self.fs().locals.insert(n, (slot, cty.clone()));
@@ -1394,6 +1491,34 @@ impl Lowerer<'_> {
                 span,
             ),
             chiero_ast::ExprKind::Call { callee, args } => {
+                // **`alloca()` is an allocation, not a call** (015 contract 14, 020 §3).
+                // It differs from a VLA in exactly one way — `Lifetime::Function`, since
+                // the storage lives until the function returns rather than until the block
+                // ends — so an implementation using one lifetime for both is wrong in a
+                // way no other assertion sees.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && matches!(self.names.text(n), Some("alloca" | "__builtin_alloca"))
+                    && let Some(&size) = args.first()
+                {
+                    let count = self.expr(size);
+                    let slot =
+                        self.alloca_n(CTy::Int(8), chiero_cir::DYNAMIC_EXTENT, 16, None, span);
+                    if let Some(a) = self.fs().allocas.iter_mut().find(|a| a.id == slot) {
+                        a.lifetime = Lifetime::Function;
+                    }
+                    let dst = self.new_value();
+                    self.emit(
+                        InstKind::AllocaDyn {
+                            dst,
+                            alloca: slot,
+                            elem: CTy::Int(8),
+                            count,
+                            align: 16,
+                        },
+                        span,
+                    );
+                    return Operand::Value(dst);
+                }
                 // Arguments left to right, **then** the call (015 §2.5).
                 let ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
                 let fid = self.callee_of(*callee);
@@ -1436,6 +1561,18 @@ impl Lowerer<'_> {
             // as the **result** type rather than `int`.
             chiero_ast::ExprKind::Cond { cond, then, els } => {
                 self.conditional(e, *cond, *then, *els, span)
+            }
+            // 015 §2.4: the block's statements lower into the enclosing block sequence and
+            // the value is the last expression statement's. No CIR construct is needed —
+            // it falls out of the unstructured CFG, which is why §2.4 is three sentences.
+            chiero_ast::ExprKind::StmtExpr(body) => {
+                let saved = self.last_stmt_value.take();
+                self.stmt(*body);
+                let v = self.last_stmt_value.take();
+                // Restore, so a statement expression nested inside another does not
+                // consume the outer one's value.
+                self.last_stmt_value = saved;
+                v.unwrap_or(Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))))
             }
             chiero_ast::ExprKind::Comma { lhs, rhs } => {
                 self.expr(*lhs);

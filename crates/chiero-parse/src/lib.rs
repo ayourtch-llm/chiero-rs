@@ -1762,6 +1762,22 @@ impl<'a> Parser<'a> {
         }
         loop {
             let (name, ty) = self.declarator(specs.ty, false);
+            // **A nested function definition** — 013 §4 puts it in the "no" column, and
+            // contract 14 wants exactly one diagnostic with the enclosing function still
+            // parsing. The body is skipped as a balanced brace group and the declaration
+            // becomes `Error`, so a consumer sees that something was refused rather than a
+            // plausible local *declaration* followed by a stray compound statement.
+            if matches!(self.ast.ty(ty).kind, TypeKind::Func { .. })
+                && self.is_punct(0, Punct::LBrace)
+            {
+                let span = self.span_from(start);
+                self.error(span, "a nested function definition is not supported");
+                self.pos += 1;
+                self.skip_balanced(Punct::LBrace, Punct::RBrace);
+                let d = self.ast.add_decl(DeclKind::Error, span);
+                decls.push(d);
+                break;
+            }
             let init = if self.eat_punct(Punct::Eq) {
                 Some(self.initializer())
             } else {

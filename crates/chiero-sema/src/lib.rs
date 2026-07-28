@@ -191,6 +191,13 @@ pub enum ArrayLen {
     Flexible,
     /// `int a[0]`, the GNU form. 1165 VPP files use it.
     Zero,
+    /// A **variable-length array**: the bound is an expression evaluated where the
+    /// declaration stands.
+    ///
+    /// Distinguished from `Flexible` because 015 contract 14 turns on it — a VLA emits
+    /// `AllocaDyn` at its declaration point, and calling it flexible gave it extent zero,
+    /// so every access to it was out of bounds.
+    Vla(chiero_ast::ExprId),
 }
 
 /// 014 §3, computed per record and cached.
@@ -991,12 +998,7 @@ impl Cx<'_> {
                                 self.error(node.span, "array length is negative");
                                 ArrayLen::Fixed(0)
                             }
-                            None => {
-                                // A VLA. 014 lists it in `ArrayLen`, but a variable bound
-                                // has no size at compile time, so it is not a layout
-                                // question and is left to 015.
-                                ArrayLen::Flexible
-                            }
+                            None => ArrayLen::Vla(expr),
                         }
                     }
                 };
@@ -1506,6 +1508,23 @@ impl Cx<'_> {
         }
     }
 
+    /// The expression of a compound statement's **last expression statement**, which is a
+    /// statement expression's value (015 §2.4).
+    fn last_value_of_block(&self, body: StmtId) -> Option<ExprId> {
+        let StmtKind::Compound(ss) = &self.ast.stmt(body).kind else {
+            return None;
+        };
+        ss.iter().rev().find_map(|&s| match self.ast.stmt(s).kind {
+            StmtKind::Expr(e) => Some(e),
+            _ => None,
+        })
+    }
+
+    fn analysis_top_ty(&self, e: ExprId) -> Option<TyId> {
+        let t = self.out.typed.top(e)?;
+        Some(self.out.typed.ty_of(t))
+    }
+
     fn size_t(&self, v: i128) -> IntVal {
         IntVal {
             v,
@@ -1596,8 +1615,10 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         Ty::Ptr(_) => Some((t.pointer_width / 8) as u64),
         Ty::Array { elem, len } => match len {
             ArrayLen::Fixed(n) => Some(size_of_ty(a, t, *elem)? * n),
-            // Contributes 0 to size, but its alignment still counts.
-            ArrayLen::Flexible | ArrayLen::Zero => Some(0),
+            // Contributes 0 to size, but its alignment still counts. A **VLA** likewise
+            // has no compile-time size — its extent is supplied by an `AllocaDyn` at the
+            // declaration (020 §3), which is what `DYNAMIC_EXTENT` records.
+            ArrayLen::Flexible | ArrayLen::Zero | ArrayLen::Vla(_) => Some(0),
         },
         Ty::Func { .. } => None,
         Ty::Record(r) => Some(a.records.get(r.0 as usize)?.size),
@@ -2080,7 +2101,25 @@ impl Cx<'_> {
                     operands: ops,
                 })
             }
-            ExprKind::StmtExpr(_) | ExprKind::TypeName(_) | ExprKind::Error => {
+            // **A statement expression's type is its last expression statement's.** 013 §5
+            // keeps the block as a `StmtId`, so the type is found by walking to the last
+            // statement rather than by any rule of its own — and the statements inside are
+            // typed here too, or every expression in 217 VPP files' worth of `({ ... })`
+            // would be absent from the typed AST.
+            ExprKind::StmtExpr(body) => {
+                let body = *body;
+                self.type_stmt(body);
+                let ty = self
+                    .last_value_of_block(body)
+                    .and_then(|e| self.analysis_top_ty(e))
+                    .unwrap_or_else(|| self.intern(Ty::Void));
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
+            ExprKind::TypeName(_) | ExprKind::Error => {
                 let ty = self.intern(Ty::Error);
                 self.push_typed(TypedNode::Value {
                     expr,

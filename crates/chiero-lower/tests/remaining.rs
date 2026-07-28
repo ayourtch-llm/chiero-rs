@@ -116,6 +116,32 @@ fn a_vla_allocates_at_its_declaration_with_the_size_dominating() {
          {produced_at:?}, allocated at {inst_idx}"
     );
 
+    // **A VLA inside a branch**, which is what makes "at the declaration point" a real
+    // claim. With the whole function in one block, hoisting the allocation to the entry
+    // changes nothing and the mutation survives — the size and the allocation are in the
+    // same block either way. Here they are not: the allocation must be in the *branch*.
+    let m = lower(
+        "int f(int n) { if (n > 0) { int k = n + 1; int v[k]; v[0] = 3; return v[0]; } return 0; }",
+    );
+    let f = func(&m, "f");
+    let alloc_block = f
+        .blocks
+        .iter()
+        .position(|b| {
+            b.insts
+                .iter()
+                .any(|i| matches!(i.kind, InstKind::AllocaDyn { .. }))
+        })
+        .expect("the VLA allocates somewhere");
+    assert_ne!(
+        alloc_block,
+        f.blocks
+            .iter()
+            .position(|b| b.id == f.entry)
+            .expect("entry exists"),
+        "the allocation is in the branch that declares it, not hoisted to the entry —          hoisted, its size operand would be computed in a block that does not dominate it"
+    );
+
     // And the declaration is `Lifetime::Scope`: a VLA dies with its block, unlike
     // `alloca()`, which lives to function return (020 §3).
     let decl = f
