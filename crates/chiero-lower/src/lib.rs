@@ -92,7 +92,10 @@ struct FnState {
     /// Local name → its stack slot. Every local is addressable: CIR is not SSA
     /// (020 §1.3), so a local is memory and a load/store, which is also what makes
     /// `&x` free.
-    locals: IndexMap<chiero_span::Symbol, AllocaId>,
+    /// Local name → its slot **and its declared type**. The type is needed at every
+    /// load: a slot's width is a property of the declaration, not of the expression
+    /// reading it, and using the reader's width loaded four bytes from a one-byte slot.
+    locals: IndexMap<chiero_span::Symbol, (AllocaId, CTy)>,
     next_alloca: u32,
     next_block: u32,
     span: Span,
@@ -329,7 +332,8 @@ impl Lowerer<'_> {
             let pn_text = pname.and_then(|n| self.sym(n));
             let slot = self.alloca(cty.clone(), align, pn_text, span);
             if let Some(pn) = pname {
-                self.fs().locals.insert(pn, slot);
+                let t = cty.clone();
+                self.fs().locals.insert(pn, (slot, t));
             }
             let addr = self.new_value();
             self.emit(
@@ -663,7 +667,7 @@ impl Lowerer<'_> {
         let text = name.and_then(|n| self.sym(n));
         let slot = self.alloca(cty.clone(), align, text, span);
         if let Some(n) = name {
-            self.fs().locals.insert(n, slot);
+            self.fs().locals.insert(n, (slot, cty.clone()));
         }
         if let Some(init) = init {
             let v = self.expr(init);
@@ -756,7 +760,7 @@ impl Lowerer<'_> {
             chiero_ast::ExprKind::Number(_) | chiero_ast::ExprKind::Char { .. } => {
                 let mut diags = Vec::new();
                 let v = chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags);
-                let bits = self.width_of(e);
+                let bits = self.raw_width_of(e);
                 match v {
                     Some(chiero_sema::ConstVal::Int(n)) => {
                         Operand::Const(Const::Int { bits, val: n })
@@ -765,14 +769,13 @@ impl Lowerer<'_> {
                 }
             }
             chiero_ast::ExprKind::Ident(sym) => {
-                let Some(&slot) = self.fs().locals.get(sym) else {
+                let Some((slot, ty)) = self.fs().locals.get(sym).cloned() else {
                     // Not a local: a function or file-scope object. Neither is modelled
                     // by this slice, so the value is `Undef` and the path is honest
                     // about knowing nothing rather than inventing a zero.
-                    let ty = CTy::Int(self.width_of(e));
+                    let ty = CTy::Int(self.raw_width_of(e));
                     return Operand::Const(Const::Undef(ty));
                 };
-                let ty = CTy::Int(self.width_of(e));
                 let addr = self.new_value();
                 self.emit(
                     InstKind::Assign {
@@ -817,7 +820,7 @@ impl Lowerer<'_> {
                                     op: cop,
                                     a,
                                     b,
-                                    ty: CTy::Int(self.width_of(*lhs)),
+                                    ty: CTy::Int(self.raw_width_of(*lhs)),
                                 },
                             },
                             span,
@@ -827,7 +830,7 @@ impl Lowerer<'_> {
                         // everywhere: *an expression's operand has the width of its C
                         // type*. Without it, every consumer has to ask "was this a
                         // comparison?" before it can know what it is holding.
-                        self.widen_bool(dst, self.width_of(e), span)
+                        self.widen_bool(dst, self.raw_width_of(e), span)
                     }
                     None => {
                         self.emit(
@@ -837,7 +840,7 @@ impl Lowerer<'_> {
                                     op: cir_binop(*op, self.is_signed(*lhs)),
                                     a,
                                     b,
-                                    ty: CTy::Int(self.width_of(e)),
+                                    ty: CTy::Int(self.raw_width_of(e)),
                                 },
                             },
                             span,
@@ -846,9 +849,18 @@ impl Lowerer<'_> {
                     }
                 }
             }
+            // **Before the general `Unary` arm.** Rust matches in order, so an arm that
+            // refines an earlier pattern has to precede it — this one did not, and `++x`
+            // matched the general arm, fell through its `_ =>` to the operand's loaded
+            // value, and evaluated to `x` without incrementing anything. Found by the
+            // differential oracle in its first hour; no structural test could see it.
+            chiero_ast::ExprKind::Unary {
+                op: op @ (chiero_ast::UnOp::PreInc | chiero_ast::UnOp::PreDec),
+                operand,
+            } => self.inc_dec(*operand, matches!(op, chiero_ast::UnOp::PreInc), true, span),
             chiero_ast::ExprKind::Unary { op, operand } => {
                 let a = self.expr(*operand);
-                let ty = CTy::Int(self.width_of(e));
+                let ty = CTy::Int(self.raw_width_of(e));
                 let dst = self.new_value();
                 // `!x` is `x == 0`, which CIR expresses as a comparison rather than a
                 // unary op — it has no logical-not, because the result is an `int` and a
@@ -881,7 +893,7 @@ impl Lowerer<'_> {
                             span,
                         );
                         // `!x` is an `int` too.
-                        return self.widen_bool(dst, self.width_of(e), span);
+                        return self.widen_bool(dst, self.raw_width_of(e), span);
                     }
                     _ => return a,
                 };
@@ -889,6 +901,15 @@ impl Lowerer<'_> {
                 Operand::Value(dst)
             }
             chiero_ast::ExprKind::Assign { op, lhs, rhs } => self.assign(e, *op, *lhs, *rhs, span),
+            // 015 §2.2: `x++` yields the **old** value, `++x` the new one. Both compute
+            // the address once and both are a load, an add and a store — the only
+            // difference is which of the two values is the expression's result.
+            chiero_ast::ExprKind::Postfix { op, operand } => self.inc_dec(
+                *operand,
+                matches!(op, chiero_ast::PostfixOp::Inc),
+                false,
+                span,
+            ),
             chiero_ast::ExprKind::Call { callee, args } => {
                 // Arguments left to right, **then** the call (015 §2.5).
                 let ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
@@ -906,12 +927,34 @@ impl Lowerer<'_> {
                 let _ = ret_ty;
                 Operand::Value(dst)
             }
+            // An **explicit** cast written in the source. The implicit ones are handled by
+            // walking the typed AST's `Cast` nodes; this is the one the programmer wrote,
+            // and it is a different AST node — missing it made every `(int)(a / 2u)` an
+            // `Undef` and every fixture containing one unanswerable.
+            chiero_ast::ExprKind::Cast { ty, operand } => {
+                let a = self.expr(*operand);
+                let from = CTy::Int(self.width_of(*operand));
+                let to = self.cty_of_syntactic(*ty);
+                if from == to {
+                    return a;
+                }
+                let dst = self.new_value();
+                let kind = cast_kind(&from, &to, self.is_signed(*operand));
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::Cast { kind, a, from, to },
+                    },
+                    span,
+                );
+                Operand::Value(dst)
+            }
             chiero_ast::ExprKind::Comma { lhs, rhs } => {
                 self.expr(*lhs);
                 self.seq_point(span);
                 self.expr(*rhs)
             }
-            _ => Operand::Const(Const::Undef(CTy::Int(self.width_of(e)))),
+            _ => Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))),
         }
     }
 
@@ -926,7 +969,7 @@ impl Lowerer<'_> {
     ) -> Operand {
         // **`Int(32)`, not `Int(1)`** — the expression's C type is `int`, and a one-bit
         // slot would force a `ZExt` at every use that §2 forbids lowering to invent.
-        let slot_ty = CTy::Int(self.width_of(e).max(32));
+        let slot_ty = CTy::Int(self.raw_width_of(e).max(32));
         let slot = self.alloca(slot_ty.clone(), 4, None, span);
 
         let a = self.expr(lhs);
@@ -1099,7 +1142,8 @@ impl Lowerer<'_> {
         rhs: ExprId,
         span: Span,
     ) -> Operand {
-        let ty = CTy::Int(self.width_of(lhs));
+        // The **declared** type of the lvalue, so the store's width matches the slot.
+        let ty = self.lvalue_ty(lhs);
         let Some(addr) = self.lvalue_addr(lhs, span) else {
             return Operand::Const(Const::Undef(ty));
         };
@@ -1151,11 +1195,85 @@ impl Lowerer<'_> {
         value
     }
 
+    /// `x++`, `x--`, `++x`, `--x`.
+    ///
+    /// The address is computed **once** (015 §2.2), like a compound assignment and for
+    /// the same reason: `*p++ += 1` would otherwise advance `p` twice.
+    fn inc_dec(&mut self, operand: ExprId, up: bool, prefix: bool, span: Span) -> Operand {
+        let ty = self.lvalue_ty(operand);
+        let Some(addr) = self.lvalue_addr(operand, span) else {
+            return Operand::Const(Const::Undef(ty));
+        };
+        let old = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: old,
+                rv: RValue::Load {
+                    addr: addr.clone(),
+                    ty: ty.clone(),
+                    align: 1,
+                    vol: Volatility::Normal,
+                },
+            },
+            span,
+        );
+        let width = match &ty {
+            CTy::Int(b) => *b,
+            _ => 32,
+        };
+        let new = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: new,
+                rv: RValue::Bin {
+                    op: if up { CBinOp::Add } else { CBinOp::Sub },
+                    a: Operand::Value(old),
+                    b: Operand::Const(Const::Int {
+                        bits: width,
+                        val: 1,
+                    }),
+                    ty: ty.clone(),
+                },
+            },
+            span,
+        );
+        self.emit(
+            InstKind::Store {
+                addr,
+                val: Operand::Value(new),
+                ty,
+                align: 1,
+                vol: Volatility::Normal,
+            },
+            span,
+        );
+        Operand::Value(if prefix { new } else { old })
+    }
+
+    /// A syntactic type node as a CIR type, going through sema so a typedef or a tag
+    /// resolves the same way it does everywhere else.
+    fn cty_of_syntactic(&mut self, ty: chiero_ast::TypeId) -> CTy {
+        match self.analysis.ty_of_syntactic(ty) {
+            Some(t) => self.cty(t),
+            None => CTy::Int(32),
+        }
+    }
+
+    /// The declared type of an lvalue.
+    fn lvalue_ty(&mut self, e: ExprId) -> CTy {
+        if let chiero_ast::ExprKind::Ident(sym) = self.ast.expr(e).kind
+            && let Some((_, ty)) = self.fs().locals.get(&sym)
+        {
+            return ty.clone();
+        }
+        CTy::Int(self.raw_width_of(e))
+    }
+
     /// The address of an lvalue, computed **once**.
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
         match &self.ast.expr(e).kind {
             chiero_ast::ExprKind::Ident(sym) => {
-                let slot = *self.fs().locals.get(sym)?;
+                let (slot, _) = self.fs().locals.get(sym).cloned()?;
                 let addr = self.new_value();
                 self.emit(
                     InstKind::Assign {
@@ -1215,7 +1333,34 @@ impl Lowerer<'_> {
         matches!(self.analysis.ty(ty), Ty::Int { signed: true, .. })
     }
 
-    /// The bit width an expression's value occupies, from the typed AST.
+    /// The width an expression's value has **before** any conversion is applied to it.
+    ///
+    /// [`Self::width_of`] answers the other question — the width *after* — and confusing
+    /// the two is the defect the differential oracle found first. In
+    /// `signed char c = -1;` the literal's top typed node is the `Cast` to `char` that
+    /// the initializer needs, so `width_of` reports 8 for an expression whose value is a
+    /// 32-bit `int`. `raw_expr` computes the value before conversions, so it must ask
+    /// this one; the result was `neg i8 1i32` and a module that does not verify.
+    fn raw_width_of(&self, e: ExprId) -> u32 {
+        let typed = self.analysis.typed();
+        let Some(mut id) = typed.top(e) else {
+            return 32;
+        };
+        // Walk in past every conversion to the value the source actually wrote.
+        loop {
+            match typed.node(id) {
+                TypedNode::Cast { operand, .. } => id = *operand,
+                TypedNode::Value { ty, .. } => {
+                    return match self.analysis.ty(*ty) {
+                        Ty::Int { bits, .. } => (*bits).max(1),
+                        _ => 32,
+                    };
+                }
+            }
+        }
+    }
+
+    /// The bit width an expression's value occupies **after** its conversions.
     fn width_of(&self, e: ExprId) -> u32 {
         let Some(top) = self.analysis.typed().top(e) else {
             return 32;

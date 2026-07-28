@@ -406,6 +406,9 @@ pub struct Analysis {
     pub(crate) records: Vec<RecordLayout>,
     pub(crate) by_tag: IndexMap<Symbol, RecordId>,
     pub(crate) decl_types: IndexMap<DeclId, TyId>,
+    /// Syntactic type node → the type it resolved to, for consumers that hold an AST
+    /// `TypeId` rather than an expression — an explicit cast's target, above all.
+    pub(crate) syntactic_types: IndexMap<TypeId, TyId>,
     pub(crate) target: Option<TargetConfig>,
     pub(crate) typed: TypedAst,
     pub diagnostics: Vec<SemaDiagnostic>,
@@ -437,6 +440,14 @@ impl Analysis {
 
     pub fn ty_of_decl(&self, d: DeclId) -> Option<TyId> {
         self.decl_types.get(&d).copied()
+    }
+
+    /// The semantic type of a **syntactic** type node, if one was resolved for it.
+    ///
+    /// Needed by an explicit cast: `(int)x` names its target type with an AST node rather
+    /// than with an expression, so nothing in the typed AST carries it.
+    pub fn ty_of_syntactic(&self, ty: chiero_ast::TypeId) -> Option<TyId> {
+        self.syntactic_types.get(&ty).copied()
     }
 
     /// The target this analysis was built against. Every width and layout in it is
@@ -852,7 +863,9 @@ impl Cx<'_> {
     /// Resolve a syntactic `TypeId` from 013 into a semantic `TyId`.
     fn ty_of(&mut self, ty: TypeId) -> TyId {
         let base = self.ty_of_inner(ty);
-        self.apply_vector_size(ty, base)
+        let out = self.apply_vector_size(ty, base);
+        self.out.syntactic_types.insert(ty, out);
+        out
     }
 
     /// `__attribute__((vector_size(n)))` turns the type it is written on into a vector of

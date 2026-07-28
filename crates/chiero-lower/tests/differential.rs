@@ -159,6 +159,30 @@ fn loops_and_compound_assignment_compute_what_gcc_computes() {
     agree("int a = 6; int b = 3; if (a > b) { return a - b; } else { return b - a; }");
 }
 
+/// **Contract 5's own case**: `x++` yields the pre-value and `++x` the post-value.
+///
+/// Every earlier fixture used `i++` as a `for` step, where the *value* is discarded — so a
+/// mutation making `x++` yield the new value survived the whole suite. The result has to
+/// be consumed for the distinction to exist at all, and the two forms must give different
+/// answers, or the fixture is testing increment rather than which value it produces.
+#[test]
+fn increment_yields_the_pre_or_post_value_as_written() {
+    agree("int i = 5; int a = i++; return a * 10 + i;");
+    agree("int i = 5; int a = ++i; return a * 10 + i;");
+    agree("int i = 5; int a = i--; return a * 10 + i;");
+    agree("int i = 5; int a = --i; return a * 10 + i;");
+
+    let post = chiero_answer("int i = 5; int a = i++; return a * 10 + i;");
+    let pre = chiero_answer("int i = 5; int a = ++i; return a * 10 + i;");
+    assert_eq!(post, Some(56), "`i++` hands back 5 and leaves 6");
+    assert_eq!(pre, Some(66), "`++i` hands back 6 and leaves 6");
+    assert_ne!(
+        post, pre,
+        "the two forms differ, or the fixture is about incrementing rather than about \
+         which value the expression produces"
+    );
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
