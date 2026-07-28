@@ -3875,7 +3875,24 @@ impl<'m> Engine<'m> {
                             Err(_) => self.materialize_link(a, s, p.base, addr, t, span),
                         },
                     },
-                    Some(t) => Value::Scalar(t),
+                    // **The declared width, not the width of the bytes read.** Memory is
+                    // byte-addressed, so `read_term` hands back `size * 8` bits — and a
+                    // type narrower than its storage then had a value wider than itself.
+                    // `_Bool` is the case C has: `sizeof(_Bool) == 1` and its CIR type is
+                    // `Int(1)`, so `load i1` produced eight bits and `add i1` reached the
+                    // solver with operands of 8 and 1, which is an `assert_eq!` there —
+                    // `_Bool b = 0; b += 1;` panicked the whole run rather than answering
+                    // wrongly. The `None` branch below already used `sort_of(ty)`, the
+                    // declared width; only the path that succeeded disagreed with it.
+                    Some(t) => {
+                        let have = a.width(t);
+                        match sort_of(ty) {
+                            chiero_solver::Sort::BitVec(w) if have > w => {
+                                Value::Scalar(a.extract(t, w - 1, 0))
+                            }
+                            _ => Value::Scalar(t),
+                        }
+                    }
                     None => {
                         // The access produced nothing, so the caller gets a symbol chiero
                         // made up — which is exactly the case §7 puts under `Unknown`.

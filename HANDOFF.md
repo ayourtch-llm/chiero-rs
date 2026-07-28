@@ -507,7 +507,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > caught it because the one aggregate-copy path with coverage, `y = x`, goes through
 > `lvalue_addr` and never reaches here — so 1102 tests passed over it.
 >
-> ### The six defects wave 132 fixed
+> ### The nine defects wave 132 fixed
 >
 > 1. **A local aggregate named as a value is its address** (`998d999`). The wild pointer.
 > 2. **A pointer-typed global names its contents** (`f7bc88f`). The global arm's guard was
@@ -534,7 +534,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    vector indexing by one byte. `is_address_only` is now the predicate for "names its
 >    address" and includes `Ty::Func`, which fixes `(*fp)(3)`.
 >
-> Defects 7 and 8 came from the adversarial review of the implementation, which also
+> 9. **A load has the width of its declared type**, not of the bytes it read. Memory is
+>    byte-addressed, so `read_term` returns `size * 8` bits, and a type narrower than its
+>    storage had a value wider than itself. `sizeof(_Bool)` is 1 while its CIR type is
+>    `Int(1)`, so `load i1` produced eight bits and `add i1` hit an `assert_eq!` in the
+>    solver — `_Bool b = 0; b += 1;` **panicked the whole run**. The branch beside it already
+>    used `sort_of(ty)`; only the succeeding path disagreed. This is the one fix outside
+>    lowering and sema.
+>
+> Defects 7, 8 and 9 came from the adversarial review of the implementation, which also
 > confirmed the earlier tests could be satisfied by an implementation that was wrong on
 > by-value arguments — it was, until defect 4 was found independently two commits later.
 >
@@ -569,11 +577,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
 >
-> - **A `_Bool` compound assignment panics the solver.** `_Bool b = 0; b += 1;` reaches
->   `chiero-solver/src/lib.rs:533`, "operand widths must match for Add: 8 vs 1". A
->   *source-triggerable panic* is worse than any wrong answer — it takes the whole run down,
->   and nothing above it catches it. `b = 2; return b;` also gives 0 where C says 1:
->   assigning to a `_Bool` truncates instead of booleanizing (C11 6.3.1.2 makes it `!= 0`).
+> - **A conversion to `_Bool` truncates instead of booleanizing.** `_Bool b; b = 2;` gives 0
+>   where C says 1, because `cast_kind` picks `Trunc` for `Int(32) -> Int(1)` and `2 & 1` is
+>   0. C11 6.3.1.2 makes the conversion `!= 0`, which is a comparison, not a narrowing —
+>   `b = 5` gives 1 only by luck. The *panic* this sat behind is fixed (`load` now yields
+>   its declared width); the wrong answer is not.
 > - **A compound assignment or `++` on a bit-field does a full-unit `i32` read-modify-write.**
 >   `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, and `inc_dec` has no
 >   bit-field check at all — so `v.a += 1` and `v.b++` write over their neighbours. 015
@@ -621,6 +629,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A commit message that names four shapes and a test that covers two is a lie you will
+> believe** (wave 132). 998d999 listed "a by-value argument" among the shapes its guard
+> fixed. No fixture passed a struct by value, and it was *wrong* there — and worse than
+> before, because the pre-change failure was a dead state and the post-change one was a
+> plausible number. Write the fixture for every shape the message claims, or drop the claim.
+> **The predicates that answer the same question must be one function** (wave 132). Four
+> places asked "is this an aggregate": `is_aggregate`, `cty`, `aggregate_size` and
+> `aggregate_size_of_ty`, and three of the four included `Ty::Vector`. The odd one out is
+> the one every read site called. Two questions were hiding in one name — "moves by copy"
+> and "names its address" — and a function designator is the second but not the first.
 > **Instrument the value, not the theory** (wave 132). Six waves argued about *where* the
 > wild pointer came from. One `eprintln!` of what `dst` and `src` actually evaluated to in
 > the engine's `CopyMem` handler ended it in a single step — `src` was a wild pointer whose
