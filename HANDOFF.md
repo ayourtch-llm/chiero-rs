@@ -487,7 +487,86 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 125, `c096cea`) — 1095 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 126, `190017c`) — 1097 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: an aggregate return has nowhere to live
+>
+> `return p;` where `p` is a `struct` yields `addrlocal` of the **callee's** stack slot,
+> whose scope exits on return — so the caller copies from bytes that are already dead:
+>
+>     uninitialized-read: read at offset 0 of p touches bit 0, which was never written
+>     through p.lo
+>
+> 015 §2 says an aggregate return is memory; it must be memory the **caller** owns. The usual
+> shape is an **sret slot**: the caller allocates, passes its address as a hidden first
+> argument, the callee writes through it and returns nothing. That touches lowering's call
+> path, its return path, and the engine's frame setup together — a wave of its own.
+>
+> Every VPP accessor in a header returns a struct by value, so this is not a corner.
+> `tests/corpus/owed/header_inline.c` (+ `pair.h`) is written and waiting.
+>
+> ### What wave 126 fixed
+>
+> `struct pair p = f();` **stored the returned pointer** into `p`'s slot instead of copying
+> the struct, so `p.lo` read the low half of an address as an `int`. The program ran and
+> every field was wrong. Now a `CopyMem` of the layout's size (015 c6's rule, applied to
+> initialization).
+>
+> ### Shapes still untried
+>
+> - **A union inside a struct** under a symbolic index (020 c19–c23 test unions, c28 tests
+>   `container_of`, neither tests the combination).
+> - **`goto` out of three nested scopes**, where 021 must retire objects the jump skipped.
+> - **A `switch` whose scrutinee is a struct member** read through a pointer.
+>
+> ### Also open
+>
+> - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
+>   untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **The reporting you built pays off on defects you did not anticipate** (wave 126). The
+> aggregate-return diagnosis was immediate because the finding said `through p.lo` — wave
+> 110's `AccessPath`s and wave 111's naming, on a bug neither wave had in mind. Reporting
+> quality compounds; treat it as infrastructure, not decoration.
+> **Mutation is what makes "already correct" worth committing** (wave 125).
+> **A comment claiming a property is not the property** — waves 107, 112, 118, 124.
+> **A defect can hide behind another of the same shape** (wave 123).
+> **A corpus fixture that runs is coverage; a mutation needs something sharper** (wave 122).
+> **A fix does not generalise to a second code path on its own** (wave 121).
+> **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120).
+> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture that will not lower is still evidence** (wave 119).
+> **An aggregate diagnostic hides the cause** — print diagnostics before 015 §7 truncates.
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — nineteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so; **check a patch script printed `ok` and that its anchor was unique**. An oracle
+> that can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: aggregate returns have no sret slot (blocks
+> `tests/corpus/owed/header_inline.c`); the wave-117 `fork_on_offset` survivor; designated,
+> bit-field and address initializers refused; a fault in a non-entry frame is untested;
+> `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in sema; the parser's
+> speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose
+> their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately
+> uncovered.
+>
+> ### Earlier (wave 125, `c096cea`) — 1095 tests, 3 ignored, M1 165/165 by contract
 >
 > **Ten corpus files, all executing clean. Wave 125 found no defect** — the first wave since
 > 113 that did not. 021 c21 and `__attribute__((packed))` were both already correct; the
