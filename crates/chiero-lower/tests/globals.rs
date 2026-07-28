@@ -358,3 +358,74 @@ fn a_const_global_is_read_only() {
         m.globals
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Function pointers (wave 119–120)
+// ---------------------------------------------------------------------------------------
+
+/// **A call through a function-pointer variable lowers.**
+///
+/// `callee_of` looked only in `module.funcs`, so a name declared as a *variable* was
+/// reported "call to undeclared function" — and 015 §7 turns any diagnostic into refusing
+/// the whole enclosing function, so the file lowered to nothing.
+#[test]
+fn a_call_through_a_function_pointer_lowers() {
+    let src = "static int twice(int v) { return v * 2; }\n\
+               int main(void) { int (*fn)(int) = twice; return fn(7); }\n";
+    let e = errors(src);
+    assert!(e.is_empty(), "{e:#?}");
+    let text = chiero_cir::text::print(&lower(src));
+    assert!(
+        text.contains("addrfunc"),
+        "the function's address is taken (C11 6.3.2.1p4): {text}"
+    );
+    assert!(
+        text.contains("callind") || text.contains("call %"),
+        "and the call goes through it indirectly rather than naming a function: {text}"
+    );
+}
+
+/// **A conditional yielding a pointer gets a pointer slot.**
+///
+/// `conditional`'s result slot was hardcoded `CTy::Int`, so `pick ? twice : thrice` stored
+/// a `Ptr` into an `Int(32)` slot and failed verification — refusing the enclosing function
+/// again. Wave 119 blamed sema for this; sema was right, and the wrong answer was one `?:`
+/// away.
+#[test]
+fn a_pointer_valued_conditional_gets_a_pointer_slot() {
+    let src = "static int twice(int v) { return v * 2; }\n\
+               static int thrice(int v) { return v * 3; }\n\
+               int main(int pick) { int (*fn)(int) = pick ? twice : thrice; return fn(7); }\n";
+    let e = errors(src);
+    assert!(e.is_empty(), "{e:#?}");
+
+    let m = lower(src);
+    let main = m.funcs.iter().find(|f| &*f.name == "main").expect("main");
+    assert!(
+        main.allocas
+            .iter()
+            .filter(|a| a.name.is_none())
+            .any(|a| a.ty == chiero_cir::CTy::Ptr),
+        "the conditional's temporary is a pointer: {:?}",
+        main.allocas
+            .iter()
+            .map(|a| (a.name.clone(), a.ty.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **An integer-valued conditional is still an integer**, so the fix reads the type rather
+/// than making everything a pointer.
+#[test]
+fn an_integer_conditional_keeps_its_width() {
+    let m = lower("int f(int n) { return n ? 1 : 2; }");
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    assert!(
+        f.allocas
+            .iter()
+            .filter(|a| a.name.is_none())
+            .all(|a| a.ty != chiero_cir::CTy::Ptr),
+        "{:?}",
+        f.allocas.iter().map(|a| a.ty.clone()).collect::<Vec<_>>()
+    );
+}

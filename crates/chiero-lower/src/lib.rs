@@ -2148,9 +2148,24 @@ impl Lowerer<'_> {
         els: ExprId,
         span: Span,
     ) -> Operand {
-        let width = self.raw_width_of(e);
-        let slot_ty = CTy::Int(width.max(1));
-        let slot = self.alloca(slot_ty.clone(), 4, None, span);
+        // **The conditional's own type, not an assumed integer.** `pick ? twice : thrice`
+        // is a function pointer, and a slot declared `Int(32)` made storing the (correct)
+        // `Ptr` into it a verifier error — which 015 §7 turns into refusing the whole
+        // enclosing function, so `indirect_call.c` lowered to nothing.
+        //
+        // Wave 119 blamed sema for this. Sema is right: `function_pointers.rs` types
+        // `int (*fn)(int)` as a pointer at file scope *and* as a local. The wrong answer
+        // was made here, one `?:` away from where anyone looked.
+        let slot_ty = match self.type_of(e).map(|t| self.cty(t)) {
+            Some(t) if t != CTy::Void => t,
+            _ => CTy::Int(self.raw_width_of(e).max(1)),
+        };
+        let align = self
+            .type_of(e)
+            .and_then(|t| self.analysis.align_of(t))
+            .unwrap_or(4)
+            .max(1);
+        let slot = self.alloca(slot_ty.clone(), align, None, span);
 
         let c = self.expr(cond);
         // **The elvis form evaluates `a` once.** Storing it into the slot here and

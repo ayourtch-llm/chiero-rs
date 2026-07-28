@@ -17,10 +17,25 @@ Wave 119 fixed two lowering defects it exposed:
 - a bare function name used as a value lowered to `Undef` rather than `AddrOfFunc`
   (C11 6.3.2.1p4: a function designator decays to a pointer).
 
-What remains is **in sema, not lowering**: `int (*fn)(int)` is typed as an integer, so the
-slot is declared `Int(32)` and storing the (now correct) `Ptr` into it fails verification
-with `store value operand is Ptr, declared Int(32)`. `cty` maps `Ty::Ptr(_)` to `CTy::Ptr`
-correctly, so the wrong answer is upstream of it — sema does not build a pointer type for a
-function-pointer declarator.
+Wave 120 fixed a third and **corrected wave 119's diagnosis, which was wrong**:
+
+- the `?:` operator's result slot was hardcoded `CTy::Int`, so `pick ? twice : thrice`
+  stored a `Ptr` into an `Int(32)` slot and failed verification.
+
+Wave 119 blamed sema for that. **Sema is right** — `chiero-sema/tests/function_pointers.rs`
+types `int (*fn)(int)` as a pointer at file scope *and* as a local, and all six of its tests
+passed on arrival. The wrong answer was made in lowering, one `?:` away from where anyone
+looked. Those tests are kept: they were written to catch a defect that turned out not to
+exist, and they now pin behaviour nothing else did.
+
+The file lowers and **verifies** as of wave 120. What remains is in the **engine**: an
+indirect call does not bind the callee's parameters, so `twice`/`thrice` read `v` as
+uninitialized —
+
+    uninitialized-read: read at offset 0 of v touches bit 0, which was never written
+
+Two of them, one per resolved callee, so the indirect dispatch itself works and the argument
+does not arrive. Start at `Callee::Indirect` in the engine's call handling and compare what
+it binds against the `Callee::Direct` path.
 
 Move this file back into `tests/corpus/c/`, bless its golden, and read it.
