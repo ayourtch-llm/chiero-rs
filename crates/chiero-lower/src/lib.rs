@@ -92,6 +92,7 @@ fn lower(
         map,
         last_stmt_value: None,
         generated_depth: 0,
+        globals: IndexMap::new(),
         strings: IndexMap::new(),
     };
     // **Two passes, and the first is not an optimization.** Every function is registered
@@ -203,6 +204,11 @@ struct Lowerer<'a> {
     /// wrote. A counter, not a flag: the `&&` shape's bookkeeping can nest inside a
     /// scope's, and a flag would be cleared by the inner one on the way out.
     generated_depth: u32,
+    /// File-scope variable name → its `Global` (020 §3).
+    ///
+    /// Registered in the declaration pass, before any body is lowered, because a function
+    /// may reference a global declared *after* it.
+    globals: IndexMap<chiero_span::Symbol, chiero_cir::GlobalId>,
     /// One global per **distinct** string literal.
     ///
     /// Pooled because a string literal's value is an address: `"hi" == "hi"` is
@@ -452,6 +458,12 @@ impl Lowerer<'_> {
 
     /// Register a function's signature without lowering its body.
     fn declare(&mut self, id: chiero_ast::DeclId) {
+        // A file-scope variable is a `Global`; a function is a signature. Both are
+        // registered here, before any body, for the same reason.
+        if matches!(self.ast.decl(id).kind, DeclKind::Var { .. }) {
+            self.declare_global(id);
+            return;
+        }
         let DeclKind::Func { name, ty, .. } = self.ast.decl(id).kind.clone() else {
             return;
         };
@@ -498,6 +510,59 @@ impl Lowerer<'_> {
             body: Body::Declared,
             span,
         });
+    }
+
+    /// Register a file-scope variable as a `Global` (020 §3).
+    ///
+    /// **In the declaration pass**, so a function body can reference a global declared
+    /// after it — C allows that for anything with a prior tentative definition, and VPP
+    /// does it constantly.
+    fn declare_global(&mut self, id: chiero_ast::DeclId) {
+        let DeclKind::Var {
+            name: Some(name),
+            init,
+            storage,
+            ..
+        } = self.ast.decl(id).kind.clone()
+        else {
+            return;
+        };
+        if self.globals.contains_key(&name) {
+            return;
+        }
+        let Some(sty) = self.analysis.ty_of_decl(id) else {
+            return;
+        };
+        let span = self.ast.decl(id).span;
+        let size = self.analysis.size_of(sty).unwrap_or(0);
+        let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
+        let text = self.sym(name).unwrap_or_else(|| std::sync::Arc::from("?"));
+        let gid = chiero_cir::GlobalId(self.module.globals.len() as u32);
+        // **C11 6.7.9p10: static storage with no initializer is zero**, and `Extern` is
+        // for a declaration whose definition is in another TU — its bytes are unknown, not
+        // zero, and saying zero would let the engine prove things about a value it has
+        // never seen.
+        let init = if storage.extern_ && init.is_none() {
+            chiero_cir::GlobalInit::Extern
+        } else {
+            chiero_cir::GlobalInit::Zero
+        };
+        let linkage = if storage.static_ {
+            chiero_cir::Linkage::Internal
+        } else {
+            chiero_cir::Linkage::External
+        };
+        self.module.globals.push(chiero_cir::Global {
+            id: gid,
+            name: text,
+            size,
+            align,
+            is_const: false,
+            init,
+            linkage,
+            span,
+        });
+        self.globals.insert(name, gid);
     }
 
     fn item(&mut self, id: chiero_ast::DeclId) {
@@ -1408,9 +1473,54 @@ impl Lowerer<'_> {
             }
             chiero_ast::ExprKind::Ident(sym) => {
                 let Some((slot, ty)) = self.fs().locals.get(sym).cloned() else {
-                    // Not a local: a function or file-scope object. Neither is modelled
-                    // by this slice, so the value is `Undef` and the path is honest
-                    // about knowing nothing rather than inventing a zero.
+                    // **A file-scope variable is read through its address**, like any
+                    // other object. This arm used to return `Undef` for anything that was
+                    // not a local, with a comment calling that honest — it was not: a
+                    // read of `g` became "unknown", which *suppresses* every finding
+                    // downstream rather than producing a wrong one, so a whole translation
+                    // unit's worth of defects went unreported and the run still said
+                    // `Exact`. The global is modelled now; only a function name is not.
+                    if let Some(&g) = self.globals.get(sym) {
+                        let ty = self
+                            .type_of(e)
+                            .map(|t| self.cty(t))
+                            .unwrap_or_else(|| CTy::Int(self.raw_width_of(e)));
+                        let addr = self.new_value();
+                        self.emit(
+                            InstKind::Assign {
+                                dst: addr,
+                                rv: RValue::AddrOfGlobal { g },
+                            },
+                            span,
+                        );
+                        // **An array names its own address; a scalar names its contents.**
+                        // One test, not two: `cty` of an array type is already `CTy::Ptr`
+                        // (020 §2 — pointers are untyped and CIR has no aggregate values),
+                        // so an explicit `is_array` check was a second spelling of the same
+                        // condition and no mutation could tell them apart.
+                        if matches!(ty, CTy::Ptr) {
+                            return Operand::Value(addr);
+                        }
+                        let dst = self.new_value();
+                        let align = self
+                            .type_of(e)
+                            .and_then(|t| self.analysis.align_of(t))
+                            .unwrap_or(1)
+                            .max(1);
+                        self.emit(
+                            InstKind::Assign {
+                                dst,
+                                rv: RValue::Load {
+                                    addr: Operand::Value(addr),
+                                    ty,
+                                    align,
+                                    vol: Volatility::Normal,
+                                },
+                            },
+                            span,
+                        );
+                        return Operand::Value(dst);
+                    }
                     let ty = CTy::Int(self.raw_width_of(e));
                     return Operand::Const(Const::Undef(ty));
                 };
@@ -1651,7 +1761,15 @@ impl Lowerer<'_> {
             // `Undef` and every fixture containing one unanswerable.
             chiero_ast::ExprKind::Cast { ty, operand } => {
                 let a = self.expr(*operand);
-                let from = CTy::Int(self.width_of(*operand));
+                // **The operand's real type, not an assumed integer.** `from` was
+                // `CTy::Int(width_of(operand))` unconditionally, so `(int *)&g` declared a
+                // 32-bit integer source for a pointer and the verifier rejected the whole
+                // module — `cast source operand is Ptr, declared Int(32)`. Every
+                // pointer-to-pointer cast written in C hit this.
+                let from = match self.type_of(*operand).map(|t| self.cty(t)) {
+                    Some(t) => t,
+                    None => CTy::Int(self.width_of(*operand)),
+                };
                 let to = self.cty_of_syntactic(*ty);
                 if from == to || matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
                     return a;
@@ -2256,7 +2374,22 @@ impl Lowerer<'_> {
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
         match self.ast.expr(e).kind.clone() {
             chiero_ast::ExprKind::Ident(sym) => {
-                let (slot, _) = self.fs().locals.get(&sym).cloned()?;
+                // **Locals first, then file-scope.** Looking only at locals is what made
+                // `g[1]` index off the array's first *element* instead of its address:
+                // the name resolved to nothing, the caller fell through to the value path,
+                // and `PtrAdd` got an `Int(32)` base that the verifier rightly rejected.
+                let Some((slot, _)) = self.fs().locals.get(&sym).cloned() else {
+                    let g = *self.globals.get(&sym)?;
+                    let addr = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: addr,
+                            rv: RValue::AddrOfGlobal { g },
+                        },
+                        span,
+                    );
+                    return Some(Operand::Value(addr));
+                };
                 let addr = self.new_value();
                 self.emit(
                     InstKind::Assign {

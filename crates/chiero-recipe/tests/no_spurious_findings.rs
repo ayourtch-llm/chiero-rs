@@ -256,7 +256,6 @@ fn the_naming_picks_the_right_local() {
 ///
 /// Both defects are recorded in HANDOFF §9. Un-ignore this once a global can fault.
 #[test]
-#[ignore = "blocked: indexing a global array lowers to invalid CIR — see HANDOFF §9"]
 fn a_global_is_named_in_a_finding() {
     let (findings, _) = run("int g[4]; int f(void) { return g[9]; }");
     assert!(

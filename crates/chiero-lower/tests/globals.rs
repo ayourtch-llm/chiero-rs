@@ -19,6 +19,9 @@ use harness::lower;
 /// Lower `src` and return the verifier's complaints.
 fn errors(src: &str) -> Vec<String> {
     let m = lower(src);
+    if std::env::var("DUMP").is_ok() {
+        eprintln!("{}", chiero_cir::text::print(&m));
+    }
     chiero_cir::verify::verify(&m)
         .iter()
         .filter(|e| e.is_error())
@@ -80,10 +83,94 @@ fn writing_through_a_cast_away_from_const_verifies() {
     assert!(e.is_empty(), "{e:#?}");
 }
 
-/// A plain global read, as the control: if this were broken too the tests above would be
-/// about something much larger, and the failure message should say so.
+/// A plain global read, as the control.
+///
+/// **`verify` alone was too weak here, and it mattered.** This test passed all along while
+/// `int g; int f(void) { return g; }` lowered to `ret undef:i32` — the global was in no
+/// table, the read produced nothing, and the module verified perfectly because `Undef` is
+/// valid CIR. The real defect was never "two verifier errors"; it was that lowering had no
+/// notion of a file-scope variable at all, and a read of one silently became "unknown",
+/// which suppresses every finding downstream instead of producing a wrong one.
+///
+/// So the assertion is what the *program* says, not what the verifier tolerates.
 #[test]
-fn reading_a_global_scalar_verifies() {
+fn reading_a_global_scalar_is_not_undef() {
     let e = errors("int g; int f(void) { return g; }");
+    assert!(e.is_empty(), "{e:#?}");
+
+    let m = lower("int g; int f(void) { return g; }");
+    assert_eq!(m.globals.len(), 1, "`g` is a global: {:?}", m.globals);
+    assert_eq!(&*m.globals[0].name, "g");
+
+    let text = chiero_cir::text::print(&m);
+    assert!(
+        text.contains("addrglobal"),
+        "the read goes through the global's address: {text}"
+    );
+    assert!(
+        !text.contains("ret undef"),
+        "and is not silently unknown — an `Undef` return suppresses every finding \
+         downstream rather than producing a wrong one: {text}"
+    );
+}
+
+/// `static` and `extern` carry the linkage and initializer 020 §3 records.
+///
+/// `Extern` is not `Zero`: a definition in another TU has bytes chiero has never seen, and
+/// saying zero would let the engine prove things about a value it does not have.
+#[test]
+fn storage_class_decides_linkage_and_initializer() {
+    let m = lower("static int s; extern int e; int p; int f(void) { return s + e + p; }");
+    let g = |n: &str| {
+        m.globals
+            .iter()
+            .find(|x| &*x.name == n)
+            .unwrap_or_else(|| panic!("no `{n}` in {:?}", m.globals))
+    };
+    assert_eq!(g("s").linkage, chiero_cir::Linkage::Internal);
+    assert_eq!(g("e").linkage, chiero_cir::Linkage::External);
+    assert_eq!(g("p").linkage, chiero_cir::Linkage::External);
+    assert_eq!(g("e").init, chiero_cir::GlobalInit::Extern);
+    assert_eq!(
+        g("s").init,
+        chiero_cir::GlobalInit::Zero,
+        "C11 6.7.9p10: static storage with no initializer is zero"
+    );
+}
+
+/// **Assigning to a global scalar**, and taking its address.
+///
+/// These are the shapes that reach `lvalue_addr` for a file-scope name — reads go through
+/// the rvalue path instead. Mutation showed the `lvalue_addr` branch was unreachable from
+/// every other fixture in this file, which is a fixture gap rather than dead code: without
+/// these, removing that branch changes nothing observable.
+#[test]
+fn assigning_to_a_global_scalar_verifies() {
+    let e = errors("int g; void f(int n) { g = n; }");
+    assert!(e.is_empty(), "{e:#?}");
+    let text = chiero_cir::text::print(&lower("int g; void f(int n) { g = n; }"));
+    assert!(
+        text.contains("addrglobal") && text.contains("store"),
+        "the write goes to the global's address: {text}"
+    );
+}
+
+/// `&g` on a scalar — the address is the value, with no load.
+#[test]
+fn taking_the_address_of_a_global_scalar_verifies() {
+    let e = errors("int g; int *f(void) { return &g; }");
+    assert!(e.is_empty(), "{e:#?}");
+    let text = chiero_cir::text::print(&lower("int g; int *f(void) { return &g; }"));
+    assert!(text.contains("addrglobal"), "{text}");
+    assert!(
+        !text.contains("ret undef"),
+        "`&g` is a real address, not unknown: {text}"
+    );
+}
+
+/// A **global struct member written through**, which reaches `lvalue_addr` via `Member`.
+#[test]
+fn assigning_to_a_global_struct_member_verifies() {
+    let e = errors("struct S { int a; int b; }; struct S g; void f(int n) { g.b = n; }");
     assert!(e.is_empty(), "{e:#?}");
 }
