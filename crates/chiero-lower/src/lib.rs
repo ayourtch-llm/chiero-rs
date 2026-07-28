@@ -130,6 +130,12 @@ use indexmap::IndexMap;
 /// The function currently being built.
 struct FnState {
     id: FuncId,
+    /// 015 §2's aggregate return: the hidden first parameter holding the **caller's**
+    /// slot, when this function returns a struct, union or array by value.
+    ///
+    /// `None` for every scalar-returning function, which is the overwhelming majority —
+    /// the ABI change is confined to the functions that need it.
+    sret: Option<ValueId>,
     /// 020 §4.4's reporting-only paths, keyed by the address value they describe.
     access_paths: IndexMap<ValueId, AccessPath>,
     /// 020 §7, contract 18a. Computed from the **syntax** before any lowering happens, so
@@ -481,6 +487,27 @@ impl Lowerer<'_> {
             chiero_ast::TypeKind::Func { params, .. } => params.clone(),
             _ => Vec::new(),
         };
+        // **The hidden sret slot is part of the declared signature too** (015 §2). The
+        // declaration pass fixes each function's arity, and a caller that prepends the
+        // slot against a signature built without it fails `CallArity` — which is the
+        // verifier catching a real inconsistency, not a nuisance.
+        let sret: Vec<Param> = if self
+            .analysis
+            .ty_of_decl(id)
+            .map(|t| self.analysis.ty(t).clone())
+            .and_then(|t| match t {
+                Ty::Func { ret, .. } => Some(ret),
+                _ => None,
+            })
+            .is_some_and(|r| self.is_aggregate(r))
+        {
+            vec![Param {
+                value: self.new_value(),
+                ty: CTy::Ptr,
+            }]
+        } else {
+            Vec::new()
+        };
         let cparams = params
             .iter()
             .map(|&p| {
@@ -493,7 +520,8 @@ impl Lowerer<'_> {
                     ty: self.cty(sty),
                 }
             })
-            .collect();
+            .collect::<Vec<Param>>();
+        let cparams: Vec<Param> = sret.into_iter().chain(cparams).collect();
         let id_ = FuncId(self.next_func);
         self.next_func += 1;
         self.module.funcs.push(Function {
@@ -739,6 +767,7 @@ impl Lowerer<'_> {
         };
         self.f = Some(FnState {
             id: fid,
+            sret: None,
             access_paths: IndexMap::new(),
             order_sensitive: order_sensitive_body(self.ast, body),
             name: cir_name.clone(),
@@ -781,6 +810,31 @@ impl Lowerer<'_> {
         // recreated on every iteration.
         let param_scope = self.enter_scope(span);
         let _ = param_scope;
+
+        // **015 §2's aggregate return: a hidden first parameter.** A function returning a
+        // struct by value takes the caller's slot as a pointer and writes through it, so
+        // the result lives in memory the caller owns. Returning the callee's own
+        // `addrlocal` handed back an address whose scope exits on the way out.
+        //
+        // Confined to the functions that need it: every scalar-returning function keeps
+        // the signature it had, so nothing else in the ABI moves.
+        if self
+            .analysis
+            .ty_of_decl(decl)
+            .map(|t| self.analysis.ty(t).clone())
+            .and_then(|t| match t {
+                Ty::Func { ret, .. } => Some(ret),
+                _ => None,
+            })
+            .is_some_and(|r| self.is_aggregate(r))
+        {
+            let v = self.new_value();
+            self.fs().params.push(Param {
+                value: v,
+                ty: CTy::Ptr,
+            });
+            self.fs().sret = Some(v);
+        }
 
         // Parameters get a slot each and are stored into it on entry, so the body reads
         // them exactly the way it reads any other local. Without that, `&param` would
@@ -1078,6 +1132,42 @@ impl Lowerer<'_> {
                 }
             }
             StmtKind::Return(v) => {
+                // **An aggregate result is written through the caller's pointer.**
+                // Returning `addrlocal` of the callee's own slot returned an address whose
+                // scope exits on the way out, so the caller copied from retired bytes and
+                // the engine reported a wild pointer. 015 §2 says the result is memory;
+                // this makes it memory the *caller* owns.
+                if let Some(sret) = self.fs().sret
+                    && let Some(e) = v
+                {
+                    let src = self.expr(e);
+                    let size = self
+                        .type_of(e)
+                        .and_then(|t| self.analysis.size_of(t))
+                        .unwrap_or(0);
+                    let align = self
+                        .type_of(e)
+                        .and_then(|t| self.analysis.align_of(t))
+                        .unwrap_or(1)
+                        .max(1);
+                    self.emit(
+                        InstKind::CopyMem {
+                            dst: Operand::Value(sret),
+                            src,
+                            size: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: size as i128,
+                            }),
+                            align,
+                        },
+                        span,
+                    );
+                    self.unwind_to(0, span);
+                    // The value handed back is the caller's own pointer, so the caller's
+                    // `CopyMem` (015 c6) reads bytes it owns and that are still live.
+                    self.set_term(Terminator::Return(Some(Operand::Value(sret))));
+                    return;
+                }
                 let op = v.map(|e| self.expr(e));
                 let ret = self.fs().ret.clone();
                 let op = match (op, &ret) {
@@ -1935,9 +2025,29 @@ impl Lowerer<'_> {
                     return Operand::Value(dst);
                 }
                 // Arguments left to right, **then** the call (015 §2.5).
-                let ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
+                let mut ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
                 let fid = self.callee_of(*callee);
                 let ret_ty = self.width_of(e);
+                // **The caller owns the slot an aggregate result is written into**
+                // (015 §2). It is allocated here, per call site, so two live results in one
+                // expression are two objects — a single reused scratch buffer would make
+                // `mk(1,2)` and `mk(3,4)` the same struct.
+                //
+                // Prepended, matching the callee's hidden first parameter.
+                if let Some(rt) = self.type_of(e).filter(|t| self.is_aggregate(*t)) {
+                    let align = self.analysis.align_of(rt).unwrap_or(1).max(1);
+                    let size = self.analysis.size_of(rt).unwrap_or(0);
+                    let slot = self.alloca_n(CTy::Int(8), size, align, None, span);
+                    let addr = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: addr,
+                            rv: RValue::AddrOfLocal { alloca: slot },
+                        },
+                        span,
+                    );
+                    ops.insert(0, Operand::Value(addr));
+                }
                 let dst = self.new_value();
                 self.emit(
                     InstKind::Call {

@@ -628,3 +628,103 @@ fn a_scalar_initializer_is_still_a_store() {
         "and not copied"
     );
 }
+
+/// **An aggregate return uses an sret slot** (015 §2).
+///
+/// The callee takes the caller's slot as a hidden **first** parameter and writes through
+/// it; the caller allocates that slot per call site. Returning `addrlocal` of the callee's
+/// own local handed back an address whose scope exits on the way out, so the caller copied
+/// from retired bytes.
+#[test]
+fn an_aggregate_return_uses_an_sret_slot() {
+    let src = "struct pair { int lo; int hi; };\n\
+               static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
+               int f(void) { struct pair q = mk(3, 7); return q.hi - q.lo; }\n";
+    assert!(errors(src).is_empty(), "{:#?}", errors(src));
+    let m = lower(src);
+
+    let mk = m.funcs.iter().find(|f| &*f.name == "mk").expect("mk");
+    assert_eq!(
+        mk.params.len(),
+        3,
+        "two written parameters plus the hidden slot: {:?}",
+        mk.params
+    );
+    assert_eq!(
+        mk.params[0].ty,
+        chiero_cir::CTy::Ptr,
+        "and it is *first*, matching what the caller prepends"
+    );
+    // The callee writes through it rather than returning its own address.
+    assert!(
+        mk.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(&i.kind, chiero_cir::InstKind::CopyMem { dst: chiero_cir::Operand::Value(v), .. } if *v == mk.params[0].value)),
+        "the result is copied into the caller's slot: {:#?}",
+        mk.blocks
+    );
+
+    // The caller allocates the slot and passes it as argument zero.
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    let args = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .find_map(|i| match &i.kind {
+            chiero_cir::InstKind::Call { args, .. } => Some(args.clone()),
+            _ => None,
+        })
+        .expect("a call");
+    assert_eq!(args.len(), 3, "the slot is one extra argument: {args:?}");
+    // **First, not merely present.** The callee's hidden parameter is `params[0]`, so an
+    // implementation that appended the slot passes an `i32` where a `ptr` is bound and the
+    // struct's bytes become an address. `3` and `7` are the written arguments, so the
+    // remaining one is the slot.
+    assert!(
+        !matches!(
+            args[0],
+            chiero_cir::Operand::Const(chiero_cir::Const::Int { .. })
+        ),
+        "argument zero is the slot's address, not a written constant: {args:?}"
+    );
+    assert!(
+        matches!(
+            args[2],
+            chiero_cir::Operand::Const(chiero_cir::Const::Int { val: 7, .. })
+        ),
+        "and the written arguments follow it in order: {args:?}"
+    );
+}
+
+/// **A scalar-returning function keeps its signature**, so the ABI change is confined to
+/// the functions that need it.
+#[test]
+fn a_scalar_return_has_no_hidden_parameter() {
+    let m = lower("static int twice(int v) { return v * 2; } int f(void) { return twice(4); }");
+    let t = m.funcs.iter().find(|f| &*f.name == "twice").expect("twice");
+    assert_eq!(t.params.len(), 1, "{:?}", t.params);
+    assert_eq!(t.params[0].ty, chiero_cir::CTy::Int(32));
+}
+
+/// **Two call sites are two slots**, or one reused scratch buffer would make two live
+/// results alias.
+#[test]
+fn each_aggregate_call_site_gets_its_own_slot() {
+    let src = "struct pair { int lo; int hi; };\n\
+               static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
+               int f(void) { struct pair x = mk(1, 2); struct pair y = mk(3, 4); \
+                             return x.lo + y.lo; }\n";
+    let m = lower(src);
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    // Two named locals plus two unnamed return slots.
+    let unnamed = f.allocas.iter().filter(|a| a.name.is_none()).count();
+    assert!(
+        unnamed >= 2,
+        "one slot per call site: {:?}",
+        f.allocas
+            .iter()
+            .map(|a| (a.name.clone(), a.count))
+            .collect::<Vec<_>>()
+    );
+}
