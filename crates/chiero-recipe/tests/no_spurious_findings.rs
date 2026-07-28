@@ -153,3 +153,64 @@ fn an_initialized_local_is_not_reported() {
     assert!(findings.is_empty(), "{findings:#?}");
     assert!(!invented(&causes), "{causes:?}");
 }
+
+/// **A finding names the variable, not an engine-internal counter.**
+///
+/// Wave 102 recorded this as owed and worked around it: `chiero-opt`'s transparency sweep
+/// normalizes `ObjectId(N)` out of finding text, because `mem2reg` removes allocas and the
+/// remaining objects renumber — so *the same defect in the same program* printed
+/// differently under a different pass configuration. That is a workaround for a defect in
+/// the finding, not a property of the pass.
+///
+/// `ObjectId` is an allocation counter. It means nothing to a reader, it is not stable
+/// across configurations, and 023 §9 wants a finding to carry "everything a reader needs to
+/// act on it".
+#[test]
+fn a_finding_names_the_variable_not_an_internal_id() {
+    let (findings, _) = run("int f(void) { int x; return x; }");
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert!(
+        findings[0].contains('x'),
+        "the finding names `x`, which is what a reader has to go and look at: {}",
+        findings[0]
+    );
+    assert!(
+        !findings[0].contains("ObjectId"),
+        "and does not name an allocation counter: {}",
+        findings[0]
+    );
+}
+
+/// **No finding anywhere cites an `ObjectId`.**
+///
+/// A sweep rather than one fixture, because the id is printed by `MemFault`'s `Display`
+/// and every fault kind shares it — fixing one message and leaving the rest is the likely
+/// half-fix, and it would leave `chiero-opt`'s normalization still load-bearing.
+#[test]
+fn no_finding_cites_an_object_id() {
+    for src in [
+        "int f(void) { int x; return x; }",
+        "int f(void) { int a[4]; a[0] = 1; return a[7]; }",
+        "struct S { int a; int b; }; int f(void) { struct S s; return s.b; }",
+    ] {
+        let (findings, _) = run(src);
+        assert!(
+            !findings.is_empty(),
+            "the fixture must report something or it proves nothing: {src}"
+        );
+        for f in &findings {
+            assert!(!f.contains("ObjectId"), "`{src}` reported: {f}");
+        }
+    }
+}
+
+/// A finding about a **struct member** names the member, now that lowering builds
+/// `AccessPath`s for real C (wave 110).
+#[test]
+fn a_member_finding_names_the_member() {
+    let (findings, _) = run("struct S { int a; int b; }; int f(void) { struct S s; return s.b; }");
+    assert!(
+        findings.iter().any(|f| f.contains("s.b")),
+        "the path names the member that was read: {findings:#?}"
+    );
+}
