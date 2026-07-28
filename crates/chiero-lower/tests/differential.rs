@@ -472,6 +472,24 @@ fn a_braced_initializer_stores_a_bitfield_as_bits() {
     );
     // The compound-literal spelling reaches the same code.
     agree_with(B, "struct B v = (struct B){1, 2}; return v.a * 10 + v.b;");
+    // **A value whose extra bits are set**, which is what pins the *width* of the write
+    // rather than only its offset. `{7, 2}` cannot see an over-wide store — 7 in four bits
+    // is `0111`, so the fourth bit is 0 and the neighbour survives by luck. 15 is `1111`,
+    // so a store one bit too wide sets `b`'s low bit and the answer moves.
+    agree_with(B, "struct B v = {15, 2}; return v.a * 10 + v.b;");
+    agree_with(
+        "struct C { unsigned a:3; unsigned b:5; };\n",
+        "struct C v = {15, 2}; return (int)(v.a * 100 + v.b);",
+    );
+    // **And the neighbour must be left unwritten**, or the over-wide store is repaired by
+    // the very next one. `{15, 2}` above cannot see it: `a`'s stray fourth bit lands in
+    // `b`'s bit 0, and `b = 2` is stored straight after and overwrites it. With `{15}` the
+    // zero-fill is all `b` ever gets, so the stray bit survives to be read.
+    agree_with(B, "struct B v = {15}; return v.a * 10 + v.b;");
+    agree_with(
+        "struct C { unsigned a:3; unsigned b:5; };\n",
+        "struct C v = {15}; return (int)(v.a * 100 + v.b);",
+    );
     // A single bit-field at offset 0 passes even unfixed — kept as the case that must not
     // regress, and as the reason the defect stayed invisible.
     agree_with("struct F { int a:4; };\n", "struct F v = {7}; return v.a;");

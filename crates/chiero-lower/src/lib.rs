@@ -4577,29 +4577,47 @@ impl Lowerer<'_> {
         let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
             return;
         };
-        // The fields to walk, as (byte offset, type), in declaration order.
-        let slots: Vec<(u64, TyId, Option<chiero_span::Symbol>)> =
-            match self.analysis.ty(ty).clone() {
-                Ty::Record(r) => {
-                    let l = self.analysis.layout(r);
-                    l.fields.iter().map(|f| (f.offset, f.ty, f.name)).collect()
-                }
-                Ty::Array { elem, len } => {
-                    let n = match len {
-                        chiero_sema::ArrayLen::Fixed(n) => n,
-                        _ => items.len() as u64,
-                    };
-                    let esz = self.analysis.size_of(elem).unwrap_or(1);
-                    (0..n).map(|i| (i * esz, elem, None)).collect()
-                }
-                _ => return,
-            };
+        // The fields to walk, as (byte offset, type, name, bit range), in declaration
+        // order. **The bit range travels with the slot**, because a bit-field initializer
+        // is `StoreBits` and not a narrower `Store` — 015 contract 7, which `assign` obeys
+        // and this function did not. Deriving it here from `RecordLayout` is the same
+        // single source `bitfield_of` uses for the assignment path.
+        type Slot = (
+            u64,
+            TyId,
+            Option<chiero_span::Symbol>,
+            Option<chiero_cir::BitRange>,
+        );
+        let slots: Vec<Slot> = match self.analysis.ty(ty).clone() {
+            Ty::Record(r) => {
+                let l = self.analysis.layout(r);
+                l.fields
+                    .iter()
+                    .map(|f| {
+                        let bits = f.bits.map(|b| chiero_cir::BitRange {
+                            off: (b.bit_offset - f.offset * 8) as u32,
+                            width: b.width as u32,
+                        });
+                        (f.offset, f.ty, f.name, bits)
+                    })
+                    .collect()
+            }
+            Ty::Array { elem, len } => {
+                let n = match len {
+                    chiero_sema::ArrayLen::Fixed(n) => n,
+                    _ => items.len() as u64,
+                };
+                let esz = self.analysis.size_of(elem).unwrap_or(1);
+                (0..n).map(|i| (i * esz, elem, None, None)).collect()
+            }
+            _ => return,
+        };
 
         let mut cursor = 0usize;
         for item in items {
             // A designator repositions the cursor; C11 6.7.9p17 continues from there.
             if let Some(chiero_ast::Designator::Field(name)) = item.designators.first() {
-                if let Some(i) = slots.iter().position(|(_, _, n)| *n == Some(*name)) {
+                if let Some(i) = slots.iter().position(|(_, _, n, _)| *n == Some(*name)) {
                     cursor = i;
                 }
             } else if let Some(chiero_ast::Designator::Index(idx)) = item.designators.first()
@@ -4607,7 +4625,7 @@ impl Lowerer<'_> {
             {
                 cursor = v.max(0) as usize;
             }
-            let Some(&(off, fty, _)) = slots.get(cursor) else {
+            let Some(&(off, fty, _, bits)) = slots.get(cursor) else {
                 break;
             };
             cursor += 1;
@@ -4642,6 +4660,29 @@ impl Lowerer<'_> {
             }
             let v = self.expr(item.value);
             let cty = self.cty(fty);
+            // **A bit-field member is `StoreBits`**, not a narrower `Store` (015 contract
+            // 7, whose `BitRange` came from `RecordLayout` above). A full-width store here
+            // wrote over every neighbour sharing the unit, so `{1, 2}` into
+            // `struct { int a:3; int b:5; }` put 1 across the whole unit and then 2 across
+            // it again. `assign` has obeyed this rule all along; this path never did, and a
+            // single bit-field at offset 0 hid it by having no neighbour to clobber.
+            //
+            // The value is *not* pre-truncated: `StoreBits` writes `width` bits and the
+            // reinterpretation at the field's signedness happens on the read, which is what
+            // makes 7 in a 3-bit signed field read back as −1.
+            if let Some(bits) = bits {
+                self.emit(
+                    InstKind::StoreBits {
+                        addr,
+                        val: v,
+                        unit: cty,
+                        bits,
+                        align: 1,
+                    },
+                    span,
+                );
+                continue;
+            }
             // **The initializer is converted to the member's type** (C11 6.7.9p11). sema
             // inserts that conversion for an assignment and not for a braced element — it
             // is not typing an assignment expression — so `struct S { signed char a; int b; }
