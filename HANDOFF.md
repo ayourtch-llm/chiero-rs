@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 137) — 1118 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 138) — 1119 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -495,8 +495,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > null-testing did not work at all; 134 discharged the parser's speculative type-name
 > rollback; 135 pinned every operator's precedence class after a sweep found `<<` could be
 > moved without any test noticing; 136 fixed the bit-field read-modify-write; 137 made an
-> enumeration constant its value, at its own type and in its own scope. **013 is clear** —
-> 20/20 contracts, no owed items.*
+> enumeration constant its value, at its own type and in its own scope; 138 made a compound
+> literal an object and let it take postfix suffixes.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -509,7 +509,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > channel where constructs are enumerated **once, in one auditable grammar**, and the
 > spellings × contexts × operand orders are explored mechanically.
 >
-> **1. Coverage recon (half a day, one-shot).** `cargo install cargo-llvm-cov`, run over the
+> **1. Coverage recon — DONE in wave 138, and it worked.** It did not need
+> `cargo-llvm-cov` in the end. Enumerating `ExprKind`'s 21 variants against the arms of
+> `raw_expr` took about ten minutes and found **three** reaching the catch-all `_ => Undef`:
+> `Error`, `TypeName` and `InitList`. Two behave correctly —
+> `__builtin_types_compatible_p(int, int)` and `__builtin_choose_expr` push "contains a
+> construct lowering cannot represent" and 015 §7 discards the function, a gap behaving
+> loudly. `InitList` was the silent one and became wave 138.
+>
+> **Do the same census for `StmtKind` against `stmt`, `Ty` against `cty`, and
+> `RValue`/`InstKind` against the engine's dispatch.** A match arm list is a cheap, exact
+> statement of what a pass claims to handle, and the catch-all is where the silent gaps
+> live. `cargo-llvm-cov` is installed now for the harder question — which arms exist but
+> never execute — but the free version of the trick is the arm census, so do that first.
+>
+> **1b. Coverage recon, the tooling version (not yet run).** `cargo install cargo-llvm-cov`, run over the
 > existing suite, read region coverage for `expr`, `assign`, `lvalue_addr`, `truth_of` and
 > every `_ =>` fallback. Finds the "arm that returns `Undef`/32/`None` and never executed"
 > class — the enum defect's shape. Structurally blind to "right arm, wrong for this operand
@@ -563,12 +577,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
-> - **`lvalue_addr` returning `None` for an aggregate is still silent in two places.**
->   `struct I y = mk().i;` and the compound literals `(struct S){1, 2}` and `(int[]){5, 6}`
->   all produce **no state and zero diagnostics**. 020 §5 says a gap is a diagnostic rather
->   than a licence, and `callee_of` in the same file quotes that norm — the aggregate read
->   arms do not follow it. The assignment path was fixed this wave; the two read arms in
->   `expr` were not.
+> - **`lvalue_addr` returning `None` for an aggregate is still silent in one place.**
+>   `struct I y = mk().i;` — a member selected off a *call result* — produces **no state and
+>   zero diagnostics**. 020 §5 says a gap is a diagnostic rather than a licence, and
+>   `callee_of` in the same file quotes that norm; the aggregate read arms in `expr` do not
+>   follow it. (The compound-literal half of this item was fixed in wave 138.)
 > - **A statement-expression aggregate value is copied after its scope dies.**
 >   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
 >   `.scope exit 2`, reading `t` once 021 has retired it.
