@@ -487,7 +487,58 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 105, `92b9328`) — 1002 tests, M1 162/165, frontend 113/117
+> ### ⏭️ START HERE (wave 106, `7a9ebb3`) — 1011 tests, M1 163/165, frontend 114/117
+>
+> **010 is complete but for its deliberately-uncovered metric, and 023 c7 is closed.**
+> `CookedSite` carries a `config` and the deduplication key includes it; the engine has a
+> `Strategy` (`Dfs` / `RandomPath { seed }`) with the seed recorded in every `RunResult`.
+>
+> **Two contracts remain in M1:**
+>
+> 1. **021 c19** — `LazyPolicy::max_depth = 2` on a linked list stops materializing at the
+>    third `next`, and the result carries `Fidelity::Bounded` **naming `next`**. Check
+>    whether `LazyPolicy` exists at all before planning; the naming half is the part a
+>    plausible implementation drops.
+> 2. **023 c17** — 1, 2 and 8 worker threads produce identical `RunResult`s with
+>    `wall_clock: None`. The engine is single-threaded today, so this is a real piece of
+>    work, not a test. 023 §4 says per-state `CheckerState` is what makes it achievable —
+>    that already holds, and wave 106's `Strategy` is the other half: `pick` takes the
+>    whole queue, so a parallel scheduler has one place to change.
+> 3. **023 c21** — per-witness replay at line granularity against gcov. The `gcov_lines`
+>    oracle already exists in `chiero-lower/tests/gcov_lines.rs`; this needs a *replay* with
+>    all inputs concretized.
+>
+> **A test that compares one run against another cannot see a changed algorithm.** Wave
+> 106's only mutation survivor was altering the PRNG constant: every test compared two runs,
+> and two runs of a *changed* generator agree with each other just as well. Anything whose
+> value is "identical everywhere and forever" — a hash, a PRNG, a serialization — needs a
+> **pinned literal**, not a self-consistency check. `strategy.rs` now pins the leaf order for
+> seed 7.
+>
+> **Write the generator, do not depend on it.** SplitMix64 is twelve lines and a dependency
+> could change its algorithm in a patch release, silently invalidating every seed in every
+> recorded bug report.
+>
+> ### The survivor pattern (five waves running)
+>
+> **The fixture never reached the comparison the design exists for.** Before running a
+> mutation, ask what the fixture would have to look like for the mutant to survive; for
+> every `&&` in a predicate there should be a fixture where that conjunct alone is false.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**, not a survivor — wave 106 had two, and `#[default]` cannot
+> move to a variant with a field, so some claims are structurally forced and must be mutated
+> somewhere else; two guards only ever true together are equivalent mutants; a genuine
+> no-op mutant is neither. **`cargo fmt` moves anchors** — re-grep after formatting.
+>
+> Owed and written down: nothing builds `AccessPath`s (lowering has the layouts and member
+> names; 015 is where it belongs, and it is not a numbered contract so it needs a decision);
+> the engine's own findings cite `ObjectId(N)`; `typeof` types to `Ty::Error` in sema; the
+> parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string
+> literals lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 105, `92b9328`) — 1002 tests, M1 162/165, frontend 113/117
 >
 > **020 is complete.** Contracts 29 and 30 close it: `UnionPun` exists and is deliberately
 > absent from `chiero_check::default_checkers()`, and `lower_tu_with_config` records the
