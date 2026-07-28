@@ -16,6 +16,8 @@ indexmap.workspace = true
 [dev-dependencies]
 chiero-parse.workspace = true
 chiero-pp.workspace = true
+chiero-exec.workspace = true
+chiero-solver.workspace = true
 
 [lints]
 workspace = true

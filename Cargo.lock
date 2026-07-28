@@ -100,9 +100,11 @@ version = "0.1.0"
 dependencies = [
  "chiero-ast",
  "chiero-cir",
+ "chiero-exec",
  "chiero-parse",
  "chiero-pp",
  "chiero-sema",
+ "chiero-solver",
  "chiero-span",
  "indexmap",
 ]
