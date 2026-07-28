@@ -29,15 +29,59 @@ fn agree(body: &str) {
 /// shows up through file-scope storage — a pointer-typed global read as a value, a struct
 /// passed by value to a helper — was outside this oracle's reach entirely.
 fn agree_with(prelude: &str, body: &str) {
-    let Some(expected) = gcc_answer(prelude, body) else {
-        eprintln!("skipping `{prelude} / {body}`: gcc not available (015 contract 5)");
-        return;
+    let expected = match gcc_answer(prelude, body) {
+        Ok(v) => v,
+        // **The only excusable reason to compare nothing**, and it is announced. `eprintln!`
+        // on a *passing* test is swallowed without `--nocapture`, so this branch also
+        // records itself where a reader will actually see it, below.
+        Err(Oracle::NoGcc) => {
+            eprintln!("skipping `{prelude} / {body}`: gcc not on PATH (015 contract 5)");
+            SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        // **Every other failure was previously spelled "gcc not available" too** — a
+        // temp-directory error, a binary that would not run, output that would not parse.
+        // Reporting a broken oracle as an absent one is how a file like this goes green for
+        // months while comparing nothing.
+        Err(Oracle::Broken(why)) => panic!("the oracle is broken, not absent: {why}"),
     };
     let got = chiero_answer(prelude, body);
     assert_eq!(
         got,
         Some(expected),
         "`{prelude} int probe(void) {{ {body} }}`: chiero says {got:?}, gcc says {expected}"
+    );
+}
+
+/// Why the oracle produced no answer.
+enum Oracle {
+    /// gcc is not installed. The one case where skipping is honest.
+    NoGcc,
+    /// gcc is installed and something else went wrong — never a reason to pass.
+    Broken(String),
+}
+
+static SKIPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// **The announcement, where libtest cannot swallow it.**
+///
+/// A skipped comparison in a *passing* test prints nothing unless someone thought to pass
+/// `--nocapture`, so "announce every skip" was satisfied only in principle. This test fails
+/// if any fixture in the file skipped, which turns a silent no-op run into a red one.
+///
+/// It depends on running after the others, which `cargo test` does not promise — so it is
+/// a backstop for a whole-file run, not a per-test guard. That is still the difference
+/// between a suite that reports nothing and one that reports something.
+#[test]
+fn zz_the_oracle_actually_ran() {
+    // Force one comparison from this test itself, so the counter is meaningful even when
+    // this is the only test selected.
+    agree("return 1;");
+    let n = SKIPPED.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        n, 0,
+        "{n} fixture(s) skipped: gcc is not on PATH, so this file compared nothing. \
+         015 contract 5 needs the compiler; an oracle that can silently not run is not one."
     );
 }
 
@@ -59,34 +103,42 @@ fn chiero_answer(prelude: &str, body: &str) -> Option<i32> {
     Some(bits as u32 as i32)
 }
 
-fn gcc_answer(prelude: &str, body: &str) -> Option<i32> {
+fn gcc_answer(prelude: &str, body: &str) -> Result<i32, Oracle> {
     let dir =
         std::env::temp_dir().join(format!("chiero-diff-{}-{}", std::process::id(), next_seq()));
-    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::create_dir_all(&dir).map_err(|e| Oracle::Broken(format!("mkdir {dir:?}: {e}")))?;
     let c = dir.join("p.c");
     let bin = dir.join("p");
     std::fs::write(
         &c,
         format!("#include <stdio.h>\n{prelude}\nint probe(void) {{ {body} }}\nint main(void) {{ printf(\"%d\\n\", probe()); return 0; }}\n"),
     )
-    .ok()?;
+    .map_err(|e| Oracle::Broken(format!("write {c:?}: {e}")))?;
     let out = std::process::Command::new("gcc")
         .args(["-std=gnu11", "-w", "-O0", "-o"])
         .arg(&bin)
         .arg(&c)
         .output()
-        .ok()?;
+        // **Only a failure to spawn means gcc is missing.** Everything past this point is
+        // a broken oracle, not an absent one.
+        .map_err(|_| Oracle::NoGcc)?;
     if !out.status.success() {
         panic!(
-            "gcc rejected the fixture `{body}`:\n{}",
+            "gcc rejected the fixture `{prelude} / {body}`:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let run = std::process::Command::new(&bin).output().ok()?;
+    let run = std::process::Command::new(&bin)
+        .output()
+        .map_err(|e| Oracle::Broken(format!("running the fixture `{body}`: {e}")))?;
     let text = String::from_utf8_lossy(&run.stdout);
-    let v = text.trim().parse::<i32>().ok();
+    let v = text.trim().parse::<i32>().map_err(|e| {
+        Oracle::Broken(format!(
+            "the fixture `{body}` printed {text:?}, which is not an integer: {e}"
+        ))
+    })?;
     let _ = std::fs::remove_dir_all(&dir);
-    v
+    Ok(v)
 }
 
 fn next_seq() -> u64 {
@@ -352,6 +404,24 @@ fn an_aggregate_lvalue_is_an_address_not_a_load() {
         "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S y = x; \
          x.a = 9; return y.a * 10 + y.b;",
     );
+    // **The struct is read somewhere other than directly under an initializer.** Without
+    // this, the whole fix can sit outside the `Ident` arm — special-case `ArrayDecay` in
+    // the cast lowering, source the copy-init `CopyMem` from `lvalue_addr`, and all six
+    // cases above pass while a struct used as a value in a comma, a conditional, an
+    // argument or a `return` stays broken. The adversarial review built that mutation and
+    // confirmed it survives, which is the whole reason these two are here.
+    agree(
+        "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S y = (0, x); \
+         return y.a * 10 + y.b;",
+    );
+    agree(
+        "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S z; z.a = 3; \
+         z.b = 4; struct S y = (x.a ? x : z); return y.a * 10 + y.b;",
+    );
+    // **A union**, which 020 §1.4 names alongside structs and arrays and which nothing
+    // above covers. `is_aggregate` matches `Ty::Record`, and a union is one — but that is
+    // a fact about sema's representation, not something the rule should rest on unstated.
+    agree("union U { int i; short h; }; union U u; u.i = 5; union U v = u; return v.i;");
 }
 
 /// **A pointer-typed global names its contents, like any other scalar.**
@@ -435,6 +505,12 @@ fn a_pointer_lvalue_keeps_its_width_wherever_it_lives() {
         "struct I { int a; int b; }; struct O { struct I i; }; struct O o; o.i.a = 2; \
            o.i.b = 3; struct I y = o.i; return y.a * 10 + y.b;",
     );
+    // An **array member decaying**, the same rule reached through `Member` rather than
+    // through `Ident`. `s.a` is how every fixed-size buffer inside a VPP struct is spelled.
+    agree(
+        "struct S { int a[3]; }; struct S s; s.a[0] = 4; s.a[1] = 6; int *p = s.a; \
+           return p[1] * 10 + p[0];",
+    );
 }
 
 /// **Statement expressions and VLAs**, checked for what they compute.
@@ -510,7 +586,7 @@ fn the_oracle_can_observe_a_disagreement() {
         "the two extensions must give different answers, or this file's equalities \
          are comparing a constant against itself"
     );
-    if let (Some(ga), Some(gb)) = (
+    if let (Ok(ga), Ok(gb)) = (
         gcc_answer("", "signed char c = -1; int i = c; return i;"),
         gcc_answer("", "unsigned char c = 255; int i = c; return i;"),
     ) {
