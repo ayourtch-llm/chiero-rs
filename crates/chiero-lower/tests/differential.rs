@@ -278,6 +278,24 @@ fn conditionals_and_aggregate_initializers_compute_what_gcc_computes() {
     agree("struct S { int a; int b; }; struct S s = {.b = 3}; return s.a * 10 + s.b;");
 }
 
+/// **`&x` and pointer dereference**, the gap §9 has been carrying since wave 95.
+///
+/// It is the blocker for two other things: the `chiero.h` intrinsics take `&x`, and
+/// sign-versus-zero extension of an array index cannot be distinguished without a negative
+/// index, which needs `&a[i]`.
+#[test]
+fn address_of_and_dereference_compute_what_gcc_computes() {
+    agree("int x = 7; int *p = &x; return *p;");
+    agree("int x = 7; int *p = &x; *p = 9; return x;");
+    agree("int a[4]; a[0] = 1; a[2] = 3; int *p = &a[2]; return *p;");
+    // A negative index through a pointer into the middle — this is what pins sign
+    // extension, because a zero-extended −1 addresses four billion elements away.
+    agree("int a[4]; a[1] = 5; a[2] = 6; int *p = &a[2]; return p[-1];");
+    agree("struct S { int a; int b; }; struct S s; s.b = 4; int *p = &s.b; return *p;");
+    // The address of a struct, passed through a pointer.
+    agree("struct S { int a; int b; }; struct S s; s.a = 2; struct S *p = &s; return p->a;");
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
