@@ -487,7 +487,67 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 109, `eb11102`) — 1025 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 110, `4fe60b2`) — 1031 tests, 3 ignored, M1 165/165 by contract
+>
+> **`AccessPath` is end-to-end.** Lowering builds paths at the member-access site (the only
+> place that knows both the member name and the layout offset), 021 c19 consumes them, and
+> the renderer now matches 020 §4.4's own spelling — `p->adj[3].counter`, and
+> `a as ip4.as_u32` for a union member per §4.5. That closes the last owed item from wave
+> 104.
+>
+> ## The one remaining contract: 023 c17, and why it is not a wave
+>
+> 1, 2 and 8 worker threads must produce **identical** `RunResult`s. Measured this wave:
+>
+> - **38 `&mut TermArena` parameters and 170 arena calls in `chiero-exec` alone.**
+> - `TieredSolver::check_path` also takes `&mut TermArena`, and 023 §1.1's "one solver for
+>   the run" exists *because* sibling states hit its caches — per-worker solvers throw away
+>   the thing that makes it fast.
+> - Every `State` holds `Term`s that are indices into one arena, so per-worker arenas need
+>   cross-arena term migration for every state, memory, witness and finding.
+> - **`completion_order` must be identical too**, and wave 106's contract-7 test reads it as
+>   the observable exploration order — so it cannot be canonicalised by sorting. The
+>   schedule must stay sequentially determined while only the *work* parallelises.
+>
+> So the design decision is: **shared arena behind interior mutability (and a shared solver)
+> with speculative execution committed in schedule order**, or nothing. Either is a
+> milestone, not a wave. Do not accept a `workers` parameter that is ignored — the contract's
+> test would pass while testing nothing, which is the trap 020 c16's own parenthesis warns
+> about.
+>
+> ### Worth doing before or instead
+>
+> - **Extend `no_spurious_findings.rs` as constructs land.** It is the shape that caught
+>   wave 109's storm and the suite had nothing like it for 108 waves.
+> - `AccessPath`s are built for members and indices only; a `Bits` step for a bit-field
+>   access is specified in §4.4 and not emitted.
+> - The engine's own findings still cite `ObjectId(N)` (wave 102's owed item). Now that
+>   paths reach the engine from real C, a finding could name the variable instead.
+>
+> ### Rules earned, most recent first
+>
+> **A renderer that disagrees with the spec's own example is a defect** — wave 110's
+> `(*p).adj` vs §4.4's `p->adj`. When a test expectation and the code disagree, check which
+> one the spec backs before assuming the test is wrong.
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** to decide which crate owns a bug
+> (wave 109 — three probes to one instruction).
+> **A comment claiming a property is not the property** (wave 107).
+> **Comparing two configurations cannot see a leak that affects both** (wave 107).
+> **Anything claiming to be stable forever needs a pinned literal** (wave 106).
+> **The fixture never reached the comparison the design exists for** — eight waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial, not a surviving gap**.
+>
+> Owed and written down: `Bits` path steps are not emitted; the engine's findings cite
+> `ObjectId(N)`; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
+> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 109, `eb11102`) — 1025 tests, 3 ignored, M1 165/165 by contract
 >
 > **The false-positive storm is fixed and 023 c21 is closed with it.** A parameter's slot
 > took `ScopeId(0)` (allocated while `open_scopes` was empty) and the body's compound then
