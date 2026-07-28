@@ -665,6 +665,7 @@ fn a_nonzero_entry_block_does_not_alias() {
         ],
         entry: BlockId(3),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     });
@@ -763,6 +764,7 @@ fn gcov_line_order_is_preserved() {
         }],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     });

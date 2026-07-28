@@ -394,6 +394,7 @@ fn gen_module(seed: u64) -> Module {
                     None
                 },
             },
+            access_paths: Default::default(),
             body: Body::Defined,
             span: r.span(),
         });

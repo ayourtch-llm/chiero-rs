@@ -62,6 +62,7 @@ fn one_local(insts: Vec<Inst>, ret: Operand) -> Module {
         blocks: vec![block(0, insts, Terminator::Return(Some(ret)))],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -266,6 +267,7 @@ fn one_volatile_store_executed_twice_is_two_effects() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

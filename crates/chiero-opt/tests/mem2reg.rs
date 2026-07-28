@@ -72,6 +72,7 @@ fn func(allocas: Vec<AllocaDecl>, blocks: Vec<Block>) -> Module {
             blocks,
             entry: BlockId(0),
             attrs: Default::default(),
+            access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
         }],

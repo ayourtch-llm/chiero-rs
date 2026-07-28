@@ -112,6 +112,7 @@ fn escaping_scope(lifetime: Lifetime) -> Module {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -219,6 +220,7 @@ fn an_ordinary_scope_exit_reports_nothing() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -290,6 +292,7 @@ fn an_inner_scope_exit_leaves_the_outer_scopes_objects_alone() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -335,6 +338,7 @@ fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -371,6 +375,7 @@ fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -409,6 +414,7 @@ fn a_callers_locals_survive_a_callees_return() {
         blocks: vec![block(0, vec![], Terminator::Return(Some(i32c(7))))],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -455,6 +461,7 @@ fn a_callers_locals_survive_a_callees_return() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -521,6 +528,7 @@ fn an_alloca_in_a_loop_body_is_a_new_object_each_time_the_scope_opens() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

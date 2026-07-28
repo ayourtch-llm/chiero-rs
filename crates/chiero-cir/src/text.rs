@@ -427,6 +427,7 @@ impl<'a> Parser<'a> {
             blocks: Vec::new(),
             entry: BlockId(0),
             attrs,
+            access_paths: Default::default(),
             body: if has_body {
                 Body::Defined
             } else {
@@ -521,6 +522,11 @@ impl<'a> Parser<'a> {
                 f.allocas.push(self.alloca(&t)?);
                 continue;
             }
+            if head == "path" {
+                let (v, p) = self.access_path(&t)?;
+                f.access_paths.insert(v, p);
+                continue;
+            }
             if head.ends_with(':') && t.len() == 1 {
                 if cur.is_some() && !terminated {
                     return self.err("block has no terminator");
@@ -602,6 +608,84 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `path %V root <root...> [step <step...>]*`
+    fn access_path(&mut self, t: &[String]) -> Result<(ValueId, AccessPath), ParseError> {
+        let v = self.value_id(self.tok(t, 1)?)?;
+        if self.tok(t, 2)? != "root" {
+            return self.err("a path needs a root");
+        }
+        let num = |s: &str| s.parse::<u64>().ok();
+        let root = match self.tok(t, 3)? {
+            "local" => PathRoot::Local {
+                alloca: AllocaId(
+                    num(self.tok(t, 4)?).ok_or_else(|| self.perr("bad alloca id"))? as u32,
+                ),
+                name: match self.tok(t, 5)? {
+                    "-" => None,
+                    n => Some(n.into()),
+                },
+            },
+            "global" => PathRoot::Global {
+                g: GlobalId(num(self.tok(t, 4)?).ok_or_else(|| self.perr("bad global id"))? as u32),
+                name: self.tok(t, 5)?.into(),
+            },
+            "value" => PathRoot::Value(ValueId(
+                num(self.tok(t, 4)?).ok_or_else(|| self.perr("bad value id"))? as u32,
+            )),
+            other => return self.err(format!("unknown path root `{other}`")),
+        };
+        let mut steps: SmallVec<[PathStep; 4]> = SmallVec::new();
+        let mut i = 3;
+        while i < t.len() {
+            if t[i] != "step" {
+                i += 1;
+                continue;
+            }
+            let kind = self.tok(t, i + 1)?.to_string();
+            let want = |n: usize| -> Result<u64, ParseError> {
+                num(t.get(n).map(String::as_str).unwrap_or(""))
+                    .ok_or_else(|| self.perr("bad path number"))
+            };
+            match kind.as_str() {
+                "deref" => {
+                    steps.push(PathStep::Deref);
+                    i += 2;
+                }
+                "field" => {
+                    steps.push(PathStep::Field {
+                        name: self.tok(t, i + 2)?.into(),
+                        off: want(i + 3)?,
+                    });
+                    i += 4;
+                }
+                "union" => {
+                    steps.push(PathStep::UnionMember {
+                        name: self.tok(t, i + 2)?.into(),
+                        off: want(i + 3)?,
+                        view: self.tok(t, i + 4)?.into(),
+                    });
+                    i += 5;
+                }
+                "bits" => {
+                    steps.push(PathStep::Bits {
+                        name: self.tok(t, i + 2)?.into(),
+                        bits: BitRange {
+                            off: want(i + 3)? as u32,
+                            width: want(i + 4)? as u32,
+                        },
+                    });
+                    i += 5;
+                }
+                "index" => {
+                    steps.push(PathStep::Index(self.operand(self.tok(t, i + 2)?)?));
+                    i += 3;
+                }
+                other => return self.err(format!("unknown path step `{other}`")),
+            }
+        }
+        Ok((v, AccessPath { root, steps }))
     }
 
     fn alloca(&mut self, t: &[String]) -> Result<AllocaDecl, ParseError> {
@@ -1433,6 +1517,38 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
             o.push_str(&format!(" \"{n}\""));
         }
         o.push_str(&span_note(a.span));
+        o.push('\n');
+    }
+    // **The structure, not the rendered string.** Rendering is lossy — `(*p).a` does not
+    // say what offset `a` is at — and a round trip that preserved only what a reader sees
+    // would quietly turn a path into a comment.
+    //
+    // `-` for an absent name, because a missing token would make the next field's position
+    // depend on whether the previous one existed.
+    for (v, p) in &f.access_paths {
+        o.push_str(&format!("  path %{} root ", v.0));
+        match &p.root {
+            PathRoot::Local { alloca, name } => o.push_str(&format!(
+                "local {} {}",
+                alloca.0,
+                name.as_deref().unwrap_or("-")
+            )),
+            PathRoot::Global { g, name } => o.push_str(&format!("global {} {name}", g.0)),
+            PathRoot::Value(x) => o.push_str(&format!("value {}", x.0)),
+        }
+        for st in &p.steps {
+            match st {
+                PathStep::Deref => o.push_str(" step deref"),
+                PathStep::Field { name, off } => o.push_str(&format!(" step field {name} {off}")),
+                PathStep::UnionMember { name, off, view } => {
+                    o.push_str(&format!(" step union {name} {off} {view}"))
+                }
+                PathStep::Bits { name, bits } => {
+                    o.push_str(&format!(" step bits {name} {} {}", bits.off, bits.width))
+                }
+                PathStep::Index(x) => o.push_str(&format!(" step index {}", opm(m, x))),
+            }
+        }
         o.push('\n');
     }
     for b in &f.blocks {

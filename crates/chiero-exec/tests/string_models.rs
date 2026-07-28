@@ -52,6 +52,7 @@ fn strlen_over_symbolic_bytes() -> Module {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -82,6 +83,7 @@ fn strlen_over_symbolic_bytes() -> Module {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -234,6 +236,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -290,6 +293,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
         blocks: vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -348,6 +352,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -404,6 +409,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
         blocks: vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -471,6 +477,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -536,6 +543,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -609,6 +617,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -667,6 +676,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

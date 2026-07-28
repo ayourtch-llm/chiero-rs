@@ -41,6 +41,7 @@ fn func(blocks: Vec<Block>, ret: CTy) -> Module {
             blocks,
             entry: BlockId(0),
             attrs: Default::default(),
+            access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
         }],
@@ -73,6 +74,7 @@ fn calling(id: u32, name: &str) -> Module {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -86,6 +88,7 @@ fn calling(id: u32, name: &str) -> Module {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -347,6 +350,7 @@ fn one_degradation_before_a_fork_is_reported_once() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -498,6 +502,7 @@ fn assumptions_from_every_path_reach_the_report() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -558,6 +563,7 @@ fn assumptions_from_every_path_reach_the_report() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

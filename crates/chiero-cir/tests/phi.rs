@@ -111,6 +111,7 @@ fn diamond(incomings: Vec<(BlockId, Operand)>, phi_first: bool) -> Module {
             ],
             entry: BlockId(0),
             attrs: Default::default(),
+            access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
         }],

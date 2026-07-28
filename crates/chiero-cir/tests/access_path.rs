@@ -193,6 +193,13 @@ fn access_paths_survive_the_text_round_trip() {
         back.funcs[0].access_paths[&ValueId(0)].render(),
         "opaque as ip4_rewrite_t.adj_index"
     );
+    // **Structurally, not just as it renders.** `render()` never prints an offset, so a
+    // round trip that dropped every `off` would produce the same string and this test
+    // would agree with itself about a path that had lost half its content.
+    assert_eq!(
+        back.funcs[0].access_paths, m.funcs[0].access_paths,
+        "every field survived, including the ones `render` does not show"
+    );
 }
 
 /// **The verifier does not require a path**, and does not reject one that names a value
@@ -243,4 +250,83 @@ fn a_path_is_never_a_verification_error() {
         errs.iter().all(|e| !e.is_error()),
         "a reporting aid cannot fail a run: {errs:#?}"
     );
+}
+
+/// Offsets round-trip, and they are what `render` cannot show.
+///
+/// A path's `off` fields are never printed by `render` — `.adj[3].counter` says nothing
+/// about byte 16 — so a serialization that dropped them looks perfect in every message.
+/// They exist because 020 §4.4 lets a `StructLayoutId` be attached for reporting, and an
+/// offset is how a reader checks a path against a layout.
+#[test]
+fn path_step_offsets_survive_the_round_trip() {
+    let steps: Vec<PathStep> = vec![
+        PathStep::Field {
+            name: sym("adj"),
+            off: 8,
+        },
+        PathStep::UnionMember {
+            name: sym("adj_index"),
+            off: 24,
+            view: sym("ip4_rewrite_t"),
+        },
+        PathStep::Bits {
+            name: sym("flags"),
+            bits: BitRange { off: 3, width: 5 },
+        },
+        PathStep::Index(Operand::Const(Const::Int { bits: 64, val: 3 })),
+        PathStep::Deref,
+    ];
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Void,
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![Block {
+            id: BlockId(0),
+            insts: vec![],
+            term: Terminator::Return(None),
+            gcov_lines: Default::default(),
+            span: at(1),
+        }],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        access_paths: [(
+            ValueId(3),
+            AccessPath {
+                root: PathRoot::Global {
+                    g: GlobalId(0),
+                    name: sym("cfg"),
+                },
+                steps: steps.iter().cloned().collect(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        span: at(1),
+    };
+    let m = Module {
+        funcs: vec![f],
+        globals: vec![Global {
+            id: GlobalId(0),
+            name: "cfg".into(),
+            size: 64,
+            align: 8,
+            is_const: false,
+            init: GlobalInit::Zero,
+            linkage: Linkage::External,
+            span: at(1),
+        }],
+        ..Default::default()
+    };
+    let back = text::parse(&text::print(&m)).expect("reparse");
+    let got: Vec<PathStep> = back.funcs[0].access_paths[&ValueId(3)]
+        .steps
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(got, steps, "every step, with its offsets, came back");
 }

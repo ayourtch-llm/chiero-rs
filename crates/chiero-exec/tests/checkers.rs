@@ -55,6 +55,7 @@ fn func(id: u32, name: &str, params: Vec<Param>, ret: CTy, blocks: Vec<Block>) -
         blocks,
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     }
@@ -992,6 +993,7 @@ fn a_real_run_slices_its_path_condition() {
         blocks,
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

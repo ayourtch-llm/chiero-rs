@@ -99,6 +99,7 @@ fn guarded_fault() -> Module {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -198,6 +199,7 @@ fn a_path_with_no_inputs_is_witnessed_by_the_empty_assignment() {
             )],
             entry: BlockId(0),
             attrs: Default::default(),
+            access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
         }],
@@ -313,6 +315,7 @@ fn two_input_fault() -> Module {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -326,6 +329,7 @@ fn two_input_fault() -> Module {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -467,6 +471,7 @@ fn an_out_of_bounds_write_is_reported_with_a_witness() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -674,6 +679,7 @@ fn findings_on_every_path_are_witnessed_and_carry_that_paths_fidelity() {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -755,6 +761,7 @@ fn findings_on_every_path_are_witnessed_and_carry_that_paths_fidelity() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -857,6 +864,7 @@ fn a_scalar_parameter_is_bound_by_the_witness() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -962,6 +970,7 @@ fn an_input_the_path_does_not_constrain_is_not_reported_as_pinned() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -1172,6 +1181,7 @@ fn two_faults_at_one_site_on_two_paths_are_two_reports() {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

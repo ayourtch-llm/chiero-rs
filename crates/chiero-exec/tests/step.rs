@@ -58,6 +58,7 @@ fn func(blocks: Vec<Block>, ret: CTy) -> Module {
             blocks,
             entry: BlockId(0),
             attrs: Default::default(),
+            access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
         }],
@@ -718,6 +719,7 @@ fn defined(id: u32, name: &str, blocks: Vec<Block>, ret: CTy) -> Function {
         blocks,
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     }

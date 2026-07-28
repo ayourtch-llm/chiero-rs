@@ -4722,6 +4722,32 @@ impl<'m> Engine<'m> {
     /// Memory faults from an instruction become findings and degrade, the same way a
     /// model's do. A fault that only reached the memory model is a bug chiero found and
     /// did not report.
+    /// The rendered `AccessPath` for the address the current instruction accesses.
+    ///
+    /// Looked up from the instruction at the program counter rather than threaded through
+    /// the memory model: 020 §4.4 says no analysis may branch on a path, and handing one
+    /// to `chiero-mem` would put it exactly where an analysis would find it.
+    fn path_for_current_access(&self, s: &State) -> Option<String> {
+        let f = self.module.funcs.iter().find(|f| f.id == s.func())?;
+        if f.access_paths.is_empty() {
+            return None;
+        }
+        let (bid, ix) = s.pc;
+        let b = f.blocks.iter().find(|b| b.id == bid)?;
+        let addr = match &b.insts.get(ix)?.kind {
+            chiero_cir::InstKind::Assign {
+                rv:
+                    chiero_cir::RValue::Load { addr, .. } | chiero_cir::RValue::LoadBits { addr, .. },
+                ..
+            }
+            | chiero_cir::InstKind::Store { addr, .. }
+            | chiero_cir::InstKind::StoreBits { addr, .. } => addr,
+            _ => return None,
+        };
+        let Operand::Value(v) = addr else { return None };
+        f.access_paths.get(v).map(|p| p.render())
+    }
+
     fn report_faults(&mut self, s: &mut State, faults: &[chiero_mem::MemFault], span: Span) {
         // 021 §5 step 3: misalignment is **recorded** on every access and is a *finding*
         // only in `ub-strict` mode, because x86-64 tolerates it and VPP relies on that.
@@ -4747,10 +4773,19 @@ impl<'m> Engine<'m> {
                 object: f.object(),
                 func: s.func(),
             };
+            // **The access path, if the function carries one for this address.**
+            // 020 §4.4: a finding should read `opaque as l2_bridge_t.bd_index`, not
+            // "offset 36 of ObjectId(1)" — dozens of VPP nodes reinterpret that region and
+            // the offset alone does not say which one is wrong. Reporting-only, so a
+            // missing path costs the message some words and nothing else.
+            let message = match self.path_for_current_access(s) {
+                Some(p) => format!("{f} through {p}"),
+                None => f.to_string(),
+            };
             s.findings.push(StateFinding {
                 id: self.finding_seq,
                 key: Some(key),
-                message: f.to_string(),
+                message,
                 span: f.at(),
             });
         }

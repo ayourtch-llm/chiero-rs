@@ -470,6 +470,7 @@ impl Lowerer<'_> {
             blocks: Vec::new(),
             entry: BlockId(0),
             attrs: FnAttrs::default(),
+            access_paths: Default::default(),
             body: Body::Declared,
             span,
         });
@@ -625,6 +626,7 @@ impl Lowerer<'_> {
                 order_sensitive: fs.order_sensitive,
                 ..FnAttrs::default()
             },
+            access_paths: Default::default(),
             body: Body::Defined,
             span,
         };

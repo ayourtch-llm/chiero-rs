@@ -77,6 +77,7 @@ fn run_op(op: BinOp, width: u32, a_val: i128, b_val: i128) -> (RunResult, TermAr
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

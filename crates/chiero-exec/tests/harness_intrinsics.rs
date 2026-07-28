@@ -56,6 +56,7 @@ fn declared(id: u32, name: &str, ret: CTy) -> Function {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     }
@@ -218,6 +219,7 @@ fn make_symbolic_then_branch(with_assume: bool, with_assert: bool) -> Module {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

@@ -88,6 +88,7 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };

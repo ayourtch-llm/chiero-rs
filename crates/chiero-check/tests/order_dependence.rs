@@ -92,6 +92,7 @@ fn mutator(id: u32, name: &str, g: u32, val: i128) -> Function {
         )],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: at(1),
     }
@@ -143,6 +144,7 @@ fn caller(g_target: u32, h_target: u32, sequenced: bool) -> Module {
                 )],
                 entry: BlockId(0),
                 attrs: Default::default(),
+                access_paths: Default::default(),
                 body: Body::Defined,
                 span: at(1),
             },

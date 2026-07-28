@@ -556,12 +556,108 @@ pub struct Function {
     pub entry: BlockId,
     pub attrs: FnAttrs,
     pub body: Body,
+    /// Reporting-only access paths, keyed by the address `ValueId` they describe
+    /// (020 §4.4). Absent for most values; a finding without one simply says less.
+    pub access_paths: IndexMap<ValueId, AccessPath>,
     pub span: Span,
 }
 
 impl Function {
     pub fn block(&self, id: BlockId) -> Option<&Block> {
         self.blocks.iter().find(|b| b.id == id)
+    }
+}
+
+/// Where an access started, for reporting (020 §4.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathRoot {
+    Local {
+        alloca: AllocaId,
+        /// `None` for a compiler-generated temporary, which has no name to print.
+        name: Option<Symbol>,
+    },
+    Global {
+        g: GlobalId,
+        name: Symbol,
+    },
+    /// A pointer that arrived from somewhere this function cannot see.
+    Value(ValueId),
+}
+
+/// One step from an access's root to the bytes it touched (020 §4.4).
+///
+/// No `Eq`: `Index` carries an `Operand`, which can be a float constant.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PathStep {
+    Field {
+        name: Symbol,
+        off: u64,
+    },
+    /// Which member of a union this access viewed the bytes through, and the record it
+    /// belongs to. Purely for reporting — see 020 §4.5.
+    UnionMember {
+        name: Symbol,
+        off: u64,
+        view: Symbol,
+    },
+    Bits {
+        name: Symbol,
+        bits: BitRange,
+    },
+    Index(Operand),
+    Deref,
+}
+
+/// How an access reached the bytes it touched — **reporting only** (020 §4.4).
+///
+/// "It makes a finding read `p->adj[3].counter`, or `b->opaque as
+/// ip4_rewrite_t.adj_index`, instead of `*(i64*)(%7 + 24)`. No analysis may branch on it."
+///
+/// Which is why these live in a side table on [`Function`] keyed by the address's
+/// `ValueId`, rather than on the `Inst`. An instruction that carried one would put it in
+/// front of every pass and every checker, and "no analysis may branch on it" would be a
+/// rule nobody could see they were breaking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccessPath {
+    pub root: PathRoot,
+    pub steps: SmallVec<[PathStep; 4]>,
+}
+
+impl AccessPath {
+    /// The path as C would write it.
+    ///
+    /// Never fails and never returns nothing: a path that panicked on an unnamed root
+    /// would take the whole finding with it, and a finding that says less is better than
+    /// no finding at all.
+    pub fn render(&self) -> String {
+        let mut out = match &self.root {
+            PathRoot::Local { name: Some(n), .. } => n.to_string(),
+            PathRoot::Local { alloca, name: None } => format!("%alloca{}", alloca.0),
+            PathRoot::Global { name, .. } => name.to_string(),
+            PathRoot::Value(v) => format!("%{}", v.0),
+        };
+        for st in &self.steps {
+            match st {
+                PathStep::Deref => out = format!("(*{out})"),
+                PathStep::Field { name, .. } => out = format!("{out}.{name}"),
+                // **`as` rather than `.`**, because the whole value of this step is saying
+                // the bytes were viewed *through* something that may not be what wrote
+                // them. `.adj_index` alone reads like an ordinary field access.
+                PathStep::UnionMember { name, view, .. } => out = format!("{out} as {view}.{name}"),
+                PathStep::Bits { name, bits } => {
+                    out = format!("{out}.{name}:{}..{}", bits.off, bits.off + bits.width)
+                }
+                PathStep::Index(o) => {
+                    let idx = match o {
+                        Operand::Const(Const::Int { val, .. }) => val.to_string(),
+                        Operand::Value(v) => format!("%{}", v.0),
+                        other => format!("{other:?}"),
+                    };
+                    out = format!("{out}[{idx}]");
+                }
+            }
+        }
+        out
     }
 }
 

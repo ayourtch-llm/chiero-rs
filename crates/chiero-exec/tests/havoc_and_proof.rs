@@ -66,6 +66,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
         blocks: vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };
@@ -79,6 +80,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
         blocks: vec![],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
     };
@@ -300,6 +302,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

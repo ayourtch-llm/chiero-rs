@@ -124,6 +124,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
         ],
         entry: BlockId(0),
         attrs: Default::default(),
+        access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
     };

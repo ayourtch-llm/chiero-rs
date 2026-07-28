@@ -299,3 +299,51 @@ fn an_out_of_bounds_access_without_a_path_still_reports() {
         oob[0]
     );
 }
+
+/// **A path keyed to a different value does not leak into this finding.**
+///
+/// The naming test above uses `%1` as both the access's address and the path's key, so it
+/// cannot tell "look up the address this access used" from "look up `%1`". Here the
+/// out-of-bounds access goes through `%1` and the only path in the table belongs to `%0`,
+/// the base address — a real shape, since lowering names the base as well as the member.
+/// A finding that quoted `%0`'s path would be describing the wrong access.
+#[test]
+fn a_path_for_another_value_does_not_name_this_access() {
+    let mut insts = address_at(36, 1, 10);
+    insts.push(inst(
+        InstKind::Assign {
+            dst: ValueId(2),
+            rv: RValue::Load {
+                addr: Operand::Value(ValueId(1)),
+                ty: CTy::Int(64),
+                align: 4,
+                vol: Volatility::Normal,
+            },
+        },
+        20,
+    ));
+    let base_path = AccessPath {
+        root: PathRoot::Local {
+            alloca: AllocaId(0),
+            name: Some("opaque".into()),
+        },
+        steps: [PathStep::Field {
+            name: "not_this_one".into(),
+            off: 0,
+        }]
+        .into_iter()
+        .collect(),
+    };
+    let (r, _) = run(insts, vec![(ValueId(0), base_path)]);
+    let oob: Vec<String> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("out-of-bounds"))
+        .collect();
+    assert_eq!(oob.len(), 1, "{oob:#?}");
+    assert!(
+        !oob[0].contains("not_this_one"),
+        "the path belongs to `%0` and the access went through `%1`: {}",
+        oob[0]
+    );
+}
