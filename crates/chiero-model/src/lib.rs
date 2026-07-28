@@ -420,6 +420,10 @@ pub const DISPATCHABLE: &[&str] = &[
     "chiero_mark_fidelity",
     "longjmp",
     "scanf",
+    // 024 contract 22: the format check needs the *call*, so  is dispatched even
+    // though its output is not modeled — the model returns no value and reports what the
+    // format string and the arguments disagree about.
+    "printf",
 ];
 
 pub fn dispatchable() -> &'static [&'static str] {
@@ -460,6 +464,7 @@ pub mod models {
                 | "chiero_assume"
                 | "chiero_assert"
                 | "chiero_mark_fidelity"
+                | "printf"
                 | "longjmp"
                 | "scanf"
         )
@@ -829,6 +834,108 @@ pub mod models {
             objects: args.iter().skip(1).flatten().map(|p| p.base).collect(),
             ..HavocSpec::unmodeled_extern()
         })
+    }
+
+    /// 024 contract 22. Check a format string against the arguments it was given.
+    ///
+    /// Two different bugs, kept apart deliberately: a **format mismatch** is the program
+    /// lying about what it is passing, and a **memory** fault is the program handing
+    /// `printf` bytes it may not read. `%s` of a null pointer is the second, not the
+    /// first — the conversion did want a pointer.
+    ///
+    /// A format string chiero cannot read concretely is not a finding: an unreadable
+    /// format is a gap in chiero, and reporting it as a bug in the program is the
+    /// confusion 023 §7 exists to prevent. It degrades instead, via `Bounded`.
+    ///
+    /// Only the conversions VPP's `format`/`printf` calls actually use are classified;
+    /// anything else consumes an argument without a claim about its type, because a wrong
+    /// claim is worse than none.
+    pub fn printf(cx: &mut ModelCtx, args: &[Option<Value>]) -> ModelOutcome {
+        let Some(Some(Value::Ptr(fmt_p))) = args.first() else {
+            return ModelOutcome::Bounded(
+                "printf: the format argument is not a pointer, so nothing was checked".to_string(),
+            );
+        };
+        let Some(fmt) = cx.mem().c_string_at(*fmt_p) else {
+            return ModelOutcome::Bounded(
+                "printf: the format string is not concretely readable, so the arguments \
+                 were not checked"
+                    .to_string(),
+            );
+        };
+        let mut rest = args.iter().skip(1);
+        let mut reported = 0usize;
+        let bytes: Vec<char> = fmt.chars().collect();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != '%' {
+                i += 1;
+                continue;
+            }
+            i += 1;
+            if i < bytes.len() && bytes[i] == '%' {
+                i += 1;
+                continue;
+            }
+            // Skip flags, width and precision — none of them changes what *kind* of
+            // argument the conversion wants, which is all this checks.
+            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            // Length modifiers, likewise.
+            while i < bytes.len() && matches!(bytes[i], 'h' | 'l' | 'j' | 'z' | 't' | 'L') {
+                i += 1;
+            }
+            let Some(conv) = bytes.get(i).copied() else {
+                break;
+            };
+            i += 1;
+            let Some(arg) = rest.next() else {
+                cx.report(format!(
+                    "format-mismatch: `%{conv}` has no argument; the call supplies fewer \
+                     than the format string consumes"
+                ));
+                reported += 1;
+                continue;
+            };
+            let wants_pointer = matches!(conv, 's' | 'p' | 'n');
+            match (wants_pointer, arg) {
+                // `%s` of a pointer: the *string* has to be readable, and a bad one is a
+                // memory finding rather than a mismatch.
+                (true, Some(Value::Ptr(p))) => {
+                    if conv == 's' && cx.mem().c_string_at(*p).is_none() {
+                        let at = cx.span();
+                        let r = cx.mem().read(*p, 1, at);
+                        let faults = r.faults.clone();
+                        if faults.is_empty() {
+                            cx.report(format!(
+                                "printf: the string for `%{conv}` is not concretely \
+                                 readable"
+                            ));
+                        } else {
+                            cx.lift(&faults);
+                        }
+                    }
+                }
+                (false, Some(Value::Scalar(_))) => {}
+                (true, _) => {
+                    cx.report(format!(
+                        "format-mismatch: `%{conv}` wants a pointer and the argument is \
+                         not one"
+                    ));
+                    reported += 1;
+                }
+                (false, _) => {
+                    cx.report(format!(
+                        "format-mismatch: `%{conv}` wants an integer and the argument is \
+                         a pointer"
+                    ));
+                    reported += 1;
+                }
+            }
+        }
+        let _ = reported;
+        ModelOutcome::Value(None)
     }
 
     /// 024 contract 20. Non-local control flow: the state ends here.

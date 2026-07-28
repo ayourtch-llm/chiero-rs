@@ -3755,6 +3755,20 @@ impl<'m> Engine<'m> {
                         )),
                     }
                 }),
+                "printf" => {
+                    // The two `Value` types are deliberately separate (023 §1.1 keeps the
+                    // engine's out of the model API); `Undef` has no model counterpart and
+                    // becomes "not an argument this can classify".
+                    let vs: Vec<Option<chiero_model::Value>> = resolved
+                        .iter()
+                        .map(|v| match v {
+                            Some(Value::Scalar(t)) => Some(chiero_model::Value::Scalar(*t)),
+                            Some(Value::Ptr(p)) => Some(chiero_model::Value::Ptr(*p)),
+                            _ => None,
+                        })
+                        .collect();
+                    Some(models::printf(&mut cx, &vs))
+                }
                 "longjmp" => Some(models::longjmp(&mut cx)),
                 "scanf" => {
                     // An argument chiero could not translate is not the absence of an

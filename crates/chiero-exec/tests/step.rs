@@ -2740,7 +2740,11 @@ fn everything_dispatchable_is_implemented_and_vice_versa() {
     // `true` unconditionally passed the loop above — every assertion in it was satisfied
     // by a function that says yes to everything. These are registered models chiero has
     // *no* implementation for, which is exactly what the flag exists to distinguish.
-    for n in ["printf", "sqrt", "read", "ioctl", "not_a_function_at_all"] {
+    // `printf` used to be the example here and is now implemented (024 contract 22), so
+    // `fscanf` takes its place: registered, approximate, and with nothing behind it. The
+    // list must keep at least one *registered* name, or it only tests that made-up names
+    // are unimplemented.
+    for n in ["fscanf", "sqrt", "read", "ioctl", "not_a_function_at_all"] {
         assert!(
             !chiero_model::models::is_implemented(n),
             "`{n}` has no implementation here and must not claim one"
@@ -2811,6 +2815,10 @@ fn every_dispatchable_name_is_actually_performed_by_the_engine() {
             vec![CTy::Ptr, CTy::Ptr],
             vec![p1.clone(), p0.clone()],
         ),
+        // 024 contract 22: dispatched for the format check, even though the *output* is
+        // not modeled — the model returns no value and reports what the format string
+        // and the arguments disagree about.
+        ("printf", vec![CTy::Ptr], vec![p1.clone()]),
     ];
     let names: Vec<&str> = cases.iter().map(|(n, _, _)| *n).collect();
     for n in chiero_model::dispatchable() {

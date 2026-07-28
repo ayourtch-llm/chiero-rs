@@ -195,3 +195,22 @@ fn a_null_pointer_to_a_string_conversion_is_a_memory_finding() {
         "and not a format mismatch — `%s` did want a pointer: {f:#?}"
     );
 }
+
+/// `%%` is an escape, not a conversion: it consumes no argument. Treating it as one makes
+/// every progress message in a codebase — `"100%% done"` — a false "conversion with no
+/// argument", which is the kind of noise that gets a checker turned off.
+#[test]
+fn a_literal_percent_consumes_no_argument() {
+    let m = call_printf("100%% done", vec![], vec![]);
+    let f = run(&m);
+    assert!(
+        !f.iter().any(|x| x.contains("format")),
+        "`%%` is a literal percent sign: {f:#?}"
+    );
+    // And one real conversion after it still lines up with its argument.
+    let m2 = call_printf("%d%%", vec![], vec![i32c(50)]);
+    assert!(
+        !run(&m2).iter().any(|x| x.contains("format")),
+        "the argument belongs to `%d`, not to `%%`"
+    );
+}
