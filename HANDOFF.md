@@ -487,13 +487,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 134) — 1115 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 136) — 1117 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
-> wild pointer plus eight more defects and emptied `tests/corpus/owed/`; wave 133 found that
-> pointer null-testing did not work at all; wave 134 discharged the parser's speculative
-> type-name rollback — 013 now has no owed items and all 20 of its contracts are covered.*
+> wild pointer plus eight more defects and emptied `tests/corpus/owed/`; 133 found pointer
+> null-testing did not work at all; 134 discharged the parser's speculative type-name
+> rollback; 135 pinned every operator's precedence class after a sweep found `<<` could be
+> moved without any test noticing; 136 fixed the bit-field read-modify-write. **013 is
+> clear** — 20/20 contracts, no owed items.*
+>
+> **Open question for the user, asked and not yet answered:** whether to build the
+> `chiero-cli` / `chiero-tool` surface now. Both are genuine stubs (5 lines and 1). That is
+> **M7 work while we are at M1**, and most of 050 §3's catalogue cannot be backed yet —
+> `gcov`, `select`, `diff`, `recipe` and `vpp` are all 1-line stubs. What *is* backed is one
+> vertical: C source → findings, plus CIR dump/verify and span provenance. The proposed
+> slice was the 050 §2 envelope in `chiero-tool` plus three clap subcommands over that
+> vertical, TDD'd against 050 contracts 1, 2 and 4b. **Do not start it without an answer** —
+> it reorders the roadmap.
 >
 > ## ✅ The sret wild pointer is fixed, and it was never where six waves looked
 >
@@ -606,10 +617,6 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
-> - **A compound assignment or `++` on a bit-field does a full-unit `i32` read-modify-write.**
->   `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, and `inc_dec` has no
->   bit-field check at all — so `v.a += 1` and `v.b++` write over their neighbours. 015
->   contract 7 owns this and the plain-assignment path already obeys it.
 > - **An enum constant lowers to a silent `Undef`.** `enum E { A = 3 }; enum E e; e = A;`
 >   emits `store i32 undef` — the `Ident` arm falls through when the name is neither a local,
 >   a global, nor a function. gcc says 3, chiero returns nothing, and no diagnostic is
@@ -653,6 +660,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A discriminator must differ under *both* readings — check it against gcc first**
+> (waves 135, 136). Four precedence fixtures and two signedness fixtures looked like proofs
+> and were not: two operators sharing a class parse left-associatively into the *same tree*
+> whenever the tighter one comes second, and `+= 1` followed by truncation to the same width
+> absorbs a wrong sign-extension entirely. `7 % 4 + 1` is 4 either way; `1 + 7 % 4` is not.
+> `u.a += 1` cannot see the load's signedness; `u.a /= 2` can. Compute both readings by hand,
+> run them through the compiler, and only then write the case down.
 > **Mutate each *part* of a statement, not the statement** (wave 134, and wave 133 from the
 > other side). `self.diags.truncate(before)` has two halves — that it fires, and where it
 > stops. Deleting it was caught; changing `before` to `0`, which erases diagnostics from
@@ -730,7 +744,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
 >
-> Owed and written down: the four defects above; the wave-117 `fork_on_offset` survivor;
+> Owed and written down: the three defects above; the wave-117 `fork_on_offset` survivor;
 > floats do not execute; designated, bit-field and address initializers refused; a fault in a
 > non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
 > `Ty::Error` in sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
