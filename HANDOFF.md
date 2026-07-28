@@ -487,7 +487,76 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 116, `HEAD`) — 1066 tests, 8 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 117, `07524e1`) — 1070 tests, 4 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: a symbolic index into a *global* array is a wild pointer
+>
+> `table[i]` with symbolic `i` on a file-scope array reports
+> `wild-pointer: access through a pointer at address 4 matching no known object`. **The same
+> shape on a local array works** — `array_bounds.c` passes — so the fork and the memory model
+> are fine and the global's object is not being found from the concretized offset. Start by
+> comparing what `AddrOfGlobal` puts in the state against what `AddrOfLocal` does.
+>
+> It is the only thing keeping `globals.c` out of the corpus sweep, which excludes it **by
+> name and announces it** so the other four files stay checked.
+>
+> ### What wave 117 delivered
+>
+> Symbolic indexing works. `SmtLib::discover()` opts in a backend when one is on `PATH`
+> (022 c2: discovery is a runtime fact, the suite runs without one, every skip announced).
+> **Four of five corpus files now execute clean** — every path terminating by returning,
+> nothing invented. That was the front for three waves.
+>
+> ### An unresolved mutation survivor — do not assume it is covered
+>
+> In `fork_on_offset`, giving every sibling the base offset (`off: p.off` instead of
+> `p.off.wrapping_add(v)`) leaves all four `symbolic_index` tests passing. Either the
+> sibling's destination local is written somewhere else too, or `pending_dst` is `None` here
+> and the siblings' values come from re-evaluation. **Find out which before trusting that
+> path.** The other two fork mutants die, so the forking itself is covered.
+>
+> ### Also open
+>
+> - Initializer forms refused: designated, bit-field, address (`int *p = &g;` — CIR cannot
+>   express a relocation).
+> - 021 c21 reachable and untested on a real global since wave 114.
+> - A fault in a non-entry frame is untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave; measurement in wave 110's entry.
+>
+> ### Rules earned, most recent first
+>
+> **A failing test is not automatically a failing engine** (wave 117). The symbolic-index
+> fixture left its index unconstrained, so the offset really did have unbounded values and
+> bounding was correct — the test was measuring the bound rather than the enumeration.
+> Check the fixture states what you meant before changing the code.
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** — remove the code and re-run (112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (waves 107, 112).
+> **The fixture never reached the comparison the design exists for** — fifteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **a patch script that asserts must write nothing on failure —
+> and check it said `ok`**, wave 117 lost two edits to a script that aborted mid-way. An
+> oracle that can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: symbolic index into a global array is a wild pointer (excludes
+> `globals.c` from the sweep); the unresolved `fork_on_offset` survivor above; designated,
+> bit-field and address initializers refused; 021 c21 untested on a real global; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 116, `da79c94`) — 1066 tests, 8 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: the default solver cannot enumerate
 >
