@@ -2270,12 +2270,71 @@ impl Lowerer<'_> {
             // it falls out of the unstructured CFG, which is why §2.4 is three sentences.
             chiero_ast::ExprKind::StmtExpr(body) => {
                 let saved = self.last_stmt_value.take();
-                self.stmt(*body);
+                // **An aggregate result is copied out before the block ends.** The value of
+                // a statement expression yielding a struct is that struct's *address* —
+                // the only thing an aggregate expression can be (020 §1.4) — and the
+                // object it names is a local of the block that is about to close. By the
+                // time the enclosing initializer copied from it, 021 had retired it and the
+                // `CopyMem` read bytes that were gone.
+                //
+                // So the destination is allocated **here**, before the body's scope is
+                // entered, which gives it the enclosing block's lifetime — the same answer
+                // wave 138 gave a compound literal, and for the same reason. A fresh slot
+                // per statement expression, so two in one expression are two objects.
+                //
+                // The scalar case needs none of this and gets none: a scalar's value is a
+                // value, and no scope exit can invalidate it. That is why the construct has
+                // always worked for half the types.
+                let dest = match self.type_of(e) {
+                    Some(t) if self.is_aggregate(t) => {
+                        let align = self.analysis.align_of(t).unwrap_or(1).max(1);
+                        let slot = self.alloca_for(t, align, None, span);
+                        let addr = self.new_value();
+                        self.emit(
+                            InstKind::Assign {
+                                dst: addr,
+                                rv: RValue::AddrOfLocal { alloca: slot },
+                            },
+                            span,
+                        );
+                        Some((addr, self.analysis.size_of(t).unwrap_or(0), align))
+                    }
+                    _ => None,
+                };
+                // The body's statements are lowered here rather than through `stmt`,
+                // because `stmt` would exit the scope before the copy could run.
+                let items = match self.ast.stmt(*body).kind.clone() {
+                    chiero_ast::StmtKind::Compound(ss) => ss,
+                    _ => vec![*body],
+                };
+                self.enter_scope(span);
+                for st in items {
+                    self.stmt(st);
+                }
                 let v = self.last_stmt_value.take();
+                let out = match (dest, v.clone()) {
+                    (Some((addr, size, align)), Some(src)) => {
+                        self.emit(
+                            InstKind::CopyMem {
+                                dst: Operand::Value(addr),
+                                src,
+                                size: Operand::Const(Const::Int {
+                                    bits: 64,
+                                    val: size as i128,
+                                }),
+                                align,
+                            },
+                            span,
+                        );
+                        Some(Operand::Value(addr))
+                    }
+                    _ => v,
+                };
+                self.exit_scope(span);
                 // Restore, so a statement expression nested inside another does not
                 // consume the outer one's value.
                 self.last_stmt_value = saved;
-                v.unwrap_or(Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))))
+                out.unwrap_or(Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))))
             }
             chiero_ast::ExprKind::Comma { lhs, rhs } => {
                 self.expr(*lhs);
