@@ -487,7 +487,62 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 111, `6db3cac`) — 1036 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 112, `775c406`) — 1048 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: put globals in the corpus
+>
+> **Not one C file in `tests/corpus/c/` has a file-scope variable.** That is how wave 112's
+> defect — lowering had *no notion* of a global, so every read of one became `Undef` —
+> survived 111 waves with a green suite. An unknown value suppresses findings rather than
+> producing wrong ones, so the engine was a false negative for all of VPP and said `Exact`
+> while doing it.
+>
+> Globals now work (registered in the declaration pass, read and written through
+> `AddrOfGlobal`, `Extern` distinguished from `Zero`). What is missing is *coverage*: add
+> corpus C files with file-scope arrays, structs and `static` counters, re-bless, and read
+> the goldens. Expect more gaps — an initializer on a global is still lowered as `Zero`
+> regardless of what it says, which is the next obvious hole.
+>
+> **Known and unfixed**: `int g[4] = {1,2,3,4};` records `GlobalInit::Zero`. The initializer
+> is parsed and ignored. That is a wrong answer rather than a missing one, which makes it
+> worse than what wave 112 fixed.
+>
+> ### Also open
+>
+> - **A fault in a non-entry frame is untested** (`object_name` uses `stack.last()`; no C
+>   fixture distinguishes it from `first()` because the engine enters `funcs.first()` and C
+>   declares callees first). Needs a hand-built `.cir` module in `chiero-exec`'s suite.
+> - **`Bits` path steps are not emitted** for bit-field accesses (020 §4.4).
+> - **023 c17** — the last contract, a milestone not a wave; measurement in wave 110's entry.
+>
+> ### Rules earned, most recent first
+>
+> **Dump the control when it passes.** Wave 112's RED found two verifier errors; the *real*
+> defect was in the one fixture that passed, and `verify` was too weak to see it. When a
+> control passes, print what it produced before believing it.
+> **A survivor is not automatically a fixture gap** — check. Wave 112 had two: one was a
+> fixture gap (three fixtures added, mutant dies), the other was genuinely dead code
+> (deleted). Removing the code and re-running the suite is how you tell them apart.
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (wave 107) — wave 112 again: the
+> `Undef` return had a comment calling it "honest", and it was the bug.
+> **The fixture never reached the comparison the design exists for** — ten waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial, not a surviving gap**.
+>
+> Owed and written down: global initializers are ignored; the corpus has no globals; a fault
+> in a non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 111, `6db3cac`) — 1036 tests, 4 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: two lowering defects on file-scope variables
 >
