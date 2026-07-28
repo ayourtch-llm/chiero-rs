@@ -2806,6 +2806,40 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 79** (`16542c6` RED, `2e12723` GREEN; 727 tests, **144/165 cited**) — 022
+   contracts 9 and 9b: independence slicing, `PathCondition`, and §6.1. Union-find
+   partition of the assertion set into variable-disjoint components, a per-slice model
+   cache, `check_path`, and a `sliced_terms_skipped` stat.
+
+   **§6.1 was amended in the same commit.** As drafted it makes the `possibly_infeasible`
+   flag the only thing preventing a wrong `Sat` from a quietly-dead component, which rests
+   the soundness of slicing on all three call sites having remembered `push_unchecked`.
+   023 contract 16 independently demands more — a witness must satisfy the *whole* path
+   condition, and a model solved from one component assigns nothing in the others — so a
+   sliced `Sat` is completed from the remaining components, and a dead one is caught on
+   the way. The flag still disables slicing (performance) and the subset/superset rules
+   (correctness: those are stated over full assertion sets), but is **no longer
+   load-bearing for soundness**. The RED negative control asserting the wrong answer was
+   reachable is now `slicing_stays_sound_when_the_flag_is_wrong`, asserting it is not,
+   naming the cheaper model-completion that would undo it.
+
+   Two test defects found going green, both **the same shape as wave 78's**:
+   - `x == 1 && x == 2` is refuted by tier 1's interval domain before any backend call, so
+     the poisoned path condition exercised neither slicing nor the subsumption index. The
+     `sliced_terms_skipped == 0` assertions are what caught it. It is now `x * 2 == 1`,
+     outside §3.2's transfer set and so genuinely opaque to tier 1.
+   - The flagged superset reused the previous query's exact term set, so the **exact**
+     cache answered it. §6.1 does not disable that cache and should not: an exact match is
+     the same question, not a subsumed one.
+
+   ⚠️ **Method note for the next wave — this is now three for three.** Waves 78 and 79
+   both shipped tests that could not reach the code they named, and in both cases the
+   thing that exposed it was an *instrumentation* assertion (`sliced_terms_skipped`, the
+   `Unsat`-count floor) rather than the behavioural one. A behavioural assertion alone
+   cannot distinguish "the feature works" from "a cheaper path reached the same answer".
+   When testing an optimisation or a guard, assert that it **ran**, not only that the
+   answer is right.
+
    **WAVE 78** (`8741781`; 721 tests, **142/165 cited**) — 022 contract 18, the random
    differential campaign. Written, then invalidated twice by mutation before it was
    committed; both failures are the same trap in different clothing and both are worth
@@ -2993,7 +3027,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **721 tests, 142/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **727 tests, 144/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
