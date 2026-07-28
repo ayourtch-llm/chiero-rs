@@ -790,6 +790,8 @@ pub struct Engine<'m> {
     alloc_policy: AllocPolicy,
     string_policy: StringPolicy,
     entry_param_bytes: u64,
+    /// 021 §6's `--fork-on-alias`. Off by default, because it multiplies states.
+    fork_on_alias: bool,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -824,6 +826,7 @@ impl<'m> Engine<'m> {
             alloc_policy: AllocPolicy::default(),
             string_policy: StringPolicy::default(),
             entry_param_bytes: ENTRY_PARAM_BYTES,
+            fork_on_alias: false,
             backend: None,
             solver: None,
             solver_inits: 0,
@@ -852,6 +855,18 @@ impl<'m> Engine<'m> {
     /// `min(max_string_scan, object size)`, so both halves must be settable.
     pub fn with_entry_param_bytes(mut self, n: u64) -> Self {
         self.entry_param_bytes = n;
+        self
+    }
+
+    /// 021 §6's `--fork-on-alias`: explore the case two lazily-materialized pointer
+    /// parameters name the *same* object.
+    ///
+    /// Off by default — §6 says why, and it is not squeamishness: the alias case for every
+    /// pair multiplies the state count, and the default's distinctness assumption is what
+    /// keeps an under-constrained run tractable. What the default owes in exchange is
+    /// saying that it made the assumption, which it does.
+    pub fn with_fork_on_alias(mut self, on: bool) -> Self {
+        self.fork_on_alias = on;
         self
     }
 
@@ -993,6 +1008,8 @@ impl<'m> Engine<'m> {
         // scalar gets a fresh symbol of its declared width.
         let mut entry_locals: IndexMap<ValueId, Value> = IndexMap::new();
         let mut entry_inputs: Vec<(Term, InputOrigin)> = Vec::new();
+        // Which parameters got a lazily-materialized object, for 021 §6's aliasing policy.
+        let mut ptr_params: Vec<(ValueId, chiero_mem::ObjectId)> = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
             let v = if p.ty == CTy::Ptr {
                 // Sized by the budget rather than by a guess about the callee: the object
@@ -1038,6 +1055,9 @@ impl<'m> Engine<'m> {
                 ));
                 Value::Scalar(t)
             };
+            if let Value::Ptr(q) = v {
+                ptr_params.push((p.value, q.base));
+            }
             entry_locals.insert(p.value, v);
         }
         let start = State {
@@ -1073,7 +1093,56 @@ impl<'m> Engine<'m> {
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
         // 001 §5's determinism requirement is met by construction rather than by luck.
+        // **021 §6's aliasing policy, and the assumption it rests on.** Two lazily
+        // materialized objects are distinct by default; that is an assumption about the
+        // *caller*, not a fact about the program, and §6 requires it recorded and printed.
+        // A run that quietly assumed `memcpy(dst, src, n)` never overlaps would miss the
+        // bug that idiom exists to have.
         let mut work = vec![start];
+        if ptr_params.len() > 1 {
+            if self.fork_on_alias {
+                // One extra state per pair, each with the later parameter naming the
+                // earlier one's object. §6 describes `2^(pairs)`; pairwise is the subset
+                // that answers "do *these two* alias", which is the question a checker
+                // asks, and it grows quadratically rather than exponentially.
+                let pairs: Vec<(usize, usize)> = (0..ptr_params.len())
+                    .flat_map(|i| (i + 1..ptr_params.len()).map(move |j| (i, j)))
+                    .collect();
+                for (i, j) in pairs {
+                    let (vi, base) = ptr_params[i];
+                    let (vj, _) = ptr_params[j];
+                    let mut alias = work[0].clone();
+                    alias.id = self.new_id();
+                    alias.set_local(vj, Value::Ptr(Pointer { base, off: 0 }));
+                    alias.degrade(
+                        Fidelity::Approximated,
+                        AssumptionKind::OpaqueCode,
+                        f.span,
+                        &format!(
+                            "--fork-on-alias: parameters {} and {} were explored as the \
+                             same object",
+                            vi.0, vj.0
+                        ),
+                    );
+                    work.push(alias);
+                }
+            } else {
+                let names: Vec<String> = ptr_params
+                    .iter()
+                    .map(|(v, _)| format!("%{}", v.0))
+                    .collect();
+                work[0].degrade(
+                    Fidelity::Approximated,
+                    AssumptionKind::OpaqueCode,
+                    f.span,
+                    &format!(
+                        "the pointer parameters {} are assumed to be distinct objects; \
+                         `--fork-on-alias` explores the case they are not",
+                        names.join(", ")
+                    ),
+                );
+            }
+        }
         let mut done = Vec::new();
         while let Some(mut s) = work.pop() {
             while s.status == Status::Running {

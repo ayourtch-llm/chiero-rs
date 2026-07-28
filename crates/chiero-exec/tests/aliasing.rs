@@ -17,10 +17,6 @@ use chiero_exec::*;
 use chiero_solver::TermArena;
 use chiero_span::Span;
 
-fn i32c(v: i128) -> Operand {
-    Operand::Const(Const::Int { bits: 32, val: v })
-}
-
 fn block(id: u32, insts: Vec<Inst>, term: Terminator) -> Block {
     Block {
         id: BlockId(id),
@@ -47,7 +43,10 @@ fn two_pointer_params() -> Module {
                 ty: CTy::Ptr,
             },
         ],
-        ret: CTy::Int(32),
+        // Returns the byte it loaded, so the declared type is the loaded type — a
+        // mismatch does not verify, and a module that does not verify reports the
+        // absence of everything.
+        ret: CTy::Int(8),
         variadic: false,
         allocas: vec![],
         blocks: vec![block(
@@ -56,7 +55,10 @@ fn two_pointer_params() -> Module {
                 Inst {
                     kind: InstKind::Store {
                         addr: Operand::Value(ValueId(0)),
-                        val: i32c(1),
+                        // 8-bit value for an 8-bit store: a width mismatch does not
+                        // verify, and a module that does not verify reports the absence
+                        // of everything.
+                        val: Operand::Const(Const::Int { bits: 8, val: 1 }),
                         ty: CTy::Int(8),
                         align: 1,
                         vol: Volatility::Normal,
@@ -114,6 +116,23 @@ fn two_pointer_parameters_are_distinct_and_the_run_records_the_assumption() {
             .iter()
             .map(|x| &x.detail)
             .collect::<Vec<_>>()
+    );
+    // **And the run cannot claim to be exact.** Assuming two pointers do not alias is
+    // discarding a case the program allows — 023 §7's `Approximated`, "keeping one of
+    // several feasible values" — so a run that made it must not seal as a proof. An
+    // assumption recorded without the fidelity to match is one `seal` would step over.
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Approximated,
+        "the distinctness assumption is a modelling choice, not a fact: {:#?}",
+        s.assumptions()
+            .iter()
+            .map(|x| (&x.kind, &x.detail))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        seal(&r, r.witness()).is_err(),
+        "and it cannot be presented as a proof"
     );
     // Printed, too: §6 says "printed in every report", and an assumption a reader cannot
     // see is one they cannot weigh.
