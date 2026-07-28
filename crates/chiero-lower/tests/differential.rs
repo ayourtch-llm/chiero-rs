@@ -569,6 +569,14 @@ fn a_struct_parameter_is_the_callees_own_copy() {
          static int sum_of(struct box b) { return b.v[0] + b.v[1] + b.v[2] + b.tag; }\n",
         "struct box b; b.v[0] = 1; b.v[1] = 2; b.v[2] = 3; b.tag = 40; return sum_of(b);",
     );
+    // A **nested member** passed by value, so the argument is not reached through an
+    // `Ident`. The implementation review supplied this one after finding the whole
+    // by-value shape was claimed in a commit message and covered by no fixture.
+    agree_with(
+        "struct I { int a; int b; }; struct O { struct I i; };\n\
+         static int f(struct I s) { return s.a * 10 + s.b; }\n",
+        "struct O o; o.i.a = 5; o.i.b = 6; return f(o.i);",
+    );
 }
 
 /// **"No value form" means vectors and function designators too, not just records.**
@@ -729,6 +737,20 @@ fn pointer_arithmetic_is_scaled_and_pointer_wide() {
     agree("char c[4]; char *p = c + 3; char *q = c + 1; return (int)(p - q);");
     // And a **negative** result, which pins the signedness of the division.
     agree("int a[4]; int *p = a + 1; int *q = a + 3; return (int)(p - q);");
+    // **The pointer lvalue is not always a plain local.** `assign` and `inc_dec` reach
+    // `displace` through `lvalue_ty`, whose local fast path is the one half that was
+    // already honest — so a pointer in a struct member, in an array element, or at file
+    // scope goes down the *other* half. The implementation review supplied these three
+    // after noting the cases above pin only the local.
+    agree(
+        "struct H { int *p; }; int a[2]; a[0] = 1; a[1] = 9; struct H h; h.p = a; \
+         h.p += 1; return *h.p;",
+    );
+    agree("int a[2]; a[0] = 1; a[1] = 9; int *pa[1]; pa[0] = a; pa[0] += 1; return *pa[0];");
+    agree_with(
+        "int a[2]; int *gp;",
+        "a[0] = 3; a[1] = 8; gp = a; gp++; return *gp;",
+    );
 }
 
 /// **Statement expressions and VLAs**, checked for what they compute.

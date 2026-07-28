@@ -524,6 +524,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    no fault, no finding, just a wrong number.
 > 5. **Pointer arithmetic is scaled `PtrAdd`** (`d9b4171`), in all six spellings.
 > 6. **`p += 1` does not convert `1` to a pointer** (`d9b4171`, in sema).
+> 7. **An aggregate assignment takes any right-hand side.** `assign` used `lvalue_addr(rhs)`
+>    and returned `Undef` when that was `None`, so `y = mk(1, 2)`, `y = (0, x)`,
+>    `y = c ? x : z` and `w = y = x` emitted **no `CopyMem` at all** — the assignment
+>    vanished from the CIR along with the right-hand side's side effects.
+> 8. **A vector and a function designator have no value form either.** `is_aggregate`
+>    matched `Record | Array` while `cty`, `aggregate_size` and `aggregate_size_of_ty` all
+>    included `Vector` — so a vector reproduced defect 1 exactly, and `elem_size_of` scaled
+>    vector indexing by one byte. `is_address_only` is now the predicate for "names its
+>    address" and includes `Ty::Func`, which fixes `(*fp)(3)`.
+>
+> Defects 7 and 8 came from the adversarial review of the implementation, which also
+> confirmed the earlier tests could be satisfied by an implementation that was wrong on
+> by-value arguments — it was, until defect 4 was found independently two commits later.
 >
 > One rule now covers all four: **an aggregate lvalue names its address; every other lvalue
 > is loaded and stored at `cty(type_of(e))`.** `cty_of` and `is_aggregate_expr` are the two
@@ -551,18 +564,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > where the count belonged. C11 6.5.16.2p1 keeps the right operand an integer for `+=`/`-=`
 > on a pointer. That is the *only* sema change wave 132 made — everything else was lowering.
 >
-> ### 🔴 Do this first: two defects found and recorded, not yet fixed
+> ### 🔴 Do this first: defects found by the implementation review, still open
 >
-> Both have a one-line reproduction, both are red today, and neither has a test yet —
-> **write the red test before fixing**, or they are worth nothing:
+> Each has a one-line reproduction and is red today. None has a test yet — **write the red
+> test before fixing**, or they are worth nothing. Ranked by how much of C they break:
 >
-> - **`y = (0, x);` for aggregates emits nothing at all** — no store, no `CopyMem`. The
->   assignment vanishes from the CIR. The *initializer* form `struct S y = (0, x);` works,
->   so it is `assign`'s aggregate path specifically: it uses `lvalue_addr(rhs)`, which
->   returns `None` for a comma expression, and returns `Undef` instead of refusing.
+> - **A `_Bool` compound assignment panics the solver.** `_Bool b = 0; b += 1;` reaches
+>   `chiero-solver/src/lib.rs:533`, "operand widths must match for Add: 8 vs 1". A
+>   *source-triggerable panic* is worse than any wrong answer — it takes the whole run down,
+>   and nothing above it catches it. `b = 2; return b;` also gives 0 where C says 1:
+>   assigning to a `_Bool` truncates instead of booleanizing (C11 6.3.1.2 makes it `!= 0`).
+> - **A compound assignment or `++` on a bit-field does a full-unit `i32` read-modify-write.**
+>   `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, and `inc_dec` has no
+>   bit-field check at all — so `v.a += 1` and `v.b++` write over their neighbours. 015
+>   contract 7 owns this and the plain-assignment path already obeys it.
+> - **An enum constant lowers to a silent `Undef`.** `enum E { A = 3 }; enum E e; e = A;`
+>   emits `store i32 undef` — the `Ident` arm falls through when the name is neither a local,
+>   a global, nor a function. gcc says 3, chiero returns nothing, and no diagnostic is
+>   pushed, so 015 §7 never refuses the function either.
+> - **`lvalue_addr` returning `None` for an aggregate is still silent in two places.**
+>   `struct I y = mk().i;` and the compound literals `(struct S){1, 2}` and `(int[]){5, 6}`
+>   all produce **no state and zero diagnostics**. 020 §5 says a gap is a diagnostic rather
+>   than a licence, and `callee_of` in the same file quotes that norm — the aggregate read
+>   arms do not follow it. The assignment path was fixed this wave; the two read arms in
+>   `expr` were not.
 > - **A statement-expression aggregate value is copied after its scope dies.**
 >   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
 >   `.scope exit 2`, reading `t` once 021 has retired it.
+>
+> ### The corpus misses every path this wave touched
+>
+> The review read all 13 corpus files and confirmed the byte-identical goldens are genuine:
+> the only pointers in the whole corpus are plain locals, there is **no pointer-typed global,
+> no pointer member, no struct copy, no local-array decay, no compound assignment on a
+> pointer, no float and no vector**. All the changed sites are unreachable from it, which is
+> why 1102 tests passed over six defects.
+>
+> One file would cross all of them: `tests/corpus/c/pointer_fields.c` with an `int *gp`
+> written and dereferenced, a struct holding an `int *` written and read through the member,
+> a struct copy-initialized from another and passed by value, and an aggregate `return`.
+> **Write it.** The corpus is what the goldens quantify over, and right now it certifies
+> nothing about any of this.
 >
 > ### Also open
 >

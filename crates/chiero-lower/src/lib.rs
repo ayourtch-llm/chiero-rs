@@ -1725,7 +1725,7 @@ impl Lowerer<'_> {
                 // **An aggregate member names its address**, like an aggregate local —
                 // `o.i` used as a value, or an array member decaying. Loading it would put
                 // the nested object's first bytes where a pointer belongs.
-                if self.is_aggregate_expr(e) {
+                if self.is_address_only(e) {
                     return self
                         .lvalue_addr(e, span)
                         .unwrap_or(Operand::Const(Const::Undef(CTy::Ptr)));
@@ -1758,7 +1758,7 @@ impl Lowerer<'_> {
             | chiero_ast::ExprKind::Index { .. } => {
                 // The same rule: `*p` where `p` is a `struct S *`, and `a[k]` over an array
                 // of structs, are aggregate lvalues too.
-                if self.is_aggregate_expr(e) {
+                if self.is_address_only(e) {
                     return self
                         .lvalue_addr(e, span)
                         .unwrap_or(Operand::Const(Const::Undef(CTy::Ptr)));
@@ -1815,7 +1815,7 @@ impl Lowerer<'_> {
                         // address `gp` holds, and `*gp` read `gp`'s own bytes as an `int`.
                         // The sema type is the only thing that distinguishes them, which is
                         // why the check has to reach past `cty`.
-                        if self.is_aggregate_expr(e) {
+                        if self.is_address_only(e) {
                             return Operand::Value(addr);
                         }
                         let dst = self.new_value();
@@ -1880,7 +1880,7 @@ impl Lowerer<'_> {
                 // `lvalue_addr` and never does. The global arm got this guard when
                 // `g[1]` indexed off the wrong base; the local arm did not, and the
                 // resulting wild pointer cost waves 126 through 131.
-                if self.is_aggregate_expr(e) {
+                if self.is_address_only(e) {
                     return Operand::Value(addr);
                 }
                 let dst = self.new_value();
@@ -2863,18 +2863,35 @@ impl Lowerer<'_> {
         }
     }
 
-    /// Whether `e` denotes something CIR has no value form for, however it is spelled.
+    /// Whether a sema type is one CIR has no value form for (020 §1.4), so it lives in
+    /// memory and moves by `CopyMem` — a struct, union, array **or vector**.
     ///
-    /// `o.i` and `a[k]` are aggregate lvalues exactly as `x` is, so the "an aggregate names
-    /// its own address" rule cannot be an ident-only special case.
-    fn is_aggregate_expr(&self, e: ExprId) -> bool {
-        self.type_of(e).is_some_and(|t| self.is_aggregate(t))
+    /// `Ty::Vector` belongs here and was missing, while `cty`, `aggregate_size` and
+    /// `aggregate_size_of_ty` all included it: three predicates in one file disagreeing
+    /// about one type, so a vector read as a value loaded its first eight bytes as a
+    /// pointer and a copy moved eight of its sixteen bytes.
+    ///
+    /// **`Ty::Func` is deliberately not here.** A function designator also has no value
+    /// form and also decays to its address (C11 6.3.2.1p4), but it is not an *object*:
+    /// it has no size, so a `CopyMem` of it is meaningless and the callers that ask
+    /// "should this move by copy" must answer no. `is_address_only` is the predicate for
+    /// "names its address", and that one includes it.
+    fn is_aggregate(&self, t: TyId) -> bool {
+        matches!(
+            self.analysis.ty(t),
+            Ty::Record(_) | Ty::Array { .. } | Ty::Vector { .. }
+        )
     }
 
-    /// Whether a sema type is a struct, union or array — something CIR has no value form
-    /// for (020 §1.4), so it lives in memory and moves by `CopyMem`.
-    fn is_aggregate(&self, t: TyId) -> bool {
-        matches!(self.analysis.ty(t), Ty::Record(_) | Ty::Array { .. })
+    /// Whether reading `e` as a value can only yield its **address**.
+    ///
+    /// Every aggregate, plus a function designator: `(*fp)(3)` emitted `load ptr` at the
+    /// function's own address, because the read sites asked whether the type was an
+    /// *aggregate* and a function is not one. The two questions are close enough to have
+    /// looked like one and different enough that conflating them was wrong both ways.
+    fn is_address_only(&self, e: ExprId) -> bool {
+        self.type_of(e)
+            .is_some_and(|t| self.is_aggregate(t) || matches!(self.analysis.ty(t), Ty::Func { .. }))
     }
 
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
@@ -3294,8 +3311,11 @@ impl Lowerer<'_> {
 
     fn elem_size_of(&mut self, base: ExprId) -> Option<u64> {
         let t = self.type_of(base)?;
+        // **A vector indexes like an array.** Omitting it here made `elem` fall to the
+        // `_ => None` arm, callers substituted 1, and `a[1]` on a `v4si` wrote byte 1 —
+        // scaled by a byte rather than by four.
         let elem = match self.analysis.ty(t).clone() {
-            Ty::Array { elem, .. } | Ty::Ptr(elem) => elem,
+            Ty::Array { elem, .. } | Ty::Ptr(elem) | Ty::Vector { elem, .. } => elem,
             _ => return None,
         };
         self.analysis.size_of(elem)
