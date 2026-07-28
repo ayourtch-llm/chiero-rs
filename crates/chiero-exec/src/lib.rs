@@ -3927,17 +3927,29 @@ impl<'m> Engine<'m> {
         if let Some(g) = mine_guard {
             s.path.push(g);
         }
-        for why in branch_bounds {
-            s.degrade(Fidelity::Bounded, AssumptionKind::BudgetHit, span, &why);
-        }
-        for msg in branch_findings {
-            self.finding_seq += 1;
-            s.findings.push(StateFinding {
-                id: self.finding_seq,
-                key: None,
-                message: msg,
-                span,
-            });
+        let took_bound = !branch_bounds.is_empty();
+        let took_finding = !branch_findings.is_empty();
+        // **This state's own report is applied after the siblings are cloned.** The
+        // guard is undone per sibling by `pop_if`, but a finding and a degradation are
+        // not — so a first branch carrying either leaked it onto every sibling, including
+        // the ones whose guards contradict it. The same class of defect this arm fixed for
+        // guards and values, left in place for reports. Found by review; unreachable
+        // today, which is why it survived mutation, and wrong the moment it is reached.
+        //
+        // **A value-less branch cannot continue.** 024 §4 step 3 says reaching the scan
+        // cap "terminates the state with `Bounded`", and the reason is mechanical: the
+        // call's destination is unbound, so the *first use* of the result reached
+        // `branch condition is not a scalar` — 023 §3's marker for "a bug in chiero" —
+        // pinning the run at `Unknown` instead of the `Bounded` the spec asks for. A
+        // reported fault ends the path for the same reason: `strlen` running off the end
+        // has no length to hand back, and continuing with nothing invents one later.
+        // Found by review.
+        if result.is_none() && dst.is_some() {
+            if took_bound {
+                s.status = Status::Terminated(TermReason::Budget);
+            } else if took_finding {
+                s.status = Status::Terminated(TermReason::Crashed);
+            }
         }
         for (guard, v, report) in forks {
             let mut sib = s.clone();
@@ -3960,9 +3972,15 @@ impl<'m> Engine<'m> {
                         message: msg,
                         span,
                     });
+                    if dst.is_some() {
+                        sib.status = Status::Terminated(TermReason::Crashed);
+                    }
                 }
                 Some(BranchNote::Bounded(why)) => {
                     sib.degrade(Fidelity::Bounded, AssumptionKind::BudgetHit, span, &why);
+                    if dst.is_some() {
+                        sib.status = Status::Terminated(TermReason::Budget);
+                    }
                 }
                 None => {}
             }
@@ -3979,6 +3997,18 @@ impl<'m> Engine<'m> {
             // pointed *at* the call re-dispatched it and forked again, forever.
             sib.pc.1 = sib.pc.1.wrapping_add(1);
             self.pending.push(sib);
+        }
+        for why in branch_bounds {
+            s.degrade(Fidelity::Bounded, AssumptionKind::BudgetHit, span, &why);
+        }
+        for msg in branch_findings {
+            self.finding_seq += 1;
+            s.findings.push(StateFinding {
+                id: self.finding_seq,
+                key: None,
+                message: msg,
+                span,
+            });
         }
         if let Some(spec) = havoc {
             self.apply_havoc(a, s, name, &spec, span);

@@ -559,8 +559,10 @@ pub mod models {
         // walk that started before the object and ran past its end.
         if p.off < 0 {
             cx.report(format!(
-                "strlen: pointer is {} bytes before the object",
-                -p.off
+                // `-p.off` panics at `i64::MIN` and prints "1 bytes"; neither is worth
+                // a crash or a grammatical apology in a fault message.
+                "strlen: pointer is {} byte(s) before the object",
+                p.off.unsigned_abs()
             ));
             return StrScan::CapReached { scanned: 0 };
         }
@@ -640,8 +642,11 @@ pub mod models {
         let size = cx.mem().size_of_pub(p.base).unwrap_or(0);
         let Ok(from) = u64::try_from(p.off) else {
             return ModelOutcome::Finding(format!(
-                "strlen: pointer is {} bytes before the object",
-                -p.off
+                // `-p.off` panics at `i64::MIN`, which is a real offset a program can
+                // compute, and prints "1 bytes". Neither is worth a crash or a
+                // grammatical apology in a fault message. Found by review.
+                "strlen: pointer is {} byte(s) before the object",
+                p.off.unsigned_abs()
             ));
         };
         let room = size.saturating_sub(from);
