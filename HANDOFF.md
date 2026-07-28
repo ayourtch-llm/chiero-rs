@@ -487,7 +487,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 92, `adeb1c0`) — 906 tests, M1 152/165, frontend 94/117
+> ### ⏭️ START HERE (wave 93, `8c38524`) — 912 tests, M1 152/165, frontend 99/117
+>
+> **Lowering handles all of C's control flow** (015: 11/25) — scopes, `switch`, `goto`,
+> labels, `break`, `continue` — and `chiero-exec` can now execute a `Switch`, which it
+> could not before this wave. Nothing had ever produced one: M1's fixtures are hand-written
+> `.cir` and nobody hand-writes a switch.
+>
+> **The lesson that generalizes: a catch-all match arm hides a missing feature.** The
+> engine's terminator dispatch had an `_ =>` that reported "unsupported terminator" at run
+> time, and `Switch` sat inside it for eight waves. The arm is gone, so the *compiler* now
+> rejects an unhandled `Terminator` variant. Worth checking for the same shape elsewhere —
+> `chiero-lower`'s statement and expression dispatch still has one, deliberately (015 §7's
+> refuse-rather-than-lower-wrongly), but it should be a short list and it is not audited.
+>
+> Next, in rough order:
+>
+> 1. **`gcov_lines` — 015 §5 and contracts 15, 15b, 16, 17.** This is the join point of the
+>    whole test-selection story and the reason §4.1's headline claim works. Read 15b before
+>    starting: contract 17's subset property is **vacuously satisfied by the empty set**, so
+>    17 and 15b have to be written together or an implementation that emits no lines at all
+>    passes 17.
+> 2. **Aggregates and bitfields — contracts 6 and 7.** A struct assignment is one `CopyMem`,
+>    and bitfield access uses the `BitRange` **from `RecordLayout`** — lowering must never
+>    re-derive a bit offset, so there is exactly one place to be wrong.
+> 3. **Golden `.cir` files — contracts 2 and 22.**
+> 4. **Contracts 8, 12, 14, 19, 20** — statement expressions, `for`-scope, VLAs,
+>    aggregate initializers, and refusing nested functions.
+> 5. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down: `InitList`/`StmtExpr`/`typeof` type to `Ty::Error` in sema;
+> contract 9c (`goto` *into* a scope, and a backward `goto` creating a new generation) is
+> not implemented; VLA bounds are treated as flexible; the parser's speculative type-name
+> diagnostic rollback is unpinned.
+>
+> ### Earlier (wave 92, `adeb1c0`) — 906 tests, frontend 94/117
 >
 > **The differential oracle exists and it is the tool to reach for from now on.**
 > `crates/chiero-lower/tests/differential.rs`: write `int probe(void) { … }`, and the
