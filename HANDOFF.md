@@ -2743,6 +2743,28 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    over the *bytes*), `malloc`'s branches never changed, and the concrete fast path does
    *not* fall out of the same code.
 
+   **WAVE 74** (`cc2a098`; 708 tests, **138/165 cited**) — 024 contract 22, format-string
+   checking. `printf` was registered as approximate and never dispatched, so chiero saw
+   neither of the two bugs behind a bad format string. It is dispatched for the *check*
+   only: the model returns no value, because the output is still not modeled.
+
+   The two findings are kept apart deliberately — a **format mismatch** is the program
+   lying about what it is passing, a **memory** fault is the program handing `printf` bytes
+   it may not read. `%s` of a null pointer is the second, not the first, and reporting one
+   as the other sends a reader to the wrong line. A format string chiero cannot read
+   concretely is `Bounded`, not a finding: an unreadable format is a gap in chiero, and
+   blaming the program for it is what 023 §7 exists to prevent.
+
+   *Method note:* the `%%` mutant needed its own fixture and is the one that matters for
+   **noise** — every `"100%% done"` in a codebase would otherwise be a false "conversion
+   with no argument", and a checker that noisy gets turned off. **The negative cases are
+   what make a checker usable, and they need fixtures as specific as the positive ones.**
+
+   Two gates moved with it: `printf` joined the dispatchable and implemented lists, and
+   `everything_dispatchable_is_implemented_and_vice_versa` had used `printf` as its example
+   of a *registered but unimplemented* model — `fscanf` takes that role, since the list must
+   keep at least one **registered** name or it only tests that made-up names are missing.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2820,7 +2842,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **703 tests, 137/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **708 tests, 138/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
