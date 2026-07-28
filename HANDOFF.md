@@ -487,7 +487,76 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 119, `8d170d3`) — 1074 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 120, `6d1eb9d`) — 1083 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: an indirect call does not bind the callee's parameters
+>
+> `tests/corpus/owed/indirect_call.c` now **lowers and verifies** (waves 119–120 fixed three
+> lowering defects). What is left is in the engine: both callees read their parameter `v` as
+> uninitialized —
+>
+>     uninitialized-read: read at offset 0 of v touches bit 0, which was never written
+>
+> Two findings, one per resolved callee, so the indirect *dispatch* works and the *argument*
+> does not arrive. Start at `Callee::Indirect` in the engine's call handling and compare
+> what it binds against the `Callee::Direct` path.
+>
+> Then move the fixture into `tests/corpus/c/`, bless, and read the golden.
+>
+> ## 🔴 And: a fixture parked in `owed/` covers nothing
+>
+> Wave 120's mutation found that **two of the three lowering fixes from waves 119–120 had no
+> test at all** — the only thing exercising them was the fixture in `owed/`, which the suite
+> does not run. `globals.rs` now has direct tests for each. **When a fixture goes to `owed/`,
+> the fixes it motivated need tests where the suite can see them.** Check the rest of
+> `owed/` against this as it grows.
+>
+> ### Next
+>
+> 1. The indirect-call argument binding (above).
+> 2. **More corpus fixtures** — waves 114–120 found nine defects through the corpus, and two
+>    of them came from a file that would not lower. Loops with symbolic bounds, varargs, a
+>    `switch` on a symbolic value, `static inline` across a real header.
+> 3. 021 c21 untested on a real global; designated/bit-field/address initializers refused;
+>    a fault in a non-entry frame is untested; `Bits` path steps are not emitted.
+> 4. **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120). Wave 119
+> blamed sema and was wrong. The six tests written to prove it now pin behaviour nothing else
+> did — a disproof is worth keeping, not deleting.
+> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture that will not lower is still evidence** (wave 119) — it found three defects
+> without ever producing a golden.
+> **An aggregate diagnostic hides the cause**; print diagnostics before 015 §7 truncates them.
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — eighteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so; **check a patch script printed `ok`**. An oracle that can silently not run is not
+> an oracle — **announce every skip**.
+>
+> Owed and written down: indirect calls do not bind parameters (blocks
+> `tests/corpus/owed/indirect_call.c`); the wave-117 `fork_on_offset` survivor; designated,
+> bit-field and address initializers refused; 021 c21 untested on a real global; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 119, `8d170d3`) — 1074 tests, 3 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: sema does not type function-pointer declarators
 >
