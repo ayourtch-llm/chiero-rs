@@ -487,7 +487,72 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 115, `870b145`) — 1064 tests, 6 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 116, `HEAD`) — 1066 tests, 8 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: the default solver cannot enumerate
+>
+> Wave 116 implemented forking on a symbolic `PtrAdd` offset — enumerate feasible values,
+> one state each, bounded at 16. **The mechanism is right and the tier-1 solver cannot drive
+> it**: it answers the first query and returns `Unknown` on the second, so every symbolic
+> index takes the bounded path instead of being explored.
+>
+> So `buf[i]` still does not work, and five tests are `#[ignore]`d on it:
+> `symbolic_index.rs`'s two, and the three corpus sweeps from waves 114–115.
+>
+> **The decision to settle**: 022 §3.2 defines the tier-1 fragment; enumeration needs tier 2,
+> which means an SMT backend, which HANDOFF §2 says chiero must not *link*. `TieredSolver::
+> with_backend(SmtLib)` already exists and spawns a process. So either (a) the corpus tests
+> opt into a backend when one is on `PATH` and announce the skip when it is not — the shape
+> the gcov oracle already uses — or (b) tier 1 grows enough arithmetic to enumerate a bounded
+> index. (a) is a day; (b) is a milestone. **Neither is started.**
+>
+> ### What wave 116 delivered
+>
+> A symbolic index degrades **honestly**: `Fidelity::Bounded` + `BudgetHit`, naming the
+> offset and whether the search exceeded the bound or was cut short by the solver. Before it
+> was `NoInformation` — a value chiero made up, everything downstream unsound. A bound a
+> reader can act on is not the feature, but it is not nothing.
+>
+> ### Also open
+>
+> - Initializer forms refused: designated, bit-field, address (`int *p = &g;` — CIR cannot
+>   express a relocation).
+> - 021 c21 reachable and untested on a real global since wave 114.
+> - A fault in a non-entry frame is untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave; measurement in wave 110's entry.
+>
+> ### Rules earned, most recent first
+>
+> **Exhaustion and "the solver gave up" are different answers** (wave 116). Any loop that
+> stops on `Unsat` must not stop the same way on `Unknown` — the first is a fact about the
+> program, the second about the prover, and conflating them turns incompleteness into a
+> confident wrong answer.
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one**; refuse whole rather than encode partially
+> (wave 113).
+> **A survivor is not automatically a fixture gap** — remove the code and re-run (112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (waves 107, 112).
+> **The fixture never reached the comparison the design exists for** — fourteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**. An oracle that can silently not run is not an oracle —
+> **announce every skip**.
+>
+> Owed and written down: the tier-1 solver cannot enumerate (blocks five tests); designated,
+> bit-field and address initializers refused; 021 c21 untested on a real global; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 115, `870b145`) — 1064 tests, 6 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: `PtrAdd` with a symbolic offset is not modeled
 >
