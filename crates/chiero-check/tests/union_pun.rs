@@ -71,7 +71,7 @@ fn load(dst: u32, addr: u32, bits: u32, lo: u32) -> Inst {
         InstKind::Assign {
             dst: ValueId(dst),
             rv: RValue::Load {
-                addr: Operand::Value(addr.into()),
+                addr: Operand::Value(ValueId(addr)),
                 ty: CTy::Int(bits),
                 align: 1,
                 vol: Volatility::Normal,
@@ -177,9 +177,8 @@ fn the_findings_name_the_reads_that_punned() {
         .with_checker(Box::new(chiero_check::UnionPun::new()))
         .run(&mut a);
     let spans: Vec<u32> = r
-        .states()
-        .iter()
-        .flat_map(|s| s.state_findings())
+        .reports()
+        .into_iter()
         .filter(|f| f.message.contains("pun"))
         .map(|f| f.span.lo.0)
         .collect();
@@ -246,5 +245,144 @@ fn the_default_set_contains_checkers() {
     assert!(
         !names.contains(&"union-pun"),
         "and `union-pun` is not in it (040 §1): {names:?}"
+    );
+}
+
+/// **A read that does not overlap any write is not a pun.**
+///
+/// Write the first four bytes of an eight-byte object, then read the *last* four. Those
+/// bytes were never written by anyone, so nothing was reinterpreted — it is an
+/// uninitialized read, and a different checker owns it.
+///
+/// Every other fixture here writes and reads the same bytes, so a checker that asked only
+/// "has anything been written to this object?" passes all of them and fires here. That is
+/// the difference between per-object bookkeeping and per-range bookkeeping, and it is the
+/// whole reason the writes are keyed by offset.
+#[test]
+fn a_read_that_misses_every_write_is_not_a_pun() {
+    let mut m = punning_fixture();
+    m.funcs[0].allocas[0].count = 8;
+
+    let mut insts = addr(0, 0, 10);
+    insts.push(store(0, 32, 0x1122_3344, 20));
+    insts.extend(addr(1, 4, 30).into_iter().skip(1));
+    insts.push(load(2, 1, 32, 40));
+    m.funcs[0].blocks[0].insts = insts;
+
+    let got = run_with(&m, vec![Box::new(chiero_check::UnionPun::new())]);
+    assert!(
+        got.iter().all(|f| !f.contains("pun")),
+        "bytes 4..8 were never written, so they were never reinterpreted: {got:#?}"
+    );
+
+    // The control: the same object, the same widths, a read that *does* overlap. Without
+    // this the test above passes against a checker that went silent entirely.
+    let mut insts = addr(0, 0, 10);
+    insts.push(store(0, 32, 0x1122_3344, 20));
+    insts.extend(addr(1, 2, 30).into_iter().skip(1));
+    insts.push(load(2, 1, 32, 40));
+    m.funcs[0].blocks[0].insts = insts;
+    let got = run_with(&m, vec![Box::new(chiero_check::UnionPun::new())]);
+    assert_eq!(
+        got.iter().filter(|f| f.contains("pun")).count(),
+        1,
+        "a read straddling the write is a pun: {got:#?}"
+    );
+}
+
+/// **A read at the same offset but a narrower width is a pun.**
+///
+/// `u.as_u32 = x; u.as_u8[0]` — offset 0 in both, one byte against four. Every punned read
+/// in the main fixture is at a *shifted* offset (1, 2, 3), so a checker comparing only
+/// offsets passes all of them and misses this one, which is the single most common punning
+/// idiom in C: read the first byte of a word.
+#[test]
+fn a_narrower_read_at_the_same_offset_is_a_pun() {
+    let mut insts = addr(0, 0, 10);
+    insts.push(store(0, 32, 0x1122_3344, 20));
+    insts.push(load(1, 0, 8, 30));
+    let mut m = punning_fixture();
+    m.funcs[0].blocks[0].insts = insts;
+
+    let got = run_with(&m, vec![Box::new(chiero_check::UnionPun::new())]);
+    assert_eq!(
+        got.iter().filter(|f| f.contains("pun")).count(),
+        1,
+        "same offset, four bytes written and one read: {got:#?}"
+    );
+}
+
+/// **A store is never a pun**, even when it overlaps an earlier store at a different
+/// offset.
+///
+/// Writing `as_u32` and then `as_u8[2]` is a partial overwrite — 020 §4.5 calls it exact
+/// and expected, and there is nothing to reinterpret because nobody has read anything. A
+/// checker that ran its comparison on writes as well as reads reports here, and every
+/// other fixture in this file has at most one store.
+#[test]
+fn overlapping_stores_are_not_puns() {
+    let mut insts = addr(0, 0, 10);
+    insts.push(store(0, 32, 0x1122_3344, 20));
+    insts.extend(addr(1, 2, 30).into_iter().skip(1));
+    insts.push(store(1, 8, 0xFF, 40));
+    let mut m = punning_fixture();
+    m.funcs[0].blocks[0].insts = insts;
+
+    let got = run_with(&m, vec![Box::new(chiero_check::UnionPun::new())]);
+    assert!(
+        got.iter().all(|f| !f.contains("pun")),
+        "a partial overwrite is exact and expected; nothing was read: {got:#?}"
+    );
+}
+
+/// **Two different objects do not pun each other.**
+///
+/// A write to one object and a read at an overlapping *offset range* of another is not a
+/// pun — they are different bytes. Every other fixture here uses a single object, so a
+/// checker that compared only offsets and widths, ignoring which object they belong to,
+/// passes all of them and then fires across every unrelated pair of locals in the corpus.
+#[test]
+fn a_read_of_a_different_object_is_not_a_pun() {
+    let mut m = punning_fixture();
+    m.funcs[0].allocas.push(AllocaDecl {
+        id: AllocaId(1),
+        ty: CTy::Int(8),
+        count: 4,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: Some("other".into()),
+        span: at(1),
+    });
+    let insts = vec![
+        inst(
+            InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(0),
+                },
+            },
+            10,
+        ),
+        store(0, 32, 0x1122_3344, 20),
+        inst(
+            InstKind::Assign {
+                dst: ValueId(1),
+                rv: RValue::AddrOfLocal {
+                    alloca: AllocaId(1),
+                },
+            },
+            30,
+        ),
+        // Offset 0, width 1 — overlapping the *first* object's write range exactly, if
+        // one forgets to ask which object.
+        load(2, 1, 8, 40),
+    ];
+    m.funcs[0].blocks[0].insts = insts;
+
+    let got = run_with(&m, vec![Box::new(chiero_check::UnionPun::new())]);
+    assert!(
+        got.iter().all(|f| !f.contains("pun")),
+        "`other` is a different object; nothing written to `u` is visible in it: {got:#?}"
     );
 }

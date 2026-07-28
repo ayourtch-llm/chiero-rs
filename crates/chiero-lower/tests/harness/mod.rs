@@ -125,3 +125,42 @@ pub fn lower_raw(src: &str) -> chiero_lower::Lowered {
 pub fn print(m: &Module) -> String {
     chiero_cir::text::print(m)
 }
+
+/// Lower `src` under a named build configuration, with command-line-style defines.
+///
+/// 020 contract 30's fixture needs two runs of the *same source* that differ only in what
+/// the preprocessor saw — which is what a `ConfigId` names.
+pub fn lower_with_config(
+    src: &str,
+    config: chiero_pp::ConfigId,
+    defines: &[(&str, &str)],
+) -> Module {
+    let cfg = Config {
+        id: config,
+        defines: defines
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+        ..Config::default()
+    };
+    let tu = preprocess_str("t.c", src, cfg);
+    assert!(
+        tu.diagnostics.is_empty(),
+        "the fixture must preprocess cleanly: {:?}",
+        tu.diagnostics
+    );
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let lowered =
+        chiero_lower::lower_tu_with_config(&parsed.ast, &analysis, &names, None, Some(config.0));
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    lowered.module
+}

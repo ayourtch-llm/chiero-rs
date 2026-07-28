@@ -35,7 +35,27 @@ pub struct Lowered {
 /// guess — and it is exactly the hand-written-`.cir` case 015 §5 describes, where the
 /// `.line` directive populates the field directly instead.
 pub fn lower_tu(ast: &Ast, analysis: &Analysis, names: &dyn SymbolText) -> Lowered {
-    lower(ast, analysis, names, None)
+    lower(ast, analysis, names, None, None)
+}
+
+/// Lower one translation unit, recording which build configuration produced it
+/// (020 §4.4, contract 30).
+///
+/// **A plain `u64`, not `chiero_pp::ConfigId`.** Lowering has no other reason to depend on
+/// the preprocessor, and 020 §3 already declares `Module::config` as an untyped id for the
+/// same reason: hand-written `.cir` legitimately has no build configuration at all.
+///
+/// The id matters because endianness-conditional layouts are resolved *before* CIR — the
+/// two bitfield orderings are two `#if` branches — so a `BitRange` alone does not say
+/// which world it belongs to.
+pub fn lower_tu_with_config(
+    ast: &Ast,
+    analysis: &Analysis,
+    names: &dyn SymbolText,
+    map: Option<&chiero_span::SourceMap>,
+    config: Option<u64>,
+) -> Lowered {
+    lower(ast, analysis, names, map, config)
 }
 
 /// Lower one translation unit and compute `gcov_lines` (015 §5).
@@ -45,7 +65,7 @@ pub fn lower_tu_with_map(
     names: &dyn SymbolText,
     map: &chiero_span::SourceMap,
 ) -> Lowered {
-    lower(ast, analysis, names, Some(map))
+    lower(ast, analysis, names, Some(map), None)
 }
 
 fn lower(
@@ -53,6 +73,7 @@ fn lower(
     analysis: &Analysis,
     names: &dyn SymbolText,
     map: Option<&chiero_span::SourceMap>,
+    config: Option<u64>,
 ) -> Lowered {
     let mut cx = Lowerer {
         ast,
@@ -61,7 +82,7 @@ fn lower(
         module: Module {
             funcs: Vec::new(),
             globals: Vec::new(),
-            config: None,
+            config,
             metadata: IndexMap::new(),
         },
         diagnostics: Vec::new(),

@@ -9,6 +9,119 @@ use chiero_exec::{Action, Checker, CheckerCtx, CheckerState, Event};
 use chiero_mem::ObjectId;
 use indexmap::IndexMap;
 
+/// The checkers 040 §1 enables unless told otherwise.
+///
+/// **`union-pun` is not here, and that is the contract** (040 §1, 020 §4.5): reading a
+/// member other than the last written is legal, gcc defines it, and VPP is built on it.
+/// Enabling it by default would bury every real finding under tens of thousands about code
+/// working as designed.
+pub fn default_checkers() -> Vec<Box<dyn Checker>> {
+    vec![Box::new(OrderDependence::new())]
+}
+
+/// **020 contract 29 / 040 §1** — reading a union member other than the one last written.
+///
+/// Off by default. C89/C99 call this undefined and gcc defines it; chiero follows gcc, so
+/// this checker exists for the projects that want the stricter reading rather than for
+/// this one.
+///
+/// A pun is a read whose bytes were last written **at a different offset or a different
+/// width** — the two facts that say the bytes are being reinterpreted rather than read
+/// back. Neither alone is enough: same offset and a narrower width is a pun (`as_u8[0]`
+/// after `as_u32`), and so is the same width at a shifted offset.
+#[derive(Debug, Default)]
+pub struct UnionPun;
+
+impl UnionPun {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// What was last written to each object, as `(offset, byte width)`.
+#[derive(Debug, Default)]
+struct PunState {
+    writes: IndexMap<(ObjectId, u64), u64>,
+}
+
+impl CheckerState for PunState {
+    fn on_fork(&self) -> Box<dyn CheckerState> {
+        Box::new(PunState {
+            writes: self.writes.clone(),
+        })
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl Checker for UnionPun {
+    fn name(&self) -> &'static str {
+        "union-pun"
+    }
+
+    fn initial_state(&self) -> Box<dyn CheckerState> {
+        Box::new(PunState::default())
+    }
+
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        let Event::BeforeInst { st: exec, inst } = ev else {
+            return vec![];
+        };
+        let (addr, ty, is_write) = match &inst.kind {
+            InstKind::Store { addr, ty, .. } => (addr, ty, true),
+            InstKind::Assign {
+                rv: RValue::Load { addr, ty, .. },
+                ..
+            } => (addr, ty, false),
+            _ => return vec![],
+        };
+        let Operand::Value(v) = addr else {
+            return vec![];
+        };
+        let Some(chiero_exec::Value::Ptr(p)) = exec.local(*v) else {
+            return vec![];
+        };
+        let Some(width) = ty.bit_width().map(|b| u64::from(b).div_ceil(8)) else {
+            return vec![];
+        };
+        let off = p.off.max(0) as u64;
+
+        if is_write {
+            cx.state_mut::<PunState>()
+                .writes
+                .insert((p.base, off), width);
+            return vec![];
+        }
+
+        // **A read with no overlapping write is not a pun.** Nothing was reinterpreted;
+        // it is an uninitialized read, which a different checker owns. A checker that
+        // reported every load it could not attribute would mislabel all of them.
+        let st = cx.state_mut::<PunState>();
+        let overlapping: Option<(u64, u64)> = st
+            .writes
+            .iter()
+            .find(|((obj, w_off), w_width)| {
+                *obj == p.base && *w_off < off + width && off < *w_off + **w_width
+            })
+            .map(|((_, w_off), w_width)| (*w_off, *w_width));
+        let Some((w_off, w_width)) = overlapping else {
+            return vec![];
+        };
+        if w_off == off && w_width == width {
+            // Read back exactly what was written: an ordinary read, however many members
+            // the type has.
+            return vec![];
+        }
+        vec![Action::report(format!(
+            "union-pun: reading {width} byte(s) at offset {off} of bytes last written as              {w_width} byte(s) at offset {w_off}"
+        ))]
+    }
+}
+
 /// **020 §7 / contract 18(b)** — the interprocedural half of order sensitivity.
 ///
 /// C leaves the evaluation order of subexpressions unspecified; CIR picks one and writes
