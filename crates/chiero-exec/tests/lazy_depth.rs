@@ -172,17 +172,22 @@ fn a_walk_within_the_bound_is_not_cut() {
 /// above. The object count is the evidence — each materialized link is one more object.
 #[test]
 fn raising_the_bound_materializes_more_links() {
-    let (_, _, at_two) = run(&walk(4), 2);
-    let (_, _, at_four) = run(&walk(4), 4);
+    // **Six links, not four.** At four the two counts coincide — a bound of 2 gives
+    // entry + 2 links + the one shared cut object, and a bound of 4 gives entry + 4 links,
+    // which is the same number. The fixture has to be deep enough that the shared object
+    // cannot make up the difference, or the assertion compares two equal numbers and
+    // passes against a policy that ignores its bound entirely.
+    let (_, _, at_two) = run(&walk(6), 2);
+    let (_, _, at_six) = run(&walk(6), 6);
     assert!(
-        at_four > at_two,
-        "a deeper bound materializes more of the list: {at_two} vs {at_four}"
+        at_six > at_two,
+        "a deeper bound materializes more of the list: {at_two} vs {at_six}"
     );
-    let (fid, _, _) = run(&walk(4), 4);
+    let (fid, _, _) = run(&walk(6), 6);
     assert_eq!(
         fid,
         Fidelity::Exact,
-        "and four links under a bound of four fit"
+        "and six links under a bound of six fit"
     );
 }
 
@@ -203,9 +208,9 @@ fn a_cut_walk_still_finishes_the_function() {
         .run(&mut a);
     assert_eq!(r.states().len(), 1);
     assert!(
-        matches!(r.states()[0].status(), Status::Done),
+        matches!(r.states()[0].status, Status::Terminated(TermReason::Return)),
         "the path ran to the return: {:?}",
-        r.states()[0].status()
+        r.states()[0].status
     );
 }
 
@@ -215,4 +220,34 @@ fn the_default_policy_is_the_spec_s() {
     let p = LazyPolicy::default();
     assert_eq!(p.max_depth, 3, "021 §6 says the default is 3");
     assert!(p.distinct_by_default, "and two lazy objects are distinct");
+}
+
+/// **Past the bound, the object count stops growing.**
+///
+/// Three links and six links under the same bound of two materialize the *same* number of
+/// objects: entry, two links, and the one shared cut object. That is what makes the bound
+/// a bound — a policy that cut correctly but then let the walk *through* the cut object
+/// start counting from zero again would allocate a fresh object per hop, and the only
+/// thing bounded would be the fidelity label.
+///
+/// `raising_the_bound_materializes_more_links` cannot see this: it compares two different
+/// bounds, and a leak past the cut makes the smaller bound allocate more, which still
+/// leaves it smaller than the larger one.
+#[test]
+fn the_cut_object_is_a_floor_not_a_restart() {
+    let (_, _, three) = run(&walk(3), 2);
+    let (_, _, six) = run(&walk(6), 2);
+    assert_eq!(
+        three, six,
+        "every link past the second shares one object, so three links and six cost the \
+         same: {three} vs {six}"
+    );
+
+    // And the fidelity still says so, at both depths.
+    let (f3, n3, _) = run(&walk(3), 2);
+    let (f6, n6, _) = run(&walk(6), 2);
+    assert_eq!(f3, Fidelity::Bounded);
+    assert_eq!(f6, Fidelity::Bounded);
+    assert!(n3.iter().any(|n| n.contains("next")));
+    assert!(n6.iter().any(|n| n.contains("next")));
 }

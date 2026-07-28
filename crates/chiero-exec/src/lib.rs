@@ -349,6 +349,16 @@ pub struct State {
     pub path: Vec<Term>,
     /// One object per accessed arena element index (021 §5.2), keyed by the index term.
     arena_objs: IndexMap<u32, ObjectId>,
+    /// 021 §6: how many links from an entry pointer each lazily-materialized object sits.
+    /// The entry's own object is 0.
+    lazy_depth: IndexMap<ObjectId, u32>,
+    /// The single object every link past `max_depth` points at.
+    ///
+    /// **One shared object, not a fresh one per hop.** That is what makes the bound a
+    /// bound: the walk still reaches the return — §6 bounds materialization, it does not
+    /// end the run, and killing the state would lose every finding after the cut and
+    /// report their absence as if the code were clean — but it stops creating objects.
+    lazy_cut: Option<ObjectId>,
     /// 022 §6.1's `possibly_infeasible`, carried alongside the terms.
     ///
     /// Set whenever a constraint is added **without** a feasibility check. While it is
@@ -466,6 +476,8 @@ impl State {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
             arena_objs: IndexMap::new(),
+            lazy_depth: IndexMap::new(),
+            lazy_cut: None,
             id,
             mem: Memory::new(),
             pc: (BlockId(0), 0),
@@ -1175,6 +1187,34 @@ pub struct ArenaShape {
 /// not affect determinism, which is about the `StateId` sequence *within* a run.
 static NEXT_RUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
+/// How lazily-materialized objects are shaped and bounded (021 §6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LazyPolicy {
+    /// Bytes for a pointer to a scalar or struct.
+    pub scalar_extent: u64,
+    /// A pointer used with `PtrAdd` gets `scalar_extent * array_factor`.
+    pub array_factor: u64,
+    /// How deep the recursion of linked structures may go — `p->next->next->…`.
+    ///
+    /// Without a bound this does not terminate: every pointer read out of a lazy object is
+    /// another symbolic pointer, and materializing on demand walks an infinite list.
+    pub max_depth: u32,
+    /// Two lazily-materialized objects are distinct unless `--fork-on-alias`.
+    pub distinct_by_default: bool,
+}
+
+impl Default for LazyPolicy {
+    fn default() -> Self {
+        // 021 §6's stated defaults.
+        Self {
+            scalar_extent: ENTRY_PARAM_BYTES,
+            array_factor: 8,
+            max_depth: 3,
+            distinct_by_default: true,
+        }
+    }
+}
+
 /// How the engine picks the next state to run (023 §4).
 ///
 /// **Every strategy is deterministic**, including `RandomPath`. §4: "A non-reproducible
@@ -1256,6 +1296,8 @@ pub struct Engine<'m> {
     fork_on_alias: bool,
     /// 023 §4. `Dfs` unless a caller says otherwise.
     strategy: Strategy,
+    /// 021 §6.
+    lazy: LazyPolicy,
     /// 023 §6. Registered in order; each gets one `CheckerState` slot per state.
     checkers: Checkers,
     /// 021 §5.2, as `(entry parameter index, shape)` until the entry state binds a term.
@@ -1283,6 +1325,7 @@ impl<'m> Engine<'m> {
     pub fn new(module: &'m Module) -> Engine<'m> {
         Engine {
             strategy: Strategy::default(),
+            lazy: LazyPolicy::default(),
             checkers: Checkers::default(),
             arenas: Vec::new(),
             arena_bases: Vec::new(),
@@ -1357,6 +1400,12 @@ impl<'m> Engine<'m> {
 
     /// Register a checker (023 §6). Order is the registration order, and each checker
     /// gets one `CheckerState` slot per state.
+    /// 021 §6.
+    pub fn with_lazy_policy(mut self, p: LazyPolicy) -> Self {
+        self.lazy = p;
+        self
+    }
+
     /// 023 §4. `Dfs` unless set.
     pub fn with_strategy(mut self, s: Strategy) -> Self {
         self.strategy = s;
@@ -1589,6 +1638,8 @@ impl<'m> Engine<'m> {
                 checker_states: CheckerStates::default(),
                 path_unchecked: false,
                 arena_objs: IndexMap::new(),
+                lazy_depth: IndexMap::new(),
+                lazy_cut: None,
                 id: self.new_id(),
                 mem,
                 pc: (f.entry, 0),
@@ -1711,6 +1762,8 @@ impl<'m> Engine<'m> {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
             arena_objs: IndexMap::new(),
+            lazy_depth: IndexMap::new(),
+            lazy_cut: None,
             id: self.new_id(),
             mem,
             pc: (f.entry, 0),
@@ -3632,7 +3685,13 @@ impl<'m> Engine<'m> {
                                 }
                                 Value::Ptr(q)
                             }
-                            Err(_) => Value::Scalar(t),
+                            // **021 §6's recursive materialization.** A pointer read out
+                            // of a lazy object is itself symbolic and names no object yet;
+                            // the next dereference is what asks for one. Without this,
+                            // `p->next->next` ends the path as unresolvable rather than
+                            // as a bounded walk of a linked structure — which is the shape
+                            // every VPP graph node starts with.
+                            Err(_) => self.materialize_link(a, s, p.base, addr, t, span),
                         },
                     },
                     Some(t) => Value::Scalar(t),
@@ -4260,6 +4319,93 @@ impl<'m> Engine<'m> {
         s.mem.mark_lazy(id);
         s.arena_objs.insert(k.0, id);
         id
+    }
+
+    /// Materialize the object a pointer loaded out of `from` points at (021 §6).
+    ///
+    /// Bounded by `max_depth`: past it every further link resolves to **one shared
+    /// object** rather than a fresh one, and the state records `Fidelity::Bounded` naming
+    /// the field that was cut. One object rather than unboundedly many is what makes the
+    /// bound a bound; letting the walk continue is what keeps the findings after it.
+    fn materialize_link(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        from: chiero_mem::ObjectId,
+        addr: &Operand,
+        t: Term,
+        span: Span,
+    ) -> Value {
+        let _ = a;
+        // **`saturating_add`, and the cut object is recorded at the ceiling.** Reading a
+        // pointer *out of* the cut object was otherwise an unknown depth, defaulted to 0,
+        // so the walk started counting again and allocated a fresh object per hop past the
+        // bound — bounding the fidelity label and nothing else. Found by asserting that
+        // three links and six cost the same.
+        let depth = s
+            .lazy_depth
+            .get(&from)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        if depth > self.lazy.max_depth {
+            let what = self
+                .field_name_of(s, addr)
+                .unwrap_or_else(|| "a pointer".into());
+            let obj = match s.lazy_cut {
+                Some(o) => o,
+                None => {
+                    let o =
+                        s.mem
+                            .alloc(chiero_mem::ObjKind::Lazy, self.lazy.scalar_extent, 16, span);
+                    s.mem.mark_lazy(o);
+                    // Recorded at the ceiling, so a pointer read back out of it is
+                    // already past the bound and cuts again. This is the floor: leaving it
+                    // absent made its depth default to 0 and the walk restart.
+                    s.lazy_depth.insert(o, u32::MAX);
+                    s.lazy_cut = Some(o);
+                    o
+                }
+            };
+            s.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                span,
+                &format!(
+                    "lazy materialization stopped at `{what}`: the linked structure is                      deeper than max_depth ({})",
+                    self.lazy.max_depth
+                ),
+            );
+            let p = chiero_mem::Pointer { base: obj, off: 0 };
+            s.remember_provenance(t, p);
+            return Value::Ptr(p);
+        }
+        let o = s
+            .mem
+            .alloc(chiero_mem::ObjKind::Lazy, self.lazy.scalar_extent, 16, span);
+        // 021 §6: contents are symbolic and *initialized* — a caller-supplied structure is
+        // unknown, not uninitialized, and conflating them is an uninitialized-read storm.
+        s.mem.mark_lazy(o);
+        s.lazy_depth.insert(o, depth);
+        let p = chiero_mem::Pointer { base: o, off: 0 };
+        s.remember_provenance(t, p);
+        Value::Ptr(p)
+    }
+
+    /// The field an address's `AccessPath` names, if the function carries one.
+    ///
+    /// This is `AccessPath`'s first real consumer: 021 contract 19 asks the note to name
+    /// the field that was cut, and the offset alone (`+8`) does not say `next`.
+    fn field_name_of(&self, s: &State, addr: &Operand) -> Option<String> {
+        let Operand::Value(v) = addr else { return None };
+        let f = self.module.funcs.iter().find(|f| f.id == s.func())?;
+        let p = f.access_paths.get(v)?;
+        p.steps.iter().rev().find_map(|st| match st {
+            chiero_cir::PathStep::Field { name, .. }
+            | chiero_cir::PathStep::UnionMember { name, .. }
+            | chiero_cir::PathStep::Bits { name, .. } => Some(name.to_string()),
+            _ => None,
+        })
     }
 
     fn resolve_symbolic_base(
