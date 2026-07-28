@@ -2875,6 +2875,17 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    report *too many* arguments and does not check length modifiers against argument width —
    both false negatives rather than noise.
 
+   **M2 MERGE GATE, ROUND 2 running.** Codex reports the REVIEW-1 remediation complete —
+   all 20 differential cases matching gcc *and* clang, real `vppinfra` headers preprocessing
+   with zero diagnostics, multi-line macro calls and rescanning and `#if` and real includes
+   fixed, `__VA_OPT__` diagnosing per the new spec text, and ignored tests no longer
+   claiming coverage (011 c12 and 012 c17 explicitly owed instead, because their
+   environments are unavailable here). **That is a self-report**, and the gate is a second
+   review: round 2 is re-running round 1's own evidence rather than accepting the fixes,
+   checking that "zero diagnostics" on VPP headers also means *the same tokens as gcc*, and
+   verifying that `#`/`##` tokens no longer carry a fabricated `expansion_loc` of 1:1 —
+   010 §3.1 says of that field, "THIS IS WHAT GCOV SEES".
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
