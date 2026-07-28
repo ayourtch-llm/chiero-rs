@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 138) — 1119 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 139) — 1121 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -496,7 +496,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > rollback; 135 pinned every operator's precedence class after a sweep found `<<` could be
 > moved without any test noticing; 136 fixed the bit-field read-modify-write; 137 made an
 > enumeration constant its value, at its own type and in its own scope; 138 made a compound
-> literal an object and let it take postfix suffixes.*
+> literal an object and let it take postfix suffixes; **139 built the generator, and it
+> found a defect on its first run**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -530,7 +531,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > type", because `width_of` answering 32 for a pointer executes the same region a passing
 > `int` test does. Reconnaissance, not a channel.
 >
-> **2. A generative differential harness (2–4 days).** Typed AST → C, both sides of the
+> **2. A generative differential harness — v1 EXISTS**, in
+> `crates/chiero-lower/tests/generated.rs`. First run: 200 programs, 163 compared, 32
+> discarded as undefined, 0 refused, **5 mismatches — all one defect**, `_Bool b = 1; b++`
+> giving 0 where C says 1. No hand-written fixture had it: `differential.rs` tests `b += 1`
+> from 0 and `b -= 1` from 1, both of which fit. The boundary was the case nobody spelled.
+>
+> **What v1 has**: scalars including `_Bool`, the full binary operator set unparenthesised,
+> casts, `?:`, compound assignment, `++`/`--`, `if`/`else`, bounded loops, an adversarial
+> constant pool, a checksum return over every live variable, the five-way verdict, the
+> sanitizer discard filter with gcc-O2/clang cross-checks, and fixed seeds.
+>
+> **What v1 still lacks, in the order the defect record says to add it:**
+>   - **Helper functions with struct parameters and struct returns.** Wave 132's
+>     struct-parameter defect is invisible to a body-only generator; this is the single
+>     biggest gap.
+>   - **Pointers, arrays and the alternative-spelling production** — `a[i]`, `*(a+i)`,
+>     `*(i+a)`, `p += i`, `p++` for one access. Every hand-written fixture used `a[i]`, the
+>     one spelling that worked.
+>   - **Structs, bit-fields and unions**, with the checksum reading every field.
+>   - **File-scope declarations**, which is where the pointer-global defect lived.
+>   - **An AST shrinker** (~250 lines) emitting `agree_with("…", "…")` directly. Wave 139
+>     shrank by hand in about five minutes; that will not scale.
+>   - **A refusal allowlist ratchet.** The ledger is printed and currently empty, so nothing
+>     forces a decision yet — the moment it is non-empty, an unlisted code should fail CI or
+>     it becomes a suppression file.
+>   - `xtask diff-soak --seed N` for open-ended search; CI keeps the fixed batch.
+>
+> **Original plan, for reference (2–4 days).** Typed AST → C, both sides of the
 > existing oracle. Fable's estimate: it would have found **11–12 of the last 15 defects**.
 > Design points that matter, each earned from a specific defect:
 >   - **Multi-function generation is v1, not v2** — the struct-parameter defect is invisible
