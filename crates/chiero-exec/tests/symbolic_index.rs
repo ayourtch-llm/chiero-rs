@@ -290,3 +290,173 @@ fn an_unbounded_index_degrades_rather_than_guessing() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// The same shape, on a global
+// ---------------------------------------------------------------------------------------
+
+/// `indexed_read`, with the array at file scope instead of on the stack.
+///
+/// **Deliberately one word different from the local version.** Everything else — the
+/// initializing stores, the mask, the multiply, the `PtrAdd`, the load — is identical, so a
+/// difference in behaviour is a difference between `AddrOfGlobal` and `AddrOfLocal` and
+/// nothing else.
+fn indexed_read_global(len: u64) -> Module {
+    let mut m = indexed_read(len);
+    let f = &mut m.funcs[0];
+    let bytes = len * 4;
+    f.allocas.clear();
+    for inst in f.blocks[0].insts.iter_mut() {
+        if let InstKind::Assign {
+            rv: rv @ RValue::AddrOfLocal { .. },
+            ..
+        } = &mut inst.kind
+        {
+            *rv = RValue::AddrOfGlobal { g: GlobalId(0) };
+        }
+    }
+    m.globals = vec![Global {
+        id: GlobalId(0),
+        name: "table".into(),
+        size: bytes,
+        align: 4,
+        is_const: false,
+        init: GlobalInit::Zero,
+        linkage: Linkage::Internal,
+        span: Span::DUMMY,
+    }];
+    m
+}
+
+/// **A symbolic index into a global array reads the global**, not a wild pointer.
+///
+/// `tests/corpus/c/globals.c` reports `wild-pointer: access through a pointer at address 4
+/// matching no known object` for `table[i]`. The local twin of this fixture passes, so the
+/// fork and the memory model are not the problem: the global's object is not being found
+/// from the concretized offset.
+#[test]
+fn a_symbolic_index_into_a_global_is_not_a_wild_pointer() {
+    let m = indexed_read_global(4);
+    assert!(
+        verify::verify(&m).iter().all(|e| !e.is_error()),
+        "{:?}",
+        verify::verify(&m)
+    );
+    let Some((r, _a)) = run_solved(&m) else {
+        eprintln!("skipping: no SMT solver on PATH");
+        return;
+    };
+    let wild: Vec<String> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("wild-pointer"))
+        .collect();
+    assert!(
+        wild.is_empty(),
+        "the address came from `AddrOfGlobal`, so it names an object by construction: \
+         {wild:#?}"
+    );
+}
+
+/// And it reads the **right** element, so "no wild pointer" is not satisfied by a run that
+/// stopped before the load.
+#[test]
+fn every_in_bounds_global_index_reads_its_own_element() {
+    let m = indexed_read_global(4);
+    let Some((r, mut a)) = run_solved(&m) else {
+        eprintln!("skipping: no SMT solver on PATH");
+        return;
+    };
+    let mut seen: Vec<u128> = r
+        .states()
+        .iter()
+        .filter_map(|s| s.return_value_bits(&mut a))
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    for want in [10u128, 20, 30, 40] {
+        assert!(
+            seen.contains(&want),
+            "no path returned {want}; got {seen:?}"
+        );
+    }
+}
+
+/// **A global that is only ever read still has an object.**
+///
+/// `globals.c` reports `wild-pointer: … at address 4` for `cfg.limit`, and the fixtures
+/// above do not: they *write* the global first. This one only reads — which is what a
+/// `const` table or a configuration struct looks like, and what the corpus file does.
+///
+/// Address 4 is the tell: `AddrOfGlobal` handed back a pointer whose base is no object, so
+/// `+ 4` became the raw address 4.
+#[test]
+fn a_read_only_global_has_an_object() {
+    let m = Module {
+        funcs: vec![Function {
+            id: FuncId(0),
+            name: "f".into(),
+            params: vec![],
+            ret: CTy::Int(32),
+            variadic: false,
+            allocas: vec![],
+            blocks: vec![Block {
+                id: BlockId(0),
+                insts: vec![
+                    i(InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+                    }),
+                    i(InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::PtrAdd {
+                            base: Operand::Value(ValueId(0)),
+                            off: Operand::Const(Const::Int { bits: 64, val: 4 }),
+                        },
+                    }),
+                    i(InstKind::Assign {
+                        dst: ValueId(2),
+                        rv: RValue::Load {
+                            addr: Operand::Value(ValueId(1)),
+                            ty: CTy::Int(32),
+                            align: 4,
+                            vol: Volatility::Normal,
+                        },
+                    }),
+                ],
+                term: Terminator::Return(Some(Operand::Value(ValueId(2)))),
+                gcov_lines: Default::default(),
+                span: Span::DUMMY,
+            }],
+            entry: BlockId(0),
+            attrs: Default::default(),
+            body: Body::Defined,
+            access_paths: Default::default(),
+            span: Span::DUMMY,
+        }],
+        globals: vec![Global {
+            id: GlobalId(0),
+            name: "cfg".into(),
+            size: 8,
+            align: 4,
+            is_const: false,
+            init: GlobalInit::Bytes(vec![1, 0, 0, 0, 40, 0, 0, 0]),
+            linkage: Linkage::Internal,
+            span: Span::DUMMY,
+        }],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    let wild: Vec<String> = r
+        .findings()
+        .into_iter()
+        .filter(|f| f.contains("wild-pointer"))
+        .collect();
+    assert!(wild.is_empty(), "{wild:#?}");
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(40),
+        "and it reads the initializer's second word"
+    );
+}

@@ -395,11 +395,6 @@ fn no_corpus_file_invents_a_value() {
         .collect();
     files.sort();
     for path in &files {
-        // Same exclusion as `every_corpus_file_runs_clean`, same reason.
-        if path.file_name().is_some_and(|n| n == "globals.c") {
-            eprintln!("excluding globals.c: symbolic index into a global array is a wild pointer");
-            continue;
-        }
         let Some(m) = lower_corpus(path, &include) else {
             eprintln!("skipping no_corpus_file_invents_a_value: no gcc system include path");
             return;
@@ -519,20 +514,6 @@ fn every_corpus_file_runs_clean() {
         files.len(),
         dir.display()
     );
-    // **One exclusion, named and announced.** A symbolic index into a *global* array
-    // resolves to `wild-pointer: … at address 4 matching no known object`, where the same
-    // shape on a *local* array works (`array_bounds.c` passes). Excluding one file keeps
-    // the other four checked; ignoring the sweep would check none. Recorded in HANDOFF §9.
-    let files: Vec<std::path::PathBuf> = files
-        .into_iter()
-        .filter(|p| {
-            let skip = p.file_name().is_some_and(|n| n == "globals.c");
-            if skip {
-                eprintln!("excluding globals.c: symbolic index into a global array is wild");
-            }
-            !skip
-        })
-        .collect();
 
     let mut ran = 0;
     for path in &files {
@@ -611,8 +592,6 @@ fn every_corpus_file_runs_clean() {
 /// pass — `calls == 1` depends on a global being written and read back across a call, which
 /// neither an `Undef` read (wave 112's defect) nor a zero read (wave 113's) satisfies.
 #[test]
-#[ignore = "blocked: a symbolic index into a *global* array resolves to a wild pointer, \
-where the same shape on a local array works — see HANDOFF §9"]
 fn the_globals_corpus_file_runs_clean() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -684,6 +663,11 @@ fn the_globals_corpus_file_runs_clean() {
         !r.states().is_empty(),
         "the entry function ran on at least one path"
     );
+    if std::env::var("WHERE").is_ok() {
+        for f in r.reports() {
+            eprintln!("AT {:?} :: {}", f.span, f.message);
+        }
+    }
     assert!(
         r.findings().is_empty(),
         "every assertion in the file holds: {:#?}",

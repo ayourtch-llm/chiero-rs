@@ -349,6 +349,8 @@ pub struct State {
     pub path: Vec<Term>,
     /// One object per accessed arena element index (021 §5.2), keyed by the index term.
     arena_objs: IndexMap<u32, ObjectId>,
+    /// One object per file-scope variable, allocated on first use **in this state**.
+    global_objs: IndexMap<GlobalId, ObjectId>,
     /// 021 §6: how many links from an entry pointer each lazily-materialized object sits.
     /// The entry's own object is 0.
     lazy_depth: IndexMap<ObjectId, u32>,
@@ -476,6 +478,7 @@ impl State {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
             arena_objs: IndexMap::new(),
+            global_objs: IndexMap::new(),
             lazy_depth: IndexMap::new(),
             lazy_cut: None,
             id,
@@ -1284,8 +1287,6 @@ pub struct Engine<'m> {
     pending_dst: Option<ValueId>,
     /// One `Function` object per `FuncId`, so two `&f` are the same pointer.
     func_objs: IndexMap<FuncId, ObjectId>,
-    /// One object per file-scope variable, allocated on first use.
-    global_objs: IndexMap<GlobalId, ObjectId>,
     budget: Budget,
     backend: Option<SmtLib>,
     models: ModelRegistry,
@@ -1340,7 +1341,6 @@ impl<'m> Engine<'m> {
             finding_seq: 0,
             pending_dst: None,
             func_objs: IndexMap::new(),
-            global_objs: IndexMap::new(),
             budget: Budget::default(),
             models: ModelRegistry::with_builtins(),
             alloc_policy: AllocPolicy::default(),
@@ -1676,6 +1676,7 @@ impl<'m> Engine<'m> {
                 checker_states: CheckerStates::default(),
                 path_unchecked: false,
                 arena_objs: IndexMap::new(),
+                global_objs: IndexMap::new(),
                 lazy_depth: IndexMap::new(),
                 lazy_cut: None,
                 id: self.new_id(),
@@ -1827,6 +1828,7 @@ impl<'m> Engine<'m> {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
             arena_objs: IndexMap::new(),
+            global_objs: IndexMap::new(),
             lazy_depth: IndexMap::new(),
             lazy_cut: None,
             id: self.new_id(),
@@ -5031,7 +5033,14 @@ impl<'m> Engine<'m> {
     /// since `&counter` twice is one address — and a `const` global is `readonly`, which
     /// is what makes a write to it a finding and what keeps a havoc off a string literal.
     fn global_object(&mut self, s: &mut State, g: GlobalId) -> ObjectId {
-        if let Some(o) = self.global_objs.get(&g) {
+        // **Per state, not per engine.** The object lives in `s.mem`, which forking clones;
+        // the cache used to live on the `Engine`, which forking does not. So a sibling
+        // forked *before* a global was first touched got a cache hit for an `ObjectId` its
+        // own memory had never allocated, and every access through it reported
+        // `wild-pointer: … matching no known object`. `globals.c` hit it because
+        // `lookup(i)` forks on a symbolic index and `cfg` is first read afterwards — which
+        // is why no unforked fixture could reproduce it.
+        if let Some(o) = s.global_objs.get(&g) {
             return *o;
         }
         let decl = self.module.globals.iter().find(|d| d.id == g).cloned();
@@ -5070,7 +5079,7 @@ impl<'m> Engine<'m> {
         if is_const {
             s.mem.set_readonly(o);
         }
-        self.global_objs.insert(g, o);
+        s.global_objs.insert(g, o);
         o
     }
 
@@ -5152,7 +5161,7 @@ impl<'m> Engine<'m> {
     /// What a reader calls the object `o`: a local's declared name, a global's, or `None`
     /// when chiero invented the object and there is nothing to call it.
     fn object_name(&self, s: &State, o: chiero_mem::ObjectId) -> Option<String> {
-        if let Some(g) = self.global_objs.iter().find(|(_, id)| **id == o) {
+        if let Some(g) = s.global_objs.iter().find(|(_, id)| **id == o) {
             return self
                 .module
                 .globals
