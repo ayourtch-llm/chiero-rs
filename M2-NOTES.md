@@ -96,3 +96,15 @@
   `"__LINE__"`; the contract-4 test expected `"3"` and failed.
 - Evaluating the right side of a false `&&` as live made `#if 0 && 1/0` diagnose;
   the contract-11 short-circuit test failed.
+
+## REVIEW-2
+
+- The corrected real-header harness now imports all 401 definitions emitted by GCC 13.3
+  using `gcc -dM -E -x c /dev/null`. This immediately reproduced angle-header corruption:
+  `vec.h` attempted to include `bits/mman-1.h` and `1/errno.h`.
+- Finding 11 reproduced exactly: the 257th independent macro call produced a false depth
+  diagnostic and remained unexpanded. Expansion now uses an iterative token worklist;
+  the depth counter therefore applies only to genuinely nested calls. A compact bitset
+  hide set also avoids quadratic copying along long acyclic chains. Four hundred
+  sequential invocations and a 20,000-link chain now finish fully expanded without a
+  diagnostic or subprocess abort.

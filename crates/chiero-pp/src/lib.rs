@@ -2,7 +2,7 @@
 
 use chiero_lex::{EncPrefix, LexConfig, LexSession, PpToken, PpTokenKind, Punct, Symbol};
 use chiero_span::{ExpnCtx, ExpnKind, FileId, MacroId, SourceMap, Span};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -102,7 +102,32 @@ impl PreprocessedTu {
 struct Tok {
     token: PpToken,
     text: String,
-    hide: BTreeSet<MacroId>,
+    hide: HideSet,
+}
+
+#[derive(Clone, Debug, Default)]
+struct HideSet(Vec<u64>);
+
+impl HideSet {
+    fn contains(&self, id: &MacroId) -> bool {
+        let bit = id.0 as usize;
+        self.0
+            .get(bit / 64)
+            .is_some_and(|word| word & (1_u64 << (bit % 64)) != 0)
+    }
+
+    fn insert(&mut self, id: MacroId) {
+        let bit = id.0 as usize;
+        self.0.resize(self.0.len().max(bit / 64 + 1), 0);
+        self.0[bit / 64] |= 1_u64 << (bit % 64);
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.0.resize(self.0.len().max(other.0.len()), 0);
+        for (target, source) in self.0.iter_mut().zip(&other.0) {
+            *target |= source;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -276,7 +301,7 @@ impl Engine {
             .map(|(index, token)| Tok {
                 token: token.clone(),
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
-                hide: BTreeSet::new(),
+                hide: HideSet::default(),
             })
             .collect();
         let mut lex_diagnostics = BTreeMap::new();
@@ -539,7 +564,7 @@ impl Engine {
             .map(|(index, token)| Tok {
                 token: token.clone(),
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
-                hide: BTreeSet::new(),
+                hide: HideSet::default(),
             })
             .collect()
     }
@@ -672,7 +697,7 @@ impl Engine {
                     bol: token.bol,
                 },
                 text: lexed.text_at(index).unwrap_or("").to_owned(),
-                hide: BTreeSet::new(),
+                hide: HideSet::default(),
             })
             .collect();
         let id = self
@@ -988,42 +1013,38 @@ impl Engine {
     }
 
     fn expand_inner(&mut self, input: Vec<Tok>) -> Vec<Tok> {
+        let mut input: VecDeque<_> = input.into();
         let mut output = Vec::new();
-        let mut i = 0;
-        while i < input.len() {
-            let token = &input[i];
+        while let Some(token) = input.pop_front() {
             if token.text == "_Pragma"
-                && input.get(i + 1).is_some_and(|token| token.text == "(")
+                && input.front().is_some_and(|token| token.text == "(")
                 && input
-                    .get(i + 2)
+                    .get(1)
                     .is_some_and(|token| matches!(token.token.kind, PpTokenKind::StringLit { .. }))
-                && input.get(i + 3).is_some_and(|token| token.text == ")")
+                && input.get(2).is_some_and(|token| token.text == ")")
             {
                 self.source_map.add_expansion(
                     token.token.span.ctx,
                     None,
                     token.token.span,
-                    span_from_ends(token.token.span, input[i + 3].token.span),
+                    span_from_ends(token.token.span, input[2].token.span),
                     Vec::new(),
                     ExpnKind::Pragma,
                 );
-                output.extend(self.expand(input[i + 4..].to_vec()));
-                return output;
+                input.drain(..3);
+                continue;
             }
             let Some(&macro_index) = self.by_name.get(&token.text) else {
-                output.push(token.clone());
-                i += 1;
+                output.push(token);
                 continue;
             };
             let def = self.macros[macro_index].clone();
             if token.hide.contains(&def.def.id) {
-                output.push(token.clone());
-                i += 1;
+                output.push(token);
                 continue;
             }
             if is_builtin(&def.name) {
-                output.push(self.expand_builtin(token, &def));
-                i += 1;
+                output.push(self.expand_builtin(&token, &def));
                 continue;
             }
             match def.def.kind {
@@ -1042,37 +1063,37 @@ impl Engine {
                         .cloned()
                         .map(|mut body| {
                             body.token.span.ctx = expn;
-                            body.hide.extend(token.hide.iter().copied());
+                            body.hide.extend(&token.hide);
                             body.hide.insert(def.def.id);
                             body
                         })
                         .collect();
-                    let mut replacement = self.paste(replacement, expn);
+                    let replacement = self.paste(replacement, expn);
                     // C11 §6.10.3.4 ¶1: rescan the replacement list *together with all
                     // subsequent source tokens*. This is what lets `#define A B` turn
                     // `A(1)` into an invocation of function-like `B`.
-                    replacement.extend_from_slice(&input[i + 1..]);
-                    output.extend(self.expand(replacement));
-                    return output;
+                    for token in replacement.into_iter().rev() {
+                        input.push_front(token);
+                    }
                 }
                 MacroKind::FunctionLike { .. } => {
                     if !input
-                        .get(i + 1)
+                        .front()
                         .is_some_and(|t| matches!(t.token.kind, PpTokenKind::Punct(Punct::LParen)))
                     {
-                        output.push(token.clone());
-                        i += 1;
+                        output.push(token);
                         continue;
                     }
-                    let Some((args, close)) = parse_args(&input, i + 1) else {
-                        output.push(token.clone());
-                        i += 1;
+                    let Some((args, close)) = parse_args(&input, 0) else {
+                        output.push(token);
                         continue;
                     };
-                    let mut replacement = self.expand_function(token, &input[close], &def, args);
-                    replacement.extend_from_slice(&input[close + 1..]);
-                    output.extend(self.expand(replacement));
-                    return output;
+                    let close_token = input[close].clone();
+                    input.drain(..=close);
+                    let replacement = self.expand_function(&token, &close_token, &def, args);
+                    for token in replacement.into_iter().rev() {
+                        input.push_front(token);
+                    }
                 }
             }
         }
@@ -1238,21 +1259,21 @@ impl Engine {
                             bol: false,
                         },
                         text: String::new(),
-                        hide: BTreeSet::new(),
+                        hide: HideSet::default(),
                     });
                 }
                 for mut arg in selected {
                     if arg.token.span.ctx.is_root() {
                         arg.token.span.ctx = expn;
                     }
-                    arg.hide.extend(call.hide.iter().copied());
+                    arg.hide.extend(&call.hide);
                     arg.hide.insert(def.def.id);
                     replacement.push(arg);
                 }
             } else {
                 let mut copied = body.clone();
                 copied.token.span.ctx = expn;
-                copied.hide.extend(call.hide.iter().copied());
+                copied.hide.extend(&call.hide);
                 copied.hide.insert(def.def.id);
                 replacement.push(copied);
             }
@@ -1292,7 +1313,7 @@ impl Engine {
                 bol: operator.token.bol,
             },
             text: format!("\"{inside}\""),
-            hide: BTreeSet::new(),
+            hide: HideSet::default(),
         }
     }
 
@@ -1365,7 +1386,11 @@ impl Engine {
                         bol: left.token.bol,
                     },
                     text,
-                    hide: left.hide.union(&right.hide).copied().collect(),
+                    hide: {
+                        let mut hide = left.hide.clone();
+                        hide.extend(&right.hide);
+                        hide
+                    },
                 });
                 i += 2;
             } else {
@@ -1474,7 +1499,7 @@ fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-fn parse_args(input: &[Tok], open: usize) -> Option<(Vec<Vec<Tok>>, usize)> {
+fn parse_args(input: &VecDeque<Tok>, open: usize) -> Option<(Vec<Vec<Tok>>, usize)> {
     let mut args = vec![Vec::new()];
     let mut depth = 0_u32;
     let mut i = open + 1;
@@ -1506,7 +1531,7 @@ fn synthetic_punct(text: &str, punct: Punct, at: Span) -> Tok {
             bol: false,
         },
         text: text.into(),
-        hide: BTreeSet::new(),
+        hide: HideSet::default(),
     }
 }
 
@@ -1519,7 +1544,7 @@ fn synthetic_number(text: &str, at: Span) -> Tok {
             bol: false,
         },
         text: text.into(),
-        hide: BTreeSet::new(),
+        hide: HideSet::default(),
     }
 }
 
