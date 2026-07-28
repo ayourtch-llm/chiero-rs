@@ -276,6 +276,67 @@ fn a_bad_declaration_does_not_cascade_through_its_uses() {
     );
 }
 
+/// **Parameters are in scope in the body**, and their conversions are recorded like any
+/// other operand's.
+///
+/// Not a numbered contract, and it is here because 015's very first fixture found that
+/// nothing brought parameters into scope: they are declared on the function's *type*
+/// rather than as items, so every parameter use in the project typed as `Ty::Error` for
+/// three waves while 883 tests passed. Every sema fixture until then declared its
+/// variables at file scope.
+#[test]
+fn a_parameter_is_in_scope_in_its_own_body() {
+    let p = parse(
+        "int f(char c, long l) { return c + l; }",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        p.analysis.diagnostics.is_empty(),
+        "a parameter is a declaration: {:?}",
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // And it is typed, not merely present: `c + l` is `long` arithmetic, so the `char`
+    // carries both a promotion and the usual arithmetic conversion.
+    let body_expr = p
+        .parsed
+        .ast
+        .exprs()
+        .iter()
+        .enumerate()
+        .find_map(|(i, e)| match &e.kind {
+            ExprKind::Binary { op: BinOp::Add, .. } => Some(chiero_ast::ExprId(i as u32)),
+            _ => None,
+        })
+        .expect("the addition");
+    let ExprKind::Binary { lhs, .. } = &p.parsed.ast.expr(body_expr).kind else {
+        panic!()
+    };
+    let conv = p.analysis.typed().conversions_of(*lhs);
+    assert!(
+        conv.contains(&Conversion::IntegerPromotion),
+        "the `char` parameter is promoted: {conv:?}"
+    );
+    let ty = p
+        .analysis
+        .typed()
+        .top(*lhs)
+        .map(|t| p.analysis.typed().ty_of(t))
+        .expect("typed");
+    assert_eq!(
+        p.analysis.ty(ty),
+        &Ty::Int {
+            signed: true,
+            bits: 64
+        },
+        "and reaches `long`, which it cannot do if its own type was poison"
+    );
+}
+
 /// **Contract 20, the other half.** An *undeclared* name is reported once per **name**,
 /// not once per use.
 ///

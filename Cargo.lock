@@ -104,6 +104,7 @@ dependencies = [
  "chiero-pp",
  "chiero-sema",
  "chiero-span",
+ "indexmap",
 ]
 
 [[package]]

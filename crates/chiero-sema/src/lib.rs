@@ -439,6 +439,12 @@ impl Analysis {
         self.decl_types.get(&d).copied()
     }
 
+    /// The target this analysis was built against. Every width and layout in it is
+    /// relative to this, so a consumer computing its own must use the same one.
+    pub fn target_config(&self) -> Option<&TargetConfig> {
+        self.target.as_ref()
+    }
+
     /// 014 §5's typed AST.
     pub fn typed(&self) -> &TypedAst {
         &self.typed
@@ -777,7 +783,32 @@ impl Cx<'_> {
                 self.out.decl_types.insert(id, t);
                 self.values.insert(name, t);
                 if let Some(body) = body {
+                    // **Parameters are in scope in the body.** They are declared on the
+                    // function's *type*, not as items, so nothing else brings them in —
+                    // and until a fixture had a body that mentioned one, every parameter
+                    // use in the project silently typed as `Ty::Error`. Found by 015's
+                    // first fixture, three waves after the typing was written.
+                    let params = match &self.ast.ty(ty).kind {
+                        chiero_ast::TypeKind::Func { params, .. } => params.clone(),
+                        _ => Vec::new(),
+                    };
+                    let saved = self.values.clone();
+                    for p in params {
+                        if let DeclKind::Var {
+                            name: Some(pn),
+                            ty: pty,
+                            ..
+                        } = self.ast.decl(p).kind.clone()
+                        {
+                            let t = self.ty_of(pty);
+                            self.values.insert(pn, t);
+                            self.out.decl_types.insert(p, t);
+                        }
+                    }
                     self.type_stmt(body);
+                    // A parameter does not outlive its function; restoring rather than
+                    // removing also undoes any shadowing the body introduced.
+                    self.values = saved;
                 }
             }
             DeclKind::TagDef { ty } => {

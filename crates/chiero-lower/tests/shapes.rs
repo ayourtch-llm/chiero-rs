@@ -30,15 +30,23 @@ fn short_circuit_and_has_four_blocks_and_a_conditional_rhs() {
         "entry, rhs, false and join: {:#?}",
         f.blocks.iter().map(|b| (b.id, &b.term)).collect::<Vec<_>>()
     );
+    // Parameters get slots of their own — every local is addressable, because CIR is not
+    // SSA (020 §1.3) and `&param` has to point somewhere. The contract is about the
+    // *shape's* slot, so the count is of unnamed ones.
+    let slots: Vec<_> = f.allocas.iter().filter(|a| a.name.is_none()).collect();
     assert_eq!(
-        f.allocas.len(),
+        slots.len(),
         1,
-        "one slot for the result, per 015 §2.1's `alloca`-not-phi shape"
+        "one slot for the result, per 015 §2.1's `alloca`-not-phi shape: {:?}",
+        f.allocas
+            .iter()
+            .map(|a| (&a.name, &a.ty))
+            .collect::<Vec<_>>()
     );
     // **`Int(32)`, not `Int(1)`** — `a && b` has C type `int`, and a one-bit slot would
     // force lowering to invent a `ZExt` at every use, which §2 forbids.
     assert_eq!(
-        f.allocas[0].ty,
+        slots[0].ty,
         chiero_cir::CTy::Int(32),
         "the slot is the expression's C type"
     );
@@ -94,19 +102,27 @@ fn call_arguments_are_emitted_left_to_right() {
     let uf = m
         .funcs
         .iter()
-        .find(|f| print(&m).contains("@use") && !f.blocks.is_empty())
-        .expect("a lowered function");
+        .find(|f| &*f.name == "use")
+        .expect("`use` was lowered");
+    // The callee is a `FuncId`; the *name* is what the contract is about, so resolve it.
     let called: Vec<String> = uf
         .blocks
         .iter()
         .flat_map(|b| b.insts.iter())
         .filter_map(|i| match &i.kind {
-            InstKind::Call { callee, .. } => Some(format!("{callee:?}")),
+            InstKind::Call {
+                callee: chiero_cir::Callee::Direct(id),
+                ..
+            } => m
+                .funcs
+                .iter()
+                .find(|f| f.id == *id)
+                .map(|f| f.name.to_string()),
             _ => None,
         })
         .collect();
     assert_eq!(called.len(), 3, "g, h, then f: {called:?}");
-    let pos = |needle: &str| called.iter().position(|c| c.contains(needle));
+    let pos = |needle: &str| called.iter().position(|c| c == needle);
     assert!(
         pos("g") < pos("h"),
         "`g` is called before `h`, because 015 §2 makes left-to-right normative: {called:?}"
@@ -125,31 +141,38 @@ fn call_arguments_are_emitted_left_to_right() {
 /// checking the result.
 #[test]
 fn compound_assignment_evaluates_the_address_once() {
-    let m = lower("int f(void); void use(void) { int x = 0; x += f(); }");
-    let uf = &m.funcs[0];
-    let addr_ops = uf
-        .blocks
-        .iter()
-        .flat_map(|b| b.insts.iter())
-        .filter(|i| {
-            matches!(
-                &i.kind,
-                InstKind::Assign {
-                    rv: RValue::AddrOfLocal { .. } | RValue::PtrAdd { .. },
-                    ..
-                }
-            )
-        })
-        .count();
-    assert_eq!(
-        addr_ops,
-        1,
-        "one address computation for `x`, not one per use: {:#?}",
+    // Measured as a **delta**, because a declaration with an initializer legitimately
+    // computes an address too. One extra `x += f()` must cost exactly one more address
+    // computation — "once per compound assignment" is the contract, and an absolute count
+    // would be asserting the initializer's shape as well.
+    let count = |src: &str| {
+        let m = lower(src);
+        let uf = m
+            .funcs
+            .iter()
+            .find(|f| &*f.name == "use")
+            .expect("`use` was lowered");
         uf.blocks
             .iter()
             .flat_map(|b| b.insts.iter())
-            .map(|i| &i.kind)
-            .collect::<Vec<_>>()
+            .filter(|i| {
+                matches!(
+                    &i.kind,
+                    InstKind::Assign {
+                        rv: RValue::AddrOfLocal { .. } | RValue::PtrAdd { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    let one = count("int f(void); void use(void) { int x = 0; x += f(); }");
+    let two = count("int f(void); void use(void) { int x = 0; x += f(); x += f(); }");
+    assert_eq!(
+        two - one,
+        1,
+        "each `x += f()` computes the address once ({one} then {two}); twice is invisible \
+         in the value and is a correctness bug the moment the lvalue has side effects"
     );
 }
 
@@ -162,7 +185,7 @@ fn compound_assignment_evaluates_the_address_once() {
 #[test]
 fn an_empty_for_condition_still_has_a_header_block() {
     let m = lower("void use(void) { for(;;) { } }");
-    let f = &m.funcs[0];
+    let f = m.funcs.iter().find(|f| &*f.name == "use").expect("`use`");
     let back_edges: Vec<_> = f
         .blocks
         .iter()
@@ -184,9 +207,93 @@ fn an_empty_for_condition_still_has_a_header_block() {
         "a back edge exists, so the loop is findable: {:#?}",
         f.blocks.iter().map(|b| (b.id, &b.term)).collect::<Vec<_>>()
     );
-    assert!(
-        f.blocks.len() >= 2,
-        "the header is its own block, not folded into the body"
+    // **The header is a block of its own**, not the body's first block. A mutation that
+    // aliased the two still produced a back edge — the latch jumped to the body — so the
+    // edge check above cannot see it. `for(;;) {}` is header, body, latch and exit.
+    assert_eq!(
+        f.blocks.len(),
+        4,
+        "header, body, latch, exit: {:#?}",
+        f.blocks.iter().map(|b| (b.id, &b.term)).collect::<Vec<_>>()
+    );
+    let header = match f.block(f.entry).expect("entry").term {
+        Terminator::Goto(h) => h,
+        ref other => panic!("the entry falls into the header: {other:?}"),
+    };
+    let body = match f.block(header).expect("header").term {
+        Terminator::Goto(b) => b,
+        ref other => panic!("an absent condition is an unconditional goto: {other:?}"),
+    };
+    assert_ne!(
+        header, body,
+        "the header is distinct from the body it guards"
+    );
+}
+
+/// A terminated block is never re-terminated.
+///
+/// `if (c) return 1; else return 2;` has no path that falls through, and a lowering that
+/// overwrote each arm's `Return` with a `Goto` to the join would turn both returns into
+/// fallthrough — a silent change of what the function computes, and one no shape count
+/// notices because the block structure is identical either way.
+#[test]
+fn a_returning_branch_arm_keeps_its_return() {
+    let m = lower("int use(int c) { if (c) { return 1; } else { return 2; } }");
+    let f = m.funcs.iter().find(|f| &*f.name == "use").expect("`use`");
+    let returns = f
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.term, Terminator::Return(Some(_))))
+        .count();
+    assert_eq!(
+        returns,
+        2,
+        "both arms still return: {:#?}",
+        f.blocks.iter().map(|b| (b.id, &b.term)).collect::<Vec<_>>()
+    );
+}
+
+/// `&&` and `||` take **opposite** edges.
+///
+/// The four-block shape is identical for both, so every structural count above passes
+/// with the two swapped — and the program then computes the negation of what was written.
+/// The discriminator is which operand the short-circuit block corresponds to: for `&&`
+/// the entry's *false* edge stores 0 without evaluating the rhs; for `||` it is the
+/// *true* edge that stores 1.
+#[test]
+fn and_and_or_branch_to_opposite_edges() {
+    let stored_on = |src: &str, take_true: bool| -> i128 {
+        let m = lower(src);
+        let f = m.funcs.iter().find(|f| &*f.name == "f").expect("`f`");
+        let entry = f.block(f.entry).expect("entry");
+        let Terminator::Br { t, f: fls, .. } = entry.term else {
+            panic!("the entry tests the lhs")
+        };
+        let target = if take_true { t } else { fls };
+        // The short-circuit block stores a constant; the rhs block computes one.
+        f.block(target)
+            .expect("target")
+            .insts
+            .iter()
+            .find_map(|i| match &i.kind {
+                InstKind::Store {
+                    val: chiero_cir::Operand::Const(chiero_cir::Const::Int { val, .. }),
+                    ..
+                } => Some(*val),
+                _ => None,
+            })
+            .unwrap_or(-1)
+    };
+
+    assert_eq!(
+        stored_on("int f(int a, int b) { return a && b; }", false),
+        0,
+        "`a && b` short-circuits on the **false** edge, storing 0"
+    );
+    assert_eq!(
+        stored_on("int f(int a, int b) { return a || b; }", true),
+        1,
+        "`a || b` short-circuits on the **true** edge, storing 1"
     );
 }
 
