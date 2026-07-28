@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 143) — 1126 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 144) — 1127 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -500,7 +500,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > found a defect on its first run; 140 gave it structs and helpers and it found two more; 141 gave it
 > arrays, pointers and six spellings of one access, and it found another; 142 gave it
 > bit-fields and unions and it found a *wrong answer*; 143 gave it file-scope declarations
-> and it found a global pointer reading as null**.*
+> and it found a global pointer reading as null; 144 closed the last defect on the open
+> list**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -612,13 +613,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: defects found by the implementation review, still open
+> ### 🔴 Do this first
 >
-> Each has a one-line reproduction and is red today. None has a test yet — **write the red
-> test before fixing**, or they are worth nothing. Ranked by how much of C they break:
-> - **A statement-expression aggregate value is copied after its scope dies.**
->   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
->   `.scope exit 2`, reading `t` once 021 has retired it.
+> **The open-defect list is empty.** Every item wave 132's implementation review left, plus
+> everything the generator has found since, is fixed. What remains is tooling and one
+> deliberate deferral:
+>
+> - **The verifier is not run at lowering time.** Wave 141's defect emitted CIR the verifier
+>   rejects and lowering refused nothing, so the engine produced no state for a reason that
+>   had nothing to do with the program. 015 §7 refuses what lowering *knows* it cannot
+>   represent; this is the class it does not know about. Running `verify` at the end of
+>   `function()` and pushing a diagnostic on an error turns every such defect from a
+>   `SilentNoState` into a `Refused`. **It has no RED today** — the generator checks the
+>   verifier now and no program in its grammar produces invalid CIR — so it is a guard whose
+>   test is a mutation, like wave 134's rollback.
+> - **The AST shrinker** (~250 lines). Waves 139–144 each shrank by hand in a few minutes;
+>   that worked because each run had one defect. It will not survive a run with five.
+> - **The refusal-ledger ratchet.** The ledger prints and is empty; the moment it is not, an
+>   unlisted diagnostic code has to fail CI or it becomes a suppression file.
+> - `xtask diff-soak --seed N` for open-ended search, with CI keeping the fixed batch.
 >
 > ### The corpus misses every path this wave touched
 >
@@ -649,6 +662,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A mutation that changes the wrong thing is not evidence** (wave 144). The first attempt
+> at "does the copy happen before the scope exit" deleted `exit_scope` instead of moving the
+> copy past it, and survived — which says only that an unbalanced scope here is uncaught.
+> Rewritten to actually reorder, it dies. **Re-read a survivor before believing it**: the
+> question is whether the mutant expresses the property you meant.
 > **A surviving mutation can be telling you the code is dead** (wave 143). A
 > local-shadowing guard in `global_addr_of` survived deletion, and the reason was not a
 > missing fixture: the function has one caller, on a path where no local is in scope, and
@@ -776,10 +794,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > class it does not know about. Running `verify` at the end of `function()` and refusing on
 > an error would turn every such defect from a silent nothing into a diagnostic.
 >
-> Owed and written down: the one defect above; the wave-117 `fork_on_offset` survivor;
-> floats do not execute; designated, bit-field and address initializers refused; a fault in a
-> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
-> `Ty::Error` in sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
+> Owed and written down — **no open defects**, these are gaps and deferrals: the verifier is
+> not run at lowering time; the AST shrinker and the refusal ratchet are unwritten; the
+> wave-117 `fork_on_offset` survivor; floats do not execute; designated and bit-field
+> initializers refused (address initializers were fixed in wave 143); a fault in a non-entry
+> frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
+> sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
 > `tests/corpus/c/pointer_fields.c` is not written; 010's 18, 011's 12 and 012's 17 are
 > deliberately uncovered. **013 is clear** — 20/20 contracts covered, no owed items.
 >
