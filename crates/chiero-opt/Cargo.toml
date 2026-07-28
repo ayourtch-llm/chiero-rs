@@ -14,11 +14,5 @@ chiero-check.workspace = true
 chiero-solver.workspace = true
 indexmap.workspace = true
 
-[dev-dependencies]
-chiero-lower.workspace = true
-chiero-parse.workspace = true
-chiero-pp.workspace = true
-chiero-sema.workspace = true
-
 [lints]
 workspace = true
