@@ -183,6 +183,32 @@ fn increment_yields_the_pre_or_post_value_as_written() {
     );
 }
 
+/// **The control flow this wave adds**, checked for what it computes.
+///
+/// §9's standing instruction: a shape assertion says the blocks are arranged correctly,
+/// and only the oracle says the program computes the right number. `switch` fallthrough
+/// in particular is a shape a structural test confirms and a wrong `break` target ruins.
+#[test]
+fn switch_break_continue_and_goto_compute_what_gcc_computes() {
+    agree(
+        "int n = 2; int t = 0; switch (n) { case 1: t = 1; case 2: t += 2; break; default: t = 9; } return t;",
+    );
+    agree(
+        "int n = 1; int t = 0; switch (n) { case 1: t = 1; case 2: t += 2; break; default: t = 9; } return t;",
+    );
+    agree("int n = 7; int t = 0; switch (n) { case 1: t = 1; break; default: t = 9; } return t;");
+    agree("int n = 4; switch (n) { case 3 ... 6: return 1; default: return 0; }");
+    agree("int n = 9; switch (n) { case 3 ... 6: return 1; default: return 0; }");
+    agree("int t = 0; for (int i = 0; i < 10; i++) { if (i == 3) break; t += i; } return t;");
+    agree("int t = 0; for (int i = 0; i < 6; i++) { if (i % 2) continue; t += i; } return t;");
+    agree(
+        "int t = 0; int i = 0; while (1) { i++; if (i > 4) break; if (i == 2) continue; t += i; } return t;",
+    );
+    agree("int t = 0; int i = 0; again: i++; t += i; if (i < 4) goto again; return t;");
+    // A `goto` that leaves two scopes and lands after them.
+    agree("int t = 1; { int a = 2; { int b = 3; t = a + b; goto out; } } out: return t;");
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
