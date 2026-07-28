@@ -228,6 +228,78 @@ impl Model {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    /// Fold another model's assignments in, keeping this one's where both assign a
+    /// variable.
+    ///
+    /// Used to reassemble a model from independent slices (§6.2). The components are
+    /// **variable-disjoint** by construction, so in the intended use there is nothing to
+    /// keep or discard — the `or_insert` is there so a caller that violates that gets a
+    /// well-defined result rather than whichever iteration order won.
+    pub fn merge_from(&mut self, other: &Model) {
+        for (v, c) in &other.values {
+            self.values.entry(*v).or_insert(*c);
+        }
+    }
+}
+
+/// A path condition, and whether anything in it was added without being checked feasible
+/// (022 §6.1).
+///
+/// Independence slicing is equisatisfiable **only if every other component is already
+/// known satisfiable**, which KLEE gets for free by checking every constraint before it
+/// enters the path condition. chiero deliberately breaks that in three places — 023 §3
+/// takes a branch anyway on solver `Unknown`, 021 §5 continues past an out-of-bounds
+/// access on the in-bounds branch, 024 §4's `strlen` cap constrains a terminator to exist
+/// — so the flag travels with the terms.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathCondition {
+    terms: Vec<Term>,
+    possibly_infeasible: bool,
+}
+
+impl PathCondition {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a constraint whose feasibility, in conjunction with everything already here,
+    /// has been established.
+    pub fn push_checked(&mut self, t: Term) {
+        self.terms.push(t);
+    }
+
+    /// Add a constraint without that check, setting the flag. The three call sites in
+    /// §6.1 are the reason this exists; a fourth should be added to that list rather than
+    /// quietly using this.
+    pub fn push_unchecked(&mut self, t: Term) {
+        self.terms.push(t);
+        self.possibly_infeasible = true;
+    }
+
+    pub fn terms(&self) -> &[Term] {
+        &self.terms
+    }
+
+    pub fn possibly_infeasible(&self) -> bool {
+        self.possibly_infeasible
+    }
+
+    pub fn len(&self) -> usize {
+        self.terms.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+
+    /// §6.1: "A single full check that returns `Sat` clears it." Called by
+    /// [`TieredSolver::check_path`]; a flag that is never cleared leaves every state
+    /// downstream of one `Unknown` branch permanently unsliced, which is the
+    /// slow-but-correct failure and so the one nothing would notice.
+    pub fn mark_satisfiable(&mut self) {
+        self.possibly_infeasible = false;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1830,6 +1902,12 @@ pub struct SolverStats {
     /// `Unknown`, every consumer degrades honestly, and a run that decided *nothing*
     /// looks like a run over a hard program.
     pub backend_errors: u64,
+    /// How many assertions independence slicing kept out of a backend query (022 §6.2).
+    ///
+    /// Contract 9 needs this: "verifying only that the dumped query got smaller tests
+    /// that slicing happened, not that it was correct" — but the converse is just as
+    /// true, and a same-answer test alone passes for a slicer that never slices.
+    pub sliced_terms_skipped: u64,
 }
 
 /// Which cached set a candidate refers to. See `TieredSolver::remember`.
@@ -1873,6 +1951,18 @@ pub struct TieredSolver {
     sat_sets: Vec<(Vec<u32>, Model)>,
     unsat_sets: Vec<Vec<u32>>,
     containing: IndexMap<u32, Vec<CacheSlot>>,
+    /// §6.2 makes slicing "required, not optional", so it is on unless switched off —
+    /// which is what these two are phrased negatively for. `Default` is derived over a
+    /// dozen fields and `bool::default()` is `false`; a positively-named `slicing: bool`
+    /// would default a required optimisation to off, and nothing would fail.
+    slicing_off: bool,
+    /// Set while the path condition under test has `possibly_infeasible`. §6.1: "while it
+    /// is set, slicing and the subset/superset cache rules are disabled".
+    untrusted: bool,
+    /// Models for individual components, keyed by the component's sorted term ids. §6.2
+    /// calls the counterexample cache "per slice"; this is that, and it is what makes
+    /// completing a sliced `Sat` model free after the first full check.
+    slice_models: IndexMap<Vec<u32>, Model>,
 }
 
 impl TieredSolver {
@@ -2024,6 +2114,107 @@ impl TieredSolver {
 
     /// Send every tier-1 answer to tier 2 as well and assert agreement (022 §6).
     /// Too slow for production, mandatory in CI.
+    /// Turn independence slicing off. §6.2 requires it, so this exists for the
+    /// differential test that checks a sliced query answers what the unsliced one does.
+    pub fn set_slicing(&mut self, on: bool) {
+        self.slicing_off = !on;
+    }
+
+    /// Check a path condition, honouring §6.1.
+    ///
+    /// `assumptions` is **the query** — the constraint whose feasibility is being asked
+    /// about, typically a branch condition. Slicing needs to know which variables the
+    /// question is about; a bare `check` where everything sits in the assertion stack
+    /// cannot slice, because every component is then relevant.
+    ///
+    /// A *full* check (no assumptions) that comes back `Sat` clears the path condition's
+    /// flag. A check *with* assumptions proves something else satisfiable and must not:
+    /// `pc ∧ c` being satisfiable does imply `pc` is, but `pc ∧ c` coming back `Sat` from
+    /// a sliced query does not, since the slice may not have covered all of `pc`.
+    pub fn check_path(
+        &mut self,
+        a: &mut TermArena,
+        pc: &mut PathCondition,
+        assumptions: &[Term],
+    ) -> CheckResult {
+        let saved = std::mem::replace(&mut self.asserted, pc.terms().to_vec());
+        let saved_scopes = std::mem::take(&mut self.scopes);
+        self.untrusted = pc.possibly_infeasible();
+        let r = self.check(a, assumptions);
+        self.untrusted = false;
+        self.asserted = saved;
+        self.scopes = saved_scopes;
+        if assumptions.is_empty() && matches!(r, CheckResult::Sat(_)) {
+            pc.mark_satisfiable();
+        }
+        r
+    }
+
+    /// Partition `all` into connected components by shared variables (§6.2), returning
+    /// the components that mention one of `query_vars` first.
+    ///
+    /// Terms with **no variables** are their own component and never relevant, which is
+    /// correct: a ground assertion is `true` or `false` on its own and the arena folds it
+    /// long before here.
+    fn components(a: &TermArena, all: &[Term], query_vars: &[VarId]) -> (Vec<Term>, Vec<Term>) {
+        // Union-find over term indices, joined through a first-seen-owner per variable.
+        let mut parent: Vec<usize> = (0..all.len()).collect();
+        fn find(p: &mut Vec<usize>, mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        let mut owner: IndexMap<VarId, usize> = IndexMap::new();
+        let mut term_vars: Vec<Vec<VarId>> = Vec::with_capacity(all.len());
+        for (i, t) in all.iter().enumerate() {
+            let mut vs = Vec::new();
+            a.vars_of(*t, &mut vs);
+            vs.sort_unstable();
+            vs.dedup();
+            for v in &vs {
+                match owner.get(v) {
+                    Some(&j) => {
+                        let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                    }
+                    None => {
+                        owner.insert(*v, i);
+                    }
+                }
+            }
+            term_vars.push(vs);
+        }
+
+        // The roots the query's variables land in.
+        let mut wanted: Vec<usize> = Vec::new();
+        for v in query_vars {
+            if let Some(&j) = owner.get(v) {
+                let r = find(&mut parent, j);
+                if !wanted.contains(&r) {
+                    wanted.push(r);
+                }
+            }
+        }
+
+        let mut relevant = Vec::new();
+        let mut rest = Vec::new();
+        for i in 0..all.len() {
+            let r = find(&mut parent, i);
+            // A variable-free term goes with the relevant side: it costs the backend
+            // nothing and dropping it would change the query.
+            if term_vars[i].is_empty() || wanted.contains(&r) {
+                relevant.push(all[i]);
+            } else {
+                rest.push(all[i]);
+            }
+        }
+        (relevant, rest)
+    }
+
     pub fn set_paranoid(&mut self, on: bool) {
         self.paranoid = on;
     }
@@ -2037,7 +2228,113 @@ impl TieredSolver {
     /// Replay is the part that is easy to skip and impossible to notice: a restarted
     /// process still answers, just against an empty context, so the query silently
     /// becomes a different question.
-    fn ask_backend(&mut self, a: &TermArena, all: &[Term]) -> Option<CheckResult> {
+    /// Ask the backend, slicing the assertion set to the query's components first (§6.2).
+    ///
+    /// **Skipping is sound for `Unsat` unconditionally and for `Sat` only under §6.1's
+    /// invariant** — a component that is quietly unsatisfiable makes a sliced `Sat` a
+    /// lie. Rather than rely on the invariant alone, a sliced `Sat` is *completed*: every
+    /// skipped component contributes its own model, from `slice_models` when it is
+    /// already known and from the backend when it is not. Two things fall out of that,
+    /// and both matter more than the saved query:
+    ///
+    /// - the model is complete and satisfies the **whole** path condition, which is what
+    ///   023 contract 16 needs of a witness. A model covering only the query's component
+    ///   keeps the verdict and produces witnesses that do not satisfy the constraints
+    ///   they are offered as evidence for.
+    /// - a skipped component that turns out `Unsat` is caught rather than papered over,
+    ///   so the failure §6.1 describes cannot occur even when the flag is wrong.
+    ///
+    /// The saving is real where it pays: an infeasible branch — the case worth pruning —
+    /// is refuted from its own component and the rest of the path condition is never
+    /// sent. And after one full check the other components are all in `slice_models`, so
+    /// completion costs no backend call.
+    fn ask_backend(&mut self, a: &TermArena, all: &[Term], query: &[Term]) -> Option<CheckResult> {
+        if self.slicing_off || self.untrusted || query.is_empty() {
+            return self.ask_backend_raw(a, all);
+        }
+        let mut qvars = Vec::new();
+        for t in query {
+            a.vars_of(*t, &mut qvars);
+        }
+        qvars.sort_unstable();
+        qvars.dedup();
+        if qvars.is_empty() {
+            return self.ask_backend_raw(a, all);
+        }
+        let (relevant, rest) = Self::components(a, all, &qvars);
+        if rest.is_empty() {
+            return self.ask_backend_raw(a, all);
+        }
+        self.stats.sliced_terms_skipped += rest.len() as u64;
+
+        let mut model = match self.ask_backend_raw(a, &relevant)? {
+            CheckResult::Sat(m) => m,
+            // `Unsat` from a subset of the constraints refutes the whole set, whatever
+            // the other components say. This is the direction the win is in.
+            other => return Some(other),
+        };
+        self.remember_slice(a, &relevant, &model);
+
+        // Complete the model over the components the query did not touch.
+        let (mut comp_all, mut seen) = (Vec::new(), Vec::new());
+        for t in &rest {
+            let mut vs = Vec::new();
+            a.vars_of(*t, &mut vs);
+            comp_all.push((t, vs));
+        }
+        while let Some(i) = (0..comp_all.len()).find(|i| !seen.contains(i)) {
+            // Peel one connected component off `rest` by re-partitioning around the
+            // first unvisited term's variables.
+            let seed = comp_all[i].1.clone();
+            let remaining: Vec<Term> = (0..comp_all.len())
+                .filter(|j| !seen.contains(j))
+                .map(|j| *comp_all[j].0)
+                .collect();
+            let (comp, _) = Self::components(a, &remaining, &seed);
+            for j in 0..comp_all.len() {
+                if !seen.contains(&j) && comp.contains(comp_all[j].0) {
+                    seen.push(j);
+                }
+            }
+            match self.slice_model(a, &comp)? {
+                Some(m) => model.merge_from(&m),
+                // The invariant was wrong: some other part of the path condition is
+                // dead. That refutes the whole set, and it is the answer §6.1 is about.
+                None => return Some(CheckResult::Unsat),
+            }
+        }
+        Some(CheckResult::Sat(model))
+    }
+
+    /// A component's model, from the per-slice cache or the backend. `None` means the
+    /// component is unsatisfiable; the outer `Option` is a backend failure.
+    fn slice_model(&mut self, a: &TermArena, comp: &[Term]) -> Option<Option<Model>> {
+        let key = Self::slice_key(comp);
+        if let Some(m) = self.slice_models.get(&key) {
+            return Some(Some(m.clone()));
+        }
+        match self.ask_backend_raw(a, comp)? {
+            CheckResult::Sat(m) => {
+                self.slice_models.insert(key, m.clone());
+                Some(Some(m))
+            }
+            CheckResult::Unsat => Some(None),
+            CheckResult::Unknown(_) => None,
+        }
+    }
+
+    fn slice_key(comp: &[Term]) -> Vec<u32> {
+        let mut k: Vec<u32> = comp.iter().map(|t| t.0).collect();
+        k.sort_unstable();
+        k.dedup();
+        k
+    }
+
+    fn remember_slice(&mut self, _a: &TermArena, comp: &[Term], m: &Model) {
+        self.slice_models.insert(Self::slice_key(comp), m.clone());
+    }
+
+    fn ask_backend_raw(&mut self, a: &TermArena, all: &[Term]) -> Option<CheckResult> {
         let path = self.backend.as_ref()?.path().to_path_buf();
         let mut vars = Vec::new();
         for t in all {
@@ -2204,10 +2501,15 @@ impl Solver for TieredSolver {
                 // non-predicate term that both tiers would have refused. §6 puts the
                 // caches "below escalation"; this is that, one level finer. Found by
                 // review.
-                if let Some(r) = self.counterexample_cache(a, &all) {
+                // §6.1: the subset/superset rules are disabled while the path
+                // condition may be infeasible. They are stated over *full* assertion
+                // sets, and a set that is not known satisfiable is not one they hold for.
+                if !self.untrusted
+                    && let Some(r) = self.counterexample_cache(a, &all)
+                {
                     return r;
                 }
-                match self.ask_backend(a, &all) {
+                match self.ask_backend(a, &all, assumptions) {
                     Some(r) => r,
                     None => tier1,
                 }
@@ -2215,7 +2517,7 @@ impl Solver for TieredSolver {
             _ => {
                 if self.paranoid
                     && self.backend.is_some()
-                    && let Some(t2) = self.ask_backend(a, &all)
+                    && let Some(t2) = self.ask_backend(a, &all, &[])
                 {
                     {
                         let agree = matches!(

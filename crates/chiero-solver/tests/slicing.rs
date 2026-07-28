@@ -134,7 +134,10 @@ fn a_sliced_query_answers_what_the_unsliced_query_answers() {
         }
     }
     // Both verdicts have to occur, or "the same answer" was demonstrated for one of them.
-    assert!(sat > 0 && unsat > 0, "corpus is one-sided: {sat} sat, {unsat} unsat");
+    assert!(
+        sat > 0 && unsat > 0,
+        "corpus is one-sided: {sat} sat, {unsat} unsat"
+    );
 }
 
 /// **022 contract 9, the other half.** Slicing has to actually happen. Without this the
@@ -180,23 +183,35 @@ fn slicing_sends_less_to_the_backend_than_the_whole_path_condition() {
     );
 }
 
-/// A path condition holding `x == 1 && x == 2` in one cluster and a satisfiable
+/// An unsatisfiable constraint **tier 1 cannot see through**: `x * 2 == 1` has no
+/// solution at any width, since doubling clears the low bit, but multiplication is not in
+/// §3.2's transfer set so the interval domain returns `Unknown` and the query reaches the
+/// backend.
+///
+/// This matters more than it looks. Written the obvious way — `x == 1 && x == 2` — tier 1
+/// refutes it from two conflicting equalities before any backend call, so every test
+/// below passes without slicing or the subsumption index ever running. They did, and the
+/// `sliced_terms_skipped` assertions are what caught it.
+fn tier1_opaque_contradiction(a: &mut TermArena) -> Term {
+    let x = a.var(Sort::BitVec(8), "x");
+    let two = a.bv(8, 2);
+    let one = a.bv(8, 1);
+    let d = a.mul(x, two);
+    a.eq(d, one)
+}
+
+/// A path condition holding that contradiction in one cluster and a satisfiable
 /// constraint on an unrelated variable in another. The contradiction is added *without* a
 /// feasibility check, which is exactly what 023 §3 does on solver `Unknown`.
 fn poisoned(a: &mut TermArena) -> (PathCondition, Term) {
-    let x = a.var(Sort::BitVec(8), "x");
     let y = a.var(Sort::BitVec(8), "y");
-    let one = a.bv(8, 1);
-    let two = a.bv(8, 2);
     let ten = a.bv(8, 10);
 
     let mut pc = PathCondition::new();
-    let x1 = a.eq(x, one);
-    pc.push_checked(x1);
-    // The unchecked one: nothing established that this is consistent with what is
-    // already there, and it is not.
-    let x2 = a.eq(x, two);
-    pc.push_unchecked(x2);
+    // Nothing established that this is consistent with what is already here, and it is
+    // not consistent with anything at all.
+    let bad = tier1_opaque_contradiction(a);
+    pc.push_unchecked(bad);
     let ylt = a.ult(y, ten);
     pc.push_checked(ylt);
 
@@ -236,12 +251,22 @@ fn an_unsatisfiable_component_is_reported_even_when_the_query_is_elsewhere() {
     }
 }
 
-/// **The negative control, which is what makes the test above mean anything.** The same
-/// terms with the contradiction declared *checked* — a lie, but the point is that the
-/// flag is the only difference — slice to `Sat`. So 9b's `Unsat` comes from §6.1's rule
-/// and not from slicing quietly failing to slice.
+/// **Deviation from §6.1, pinned deliberately.** The spec's design makes the flag the
+/// *only* thing standing between a poisoned path condition and a wrong `Sat`, so this
+/// started life as a negative control asserting that a lying `push_checked` slices to
+/// `Sat` — the reachable wrong answer §6.1 exists to prevent. It does not, and should
+/// not: `ask_backend` completes a sliced `Sat` model over the skipped components, because
+/// 023 contract 16 needs a witness that satisfies the *whole* path condition and a model
+/// covering one component does not. Completing it catches a dead component on the way,
+/// so the wrong answer is unreachable whether or not the flag is right.
+///
+/// This is worth a test rather than a comment: it says the soundness of slicing does not
+/// rest on every one of §6.1's three call sites having remembered to use
+/// `push_unchecked`, and a future change that completes models more cheaply — say, from
+/// the per-slice cache only, filling misses with zeroes — would put that dependency back
+/// and this is what would notice.
 #[test]
-fn without_the_flag_the_same_path_condition_slices_to_the_wrong_answer() {
+fn slicing_stays_sound_when_the_flag_is_wrong() {
     let Some(backend) = SmtLib::discover() else {
         eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
         return;
@@ -255,13 +280,15 @@ fn without_the_flag_the_same_path_condition_slices_to_the_wrong_answer() {
     assert!(!lying.possibly_infeasible());
 
     let mut s = TieredSolver::with_backend(backend);
+    let r = s.check_path(&mut a, &mut lying, &[query]);
     assert!(
-        matches!(
-            s.check_path(&mut a, &mut lying, &[query]),
-            CheckResult::Sat(_)
-        ),
-        "with the invariant asserted, slicing is entitled to skip the dead component — \
-         this is the wrong answer that §6.1 exists to prevent, and it is reachable"
+        matches!(r, CheckResult::Unsat),
+        "the dead component is in a part of the path condition the query does not touch \
+         and the flag does not warn about it, and the answer is still `Unsat`: {r:?}"
+    );
+    assert!(
+        s.stats().sliced_terms_skipped > 0,
+        "and it was reached by slicing, not by slicing having silently not happened"
     );
 }
 
@@ -306,19 +333,16 @@ fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
         return;
     };
     let mut a = TermArena::new();
-    let x = a.var(Sort::BitVec(8), "x");
     let y = a.var(Sort::BitVec(8), "y");
     let one = a.bv(8, 1);
-    let two = a.bv(8, 2);
-    let x1 = a.eq(x, one);
-    let x2 = a.eq(x, two);
+    let bad = tier1_opaque_contradiction(&mut a);
     let y1 = a.eq(y, one);
 
-    // Prime the index with an `Unsat` set.
+    // Prime the index with an `Unsat` set — one the backend had to decide, or the index
+    // is never consulted and neither branch of this test means anything.
     let mut s = TieredSolver::with_backend(backend);
     let mut base = PathCondition::new();
-    base.push_checked(x1);
-    base.push_checked(x2);
+    base.push_checked(bad);
     assert!(matches!(
         s.check_path(&mut a, &mut base.clone(), &[]),
         CheckResult::Unsat
@@ -338,10 +362,15 @@ fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
         "a superset of a known-`Unsat` set needs no solver (022 contract 11)"
     );
 
-    // The same superset with the flag set has to go to the backend instead.
+    // A *different* superset with the flag set has to go to the backend instead. It has
+    // to be a different one: the exact cache is keyed on the term ids and would answer
+    // the previous query without consulting the index at all, which §6.1 does not
+    // disable and soundly so — an exact match is the same question, not a subsumed one.
+    let z = a.var(Sort::BitVec(8), "z");
+    let z1 = a.eq(z, one);
     let before = s.stats().backend_calls;
     let mut poisoned_sup = base.clone();
-    poisoned_sup.push_unchecked(y1);
+    poisoned_sup.push_unchecked(z1);
     assert!(matches!(
         s.check_path(&mut a, &mut poisoned_sup, &[]),
         CheckResult::Unsat

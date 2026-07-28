@@ -255,6 +255,30 @@ Set whenever a constraint is added without a feasibility check. While it is set,
 **slicing and the subset/superset cache rules are disabled** for that state and queries go
 to the full assertion set. A single full check that returns `Sat` clears it.
 
+**Amendment (implementation of contracts 9/9b).** As drafted, this section makes the flag
+the *only* thing standing between a poisoned path condition and a wrong `Sat`, which puts
+the soundness of slicing on all three call sites having remembered to use the unchecked
+push. The implementation does not rest on that, because a separate obligation forces the
+stronger behaviour anyway: [023](023-execution-engine.md) contract 16 requires a witness
+to satisfy the **whole** path condition, and a model solved from one component does not
+assign the other components' variables at all. So a sliced `Sat` is *completed* — every
+skipped component contributes its own model, from the per-slice cache when it is known and
+from the backend when it is not — and a skipped component that turns out `Unsat` is caught
+on the way. The saving is undiminished where it pays: an `Unsat` from the query's own
+component refutes the whole set and the rest is never sent, which is the infeasible-branch
+case worth pruning, and after one full check completion costs no backend call.
+
+The flag therefore still governs two things and no longer governs a third:
+
+- it disables **slicing** while set — a performance choice, as specified;
+- it disables the **subset/superset rules** while set — a correctness requirement, since
+  those rules are stated over full assertion sets and a set not known satisfiable is not
+  one they hold for;
+- it is *not* what prevents a wrong `Sat` from a dead component. That is prevented by
+  construction. A future change that completes models more cheaply — from the per-slice
+  cache only, filling misses with zeroes — would reintroduce the dependency this section
+  describes, and `slicing_stays_sound_when_the_flag_is_wrong` is the test that would say so.
+
 ### 6.2 The caches
 
 Three caches, in lookup order:
