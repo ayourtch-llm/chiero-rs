@@ -487,7 +487,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 88, `2b1e308`) — 875 tests, M1 152/165, frontend 81/117
+> ### ⏭️ START HERE (wave 89, `6d50b57`) — 883 tests, M1 152/165, frontend 83/117
+>
+> **014 is 15/20 and the typed AST exists.** Every implicit conversion is an explicit
+> `Cast` with a recorded *reason*, verified over **2234 arithmetic operations of real VPP**
+> — none is left with operands C would have had to convert. The layout gate is still green
+> at 2909 assertions over 520 records.
+>
+> Next, in order:
+>
+> 1. **014's 14–18**: tentative definitions and linkage (14–16 — note that `static`
+>    functions with the same name in *different* TUs must stay distinct `GlobalId`s, a real
+>    hazard in VPP where short static helper names repeat), address constants (17), and
+>    `__builtin_constant_p` (18). 14–16 need a **cross-TU** symbol table, which is the
+>    first thing in this project that spans TUs and is what lets 031's call graph do so.
+> 2. **015 — AST→CIR lowering** (0/25). The frontend is now complete enough to feed it:
+>    parse → types → layout → conversions, all explicit.
+> 3. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down rather than forgotten: `ExprKind::InitList` and `StmtExpr` type to
+> `Ty::Error` (a braced initializer needs the target type threaded through, a statement
+> expression needs the block's last value — both are more 015's shape than 014's);
+> `typeof` still resolves to `Ty::Error`; VLA bounds are treated as flexible; and the
+> parser's speculative type-name diagnostic rollback is still unpinned.
+>
+> ### Earlier (wave 88, `2b1e308`) — 875 tests, frontend 81/117
 >
 > **The 014 layout gate is live and green**: 2909 generated `_Static_assert`s over **520
 > real VPP records**, zero rejected by gcc. `cargo test -p chiero-sema --test
