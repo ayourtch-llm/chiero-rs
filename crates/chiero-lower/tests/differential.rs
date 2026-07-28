@@ -391,6 +391,80 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     );
 }
 
+/// **A read-modify-write on a bit-field stays inside the bit-field.**
+///
+/// `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, so it fires for
+/// `v.a = 1` and not for `v.a += 1`; `inc_dec` has no bit-field check at all. Both fall
+/// through to the ordinary path, which loads and stores the *declared* type — a whole
+/// `int` — so the write lands on every neighbouring field in the same storage unit. 015
+/// contract 7 owns this and the plain-assignment path already obeys it.
+///
+/// The discriminator is **width, not just the neighbour**: a 3-bit signed field holding 3
+/// takes `+= 1` to −4, because the result is truncated to the field and reinterpreted. An
+/// `i32` read-modify-write answers 4, which is a legal `int` and looks entirely reasonable.
+/// Every case returns both fields packed into one number, so a write that corrupts the
+/// neighbour fails even when its own field is right.
+#[test]
+fn a_bitfield_read_modify_write_stays_inside_the_bitfield() {
+    const B: &str = "struct B { int a:3; int b:5; };\n";
+    // Compound assignment, in range: the neighbour must be untouched.
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; v.a += 1; return v.a * 100 + v.b;",
+    );
+    // **Out of range**, which is where a full-unit RMW stops being plausible: 3 + 1 in a
+    // 3-bit signed field is −4, not 4.
+    agree_with(
+        B,
+        "struct B v; v.a = 3; v.b = 2; v.a += 1; return v.a * 100 + v.b;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 2; v.b = 3; v.a *= 3; return v.a * 100 + v.b;",
+    );
+    // The wider neighbour, so the fix cannot be keyed to the first field's offset of 0.
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; v.b += 30; return v.a * 100 + v.b;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; v.b -= 1; return v.a * 100 + v.b;",
+    );
+    // **Unsigned wraps differently** — 7 + 1 in a 3-bit unsigned field is 0, not −8.
+    agree_with(
+        "struct U { unsigned a:3; unsigned b:5; };\n",
+        "struct U u; u.a = 7; u.b = 2; u.a += 1; return (int)(u.a * 100 + u.b);",
+    );
+    // Increment and decrement, which reach `inc_dec` rather than `assign`.
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; v.b++; return v.a * 100 + v.b;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; v.b--; return v.a * 100 + v.b;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 3; v.b = 2; v.a++; return v.a * 100 + v.b;",
+    );
+    // **The value the expression yields**, not only the value it stores. `a++` is the
+    // pre-value and `++a` the post-value, and both are read back out of the field.
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; int r = v.a++; return r * 100 + v.a;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 1; v.b = 2; int s = ++v.a; return s * 100 + v.a;",
+    );
+    agree_with(
+        B,
+        "struct B v; v.a = 3; v.b = 2; int r = v.a++; return r * 100 + v.a;",
+    );
+}
+
 /// **`?:` and aggregate initializers**, the two constructs contract 2's goldens and
 /// contract 22's corpus both need.
 ///
