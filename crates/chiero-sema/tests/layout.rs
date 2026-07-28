@@ -314,6 +314,30 @@ fn a_spread_of_awkward_records_agrees_with_gcc() {
         // each other — the sizes come out the same and only the bit probe can tell.
         ("union S { int a:3; int b:20; };", "S"),
         ("union S { unsigned a:1; unsigned b:32; char c; };", "S"),
+        // **Vector types**, which is what the VPP corpus gate turned red over.
+        // `vector_size` is in *bytes*, and gcc aligns a vector to its width **capped by
+        // the ABI's vector alignment** — 16 on baseline x86-64, so a 32-byte vector still
+        // aligns to 16. The corpus proves the cap; only these prove that an explicit
+        // `aligned(1)` still wins, because VPP declares an unaligned twin of every vector
+        // shape (`u64x4u`) and never puts one in a struct.
+        (
+            "typedef unsigned long long u64;\n\
+             typedef u64 u64x4 __attribute__((vector_size(32)));\n\
+             struct S { char c; u64x4 v; };",
+            "S",
+        ),
+        (
+            "typedef unsigned long long u64;\n\
+             typedef u64 u64x4u __attribute__((vector_size(32), __aligned__(1)));\n\
+             struct S { char c; u64x4u v; };",
+            "S",
+        ),
+        (
+            "typedef unsigned char u8;\n\
+             typedef u8 u8x16 __attribute__((vector_size(16)));\n\
+             struct S { u8x16 a; char b; };",
+            "S",
+        ),
     ];
     for (src, tag) in cases {
         let p = parse(src, TargetConfig::x86_64_linux());

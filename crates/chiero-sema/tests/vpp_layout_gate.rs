@@ -161,10 +161,10 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
                 let Some(ty) = analysis.ty_of_decl(item) else {
                     continue;
                 };
-                if let chiero_sema::Ty::Record(r) = analysis.ty(ty) {
-                    if let Some(text) = parsed.text(*name) {
-                        by_typedef.entry(r.0).or_insert_with(|| text.to_owned());
-                    }
+                if let (chiero_sema::Ty::Record(r), Some(text)) =
+                    (analysis.ty(ty), parsed.text(*name))
+                {
+                    by_typedef.entry(r.0).or_insert_with(|| text.to_owned());
                 }
             }
         }

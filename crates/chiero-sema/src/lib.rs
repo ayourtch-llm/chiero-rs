@@ -28,6 +28,17 @@ pub struct TargetConfig {
     /// analysis consumes it: cache-line straddling and false sharing are layout
     /// properties, and VPP tunes them deliberately.
     pub cache_line_bytes: u32,
+    /// The largest alignment the ABI gives a vector type, in bytes.
+    ///
+    /// gcc aligns a vector to its own width **capped by this**: on baseline x86-64 a
+    /// 32-byte vector still aligns to 16, and only `-mavx` raises the cap to 32 and
+    /// `-mavx512f` to 64. Measured, not assumed — a 32-byte vector's alignment is 16, 32
+    /// or 64 depending on flags chiero is not told about directly.
+    ///
+    /// This is exactly the 1:N mapping [060](060-vpp-integration.md) calls multiarch:
+    /// VPP compiles the same source once per ISA variant, so one source file has several
+    /// layouts and the `ConfigId` is what distinguishes them.
+    pub max_vector_align: u64,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -88,6 +99,8 @@ impl TargetConfig {
             endian: Endian::Little,
             long_double: LongDoubleKind::X87_80,
             cache_line_bytes: 64,
+            // Baseline x86-64 is SSE2; `-mavx` would make this 32 and `-mavx512f` 64.
+            max_vector_align: 16,
         }
     }
 
@@ -131,9 +144,26 @@ pub enum Ty {
     },
     Record(RecordId),
     /// `__attribute__((vector_size(n)))`.
+    ///
+    /// **Alignment is part of the type**, not a property computed from it. gcc aligns a
+    /// vector to its own width, but `__attribute__((vector_size(n), __aligned__(1)))` is a
+    /// *different type* of the same width — VPP declares both for every shape (`u64x4` and
+    /// `u64x4u`) and uses the unaligned one for unaligned loads. Deriving the alignment
+    /// would make the two indistinguishable.
     Vector {
         elem: TyId,
         lanes: u32,
+        /// The **placement** alignment: the width, or whatever `aligned` asked for.
+        ///
+        /// gcc has *two* alignments for a vector and they differ. `_Alignof(u64x4)` is
+        /// **16** on baseline x86-64 — the psABI caps it — but a `u64x4` member is still
+        /// placed at a multiple of **32**, so `struct { char c; u64x4 v; }` puts `v` at
+        /// offset 32 while the struct itself aligns to 16. Storing the capped number and
+        /// deriving placement from it gets every struct containing a wide vector wrong;
+        /// storing the uncapped one and deriving `_Alignof` from it gets every
+        /// `_Alignof` wrong. Both are needed, so the type keeps the placement value and
+        /// [`align_of_ty`] applies the cap.
+        align: u64,
     },
     /// Poison. Propagates so one bad declaration does not produce a thousand
     /// diagnostics (contract 20).
@@ -435,6 +465,67 @@ impl Cx<'_> {
 
     /// Resolve a syntactic `TypeId` from 013 into a semantic `TyId`.
     fn ty_of(&mut self, ty: TypeId) -> TyId {
+        let base = self.ty_of_inner(ty);
+        self.apply_vector_size(ty, base)
+    }
+
+    /// `__attribute__((vector_size(n)))` turns the type it is written on into a vector of
+    /// `n` **bytes** — not `n` lanes, which is the reading that silently produces vectors
+    /// several times too long.
+    ///
+    /// 013 §4 lists this as required because VPP's SIMD paths are built on it: every
+    /// `u8x16`/`u64x4`/`f32x16` in `vppinfra/vector.h` is a `vector_size` typedef, and
+    /// without it 258 of the corpus's 2909 layout assertions are wrong.
+    fn apply_vector_size(&mut self, node: TypeId, base: TyId) -> TyId {
+        let attrs = self.ast.ty(node).attrs.clone();
+        let mut bytes: Option<u64> = None;
+        let mut requested: Option<u64> = None;
+        for a in &attrs {
+            let name = self.text(a.name).unwrap_or("").to_owned();
+            let arg = a.args.first().copied();
+            match name.as_str() {
+                "vector_size" | "__vector_size__" => {
+                    if let Some(v) = arg
+                        .and_then(|e| self.eval(e))
+                        .map(|v| v.v)
+                        .filter(|&v| v > 0)
+                    {
+                        bytes = Some(v as u64);
+                    }
+                }
+                "aligned" | "__aligned__" => {
+                    if let Some(v) = arg
+                        .and_then(|e| self.eval(e))
+                        .map(|v| v.v)
+                        .filter(|&v| v > 0)
+                    {
+                        requested = Some(v as u64);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(bytes) = bytes else { return base };
+        let elem_size = size_of_ty(&self.out, &self.target, base).unwrap_or(0);
+        if elem_size == 0 || bytes % elem_size != 0 {
+            return base;
+        }
+        let lanes = (bytes / elem_size) as u32;
+        // gcc aligns a vector to its own width unless `aligned` says otherwise — and
+        // `aligned(1)` really does lower it, which is what VPP's `u64x4u` relies on.
+        // An explicit `aligned(n)` wins in **both** directions — VPP's `u64x4u` is
+        // `aligned(1)` and really is byte-aligned. Otherwise the vector's own width; the
+        // psABI cap is applied by `align_of_ty`, not here, because placement needs the
+        // uncapped number.
+        let align = requested.unwrap_or(bytes);
+        self.intern(Ty::Vector {
+            elem: base,
+            lanes,
+            align,
+        })
+    }
+
+    fn ty_of_inner(&mut self, ty: TypeId) -> TyId {
         let node = self.ast.ty(ty).clone();
         match node.kind {
             TypeKind::Builtin(b) => {
@@ -733,7 +824,7 @@ impl Cx<'_> {
             let malign = if member_packed {
                 requested.unwrap_or(1)
             } else {
-                align_of_ty(&self.out, &self.target, fty)
+                field_align_of_ty(&self.out, &self.target, fty)
                     .unwrap_or(1)
                     .max(requested.unwrap_or(1))
             };
@@ -767,10 +858,14 @@ impl Cx<'_> {
             // nothing, which is how it was found.
             bit_cursor = start + msize * 8;
             size_bits = size_bits.max(start + msize * 8);
+            // The record's own alignment takes the **capped** value: gcc reports
+            // `_Alignof(struct { char c; u64x4 v; })` as 16 even though `v` sits at 32.
             align = align.max(if member_packed {
                 requested.unwrap_or(1)
             } else {
-                malign
+                align_of_ty(&self.out, &self.target, fty)
+                    .unwrap_or(1)
+                    .max(requested.unwrap_or(1))
             });
         }
 
@@ -1044,8 +1139,21 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         },
         Ty::Func { .. } => None,
         Ty::Record(r) => Some(a.records.get(r.0 as usize)?.size),
-        Ty::Vector { elem, lanes } => Some(size_of_ty(a, t, *elem)? * (*lanes as u64)),
+        Ty::Vector { elem, lanes, .. } => Some(size_of_ty(a, t, *elem)? * (*lanes as u64)),
         Ty::Error => None,
+    }
+}
+
+/// The alignment a **member of this type is placed at**, which is not always its
+/// `_Alignof`.
+///
+/// They differ only for vectors, and gcc's own answers are the evidence:
+/// `_Alignof(u64x4)` is 16 while `offsetof(struct { char c; u64x4 v; }, v)` is 32.
+fn field_align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
+    match a.types.get(id.0 as usize)? {
+        Ty::Vector { align, .. } => Some(*align),
+        Ty::Array { elem, .. } => field_align_of_ty(a, t, *elem),
+        _ => align_of_ty(a, t, id),
     }
 }
 
@@ -1069,7 +1177,10 @@ fn align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         Ty::Array { elem, .. } => align_of_ty(a, t, *elem),
         Ty::Func { .. } => None,
         Ty::Record(r) => Some(a.records.get(r.0 as usize)?.align),
-        Ty::Vector { elem, lanes } => Some(align_of_ty(a, t, *elem)? * (*lanes as u64)),
+        // The psABI cap, which `_Alignof` reports and which a record's own alignment is
+        // computed from. Field *placement* uses the uncapped value — see
+        // `field_align_of_ty`.
+        Ty::Vector { align, .. } => Some((*align).min(t.max_vector_align)),
         Ty::Error => None,
     }
 }
