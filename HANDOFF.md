@@ -487,7 +487,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 96, `a12bde3`) — 924 tests, M1 152/165, frontend 107/117
+> ### ⏭️ START HERE (wave 97, `d4fe3ce`) — 926 tests, M1 152/165, frontend 108/117
+>
+> **015 is 20/25 and the corpus round trip closes.** All four files in
+> `tests/corpus/c/` lower to CIR that verifies, matches a golden in
+> `tests/corpus/lowered/`, and survives print/parse/print. `&x`, dereference and pointer
+> indexing all work. Only 8, 9c, 12, 14 and 20 remain.
+>
+> **Read the goldens, not just the test results.** Wave 97's sharpest finding —
+> declared functions' parameters were never typed, so the intrinsics printed as
+> `chiero_make_symbolic(i64, i64, i64)` — was found by *looking at* a golden after
+> blessing it. No test asserted anything about a declared signature; the wrong one was
+> simply visible. `CHIERO_BLESS=1 cargo test -p chiero-lower --test goldens`.
+>
+> Next, in rough order:
+>
+> 1. **Contracts 8, 12, 14, 20** — statement expressions (`({ ... })`, 217 VPP files, and
+>    `StmtExpr` still types to `Ty::Error` in sema so this is a two-crate change),
+>    `for`-scope, VLAs (`AllocaDyn` at the declaration point with the size operand
+>    dominating it), and refusing a nested function with **exactly one** diagnostic.
+> 2. **Contract 9c** — `goto` *into* a scope, and a backward `goto` creating a new
+>    generation of its objects.
+> 3. **015 is then complete.** After that: **010 contract 19**, and **M1's remaining 13**
+>    (020's 14/16/17/18/23/29/30/44, 021 c19, 023's 7/17/21).
+>
+> Owed and written down: string literals lower to `Undef` — a real one needs 020's
+> `GlobalInit`, which is also uncited (020 c29/c30); `typeof` types to `Ty::Error` in sema;
+> VLA bounds are treated as flexible; the parser's speculative type-name diagnostic
+> rollback is unpinned.
+>
+> ### Earlier (wave 96, `a12bde3`) — 924 tests, frontend 107/117
 >
 > **015 is 19/25.** Goldens exist at `tests/corpus/lowered/` (7 files), `?:` and aggregate
 > initializers lower, and every golden reparses and verifies. Only 8, 9c, 12, 14, 20 and
