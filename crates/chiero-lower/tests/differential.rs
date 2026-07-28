@@ -579,6 +579,35 @@ fn a_struct_parameter_is_the_callees_own_copy() {
     );
 }
 
+/// **A load yields a value of its declared width, not of the bytes it read.**
+///
+/// The engine reads `size_of_cty(ty)` bytes and hands the term back as-is, so a load of a
+/// type narrower than its storage comes back too wide. `_Bool` is the case C actually has:
+/// `sizeof(_Bool) == 1` but its CIR type is `Int(1)`, so `load i1` produced an eight-bit
+/// term and `add i1 %3, %4` reached the solver with operands of 8 and 1. That is an
+/// `assert_eq!` in `chiero-solver`, so `_Bool b = 0; b += 1;` **panics the whole run** —
+/// worse than any wrong answer, because nothing above it can catch it and every other
+/// finding in the same run is lost with it.
+///
+/// The branch immediately beside it already gets this right: when the read produces
+/// nothing, the invented symbol is `sort_of(ty)` — the *declared* width. Only the path
+/// that succeeds disagreed with it.
+#[test]
+fn a_load_has_the_width_of_its_declared_type() {
+    // The panic itself.
+    agree("_Bool b = 0; b += 1; return b;");
+    agree("_Bool b = 1; b -= 1; return b;");
+    agree("_Bool b = 0; b++; return b;");
+    // Reading one back is fine today; kept so a fix that narrows too far is caught.
+    agree("_Bool b = 1; return b;");
+    agree("_Bool b = 0; return b;");
+    agree("int x = 7; _Bool b = x; return b;");
+    // A `_Bool` in a struct, where the storage byte is surrounded by other fields — a
+    // narrowing that read the neighbour's bits instead would pass every case above.
+    agree("struct F { _Bool f; int n; }; struct F s; s.f = 1; s.n = 5; return s.f * 10 + s.n;");
+    agree("struct F { _Bool a; _Bool b; }; struct F s; s.a = 1; s.b = 0; return s.a * 10 + s.b;");
+}
+
 /// **"No value form" means vectors and function designators too, not just records.**
 ///
 /// `is_aggregate` matches `Ty::Record | Ty::Array`, while `cty`, `aggregate_size` and
