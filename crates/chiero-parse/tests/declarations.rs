@@ -520,3 +520,106 @@ fn grouping_parentheses_bind_the_pointer_before_the_parameter_list() {
         p.ast.ty(pty).kind
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Speculative type-name parsing (013 §6's diagnostic budget)
+// ---------------------------------------------------------------------------------------
+
+/// **A rejected reading takes its complaints with it.**
+///
+/// Not a numbered contract — it is the §9 item recorded as "the parser's speculative
+/// type-name diagnostic rollback is unpinned", and it was: deleting `self.diags.truncate`
+/// from `call_argument` left all 1114 workspace tests passing.
+///
+/// `call_argument` decides between a type argument and an expression by *trying* the type
+/// name and backtracking, because keying on the callee's name would need a list that is
+/// wrong the moment gcc adds a builtin. Backtracking rewinds `self.pos`; it must rewind the
+/// diagnostics too, or the parser reports errors for a reading it itself rejected.
+///
+/// This is not cosmetic. 013 §6 caps a TU at 100 diagnostics and then goes silent, so
+/// speculative noise spends a budget that real errors need — and `f(struct { int a; q)`
+/// alone produced **five** duplicate struct-member complaints, each one a line a reader
+/// would go and look at.
+///
+/// The fixtures are invalid C on purpose. In valid C the speculative parse always ends at
+/// `,` or `)` and is kept, so the rollback path is unreachable from a correct program; the
+/// only way to observe it is to make the type name fail *and* not end where a type name
+/// would. Each fixture below was checked against the deletion above: each one's count
+/// changes.
+#[test]
+fn a_rejected_type_name_reading_takes_its_diagnostics_with_it() {
+    // `T[3 q` — the kept reading is a **subscript expression** and says so. The abandoned
+    // reading was an *array declarator*, and that is the word to look for: the two readings
+    // use different nouns for the same missing `]`, so the wrong one cannot hide behind the
+    // right one.
+    let (_, p) = parse("typedef int T;\nint f(int);\nint g(void) { return f(T[3 q); }\n");
+    let msgs: Vec<&str> = p.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("subscript")),
+        "the reading the parser kept still reports its own error: {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains("array declarator")),
+        "and the reading it abandoned reports none: {msgs:?}"
+    );
+
+    // A struct body is parsed **once**, not once per attempt. Five messages doubled here.
+    let (_, p) = parse("int f(int);\nint g(void) { return f(struct { int a; q); }\n");
+    let n = p
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("expected a member declaration"))
+        .count();
+    assert_eq!(n, 1, "one attempt's worth: {:?}", p.diagnostics);
+
+    // The same for a parenthesized expression inside the speculative array size.
+    let (_, p) = parse("typedef int T;\nint f(int);\nint g(void) { return f(T[(] q); }\n");
+    let n = p
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("close a parenthesized expression"))
+        .count();
+    assert_eq!(n, 1, "one attempt's worth: {:?}", p.diagnostics);
+
+    // **The other half, and the one a blanket `truncate` would break: when the type name
+    // IS accepted, its diagnostic stays.** `f(T[3 , 1)` ends the speculative parse at the
+    // `,`, so the reading is kept and its complaint about the missing `]` is a real error
+    // about the program. A rollback that fired unconditionally would swallow it and the
+    // malformed argument would parse silently.
+    let (_, p) = parse("typedef int T;\nint f(int,int);\nint g(void) { return f(T[3 , 1); }\n");
+    assert!(
+        p.diagnostics
+            .iter()
+            .any(|d| d.message.contains("array declarator")),
+        "a kept reading keeps its errors: {:?}",
+        p.diagnostics
+    );
+
+    // **It rewinds to where the attempt began, not to nothing.** A diagnostic recorded
+    // *before* the speculative parse belongs to a different declaration entirely and must
+    // survive it. Truncating to `0` rather than to `before` passes every assertion above —
+    // mutation found that, not review — and would silently erase every error preceding the
+    // first rolled-back call argument in the TU.
+    let (_, p) = parse(
+        "typedef int T;\nint f(int);\n\
+         int h(void) { int inner(void) { return 1; } return 0; }\n\
+         int g(void) { return f(T[3 q); }\n",
+    );
+    assert!(
+        p.diagnostics
+            .iter()
+            .any(|d| d.message.contains("nested function")),
+        "an earlier declaration's diagnostic outlives a later rollback: {:?}",
+        p.diagnostics
+    );
+
+    // And a **valid** type-taking builtin still reports nothing, so "discard everything"
+    // is not a passing implementation either.
+    let (_, p) =
+        parse("typedef int T;\nint g(void) { return __builtin_types_compatible_p(T, int); }\n");
+    assert!(
+        p.diagnostics.is_empty(),
+        "valid C is silent: {:?}",
+        p.diagnostics
+    );
+}
