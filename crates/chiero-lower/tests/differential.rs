@@ -296,6 +296,25 @@ fn address_of_and_dereference_compute_what_gcc_computes() {
     agree("struct S { int a; int b; }; struct S s; s.a = 2; struct S *p = &s; return p->a;");
 }
 
+/// **Statement expressions and VLAs**, checked for what they compute.
+///
+/// A statement expression's value is the last expression statement's, and its side
+/// effects happen once — the count is a shape property but the *value* is not, and
+/// `({ a; b; })` yielding `a` instead of `b` has an identical shape.
+#[test]
+fn statement_expressions_and_vlas_compute_what_gcc_computes() {
+    agree("int x = ({ int t = 3; t + 1; }); return x;");
+    agree("int x = ({ 1; 2; 3; }); return x;");
+    agree("int a = 2; int x = ({ int t = a * 5; t - 1; }); return x;");
+    // Nested, so the two blocks' values cannot be confused.
+    agree("int x = ({ int t = ({ 2; }); t * 10; }); return x;");
+    // A VLA, indexed and summed.
+    agree("int n = 3; int v[n]; v[0] = 1; v[2] = 5; return v[0] * 10 + v[2];");
+    agree(
+        "int n = 4; int v[n]; int t = 0; for (int i = 0; i < n; i++) { v[i] = i; t += v[i]; } return t;",
+    );
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal

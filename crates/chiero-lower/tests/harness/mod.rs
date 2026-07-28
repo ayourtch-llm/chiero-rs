@@ -110,6 +110,18 @@ pub fn gcc_system_paths() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+/// Lower without requiring lowering to be clean — for the tests whose subject *is* a
+/// refusal (015 §7, contract 20).
+pub fn lower_raw(src: &str) -> chiero_lower::Lowered {
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    chiero_lower::lower_tu(&parsed.ast, &analysis, &names)
+}
+
 pub fn print(m: &Module) -> String {
     chiero_cir::text::print(m)
 }
