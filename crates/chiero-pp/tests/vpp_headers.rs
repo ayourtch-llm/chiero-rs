@@ -1,0 +1,87 @@
+//! Real-header smoke/regression metric. This provides useful external evidence, but does
+//! not claim contract credit without the configured compilation database.
+
+use chiero_pp::{Config, FileLoader, PreprocessorSession};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+struct DiskLoader;
+
+impl FileLoader for DiskLoader {
+    fn load(&mut self, path: &Path) -> io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+}
+
+fn gcc_predefines() -> Vec<(String, String)> {
+    let output = Command::new("gcc")
+        .args(["-dM", "-E", "-x", "c", "/dev/null"])
+        .output()
+        .expect("gcc is required for the differential real-header metric");
+    assert!(output.status.success(), "gcc -dM failed");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let definition = line
+                .strip_prefix("#define ")
+                .expect("gcc -dM emitted a non-define line");
+            definition.split_once(char::is_whitespace).map_or_else(
+                || (definition.to_owned(), String::new()),
+                |(name, value)| (name.to_owned(), value.trim_start().to_owned()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn required_vppinfra_headers_preprocess_without_panicking() {
+    let root = Path::new("/home/ubuntu/vpp/src");
+    if !root.exists() {
+        eprintln!("VPP checkout unavailable; external smoke metric skipped");
+        return;
+    }
+    let session = PreprocessorSession::new();
+    let mut loader = DiskLoader;
+    let mut diagnostic_counts = Vec::new();
+    let defines = gcc_predefines();
+    assert_eq!(
+        defines.len(),
+        401,
+        "standing harness must use gcc's complete predefine set"
+    );
+    for name in ["clib.h", "vec.h", "pool.h", "bitmap.h"] {
+        let path = root.join("vppinfra").join(name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let config = Config {
+            include_paths: vec![root.to_path_buf()],
+            system_paths: vec![
+                PathBuf::from("/usr/lib/gcc/x86_64-linux-gnu/13/include"),
+                PathBuf::from("/usr/local/include"),
+                PathBuf::from("/usr/include/x86_64-linux-gnu"),
+                PathBuf::from("/usr/include"),
+            ],
+            defines: defines.clone(),
+            ..Config::default()
+        };
+        let tu = session.preprocess_with_loader(&path, &source, config, &mut loader);
+        assert!(
+            tu.deps.len() > 1,
+            "{name} did not resolve any dependency headers"
+        );
+        assert!(
+            tu.diagnostics.is_empty(),
+            "{name} diagnostics: {:?}",
+            tu.diagnostics
+        );
+        diagnostic_counts.push((name, tu.diagnostics.len()));
+    }
+    eprintln!("VPP header diagnostic metric: {diagnostic_counts:?}");
+    let cache_stats = session.lex_cache_stats();
+    eprintln!("VPP header lex-cache metric: {cache_stats:?}");
+    assert!(
+        cache_stats.0 > 0,
+        "shared headers across distinct TUs must produce cache hits"
+    );
+}
