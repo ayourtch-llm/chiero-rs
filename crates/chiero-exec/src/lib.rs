@@ -4103,6 +4103,18 @@ impl<'m> Engine<'m> {
                 ..
             } => s.lane_width_of(*id),
             RValue::Use(Operand::Value(v)) => s.lane_width_of(*v),
+            // **A `Bitcast` to a vector re-divides the same bits** (020 contract 22).
+            // That is the whole point of the instruction — `u32x4` and `u8x16` are one
+            // 128-bit value cut two ways — so the lane width comes from the *destination*
+            // type and not from the operand. Without this the shape is lost at the cast
+            // and every `ExtractLane` after it is a lowering gap, which is a silent
+            // `Unknown` rather than a wrong answer, but silent all the same: the byte
+            // view of a union simply stops working and nothing says why.
+            RValue::Cast {
+                kind: CastKind::Bitcast,
+                to: CTy::Vector { elem, .. },
+                ..
+            } => elem.bit_width(),
             _ => None,
         }
     }
@@ -5009,7 +5021,15 @@ fn bits_of_cty(t: &CTy) -> Option<u32> {
     match t {
         CTy::Int(b) => Some(*b),
         CTy::Ptr => Some(64),
-        _ => None,
+        // **A vector has a width** (020 contract 22). Falling through to `None` made
+        // every `Bitcast` between two views of one 128-bit union a lowering gap — so the
+        // `u8x16` view of a `u32x4` did not produce a wrong answer, it produced no answer,
+        // and the run degraded to `Unknown` for a construct the CIR fully specifies.
+        CTy::Vector { elem, lanes } => elem.bit_width().map(|w| w * lanes),
+        // **Not a fallthrough.** `Float` is 023 §7's `Approximated` territory and `Void`
+        // has no width at all; both are genuine `None`, and writing them out means a new
+        // `CTy` is a compile error here rather than a silent gap of the kind above.
+        CTy::Float(_) | CTy::Void => None,
     }
 }
 
