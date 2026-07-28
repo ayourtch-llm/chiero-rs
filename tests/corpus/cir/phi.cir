@@ -1,0 +1,33 @@
+target x86_64-unknown-linux-gnu
+
+func @select(%0: i32) -> i32 {
+entry:
+  .line 3
+  %1 = cmp ne i32 %0, 0i32
+  br %1, bb1, bb2
+bb1:
+  .line 4
+  goto bb3
+bb2:
+  .line 6
+  goto bb3
+bb3:
+  .line 8
+  %2 = phi i32 [bb1 1i32] [bb2 2i32]
+  ret %2
+}
+
+func @count(%0: i32) -> i32 {
+entry:
+  .line 14
+  goto bb1
+bb1:
+  .line 15
+  %1 = phi i32 [entry 0i32] [bb1 %2]
+  %2 = add i32 %1, 1i32
+  %3 = cmp slt i32 %2, 3i32
+  br %3, bb1, bb2
+bb2:
+  .line 18
+  ret %1
+}

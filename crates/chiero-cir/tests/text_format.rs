@@ -367,6 +367,7 @@ bb2:
   indirectgoto %1, [bb3]
 bb3:
   .line 51
+  %32 = phi i32 [bb1 %11] [bb2 %13]
   goto bb4
 bb4:
   .line 53
@@ -465,6 +466,7 @@ const ALL_INST_NAMES: &[&str] = &[
     "VaCopy",
     "VaEnd",
     "Opaque",
+    "Phi",
     "Marker",
 ];
 const ALL_RVALUE_NAMES: &[&str] = &[
@@ -519,6 +521,7 @@ fn inst_name(k: &InstKind) -> &'static str {
         InstKind::VaCopy { .. } => "VaCopy",
         InstKind::VaEnd { .. } => "VaEnd",
         InstKind::Opaque { .. } => "Opaque",
+        InstKind::Phi { .. } => "Phi",
         InstKind::Marker(_) => "Marker",
     }
 }

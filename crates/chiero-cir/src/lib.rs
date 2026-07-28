@@ -386,6 +386,21 @@ pub enum InstKind {
         reads: Vec<Operand>,
         why: OpaqueReason,
     },
+    /// **The one non-SSA exception, and only `mem2reg` may emit it** (020 §9).
+    ///
+    /// `dst` takes the incoming value belonging to the edge actually taken into this
+    /// block. Its operands are therefore *not* evaluated where they appear, which makes
+    /// `Phi` the only instruction ordinary dominance is the wrong rule for: an incoming
+    /// from `bb1` is defined in `bb1`, and `bb1` does not dominate the join.
+    ///
+    /// `incomings` carries one entry per predecessor, in the block order of those
+    /// predecessors — sorted rather than insertion-ordered so two runs print identically
+    /// (020 contract 21).
+    Phi {
+        dst: ValueId,
+        ty: CTy,
+        incomings: Vec<(BlockId, Operand)>,
+    },
     Marker(MarkerKind),
 }
 

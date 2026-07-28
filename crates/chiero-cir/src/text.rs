@@ -867,6 +867,24 @@ impl<'a> Parser<'a> {
                         .map_err(|_| self.perr("bad align"))?,
                 });
             }
+            if self.tok(rest, 0)? == "phi" {
+                let t = self.ty(self.tok(rest, 1)?)?;
+                // `[label value]` pairs, tokenized by whitespace — so the brackets are
+                // stripped from the ends of their own tokens rather than lexed.
+                let mut incomings = Vec::new();
+                let mut i = 2;
+                while let Ok(lbl) = self.tok(rest, i) {
+                    let lbl = lbl.trim_start_matches('[').to_string();
+                    let val = self.tok(rest, i + 1)?.trim_end_matches(']').to_string();
+                    incomings.push((self.label_id(&lbl)?, self.operand(&val)?));
+                    i += 2;
+                }
+                return Ok(InstKind::Phi {
+                    dst,
+                    ty: t,
+                    incomings,
+                });
+            }
             if self.tok(rest, 0)? == "vaarg" {
                 return Ok(InstKind::VaArg {
                     dst,
@@ -1473,6 +1491,16 @@ fn span_note(sp: Span) -> String {
     }
 }
 
+/// The label for a block id, without needing the function — a phi names blocks and
+/// `block_label` takes a `&Function` the instruction printer does not have.
+fn block_label_id(id: BlockId) -> String {
+    if id.0 == 0 {
+        "entry".to_string()
+    } else {
+        format!("bb{}", id.0)
+    }
+}
+
 fn block_label(_f: &Function, id: BlockId) -> String {
     if id.0 == 0 {
         "entry".to_string()
@@ -1643,6 +1671,18 @@ fn print_inst(m: &Module, k: &InstKind, o: &mut String) {
         )),
         InstKind::VaArg { dst, list, ty: t } => {
             o.push_str(&format!("%{} = vaarg {}, {}", dst.0, op(list), ty(t)))
+        }
+        // `%9 = phi i32 [bb1 1i32] [bb2 2i32]` — the edge label inside the bracket with
+        // its value, so a reader never has to count two parallel lists to pair them.
+        InstKind::Phi {
+            dst,
+            ty: t,
+            incomings,
+        } => {
+            o.push_str(&format!("%{} = phi {}", dst.0, ty(t)));
+            for (b, v) in incomings {
+                o.push_str(&format!(" [{} {}]", block_label_id(*b), op(v)));
+            }
         }
         InstKind::VaStart { list } => o.push_str(&format!("vastart {}", op(list))),
         InstKind::VaCopy { dst, src } => o.push_str(&format!("vacopy {} -> {}", op(src), op(dst))),

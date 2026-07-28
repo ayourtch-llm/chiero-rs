@@ -469,13 +469,41 @@ fn every_pass_is_observationally_transparent_over_the_corpus() {
 }
 
 /// The engine's findings for a module, as the reader would see them.
+///
+/// **`ObjectId`s are normalized out**, and that deserves an explanation rather than a
+/// quiet regex. `mem2reg` removes allocas, so the objects the engine creates are numbered
+/// differently afterwards — the same four uninitialized reads on the same four variables
+/// report as `ObjectId(4..6)` before and `ObjectId(6..8)` after. No finding appears or
+/// disappears and no counterexample changes; only an internal allocation counter does,
+/// and §9's promise is about findings and counterexamples.
+///
+/// The leak itself is a real defect and is recorded as owed in HANDOFF §9: a finding's
+/// text should name the *variable* — a span, a declaration — and not an engine-internal
+/// id, because as written the same defect in the same program reads differently under a
+/// different pass configuration, which is exactly what a reader would take as a change.
 fn run_report(m: &Module) -> Vec<String> {
     let mut a = chiero_solver::TermArena::new();
     let r = chiero_exec::Engine::new(m).run(&mut a);
-    let mut out = r.findings();
+    let mut out: Vec<String> = r.findings().iter().map(|s| strip_object_ids(s)).collect();
     // The *set* is the contract; completion order is a scheduling detail a pass may
     // legitimately disturb, so sorting keeps a reordering from reading as a regression.
     out.sort();
+    out
+}
+
+/// Replace `ObjectId(N)` with `ObjectId(_)`, leaving every other word of the finding —
+/// including the offset, the bit and the defect class — compared exactly.
+fn strip_object_ids(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("ObjectId(") {
+        out.push_str(&rest[..i]);
+        out.push_str("ObjectId(_");
+        rest = &rest[i + "ObjectId(".len()..];
+        let j = rest.find(')').unwrap_or(0);
+        rest = &rest[j..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -656,7 +684,7 @@ fn const_fold_wraps_to_the_declared_width() {
 #[test]
 fn the_registry_holds_every_pass_the_spec_names() {
     let registered: Vec<&str> = passes().iter().map(|p| p.name).collect();
-    for named in ["simplify_cfg", "const_fold"] {
+    for named in ["simplify_cfg", "const_fold", "mem2reg"] {
         assert!(
             registered.contains(&named),
             "020 §9 names `{named}`, and an unregistered pass is covered by no sweep in \
@@ -667,14 +695,9 @@ fn the_registry_holds_every_pass_the_spec_names() {
             "and it is reachable by name for a configuration-driven caller"
         );
     }
-    assert!(
-        chiero_opt::pass("mem2reg").is_none(),
-        "`mem2reg` is not implemented yet — when it is, register it, and delete this line \
-         rather than the assertion above it"
-    );
     assert_eq!(
         registered.len(),
-        2,
+        3,
         "a pass was added without being named here, so the spec-anchored list has gone \
          stale: {registered:?}"
     );

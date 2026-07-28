@@ -521,3 +521,152 @@ fn mem2reg_is_registered() {
     let p = chiero_opt::pass("mem2reg").expect("020 §9 names it, so the registry holds it");
     assert_eq!(p.name, "mem2reg");
 }
+
+/// **A join whose incomings agree gets no phi.**
+///
+/// `x = 1; if (n) {} else {} return x;` — the slot is stored once before the branch and
+/// neither arm touches it, so both edges carry the same value and a phi would choose
+/// between a thing and itself. Every phi is a value the engine carries and a term the
+/// solver sees; one that always picks the same operand is pure cost.
+///
+/// The straight-line fixture above does not cover this: it has no join at all, so no phi
+/// is ever *reserved* and an implementation that never prunes still passes it.
+#[test]
+fn a_join_whose_incomings_agree_gets_no_phi() {
+    let mut m = func(
+        vec![slot(0)],
+        vec![
+            block(
+                0,
+                vec![
+                    addr(1, 0, 10),
+                    store(1, i32c(1), 11),
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(2),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Ne,
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(0),
+                                ty: CTy::Int(32),
+                            },
+                        },
+                        12,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(2)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Goto(BlockId(3))),
+            block(2, vec![], Terminator::Goto(BlockId(3))),
+            block(
+                3,
+                vec![load(3, 1, 40)],
+                Terminator::Return(Some(Operand::Value(ValueId(3)))),
+            ),
+        ],
+    );
+    chiero_opt::mem2reg(&mut m);
+    assert_eq!(m.funcs[0].allocas.len(), 0, "promoted");
+    assert_eq!(
+        phis(&m),
+        0,
+        "both edges carry `1`, so the join has nothing to choose: {:#?}",
+        m.funcs[0].blocks
+    );
+    // And the load still reads 1, or the phi was pruned by losing the value.
+    let uses: Vec<Operand> = m.funcs[0]
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            InstKind::Assign {
+                dst,
+                rv: RValue::Use(o),
+            } if *dst == ValueId(3) => Some(o.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uses, vec![i32c(1)], "the value survived the pruning");
+}
+
+/// **A loop header phi that only ever chooses itself collapses.**
+///
+/// `x = 1; while (n) { /* reads x, never writes it */ } return x;` — the header's
+/// incomings are the preheader's `1` and the latch's, and the latch carries whatever the
+/// header did, which is the phi. A phi choosing between `1` and *itself* is `1`.
+///
+/// Without ignoring self-references when judging triviality the phi stands forever: the
+/// two incomings are literally different operands, so nothing prunes it. It is not
+/// *wrong* — it evaluates to 1 on every path — but it is a value the engine carries and a
+/// term the solver sees on every iteration, for a variable that never changes. The
+/// diamond fixture cannot reach this: only a back edge lets a phi be its own incoming.
+#[test]
+fn a_loop_phi_that_only_chooses_itself_collapses() {
+    let mut m = func(
+        vec![slot(0)],
+        vec![
+            block(
+                0,
+                vec![addr(1, 0, 10), store(1, i32c(1), 11)],
+                Terminator::Goto(BlockId(1)),
+            ),
+            block(
+                1,
+                vec![
+                    load(2, 1, 20),
+                    // A `Br` condition is `Int(1)`; the parameter is `Int(32)`, so the
+                    // loop test is a comparison rather than the parameter itself.
+                    inst(
+                        InstKind::Assign {
+                            dst: ValueId(4),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Ne,
+                                a: Operand::Value(ValueId(0)),
+                                b: i32c(0),
+                                ty: CTy::Int(32),
+                            },
+                        },
+                        21,
+                    ),
+                ],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(4)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(
+                2,
+                vec![load(3, 1, 30)],
+                Terminator::Return(Some(Operand::Value(ValueId(3)))),
+            ),
+        ],
+    );
+    chiero_opt::mem2reg(&mut m);
+    assert_eq!(m.funcs[0].allocas.len(), 0, "promoted");
+    assert_eq!(
+        phis(&m),
+        0,
+        "the header chooses between `1` and itself, which is `1`: {:#?}",
+        m.funcs[0].blocks
+    );
+    // And both loads read 1 — a prune that lost the value would leave `Undef` here.
+    let uses: Vec<Operand> = m.funcs[0]
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            InstKind::Assign {
+                rv: RValue::Use(o), ..
+            } => Some(o.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uses, vec![i32c(1), i32c(1)], "both loads read the stored 1");
+    let errs = chiero_cir::verify::verify(&m);
+    assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
+}

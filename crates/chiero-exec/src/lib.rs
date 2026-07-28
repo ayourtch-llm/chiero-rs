@@ -320,6 +320,13 @@ pub struct Frame {
     /// arena folds `concrete_address & 63` to a constant on construction — by the time a
     /// branch sees the condition, the structure that revealed the question is gone.
     bit_inspected: Vec<ValueId>,
+    /// The block this activation was in before the current one, or `None` in the entry.
+    ///
+    /// **Per activation, for the same reason as `locals`**: a `BlockId` is unique only
+    /// within a function, so one field per state would let a returning call resume with
+    /// the callee's last block as its predecessor. Only `Phi` reads it, and a phi's whole
+    /// meaning is "the value belonging to the edge actually taken".
+    prev_block: Option<BlockId>,
     /// The arguments past the declared parameters of a variadic call, in order. 020 §4.4.1
     /// puts the `va_list` in *memory* so `va_list *` can cross a function boundary; this
     /// is the argument area it iterates, which belongs to the activation that received it.
@@ -1626,6 +1633,7 @@ impl<'m> Engine<'m> {
                 frame_objs,
                 ptr_vals: IndexMap::new(),
                 bit_inspected: Vec::new(),
+                prev_block: None,
                 varargs: Vec::new(),
                 lane_w: IndexMap::new(),
             }],
@@ -2615,6 +2623,31 @@ impl<'m> Engine<'m> {
             InstKind::VaEnd { list } => {
                 let _ = self.operand(a, s, list);
             }
+            // **A phi takes the incoming belonging to the edge actually taken** (020 §9).
+            //
+            // The only instruction whose operands are not all evaluated: evaluating them
+            // all would read values that are undefined on this path, and for a loop phi
+            // the latch incoming does not exist yet on the first iteration.
+            //
+            // A phi whose predecessor is not listed is a verifier error, not something to
+            // paper over — taking "the first incoming" would report the *other* branch's
+            // value as a counterexample, so an unmatched edge leaves the destination
+            // unset and the use that follows is the one that reports it.
+            InstKind::Phi { dst, ty, incomings } => {
+                let from = s.stack.last().and_then(|f| f.prev_block);
+                if let Some(op) = from
+                    .and_then(|p| incomings.iter().find(|(b, _)| *b == p))
+                    .map(|(_, v)| v.clone())
+                    && let Some(v) = self.operand(a, s, &op)
+                {
+                    s.set_local(*dst, v);
+                } else {
+                    let u = self.operand(a, s, &Operand::Const(Const::Undef(ty.clone())));
+                    if let Some(v) = u {
+                        s.set_local(*dst, v);
+                    }
+                }
+            }
             // **`Scope` markers are semantic** (020 §4.4): they bound the lifetime of
             // stack objects, "which is what makes use-after-scope detectable". The other
             // marker kinds are reporting-only and do nothing here.
@@ -2873,6 +2906,7 @@ impl<'m> Engine<'m> {
             frame_objs,
             ptr_vals: IndexMap::new(),
             bit_inspected: Vec::new(),
+            prev_block: None,
             varargs,
             lane_w: IndexMap::new(),
         });
@@ -3081,6 +3115,12 @@ impl<'m> Engine<'m> {
                 );
                 return None;
             }
+        }
+        // Recorded **before** `pc` moves, so a `Phi` at the top of `to` reads the edge
+        // that brought it there rather than the block it is already in.
+        let from = s.pc.0;
+        if let Some(fr) = s.stack.last_mut() {
+            fr.prev_block = Some(from);
         }
         s.pc = (to, 0);
         let fid = s.func();
@@ -5522,6 +5562,7 @@ impl<'m> Engine<'m> {
             frame_objs,
             ptr_vals: IndexMap::new(),
             bit_inspected: Vec::new(),
+            prev_block: None,
             varargs: Vec::new(),
             lane_w: IndexMap::new(),
         });

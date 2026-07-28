@@ -32,6 +32,13 @@ pub enum VerifyErrorKind {
     /// 020 §4.3: an `Opaque` with no declared effect is a no-op, which would let a
     /// checker reason about code chiero refused to model.
     OpaqueWithoutEffect,
+    /// 020 §9: a `Phi`'s incomings must be exactly its block's predecessors — no more, no
+    /// fewer. A missing one leaves nothing to choose when that edge is taken; an extra one
+    /// names an edge that does not exist.
+    PhiPredecessorMismatch,
+    /// 020 §9: phis sit at the top of a block. A phi's value is chosen by the edge that
+    /// was taken, and after an ordinary instruction that is no longer the current fact.
+    PhiNotAtTop,
     /// Rule 3: a *warning*. Unreachable C code exists and is legal.
     UnreachableBlock,
 }
@@ -210,6 +217,7 @@ fn verify_function(m: &Module, f: &Function, out: &mut Vec<VerifyError>) {
         (Body::Declared, true) => return,
         (Body::Defined, false) => {}
     }
+    check_phis(f, out);
 
     check_structural_identity(f, out);
     check_references(m, f, out);
@@ -578,6 +586,69 @@ fn check_ssa_and_types(f: &Function, out: &mut Vec<VerifyError>) {
 /// Resolution matters: an unresolved `Value` records as `Void`, and `Void` is the escape
 /// hatch that makes `require_ptr` and the lane checks silently stop checking. One `%1 =
 /// %0` would otherwise erase a pointer's type and disable rule 6 for everything downstream.
+/// 020 §9's two structural rules for `Phi`.
+///
+/// Checked here rather than inside the dominance walk because both are facts about a
+/// block's *edges* and its instruction order, neither of which that walk is looking at.
+fn check_phis(f: &Function, out: &mut Vec<VerifyError>) {
+    for b in &f.blocks {
+        // The predecessors of `b`, as a set. A block may branch to the same successor
+        // twice (`br c, bb1, bb1`), and that is **one** edge for a phi's purposes: there
+        // is one value to choose no matter which arm the printer wrote first.
+        let mut preds: Vec<BlockId> = f
+            .blocks
+            .iter()
+            .filter(|p| p.term.successors().contains(&b.id))
+            .map(|p| p.id)
+            .collect();
+        preds.sort_by_key(|x| x.0);
+        preds.dedup();
+
+        let mut seen_ordinary = false;
+        for i in &b.insts {
+            let InstKind::Phi { dst, incomings, .. } = &i.kind else {
+                // A marker is not an ordinary instruction for this purpose: lowering emits
+                // `.line` and `.scope` markers at a block's top, and a phi after one is
+                // still at the top in every sense that matters.
+                if !matches!(i.kind, InstKind::Marker(_)) {
+                    seen_ordinary = true;
+                }
+                continue;
+            };
+            if seen_ordinary {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::PhiNotAtTop,
+                    i.span,
+                    format!(
+                        "`%{}` follows an ordinary instruction in bb{}",
+                        dst.0, b.id.0
+                    ),
+                );
+            }
+            let mut got: Vec<BlockId> = incomings.iter().map(|(p, _)| *p).collect();
+            got.sort_by_key(|x| x.0);
+            got.dedup();
+            if got != preds {
+                err(
+                    out,
+                    f,
+                    VerifyErrorKind::PhiPredecessorMismatch,
+                    i.span,
+                    format!(
+                        "`%{}` has incomings from {:?} but bb{} is entered from {:?}",
+                        dst.0,
+                        got.iter().map(|x| x.0).collect::<Vec<_>>(),
+                        b.id.0,
+                        preds.iter().map(|x| x.0).collect::<Vec<_>>()
+                    ),
+                );
+            }
+        }
+    }
+}
+
 fn defined_by(i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
     match &i.kind {
         InstKind::Assign { dst, rv } => vec![(*dst, rvalue_type_in(rv, types))],
@@ -588,6 +659,7 @@ fn defined_by(i: &Inst, types: &IndexMap<ValueId, CTy>) -> Vec<(ValueId, CTy)> {
         InstKind::Call { dst: Some(d), .. } => vec![(*d, CTy::Void)],
         InstKind::AllocaDyn { dst, .. } => vec![(*dst, CTy::Ptr)],
         InstKind::VaArg { dst, ty, .. } => vec![(*dst, ty.clone())],
+        InstKind::Phi { dst, ty, .. } => vec![(*dst, ty.clone())],
         // Unlike a call, an `Opaque` *declares* the type of each output, so these are
         // known rather than a gap.
         InstKind::Opaque { dsts, .. } => dsts.clone(),
@@ -669,6 +741,12 @@ fn operands_of(i: &Inst) -> Vec<Operand> {
             v.push(list.clone())
         }
         InstKind::VaCopy { dst, src } => v.extend([dst.clone(), src.clone()]),
+        // **A phi contributes no operands here, and that is the rule rather than an
+        // omission.** Its incomings are evaluated on their *edges*, not at the phi, so
+        // feeding them to the dominance walk would reject every correct phi ever written:
+        // an incoming from `bb1` is defined in `bb1`, which does not dominate the join.
+        // `check_phis` verifies them against the edges instead.
+        InstKind::Phi { .. } => {}
         InstKind::Marker(_) => {}
     }
     v
