@@ -87,8 +87,19 @@ pub fn names(p: &Parsed) -> impl SymbolText + '_ {
     Names(&p.parsed)
 }
 
+/// The same, over a bare `ParsedTu` from [`expression`].
+pub fn names_of(p: &ParsedTu) -> impl SymbolText + '_ {
+    Names(p)
+}
+
 /// Parse a bare expression by wrapping it in an initializer, and hand back the tree plus
 /// the expression's id.
+///
+/// The returned `ParsedTu` **owns the interner those symbols index**, so the caller must
+/// take its `SymbolText` from this TU and not from another. Mixing the two is silent:
+/// symbol 7 exists in both and means different things, which is exactly the hazard
+/// `Symbol`'s own doc comment in `chiero-span` warns about, and it produced `None` from
+/// every fold in the first version of these tests.
 pub fn expression(src: &str) -> (ParsedTu, chiero_ast::ExprId) {
     let text = format!("int probe = {src};");
     let tu = preprocess_str("e.c", &text, Config::default());
@@ -179,7 +190,16 @@ pub fn assert_agrees_with_gcc(src: &str, tag: &str, l: &RecordLayout, p: &Parsed
     }
     prog.push_str("  return 0;\n}\n");
 
-    let dir = std::env::temp_dir().join(format!("chiero-sema-{}-{tag}", std::process::id()));
+    // **A unique directory per invocation.** Keying it on the process id and the tag
+    // collided: cargo runs tests in parallel and nearly every fixture here calls its
+    // record `S`, so two probes wrote the same `probe.c` and ran the other's binary. The
+    // failures were real gcc rejections of somebody else's layout, and every test passed
+    // when run alone — the same shape as the process-global allocation counter that
+    // wave-63 only caught because unrelated tests happened to run beside it.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("chiero-sema-{}-{}-{tag}", std::process::id(), seq));
     let _ = std::fs::create_dir_all(&dir);
     let c = dir.join("probe.c");
     let bin = dir.join("probe");

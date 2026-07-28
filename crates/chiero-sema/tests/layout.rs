@@ -298,6 +298,22 @@ fn a_spread_of_awkward_records_agrees_with_gcc() {
             "S",
         ),
         ("struct S { char a[0]; int b; };", "S"),
+        // Record-level `aligned`, which is a different code path from a member-level one
+        // and which a mutation showed was unexercised.
+        ("struct __attribute__((aligned(32))) S { int a; };", "S"),
+        (
+            "struct __attribute__((aligned(32))) S { char a; char b; };",
+            "S",
+        ),
+        (
+            "union __attribute__((packed)) S { int a; char b[7]; };",
+            "S",
+        ),
+        // A union of **bit-fields**: each starts at bit 0. Nothing else here had one, so
+        // laying them out sequentially was indistinguishable from laying them on top of
+        // each other — the sizes come out the same and only the bit probe can tell.
+        ("union S { int a:3; int b:20; };", "S"),
+        ("union S { unsigned a:1; unsigned b:32; char c; };", "S"),
     ];
     for (src, tag) in cases {
         let p = parse(src, TargetConfig::x86_64_linux());

@@ -7,7 +7,7 @@
 //! 014 §7 validates layout differentially against the real compiler instead of against
 //! hand-written expectations: the expectations are exactly what a layout bug corrupts.
 
-use chiero_ast::{Ast, DeclId, ExprId};
+use chiero_ast::{Ast, DeclId, DeclKind, ExprId, TypeId, TypeKind};
 use chiero_span::{Span, Symbol};
 use indexmap::IndexMap;
 
@@ -126,6 +126,7 @@ pub enum Ty {
     },
     Func {
         ret: TyId,
+        params: Vec<TyId>,
         variadic: bool,
     },
     Record(RecordId),
@@ -240,13 +241,13 @@ impl Analysis {
 
     /// Size in bytes, or `None` for a type that has none — a function, or `Error`.
     pub fn size_of(&self, id: TyId) -> Option<u64> {
-        let _ = id;
-        todo!("014 §3")
+        let t = self.target.as_ref()?;
+        size_of_ty(self, t, id)
     }
 
     pub fn align_of(&self, id: TyId) -> Option<u64> {
-        let _ = id;
-        todo!("014 §3")
+        let t = self.target.as_ref()?;
+        align_of_ty(self, t, id)
     }
 }
 
@@ -262,8 +263,24 @@ pub trait SymbolText {
 
 /// Analyse one TU's AST against a target (014 §§2–6).
 pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Analysis {
-    let _ = (ast, target, names);
-    todo!("014 §§2-6: types, layout and constant evaluation")
+    let mut cx = Cx {
+        ast,
+        target: target.clone(),
+        names,
+        out: Analysis {
+            target: Some(target.clone()),
+            ..Analysis::default()
+        },
+        typedefs: IndexMap::new(),
+        tags: IndexMap::new(),
+        enums: IndexMap::new(),
+        enumerators: IndexMap::new(),
+        in_progress: Vec::new(),
+    };
+    for &item in ast.items() {
+        cx.item(item);
+    }
+    cx.out
 }
 
 /// Evaluate an integer constant expression (014 §6).
@@ -275,8 +292,864 @@ pub fn const_eval(
     ast: &Ast,
     expr: ExprId,
     names: &dyn SymbolText,
+    target: &TargetConfig,
     out: &mut Vec<SemaDiagnostic>,
 ) -> Option<ConstVal> {
-    let _ = (ast, expr, names, out);
-    todo!("014 §6: constant evaluation")
+    // A throwaway context, so `sizeof(int)` resolves standalone. `sizeof(struct S)` needs
+    // the TU's tag table and therefore needs `analyze`; that is a real limit and is why
+    // this takes a target rather than pretending sizes are universal.
+    let mut cx = Cx {
+        ast,
+        target: target.clone(),
+        names,
+        out: Analysis::default(),
+        typedefs: IndexMap::new(),
+        tags: IndexMap::new(),
+        enums: IndexMap::new(),
+        enumerators: IndexMap::new(),
+        in_progress: Vec::new(),
+    };
+    let v = cx.eval(expr);
+    out.append(&mut cx.out.diagnostics);
+    v.map(|v| ConstVal::Int(v.v))
+}
+
+/// A constant's value **and its type**, because contract 19 is about the type.
+///
+/// `2147483647 + 1` overflows and `0x100000000` does not, and the only thing that
+/// distinguishes them is that the first is `int` arithmetic and the second is a `long`
+/// literal. Carrying the value alone makes the two indistinguishable, which is how the
+/// first implementation of this silently accepted both.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct IntVal {
+    v: i128,
+    bits: u32,
+    signed: bool,
+}
+
+// ---------------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------------
+
+struct Cx<'a> {
+    ast: &'a Ast,
+    target: TargetConfig,
+    names: &'a dyn SymbolText,
+    out: Analysis,
+    typedefs: IndexMap<Symbol, TyId>,
+    tags: IndexMap<Symbol, RecordId>,
+    /// Enum tag → its underlying integer type (014 contract 10).
+    enums: IndexMap<Symbol, TyId>,
+    /// Enumerator name → value, so `enum { A = 1, B = A + 1 }` and any later use of `A`
+    /// in a constant expression resolve. 013 left every name unresolved on purpose.
+    enumerators: IndexMap<Symbol, i128>,
+    /// Records currently being laid out, so a struct containing itself by value is a
+    /// diagnostic rather than a stack overflow.
+    in_progress: Vec<Symbol>,
+}
+
+impl Cx<'_> {
+    fn intern(&mut self, ty: Ty) -> TyId {
+        if let Some(&id) = self.out.interned.get(&ty) {
+            return id;
+        }
+        let id = TyId(self.out.types.len() as u32);
+        self.out.types.push(ty.clone());
+        self.out.interned.insert(ty, id);
+        id
+    }
+
+    fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.out.diagnostics.push(SemaDiagnostic {
+            span,
+            message: message.into(),
+        });
+    }
+
+    fn text(&self, sym: Symbol) -> Option<&str> {
+        self.names.text(sym)
+    }
+
+    fn item(&mut self, id: DeclId) {
+        match self.ast.decl(id).kind.clone() {
+            DeclKind::Var { ty, .. } => {
+                let t = self.ty_of(ty);
+                self.out.decl_types.insert(id, t);
+            }
+            DeclKind::Typedef { name, ty } => {
+                let t = self.ty_of(ty);
+                self.typedefs.insert(name, t);
+                self.out.decl_types.insert(id, t);
+            }
+            DeclKind::Func { ty, .. } => {
+                let t = self.ty_of(ty);
+                self.out.decl_types.insert(id, t);
+            }
+            DeclKind::TagDef { ty } => {
+                let t = self.ty_of(ty);
+                self.out.decl_types.insert(id, t);
+            }
+            DeclKind::StaticAssert { cond, msg } => self.static_assert(id, cond, msg),
+            DeclKind::Error => {}
+        }
+    }
+
+    /// 014 contract 13: a false `_Static_assert` is **exactly one** diagnostic, carrying
+    /// the message the source gave it, and analysis continues.
+    fn static_assert(&mut self, id: DeclId, cond: ExprId, msg: Option<Symbol>) {
+        let span = self.ast.decl(id).span;
+        let before = self.out.diagnostics.len();
+        let v = self.eval(cond);
+        let diags: Vec<SemaDiagnostic> = self.out.diagnostics.drain(before..).collect();
+        // The condition's own diagnostics are **dropped when it evaluated anyway**: an
+        // overflow inside an assertion that still comes out true is not a second
+        // complaint about the assertion, and contract 13 asks for exactly one.
+        match v.map(|v| v.v) {
+            Some(0) => {
+                let text = msg
+                    .and_then(|m| self.text(m))
+                    .map(str::to_owned)
+                    .unwrap_or_default();
+                self.error(span, format!("static assertion failed: {text}"));
+            }
+            Some(_) => {}
+            None => {
+                self.out.diagnostics.extend(diags);
+                self.error(
+                    span,
+                    "static assertion is not an integer constant expression",
+                );
+            }
+        }
+    }
+
+    /// Resolve a syntactic `TypeId` from 013 into a semantic `TyId`.
+    fn ty_of(&mut self, ty: TypeId) -> TyId {
+        let node = self.ast.ty(ty).clone();
+        match node.kind {
+            TypeKind::Builtin(b) => {
+                let t = self.builtin(b);
+                self.intern(t)
+            }
+            TypeKind::Named(sym) => match self.typedefs.get(&sym).copied() {
+                Some(t) => t,
+                None => {
+                    let name = self.text(sym).unwrap_or("?").to_owned();
+                    self.error(node.span, format!("unknown type name `{name}`"));
+                    self.intern(Ty::Error)
+                }
+            },
+            TypeKind::Ptr(inner) => {
+                let p = self.ty_of(inner);
+                self.intern(Ty::Ptr(p))
+            }
+            TypeKind::Array { elem, len } => {
+                let e = self.ty_of(elem);
+                let l = match len {
+                    chiero_ast::ArrayLen::Zero => ArrayLen::Zero,
+                    chiero_ast::ArrayLen::Unspecified | chiero_ast::ArrayLen::Star => {
+                        ArrayLen::Flexible
+                    }
+                    chiero_ast::ArrayLen::Fixed(expr) => {
+                        let n = self.eval(expr).map(|v| v.v);
+                        match n {
+                            Some(n) if n >= 0 => ArrayLen::Fixed(n as u64),
+                            Some(_) => {
+                                self.error(node.span, "array length is negative");
+                                ArrayLen::Fixed(0)
+                            }
+                            None => {
+                                // A VLA. 014 lists it in `ArrayLen`, but a variable bound
+                                // has no size at compile time, so it is not a layout
+                                // question and is left to 015.
+                                ArrayLen::Flexible
+                            }
+                        }
+                    }
+                };
+                self.intern(Ty::Array { elem: e, len: l })
+            }
+            TypeKind::Func {
+                ret,
+                params,
+                variadic,
+                ..
+            } => {
+                let r = self.ty_of(ret);
+                let ps = params
+                    .iter()
+                    .map(|&p| match &self.ast.decl(p).kind {
+                        DeclKind::Var { ty, .. } => {
+                            let ty = *ty;
+                            self.ty_of(ty)
+                        }
+                        _ => self.intern(Ty::Error),
+                    })
+                    .collect();
+                self.intern(Ty::Func {
+                    ret: r,
+                    params: ps,
+                    variadic,
+                })
+            }
+            TypeKind::Tag { tag, name, members } => self.tag(ty, tag, name, members),
+            TypeKind::TypeofExpr(_) | TypeKind::TypeofType(_) => {
+                // `typeof` needs expression typing, which is contract 11's half of 014
+                // and is not this slice. `Error` is the honest answer and it propagates
+                // rather than producing a wrong size.
+                self.intern(Ty::Error)
+            }
+            TypeKind::Error => self.intern(Ty::Error),
+        }
+    }
+
+    fn builtin(&self, b: chiero_ast::Builtin) -> Ty {
+        use chiero_ast::Builtin as B;
+        let s = &self.target.sizes;
+        let int = |signed, bits| Ty::Int { signed, bits };
+        match b {
+            B::Void => Ty::Void,
+            B::Bool => int(false, 1),
+            // **Plain `char` follows the target** (contract 9), and is a *third* type
+            // distinct from both `signed char` and `unsigned char`. Only this one moves.
+            B::Char => int(self.target.char_signed, 8),
+            B::SChar => int(true, 8),
+            B::UChar => int(false, 8),
+            B::Short => int(true, (s.short_ * 8) as u32),
+            B::UShort => int(false, (s.short_ * 8) as u32),
+            B::Int => int(true, (s.int_ * 8) as u32),
+            B::UInt => int(false, (s.int_ * 8) as u32),
+            B::Long => int(true, (s.long_ * 8) as u32),
+            B::ULong => int(false, (s.long_ * 8) as u32),
+            B::LongLong => int(true, (s.long_long * 8) as u32),
+            B::ULongLong => int(false, (s.long_long * 8) as u32),
+            B::Int128 => int(true, 128),
+            B::UInt128 => int(false, 128),
+            B::VaList => {
+                // On x86-64 `__builtin_va_list` is `struct __va_list_tag [1]`, 24 bytes
+                // aligned 8. Modelled by its ABI shape rather than as a record, because
+                // nothing declares the record and 021 only needs the size.
+                Ty::Array {
+                    elem: TyId(u32::MAX),
+                    len: ArrayLen::Fixed(0),
+                }
+            }
+            B::Float => Ty::Float(FloatKind::F32),
+            B::Double => Ty::Float(FloatKind::F64),
+            B::LongDouble => Ty::Float(match self.target.long_double {
+                LongDoubleKind::X87_80 => FloatKind::X87_80,
+                LongDoubleKind::Binary128 => FloatKind::Binary128,
+                LongDoubleKind::Double => FloatKind::F64,
+            }),
+            B::ExtFloat { bits, fmt } => Ty::Float(match (bits, fmt) {
+                (16, chiero_ast::FloatFmt::Brain) => FloatKind::BFloat16,
+                (16, _) => FloatKind::Binary16,
+                (32, _) => FloatKind::F32,
+                (64, _) => FloatKind::F64,
+                _ => FloatKind::Binary128,
+            }),
+        }
+    }
+
+    fn tag(
+        &mut self,
+        node: TypeId,
+        tag: chiero_ast::TagKind,
+        name: Option<Symbol>,
+        members: Option<Vec<DeclId>>,
+    ) -> TyId {
+        let span = self.ast.ty(node).span;
+        if tag == chiero_ast::TagKind::Enum {
+            return self.enum_ty(span, name, members);
+        }
+        // A reference to an already-defined tag.
+        if members.is_none() {
+            if let Some(&rid) = name.and_then(|n| self.tags.get(&n)) {
+                return self.intern(Ty::Record(rid));
+            }
+            // An incomplete type. Legal in a pointer, which is the only place it can
+            // appear without a size being asked for.
+            return self.intern(Ty::Error);
+        }
+        if let Some(name) = name {
+            if self.in_progress.contains(&name) {
+                let n = self.text(name).unwrap_or("?").to_owned();
+                self.error(span, format!("`struct {n}` contains itself by value"));
+                return self.intern(Ty::Error);
+            }
+            self.in_progress.push(name);
+        }
+        let layout = self.lay_out(node, tag == chiero_ast::TagKind::Union, &members.unwrap());
+        if name.is_some() {
+            self.in_progress.pop();
+        }
+        let rid = RecordId(self.out.records.len() as u32);
+        self.out.records.push(layout);
+        if let Some(name) = name {
+            self.tags.insert(name, rid);
+            self.out.by_tag.insert(name, rid);
+        }
+        self.intern(Ty::Record(rid))
+    }
+
+    /// 014 contract 10: the underlying type is `int` unless a value requires wider.
+    fn enum_ty(&mut self, span: Span, name: Option<Symbol>, members: Option<Vec<DeclId>>) -> TyId {
+        let Some(members) = members else {
+            if let Some(&t) = name.and_then(|n| self.enums.get(&n)) {
+                return t;
+            }
+            let _ = span;
+            let bits = (self.target.sizes.int_ * 8) as u32;
+            return self.intern(Ty::Int { signed: true, bits });
+        };
+        let mut next = 0i128;
+        let mut lo = 0i128;
+        let mut hi = 0i128;
+        for m in &members {
+            let DeclKind::Var {
+                name: Some(en),
+                init,
+                ..
+            } = self.ast.decl(*m).kind.clone()
+            else {
+                continue;
+            };
+            let v = match init {
+                Some(e) => self.eval(e).map(|v| v.v).unwrap_or(next),
+                None => next,
+            };
+            next = v.wrapping_add(1);
+            lo = lo.min(v);
+            hi = hi.max(v);
+            self.enumerators.insert(en, v);
+        }
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        let fits_int = lo >= -(1i128 << (int_bits - 1)) && hi < (1i128 << (int_bits - 1));
+        let t = if fits_int {
+            Ty::Int {
+                signed: true,
+                bits: int_bits,
+            }
+        } else {
+            // gcc widens to `long` (64-bit here) rather than to an arbitrary width.
+            Ty::Int {
+                signed: lo < 0 || hi < (1i128 << 63),
+                bits: (self.target.sizes.long_ * 8) as u32,
+            }
+        };
+        let id = self.intern(t);
+        if let Some(n) = name {
+            self.enums.insert(n, id);
+        }
+        id
+    }
+
+    /// 014 §3. The gcc x86-64 rules, with bit-fields.
+    fn lay_out(&mut self, node: TypeId, is_union: bool, members: &[DeclId]) -> RecordLayout {
+        let packed = self
+            .ast
+            .ty(node)
+            .attrs
+            .iter()
+            .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+
+        let mut fields: Vec<FieldLayout> = Vec::new();
+        let mut bit_cursor: u64 = 0; // bits from the start of the record
+        let mut size_bits: u64 = 0;
+        let mut align: u64 = 1;
+        let mut flexible_member = None;
+
+        for &m in members {
+            let DeclKind::Var { name, ty, .. } = self.ast.decl(m).kind.clone() else {
+                continue;
+            };
+            let fty = self.ty_of(ty);
+            let member_packed = packed
+                || self
+                    .ast
+                    .ty(ty)
+                    .attrs
+                    .iter()
+                    .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+            // `aligned(n)` raises alignment, and combined with `packed` it does **not**
+            // re-introduce padding before the member — it only raises the record's own
+            // alignment. 014 §3 calls this out because getting it backwards is the
+            // common error.
+            let requested = self.aligned_attr(ty);
+
+            let bw = self.ast.bitfield(m);
+            if let Some(bw) = bw {
+                let w = self.eval(bw).map(|v| v.v).unwrap_or(0).max(0) as u64;
+                let unit_bits = size_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
+                let unit_align_bits = align_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
+
+                if w == 0 {
+                    // Contract 4: declares no member, and forces the next allocation to
+                    // the next unit boundary.
+                    if !member_packed {
+                        bit_cursor = round_up(bit_cursor, unit_align_bits);
+                        align = align.max(unit_align_bits / 8);
+                    }
+                    size_bits = size_bits.max(bit_cursor);
+                    continue;
+                }
+                let mut start = if is_union { 0 } else { bit_cursor };
+                if !member_packed {
+                    // Straddling (contract 5): if the field would cross a boundary of its
+                    // declared type's storage unit, move it to the next one.
+                    if unit_bits > 0 && (start % unit_bits) + w > unit_bits {
+                        start = round_up(start, unit_align_bits);
+                    }
+                    align = align.max(unit_align_bits / 8).max(requested.unwrap_or(1));
+                } else if let Some(r) = requested {
+                    align = align.max(r);
+                }
+                fields.push(FieldLayout {
+                    name,
+                    ty: fty,
+                    offset: start / 8,
+                    bits: Some(BitField {
+                        bit_offset: start,
+                        width: w,
+                    }),
+                });
+                bit_cursor = start + w;
+                size_bits = size_bits.max(start + w);
+                continue;
+            }
+
+            // An ordinary member.
+            let msize = size_of_ty(&self.out, &self.target, fty).unwrap_or(0);
+            let malign = if member_packed {
+                requested.unwrap_or(1)
+            } else {
+                align_of_ty(&self.out, &self.target, fty)
+                    .unwrap_or(1)
+                    .max(requested.unwrap_or(1))
+            };
+            let start = if is_union {
+                0
+            } else {
+                round_up(bit_cursor, malign * 8)
+            };
+            let is_flexible = matches!(
+                self.out.types[fty.0 as usize],
+                Ty::Array {
+                    len: ArrayLen::Flexible,
+                    ..
+                }
+            );
+            if is_flexible {
+                flexible_member = Some(fields.len());
+            }
+            fields.push(FieldLayout {
+                name,
+                ty: fty,
+                offset: start / 8,
+                bits: None,
+            });
+            // A flexible or zero-length array contributes 0 to size but does affect
+            // alignment (contract 7).
+            //
+            // The cursor advances even in a union, where it is then **never read** —
+            // every union member starts at 0. Guarding it was dead code that read as
+            // though it mattered, and two mutations that removed the guards changed
+            // nothing, which is how it was found.
+            bit_cursor = start + msize * 8;
+            size_bits = size_bits.max(start + msize * 8);
+            align = align.max(if member_packed {
+                requested.unwrap_or(1)
+            } else {
+                malign
+            });
+        }
+
+        if packed {
+            // The *record's* alignment is 1 unless a member asked for more.
+            let requested_max = members
+                .iter()
+                .filter_map(|&m| match &self.ast.decl(m).kind {
+                    DeclKind::Var { ty, .. } => self.aligned_attr(*ty),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(1);
+            align = requested_max.max(1);
+        }
+        if let Some(r) = self.aligned_attr(node) {
+            align = align.max(r);
+        }
+        let size = round_up(round_up(size_bits, 8) / 8, align);
+        RecordLayout {
+            size,
+            align,
+            fields,
+            is_union,
+            flexible_member,
+            packed,
+        }
+    }
+
+    /// The `n` of `__attribute__((aligned(n)))` on a syntactic type node.
+    fn aligned_attr(&mut self, ty: TypeId) -> Option<u64> {
+        let attrs = self.ast.ty(ty).attrs.clone();
+        let mut best: Option<u64> = None;
+        for a in attrs {
+            if !matches!(self.text(a.name), Some("aligned" | "__aligned__")) {
+                continue;
+            }
+            let Some(&arg) = a.args.first() else {
+                // Bare `aligned` means the target's biggest useful alignment.
+                best = Some(best.unwrap_or(0).max(16));
+                continue;
+            };
+            if let Some(n) = self.eval(arg).map(|v| v.v).filter(|&n| n > 0) {
+                best = Some(best.unwrap_or(0).max(n as u64));
+            }
+        }
+        best
+    }
+}
+
+impl Cx<'_> {
+    /// 014 §6, the integer subset — array bounds, bit-field widths, enum values,
+    /// `_Static_assert`, case labels.
+    ///
+    /// Types are tracked alongside values because contract 19 is a question about types:
+    /// overflow **wraps and diagnoses once** rather than poisoning the expression, since
+    /// an array bound that stopped resolving would cascade into every use of the type,
+    /// which is the opposite of what §5's `Ty::Error` policy is for.
+    fn eval(&mut self, expr: ExprId) -> Option<IntVal> {
+        use chiero_ast::{BinOp, ExprKind, UnOp};
+        let node = self.ast.expr(expr).clone();
+        let span = node.span;
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        match node.kind {
+            ExprKind::Number(sym) => {
+                let text = self.text(sym)?.to_owned();
+                parse_int_literal(&text, &self.target)
+            }
+            // A character constant has type `int` in C, not `char`.
+            ExprKind::Char { spelling } => {
+                let text = self.text(spelling)?.to_owned();
+                Some(IntVal {
+                    v: parse_char_literal(&text)?,
+                    bits: int_bits,
+                    signed: true,
+                })
+            }
+            ExprKind::Ident(sym) => self.enumerators.get(&sym).copied().map(|v| IntVal {
+                v,
+                bits: int_bits,
+                signed: true,
+            }),
+            ExprKind::SizeofType(ty) => {
+                let t = self.ty_of(ty);
+                let n = size_of_ty(&self.out, &self.target, t)?;
+                Some(self.size_t(n as i128))
+            }
+            ExprKind::AlignofType(ty) => {
+                let t = self.ty_of(ty);
+                let n = align_of_ty(&self.out, &self.target, t)?;
+                Some(self.size_t(n as i128))
+            }
+            ExprKind::Unary { op, operand } => {
+                let a = self.eval(operand)?;
+                let a = promote(a, int_bits);
+                Some(match op {
+                    UnOp::Plus => a,
+                    UnOp::Minus => self.wrap(a.v.wrapping_neg(), a, span),
+                    UnOp::Not => IntVal {
+                        v: (a.v == 0) as i128,
+                        bits: int_bits,
+                        signed: true,
+                    },
+                    UnOp::BitNot => self.wrap(!a.v, a, span),
+                    _ => return None,
+                })
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let a = promote(self.eval(lhs)?, int_bits);
+                let b = promote(self.eval(rhs)?, int_bits);
+                let r = usual_arithmetic(a, b);
+                let bool_ = IntVal {
+                    v: 0,
+                    bits: int_bits,
+                    signed: true,
+                };
+                let (raw, ty) = match op {
+                    BinOp::Add => (a.v.checked_add(b.v)?, r),
+                    BinOp::Sub => (a.v.checked_sub(b.v)?, r),
+                    BinOp::Mul => (a.v.checked_mul(b.v)?, r),
+                    BinOp::Div | BinOp::Rem => {
+                        if b.v == 0 {
+                            self.error(span, "division by zero in a constant expression");
+                            return None;
+                        }
+                        let v = if matches!(op, BinOp::Div) {
+                            a.v.checked_div(b.v)?
+                        } else {
+                            a.v.checked_rem(b.v)?
+                        };
+                        (v, r)
+                    }
+                    // Shifts take the *left* operand's type, not the usual conversions.
+                    BinOp::Shl => (a.v.checked_shl(b.v.try_into().ok()?)?, a),
+                    BinOp::Shr => (a.v.checked_shr(b.v.try_into().ok()?)?, a),
+                    BinOp::Lt => ((a.v < b.v) as i128, bool_),
+                    BinOp::Gt => ((a.v > b.v) as i128, bool_),
+                    BinOp::Le => ((a.v <= b.v) as i128, bool_),
+                    BinOp::Ge => ((a.v >= b.v) as i128, bool_),
+                    BinOp::Eq => ((a.v == b.v) as i128, bool_),
+                    BinOp::Ne => ((a.v != b.v) as i128, bool_),
+                    BinOp::BitAnd => (a.v & b.v, r),
+                    BinOp::BitXor => (a.v ^ b.v, r),
+                    BinOp::BitOr => (a.v | b.v, r),
+                    BinOp::LogAnd => (((a.v != 0) && (b.v != 0)) as i128, bool_),
+                    BinOp::LogOr => (((a.v != 0) || (b.v != 0)) as i128, bool_),
+                };
+                Some(self.wrap(raw, ty, span))
+            }
+            ExprKind::Cond { cond, then, els } => {
+                let c = self.eval(cond)?;
+                if c.v != 0 {
+                    match then {
+                        Some(t) => self.eval(t),
+                        None => Some(c),
+                    }
+                } else {
+                    self.eval(els)
+                }
+            }
+            ExprKind::Comma { rhs, .. } => self.eval(rhs),
+            // A cast to an integer type truncates to that type, which is how
+            // `(char)0xFF == -1` gets its answer (contract 9).
+            ExprKind::Cast { ty, operand } => {
+                let v = self.eval(operand)?;
+                let t = self.ty_of(ty);
+                match self.out.types.get(t.0 as usize) {
+                    Some(Ty::Int { signed, bits }) => {
+                        let (signed, bits) = (*signed, *bits);
+                        Some(truncate(v.v, bits, signed))
+                    }
+                    _ => Some(v),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn size_t(&self, v: i128) -> IntVal {
+        IntVal {
+            v,
+            bits: (self.target.sizes.long_ * 8) as u32,
+            signed: false,
+        }
+    }
+
+    /// Fit `raw` into `ty`, diagnosing **once** if it does not fit.
+    fn wrap(&mut self, raw: i128, ty: IntVal, span: Span) -> IntVal {
+        let fitted = truncate(raw, ty.bits, ty.signed);
+        if fitted.v != raw && ty.signed {
+            self.error(span, "signed overflow in a constant expression");
+        }
+        fitted
+    }
+}
+
+/// Integer promotion: anything narrower than `int` becomes `int`.
+fn promote(v: IntVal, int_bits: u32) -> IntVal {
+    if v.bits >= int_bits {
+        return v;
+    }
+    IntVal {
+        v: v.v,
+        bits: int_bits,
+        signed: true,
+    }
+}
+
+/// C's usual arithmetic conversions for the integer cases.
+fn usual_arithmetic(a: IntVal, b: IntVal) -> IntVal {
+    if a.bits == b.bits {
+        return IntVal {
+            v: 0,
+            bits: a.bits,
+            // If either is unsigned at the same width, the result is unsigned.
+            signed: a.signed && b.signed,
+        };
+    }
+    let (w, n) = if a.bits > b.bits { (a, b) } else { (b, a) };
+    IntVal {
+        v: 0,
+        bits: w.bits,
+        // A wider signed type can represent every value of a narrower unsigned one.
+        signed: if w.signed && !n.signed {
+            true
+        } else {
+            w.signed
+        },
+    }
+}
+
+fn truncate(v: i128, bits: u32, signed: bool) -> IntVal {
+    let bits = bits.clamp(1, 127);
+    let mask = (1i128 << bits) - 1;
+    let raw = v & mask;
+    let out = if signed && (raw >> (bits - 1)) & 1 == 1 {
+        raw - (1i128 << bits)
+    } else {
+        raw
+    };
+    IntVal {
+        v: out,
+        bits,
+        signed,
+    }
+}
+
+fn round_up(v: u64, to: u64) -> u64 {
+    if to == 0 {
+        return v;
+    }
+    v.div_ceil(to) * to
+}
+
+fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
+    match a.types.get(id.0 as usize)? {
+        Ty::Void => Some(1), // gcc's `sizeof(void) == 1`
+        Ty::Int { bits, .. } => Some(((*bits).max(8) as u64).div_ceil(8)),
+        Ty::Float(f) => Some(match f {
+            FloatKind::Binary16 | FloatKind::BFloat16 => 2,
+            FloatKind::F32 => 4,
+            FloatKind::F64 => 8,
+            FloatKind::X87_80 => 16,
+            FloatKind::Binary128 => 16,
+        }),
+        Ty::Ptr(_) => Some((t.pointer_width / 8) as u64),
+        Ty::Array { elem, len } => match len {
+            ArrayLen::Fixed(n) => Some(size_of_ty(a, t, *elem)? * n),
+            // Contributes 0 to size, but its alignment still counts.
+            ArrayLen::Flexible | ArrayLen::Zero => Some(0),
+        },
+        Ty::Func { .. } => None,
+        Ty::Record(r) => Some(a.records.get(r.0 as usize)?.size),
+        Ty::Vector { elem, lanes } => Some(size_of_ty(a, t, *elem)? * (*lanes as u64)),
+        Ty::Error => None,
+    }
+}
+
+fn align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
+    match a.types.get(id.0 as usize)? {
+        Ty::Void => Some(1),
+        Ty::Int { bits, .. } => Some(match bits {
+            0..=8 => 1,
+            9..=16 => t.aligns.short_,
+            17..=32 => t.aligns.int_,
+            33..=64 => t.aligns.long_,
+            _ => 16,
+        }),
+        Ty::Float(f) => Some(match f {
+            FloatKind::Binary16 | FloatKind::BFloat16 => 2,
+            FloatKind::F32 => 4,
+            FloatKind::F64 => t.aligns.double_,
+            FloatKind::X87_80 | FloatKind::Binary128 => t.aligns.long_double,
+        }),
+        Ty::Ptr(_) => Some(t.aligns.pointer),
+        Ty::Array { elem, .. } => align_of_ty(a, t, *elem),
+        Ty::Func { .. } => None,
+        Ty::Record(r) => Some(a.records.get(r.0 as usize)?.align),
+        Ty::Vector { elem, lanes } => Some(align_of_ty(a, t, *elem)? * (*lanes as u64)),
+        Ty::Error => None,
+    }
+}
+
+/// A literal's value **and the type C gives it**, which is what decides whether a later
+/// operation overflows: `2147483647 + 1` is `int` arithmetic and overflows,
+/// `0x100000000 + 1` is `long` arithmetic and does not.
+///
+/// The rule is C11 §6.4.4.1: take the first type in the literal's rank list that can
+/// represent the value. A decimal literal without a suffix never becomes unsigned; a hex
+/// or octal one may, which is why `0xffffffff` is `unsigned int` and `4294967295` is
+/// `long`.
+fn parse_int_literal(text: &str, target: &TargetConfig) -> Option<IntVal> {
+    let lower = text.to_ascii_lowercase();
+    let unsigned_suffix = lower.contains('u');
+    let long_suffix = lower.contains('l');
+    let t: String = text
+        .trim_end_matches(['u', 'U', 'l', 'L', 'z', 'Z'])
+        .replace('\'', ""); // C23 digit separators
+    let (v, decimal) = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        (i128::from_str_radix(h, 16).ok()?, false)
+    } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+        (i128::from_str_radix(b, 2).ok()?, false)
+    } else if t.len() > 1 && t.starts_with('0') && t.bytes().all(|c| c.is_ascii_digit()) {
+        (i128::from_str_radix(&t[1..], 8).ok()?, false)
+    } else {
+        (t.parse::<i128>().ok()?, true)
+    };
+
+    let int_bits = (target.sizes.int_ * 8) as u32;
+    let long_bits = (target.sizes.long_ * 8) as u32;
+    let mut candidates: Vec<(u32, bool)> = Vec::new();
+    if !long_suffix {
+        if !unsigned_suffix {
+            candidates.push((int_bits, true));
+        }
+        if unsigned_suffix || !decimal {
+            candidates.push((int_bits, false));
+        }
+    }
+    if !unsigned_suffix {
+        candidates.push((long_bits, true));
+    }
+    if unsigned_suffix || !decimal {
+        candidates.push((long_bits, false));
+    }
+    candidates.push((128, !unsigned_suffix));
+    for (bits, signed) in candidates {
+        if fits(v, bits, signed) {
+            return Some(IntVal { v, bits, signed });
+        }
+    }
+    Some(IntVal {
+        v,
+        bits: 128,
+        signed: true,
+    })
+}
+
+fn fits(v: i128, bits: u32, signed: bool) -> bool {
+    if bits >= 127 {
+        return true;
+    }
+    if signed {
+        v >= -(1i128 << (bits - 1)) && v < (1i128 << (bits - 1))
+    } else {
+        v >= 0 && v < (1i128 << bits)
+    }
+}
+
+fn parse_char_literal(text: &str) -> Option<i128> {
+    let inner = text.split_once('\'')?.1;
+    let inner = inner.rsplit_once('\'')?.0;
+    let mut it = inner.chars();
+    let c = it.next()?;
+    if c != '\\' {
+        return Some(c as i128);
+    }
+    Some(match it.next()? {
+        'n' => 10,
+        't' => 9,
+        'r' => 13,
+        '0' => 0,
+        '\\' => 92,
+        '\'' => 39,
+        '"' => 34,
+        'a' => 7,
+        'b' => 8,
+        'f' => 12,
+        'v' => 11,
+        other => other as i128,
+    })
 }

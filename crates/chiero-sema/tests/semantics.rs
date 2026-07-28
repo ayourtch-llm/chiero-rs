@@ -106,13 +106,17 @@ fn a_false_static_assert_is_exactly_one_diagnostic() {
 /// use of the type.
 #[test]
 fn signed_overflow_in_a_constant_expression_wraps_and_diagnoses_once() {
-    let p = parse("int probe;", TargetConfig::x86_64_linux());
-    let names = harness::names(&p);
-
     // `2147483647 + 1` in `int`.
     let (ast, expr) = harness::expression("2147483647 + 1");
+    let names = harness::names_of(&ast);
     let mut diags: Vec<SemaDiagnostic> = Vec::new();
-    let v = const_eval(&ast.ast, expr, &names, &mut diags);
+    let v = const_eval(
+        &ast.ast,
+        expr,
+        &names,
+        &TargetConfig::x86_64_linux(),
+        &mut diags,
+    );
     assert_eq!(
         diags.len(),
         1,
@@ -127,8 +131,15 @@ fn signed_overflow_in_a_constant_expression_wraps_and_diagnoses_once() {
     // The discriminator: the same expression one below the edge is silent, so the
     // diagnostic is about overflow and not about addition.
     let (ast, expr) = harness::expression("2147483646 + 1");
+    let names = harness::names_of(&ast);
     let mut diags = Vec::new();
-    let v = const_eval(&ast.ast, expr, &names, &mut diags);
+    let v = const_eval(
+        &ast.ast,
+        expr,
+        &names,
+        &TargetConfig::x86_64_linux(),
+        &mut diags,
+    );
     assert!(diags.is_empty(), "no overflow, no diagnostic: {diags:?}");
     assert_eq!(v, Some(ConstVal::Int(2147483647)));
 }
@@ -136,8 +147,6 @@ fn signed_overflow_in_a_constant_expression_wraps_and_diagnoses_once() {
 /// Constant evaluation over the forms 014 §6 needs for array bounds and bit-field widths.
 #[test]
 fn integer_constant_expressions_fold() {
-    let p = parse("int probe;", TargetConfig::x86_64_linux());
-    let names = harness::names(&p);
     for (src, want) in [
         ("1 + 2 * 3", 7),
         ("(1 + 2) * 3", 9),
@@ -156,11 +165,26 @@ fn integer_constant_expressions_fold() {
         ("'A'", 65),
         ("1u + 1", 2),
         ("0xffffffffu", 4294967295),
+        // **A decimal literal never becomes unsigned** (C11 §6.4.4.1), so this is a
+        // `long` and the addition does not wrap. A mutation that let it be `unsigned int`
+        // folded this to 0 and reported nothing, because unsigned overflow is defined —
+        // so the wrong type is silent, which is why the pair below is the test rather
+        // than the literal alone.
+        ("4294967295 + 1", 4294967296),
+        // The hex spelling of the same value *is* `unsigned int`, so it wraps to 0.
+        ("0xffffffff + 1", 0),
     ] {
         let (ast, expr) = harness::expression(src);
+        let names = harness::names_of(&ast);
         let mut diags = Vec::new();
         assert_eq!(
-            const_eval(&ast.ast, expr, &names, &mut diags),
+            const_eval(
+                &ast.ast,
+                expr,
+                &names,
+                &TargetConfig::x86_64_linux(),
+                &mut diags
+            ),
             Some(ConstVal::Int(want)),
             "`{src}` should fold to {want} ({diags:?})"
         );
