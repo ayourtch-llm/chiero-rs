@@ -174,3 +174,98 @@ fn assigning_to_a_global_struct_member_verifies() {
     let e = errors("struct S { int a; int b; }; struct S g; void f(int n) { g.b = n; }");
     assert!(e.is_empty(), "{e:#?}");
 }
+
+// ---------------------------------------------------------------------------------------
+// Initializers (020 §3's `GlobalInit`)
+// ---------------------------------------------------------------------------------------
+
+fn init_of(src: &str, name: &str) -> chiero_cir::GlobalInit {
+    let m = lower(src);
+    m.globals
+        .iter()
+        .find(|g| &*g.name == name)
+        .unwrap_or_else(|| panic!("no `{name}` in {:?}", m.globals))
+        .init
+        .clone()
+}
+
+/// **A scalar initializer reaches the CIR.**
+///
+/// `int g = 7;` recorded `GlobalInit::Zero`: the initializer was parsed and thrown away.
+/// That is a **wrong answer rather than a missing one**, which is worse than what wave 112
+/// fixed — an engine reading `g` gets 0 and proves things about a program that does not
+/// exist, and every path predicated on `g` is explored as if the value were zero.
+#[test]
+fn a_scalar_global_initializer_is_recorded() {
+    assert_eq!(
+        init_of("int g = 7;", "g"),
+        chiero_cir::GlobalInit::Bytes(vec![7, 0, 0, 0]),
+        "little-endian bytes of 7 at `int` width"
+    );
+}
+
+/// An **array** initializer, element by element.
+#[test]
+fn an_array_global_initializer_is_recorded() {
+    assert_eq!(
+        init_of("int g[4] = {1, 2, 3, 4};", "g"),
+        chiero_cir::GlobalInit::Bytes(vec![
+            1, 0, 0, 0, //
+            2, 0, 0, 0, //
+            3, 0, 0, 0, //
+            4, 0, 0, 0,
+        ])
+    );
+}
+
+/// **A partial initializer zero-fills the rest** (C11 6.7.9p21), rather than shortening
+/// the object — a consumer reading past the initialized part must see zeros, not the end
+/// of a byte string.
+#[test]
+fn a_partial_array_initializer_zero_fills() {
+    assert_eq!(
+        init_of("int g[4] = {1, 2};", "g"),
+        chiero_cir::GlobalInit::Bytes(vec![1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        "16 bytes, not 8"
+    );
+}
+
+/// A **string** initializer, with its terminator.
+#[test]
+fn a_string_global_initializer_is_recorded() {
+    assert_eq!(
+        init_of("char s[4] = \"hi\";", "s"),
+        chiero_cir::GlobalInit::Bytes(vec![b'h', b'i', 0, 0])
+    );
+}
+
+/// **A struct initializer respects the layout's padding.**
+///
+/// `struct { char a; int b; }` puts `b` at offset 4, so the bytes are not the fields
+/// concatenated — an implementation that appended field encodings gives 5 bytes and every
+/// offset after the first is wrong.
+#[test]
+fn a_struct_global_initializer_respects_padding() {
+    assert_eq!(
+        init_of("struct S { char a; int b; }; struct S g = {1, 2};", "g"),
+        chiero_cir::GlobalInit::Bytes(vec![1, 0, 0, 0, 2, 0, 0, 0]),
+        "`b` sits at offset 4, so three padding bytes come first"
+    );
+}
+
+/// **The controls.** No initializer is still `Zero`, and `extern` is still `Extern` — a
+/// fix that recorded bytes for everything would break both.
+#[test]
+fn uninitialized_and_extern_globals_are_unchanged() {
+    assert_eq!(init_of("int g;", "g"), chiero_cir::GlobalInit::Zero);
+    assert_eq!(
+        init_of("static int g;", "g"),
+        chiero_cir::GlobalInit::Zero,
+        "C11 6.7.9p10"
+    );
+    assert_eq!(
+        init_of("extern int g;", "g"),
+        chiero_cir::GlobalInit::Extern,
+        "bytes chiero has never seen are not zero"
+    );
+}
