@@ -272,11 +272,22 @@ fn expansion_chain_child() {
     }
     src.push_str("M0\n");
     let tu = preprocess_str("deep.c", &src, Config::default());
-    assert!(
-        tu.diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("expansion depth")),
-        "a bounded expansion must explain why it stopped"
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["M20000"]);
+}
+
+#[test]
+fn expansion_depth_counts_nesting_not_sequential_calls() {
+    let mut src = String::from("#define M(x) (x)\n");
+    for index in 0..400 {
+        src.push_str(&format!("int v{index} = M({index});\n"));
+    }
+    let tu = preprocess_str("sequential.c", &src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(
+        tu.token_texts().filter(|text| *text == "M").count(),
+        0,
+        "every independent invocation must expand"
     );
 }
 
