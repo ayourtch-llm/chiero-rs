@@ -4027,7 +4027,7 @@ impl<'m> Engine<'m> {
                 Value::Scalar(a.ite(c, tv, fv))
             }
             RValue::AddrOfGlobal { g } => {
-                let base = self.global_object(s, *g);
+                let base = self.global_object(a, s, *g);
                 Value::Ptr(Pointer { base, off: 0 })
             }
             RValue::LoadBits {
@@ -5061,7 +5061,7 @@ impl<'m> Engine<'m> {
     /// The object for a file-scope variable, allocated on first use. One per `GlobalId`,
     /// since `&counter` twice is one address — and a `const` global is `readonly`, which
     /// is what makes a write to it a finding and what keeps a havoc off a string literal.
-    fn global_object(&mut self, s: &mut State, g: GlobalId) -> ObjectId {
+    fn global_object(&mut self, a: &mut TermArena, s: &mut State, g: GlobalId) -> ObjectId {
         // **Per state, not per engine.** The object lives in `s.mem`, which forking clones;
         // the cache used to live on the `Engine`, which forking does not. So a sibling
         // forked *before* a global was first touched got a cache hit for an `ObjectId` its
@@ -5080,6 +5080,10 @@ impl<'m> Engine<'m> {
             None => (0, 1, false, Span::DUMMY),
         };
         let o = s.mem.alloc(ObjKind::Global, size, align, span);
+        // **Cached before the initializer runs**, not after. An `Addr` initializer resolves
+        // its target through this same function, and `struct { void *p; } a = { &a };` is
+        // legal C — without the entry here that recurses until the stack ends.
+        s.global_objs.insert(g, o);
         // **The initializer is written before the object is read-only.** C gives static
         // storage a defined initial value — zero unless stated — and until 020 carried
         // `GlobalInit` there was nothing to write, so every string literal's bytes read
@@ -5100,6 +5104,29 @@ impl<'m> Engine<'m> {
                     .mem
                     .write_bytewise(chiero_mem::Pointer { base: o, off: 0 }, &zeros, span);
             }
+            // **An address, written as one.** `address_term` is the same function a
+            // `Value::Ptr` store goes through, so a pointer that starts life in a global
+            // and one assigned at run time are the same value by construction — and the
+            // object travels with it, which no byte pattern could carry.
+            Some(chiero_cir::GlobalInit::Addr { g: target, off }) => {
+                let (target, off) = (*target, *off);
+                let base = self.global_object(a, s, target);
+                let p = chiero_mem::Pointer { base, off };
+                if let Some(t) = self.address_term(a, s, p, span) {
+                    // `address_term` has already recorded the term's provenance, and
+                    // provenance is keyed on the *term* rather than on the location — so a
+                    // reload of these bytes yields the same term and resolves to the same
+                    // object, with no address-range search and no fidelity degrade.
+                    let _ = s.mem.write_term(
+                        a,
+                        chiero_mem::Pointer { base: o, off: 0 },
+                        t,
+                        size,
+                        Endian::Little,
+                        span,
+                    );
+                }
+            }
             // `Extern` is defined in another TU: the bytes are genuinely unknown here,
             // and leaving them uninitialized is the honest answer rather than a zero
             // chiero invented.
@@ -5108,7 +5135,6 @@ impl<'m> Engine<'m> {
         if is_const {
             s.mem.set_readonly(o);
         }
-        s.global_objs.insert(g, o);
         o
     }
 
@@ -6190,7 +6216,7 @@ impl<'m> Engine<'m> {
             // ordinary. They go through the same per-id object tables, because a second
             // object for one global makes `p == &counter` false against itself.
             Operand::Const(Const::GlobalAddr { g, off }) => {
-                let base = self.global_object(s, *g);
+                let base = self.global_object(a, s, *g);
                 Some(Value::Ptr(Pointer { base, off: *off }))
             }
             Operand::Const(Const::FuncAddr(id)) => {

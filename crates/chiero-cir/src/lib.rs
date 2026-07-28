@@ -713,6 +713,15 @@ pub enum GlobalInit {
     Bytes(Vec<u8>),
     /// Defined in another translation unit; the bytes are not this module's to state.
     Extern,
+    /// **The address of another global**, plus a byte offset: `int *gp = &g;` or
+    /// `int *gp = ga;` or `int *gp = &ga[1];`.
+    ///
+    /// Its own variant rather than `Bytes`, because an address is not a byte pattern. 021
+    /// gives every pointer an *object*, and the bytes of an address carry no provenance —
+    /// so encoding one as `Bytes` would produce a pointer that dereferences to nothing and
+    /// compares equal to null. Lowering used to fall back to `Zero` here, which made
+    /// `gp == 0` answer *true* for a pointer that is definitely not null.
+    Addr { g: GlobalId, off: i64 },
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]

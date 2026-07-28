@@ -574,14 +574,20 @@ impl Lowerer<'_> {
         let init = if storage.extern_ && init.is_none() {
             chiero_cir::GlobalInit::Extern
         } else {
-            match init.and_then(|e| self.encode_init(e, sty, size)) {
-                Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
-                // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
-                // must not become bytes for the part it understood: the rest would read as
-                // zeros the program never wrote, which is the confidently-wrong direction.
-                // `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct; for one
-                // chiero failed to encode it is at least not a fabrication.
-                None => chiero_cir::GlobalInit::Zero,
+            // **An address initializer is an address, not bytes.** `int *gp = &g;` has no
+            // byte encoding that carries provenance, and falling through to `Zero` below
+            // made `gp == 0` answer *true* for a pointer that is definitely not null.
+            match init.and_then(|e| self.global_addr_init(e)) {
+                Some((g, off)) => chiero_cir::GlobalInit::Addr { g, off },
+                None => match init.and_then(|e| self.encode_init(e, sty, size)) {
+                    Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
+                    // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
+                    // must not become bytes for the part it understood: the rest would read as
+                    // zeros the program never wrote, which is the confidently-wrong direction.
+                    // `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct; for one
+                    // chiero failed to encode it is at least not a fabrication.
+                    None => chiero_cir::GlobalInit::Zero,
+                },
             }
         };
         let linkage = if storage.static_ {
@@ -4571,6 +4577,54 @@ impl Lowerer<'_> {
             span,
         );
         Operand::Value(dst)
+    }
+
+    /// `&g`, `g` for an array, or `&g[k]` — the address of a file-scope object.
+    ///
+    /// **Only a file-scope target.** The address of a *local* is not a constant expression
+    /// and cannot initialize static storage, so `None` here is the right answer for it and
+    /// C would have rejected the program anyway.
+    fn global_addr_init(&mut self, e: ExprId) -> Option<(chiero_cir::GlobalId, i64)> {
+        match self.ast.expr(e).kind.clone() {
+            // `&x` — the operand names the object directly.
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::AddrOf,
+                operand,
+            } => self.global_addr_of(operand),
+            // A bare array name decays to its own address (C11 6.3.2.1p3), which is what
+            // `int *gp = ga;` is. A bare *scalar* name does not, so it is excluded — that
+            // is `int a = b;`, an ordinary constant read.
+            chiero_ast::ExprKind::Ident(_) => {
+                let t = self.type_of(e)?;
+                matches!(self.analysis.ty(t), Ty::Array { .. }).then_some(())?;
+                self.global_addr_of(e)
+            }
+            _ => None,
+        }
+    }
+
+    /// The `(global, byte offset)` an lvalue expression names, when it is file-scope.
+    fn global_addr_of(&mut self, e: ExprId) -> Option<(chiero_cir::GlobalId, i64)> {
+        match self.ast.expr(e).kind.clone() {
+            chiero_ast::ExprKind::Ident(sym) => {
+                // **No local-shadowing check, deliberately.** A draft had one; a mutation
+                // deleting it survived, and the reason is that it was unreachable. This
+                // function has exactly one caller — the file-scope declaration path, where
+                // no local is in scope — and `&automatic` is not a constant expression, so
+                // `static int *p = &x;` naming a local is a program C rejects
+                // ("initializer element is not constant"). A guard against a case that
+                // cannot arise is dead code wearing a confident comment.
+                self.globals.get(&sym).copied().map(|g| (g, 0))
+            }
+            // `&ga[k]` for a constant `k`.
+            chiero_ast::ExprKind::Index { base, index } => {
+                let (g, off) = self.global_addr_of(base)?;
+                let k = self.const_of(index)?;
+                let esz = self.elem_size_of(base)? as i64;
+                Some((g, off + k as i64 * esz))
+            }
+            _ => None,
+        }
     }
 
     fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {

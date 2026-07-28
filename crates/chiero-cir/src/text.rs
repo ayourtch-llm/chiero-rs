@@ -208,6 +208,21 @@ impl<'a> Parser<'a> {
                 }
                 GlobalInit::Bytes(bytes)
             }
+            Some("addr") => {
+                let g = self
+                    .tok(t, o + 7)?
+                    .trim_start_matches('@')
+                    .parse()
+                    .map_err(|_| self.perr("bad addr target"))?;
+                let off = self
+                    .tok(t, o + 8)?
+                    .parse()
+                    .map_err(|_| self.perr("bad addr offset"))?;
+                GlobalInit::Addr {
+                    g: GlobalId(g),
+                    off,
+                }
+            }
             _ => GlobalInit::Zero,
         };
         Ok(Global {
@@ -1422,6 +1437,10 @@ pub fn print(m: &Module) -> String {
                 let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
                 format!(" bytes {hex}")
             }
+            // `addr @3 + 8` — the target's id and a byte offset. The id rather than the
+            // name because a global need not have a unique printable one, and the round
+            // trip has to be exact.
+            GlobalInit::Addr { g, off } => format!(" addr @{} {}", g.0, off),
         };
         o.push_str(&format!(
             "\nglobal {}{}@{} : size {} align {}{}{}\n",
