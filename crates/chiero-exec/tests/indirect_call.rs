@@ -148,3 +148,87 @@ fn an_indirect_calls_parameter_is_not_uninitialized() {
     let (_, direct) = run(&caller(false));
     assert!(direct.is_empty(), "{direct:#?}");
 }
+
+/// **Two arguments arrive in order**, which one parameter cannot show.
+///
+/// `sub(10, 3)` is 7 and `sub(3, 10)` is -7, so a binding that pairs parameters with
+/// arguments in the wrong order is visible in the value. With a single parameter, reversing
+/// the pairing is a no-op and the mutation survives.
+#[test]
+fn two_arguments_arrive_in_order() {
+    let sub = Function {
+        id: FuncId(1),
+        name: "sub".into(),
+        params: vec![
+            Param {
+                value: ValueId(0),
+                ty: CTy::Int(32),
+            },
+            Param {
+                value: ValueId(1),
+                ty: CTy::Int(32),
+            },
+        ],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![Block {
+            id: BlockId(0),
+            insts: vec![i(InstKind::Assign {
+                dst: ValueId(2),
+                rv: RValue::Bin {
+                    op: BinOp::Sub,
+                    a: Operand::Value(ValueId(0)),
+                    b: Operand::Value(ValueId(1)),
+                    ty: CTy::Int(32),
+                },
+            })],
+            term: Terminator::Return(Some(Operand::Value(ValueId(2)))),
+            gcov_lines: Default::default(),
+            span: Span::DUMMY,
+        }],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        access_paths: Default::default(),
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![
+            Function {
+                id: FuncId(0),
+                name: "main".into(),
+                params: vec![],
+                ret: CTy::Int(32),
+                variadic: false,
+                allocas: vec![],
+                blocks: vec![Block {
+                    id: BlockId(0),
+                    insts: vec![
+                        i(InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::AddrOfFunc(FuncId(1)),
+                        }),
+                        i(InstKind::Call {
+                            dst: Some(ValueId(1)),
+                            callee: Callee::Indirect(Operand::Value(ValueId(0))),
+                            args: vec![i32c(10), i32c(3)],
+                        }),
+                    ],
+                    term: Terminator::Return(Some(Operand::Value(ValueId(1)))),
+                    gcov_lines: Default::default(),
+                    span: Span::DUMMY,
+                }],
+                entry: BlockId(0),
+                attrs: Default::default(),
+                body: Body::Defined,
+                access_paths: Default::default(),
+                span: Span::DUMMY,
+            },
+            sub,
+        ],
+        ..Default::default()
+    };
+    let (v, findings) = run(&m);
+    assert_eq!(v, Some(7), "10 - 3, not 3 - 10: {findings:#?}");
+}

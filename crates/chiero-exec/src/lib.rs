@@ -2916,7 +2916,7 @@ impl<'m> Engine<'m> {
         let id = match callee {
             Callee::Direct(id) => id,
             Callee::Indirect(op) => {
-                self.indirect(a, s, op, dst, span);
+                self.indirect(a, s, op, dst, args, span);
                 return;
             }
         };
@@ -6004,6 +6004,7 @@ impl<'m> Engine<'m> {
         s: &mut State,
         op: &Operand,
         dst: Option<ValueId>,
+        args: &[Operand],
         span: Span,
     ) {
         // **A pointer chiero can resolve is not a pointer chiero cannot resolve.** The
@@ -6015,7 +6016,7 @@ impl<'m> Engine<'m> {
             && p.off == 0
             && let Some(id) = self.func_of_object(p.base)
         {
-            self.direct_into(s, id, dst, span);
+            self.direct_into(a, s, id, dst, args, span);
             return;
         }
         let all: Vec<FuncId> = self
@@ -6041,7 +6042,7 @@ impl<'m> Engine<'m> {
         for id in candidates {
             let mut sib = s.clone();
             sib.id = self.new_id();
-            self.direct_into(&mut sib, id, dst, span);
+            self.direct_into(a, &mut sib, id, dst, args, span);
             // A sibling is stepped straight from the work list, so it never passes
             // through `step`'s post-call increment — it has to arrive already advanced.
             // Without this the callee's entry block skipped to its terminator, which no
@@ -6060,7 +6061,15 @@ impl<'m> Engine<'m> {
 
     /// Push a frame for `id` on an already-cloned state. Shares the body of `call`'s
     /// direct path so an indirect candidate is executed exactly like a direct call.
-    fn direct_into(&mut self, s: &mut State, id: FuncId, dst: Option<ValueId>, span: Span) {
+    fn direct_into(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        id: FuncId,
+        dst: Option<ValueId>,
+        args: &[Operand],
+        span: Span,
+    ) {
         let Some(f) = self.module.funcs.iter().find(|f| f.id == id) else {
             s.give_up("call to an unknown function".into(), span);
             return;
@@ -6076,12 +6085,24 @@ impl<'m> Engine<'m> {
             let obj = s.mem.alloc(ObjKind::Stack, bytes, d.align, d.span);
             frame_objs.insert(d.id, obj);
         }
+        // **Arguments reach the callee here too.** The direct path binds them and this one
+        // did not, so every call through a function pointer — how VPP dispatches every
+        // graph node — arrived with no parameters at all and the callee read them as
+        // uninitialized. The direct path carries a comment recording this exact bug being
+        // fixed once; `direct_into` was written afterwards without it.
+        let params: Vec<Param> = f.params.clone();
+        let mut locals = IndexMap::new();
+        for (p, o) in params.iter().zip(args.iter()) {
+            if let Some(v) = self.operand(a, s, o) {
+                locals.insert(p.value, v);
+            }
+        }
         let ret_to = Some((s.func(), s.pc.0, s.pc.1 + 1));
         s.stack.push(Frame {
             func: id,
             ret_to,
             ret_dst: dst,
-            locals: IndexMap::new(),
+            locals,
             frame_objs,
             ptr_vals: IndexMap::new(),
             bit_inspected: Vec::new(),
