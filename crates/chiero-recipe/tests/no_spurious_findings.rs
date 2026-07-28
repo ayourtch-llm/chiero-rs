@@ -749,3 +749,63 @@ fn writing_to_a_mutable_global_is_not_a_finding() {
         "and the write took effect"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Aggregate returns (015 §2)
+// ---------------------------------------------------------------------------------------
+
+/// **A struct returned by value carries its fields.**
+///
+/// 015 §2 makes an aggregate return memory rather than a register. Wave 126 made the
+/// caller *copy* rather than store a pointer, and then found the copy reads bytes that are
+/// already dead: `return p;` yields `addrlocal` of the **callee's** stack slot, whose scope
+/// exits on return.
+///
+/// The memory has to be the caller's. Every VPP accessor in a header returns a struct by
+/// value, so this is the common case rather than a corner.
+#[test]
+fn a_struct_returned_by_value_carries_its_fields() {
+    let src = "struct pair { int lo; int hi; };\n\
+               static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
+               int f(void) { struct pair q = mk(3, 7); return q.hi - q.lo; }\n";
+    let m = lower(src);
+    let errs = chiero_cir::verify::verify(&m);
+    assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
+
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).with_entry("f").run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "the fields the callee wrote are the fields the caller reads: {:#?}",
+        r.findings()
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(4),
+        "7 - 3, so both fields survived the return"
+    );
+}
+
+/// **Two calls do not share one slot**, which a single caller-side scratch buffer would
+/// make invisible in the test above.
+#[test]
+fn two_aggregate_returns_are_distinct() {
+    let src = "struct pair { int lo; int hi; };\n\
+               static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
+               int f(void) { struct pair x = mk(1, 2); struct pair y = mk(30, 40); \
+                             return x.lo + y.lo; }\n";
+    let m = lower(src);
+    assert!(
+        chiero_cir::verify::verify(&m).iter().all(|e| !e.is_error()),
+        "{:#?}",
+        chiero_cir::verify::verify(&m)
+    );
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).with_entry("f").run(&mut a);
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(31),
+        "1 + 30 — a shared slot would make this 30 + 30 or 1 + 1"
+    );
+}
