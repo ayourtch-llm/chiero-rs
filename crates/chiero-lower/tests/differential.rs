@@ -571,6 +571,64 @@ fn a_struct_parameter_is_the_callees_own_copy() {
     );
 }
 
+/// **An aggregate assignment works whatever the right-hand side is.**
+///
+/// `assign`'s aggregate path takes `lvalue_addr(rhs)` and returns `Undef` when that is
+/// `None` — so for any right-hand side that is not a plain lvalue the `CopyMem` is *not
+/// emitted at all*. The assignment vanishes from the CIR, along with the side effects of
+/// whatever was on the right. `y = (0, x);` lowers to one `addrlocal` and nothing else.
+///
+/// `y = mk(1, 2);` is the case that matters: a struct-returning call is how C is written,
+/// and it is broken in exactly the same way. So is a conditional, and so is the chain
+/// `w = y = x;` — an assignment's own result is not an lvalue in C, and `assign` returns
+/// the destination address for precisely this reason, which nothing was reading.
+///
+/// The *initializer* form `struct S y = (0, x);` works, because `local_decl` goes through
+/// `expr` rather than `lvalue_addr`. Wave 132 made `expr` yield the address for an
+/// aggregate, which is what makes the same fallback correct here.
+#[test]
+fn an_aggregate_assignment_takes_any_right_hand_side() {
+    const P: &str = "struct S { int a; int b; };\n\
+         static struct S mk(int a, int b) { struct S s; s.a = a; s.b = b; return s; }\n";
+    // **A struct-returning call**, the shape every VPP accessor has.
+    agree_with(P, "struct S y; y = mk(1, 2); return y.a * 10 + y.b;");
+    // A comma, whose left operand must still be evaluated for its side effects.
+    agree_with(
+        P,
+        "struct S x; x.a = 1; x.b = 2; int t = 0; struct S y; y = (t = 5, x); \
+         return y.a * 10 + y.b + t;",
+    );
+    // A conditional, both ways round, so neither arm is the one that happens to work.
+    agree_with(
+        P,
+        "struct S x; x.a = 1; x.b = 2; struct S z; z.a = 5; z.b = 6; struct S y; \
+         y = (x.a ? x : z); return y.a * 10 + y.b;",
+    );
+    agree_with(
+        P,
+        "struct S x; x.a = 1; x.b = 2; struct S z; z.a = 5; z.b = 6; struct S y; \
+         y = (x.a - 1 ? x : z); return y.a * 10 + y.b;",
+    );
+    // **A chain.** C makes an assignment's value the stored value, so `w = y = x` copies
+    // twice — and both destinations must end up with the fields, not one.
+    agree_with(
+        P,
+        "struct S x; x.a = 1; x.b = 2; struct S y; struct S w; w = y = x; \
+         return w.a * 1000 + w.b * 100 + y.a * 10 + y.b;",
+    );
+    // The plain-lvalue right-hand sides that already worked, so the fallback does not
+    // replace the path that was right.
+    agree_with(
+        P,
+        "struct S a[2]; a[0].a = 3; a[0].b = 4; struct S y; y = a[0]; return y.a * 10 + y.b;",
+    );
+    agree_with(
+        P,
+        "struct S x; x.a = 7; x.b = 8; struct S *p = &x; struct S y; y = *p; \
+         return y.a * 10 + y.b;",
+    );
+}
+
 /// **Pointer arithmetic is scaled `PtrAdd`, not integer `Add`.**
 ///
 /// 020 says PtrAdd-not-Add by name, and the *index* path obeys it: `a[1]` lowers to `sext`,
