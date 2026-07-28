@@ -487,7 +487,71 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 110, `4fe60b2`) — 1031 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 111, `6db3cac`) — 1036 tests, 4 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: two lowering defects on file-scope variables
+>
+> Both found in five minutes of trying to make a *global* produce a finding. Both make
+> lowering emit **invalid CIR** — `verify` rejects it, so nothing downstream runs at all:
+>
+> - **`int g[4]; … g[1]`** → `PtrAdd base must be pointer-typed, got Int(32)`. Indexing a
+>   global array. `lvalue_addr`'s `Ident` arm looks only in `fs().locals`, so a file-scope
+>   name falls through to whatever the value path produces.
+> - **`const int g = 1; *(int *)&g = 2`** → `WidthMismatch`.
+>
+> File-scope arrays are everywhere in C and in VPP. That two independent defects surfaced
+> that fast says how little of the global path is exercised — the corpus fixtures are
+> function-local almost throughout. **Start by adding globals to
+> `no_spurious_findings.rs`**, which is where both were caught.
+>
+> `chiero-recipe/tests/no_spurious_findings.rs::a_global_is_named_in_a_finding` is
+> `#[ignore]`d on exactly this; un-ignore it when a global can fault.
+>
+> ### Also open
+>
+> - **A fault in a non-entry frame is untested.** `object_name` uses `stack.last()`, and no
+>   C fixture can distinguish that from `first()`: the engine enters `funcs.first()` and
+>   valid C declares a callee before use, so the callee is always first. Needs a hand-built
+>   `.cir` module with the entry first, in `chiero-exec`'s own suite.
+> - **`Bits` path steps are not emitted** for bit-field accesses (020 §4.4 specifies them).
+> - **023 c17** — the last contract, and a milestone rather than a wave. Measurement and the
+>   design decision are in wave 110's entry below; do not accept an ignored `workers`
+>   parameter.
+>
+> ### What wave 111 changed
+>
+> Findings name the variable, not `ObjectId(N)`. The engine substitutes the one token
+> `f.object()` identifies, because `chiero-mem` has no module and cannot know names.
+> **`chiero-opt`'s eight-wave-old `ObjectId` normalization is deleted** — the transparency
+> sweep compares finding text verbatim again, and is stronger for it.
+>
+> ### Rules earned, most recent first
+>
+> **A workaround marks a defect; go back and delete it.** Wave 102 normalized `ObjectId` out
+> of a comparison to keep a sweep meaningful and recorded why. Nine waves later that note was
+> the map to a real fix, and removing the workaround was the strongest verification the fix
+> had.
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** to decide which crate owns a bug
+> (wave 109).
+> **A comment claiming a property is not the property** (wave 107).
+> **Comparing two configurations cannot see a leak that affects both** (wave 107).
+> **Anything claiming to be stable forever needs a pinned literal** (wave 106).
+> **The fixture never reached the comparison the design exists for** — nine waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial, not a surviving gap**.
+>
+> Owed and written down: the two global defects above; a fault in a non-entry frame is
+> untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in sema; the
+> parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals
+> lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately
+> uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 110, `4fe60b2`) — 1031 tests, 3 ignored, M1 165/165 by contract
 >
 > **`AccessPath` is end-to-end.** Lowering builds paths at the member-access site (the only
 > place that knows both the member name and the layout offset), 021 c19 consumes them, and
