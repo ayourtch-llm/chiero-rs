@@ -483,8 +483,94 @@ impl GlobalTable {
         analysis: &Analysis,
         names: &dyn SymbolText,
     ) -> Vec<SemaDiagnostic> {
-        let _ = (tu, ast, analysis, names);
-        todo!("014 §4: linkage and the cross-TU table")
+        let _ = analysis;
+        let mut diags = Vec::new();
+        for &item in ast.items() {
+            let (name, storage, is_definition, tentative) = match &ast.decl(item).kind {
+                DeclKind::Var {
+                    name: Some(n),
+                    storage,
+                    init,
+                    ..
+                } => (
+                    *n,
+                    *storage,
+                    // `extern int x;` declares; `int x;` and `int x = 1;` define. The
+                    // second is tentative — C11 §6.9.2 — and repeating it is legal.
+                    !storage.extern_,
+                    init.is_none(),
+                ),
+                DeclKind::Func {
+                    name,
+                    body,
+                    storage,
+                    ..
+                } => (*name, *storage, body.is_some(), false),
+                _ => continue,
+            };
+            let Some(text) = names.text(name) else {
+                continue;
+            };
+            let text = text.to_owned();
+            let linkage = if storage.static_ {
+                Linkage::Internal
+            } else {
+                Linkage::External
+            };
+
+            let id = match linkage {
+                Linkage::Internal => {
+                    // **One entity per TU**, even when the name repeats. This is the rule
+                    // 014 §4 calls a real VPP hazard: short static helper names recur
+                    // across nodes, and merging them would give 031 call-graph edges
+                    // between functions that cannot see each other.
+                    let key = (tu, text.clone());
+                    match self.by_internal.get(&key) {
+                        Some(&id) => id,
+                        None => {
+                            let id = self.fresh(text.clone(), linkage, Some(tu));
+                            self.by_internal.insert(key, id);
+                            id
+                        }
+                    }
+                }
+                Linkage::External => match self.by_external.get(&text) {
+                    Some(&id) => id,
+                    None => {
+                        let id = self.fresh(text.clone(), linkage, None);
+                        self.by_external.insert(text.clone(), id);
+                        id
+                    }
+                },
+            };
+
+            let info = &mut self.globals[id.0 as usize];
+            if is_definition {
+                // Two *initialized* definitions of one external name are the error;
+                // tentative ones may repeat freely (contract 14, across TUs this time).
+                if info.defined && !info.tentative_only && !tentative {
+                    diags.push(SemaDiagnostic {
+                        span: ast.decl(item).span,
+                        message: format!("`{text}` is defined more than once"),
+                    });
+                }
+                info.defined = true;
+                info.tentative_only = info.tentative_only && tentative;
+            }
+        }
+        diags
+    }
+
+    fn fresh(&mut self, name: String, linkage: Linkage, tu: Option<TuId>) -> GlobalId {
+        let id = GlobalId(self.globals.len() as u32);
+        self.globals.push(GlobalInfo {
+            name,
+            linkage,
+            tu,
+            defined: false,
+            tentative_only: true,
+        });
+        id
     }
 
     /// The entity a name refers to **from inside `tu`** — which is not the same question
@@ -530,6 +616,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         in_progress: Vec::new(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
+        defined_with_init: Default::default(),
     };
     for &item in ast.items() {
         cx.item(item);
@@ -564,10 +651,28 @@ pub fn const_eval(
         in_progress: Vec::new(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
+        defined_with_init: Default::default(),
     };
+    // **The declarations are processed first.** An address constant is *about* a declared
+    // object — `&arr[3]` needs `arr`'s element size to scale the offset — and `sizeof`
+    // needs the tag table. Their diagnostics are then discarded, because the caller asked
+    // about one expression and complaints about the surrounding file are not an answer.
+    for &item in ast.items() {
+        cx.item(item);
+    }
+    cx.out.diagnostics.clear();
+
     let v = cx.eval(expr);
     out.append(&mut cx.out.diagnostics);
-    v.map(|v| ConstVal::Int(v.v))
+    match v {
+        Some(v) => Some(ConstVal::Int(v.v)),
+        // Not an integer constant: it may still be an **address** constant, which 014 §6
+        // requires because `&arr[3]` and `(char*)&s + offsetof(S, f)` are valid static
+        // initializers and fill VPP's node registration tables.
+        None => cx
+            .addr_of(expr)
+            .map(|(global, off, _)| ConstVal::Addr { global, off }),
+    }
 }
 
 /// A constant's value **and its type**, because contract 19 is about the type.
@@ -608,6 +713,8 @@ struct Cx<'a> {
     /// Names already reported as undeclared, so the complaint is per name and not per
     /// use — contract 20.
     unknown_names: indexmap::IndexSet<Symbol>,
+    /// File-scope names that already have an *initialized* definition — contract 14.
+    defined_with_init: indexmap::IndexSet<Symbol>,
 }
 
 impl Cx<'_> {
@@ -639,6 +746,18 @@ impl Cx<'_> {
                 self.out.decl_types.insert(id, t);
                 if let Some(n) = name {
                     self.values.insert(n, t);
+                    // Contract 14. `int x; int x;` is two **tentative** definitions and is
+                    // legal C11 §6.9.2 — it is how headers have always worked. Only a
+                    // second *initialized* definition is an error, so the thing tracked
+                    // is "has an initializer", not "has been seen".
+                    if init.is_some() && !self.ast.decl(id).span.ctx.is_root() {
+                        // Macro-produced definitions are not compared: a header expanded
+                        // twice is the preprocessor's business, not a redefinition.
+                    } else if init.is_some() && !self.defined_with_init.insert(n) {
+                        let text = self.text(n).unwrap_or("?").to_owned();
+                        let span = self.ast.decl(id).span;
+                        self.error(span, format!("`{text}` is defined more than once"));
+                    }
                 }
                 self.check_complete(id, t);
                 if let Some(init) = init {
@@ -1263,6 +1382,36 @@ impl Cx<'_> {
                 }
             }
             ExprKind::Comma { rhs, .. } => self.eval(rhs),
+            // **`__builtin_constant_p`** (contract 18). The answer is 1 exactly when the
+            // argument folds — and it is a *constant* either way, which is the point:
+            // VPP wraps it in a `?:` that must fold away so only one implementation is
+            // compiled. Answering "does not fold" instead of a constant 0 would make
+            // every such macro keep both branches.
+            ExprKind::Call { callee, args } => {
+                let ExprKind::Ident(name) = self.ast.expr(callee).kind else {
+                    return None;
+                };
+                if self.text(name) != Some("__builtin_constant_p") {
+                    return None;
+                }
+                let folds = args
+                    .first()
+                    .map(|&a| {
+                        // The argument's own diagnostics are discarded: asking whether
+                        // something is constant is not itself an error, however the
+                        // answer comes out.
+                        let before = self.out.diagnostics.len();
+                        let v = self.eval(a).is_some() || self.addr_of(a).is_some();
+                        self.out.diagnostics.truncate(before);
+                        v
+                    })
+                    .unwrap_or(false);
+                Some(IntVal {
+                    v: folds as i128,
+                    bits: int_bits,
+                    signed: true,
+                })
+            }
             // A cast to an integer type truncates to that type, which is how
             // `(char)0xFF == -1` gets its answer (contract 9).
             ExprKind::Cast { ty, operand } => {
@@ -2226,5 +2375,100 @@ impl Cx<'_> {
     fn condition(&mut self, node: TypedId, expr: ExprId) {
         let node = self.decay(node, expr);
         self.set_top(expr, node);
+    }
+}
+
+impl Cx<'_> {
+    /// An **address constant**: a named object plus a byte offset (014 §6, contract 17).
+    ///
+    /// Returns the designated object's type as well, because the offset has to be
+    /// *scaled* by the element size at each step — `&arr[3]` is byte offset 12, and an
+    /// unscaled 3 points three bytes into the first element, which no type check catches.
+    fn addr_of(&mut self, expr: ExprId) -> Option<(String, i64, TyId)> {
+        let node = self.ast.expr(expr).clone();
+        match &node.kind {
+            // `&x` — the address of an lvalue.
+            ExprKind::Unary {
+                op: UnOp::AddrOf,
+                operand,
+            } => self.designator(*operand),
+            // An array name used as a value already *is* an address (it decays).
+            ExprKind::Ident(sym) => {
+                let ty = self.values.get(sym).copied()?;
+                match self.out.types[ty.0 as usize].clone() {
+                    Ty::Array { elem, .. } => Some((self.text(*sym)?.to_owned(), 0, elem)),
+                    _ => None,
+                }
+            }
+            // `addr + n` and `addr - n`, scaled by the pointee.
+            ExprKind::Binary {
+                op: op @ (BinOp::Add | BinOp::Sub),
+                lhs,
+                rhs,
+            } => {
+                let (base, off, elem) = self.addr_of(*lhs).or_else(|| self.addr_of(*rhs))?;
+                let other = if self.addr_of(*lhs).is_some() {
+                    *rhs
+                } else {
+                    *lhs
+                };
+                let n = self.eval(other)?.v as i64;
+                let scale = size_of_ty(&self.out, &self.target, elem).unwrap_or(1) as i64;
+                let delta = n.checked_mul(scale)?;
+                Some((
+                    base,
+                    if matches!(op, BinOp::Add) {
+                        off.checked_add(delta)?
+                    } else {
+                        off.checked_sub(delta)?
+                    },
+                    elem,
+                ))
+            }
+            ExprKind::Cast { operand, .. } => self.addr_of(*operand),
+            _ => None,
+        }
+    }
+
+    /// The object an lvalue designates, as `(name, byte offset, type of the designated
+    /// object)`.
+    fn designator(&mut self, expr: ExprId) -> Option<(String, i64, TyId)> {
+        let node = self.ast.expr(expr).clone();
+        match &node.kind {
+            ExprKind::Ident(sym) => {
+                let ty = self.values.get(sym).copied()?;
+                Some((self.text(*sym)?.to_owned(), 0, ty))
+            }
+            ExprKind::Index { base, index } => {
+                let (name, off, ty) = self.designator(*base).or_else(|| self.addr_of(*base))?;
+                let elem = match self.out.types[ty.0 as usize].clone() {
+                    Ty::Array { elem, .. } | Ty::Ptr(elem) => elem,
+                    _ => ty,
+                };
+                let n = self.eval(*index)?.v as i64;
+                let scale = size_of_ty(&self.out, &self.target, elem).unwrap_or(1) as i64;
+                Some((name, off.checked_add(n.checked_mul(scale)?)?, elem))
+            }
+            ExprKind::Member { base, field, arrow } => {
+                let (name, off, ty) = if *arrow {
+                    self.addr_of(*base)?
+                } else {
+                    self.designator(*base)?
+                };
+                let rec = match self.out.types[ty.0 as usize].clone() {
+                    Ty::Record(r) => r,
+                    _ => return None,
+                };
+                let f = self
+                    .out
+                    .records
+                    .get(rec.0 as usize)?
+                    .fields
+                    .iter()
+                    .find(|f| f.name == Some(*field))?;
+                Some((name, off.checked_add(f.offset as i64)?, f.ty))
+            }
+            _ => None,
+        }
     }
 }

@@ -102,6 +102,15 @@ fn two_static_definitions_of_one_name_are_two_entities() {
         s0, s1,
         "an external name is one entity across TUs, or the rule is just `never merge`"
     );
+    assert_eq!(
+        table
+            .globals()
+            .iter()
+            .filter(|g| g.name == "helper")
+            .count(),
+        2,
+        "and the two statics really are two rows, not one row reached twice"
+    );
 }
 
 /// **Contract 16.** Two TUs referencing `extern int foo;` and one defining `int foo;`
@@ -120,6 +129,16 @@ fn an_extern_declared_twice_and_defined_once_is_one_entity() {
     let c = table.resolve(TuId(2), "foo").expect("foo from TU 2");
     assert_eq!(a, b);
     assert_eq!(b, c, "one entity, however many TUs mention it");
+    // **And exactly one exists.** `resolve` agreeing is not enough: a mutation that
+    // created a fresh entity per TU and overwrote the index each time still returned the
+    // same id from every lookup, because the *last* one won. The table would have held
+    // three `foo`s, which is what 031 would walk.
+    assert_eq!(
+        table.globals().iter().filter(|g| g.name == "foo").count(),
+        1,
+        "one entity in the table, not one per mention: {:?}",
+        table.globals()
+    );
     assert_eq!(table.info(a).linkage, Linkage::External);
     assert_eq!(
         table.info(a).tu,
