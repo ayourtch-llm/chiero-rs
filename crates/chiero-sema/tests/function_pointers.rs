@@ -151,3 +151,63 @@ fn a_local_function_pointer_is_a_pointer() {
         p.analysis.ty(t)
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// `__builtin_va_list` (020 §4.4.1)
+// ---------------------------------------------------------------------------------------
+
+/// **`va_list` is 24 bytes, aligned 8, on x86-64.**
+///
+/// `__builtin_va_list` is `struct __va_list_tag [1]`:
+///
+///     unsigned int gp_offset;      // 0
+///     unsigned int fp_offset;      // 4
+///     void *overflow_arg_area;     // 8
+///     void *reg_save_area;         // 16
+///
+/// Sema modelled it as `Array { elem: <sentinel>, len: Fixed(0) }` — size **zero**, under a
+/// comment saying "24 bytes aligned 8". Lowering's `.max(1)` then gave `va_list ap` a
+/// one-byte object, so any read of it was out of bounds and no variadic function could run.
+#[test]
+fn a_va_list_has_the_abi_size_and_alignment() {
+    let p = parse("__builtin_va_list ap;", TargetConfig::x86_64_linux());
+    assert!(
+        p.analysis.diagnostics.is_empty(),
+        "{:?}",
+        p.analysis.diagnostics
+    );
+    let id = p.decl_ty("ap").expect("ap");
+    assert_eq!(
+        p.analysis.size_of(id),
+        Some(24),
+        "`__va_list_tag` is 4 + 4 + 8 + 8"
+    );
+    assert_eq!(
+        p.analysis.align_of(id),
+        Some(8),
+        "its pointer members force 8"
+    );
+}
+
+/// **`__gnuc_va_list` is the same type**, which is the spelling glibc's headers use.
+#[test]
+fn the_gnuc_spelling_is_the_same_type() {
+    let p = parse("__gnuc_va_list ap;", TargetConfig::x86_64_linux());
+    let id = p.decl_ty("ap").expect("ap");
+    assert_eq!(p.analysis.size_of(id), Some(24));
+    assert_eq!(p.analysis.align_of(id), Some(8));
+}
+
+/// **A pointer to it is still a pointer**, which is what 020 §4.4.1 needs: the list lives
+/// in memory so `va_list *` can cross a function boundary.
+#[test]
+fn a_pointer_to_a_va_list_is_a_pointer() {
+    let p = parse("__builtin_va_list *ap;", TargetConfig::x86_64_linux());
+    let id = p.decl_ty("ap").expect("ap");
+    assert!(
+        matches!(p.analysis.ty(id), Ty::Ptr(_)),
+        "{:?}",
+        p.analysis.ty(id)
+    );
+    assert_eq!(p.analysis.size_of(id), Some(8));
+}
