@@ -429,6 +429,54 @@ fn a_bool_read_modify_write_converts_rather_than_truncates() {
     agree("_Bool b = 1; b ^= 1; return b;");
 }
 
+/// **A braced initializer stores a bit-field as bits, not as its storage unit.**
+///
+/// 015 contract 7 says a bit-field access uses the `BitRange` from `RecordLayout`, and
+/// `assign` obeys it — `v.a = 1` emits `StoreBits`. `init_list` never got the rule and
+/// emits an ordinary full-width `Store`, so `struct B { int a:3; int b:5; } v = {1, 2};`
+/// writes `1` over the whole storage unit and then `2` over it again.
+///
+/// **It is a wrong answer, not a missing one**: chiero says 20 where C says 12. Wave 113's
+/// rule, and the reason this ranks above the two silent gaps left in §9.
+///
+/// Found by the generator once bit-fields entered the record grammar. A single bit-field at
+/// offset 0 works by accident — with no neighbour there is nothing to clobber — which is
+/// why `differential.rs`'s existing bit-field fixtures, which assign field by field, never
+/// saw it. The same "works one spelling, not the other" pairing as wave 140.
+#[test]
+fn a_braced_initializer_stores_a_bitfield_as_bits() {
+    const B: &str = "struct B { int a:3; int b:5; };\n";
+    // Two adjacent bit-fields in one unit: the first must survive the second.
+    agree_with(B, "struct B v = {1, 2}; return v.a * 10 + v.b;");
+    // **Truncated to the field and reinterpreted at its signedness**: 7 in a 3-bit signed
+    // field is -1, so the answer is -8 rather than 72.
+    agree_with(B, "struct B v = {7, 2}; return v.a * 10 + v.b;");
+    // A partial initializer — C11 6.7.9p21 zero-fills `b`, which the `SetMem` already does
+    // and a per-field `StoreBits` must not undo.
+    agree_with(B, "struct B v = {1}; return v.a * 10 + v.b;");
+    // Unsigned wraps the other way: 40 in a 5-bit unsigned field is 8.
+    agree_with(
+        "struct C { unsigned a:3; unsigned b:5; };\n",
+        "struct C v = {7, 40}; return (int)(v.a * 100 + v.b);",
+    );
+    // A bit-field after an ordinary member, so the byte offset is not zero.
+    agree_with(
+        "struct D { short s; int b:3; };\n",
+        "struct D v = {5, 2}; return v.s * 10 + v.b;",
+    );
+    // And an ordinary member after the bit-fields, so the unit's neighbours on both sides
+    // are checked.
+    agree_with(
+        "struct E { int a:3; int b:5; int n; };\n",
+        "struct E v = {1, 2, 9}; return v.a * 100 + v.b * 10 + v.n;",
+    );
+    // The compound-literal spelling reaches the same code.
+    agree_with(B, "struct B v = (struct B){1, 2}; return v.a * 10 + v.b;");
+    // A single bit-field at offset 0 passes even unfixed — kept as the case that must not
+    // regress, and as the reason the defect stayed invisible.
+    agree_with("struct F { int a:4; };\n", "struct F v = {7}; return v.a;");
+}
+
 /// **A braced initializer element is converted to its member's type.**
 ///
 /// C11 6.7.9p11: the initializer for a scalar member is converted as if by assignment.

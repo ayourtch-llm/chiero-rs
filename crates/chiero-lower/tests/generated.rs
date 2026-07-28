@@ -187,11 +187,34 @@ const POOL: [i128; 21] = [
 struct Rec {
     tag: String,
     fields: Vec<Ty>,
+    /// `Some(width)` makes the member a bit-field of that width.
+    ///
+    /// Bit-fields have their own arithmetic — the value is truncated to the field and
+    /// reinterpreted at its own signedness — and wave 136 found a read-modify-write on one
+    /// clobbering its neighbours. A grammar without them cannot see any of that.
+    widths: Vec<Option<u32>>,
+    /// A `union` rather than a `struct`. Every member overlaps, so the generator writes and
+    /// reads **one** member per union: reading a member other than the one last stored is
+    /// unspecified in C, and an unspecified program teaches nothing.
+    is_union: bool,
 }
 
 impl Rec {
     fn field(&self, i: usize) -> String {
         format!("f{i}")
+    }
+
+    fn kw(&self) -> &'static str {
+        if self.is_union { "union" } else { "struct" }
+    }
+
+    /// The members a generated program may read.
+    ///
+    /// For a union that is **only the first**, because every member overlaps and reading
+    /// one that was not last stored is unspecified. Initialising a union with `{v}` sets
+    /// the first member (C11 6.7.9p17), so the first is the one that is always defined.
+    fn readable(&self) -> usize {
+        if self.is_union { 1 } else { self.fields.len() }
     }
 }
 
@@ -272,9 +295,25 @@ impl Gen {
                     if t == Ty::Bool { Ty::Int } else { t }
                 })
                 .collect();
+            let is_union = self.rng.chance(4);
+            // Bit-fields only in structs, and only on `int`/`unsigned` members — those are
+            // the two 013 §4 measured in VPP, and a bit-field of `char` is a gcc extension
+            // whose layout is its own question.
+            let widths: Vec<Option<u32>> = fields
+                .iter()
+                .map(|t| {
+                    if is_union || !matches!(t, Ty::Int | Ty::UInt) || !self.rng.chance(2) {
+                        None
+                    } else {
+                        Some(1 + self.rng.below(7) as u32)
+                    }
+                })
+                .collect();
             self.records.push(Rec {
                 tag: format!("S{i}"),
                 fields,
+                widths,
+                is_union,
             });
         }
         let nfun = 1 + self.rng.below(3);
@@ -311,15 +350,23 @@ impl Gen {
     fn render_prelude(&mut self) -> String {
         let mut out = String::new();
         for r in &self.records.clone() {
-            let _ = writeln!(out, "struct {} {{", r.tag);
+            let kw = if r.is_union { "union" } else { "struct" };
+            let _ = writeln!(out, "{kw} {} {{", r.tag);
             for (i, f) in r.fields.iter().enumerate() {
-                let _ = writeln!(out, "  {} {};", f.c(), r.field(i));
+                match r.widths[i] {
+                    Some(w) => {
+                        let _ = writeln!(out, "  {} {}:{w};", f.c(), r.field(i));
+                    }
+                    None => {
+                        let _ = writeln!(out, "  {} {};", f.c(), r.field(i));
+                    }
+                }
             }
             let _ = writeln!(out, "}};");
         }
         for f in &self.funs.clone() {
             let sig_ret = match (f.ret, f.ret_rec) {
-                (_, Some(r)) => format!("struct {}", self.records[r].tag),
+                (_, Some(r)) => format!("{} {}", self.records[r].kw(), self.records[r].tag),
                 (Some(t), _) => t.c().to_string(),
                 _ => "int".into(),
             };
@@ -329,7 +376,9 @@ impl Gen {
                 .enumerate()
                 .map(|(i, p)| match p {
                     Param::Scalar(t) => format!("{} p{i}", t.c()),
-                    Param::Struct(r) => format!("struct {} p{i}", self.records[*r].tag),
+                    Param::Struct(r) => {
+                        format!("{} {} p{i}", self.records[*r].kw(), self.records[*r].tag)
+                    }
                 })
                 .collect();
             let args = if ps.is_empty() {
@@ -344,8 +393,9 @@ impl Gen {
             match f.ret_rec {
                 Some(r) => {
                     let tag = self.records[r].tag.clone();
-                    let _ = writeln!(out, "  struct {tag} out;");
-                    let nf = self.records[r].fields.len();
+                    let kw = self.records[r].kw();
+                    let _ = writeln!(out, "  {kw} {tag} out;");
+                    let nf = self.records[r].readable();
                     for i in 0..nf {
                         let mut e = format!("{}", 1 + i as i64);
                         for (pi, p) in f.params.iter().enumerate() {
@@ -354,13 +404,16 @@ impl Gen {
                                     let _ = write!(e, " + (long)p{pi}");
                                 }
                                 Param::Struct(pr) => {
-                                    for fi in 0..self.records[*pr].fields.len() {
+                                    for fi in 0..self.records[*pr].readable() {
                                         let _ = write!(e, " + (long)p{pi}.f{fi}");
                                     }
                                 }
                             }
                         }
                         let ft = self.records[r].fields[i];
+                        // A bit-field's value is truncated to its width, which is exactly
+                        // what wave 136's rule is about; the cast keeps the *source* in
+                        // range so only the field's own truncation is under test.
                         let _ = writeln!(out, "  out.f{i} = ({})({e});", ft.c());
                     }
                     let _ = writeln!(out, "  return out;");
@@ -374,7 +427,7 @@ impl Gen {
                                 let _ = write!(e, " + (long)p{pi}");
                             }
                             Param::Struct(pr) => {
-                                for fi in 0..self.records[*pr].fields.len() {
+                                for fi in 0..self.records[*pr].readable() {
                                     let _ = write!(e, " + (long)p{pi}.f{fi}");
                                 }
                             }
@@ -469,7 +522,7 @@ impl Gen {
                 if let Some(r) = f.ret_rec {
                     // A struct-returning helper is not a scalar; use it through a member.
                     let args = self.args_for(&f);
-                    let fi = self.rng.below(self.records[r].fields.len());
+                    let fi = self.rng.below(self.records[r].readable());
                     format!("({}){}({args}).f{fi}", want.c(), f.name)
                 } else {
                     let args = self.args_for(&f);
@@ -654,6 +707,7 @@ impl Gen {
                 // struct-returning helper — the aggregate-return path.
                 let r = self.rng.below(self.records.len());
                 let tag = self.records[r].tag.clone();
+                let kw = self.records[r].kw();
                 let name = self.fresh();
                 let from_call = self
                     .funs
@@ -672,7 +726,7 @@ impl Gen {
                         format!("(struct {tag}){{{}}}", vals.join(", "))
                     }
                 };
-                let _ = writeln!(self.body, "  struct {tag} {name} = {init};");
+                let _ = writeln!(self.body, "  {kw} {tag} {name} = {init};");
                 self.recs_in_scope.push((name, r));
             }
             8 => {
@@ -743,7 +797,7 @@ impl Gen {
         // was supposed to produce is right.
         let recs = self.recs_in_scope.clone();
         for (name, r) in &recs {
-            for fi in 0..self.records[*r].fields.len() {
+            for fi in 0..self.records[*r].readable() {
                 let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}.f{fi});");
             }
         }
@@ -789,6 +843,14 @@ enum Verdict {
         stage: &'static str,
         message: String,
     },
+    /// **Lowering emitted CIR the verifier rejects, and refused nothing.** A defect, and a
+    /// distinct one: the engine's silence is a *consequence* here, not the fault. 015 §7
+    /// refuses what lowering knows it cannot represent; this is the class it does not know
+    /// about, so it needs its own name or it hides inside `SilentNoState`.
+    InvalidCir {
+        errors: Vec<String>,
+        gcc: i32,
+    },
     /// The program was undefined, or the compilers disagreed with each other about it.
     /// Not compared, and not a defect on either side.
     Discarded,
@@ -803,12 +865,13 @@ fn judge(prelude: &str, body: &str) -> Verdict {
         return Verdict::Discarded;
     }
     match chiero_answer(prelude, body) {
-        Ok(Some(v)) if v == gcc => Verdict::Agree,
-        Ok(Some(v)) => Verdict::Mismatch {
+        Ok(Ok(Some(v))) if v == gcc => Verdict::Agree,
+        Ok(Ok(Some(v))) => Verdict::Mismatch {
             chiero: Some(v),
             gcc,
         },
-        Ok(None) => Verdict::SilentNoState { gcc },
+        Ok(Ok(None)) => Verdict::SilentNoState { gcc },
+        Ok(Err(errors)) => Verdict::InvalidCir { errors, gcc },
         Err(ChieroErr::Refused { stage, message }) => Verdict::Refused { stage, message },
         Err(ChieroErr::Panic(m)) => Verdict::Panic(m),
     }
@@ -827,7 +890,8 @@ enum ChieroErr {
 /// `harness::lower` panics on any diagnostic, which is right for a hand-written fixture and
 /// wrong here — a refusal is information, not a test failure. So the stages are run
 /// directly and each one's diagnostics are reported as themselves.
-fn chiero_answer(prelude: &str, body: &str) -> Result<Option<i32>, ChieroErr> {
+#[allow(clippy::type_complexity)]
+fn chiero_answer(prelude: &str, body: &str) -> Result<Result<Option<i32>, Vec<String>>, ChieroErr> {
     use chiero_parse::{ScopedTypedefs, parse_tu};
     use chiero_pp::{Config, preprocess_str};
     use chiero_sema::{SymbolText, TargetConfig, analyze};
@@ -859,14 +923,26 @@ fn chiero_answer(prelude: &str, body: &str) -> Result<Option<i32>, ChieroErr> {
         if let Some(d) = m.diagnostics.first() {
             return Err(("lower", d.message.clone()));
         }
+        // **Verify what lowering emitted.** Nothing else does — 015 §7 refuses only what
+        // lowering itself detected — so invalid CIR reaches the engine, which then produces
+        // no state for a reason that has nothing to do with the program.
+        let bad: Vec<String> = chiero_cir::verify::verify(&m.module)
+            .iter()
+            .filter(|e| e.is_error())
+            .map(|e| format!("{e:?}"))
+            .collect();
+        if !bad.is_empty() {
+            return Ok(Err(bad));
+        }
         let mut arena = chiero_solver::TermArena::new();
         let r = chiero_exec::Engine::new(&m.module)
             .with_entry("probe")
             .run(&mut arena);
-        Ok(r.states()
+        Ok(Ok(r
+            .states()
             .iter()
             .find_map(|s| s.return_value_bits(&mut arena))
-            .map(|b| b as u32 as i32))
+            .map(|b| b as u32 as i32)))
     });
     match out {
         Ok(Ok(v)) => Ok(v),
