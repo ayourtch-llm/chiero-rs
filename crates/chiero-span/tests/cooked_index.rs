@@ -1,8 +1,8 @@
 //! The whole-tree expansion index (010 §6.2).
 //!
-//! Covers **010 contracts 13–17**. Contract 18 (peak-memory bound) needs a large
-//! fixture and 19 (per-`ConfigId` sites) needs `ConfigId`, which does not exist yet;
-//! both are owed and listed in HANDOFF rather than silently claimed here. This is the fix for a design error the adversarial
+//! Covers **010 contracts 13–17**. Contract 18 (peak-memory bound) needs a large fixture
+//! and is owed and listed in HANDOFF rather than silently claimed here; contract 19
+//! (per-`ConfigId` sites) landed in wave 106 and is covered in `config_sites.rs`. This is the fix for a design error the adversarial
 //! review found: the earlier design dropped per-TU expansion tables while retaining a
 //! reverse index of `ExpnCtx` values — which are *indices into the dropped tables*. The
 //! headline capability would have broken at exactly the scale where it matters.
@@ -257,6 +257,7 @@ fn cooked_types_hold_no_per_tu_ids() {
             file: _,
             line: _,
             depth: _,
+            config: _,
         } = s;
     }
 
@@ -269,9 +270,10 @@ fn cooked_types_hold_no_per_tu_ids() {
     // A `CookedSite`'s file is a *global* id, resolvable without any SourceMap.
     assert_eq!(interner.path(site.file).display().to_string(), "a.c");
     assert_eq!(site.depth, 0);
-    // An upper bound, not an equality: 010 §6.2 still owes `func: Option<FuncKey>` and
-    // `config: ConfigId`, and pinning the exact size would make adding them read as a
-    // regression. The point is that no *per-TU handle* has crept in.
+    // An upper bound, not an equality: 010 §6.2 still owes `func: Option<FuncKey>`, and
+    // pinning the exact size would make adding it read as a regression. `config` arrived
+    // in wave 106 (contract 19) and cost 8 bytes without disturbing this. The point is
+    // that no *per-TU handle* has crept in.
     assert!(std::mem::size_of::<chiero_span::CookedSite>() <= 32);
 }
 

@@ -111,7 +111,7 @@ fn order(m: &Module, strategy: Strategy) -> (Vec<u32>, u64) {
         .filter_map(|id| {
             r.states()
                 .iter()
-                .find(|s| s.id() == *id)
+                .find(|s| s.id.0 == *id)
                 .and_then(|s| s.trace().last().map(|(_, b)| b.0))
         })
         .collect();
@@ -219,4 +219,33 @@ fn dfs_is_the_default() {
         explicit.completion_order(),
         "the default is `Dfs`"
     );
+}
+
+/// **The order for a given seed is pinned, not merely self-consistent.**
+///
+/// Every other test here compares one run against another, so all of them pass if the
+/// PRNG changes — two runs of the *new* generator agree with each other just as well.
+/// That is exactly the failure the generator was written out by hand to avoid: 023 §4's
+/// promise is that a bug report replayed next year on another machine walks the same
+/// paths, and a sequence that is only internally consistent keeps that promise to nobody.
+///
+/// If this fails after a deliberate change to the generator, every recorded seed in every
+/// existing bug report has silently changed meaning. Re-bless it only with that written
+/// down.
+#[test]
+fn a_known_seed_produces_a_pinned_order() {
+    let m = tree(3);
+    let (got, _) = order(&m, Strategy::RandomPath { seed: 7 });
+    assert_eq!(
+        got,
+        vec![7, 11, 13, 14, 9, 8, 10, 12],
+        "the leaf order for seed 7. A different list means the generator changed, and \
+         every seed ever recorded now names a different exploration"
+    );
+
+    // And `Dfs` is pinned too. Ascending leaf order, which is the *true* branch of every
+    // fork completing first: the sibling is pushed and the running state carries on, so
+    // depth-first descent always takes `t` before `f`.
+    let (got, _) = order(&m, Strategy::Dfs);
+    assert_eq!(got, vec![7, 8, 9, 10, 11, 12, 13, 14]);
 }

@@ -719,6 +719,10 @@ pub struct RunResult {
     /// The order states *finished*, so a change of searcher is visible in the output
     /// rather than hidden by sorting.
     completion_order: Vec<u32>,
+    /// 023 contract 7: the seed the strategy used, recorded whether or not the strategy
+    /// had any randomness to spend it on. A reader must not have to know which strategy
+    /// ran in order to know how to reproduce it.
+    seed: u64,
     /// 023 §8: reported whether or not it was hit, so a reader can tell
     /// `Exact`-with-generous-bounds from `Exact`-with-trivial-bounds.
     budget: Budget,
@@ -735,6 +739,11 @@ impl RunResult {
 
     pub fn states(&self) -> &[State] {
         &self.states
+    }
+
+    /// 023 contract 7: the seed the strategy used.
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     pub fn completion_order(&self) -> &[u32] {
@@ -1166,6 +1175,61 @@ pub struct ArenaShape {
 /// not affect determinism, which is about the `StateId` sequence *within* a run.
 static NEXT_RUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
+/// How the engine picks the next state to run (023 §4).
+///
+/// **Every strategy is deterministic**, including `RandomPath`. §4: "A non-reproducible
+/// bug report is not a bug report" — a symbolic run finds bugs on some paths and not
+/// others, so if the order is not reproducible then neither is the finding nor its
+/// absence.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Strategy {
+    /// Depth-first. The default: cheap memory, good locality for the solver caches.
+    #[default]
+    Dfs,
+    /// A seeded random descent, which avoids the DFS starvation a loop causes.
+    ///
+    /// The seed is recorded in every `RunResult`, so a run that found something can be
+    /// re-run exactly.
+    RandomPath { seed: u64 },
+}
+
+/// Take the next state to run, per 023 §4's strategy.
+///
+/// `Dfs` pops the end, which is what makes the true branch of a fork complete first — the
+/// sibling was pushed and this state carried on. `RandomPath` picks an index from the
+/// seeded stream and swap-removes it, which is O(1) and, more importantly, a function of
+/// the seed and the queue length alone.
+///
+/// **Ties break by position, not by `StateId` comparison**, because the queue is already
+/// in deterministic creation order: 001 §5 bans the hash iteration that would make it
+/// otherwise, so an index into it is as stable as an id.
+fn pick(work: &mut Vec<State>, strategy: Strategy, rng: &mut u64) -> Option<State> {
+    if work.is_empty() {
+        return None;
+    }
+    match strategy {
+        Strategy::Dfs => work.pop(),
+        Strategy::RandomPath { .. } => {
+            let i = (split_mix64(rng) % work.len() as u64) as usize;
+            Some(work.swap_remove(i))
+        }
+    }
+}
+
+/// SplitMix64 — a small, fully specified PRNG.
+///
+/// **Written out rather than pulled in.** The requirement is not statistical quality but
+/// that the sequence is *identical everywhere and forever*: a bug report replayed next
+/// year on another machine must walk the same paths. A dependency could change its
+/// algorithm in a patch release and silently invalidate every recorded seed.
+fn split_mix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 #[derive(Debug)]
 pub struct Engine<'m> {
     module: &'m Module,
@@ -1190,6 +1254,8 @@ pub struct Engine<'m> {
     entry_param_bytes: u64,
     /// 021 §6's `--fork-on-alias`. Off by default, because it multiplies states.
     fork_on_alias: bool,
+    /// 023 §4. `Dfs` unless a caller says otherwise.
+    strategy: Strategy,
     /// 023 §6. Registered in order; each gets one `CheckerState` slot per state.
     checkers: Checkers,
     /// 021 §5.2, as `(entry parameter index, shape)` until the entry state binds a term.
@@ -1216,6 +1282,7 @@ pub struct Engine<'m> {
 impl<'m> Engine<'m> {
     pub fn new(module: &'m Module) -> Engine<'m> {
         Engine {
+            strategy: Strategy::default(),
             checkers: Checkers::default(),
             arenas: Vec::new(),
             arena_bases: Vec::new(),
@@ -1290,6 +1357,21 @@ impl<'m> Engine<'m> {
 
     /// Register a checker (023 §6). Order is the registration order, and each checker
     /// gets one `CheckerState` slot per state.
+    /// 023 §4. `Dfs` unless set.
+    pub fn with_strategy(mut self, s: Strategy) -> Self {
+        self.strategy = s;
+        self
+    }
+
+    /// The seed this run's strategy uses, reported whether or not it spends it.
+    ///
+    fn seed(&self) -> u64 {
+        match self.strategy {
+            Strategy::Dfs => 0,
+            Strategy::RandomPath { seed } => seed,
+        }
+    }
+
     pub fn with_checker(mut self, c: Box<dyn Checker>) -> Self {
         self.checkers.0.push(c);
         self
@@ -1467,6 +1549,7 @@ impl<'m> Engine<'m> {
                 backend_spawns: 0,
                 solver_inits: 0,
                 completion_order: vec![0],
+                seed: self.seed(),
                 budget: self.budget,
                 _seal: Sealed,
             };
@@ -1548,6 +1631,7 @@ impl<'m> Engine<'m> {
                 // normal path returns a permutation of `states()`. An empty vector here
                 // broke that invariant on the new path alone.
                 completion_order: vec![0],
+                seed: self.seed(),
                 budget: self.budget,
                 _seal: Sealed,
             };
@@ -1716,7 +1800,11 @@ impl<'m> Engine<'m> {
             }
         }
         let mut done = Vec::new();
-        while let Some(mut s) = work.pop() {
+        // **The PRNG advances once per selection, not per candidate**, so the sequence a
+        // seed produces does not depend on how many states happened to be live — which
+        // would make the order depend on the budget and the module rather than the seed.
+        let mut rng = self.seed();
+        while let Some(mut s) = pick(&mut work, self.strategy, &mut rng) {
             while s.status == Status::Running {
                 let forked = self.step(a, &mut s);
                 // An indirect call creates several siblings at once, which `step` cannot
@@ -1807,6 +1895,7 @@ impl<'m> Engine<'m> {
             sliced_terms_skipped,
             solver_inits: self.solver_inits,
             completion_order,
+            seed: self.seed(),
             budget: self.budget,
             _seal: Sealed,
         }

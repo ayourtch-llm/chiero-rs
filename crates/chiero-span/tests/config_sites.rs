@@ -64,7 +64,7 @@ fn cook(
 
 fn add1(interner: &GlobalInterner) -> chiero_span::MacroEntity {
     interner
-        .macro_entity("vppinfra/vec.h", "ADD1", 1)
+        .lookup_macro("vppinfra/vec.h", "ADD1")
         .expect("ADD1 was interned")
 }
 

@@ -593,19 +593,30 @@ pub struct CookedSite {
     pub file: GlobalFileId,
     pub line: u32,
     pub depth: u32,
+    /// Which build configuration this expansion happened under (010 contract 19).
+    ///
+    /// **A plain `u64`, not `chiero_pp::ConfigId`.** `chiero-span` is the foundation and
+    /// depends on nothing (001 §4); the preprocessor's id is an opaque number here for the
+    /// same reason `Module::config` is one in CIR.
+    pub config: u64,
 }
 
 /// The retained whole-tree artifact (010 §6.2).
 #[derive(Debug, Default)]
 pub struct CookedExpansionIndex {
     sites: indexmap::IndexMap<MacroEntity, Vec<CookedSite>>,
-    /// `(entity, file, line) -> index into that entity's site vector`.
+    /// `(entity, file, line, config) -> index into that entity's site vector`.
     ///
     /// Without it, deduplication is a linear scan of a vector that keeps growing across
     /// all 1552 TUs — quadratic in total sites, measured at 305 ms for 32k sites and
     /// rising ~3.5x per doubling. 010 §6.3 budgets *millions* of sites, so the fix that
     /// made the index bounded by sites would have made building it unaffordable.
-    by_site: indexmap::IndexMap<(MacroEntity, GlobalFileId, u32), usize>,
+    /// **The config is part of the key.** VPP builds the same headers several ways, and
+    /// one source line is a different expansion in each — `CLIB_DEBUG` changes what
+    /// `ASSERT` becomes. Keyed without it, the second configuration's site is deduplicated
+    /// away against the first's and the index answers "where is this used?" with a list
+    /// true of no single build.
+    by_site: indexmap::IndexMap<(MacroEntity, GlobalFileId, u32, u64), usize>,
     dropped: u32,
 }
 
@@ -748,6 +759,17 @@ impl CookedExpansionIndex {
     /// This eager resolution is the whole point of §6.2: `ExpnCtx` and `MacroId` are
     /// indices into `sm`, so retaining them and resolving later would dangle.
     pub fn cook_tu(&mut self, interner: &mut GlobalInterner, sm: &SourceMap) {
+        self.cook_tu_with_config(interner, sm, 0);
+    }
+
+    /// As [`Self::cook_tu`], recording which build configuration produced these
+    /// expansions (010 contract 19).
+    pub fn cook_tu_with_config(
+        &mut self,
+        interner: &mut GlobalInterner,
+        sm: &SourceMap,
+        config: u64,
+    ) {
         // Intern every macro, so a defined-but-unused macro still gets an identity.
         let mut entity_of: Vec<MacroEntity> = Vec::new();
         for m in &sm.macros {
@@ -799,13 +821,17 @@ impl CookedExpansionIndex {
             // expansion *events* (10^8–10^9). `M + M + M` on one line is three events
             // and one site; pushing unconditionally reproduces the tens-of-gigabytes
             // footprint the design exists to avoid.
-            match v.iter_mut().find(|s| s.file == gf && s.line == loc.line) {
+            match v
+                .iter_mut()
+                .find(|s| s.file == gf && s.line == loc.line && s.config == config)
+            {
                 // A site reachable both directly and through nesting is depth 0.
                 Some(existing) => existing.depth = existing.depth.min(depth),
                 None => v.push(CookedSite {
                     file: gf,
                     line: loc.line,
                     depth,
+                    config,
                 }),
             }
         }
@@ -848,7 +874,7 @@ impl CookedExpansionIndex {
         self.by_site.clear();
         for (e, v) in &self.sites {
             for (i, s) in v.iter().enumerate() {
-                self.by_site.insert((*e, s.file, s.line), i);
+                self.by_site.insert((*e, s.file, s.line, s.config), i);
             }
         }
     }
@@ -861,5 +887,14 @@ impl CookedExpansionIndex {
 
     pub fn sites(&self, m: MacroEntity) -> impl Iterator<Item = &CookedSite> + '_ {
         self.sites.get(&m).into_iter().flatten()
+    }
+
+    /// The sites of `m` under one build configuration (010 contract 19).
+    pub fn sites_for_config(
+        &self,
+        m: MacroEntity,
+        config: u64,
+    ) -> impl Iterator<Item = &CookedSite> + '_ {
+        self.sites(m).filter(move |s| s.config == config)
     }
 }
