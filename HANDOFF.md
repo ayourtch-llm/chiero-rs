@@ -487,7 +487,81 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 122, `dd6f799`) — 1088 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 123, `5ce2093`) — 1090 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: sema has no type for `__builtin_va_list`
+>
+> `va_list ap;` gets a **one-byte** object, so any read of it is out of bounds:
+>
+>     out-of-bounds: 8-byte access at offset 0 of ap, which is 1 bytes
+>
+> On x86-64 `__builtin_va_list` is `__va_list_tag[1]` — 24 bytes: two `unsigned int`
+> offsets, then `overflow_arg_area` and `reg_save_area` pointers. Sema needs a builtin type
+> with the target's layout, which is also what lets `va_list *` cross a function boundary the
+> way 020 §4.4.1 requires.
+>
+> It is the only thing keeping `tests/corpus/owed/varargs.c` out of the corpus. Wave 123
+> already fixed the two defects underneath it (sema reporting `__builtin_va_*` undeclared;
+> lowering treating them as calls) and the file lowers with `vastart` / `vaarg` / `vaend` in
+> its golden.
+>
+> ### Eight corpus files, and the yield is holding
+>
+> Waves 114–123 found **thirteen** defects through the corpus. Shapes it still lacks:
+>
+> - **`static inline` across a real header** end to end (030 attributes its lines to the
+>   header; `gcov_lines.rs` tests that in isolation and nothing does it whole)
+> - **bit-fields** read and written through a symbolic index
+> - a **union inside a struct** under a symbolic index
+> - **`setjmp`-free early exit**: `return` from inside three nested scopes with a `goto`
+>
+> ### Also open
+>
+> - **021 c21 untested on a real global** since wave 114 fixed `is_const`.
+> - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
+>   untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **A defect can hide behind another of the same shape** (wave 123). Sema and lowering both
+> reported `__builtin_va_start` undeclared; fixing sema only moved the message one crate
+> down. When a fix reveals the identical complaint from elsewhere, expect a *layered* gap,
+> not a regression.
+> **A corpus fixture that runs is coverage; a mutation needs something sharper** (wave 122).
+> **A fix does not generalise to a second code path on its own** (wave 121).
+> **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120).
+> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture that will not lower is still evidence** (wave 119).
+> **An aggregate diagnostic hides the cause** — print diagnostics before 015 §7 truncates
+> them. The standard first move when a corpus file is "skipped"; needed three times now.
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — nineteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so; **check a patch script printed `ok`**, and that its anchor was unique. An oracle
+> that can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: `__builtin_va_list` has no type (blocks
+> `tests/corpus/owed/varargs.c`); the wave-117 `fork_on_offset` survivor; designated,
+> bit-field and address initializers refused; 021 c21 untested on a real global; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 122, `dd6f799`) — 1088 tests, 3 ignored, M1 165/165 by contract
 >
 > **Seven corpus files, all executing clean.** Wave 122 added a symbolic loop with a `goto`
 > out of a nested one (clean on arrival) and a symbolic `switch` — which found that **every
