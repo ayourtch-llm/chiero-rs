@@ -118,6 +118,13 @@ pub enum ExprKind {
         ty: TypeId,
         operand: ExprId,
     },
+    /// A **type name in argument position**: `__builtin_types_compatible_p (T1, T2)`,
+    /// `__builtin_va_arg (ap, T)`, `__builtin_offsetof (T, member)`.
+    ///
+    /// C has no such thing, which is why it needs its own node rather than being squeezed
+    /// into `SizeofType`: these builtins take types where the grammar says expressions,
+    /// and glibc and gcc's own headers use them, so every TU reaches one.
+    TypeName(TypeId),
     SizeofExpr(ExprId),
     SizeofType(TypeId),
     AlignofType(TypeId),
@@ -440,6 +447,34 @@ pub enum Builtin {
     Float,
     Double,
     LongDouble,
+    /// gcc's `__builtin_va_list`. A *type*, not a typedef: nothing declares it, so a
+    /// parser without it reports "expected a type specifier" on `<stdarg.h>` and
+    /// therefore on every TU in existence. 014 gives it the target's layout.
+    VaList,
+    /// gcc's extended floating types — `_Float16`, `__bf16`, `_Float128`, `__ibm128` and
+    /// the `x` forms.
+    ///
+    /// They appear only in intrinsic headers, but they appear in **every** TU that
+    /// includes one, so a parser that did not know them would fail on all of VPP.
+    /// Modelled as width plus format rather than as nine opaque names because the two
+    /// facts 014 needs are exactly those: `_Float16` and `__bf16` are both 16 bits and
+    /// are different formats, so neither the width nor the name alone identifies one.
+    ExtFloat {
+        bits: u16,
+        fmt: FloatFmt,
+    },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FloatFmt {
+    /// IEEE 754 binary interchange format of the stated width.
+    Binary,
+    /// The `x` forms: "at least this wide", mapped to a machine format by the target.
+    Extended,
+    /// bfloat16 — 16 bits, but `float`'s exponent range and 8 bits of mantissa.
+    Brain,
+    /// IBM double-double, which is not an IEEE format at all.
+    Ibm,
 }
 
 /// An attribute as written, with its arguments left as expressions.
@@ -468,6 +503,14 @@ pub struct Ast {
     /// with nowhere to live; a parser that returned a bag of nodes and no roots would be
     /// unusable. Recorded as a deviation rather than smuggled in.
     items: Vec<DeclId>,
+    /// GNU asm labels: `extern int f (void) __asm__ ("real_name");`
+    ///
+    /// **A side table, not a field**, because fewer than one declaration in a thousand
+    /// has one and every `DeclKind` variant would otherwise carry a `None`. It cannot be
+    /// dropped, though: the label *is* the symbol's linker name, so 030 matching gcov
+    /// records and 060 resolving VPP's multiarch aliases both need the name the object
+    /// file will actually contain rather than the one in the source.
+    asm_labels: indexmap::IndexMap<DeclId, Symbol>,
 }
 
 impl Ast {
@@ -530,6 +573,14 @@ impl Ast {
 
     pub fn push_item(&mut self, id: DeclId) {
         self.items.push(id);
+    }
+
+    pub fn set_asm_label(&mut self, id: DeclId, label: Symbol) {
+        self.asm_labels.insert(id, label);
+    }
+
+    pub fn asm_label(&self, id: DeclId) -> Option<Symbol> {
+        self.asm_labels.get(&id).copied()
     }
 
     pub fn exprs(&self) -> &[Expr] {

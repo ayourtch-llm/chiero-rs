@@ -531,6 +531,56 @@ fn concatenated_string_fragments_keep_one_expansion_context_each() {
     );
 }
 
+/// **GNU asm labels**, which rename a symbol: `int f (void) __asm__ ("real");`
+///
+/// Not one of 013's numbered contracts, and it is here because the VPP corpus could not
+/// see it. Reading only the *first* string fragment still parses cleanly and still reports
+/// zero diagnostics — it just gives every redirected symbol the wrong name — so the corpus
+/// gate is structurally blind to it and a mutation proved that.
+///
+/// glibc's `__ASMNAME` is `__STRING (prefix) cname`: **two** adjacent literals, the first
+/// normally empty. So the first-fragment-only bug produces the label `""` for every
+/// redirected function in `<string.h>`, and the label is the name the object file will
+/// carry — which 030 must match against gcov records and 060 against VPP's multiarch
+/// aliases. A silently empty linker name would send both looking for a symbol that does
+/// not exist.
+#[test]
+fn an_asm_label_is_the_concatenation_of_all_its_fragments() {
+    let (_, p) = parse(
+        "extern int redirected (int n) __asm__ (\"\" \"actual_symbol\");\n\
+         extern int plain (int n);\n",
+    );
+    no_diagnostics(&p, "asm labels");
+
+    let decl = |name: &str| {
+        *p.ast
+            .items()
+            .iter()
+            .find(|&&id| match &p.ast.decl(id).kind {
+                DeclKind::Func { name: n, .. } => p.text(*n) == Some(name),
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("no declaration of `{name}`"))
+    };
+
+    let label = p
+        .ast
+        .asm_label(decl("redirected"))
+        .expect("the asm label was recorded");
+    assert_eq!(
+        p.text(label),
+        Some("actual_symbol"),
+        "both fragments, joined, and stored as content rather than spelling — a linker \
+         name is a name, not a quoted literal"
+    );
+    assert_eq!(
+        p.ast.asm_label(decl("plain")),
+        None,
+        "and a declaration without one has none, or the side table leaks the previous \
+         declaration's label onto everything after it"
+    );
+}
+
 /// A guard on the array-length rule that contract 5 established, checked here because
 /// designated initializers are where a wrong answer would show up first.
 #[test]

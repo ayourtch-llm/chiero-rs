@@ -9,8 +9,8 @@
 
 use chiero_ast::{
     ArrayLen, AsmOperand, AsmStmt, Ast, Attr, BinOp, Builtin, DeclId, DeclKind, Designator, ExprId,
-    ExprKind, ForInit, InitItem, PostfixOp, Quals, StmtId, StmtKind, Storage, StrFragment, TagKind,
-    TypeId, TypeKind, UnOp,
+    ExprKind, FloatFmt, ForInit, InitItem, PostfixOp, Quals, StmtId, StmtKind, Storage,
+    StrFragment, TagKind, TypeId, TypeKind, UnOp,
 };
 use chiero_lex::{PpTokenKind, Punct};
 use chiero_pp::PreprocessedTu;
@@ -178,6 +178,16 @@ enum Kw {
     Bool,
     Int128,
     Complex,
+    VaList,
+    F16,
+    BF16,
+    F32,
+    F32x,
+    F64,
+    F64x,
+    F128,
+    F128x,
+    Ibm128,
     Struct,
     Union,
     Enum,
@@ -236,6 +246,16 @@ fn keyword(text: &str) -> Option<Kw> {
         "_Bool" => Kw::Bool,
         "__int128" | "__int128_t" => Kw::Int128,
         "_Complex" | "__complex__" => Kw::Complex,
+        "__builtin_va_list" | "__gnuc_va_list" => Kw::VaList,
+        "_Float16" => Kw::F16,
+        "__bf16" => Kw::BF16,
+        "_Float32" => Kw::F32,
+        "_Float32x" => Kw::F32x,
+        "_Float64" => Kw::F64,
+        "_Float64x" => Kw::F64x,
+        "_Float128" | "__float128" => Kw::F128,
+        "_Float128x" => Kw::F128x,
+        "__ibm128" => Kw::Ibm128,
         "struct" => Kw::Struct,
         "union" => Kw::Union,
         "enum" => Kw::Enum,
@@ -294,6 +314,12 @@ struct Parser<'a> {
     interner: IndexMap<Arc<str>, Symbol>,
     spellings: Vec<Arc<str>>,
     oracle: &'a mut dyn TypedefOracle,
+    /// An asm label read by the declarator, waiting for the `DeclId` it belongs to.
+    ///
+    /// The declarator returns `(name, type)` and the declaration node does not exist yet,
+    /// so the label is parked here for the few lines between. Cleared on read, so a label
+    /// can never attach to a later declaration that had none.
+    pending_asm_label: Option<Symbol>,
     /// Guards the declarator double-scan (see [`Parser::declarator`]) and ordinary
     /// recursion. A 1M-line codebase contains generated files; a stack overflow is a
     /// `SIGABRT` that `catch_unwind` cannot contain, so depth is a diagnostic, never a
@@ -314,6 +340,7 @@ impl<'a> Parser<'a> {
             interner: IndexMap::new(),
             spellings: Vec::new(),
             oracle,
+            pending_asm_label: None,
             depth: 0,
         };
         for (i, t) in tu.tokens.iter().enumerate() {
@@ -725,6 +752,22 @@ impl<'a> Parser<'a> {
     ) -> DeclId {
         // Specifier attributes already sit on `specs.ty`, which is either this type or is
         // reachable from it through the declarator's derivations.
+        let label = self.pending_asm_label.take();
+        let d = self.finish_declarator_inner(specs, name, ty, init, span);
+        if let Some(label) = label {
+            self.ast.set_asm_label(d, label);
+        }
+        d
+    }
+
+    fn finish_declarator_inner(
+        &mut self,
+        specs: &Specs,
+        name: Option<Symbol>,
+        ty: TypeId,
+        init: Option<ExprId>,
+        span: Span,
+    ) -> DeclId {
         match (specs.is_typedef, name) {
             (true, Some(name)) => {
                 self.oracle.declare(name, true);
@@ -823,6 +866,16 @@ impl<'a> Parser<'a> {
                     | Kw::Bool
                     | Kw::Int128
                     | Kw::Complex
+                    | Kw::VaList
+                    | Kw::F16
+                    | Kw::BF16
+                    | Kw::F32
+                    | Kw::F32x
+                    | Kw::F64
+                    | Kw::F64x
+                    | Kw::F128
+                    | Kw::F128x
+                    | Kw::Ibm128
                     | Kw::Struct
                     | Kw::Union
                     | Kw::Enum
@@ -948,11 +1001,25 @@ impl<'a> Parser<'a> {
                     short_seen = true;
                     self.pos += 1;
                 }
-                TokKind::Kw(k @ (Kw::Void | Kw::Char | Kw::Int | Kw::Bool | Kw::Int128)) => {
+                TokKind::Kw(
+                    k @ (Kw::Void | Kw::Char | Kw::Int | Kw::Bool | Kw::Int128 | Kw::VaList),
+                ) => {
                     base = Some(k);
                     self.pos += 1;
                 }
-                TokKind::Kw(k @ (Kw::Float | Kw::Double)) => {
+                TokKind::Kw(
+                    k @ (Kw::Float
+                    | Kw::Double
+                    | Kw::F16
+                    | Kw::BF16
+                    | Kw::F32
+                    | Kw::F32x
+                    | Kw::F64
+                    | Kw::F64x
+                    | Kw::F128
+                    | Kw::F128x
+                    | Kw::Ibm128),
+                ) => {
                     base = Some(k);
                     self.pos += 1;
                 }
@@ -1340,6 +1407,35 @@ impl<'a> Parser<'a> {
             }
         };
         let mut ty = self.declarator_suffixes(ty);
+        // A GNU **asm label**, not an asm statement: `int f (void) __asm__ ("real");`
+        // renames the symbol. glibc's `__REDIRECT` is built on it, so `<string.h>` alone
+        // reaches it and every TU includes that.
+        if self.is_kw(0, Kw::Asm) && self.is_punct(1, Punct::LParen) {
+            self.pos += 2;
+            // **One or more** adjacent literals, because phase 6 applies here too and
+            // glibc's `__ASMNAME` is literally `__STRING (prefix) cname` — two of them,
+            // the first usually empty. Reading only the first gives every redirected
+            // symbol the label `""`.
+            let mut label = String::new();
+            let mut any = false;
+            while let Some(TokKind::Str(sym)) = self.peek().map(|t| t.kind) {
+                self.pos += 1;
+                any = true;
+                label.push_str(unquote(self.spelling_of(sym)));
+            }
+            if any {
+                // Stored as **content**, not spelling — unlike `ExprKind::Str`, whose
+                // quotes 014 needs. A linker name is a name; every consumer of this
+                // (030 matching gcov records, 060 resolving multiarch aliases) wants the
+                // symbol, and dropping the delimiters is phase 6's own work, not the
+                // escape evaluation 013 §2 defers.
+                self.pending_asm_label = Some(self.intern(&label));
+            } else {
+                let here = self.here();
+                self.error(here, "expected a string literal in an asm label");
+            }
+            self.expect_punct(Punct::RParen, "to close an asm label");
+        }
         let mut post = Vec::new();
         self.attribute_specifiers(&mut post);
         attrs.extend(post);
@@ -1463,6 +1559,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn spelling_of(&self, s: Symbol) -> &str {
+        self.spellings.get(s.0 as usize).map(|a| &**a).unwrap_or("")
+    }
+
     fn spelling_is_zero(&self, s: Symbol) -> bool {
         matches!(self.spellings.get(s.0 as usize), Some(t) if &**t == "0")
     }
@@ -1557,6 +1657,16 @@ impl<'a> Parser<'a> {
                     | Kw::Bool
                     | Kw::Int128
                     | Kw::Complex
+                    | Kw::VaList
+                    | Kw::F16
+                    | Kw::BF16
+                    | Kw::F32
+                    | Kw::F32x
+                    | Kw::F64
+                    | Kw::F64x
+                    | Kw::F128
+                    | Kw::F128x
+                    | Kw::Ibm128
                     | Kw::Struct
                     | Kw::Union
                     | Kw::Enum
@@ -1565,6 +1675,13 @@ impl<'a> Parser<'a> {
                     | Kw::Volatile
                     | Kw::Restrict
                     | Kw::Atomic
+                    // A type name may *start* with an attribute:
+                    // `(__attribute__((__vector_size__ (16))) int) {4,1,2,3}` is a
+                    // compound literal in gcc's own `xmmintrin.h`, which every VPP TU
+                    // reaches through `x86intrin.h`. Without this the `(` is read as a
+                    // parenthesized expression and the whole SIMD header derails.
+                    | Kw::Attribute
+                    | Kw::Alignas
             ),
             Some(TokKind::Ident(s)) => self.oracle.is_typedef_name(s),
             _ => false,
@@ -2145,7 +2262,7 @@ impl<'a> Parser<'a> {
             if self.eat_punct(Punct::LParen) {
                 let mut args = Vec::new();
                 while !self.at_end() && !self.is_punct(0, Punct::RParen) {
-                    args.push(self.assignment_expr());
+                    args.push(self.call_argument());
                     if !self.eat_punct(Punct::Comma) {
                         break;
                     }
@@ -2213,6 +2330,37 @@ impl<'a> Parser<'a> {
                 span,
             );
         }
+    }
+
+    /// One call argument, which is *usually* an assignment expression.
+    ///
+    /// gcc's type-taking builtins are the exception, and they are unavoidable: `<string.h>`
+    /// reaches `__builtin_types_compatible_p (__typeof__ (x), void)` and VPP's `vec_add1`
+    /// is built on it, so the construct appears in every TU that includes either.
+    ///
+    /// **Decided by trying the type name and backtracking**, not by matching the callee's
+    /// name. Keying on names would need a list that is wrong the moment gcc adds a
+    /// builtin, and would not cover the `__typeof__` form at all. A type name is only
+    /// accepted when it runs exactly to the `,` or `)`, so an ordinary expression that
+    /// merely starts with a typedef name — which is not valid C anyway — cannot be
+    /// swallowed halfway.
+    fn call_argument(&mut self) -> ExprId {
+        if self.starts_type_name() {
+            let save = self.pos;
+            let start = self.pos;
+            let before = self.diags.len();
+            let ty = self.type_name();
+            if self.is_punct(0, Punct::Comma) || self.is_punct(0, Punct::RParen) {
+                let span = self.span_from(start);
+                return self.ast.add_expr(ExprKind::TypeName(ty), span);
+            }
+            // Not a type argument after all. Roll the cursor back **and the diagnostics
+            // with it** — a speculative parse that leaves its complaints behind reports
+            // errors for a reading the parser itself rejected.
+            self.pos = save;
+            self.diags.truncate(before);
+        }
+        self.assignment_expr()
     }
 
     fn primary_expr(&mut self) -> ExprId {
@@ -2375,7 +2523,44 @@ fn builtin_of(
     Some(match base {
         Some(Kw::Void) => Builtin::Void,
         Some(Kw::Bool) => Builtin::Bool,
+        Some(Kw::VaList) => Builtin::VaList,
         Some(Kw::Float) => Builtin::Float,
+        Some(Kw::F16) => Builtin::ExtFloat {
+            bits: 16,
+            fmt: FloatFmt::Binary,
+        },
+        Some(Kw::BF16) => Builtin::ExtFloat {
+            bits: 16,
+            fmt: FloatFmt::Brain,
+        },
+        Some(Kw::F32) => Builtin::ExtFloat {
+            bits: 32,
+            fmt: FloatFmt::Binary,
+        },
+        Some(Kw::F32x) => Builtin::ExtFloat {
+            bits: 32,
+            fmt: FloatFmt::Extended,
+        },
+        Some(Kw::F64) => Builtin::ExtFloat {
+            bits: 64,
+            fmt: FloatFmt::Binary,
+        },
+        Some(Kw::F64x) => Builtin::ExtFloat {
+            bits: 64,
+            fmt: FloatFmt::Extended,
+        },
+        Some(Kw::F128) => Builtin::ExtFloat {
+            bits: 128,
+            fmt: FloatFmt::Binary,
+        },
+        Some(Kw::F128x) => Builtin::ExtFloat {
+            bits: 128,
+            fmt: FloatFmt::Extended,
+        },
+        Some(Kw::Ibm128) => Builtin::ExtFloat {
+            bits: 128,
+            fmt: FloatFmt::Ibm,
+        },
         Some(Kw::Double) if long_count > 0 => Builtin::LongDouble,
         Some(Kw::Double) => Builtin::Double,
         Some(Kw::Int128) => {
@@ -2416,6 +2601,16 @@ fn builtin_of(
         }
         _ => return None,
     })
+}
+
+/// The content of a string literal's spelling: everything between the first and last
+/// `"`. Encoding prefixes are dropped with it. Escapes are **not** processed — that is
+/// 014's job, and an asm label containing one is not a thing that occurs.
+fn unquote(spelling: &str) -> &str {
+    match (spelling.find('"'), spelling.rfind('"')) {
+        (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
+        _ => spelling,
+    }
 }
 
 fn punct_text(p: Punct) -> &'static str {
