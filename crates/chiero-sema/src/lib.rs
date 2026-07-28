@@ -1894,8 +1894,18 @@ impl Cx<'_> {
                         // times is one mistake, and forty copies of the same complaint
                         // bury the thirty-nine other things that went wrong. The type is
                         // poison either way, so every use after the first says nothing.
-                        if self.unknown_names.insert(*sym) {
-                            let n = self.text(*sym).unwrap_or("?").to_owned();
+                        let n = self.text(*sym).unwrap_or("?").to_owned();
+                        // **A compiler builtin is declared by the compiler.** `stdarg.h`
+                        // is `#define va_start(v,l) __builtin_va_start(v,l)` and nothing
+                        // declares the target — gcc knows it intrinsically. Reporting it
+                        // undeclared made **every variadic function in C** a sema error,
+                        // which 015 §7 then turns into refusing the whole function.
+                        //
+                        // Typed as `Ty::Error` still: 020 §4.4.1 lowers these to `VaStart`
+                        // / `VaArg` / `VaEnd` instructions from the *call*, not from the
+                        // callee's type, so the type is never consulted. What matters is
+                        // that it is not a diagnostic.
+                        if !n.starts_with("__builtin_") && self.unknown_names.insert(*sym) {
                             self.error(span, format!("`{n}` was not declared"));
                         }
                         self.intern(Ty::Error)

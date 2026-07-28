@@ -492,3 +492,74 @@ fn a_case_followed_by_default_shares_its_block() {
         "`case 5` and `default` are the same block: {cases:?} vs {default:?}"
     );
 }
+
+/// **The varargs builtins lower to instructions, not calls** (020 §4.4.1).
+///
+/// `stdarg.h` is `#define va_start(v,l) __builtin_va_start(v,l)`, so every variadic
+/// function in C reaches these names. Sema reported them undeclared and lowering treated
+/// them as calls to undeclared functions — either one makes 015 §7 refuse the whole
+/// enclosing function, so no variadic function lowered at all.
+#[test]
+fn the_varargs_builtins_lower_to_instructions() {
+    let src = "int f(int count, ...) { __builtin_va_list ap; __builtin_va_start(ap, count); \
+               int v = __builtin_va_arg(ap, int); __builtin_va_end(ap); return v; }";
+    let e = errors(src);
+    assert!(e.is_empty(), "{e:#?}");
+
+    let text = chiero_cir::text::print(&lower(src));
+    for want in ["vastart", "vaarg", "vaend"] {
+        assert!(text.contains(want), "no `{want}` in: {text}");
+    }
+    assert!(
+        !text.contains("__builtin_va"),
+        "and none of them is a call: {text}"
+    );
+}
+
+/// **`__builtin_` names are declared by the compiler**, so sema does not report them.
+///
+/// The negative control is a name that really is undeclared, or "do not report builtins"
+/// would be indistinguishable from "do not report anything".
+#[test]
+fn builtin_names_are_not_undeclared() {
+    let tu = chiero_pp::preprocess_str(
+        "t.c",
+        "int f(void) { return __builtin_expect(1, 1); }",
+        chiero_pp::Config::default(),
+    );
+    let mut oracle = chiero_parse::ScopedTypedefs::new();
+    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    struct N<'a>(&'a chiero_parse::ParsedTu);
+    impl chiero_sema::SymbolText for N<'_> {
+        fn text(&self, s: chiero_span::Symbol) -> Option<&str> {
+            self.0.text(s)
+        }
+    }
+    let a = chiero_sema::analyze(
+        &parsed.ast,
+        &chiero_sema::TargetConfig::x86_64_linux(),
+        &N(&parsed),
+    );
+    assert!(
+        a.diagnostics.is_empty(),
+        "`__builtin_expect` is the compiler's: {:?}",
+        a.diagnostics
+    );
+
+    let tu = chiero_pp::preprocess_str(
+        "t.c",
+        "int f(void) { return nonesuch(1); }",
+        chiero_pp::Config::default(),
+    );
+    let mut oracle = chiero_parse::ScopedTypedefs::new();
+    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    let a = chiero_sema::analyze(
+        &parsed.ast,
+        &chiero_sema::TargetConfig::x86_64_linux(),
+        &N(&parsed),
+    );
+    assert!(
+        !a.diagnostics.is_empty(),
+        "a name that really is undeclared is still reported"
+    );
+}

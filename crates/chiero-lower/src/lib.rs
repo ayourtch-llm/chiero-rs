@@ -1869,6 +1869,18 @@ impl Lowerer<'_> {
                 span,
             ),
             chiero_ast::ExprKind::Call { callee, args } => {
+                // **The varargs builtins are instructions, not calls** (020 §4.4.1).
+                // `stdarg.h` is `#define va_start(v,l) __builtin_va_start(v,l)`, so every
+                // variadic function in C reaches here — and lowering reported them as
+                // calls to undeclared functions, which 015 §7 turns into refusing the
+                // whole function. `VaArg` is an instruction rather than an `RValue`
+                // because it *mutates*: it reads the next argument and advances the list.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && let Some(name) = self.names.text(n)
+                    && let Some(kind) = va_builtin(name)
+                {
+                    return self.va_builtin(kind, args, e, span);
+                }
                 // **`alloca()` is an allocation, not a call** (015 contract 14, 020 §3).
                 // It differs from a VLA in exactly one way — `Lifetime::Function`, since
                 // the storage lives until the function returns rather than until the block
@@ -2763,6 +2775,45 @@ impl Lowerer<'_> {
         }
     }
 
+    /// Lower one of 020 §4.4.1's varargs builtins.
+    fn va_builtin(&mut self, kind: VaBuiltin, args: &[ExprId], e: ExprId, span: Span) -> Operand {
+        // The `va_list` object's *address*: §4.4.1 keeps the list in memory so a
+        // `va_list *` can cross a function boundary, which VPP's `format` paths need.
+        let list = match args.first() {
+            Some(a) => self.lvalue_addr(*a, span).unwrap_or_else(|| self.expr(*a)),
+            None => return Operand::Const(Const::Undef(CTy::Ptr)),
+        };
+        match kind {
+            VaBuiltin::Start => {
+                self.emit(InstKind::VaStart { list }, span);
+                Operand::Const(Const::Int { bits: 32, val: 0 })
+            }
+            VaBuiltin::End => {
+                self.emit(InstKind::VaEnd { list }, span);
+                Operand::Const(Const::Int { bits: 32, val: 0 })
+            }
+            VaBuiltin::Copy => {
+                let src = match args.get(1) {
+                    Some(a) => self.lvalue_addr(*a, span).unwrap_or_else(|| self.expr(*a)),
+                    None => return Operand::Const(Const::Undef(CTy::Ptr)),
+                };
+                self.emit(InstKind::VaCopy { dst: list, src }, span);
+                Operand::Const(Const::Int { bits: 32, val: 0 })
+            }
+            VaBuiltin::Arg => {
+                // The type comes from the *expression's* type, which sema recorded from
+                // `va_arg(ap, T)`'s second operand — a `TypeName` argument, not a value.
+                let ty = self
+                    .type_of(e)
+                    .map(|t| self.cty(t))
+                    .unwrap_or(CTy::Int(self.raw_width_of(e).max(1)));
+                let dst = self.new_value();
+                self.emit(InstKind::VaArg { dst, list, ty }, span);
+                Operand::Value(dst)
+            }
+        }
+    }
+
     fn callee_of(&mut self, callee: ExprId) -> Callee {
         // A direct call needs the callee's `FuncId`. Functions are numbered in
         // declaration order, and a name that names no definition in this TU gets a fresh
@@ -3487,6 +3538,25 @@ impl Lowerer<'_> {
                 span,
             );
         }
+    }
+}
+
+/// Which of 020 §4.4.1's varargs builtins a name is, if any.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VaBuiltin {
+    Start,
+    Arg,
+    End,
+    Copy,
+}
+
+fn va_builtin(name: &str) -> Option<VaBuiltin> {
+    match name {
+        "__builtin_va_start" => Some(VaBuiltin::Start),
+        "__builtin_va_arg" => Some(VaBuiltin::Arg),
+        "__builtin_va_end" => Some(VaBuiltin::End),
+        "__builtin_va_copy" => Some(VaBuiltin::Copy),
+        _ => None,
     }
 }
 
