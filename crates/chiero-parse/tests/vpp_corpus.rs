@@ -1,7 +1,7 @@
 //! Covers: 013 contracts 19, 20.
 //!
 //! The corpus is **real, unmodified VPP** — the transitive local include closure of six
-//! vppinfra headers, copied at commit `7fe9c26`. See `corpus/vpp/PROVENANCE.md`.
+//! vppinfra headers, copied at commit `7fe9c26`. See `tests/corpus/vpp/PROVENANCE.md`.
 //!
 //! Every other test in this crate is a fixture someone wrote to make a point. These are
 //! not: each of these six headers expands to a quarter of a million tokens of code that
@@ -20,8 +20,16 @@ impl FileLoader for Disk {
     }
 }
 
+/// The corpus lives at the **workspace** root, not in this crate.
+///
+/// 001 §6 puts shared C programs in `tests/corpus/`, and it stopped being this crate's
+/// fixture the moment `chiero-sema` started laying out the same records (014 contract 12).
 fn corpus_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/vpp")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/<name>/ has a workspace root above it")
+        .join("tests/corpus/vpp")
 }
 
 /// The six seed headers, each preprocessed as its own translation unit.

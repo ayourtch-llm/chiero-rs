@@ -231,6 +231,16 @@ impl Analysis {
         self.by_tag.get(&tag).copied()
     }
 
+    /// The tag a record was defined with, or `None` if it was anonymous.
+    ///
+    /// The reverse direction matters for 014 §7's generator: an anonymous record has a
+    /// layout but **no spelling**, so it cannot appear in a generated `_Static_assert`,
+    /// and a gate that silently skipped those would report a comfortable zero over a
+    /// fraction of the records.
+    pub fn tag_of(&self, id: RecordId) -> Option<Symbol> {
+        self.by_tag.iter().find(|&(_, &r)| r == id).map(|(&s, _)| s)
+    }
+
     pub fn ty_of_decl(&self, d: DeclId) -> Option<TyId> {
         self.decl_types.get(&d).copied()
     }
