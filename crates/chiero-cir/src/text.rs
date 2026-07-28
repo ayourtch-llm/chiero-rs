@@ -177,21 +177,51 @@ impl<'a> Parser<'a> {
     }
 
     fn global(&mut self, t: &[String]) -> Result<Global, ParseError> {
-        // global [const] @name : size N align N
-        let is_const = t.get(1).map(String::as_str) == Some("const");
-        let o = usize::from(is_const);
+        // global [const] [static] @name : size N align N [bytes <hex> | extern]
+        let mut o = 1usize;
+        let is_const = t.get(o).map(String::as_str) == Some("const");
+        o += usize::from(is_const);
+        let internal = t.get(o).map(String::as_str) == Some("static");
+        o += usize::from(internal);
+        let name = self.tok(t, o)?.trim_start_matches('@').into();
+        let size = self
+            .tok(t, o + 3)?
+            .parse()
+            .map_err(|_| self.perr("bad size"))?;
+        let align = self
+            .tok(t, o + 5)?
+            .parse()
+            .map_err(|_| self.perr("bad align"))?;
+        let init = match t.get(o + 6).map(String::as_str) {
+            Some("extern") => GlobalInit::Extern,
+            Some("bytes") => {
+                let hex = self.tok(t, o + 7)?;
+                if hex.len() % 2 != 0 {
+                    return self.err("odd-length byte string");
+                }
+                let mut bytes = Vec::with_capacity(hex.len() / 2);
+                for i in (0..hex.len()).step_by(2) {
+                    bytes.push(
+                        u8::from_str_radix(&hex[i..i + 2], 16)
+                            .map_err(|_| self.perr("bad hex byte"))?,
+                    );
+                }
+                GlobalInit::Bytes(bytes)
+            }
+            _ => GlobalInit::Zero,
+        };
         Ok(Global {
             id: GlobalId(0),
-            name: self.tok(t, 1 + o)?.trim_start_matches('@').into(),
-            size: self
-                .tok(t, 4 + o)?
-                .parse()
-                .map_err(|_| self.perr("bad size"))?,
-            align: self
-                .tok(t, 6 + o)?
-                .parse()
-                .map_err(|_| self.perr("bad align"))?,
+            name,
+            size,
+            align,
             is_const,
+            init,
+            linkage: if internal {
+                Linkage::Internal
+            } else {
+                Linkage::External
+            },
             span: self.cur_span,
         })
     }
@@ -1279,12 +1309,30 @@ pub fn print(m: &Module) -> String {
     let mut o = String::new();
     o.push_str("target x86_64-unknown-linux-gnu\n");
     for g in &m.globals {
+        // `GlobalInit` and `Linkage` are now in the textual format — 020 §6 recorded both
+        // as owed, and a fixture needing initialized global bytes could not be written
+        // without them. Bytes print as hex so a literal survives a round trip byte for
+        // byte, which a quoted string with escapes would not.
+        let init = match &g.init {
+            GlobalInit::Zero => String::new(),
+            GlobalInit::Extern => " extern".to_string(),
+            GlobalInit::Bytes(b) => {
+                let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                format!(" bytes {hex}")
+            }
+        };
         o.push_str(&format!(
-            "\nglobal {}@{} : size {} align {}{}\n",
+            "\nglobal {}{}@{} : size {} align {}{}{}\n",
             if g.is_const { "const " } else { "" },
+            if g.linkage == Linkage::Internal {
+                "static "
+            } else {
+                ""
+            },
             g.name,
             g.size,
             g.align,
+            init,
             span_note(g.span)
         ));
     }

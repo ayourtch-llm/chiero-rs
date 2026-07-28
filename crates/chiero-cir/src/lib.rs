@@ -557,7 +557,30 @@ pub struct Global {
     pub size: u64,
     pub align: u64,
     pub is_const: bool,
+    /// 020 §3. Recorded here rather than left implicit: a global with no initializer is
+    /// not the same fact as one initialized to zero, and a string literal's *bytes* are
+    /// the whole reason its address is worth having.
+    pub init: GlobalInit,
+    pub linkage: Linkage,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum GlobalInit {
+    /// C's default for static storage: all bytes zero.
+    #[default]
+    Zero,
+    /// Literal bytes — a string literal, or a fully constant aggregate.
+    Bytes(Vec<u8>),
+    /// Defined in another translation unit; the bytes are not this module's to state.
+    Extern,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Linkage {
+    #[default]
+    External,
+    Internal,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
