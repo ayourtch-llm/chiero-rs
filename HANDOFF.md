@@ -487,6 +487,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
+> ### ⏭️ START HERE (wave 84, `44ca77c`) — 835 tests, M1 152/165, frontend 48/117
+>
+> **M2's frontend is merged and the parallel worktree is gone.** `chiero-lex` and
+> `chiero-pp` are in-tree and match gcc token-for-token on seven real vppinfra headers
+> under gcc's full predefine set. There is no second agent and no second branch any more:
+> everything is on `master` in this one tree.
+>
+> The three highest-value things now, in order:
+>
+> 1. **`013-parser.md` — the parser. Nothing exists (0/20).** It is the only thing standing
+>    between a working preprocessor and real C reaching the symbolic core, and 014 (0/20)
+>    and 015 (0/25) queue behind it. This is the milestone.
+> 2. **010 contract 19, now unblocked by the merge.** `ConfigId` lives in `chiero-pp`
+>    (001 §180), which is finally in-tree, so `CookedSite.config` has somewhere to come
+>    from. Small, and it was blocked for twenty waves.
+> 3. **M1's remaining 13 contracts** — 020's 14–18/23/29/30/44 (the optional passes,
+>    `Opaque`, `GlobalInit`/`Linkage`, `Marker::Line`), 021 c19, 023's 7/17/21.
+>
+> Before touching the frontend, read wave 84's predefine lesson below — a differential
+> number taken without `gcc -dM -E` fed through `Config::defines` is about code neither
+> tool ran.
+
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
 complete at **draft-3** (post-review, three review waves applied). ~7030 lines,
 24 numbered documents + index, **497** numbered testable contracts.
@@ -2495,6 +2517,11 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    anything). Its exit gate is 012's `gcc -E`/`clang -E` differential, which is a stronger
    oracle than anything M1 has. **That branch is reviewed adversarially before it merges.**
 
+   ✅ **MERGED at wave 84** (`c02a0a4`), at the third gate; the worktree and the branch are
+   gone, and the brief moved to `docs/reviews/m2-frontend-brief.md`. Rejected twice first —
+   `docs/reviews/m2-frontend-round-{1,2}.md` are worth reading for the method more than the
+   findings.
+
    **WAVE 64** (`6a16c3c` + the lying-backend test; 681 tests, **127/165 cited**).
 
    **021 contract 27 was violated, and it is the kind that fires everywhere.** An entry
@@ -2805,6 +2832,82 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    returned. **A module that does not verify reports the absence of everything**, and it
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
+
+   **WAVE 84** (`d0966af`, `c02a0a4`, `44ca77c`; **835 tests**, 152/165 cited, frontend
+   **48/117**) — 021 §5.2 arenas landed, and **the M2 frontend is merged; the worktree is
+   gone**. Two things happened here, and the second is the milestone.
+
+   *Arenas.* `ArenaShape { pitch, elem_size, index_scale, count }` +
+   `Engine::with_arena`, resolved **before** §5.1's search — running the search first
+   either concretizes the address (step 5) or ends the path (step 4) before the arena is
+   consulted. `vlib_buffer_ptr_from_index` resolves now, which is where every VPP node
+   analysis previously died.
+
+   **The RED commit argued a three-way fork; implementing it found a fourth outcome.**
+   §5.2 step 3 puts the gap at `d >= elem_size`, so `0 < d < elem_size` is a *legitimate*
+   pointer into the middle of element `k` — and `Pointer::off` is an `i64`, so this memory
+   model cannot represent it. Forcing `d == 0` on the good path would have deleted every
+   one of those silently, which is exactly what §5.1 calls "a wrong answer instead of an
+   honest unknown". It is its own state now, `Fidelity::Unknown` /
+   `AssumptionKind::NoInformation` / `Terminated(Unsupported)`.
+
+   Each case is created **only where it is feasible**, or every concrete buffer access
+   would carry three siblings with unsatisfiable path conditions — states that cost a
+   fork, report a finding, and describe nothing the program can do.
+
+   ⚠️ *The method note that matters here.* Every structural assertion (how many states,
+   which findings) **survived mutating the divisor to `elem_size`, mutating the gap test
+   to compare against `pitch`, and deleting the `count` bound** — because the fork happens
+   either way. The arithmetic needed ground-index tests, and the first cut of one used
+   `n = 2496`, where `n/pitch` and `n/elem_size` are *both* 1, so the divisor mutation
+   passed. It is written at `n = 4864` now — two `elem_size`s, one `pitch`. **Structure
+   tests are satisfied by the shape of the computation, not its content.**
+
+   Fallout: `SolverLite` decides **ground** assertions before §3.2's fragment test. A
+   folded contradiction collapses to the constant `false`, which is not an atom, so it
+   left the fragment, returned `Unknown`, and reached a backend that cannot assert a bare
+   constant either — `Unknown(BackendError)` for a formula needing no solver, and 023 §3
+   then explores a ground-refutable branch. Every concrete arena index has this shape.
+
+   Also honest: **the RED commit did not compile** (`f.message` on `State::findings()`,
+   which is `Vec<&str>`), so it was a build failure rather than the behavioural RED the
+   rhythm asks for.
+
+   *The M2 merge, at the third gate.* Re-run at the branch's HEAD: **seven real vppinfra
+   headers are token-for-token identical to gcc** under gcc's **full 391-macro predefine
+   set** — `clib.h` 257,310 tokens, `vec.h` 277,790, `pool.h` 291,727, `bitmap.h` 289,164,
+   plus `hash.h`/`format.h`/`error.h` — **zero diagnostics**, `#pragma` counts matching
+   exactly (375, then 381). 34 torture cases match. REVIEW-2's blocking findings verified
+   individually: 400 sequential `M(x)` calls expand, `<foo/bar.h>` stays literal with
+   `foo` defined, 20,000 nested `#if` parens and a 100,000-deep call chain diagnose and
+   exit 0 instead of `SIGABRT`, `#if 0x8000000000000000 > 0` matches gcc.
+
+   Two divergences remain and **neither is a defect**: `#pragma`/`_Pragma` is recorded
+   out-of-band rather than emitted into the token stream (012 §3 and `ExpnKind::Pragma`
+   ask for exactly that, and the parser wants it that way), and an arity error is
+   *diagnosed and recovered* where gcc and clang hard-error and stop — recovery is
+   required, because 030/032 must diff revisions that do not compile.
+
+   ⚠️ **The one methodological lesson to carry into every frontend claim from here**, from
+   REVIEW-2's addendum: under the old 5-macro predefine stub, real headers took
+   *different branches* from gcc, so "zero diagnostics on real headers" was literally true
+   and analytically worthless — 257,310 tokens against 224,074. **Agreement means nothing
+   unless both sides get the same predefines.** Feed `gcc -dM -E` through `Config::defines`
+   or the number is about code neither tool ran.
+
+   **Carried forward, not buried:** `clib.h` preprocesses in **415 ms against gcc's
+   52 ms** (8×, down from 13×, and 012 §6's budget extrapolates to ~3 min of 10 for 1552
+   TUs on 12 cores — a measure to keep, not a gate that passed). **011 c12** (throughput)
+   and **012 c17** (configured-corpus regression) are deliberately uncovered: their only
+   tests are `#[ignore]`d and 070 §195 counts that as uncovered, so the `Covers:` lines
+   were moved off rather than left reporting green. **010 c19** (per-`ConfigId` expansion
+   sites) was blocked *on this merge* — 001 §180 puts `ConfigId` in `chiero-pp`, above
+   `chiero-span` — and is now unblocked and owed.
+
+   Reviews preserved at `docs/reviews/m2-frontend-round-{1,2}.md` with the brief and
+   notes; they were untracked in the worktree and folding it would have deleted them.
+   013/014/015 are at 0/20, 0/20, 0/25 — parser, semantics and lowering are not started,
+   and they are the next milestone.
 
    **WAVE 83** (`8474a03`; 752 tests, **150/165 cited**) — the engine now uses
    `PathCondition`, so **022 §6 is reachable from a real run**. This closes the gap wave
