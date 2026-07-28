@@ -248,6 +248,31 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     );
 }
 
+/// **`?:` and aggregate initializers**, the two constructs contract 2's goldens and
+/// contract 22's corpus both need.
+///
+/// `?:` shares the four-block shape with `&&` (015 §2.1) but types its slot as the
+/// *result* type, and the GNU elvis form `a ?: b` evaluates `a` exactly once — a shape
+/// test cannot see the difference between once and twice when `a` has no side effects.
+#[test]
+fn conditionals_and_aggregate_initializers_compute_what_gcc_computes() {
+    agree("int a = 0; int b = 5; int c = 7; return a ? b : c;");
+    agree("int a = 3; int b = 5; int c = 7; return a ? b : c;");
+    agree("int a = 2; return (a ? 10 : 20) + (a ? 1 : 2);");
+    agree("int a = 0; int b = 9; return a ?: b;");
+    agree("int a = 4; int b = 9; return a ?: b;");
+    // Nested, so the two slots cannot be confused for one.
+    agree("int a = 1; int b = 0; int c = 6; return a ? (b ? 1 : 2) : c;");
+
+    // Aggregate initializers (contract 19): a full one, a partial one — C11 6.7.9p21
+    // zero-initializes the rest — and an array.
+    agree("struct S { int a; int b; }; struct S s = {1, 2}; return s.a * 10 + s.b;");
+    agree("struct S { int a; int b; }; struct S s = {7}; return s.a * 10 + s.b;");
+    agree("int a[4] = {1, 2, 3, 4}; return a[0] + a[3];");
+    agree("int a[4] = {5}; return a[0] * 10 + a[3];");
+    agree("struct S { int a; int b; }; struct S s = {.b = 3}; return s.a * 10 + s.b;");
+}
+
 /// A guard that the oracle can **see a difference at all**.
 ///
 /// Every assertion above is an equality, and a comparison that always compared equal
