@@ -3798,7 +3798,19 @@ impl<'m> Engine<'m> {
                 if self.is_undef(a, s, x) || self.is_undef(a, s, y) {
                     return self.undef_result(s, span, "a comparison against undef");
                 }
-                let (Some(xv), Some(yv)) = (self.scalar(a, s, x), self.scalar(a, s, y)) else {
+                // **A pointer compares as its address.** `scalar` refuses a `Value::Ptr` —
+                // rightly, since a pointer is not a bit-vector until someone asks for its
+                // address — so every comparison with a pointer operand ended the path as a
+                // lowering gap. That is `if (p)`, `if (p == 0)`, `while (p)`, `p ? a : b`,
+                // `p && q` and `!p`: the whole of C's null checking.
+                //
+                // `address_term` is the same function `PtrToInt` uses, so a pointer
+                // compared and a pointer cast to an integer agree by construction rather
+                // than by two implementations happening to match.
+                let (Some(xv), Some(yv)) = (
+                    self.cmp_operand(a, s, x, span),
+                    self.cmp_operand(a, s, y, span),
+                ) else {
                     return self.lowering_gap(s, span, "a non-scalar comparison operand");
                 };
                 match cmp(a, *op, xv, yv) {
@@ -6192,6 +6204,26 @@ impl<'m> Engine<'m> {
             Operand::Const(Const::Undef(_)) => Some(Value::Undef),
             // `Float` and `Wide` remain gaps: 023 §7 approximates floating point.
             _ => None,
+        }
+    }
+
+    /// A comparison operand as a bit-vector: a scalar as itself, a pointer as its address.
+    ///
+    /// Only comparisons get this. Arithmetic on a pointer is `PtrAdd` (020: PtrAdd-not-Add)
+    /// and must keep its provenance, so silently turning a `Value::Ptr` into an address
+    /// there would lose the object a later dereference needs. Equality does not dereference
+    /// anything, which is why the address alone is the whole answer here.
+    fn cmp_operand(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        o: &Operand,
+        span: Span,
+    ) -> Option<Term> {
+        match self.operand(a, s, o)? {
+            Value::Scalar(t) => Some(t),
+            Value::Ptr(p) => self.address_term(a, s, p, span),
+            Value::Undef => None,
         }
     }
 

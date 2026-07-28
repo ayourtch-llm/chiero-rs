@@ -608,6 +608,13 @@ fn a_pointer_and_a_bool_are_tested_against_zero_not_truncated() {
     agree("int *p = 0; return p == 0;");
     agree("int x; int *q = &x; int *p = q; return p == q;");
     agree("int a[2]; return &a[1] != &a[0];");
+    // **The pointer on the right.** `0 == p` is the same comparison written the other way
+    // round, and the operand lowering keys off the *left* side — so a rule that asks only
+    // `compare_ty(lhs)` types this `Int(32)` and loses it. A mutation dropping the
+    // either-side test survived the whole suite until these three existed.
+    agree("int x; int *p = &x; return 0 == p;");
+    agree("int x; int *p = &x; return 0 != p;");
+    agree("int *p = 0; return 0 == p;");
     // Every C construct that takes a condition.
     agree("int x; int *p = &x; if (p) return 7; return 9;");
     agree("int *p = 0; if (p) return 7; return 9;");

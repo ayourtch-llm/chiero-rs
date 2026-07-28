@@ -1227,7 +1227,10 @@ impl Lowerer<'_> {
             }
             StmtKind::If { cond, then, els } => {
                 let c = self.expr(cond);
-                let c = self.truth_of(c, self.width_of(cond), span);
+                let c = {
+                    let t = self.compare_ty(cond);
+                    self.truth_of(c, t, span)
+                };
                 self.seq_point(span);
                 let then_b = self.new_block();
                 let else_b = self.new_block();
@@ -1254,7 +1257,10 @@ impl Lowerer<'_> {
                 self.goto_if_open(header);
                 self.switch_to(header);
                 let c = self.expr(cond);
-                let c = self.truth_of(c, self.width_of(cond), span);
+                let c = {
+                    let t = self.compare_ty(cond);
+                    self.truth_of(c, t, span)
+                };
                 self.set_term(Terminator::Br {
                     cond: c,
                     t: body_b,
@@ -1285,7 +1291,10 @@ impl Lowerer<'_> {
                 self.goto_if_open(latch);
                 self.switch_to(latch);
                 let c = self.expr(cond);
-                let c = self.truth_of(c, self.width_of(cond), span);
+                let c = {
+                    let t = self.compare_ty(cond);
+                    self.truth_of(c, t, span)
+                };
                 self.set_term(Terminator::Br {
                     cond: c,
                     t: body_b,
@@ -1328,7 +1337,10 @@ impl Lowerer<'_> {
                 match cond {
                     Some(ce) => {
                         let c = self.expr(ce);
-                        let c = self.truth_of(c, self.width_of(ce), span);
+                        let c = {
+                            let t = self.compare_ty(ce);
+                            self.truth_of(c, t, span)
+                        };
                         self.set_term(Terminator::Br {
                             cond: c,
                             t: body_b,
@@ -1620,6 +1632,18 @@ impl Lowerer<'_> {
                 // a bitcast to preserve total bit width and `CTy::Ptr` has none.
                 if matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
                     return inner;
+                }
+                // **A conversion to `_Bool` is `!= 0`, not a narrowing** (C11 6.3.1.2p1:
+                // the result is 0 if the value compares equal to 0 and 1 otherwise).
+                // `cast_kind` picked `Trunc` for `Int(32) -> Int(1)`, so `_Bool b = 2` kept
+                // the low bit and stored **false** — and `b = 256` did too, while `b = -1`
+                // gave the right answer by accident. It is the same rule `truth_of` states
+                // for branch conditions, which this path never asked.
+                //
+                // `Int(1)` is `_Bool` and nothing else: a one-bit *bit-field* keeps its
+                // declared `int` type and carries its width in a `BitRange` instead.
+                if matches!(to, CTy::Int(1)) && !matches!(from, CTy::Int(1)) {
+                    return self.truth_of(inner, from, span);
                 }
                 let kind = cast_kind(&from, &to, from_signed);
                 let dst = self.new_value();
@@ -1920,6 +1944,15 @@ impl Lowerer<'_> {
                 // typed AST rather than from the operator.
                 match cir_cmpop(*op, self.is_signed(*lhs)) {
                     Some(cop) => {
+                        // **Either side being an address makes it a pointer comparison.**
+                        // `p == 0` has a pointer on the left and a null constant on the
+                        // right; `0 == p` is the same comparison written the other way.
+                        // `compare_ty(lhs)` alone would type the second `Int(32)`.
+                        let cty = if self.is_address(*rhs) && !self.is_address(*lhs) {
+                            CTy::Ptr
+                        } else {
+                            self.compare_ty(*lhs)
+                        };
                         self.emit(
                             InstKind::Assign {
                                 dst,
@@ -1931,7 +1964,7 @@ impl Lowerer<'_> {
                                     // returned, and 014 already promoted a `char` operand
                                     // to `int`. Using the written width declared `Int(8)`
                                     // for an operand the typed AST had widened to 32.
-                                    ty: CTy::Int(self.width_of(*lhs)),
+                                    ty: cty,
                                 },
                             },
                             span,
@@ -2036,17 +2069,18 @@ impl Lowerer<'_> {
                         ty,
                     },
                     chiero_ast::UnOp::Not => {
+                        // `!p` compares a **pointer** against null, like every other C
+                        // condition. `compare_ty` is the same answer `if (p)` gets.
+                        let cty = self.compare_ty(*operand);
+                        let zero = self.zero_at(&cty);
                         self.emit(
                             InstKind::Assign {
                                 dst,
                                 rv: RValue::Cmp {
                                     op: chiero_cir::CmpOp::Eq,
                                     a,
-                                    b: Operand::Const(Const::Int {
-                                        bits: self.width_of(*operand),
-                                        val: 0,
-                                    }),
-                                    ty: CTy::Int(self.width_of(*operand)),
+                                    b: zero,
+                                    ty: cty,
                                 },
                             },
                             span,
@@ -2165,6 +2199,13 @@ impl Lowerer<'_> {
                 if from == to || matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
                     return a;
                 }
+                // **`(_Bool)x` is `x != 0`**, the same rule as the implicit conversion in
+                // `typed_node` — C11 6.3.1.2 does not care which way the program spelled
+                // it. Written out twice because the two casts arrive by different routes:
+                // one from sema's conversion chain, one from the syntax.
+                if matches!(to, CTy::Int(1)) && !matches!(from, CTy::Int(1)) {
+                    return self.truth_of(a, from, span);
+                }
                 let dst = self.new_value();
                 let kind = cast_kind(&from, &to, self.is_signed(*operand));
                 self.emit(
@@ -2217,7 +2258,10 @@ impl Lowerer<'_> {
         let slot = self.alloca(slot_ty.clone(), 4, None, span);
 
         let a = self.expr(lhs);
-        let a = self.truth_of(a, self.width_of(lhs), span);
+        let a = {
+            let t = self.compare_ty(lhs);
+            self.truth_of(a, t, span)
+        };
         // The sequence point goes at the **end of the entry block**, before the branch.
         // Leaving its position free would let two conforming lowerings emit different
         // goldens, which is what fixing the shape here is for.
@@ -2343,13 +2387,47 @@ impl Lowerer<'_> {
         Operand::Value(dst)
     }
 
+    /// The CIR type at which `e` is compared.
+    ///
+    /// **A pointer is compared as a pointer.** `width_of` reports an *integer's* width and
+    /// answers 32 for everything else, so every comparison with a pointer operand — `p == 0`
+    /// as much as `if (p)` — was typed `Int(32)` and described a value that is not there.
+    /// That is wave 132's third defect in the one path that wave did not reach.
+    ///
+    /// Integers keep `width_of` rather than `cty_of`, deliberately: the operands here are
+    /// **post-conversion**, and 014 has already promoted a `char` to `int`. `cty_of` reports
+    /// the type as *written*, which would declare `Int(8)` for an operand the typed AST
+    /// widened to 32.
+    fn compare_ty(&mut self, e: ExprId) -> CTy {
+        if self.is_address(e) {
+            CTy::Ptr
+        } else {
+            CTy::Int(self.width_of(e))
+        }
+    }
+
+    /// The zero `ty` is compared against — a null pointer, or an integer of its width.
+    fn zero_at(&self, ty: &CTy) -> Operand {
+        match ty {
+            CTy::Ptr => Operand::Const(Const::Null),
+            CTy::Int(w) => Operand::Const(Const::Int { bits: *w, val: 0 }),
+            other => Operand::Const(Const::Undef(other.clone())),
+        }
+    }
+
     /// A branch condition as `Int(1)`.
     ///
     /// 015 §2.1's snippet says `br a_nonzero`, and CIR's verifier agrees: `Br` takes a
     /// one-bit operand. C conditions are "compares unequal to 0", so the conversion is a
     /// comparison rather than a truncation — truncating `2` to one bit gives 0, which
     /// inverts the branch for every even nonzero value.
-    fn truth_of(&mut self, v: Operand, width: u32, span: Span) -> Operand {
+    ///
+    /// It takes the condition's **type**, not a width: the rule above is right for a
+    /// pointer too, and passing a width forced every caller to answer "how wide is a
+    /// pointer" with `width_of`, which says 32. `if (p)` produced `cmp ne i32` on an
+    /// address and no path survived it.
+    fn truth_of(&mut self, v: Operand, ty: CTy, span: Span) -> Operand {
+        let zero = self.zero_at(&ty);
         let dst = self.new_value();
         self.emit(
             InstKind::Assign {
@@ -2357,11 +2435,8 @@ impl Lowerer<'_> {
                 rv: RValue::Cmp {
                     op: chiero_cir::CmpOp::Ne,
                     a: v,
-                    b: Operand::Const(Const::Int {
-                        bits: width,
-                        val: 0,
-                    }),
-                    ty: CTy::Int(width),
+                    b: zero,
+                    ty,
                 },
             },
             span,
@@ -2408,7 +2483,10 @@ impl Lowerer<'_> {
         if then.is_none() {
             self.generated(|s| s.store_slot(slot, c.clone(), &slot_ty, span));
         }
-        let test = self.truth_of(c, self.width_of(cond), span);
+        let test = {
+            let t = self.compare_ty(cond);
+            self.truth_of(c, t, span)
+        };
         self.seq_point(span);
 
         let then_b = self.new_block();
