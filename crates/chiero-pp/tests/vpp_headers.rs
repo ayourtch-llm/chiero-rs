@@ -4,6 +4,7 @@
 use chiero_pp::{Config, FileLoader, PreprocessorSession};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 struct DiskLoader;
 
@@ -11,6 +12,27 @@ impl FileLoader for DiskLoader {
     fn load(&mut self, path: &Path) -> io::Result<String> {
         std::fs::read_to_string(path)
     }
+}
+
+fn gcc_predefines() -> Vec<(String, String)> {
+    let output = Command::new("gcc")
+        .args(["-dM", "-E", "-x", "c", "/dev/null"])
+        .output()
+        .expect("gcc is required for the differential real-header metric");
+    assert!(output.status.success(), "gcc -dM failed");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let definition = line
+                .strip_prefix("#define ")
+                .expect("gcc -dM emitted a non-define line");
+            definition.split_once(char::is_whitespace).map_or_else(
+                || (definition.to_owned(), String::new()),
+                |(name, value)| (name.to_owned(), value.trim_start().to_owned()),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -23,6 +45,12 @@ fn required_vppinfra_headers_preprocess_without_panicking() {
     let session = PreprocessorSession::new();
     let mut loader = DiskLoader;
     let mut diagnostic_counts = Vec::new();
+    let defines = gcc_predefines();
+    assert_eq!(
+        defines.len(),
+        401,
+        "standing harness must use gcc's complete predefine set"
+    );
     for name in ["clib.h", "vec.h", "pool.h", "bitmap.h"] {
         let path = root.join("vppinfra").join(name);
         let source = std::fs::read_to_string(&path).unwrap();
@@ -34,6 +62,7 @@ fn required_vppinfra_headers_preprocess_without_panicking() {
                 PathBuf::from("/usr/include/x86_64-linux-gnu"),
                 PathBuf::from("/usr/include"),
             ],
+            defines: defines.clone(),
             ..Config::default()
         };
         let tu = session.preprocess_with_loader(&path, &source, config, &mut loader);
