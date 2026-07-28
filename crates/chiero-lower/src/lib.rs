@@ -2067,7 +2067,13 @@ impl Lowerer<'_> {
             chiero_ast::ExprKind::Unary {
                 op: op @ (chiero_ast::UnOp::PreInc | chiero_ast::UnOp::PreDec),
                 operand,
-            } => self.inc_dec(*operand, matches!(op, chiero_ast::UnOp::PreInc), true, span),
+            } => self.inc_dec(
+                e,
+                *operand,
+                matches!(op, chiero_ast::UnOp::PreInc),
+                true,
+                span,
+            ),
             chiero_ast::ExprKind::Unary { op, operand } => {
                 let a = self.expr(*operand);
                 let ty = CTy::Int(self.raw_width_of(e));
@@ -2116,6 +2122,7 @@ impl Lowerer<'_> {
             // the address once and both are a load, an add and a store — the only
             // difference is which of the two values is the expression's result.
             chiero_ast::ExprKind::Postfix { op, operand } => self.inc_dec(
+                e,
                 *operand,
                 matches!(op, chiero_ast::PostfixOp::Inc),
                 false,
@@ -2727,10 +2734,10 @@ impl Lowerer<'_> {
             None => self.expr(rhs),
             Some(binop) => {
                 // Load through the address computed **above**, not a second one.
-                let old = self.new_value();
+                let loaded = self.new_value();
                 self.emit(
                     InstKind::Assign {
-                        dst: old,
+                        dst: loaded,
                         rv: RValue::Load {
                             addr: addr.clone(),
                             ty: ty.clone(),
@@ -2740,7 +2747,52 @@ impl Lowerer<'_> {
                     },
                     span,
                 );
+                // A `_Bool` operand is promoted to `int` before the operation, so the
+                // loaded bit is widened to match the width the arithmetic happens at.
+                let old = if ty == CTy::Int(1) {
+                    let w = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: w,
+                            rv: RValue::Cast {
+                                kind: chiero_cir::CastKind::ZExt,
+                                a: Operand::Value(loaded),
+                                from: CTy::Int(1),
+                                to: CTy::Int(32),
+                            },
+                        },
+                        span,
+                    );
+                    w
+                } else {
+                    loaded
+                };
                 let r = self.expr(rhs);
+                // The right operand is promoted too. sema coerces a compound assignment's
+                // right-hand side to the *lvalue's* type, which for `_Bool` hands back a
+                // one-bit value — so without this the addition has a 32-bit and a one-bit
+                // operand and the engine ends the path on a width mismatch. Wave 133 fixed
+                // the same over-eager coercion in sema for pointers; here the operand is
+                // widened at the use instead, because unlike a pointer count a `_Bool` right
+                // operand really is being converted, just to `int` rather than to `_Bool`.
+                let r = if ty == CTy::Int(1) {
+                    let w = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: w,
+                            rv: RValue::Cast {
+                                kind: chiero_cir::CastKind::ZExt,
+                                a: r,
+                                from: CTy::Int(1),
+                                to: CTy::Int(32),
+                            },
+                        },
+                        span,
+                    );
+                    Operand::Value(w)
+                } else {
+                    r
+                };
                 // **`p += n` displaces by elements too.** The `Bin` below would add the
                 // count to the address unscaled and at the lvalue's width, which is the
                 // same defect `p + n` had — three spellings, one operation.
@@ -2757,6 +2809,17 @@ impl Lowerer<'_> {
                         span,
                     )
                 } else {
+                    // **`_Bool` promotes, operates, and converts back** (C11 6.5.16.2 with
+                    // 6.3.1.2), and the conversion is `!= 0` rather than a narrowing. Doing
+                    // the arithmetic at the lvalue's own one-bit width wraps `1 + 1` to 0,
+                    // so `b += 1` on a true `_Bool` turned it false. Wave 136's bit-field
+                    // rule in its other instance — and the one scalar where "convert back"
+                    // is a comparison.
+                    let width = if ty == CTy::Int(1) {
+                        CTy::Int(32)
+                    } else {
+                        ty.clone()
+                    };
                     let dst = self.new_value();
                     self.emit(
                         InstKind::Assign {
@@ -2765,12 +2828,16 @@ impl Lowerer<'_> {
                                 op: cir_binop(binop, self.is_signed(lhs)),
                                 a: Operand::Value(old),
                                 b: r,
-                                ty: ty.clone(),
+                                ty: width.clone(),
                             },
                         },
                         span,
                     );
-                    Operand::Value(dst)
+                    if ty == CTy::Int(1) {
+                        self.truth_of(Operand::Value(dst), width, span)
+                    } else {
+                        Operand::Value(dst)
+                    }
                 }
             }
         };
@@ -2822,7 +2889,14 @@ impl Lowerer<'_> {
         Operand::Value(dst)
     }
 
-    fn inc_dec(&mut self, operand: ExprId, up: bool, prefix: bool, span: Span) -> Operand {
+    fn inc_dec(
+        &mut self,
+        e: ExprId,
+        operand: ExprId,
+        up: bool,
+        prefix: bool,
+        span: Span,
+    ) -> Operand {
         // **`v.a++` is a bit-field read-modify-write**, and this function had no bit-field
         // check at all — it loaded and stored the declared `int`, so incrementing a 3-bit
         // field overwrote its neighbours and never wrapped. 015 contract 7 owns the range,
@@ -2924,6 +2998,51 @@ impl Lowerer<'_> {
                     v
                 }
             }
+        } else if ty == CTy::Int(1) {
+            // **`b++` on a `_Bool` converts rather than truncating.** C11 6.5.2.4 promotes,
+            // adds, and converts back, and conversion to `_Bool` is `!= 0` (6.3.1.2) — so
+            // incrementing a true `_Bool` leaves it true. At the lvalue's own width the
+            // addition wraps `1 + 1` to 0 and turned it false.
+            let wide = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: wide,
+                    rv: RValue::Cast {
+                        kind: chiero_cir::CastKind::ZExt,
+                        a: Operand::Value(old),
+                        from: CTy::Int(1),
+                        to: CTy::Int(32),
+                    },
+                },
+                span,
+            );
+            let sum = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: sum,
+                    rv: RValue::Bin {
+                        op: if up { CBinOp::Add } else { CBinOp::Sub },
+                        a: Operand::Value(wide),
+                        b: Operand::Const(Const::Int { bits: 32, val: 1 }),
+                        ty: CTy::Int(32),
+                    },
+                },
+                span,
+            );
+            match self.truth_of(Operand::Value(sum), CTy::Int(32), span) {
+                Operand::Value(v) => v,
+                other => {
+                    let v = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: v,
+                            rv: RValue::Use(other),
+                        },
+                        span,
+                    );
+                    v
+                }
+            }
         } else {
             let new = self.new_value();
             self.emit(
@@ -2947,13 +3066,35 @@ impl Lowerer<'_> {
             InstKind::Store {
                 addr,
                 val: Operand::Value(new),
-                ty,
+                ty: ty.clone(),
                 align: 1,
                 vol: Volatility::Normal,
             },
             span,
         );
-        Operand::Value(if prefix { new } else { old })
+        let out = if prefix { new } else { old };
+        // **`++b` on a `_Bool` yields the promoted value.** sema types the expression `int`
+        // and inserts no conversion — unlike a plain read of `b`, where it does — so the
+        // one-bit result stored in the object would be stored again as an `i32` by whatever
+        // consumes it. The object keeps its bit; the expression hands back its `int`.
+        let want = self.raw_width_of(e);
+        if ty == CTy::Int(1) && want > 1 {
+            let w = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: w,
+                    rv: RValue::Cast {
+                        kind: chiero_cir::CastKind::ZExt,
+                        a: Operand::Value(out),
+                        from: CTy::Int(1),
+                        to: CTy::Int(want),
+                    },
+                },
+                span,
+            );
+            return Operand::Value(w);
+        }
+        Operand::Value(out)
     }
 
     /// A syntactic type node as a CIR type, going through sema so a typedef or a tag

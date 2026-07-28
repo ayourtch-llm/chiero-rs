@@ -637,7 +637,7 @@ fn generated_programs_agree_with_gcc() {
                 None => counts.push((key, 1)),
             }
         }
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         eprintln!("refusal ledger ({} programs):", refused.len());
         for (k, n) in counts.iter().take(10) {
             eprintln!("  {n:>4}  {k}");
