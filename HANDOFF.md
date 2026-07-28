@@ -487,7 +487,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 91, `5e9b85a`) — 898 tests, M1 152/165, frontend 93/117
+> ### ⏭️ START HERE (wave 92, `adeb1c0`) — 906 tests, M1 152/165, frontend 94/117
+>
+> **The differential oracle exists and it is the tool to reach for from now on.**
+> `crates/chiero-lower/tests/differential.rs`: write `int probe(void) { … }`, and the
+> harness lowers it, runs it with `chiero-exec`, compiles the same C with gcc, runs that,
+> and compares one integer. No symbolic-input machinery is needed because the probe takes
+> no arguments. **It found four defects in its first hour**, including one — `++x` matching
+> the general `Unary` arm and evaluating to `x` — that every structural test in the project
+> passes happily.
+>
+> **When adding a lowering contract, add a `probe` fixture for it.** A shape assertion says
+> the blocks are arranged correctly; only the oracle says the program computes the right
+> number. And make the fixture **consume** the value: `i++` as a `for` step discards it,
+> which is exactly why the pre/post distinction went untested through two campaigns.
+>
+> Next, in rough order:
+>
+> 1. **Scopes — 015 contracts 9, 9b, 9c, 10, 11.** Read 9b first: contracts 9–11 test scope
+>    *exits* only, so an implementation that never enters a scope on a `switch` case path
+>    passes all of them.
+> 2. **`switch`, `goto`, `break`, `continue`** — currently **refused** by lowering with a
+>    diagnostic (015 §7) rather than lowered wrongly. `switch` is contract 18.
+> 3. **`gcov_lines` — 015 §5 and contracts 15, 15b, 16, 17.** §5 is the join point of the
+>    whole test-selection story; 15b warns that 17's subset property is *vacuously
+>    satisfied by the empty set*, so the two must be tested together.
+> 4. **Golden `.cir` files — contracts 2 and 22.**
+> 5. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down: `InitList`/`StmtExpr`/`typeof` type to `Ty::Error`; VLA bounds are
+> flexible; aggregates and bitfields are not lowered (contracts 6 and 7); the parser's
+> speculative type-name diagnostic rollback is unpinned.
+>
+> ### Earlier (wave 91, `5e9b85a`) — 898 tests, frontend 93/117
 >
 > **C source reaches CIR.** `chiero-lower` exists (015: 5/25) — functions, blocks,
 > statements, expressions, the §2.1 short-circuit shape, left-to-right evaluation — and
