@@ -487,7 +487,76 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 118, `HEAD`) — 1074 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 119, `8d170d3`) — 1074 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: sema does not type function-pointer declarators
+>
+> `int (*fn)(int) = twice;` types `fn` as an **integer**, so its slot is declared `Int(32)`
+> and storing a `Ptr` into it fails verification. `cty` maps `Ty::Ptr(_)` to `CTy::Ptr`
+> correctly, so the wrong answer is upstream — sema builds no pointer type for the
+> declarator.
+>
+> Calling through a function pointer is how VPP dispatches every graph node, so this blocks
+> a whole class of real code. Wave 119 already fixed the two *lowering* defects underneath
+> it (a call through a declared variable was "undeclared"; a bare function name was `Undef`
+> rather than `AddrOfFunc`), so sema is the only thing left.
+>
+> **The fixture is written and waiting**: `tests/corpus/owed/indirect_call.c`. Move it back
+> into `tests/corpus/c/`, bless, read the golden.
+>
+> ### `tests/corpus/owed/` is new and worth using
+>
+> Real C, written to the corpus standard, that chiero refuses. Out of the corpus so the
+> suite stays green; **not deleted**, so the gap stays visible and the fixture is ready the
+> day it closes. Its README records the *diagnosis*, not the symptom. Put the next
+> unlowerable shape there rather than dropping it.
+>
+> ### Next, in rough order of value
+>
+> 1. Sema's function-pointer declarators (above).
+> 2. **More corpus fixtures.** Waves 114–119 found seven defects through the corpus, and
+>    wave 119's two came from a file that *would not even lower*. Loops with symbolic
+>    bounds, `static inline` across a real header, varargs, a `switch` on a symbolic value.
+> 3. **021 c21 untested on a real global** since wave 114 fixed `is_const`.
+> 4. Designated, bit-field and address initializers refused; a fault in a non-entry frame is
+>    untested; `Bits` path steps are not emitted.
+> 5. **023 c17** — a milestone, not a wave.
+> 6. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **A fixture that will not lower is still evidence** (wave 119). `indirect_call.c` never
+> produced a golden and found two defects anyway. Write the fixture for the shape you want
+> to support, not the shape you think is supported.
+> **An aggregate diagnostic hides the cause.** 015 §7 refuses a function whole and replaces
+> its diagnostics; print them *before* the truncation when you need to know why.
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — seventeen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so rather than claiming coverage; **check a patch script printed `ok`**. An oracle that
+> can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: sema's function-pointer declarators (blocks
+> `tests/corpus/owed/indirect_call.c`); the wave-117 `fork_on_offset` survivor; designated,
+> bit-field and address initializers refused; 021 c21 untested on a real global; a fault in a
+> non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 118, `f6cb7ec`) — 1074 tests, 3 ignored, M1 165/165 by contract
 >
 > **All five corpus files execute clean**, and the only `#[ignore]`s left are 010's 18,
 > 011's 12 and 012's 17 — the three deliberately-uncovered metrics. Every corpus file is
