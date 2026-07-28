@@ -338,11 +338,64 @@ impl TypedAst {
     }
 }
 
-/// 014 §6's integer subset — enough for array bounds, bit-field widths, enum values,
-/// `_Static_assert` and case labels.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// 014 §6. Integers plus **address constants**, which matter because `&arr[3]` and
+/// `(char*)&s + offsetof(S, f)` are valid static initializers and appear throughout VPP's
+/// node registration tables.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstVal {
     Int(i128),
+    /// The address of a named object plus a byte offset.
+    Addr {
+        global: String,
+        off: i64,
+    },
+}
+
+/// One translation unit, as seen by the cross-TU table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TuId(pub u32);
+
+/// A single entity across every translation unit (014 §4).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GlobalId(pub u32);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Linkage {
+    /// Visible to every TU: one entity however many TUs mention it.
+    External,
+    /// `static` at file scope: **one entity per TU**, even when the name repeats.
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalInfo {
+    pub name: String,
+    pub linkage: Linkage,
+    /// `Some` only for internal linkage — an external entity belongs to no single TU.
+    pub tu: Option<TuId>,
+    /// Whether any TU provided a definition, as opposed to only declaring it.
+    pub defined: bool,
+    /// Whether every definition seen so far was tentative (`int x;` rather than
+    /// `int x = 1;`).
+    pub tentative_only: bool,
+}
+
+/// The cross-TU symbol table (014 §4): `(name, linkage)` → one `GlobalId`.
+///
+/// **Keyed by text, not by `Symbol`.** Each TU's interner is its own, so symbol 7 means
+/// different things in different TUs — the hazard `Symbol`'s own doc comment in
+/// `chiero-span` describes. A cross-TU table keyed on `Symbol` would merge unrelated
+/// names and split identical ones, silently.
+///
+/// This is what lets [031](031-change-impact.md)'s call graph span TUs, and the rule that
+/// makes it correct is the one 014 §4 calls out: `static` functions with the same name in
+/// different TUs are **distinct entities and must not be merged**. VPP repeats short
+/// static helper names across nodes constantly.
+#[derive(Debug, Default)]
+pub struct GlobalTable {
+    globals: Vec<GlobalInfo>,
+    by_external: IndexMap<String, GlobalId>,
+    by_internal: IndexMap<(TuId, String), GlobalId>,
 }
 
 /// The result of analysing one translation unit.
@@ -415,6 +468,49 @@ impl Analysis {
 /// pretending to be the C parser.
 pub trait SymbolText {
     fn text(&self, sym: Symbol) -> Option<&str>;
+}
+
+impl GlobalTable {
+    pub fn new() -> GlobalTable {
+        GlobalTable::default()
+    }
+
+    /// Fold one analysed TU's file-scope declarations into the table.
+    pub fn add_tu(
+        &mut self,
+        tu: TuId,
+        ast: &Ast,
+        analysis: &Analysis,
+        names: &dyn SymbolText,
+    ) -> Vec<SemaDiagnostic> {
+        let _ = (tu, ast, analysis, names);
+        todo!("014 §4: linkage and the cross-TU table")
+    }
+
+    /// The entity a name refers to **from inside `tu`** — which is not the same question
+    /// as "the entity with this name", because a `static` shadows an external one.
+    pub fn resolve(&self, tu: TuId, name: &str) -> Option<GlobalId> {
+        self.by_internal
+            .get(&(tu, name.to_owned()))
+            .or_else(|| self.by_external.get(name))
+            .copied()
+    }
+
+    pub fn info(&self, id: GlobalId) -> &GlobalInfo {
+        &self.globals[id.0 as usize]
+    }
+
+    pub fn globals(&self) -> &[GlobalInfo] {
+        &self.globals
+    }
+
+    pub fn len(&self) -> usize {
+        self.globals.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.globals.is_empty()
+    }
 }
 
 /// Analyse one TU's AST against a target (014 §§2–6).

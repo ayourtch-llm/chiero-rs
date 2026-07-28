@@ -239,6 +239,42 @@ pub fn gcc_predefines() -> Vec<(String, String)> {
         .collect()
 }
 
+/// Parse `prelude` followed by an initializer holding `src`, and return the expression.
+///
+/// The prelude is what lets an expression mention names — an address constant is *about*
+/// a declared object, so `&arr[3]` cannot be tested without `arr` existing.
+pub fn expression_with_prelude(prelude: &str, src: &str) -> (ParsedTu, chiero_ast::ExprId) {
+    let text = format!("{prelude}\nint probe_expr = {src};");
+    let tu = preprocess_str("e.c", &text, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{src}: {:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "{src}: {:?}",
+        parsed.diagnostics
+    );
+    let probe = (0..u32::MAX)
+        .map(Symbol)
+        .take_while(|s| parsed.text(*s).is_some())
+        .find(|s| parsed.text(*s) == Some("probe_expr"))
+        .expect("probe_expr was interned");
+    let init = parsed
+        .ast
+        .items()
+        .iter()
+        .find_map(|&id| match &parsed.ast.decl(id).kind {
+            chiero_ast::DeclKind::Var {
+                name: Some(n),
+                init: Some(i),
+                ..
+            } if *n == probe => Some(*i),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no initializer parsed for `{src}`"));
+    (parsed, init)
+}
+
 pub fn gcc_available() -> bool {
     std::process::Command::new("gcc")
         .arg("--version")
