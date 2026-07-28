@@ -372,3 +372,151 @@ fn every_node_span_maps_into_a_real_file() {
         );
     }
 }
+
+/// **Contract 17's other half, and the assertion the first version was missing.**
+///
+/// "Lands inside a real file" is satisfied by a *fabricated* range: splice `lo` from one
+/// expansion onto `hi` from another and the result still resolves, to a plausible wrong
+/// location. A mutation that removed the `a.ctx == b.ctx` guard in the parser's span join
+/// passed the test above — so the contract needs the stronger property.
+///
+/// Every node's endpoints must be **endpoints of real tokens in the node's own
+/// expansion**: `lo` is some token's `lo` and `hi` is some token's `hi`, both with the
+/// node's `ctx`. That is exactly what "no fabricated range" means (010 §4), and a spliced
+/// span fails it because no token in the first operand's context ends where the second
+/// operand's does.
+#[test]
+fn no_node_span_is_spliced_from_two_expansions() {
+    // `HEAD` is the shape that makes the splice *observable*, and it took a surviving
+    // mutation to find it. A macro **body** sits at a lower byte position than its use, so
+    // for `g + ONE` the spliced `hi` is below the `lo` and a splice is indistinguishable
+    // from a refusal. `HEAD(g) 1` inverts that: the node's first token is the argument `g`
+    // (carrying the call site) and its last is the literal `1` that follows the
+    // invocation, so a splice produces a strictly wider, entirely fictional range.
+    let (tu, p) = parse(
+        "#define ONE 1\n\
+         #define ADD(a, b) ((a) + (b))\n\
+         #define HEAD(x) x +\n\
+         int g;\n\
+         void f(void) { g = g + ONE; g = ADD(g, ONE); g = HEAD(g) 1; }\n",
+    );
+
+    // `lo` values and `hi` values that really occur, keyed by expansion context.
+    let mut los: std::collections::BTreeSet<(u32, u32)> = Default::default();
+    let mut his: std::collections::BTreeSet<(u32, u32)> = Default::default();
+    for t in &tu.tokens {
+        los.insert((t.span.ctx.0, t.span.lo.0));
+        his.insert((t.span.ctx.0, t.span.hi.0));
+    }
+    // Zero-width synthesized spans are legal (013 §5) and sit at a token's `lo`.
+    let mut zero_ok = los.clone();
+    zero_ok.extend(his.iter().copied());
+
+    assert!(
+        tu.tokens.iter().any(|t| !t.span.ctx.is_root()),
+        "the fixture must contain macro-produced tokens or it tests nothing"
+    );
+
+    let mut crossing_candidates = 0;
+    for sp in p.ast.all_spans() {
+        if sp.lo == sp.hi {
+            assert!(
+                zero_ok.contains(&(sp.ctx.0, sp.lo.0)),
+                "a zero-width span sits at a real token boundary: {sp:?}"
+            );
+            continue;
+        }
+        assert!(
+            los.contains(&(sp.ctx.0, sp.lo.0)),
+            "span {sp:?} starts where no token in its own context starts"
+        );
+        assert!(
+            his.contains(&(sp.ctx.0, sp.hi.0)),
+            "span {sp:?} ends where no token in its own context ends — a range spliced \
+             from two expansions, which resolves to a plausible wrong location rather \
+             than to an obvious failure"
+        );
+        crossing_candidates += 1;
+    }
+    assert!(
+        crossing_candidates > 5,
+        "only {crossing_candidates} multi-token nodes were checked, which is too few to \
+         have exercised a macro boundary"
+    );
+}
+
+/// **Declarator grouping.** `int (*fp)(void);` is a pointer to a function, not a function
+/// returning a pointer, and the two are distinguished only by the grouping parentheses.
+///
+/// This is not one of the nine contracts in this slice, but it is code that exists and was
+/// unexercised: a mutation that treated every `(` in a declarator as a parameter list
+/// passed the whole file. Untested declarator grouping would silently corrupt every
+/// function-pointer declaration in VPP, which is how its node dispatch tables are built —
+/// so this is the difference between the parser working on VPP and appearing to.
+#[test]
+fn grouping_parentheses_bind_the_pointer_before_the_parameter_list() {
+    let (_, p) = parse("int (*fp)(void);\nint *gp(void);\n");
+
+    let ty_of = |name: &str| {
+        p.ast
+            .items()
+            .iter()
+            .find_map(|&id| match &p.ast.decl(id).kind {
+                DeclKind::Var {
+                    name: Some(n), ty, ..
+                } if p.text(*n) == Some(name) => Some(*ty),
+                DeclKind::Func { name: n, ty, .. } if p.text(*n) == Some(name) => Some(*ty),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no declaration of `{name}`"))
+    };
+
+    // `fp` is a *pointer*, whose pointee is the function.
+    let fp = ty_of("fp");
+    let inner = match p.ast.ty(fp).kind {
+        TypeKind::Ptr(inner) => inner,
+        ref other => panic!("`fp` must be a pointer, not {other:?}"),
+    };
+    assert!(
+        matches!(p.ast.ty(inner).kind, TypeKind::Func { .. }),
+        "and it points to a function: {:?}",
+        p.ast.ty(inner).kind
+    );
+
+    // `gp` is a *function*, whose return type is the pointer. Same tokens minus the
+    // parentheses, opposite structure.
+    let gp = ty_of("gp");
+    let ret = match p.ast.ty(gp).kind {
+        TypeKind::Func { ret, .. } => ret,
+        ref other => panic!("`gp` must be a function, not {other:?}"),
+    };
+    assert!(
+        matches!(p.ast.ty(ret).kind, TypeKind::Ptr(_)),
+        "returning a pointer: {:?}",
+        p.ast.ty(ret).kind
+    );
+
+    // The other side of the same decision, and the one that has no `*` to give it away:
+    // in `void h(int (int));` the inner `(` opens a **parameter list**, so `h` takes one
+    // parameter of function type. Reading it as a grouping paren instead would make `h`
+    // take a plain `int`, silently and with no diagnostic.
+    let (_, p) = parse("void h(int (int));");
+    let h = match &p.ast.decl(p.ast.items()[0]).kind {
+        DeclKind::Func { ty, .. } => *ty,
+        other => panic!("expected a function declaration, got {other:?}"),
+    };
+    let params = match &p.ast.ty(h).kind {
+        TypeKind::Func { params, .. } => params.clone(),
+        other => panic!("not a function type: {other:?}"),
+    };
+    assert_eq!(params.len(), 1);
+    let pty = match &p.ast.decl(params[0]).kind {
+        DeclKind::Var { ty, .. } => *ty,
+        other => panic!("not a parameter: {other:?}"),
+    };
+    assert!(
+        matches!(p.ast.ty(pty).kind, TypeKind::Func { .. }),
+        "the parameter's own type is a function, not an int: {:?}",
+        p.ast.ty(pty).kind
+    );
+}

@@ -24,6 +24,16 @@ Before parsing:
   builds format strings by concatenating macro-produced fragments, and a diagnostic that
   cannot say *which fragment* came from *which macro* is not actionable.
 
+**Amendment (implementation of §5, 2026-07-28).** Phase 5's *evaluation* does not happen
+here, and §5 is why: the AST records what was written. `ExprKind::Char` and the fragments
+of `ExprKind::Str` carry the literal's **spelling**, quotes and backslashes included, and
+014 turns it into charset values — which it must do anyway, since `char` signedness is its
+decision, not the parser's. Evaluating in the parser would make the AST a lossy record
+(`'\x41'` and `'A'` would become the same node) and break 031's ability to see an edit that
+changed one into the other. Phase 6's *concatenation* does happen here, because grouping
+adjacent literals into one node is structural rather than semantic — and the per-fragment
+provenance above is retained exactly so nothing is lost by doing it.
+
 ## 3. The typedef problem
 
 `A * B;` is a declaration if `A` is a typedef name and a multiplication otherwise. The
@@ -100,9 +110,19 @@ Arena-allocated, ID-indexed, no `Rc`:
 ```rust
 pub struct Ast {
     exprs: Vec<Expr>, stmts: Vec<Stmt>, decls: Vec<Decl>, types: Vec<TypeExpr>,
+    items: Vec<DeclId>,     // top-level declarations, in written order
 }
 pub struct Expr { pub kind: ExprKind, pub span: Span }
 ```
+
+Two amendments to that sketch, made when it was implemented (2026-07-28):
+
+- **`items`.** The four arenas leave the TU's own contents with nowhere to live; a parser
+  that returned a bag of nodes and no roots would be unusable.
+- **One `Decl` per declared name.** `int a, b;` is two `Decl`s, not one node with a
+  declarator list, even though the C grammar groups them.
+  [031](031-change-impact.md)'s unit of change is an *entity*, and a grouped node turns
+  "did `b` change?" into a question about a subrange of a node rather than about a node.
 
 Every node carries a `Span` with its `ExpnCtx`. A node synthesized by the parser (an
 implicit conversion, an error node) uses a zero-width span at the relevant position with

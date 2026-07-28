@@ -99,12 +99,21 @@ impl PreprocessedTu {
         self.spellings.iter().map(String::as_str)
     }
 
+    /// **`text_at` is what a consumer walking the stream wants.** This one has to find
+    /// the token's index by identity, so it is linear in the stream — fine for a test
+    /// holding one token, quadratic for a parser holding all of them. Kept because it
+    /// reads naturally at a call site that already has a `&PpToken`.
     pub fn text(&self, token: &PpToken) -> Option<&str> {
         self.tokens
             .iter()
             .position(|candidate| std::ptr::eq(candidate, token))
             .and_then(|index| self.spellings.get(index))
             .map(String::as_str)
+    }
+
+    /// The spelling of the token at `index` in [`Self::tokens`], in constant time.
+    pub fn text_at(&self, index: usize) -> Option<&str> {
+        self.spellings.get(index).map(String::as_str)
     }
 
     pub fn symbol_text(&self, symbol: Symbol) -> Option<&str> {
