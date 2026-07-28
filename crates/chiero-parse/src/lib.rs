@@ -8,9 +8,9 @@
 //! `Error` nodes and keeps going.
 
 use chiero_ast::{
-    ArrayLen, Ast, Attr, BinOp, Builtin, DeclId, DeclKind, Designator, ExprId, ExprKind, ForInit,
-    InitItem, PostfixOp, Quals, StmtId, StmtKind, Storage, StrFragment, TagKind, TypeId, TypeKind,
-    UnOp,
+    ArrayLen, AsmOperand, AsmStmt, Ast, Attr, BinOp, Builtin, DeclId, DeclKind, Designator, ExprId,
+    ExprKind, ForInit, InitItem, PostfixOp, Quals, StmtId, StmtKind, Storage, StrFragment, TagKind,
+    TypeId, TypeKind, UnOp,
 };
 use chiero_lex::{PpTokenKind, Punct};
 use chiero_pp::PreprocessedTu;
@@ -283,7 +283,6 @@ struct Specs {
     ty: TypeId,
     storage: Storage,
     is_typedef: bool,
-    attrs: Vec<Attr>,
 }
 
 struct Parser<'a> {
@@ -552,6 +551,12 @@ impl<'a> Parser<'a> {
         if self.eat_punct(Punct::Semi) {
             return;
         }
+        // Top-level `asm ("...");` declares nothing either, but it is not an error and
+        // must not resynchronize past whatever follows it.
+        if self.is_kw(0, Kw::Asm) {
+            self.asm_statement();
+            return;
+        }
         if !self.starts_declaration() {
             return;
         }
@@ -581,6 +586,15 @@ impl<'a> Parser<'a> {
         self.oracle.enter_scope();
         let (name, ty) = self.declarator(specs.ty, false);
         let is_func = matches!(self.ast.ty(ty).kind, TypeKind::Func { .. });
+
+        // **K&R (contract 4).** An old-style declarator produced an identifier list with
+        // no types; the types are in ordinary declarations between the `)` and the `{`.
+        // They are read here, before the body, because the body's first statement may
+        // shadow a parameter name and would then overwrite the type we are looking for.
+        let kr = matches!(self.ast.ty(ty).kind, TypeKind::Func { kr: true, .. });
+        if kr && !self.is_punct(0, Punct::LBrace) {
+            self.kr_parameter_declarations(ty);
+        }
 
         if is_func && self.is_punct(0, Punct::LBrace) {
             let Some(name) = name else {
@@ -637,6 +651,58 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The declarations between `)` and `{` in an old-style definition (contract 4).
+    ///
+    /// Each one types a name the identifier list already produced, so the parameter decls
+    /// are **updated in place** rather than replaced: the identifier list fixed the
+    /// parameter *order*, which these declarations do not have to follow, and rebuilding
+    /// the list from them would silently reorder the arguments.
+    ///
+    /// A name declared here that is not a parameter is a diagnostic rather than a new
+    /// local — that is what the construct means, and accepting it would let a typo
+    /// disappear.
+    fn kr_parameter_declarations(&mut self, func_ty: TypeId) {
+        let params = match &self.ast.ty(func_ty).kind {
+            TypeKind::Func { params, .. } => params.clone(),
+            _ => return,
+        };
+        while !self.at_end() && !self.is_punct(0, Punct::LBrace) && self.starts_declaration() {
+            let before = self.pos;
+            let specs = self.declaration_specifiers();
+            loop {
+                let (name, ty) = self.declarator(specs.ty, false);
+                let Some(name) = name else { break };
+                let target = params.iter().copied().find(|&d| {
+                    matches!(&self.ast.decl(d).kind,
+                        DeclKind::Var { name: Some(n), .. } if *n == name)
+                });
+                match target {
+                    Some(d) => {
+                        if let DeclKind::Var { ty: slot, .. } = &mut self.ast.decl_mut(d).kind {
+                            *slot = ty;
+                        }
+                        self.oracle.declare(name, false);
+                    }
+                    None => {
+                        let span = self.span_from(before);
+                        self.error(
+                            span,
+                            "this declaration names something that is not a parameter of \
+                             the function it follows",
+                        );
+                    }
+                }
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_punct(Punct::Semi, "after an old-style parameter declaration");
+            if self.pos == before {
+                break;
+            }
+        }
+    }
+
     /// Declare a name in the scope *outside* the prototype scope we are currently in.
     fn declare_outer(&mut self, name: Symbol, is_typedef: bool) {
         self.oracle.exit_scope();
@@ -657,12 +723,8 @@ impl<'a> Parser<'a> {
         init: Option<ExprId>,
         span: Span,
     ) -> DeclId {
-        if !specs.attrs.is_empty() {
-            self.ast
-                .ty_mut(ty)
-                .attrs
-                .extend(specs.attrs.iter().cloned());
-        }
+        // Specifier attributes already sit on `specs.ty`, which is either this type or is
+        // reachable from it through the declarator's derivations.
         match (specs.is_typedef, name) {
             (true, Some(name)) => {
                 self.oracle.declare(name, true);
@@ -943,11 +1005,15 @@ impl<'a> Parser<'a> {
             }
         };
         self.ast.ty_mut(ty).quals = quals;
+        // **The specifier's attributes go on the specifier node, here and once.**
+        // `__attribute__((packed)) struct S a, b;` really does apply to both declarators,
+        // and they share this node — so attaching them per declarator would add them to
+        // the shared node once per name instead of once.
+        self.ast.ty_mut(ty).attrs.extend(attrs.iter().cloned());
         Specs {
             ty,
             storage,
             is_typedef,
-            attrs,
         }
     }
 
@@ -1067,12 +1133,8 @@ impl<'a> Parser<'a> {
         ty: TypeId,
         span: Span,
     ) -> DeclId {
-        if !specs.attrs.is_empty() {
-            self.ast
-                .ty_mut(ty)
-                .attrs
-                .extend(specs.attrs.iter().cloned());
-        }
+        // Specifier attributes already sit on `specs.ty`, which is either this type or is
+        // reachable from it through the declarator's derivations.
         self.ast.add_decl(
             DeclKind::Var {
                 name,
@@ -1277,14 +1339,34 @@ impl<'a> Parser<'a> {
                 None
             }
         };
-        let ty = self.declarator_suffixes(ty);
+        let mut ty = self.declarator_suffixes(ty);
         let mut post = Vec::new();
         self.attribute_specifiers(&mut post);
         attrs.extend(post);
         if !attrs.is_empty() {
+            ty = self.unshare(ty, base);
             self.ast.ty_mut(ty).attrs.extend(attrs);
         }
         (name, ty)
+    }
+
+    /// Give this declarator a type node of its own before writing to it.
+    ///
+    /// A declarator with no derivations — no `*`, no `[]`, no `()` — has the *specifier's*
+    /// `TypeId`, which every other declarator in the same declaration also has. Writing an
+    /// attribute there put it on all of them: `int x __attribute__((aligned(64))), y;`
+    /// aligned `y` too. `aligned` is one of the three attributes 013 §4 says changes
+    /// analysis semantics, so the symptom was every offset 014 computes from the
+    /// declaration being wrong, silently and with no diagnostic.
+    fn unshare(&mut self, ty: TypeId, base: TypeId) -> TypeId {
+        if ty != base {
+            return ty;
+        }
+        let copy = self.ast.ty(ty).clone();
+        let fresh = self.ast.add_type(copy.kind, copy.span);
+        self.ast.ty_mut(fresh).quals = copy.quals;
+        self.ast.ty_mut(fresh).attrs = copy.attrs;
+        fresh
     }
 
     /// After `(`: is this a grouping paren or a parameter list?
@@ -1591,10 +1673,144 @@ impl<'a> Parser<'a> {
         r
     }
 
+    /// `asm` / `__asm__`, basic and extended — 013 §4, 31 VPP files.
+    ///
+    /// **Parsed, never interpreted.** The template and every constraint keep their
+    /// spelling; lowering turns the whole statement into an opaque effect that clobbers
+    /// its outputs and marks the path `Approximated`. Modelling x86 semantics is out of
+    /// scope, and treating asm as a no-op would be unsound in the direction that produces
+    /// confident wrong answers.
+    fn asm_statement(&mut self) -> StmtId {
+        let start = self.pos;
+        self.pos += 1; // asm
+        let mut a = AsmStmt::default();
+        loop {
+            if self.eat_kw(Kw::Volatile) {
+                a.volatile = true;
+            } else if self.eat_kw(Kw::Goto) {
+                a.goto = true;
+            } else if self.eat_kw(Kw::Inline) || self.eat_kw(Kw::Const) {
+                // GNU accepts `asm inline` and, historically, `asm const`. Neither says
+                // anything we act on.
+            } else {
+                break;
+            }
+        }
+        if !self.expect_punct(Punct::LParen, "after `asm`") {
+            self.recover_to_boundary();
+            let span = self.span_from(start);
+            return self.ast.add_stmt(StmtKind::Error, span);
+        }
+        // The template is one or more adjacent string literals — phase 6 applies here as
+        // it does anywhere else, and each fragment keeps its own span.
+        while let Some(TokKind::Str(s)) = self.peek().map(|t| t.kind) {
+            let sp = self.peek().map(|t| t.span).unwrap_or_else(|| self.here());
+            a.template.push(StrFragment {
+                spelling: s,
+                span: sp,
+            });
+            self.pos += 1;
+        }
+        if a.template.is_empty() {
+            let here = self.here();
+            self.error(here, "expected an assembly template string");
+        }
+
+        // Sections in fixed order, each introduced by `:`. **A missing section is not the
+        // same as an empty one only in position**: `asm ("" ::: "memory")` has empty
+        // outputs and inputs and a clobber list, so the colons have to be counted rather
+        // than matched against content.
+        let mut section = 0u8;
+        while self.eat_punct(Punct::Colon) {
+            match section {
+                0 | 1 => {
+                    while !self.at_end()
+                        && !self.is_punct(0, Punct::RParen)
+                        && !self.is_punct(0, Punct::Colon)
+                    {
+                        let Some(op) = self.asm_operand() else { break };
+                        if section == 0 {
+                            a.outputs.push(op);
+                        } else {
+                            a.inputs.push(op);
+                        }
+                        if !self.eat_punct(Punct::Comma) {
+                            break;
+                        }
+                    }
+                }
+                2 => {
+                    while let Some(TokKind::Str(s)) = self.peek().map(|t| t.kind) {
+                        self.pos += 1;
+                        a.clobbers.push(s);
+                        if !self.eat_punct(Punct::Comma) {
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    while let Some(TokKind::Ident(s)) = self.peek().map(|t| t.kind) {
+                        self.pos += 1;
+                        a.labels.push(s);
+                        if !self.eat_punct(Punct::Comma) {
+                            break;
+                        }
+                    }
+                }
+            }
+            section = section.saturating_add(1);
+        }
+        self.expect_punct(Punct::RParen, "to close `asm`");
+        self.expect_punct(Punct::Semi, "after `asm`");
+        let span = self.span_from(start);
+        self.ast.add_stmt(StmtKind::Asm(Box::new(a)), span)
+    }
+
+    /// `[name] "constraint" (expr)` — the symbolic name is optional and rare, the
+    /// constraint is mandatory.
+    fn asm_operand(&mut self) -> Option<AsmOperand> {
+        let symbolic_name = if self.eat_punct(Punct::LBracket) {
+            let n = match self.peek().map(|t| t.kind) {
+                Some(TokKind::Ident(s)) => {
+                    self.pos += 1;
+                    Some(s)
+                }
+                _ => {
+                    let here = self.here();
+                    self.error(here, "expected a symbolic operand name");
+                    None
+                }
+            };
+            self.expect_punct(Punct::RBracket, "to close a symbolic operand name");
+            n
+        } else {
+            None
+        };
+        let Some(TokKind::Str(constraint)) = self.peek().map(|t| t.kind) else {
+            let here = self.here();
+            self.error(here, "expected an operand constraint string");
+            return None;
+        };
+        self.pos += 1;
+        if !self.expect_punct(Punct::LParen, "before an asm operand") {
+            return None;
+        }
+        let expr = self.expression();
+        self.expect_punct(Punct::RParen, "after an asm operand");
+        Some(AsmOperand {
+            symbolic_name,
+            constraint,
+            expr,
+        })
+    }
+
     fn statement_inner(&mut self) -> StmtId {
         let start = self.pos;
         if self.is_punct(0, Punct::LBrace) {
             return self.compound_statement(true);
+        }
+        if self.is_kw(0, Kw::Asm) {
+            return self.asm_statement();
         }
         if self.eat_punct(Punct::Semi) {
             let span = self.span_from(start);

@@ -219,6 +219,34 @@ fn a_statement_expression_carries_a_block_whose_last_statement_is_its_value() {
         "which is `t + 1`: {:?}",
         p.ast.expr(last).kind
     );
+
+    // **And the block is a scope.** A mutation that opened the statement expression's
+    // block without entering a scope passed everything above — the structure is identical
+    // either way, and only a *name* declared inside can tell. A typedef is the sharpest
+    // probe, because whether it escaped changes how the next statement parses rather than
+    // merely what some field says.
+    let (_, p) = parse(
+        "void g(void) {\n\
+         int x = ({ typedef int T; T v = 1; v; });\n\
+         T * y;\n\
+         }\n",
+    );
+    let stmts = func_body(&p, "g");
+    assert_eq!(stmts.len(), 2);
+    let e = match &p.ast.stmt(stmts[1]).kind {
+        StmtKind::Expr(e) => *e,
+        other => panic!(
+            "`T` was declared inside a statement expression, so outside it `T * y;` is a \
+             multiplication, not a declaration: {other:?}"
+        ),
+    };
+    assert!(matches!(
+        p.ast.expr(e).kind,
+        ExprKind::Binary {
+            op: chiero_ast::BinOp::Mul,
+            ..
+        }
+    ));
 }
 
 /// **Contract 8.** `typeof` and `__typeof__` — 52 VPP files.
