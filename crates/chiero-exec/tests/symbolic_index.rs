@@ -60,12 +60,31 @@ fn indexed_read(len: u64) -> Module {
             vol: Volatility::Normal,
         }));
     }
-    // %2 = k * 4, the byte offset — symbolic, because `k` is a parameter.
+    // **The index is masked into range**, which is what makes the offset's feasible set
+    // finite. An unconstrained `k` gives `k * 4` unboundedly many values, and bounding
+    // *that* is the correct answer — the first version of this fixture forgot the
+    // constraint and was measuring the bound rather than the enumeration.
+    //
+    // `k & (len-1)` rather than a pair of guard branches: same effect on the offset's
+    // feasible set, and it keeps the fixture one basic block so the state count is the
+    // fork's doing and nothing else's.
+    insts.push(i(InstKind::Assign {
+        dst: ValueId(5),
+        rv: RValue::Bin {
+            op: BinOp::And,
+            a: Operand::Value(ValueId(0)),
+            b: Operand::Const(Const::Int {
+                bits: 64,
+                val: len as i128 - 1,
+            }),
+            ty: CTy::Int(64),
+        },
+    }));
     insts.push(i(InstKind::Assign {
         dst: ValueId(2),
         rv: RValue::Bin {
             op: BinOp::Mul,
-            a: Operand::Value(ValueId(0)),
+            a: Operand::Value(ValueId(5)),
             b: Operand::Const(Const::Int { bits: 64, val: 4 }),
             ty: CTy::Int(64),
         },
@@ -125,6 +144,20 @@ fn indexed_read(len: u64) -> Module {
     }
 }
 
+/// Run with a real SMT backend when one is installed.
+///
+/// **Discovery is a runtime fact** (022 contract 2): the backend is compiled in and finds
+/// nothing when no solver is on `PATH`, which is what lets the whole suite run without one.
+/// Enumerating a symbolic offset needs more arithmetic than 022 §3.2's tier-1 fragment has
+/// — tier 1 answers the first query and returns `Unknown` on the second — so these two
+/// tests need a backend and say so when there is none.
+fn run_solved(m: &Module) -> Option<(RunResult, TermArena)> {
+    let b = chiero_solver::SmtLib::discover()?;
+    let mut a = TermArena::new();
+    let r = Engine::new(m).with_backend(b).run(&mut a);
+    Some((r, a))
+}
+
 /// **A symbolic index is explored, not invented.**
 ///
 /// Four elements, so the read has four in-bounds answers plus whatever the out-of-bounds
@@ -132,8 +165,6 @@ fn indexed_read(len: u64) -> Module {
 /// everything computed from an invented value is unsound, and the *absence* of a finding
 /// downstream then means nothing.
 #[test]
-#[ignore = "blocked: the default tier-1 solver cannot enumerate offsets, so the fork \
-degrades instead of exploring — see HANDOFF §9"]
 fn a_symbolic_index_does_not_invent_a_value() {
     let m = indexed_read(4);
     assert!(
@@ -141,8 +172,10 @@ fn a_symbolic_index_does_not_invent_a_value() {
         "{:?}",
         verify::verify(&m)
     );
-    let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    let Some((r, _a)) = run_solved(&m) else {
+        eprintln!("skipping a_symbolic_index_does_not_invent_a_value: no SMT solver on PATH");
+        return;
+    };
 
     let invented: Vec<String> = r
         .states()
@@ -162,11 +195,12 @@ fn a_symbolic_index_does_not_invent_a_value() {
 /// A pass that forked but resolved every state to the same offset satisfies the test above
 /// and is wrong about three of the four paths. The returned values are what separate them.
 #[test]
-#[ignore = "blocked by the same solver limitation"]
 fn every_in_bounds_index_reads_its_own_element() {
     let m = indexed_read(4);
-    let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    let Some((r, mut a)) = run_solved(&m) else {
+        eprintln!("skipping every_in_bounds_index_reads_its_own_element: no SMT solver on PATH");
+        return;
+    };
 
     let mut seen: Vec<u128> = r
         .states()
