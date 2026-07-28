@@ -487,31 +487,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 85, `5d2d379`) — 847 tests, M1 152/165, frontend 57/117
+> ### ⏭️ START HERE (wave 86, `5d50c7e`) — 860 tests, M1 152/165, frontend 68/117
 >
-> **The parser exists** (013: 9/20). `chiero-ast` and `chiero-parse` were one-line stubs
-> two commits ago; they now cover declarations, declarators, tags, statements,
-> precedence-climbing expressions, designated initializers, attributes and §6 recovery.
-> M2's frontend is merged and the parallel worktree is gone — everything is on `master`
-> in this one tree, and there is no second agent.
+> **013 is complete, 20/20, and the parser eats real VPP.** Six vppinfra headers,
+> **1,702,754 tokens of unmodified upstream C, zero diagnostics and zero panics**, AST at
+> 1.65× the token stream against a 10× bound. `chiero-ast` and `chiero-parse` were
+> one-line stubs at the start of wave 85.
+>
+> The corpus lives in-tree at `crates/chiero-parse/tests/corpus/vpp/` — 28 files, the
+> transitive VPP-local include closure of those six headers, copied verbatim at VPP commit
+> `7fe9c26` with provenance and Apache-2.0 attribution in `PROVENANCE.md`. **Do not edit
+> those files**; a fixture edited until it parses proves that the parser handles the edit.
+> Extend the corpus the same way — compute a closure, copy verbatim, pin the counts.
 >
 > Next, in order:
 >
-> 1. **Finish 013.** Uncited: 4, 6, 7, 8, 9, 10, 11, 14, 18, 19, 20. Most of 6–11 and 18
->    are **already implemented and merely untested** — write the tests and find out, which
->    is exactly how wave 85 found two defects. 4 (K&R), 10 (asm operands) and 14 (nested
->    functions) need code. **19 and 20 are the real gate**: parse every preprocessed VPP TU
->    with zero panics, and hold the AST under 10× the token stream.
-> 2. **014 and 015** (0/20, 0/25) — types/layout, then AST→CIR lowering, which is what
->    finally connects the frontend to the symbolic core.
+> 1. **014 — types, layout and name resolution** (0/20). The parser hands it a *syntactic*
+>    tree on purpose: no resolved types, no folded constants. 014 owns `packed`/`aligned`
+>    (every struct offset depends on getting them right), plain `char`'s signedness, phase
+>    5's escape evaluation, and the `ExtFloat { bits, fmt }` formats the parser records but
+>    does not interpret.
+> 2. **015 — AST→CIR lowering** (0/25), which is what finally connects the frontend to the
+>    symbolic core and makes the whole thing one pipeline rather than two halves.
 > 3. **010 contract 19**, unblocked since the wave-84 merge: `ConfigId` lives in
 >    `chiero-pp` (001 §180), so `CookedSite.config` finally has somewhere to come from.
 > 4. **M1's remaining 13** — 020's 14–18/23/29/30/44, 021 c19, 023's 7/17/21.
 >
-> Two rules this front keeps re-teaching, both earned the hard way in wave 85:
-> **a mutation no fixture can observe is not a killed mutation** (the span-splice mutant
-> needed a third fixture, because a macro body's byte positions are *below* its use site),
-> and a differential number taken without `gcc -dM -E` fed through `Config::defines` is
+> Owed, and small: the parser's speculative type-name parse rolls back its diagnostics as
+> well as its cursor, and that rollback is **unpinned** — an abstract declarator may be
+> empty, so `type_name()` essentially cannot fail once `starts_type_name()` was true, and
+> no fixture yet makes the speculation fail *and* leave a diagnostic.
+>
+> Three rules this front keeps re-teaching:
+> **a mutation no fixture can observe is not a killed mutation** (wave 85's span-splice
+> mutant needed a third fixture, because a macro body's byte positions sit *below* its use
+> site; wave 86's asm-label mutant was invisible to a 1.7M-token corpus because a wrong
+> label still parses cleanly). **A real corpus finds what fixtures cannot** — all five
+> wave-86 defects were constructs in *every* TU in existence, and none had been imagined.
+> And a differential number taken without `gcc -dM -E` fed through `Config::defines` is
 > about code neither tool ran (wave 84).
 
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
