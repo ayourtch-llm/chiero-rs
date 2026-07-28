@@ -26,6 +26,13 @@ impl SymbolText for Names<'_> {
     }
 }
 
+/// Whether any path degraded because chiero **invented** a value.
+fn invented(causes: &[(chiero_exec::AssumptionKind, String)]) -> bool {
+    causes
+        .iter()
+        .any(|(k, _)| *k == chiero_exec::AssumptionKind::NoInformation)
+}
+
 fn lower(src: &str) -> Module {
     let tu = preprocess_str("t.c", src, Config::default());
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
@@ -45,15 +52,25 @@ fn lower(src: &str) -> Module {
 }
 
 /// Every finding on every path, and the fidelity of the run.
-fn run(src: &str) -> (Vec<String>, Vec<chiero_exec::Fidelity>) {
+fn run(src: &str) -> (Vec<String>, Vec<(chiero_exec::AssumptionKind, String)>) {
     let m = lower(src);
     let errs = chiero_cir::verify::verify(&m);
     assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
     let mut a = chiero_solver::TermArena::new();
     let r = chiero_exec::Engine::new(&m).run(&mut a);
     let f: Vec<String> = r.findings();
-    let fid = r.states().iter().map(|s| s.fidelity()).collect();
-    (f, fid)
+    // **The causes, not the fidelity.** A symbolic branch the default tier-1 solver cannot
+    // decide degrades to `Unknown` with `SolverUnknown`, and that is honest: chiero
+    // explored both sides and says it did not know which was taken. What must never happen
+    // on correct code is `NoInformation` — the cause the engine records when it *invented*
+    // a value because a read produced none. That is the storm, and it is what these
+    // fixtures are about.
+    let causes = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions().iter().map(|x| (x.kind, x.detail.clone())))
+        .collect();
+    (f, causes)
 }
 
 /// **The one that was broken.** A function that reads its own scalar parameter.
@@ -64,15 +81,16 @@ fn run(src: &str) -> (Vec<String>, Vec<chiero_exec::Fidelity>) {
 /// store was wiped before anything could read it.
 #[test]
 fn reading_a_parameter_is_not_an_uninitialized_read() {
-    let (findings, fid) = run("int f(int n) { int t = 0; if (n > 10) { t = n * 2; } return t; }");
+    let (findings, causes) =
+        run("int f(int n) { int t = 0; if (n > 10) { t = n * 2; } return t; }");
     assert!(
         findings.is_empty(),
         "this function is correct C and every byte it reads it wrote: {findings:#?}"
     );
     assert!(
-        fid.iter().all(|f| *f == chiero_exec::Fidelity::Exact),
-        "and chiero modeled it exactly — an invented value degrades the path, so a run \
-         that is not `Exact` here has stopped describing this program: {fid:?}"
+        !invented(&causes),
+        "and nothing was invented: a value chiero made up because a read produced none is \
+         the storm itself, whatever findings it does or does not produce: {causes:?}"
     );
 }
 
@@ -80,27 +98,27 @@ fn reading_a_parameter_is_not_an_uninitialized_read() {
 /// branching case is visible.
 #[test]
 fn returning_a_parameter_is_not_an_uninitialized_read() {
-    let (findings, fid) = run("int f(int n) { return n; }");
+    let (findings, causes) = run("int f(int n) { return n; }");
     assert!(findings.is_empty(), "{findings:#?}");
-    assert!(fid.iter().all(|f| *f == chiero_exec::Fidelity::Exact));
+    assert!(!invented(&causes), "{causes:?}");
 }
 
 /// **Several parameters, read out of order**, so a fix that happened to work for the first
 /// slot is not enough.
 #[test]
 fn several_parameters_are_all_initialized() {
-    let (findings, fid) = run("int f(int a, int b, int c) { return c + a - b; }");
+    let (findings, causes) = run("int f(int a, int b, int c) { return c + a - b; }");
     assert!(findings.is_empty(), "{findings:#?}");
-    assert!(fid.iter().all(|f| *f == chiero_exec::Fidelity::Exact));
+    assert!(!invented(&causes), "{causes:?}");
 }
 
 /// A parameter read **inside a nested scope**, which is where the scope machinery is
 /// actually doing something.
 #[test]
 fn a_parameter_read_in_a_nested_scope_is_initialized() {
-    let (findings, fid) = run("int f(int n) { { int q = n + 1; return q; } }");
+    let (findings, causes) = run("int f(int n) { { int q = n + 1; return q; } }");
     assert!(findings.is_empty(), "{findings:#?}");
-    assert!(fid.iter().all(|f| *f == chiero_exec::Fidelity::Exact));
+    assert!(!invented(&causes), "{causes:?}");
 }
 
 /// **The negative control.** A genuinely uninitialized read is still reported.
@@ -110,10 +128,20 @@ fn a_parameter_read_in_a_nested_scope_is_initialized() {
 /// one that ships bugs.
 #[test]
 fn a_genuinely_uninitialized_read_is_still_reported() {
-    let (findings, _) = run("int f(void) { int x; return x; }");
+    let (findings, causes) = run("int f(void) { int x; return x; }");
     assert!(
         findings.iter().any(|f| f.contains("uninitialized")),
         "`int x; return x;` reads a byte nobody wrote: {findings:#?}"
+    );
+    // **And it degrades.** The finding and the degradation are separate mechanisms — the
+    // fault is reported by the memory model, the fidelity by the engine — so an
+    // implementation can have either without the other. `invented()` is what every test
+    // above asserts the *absence* of, and a run where it is never true of anything makes
+    // all of them vacuous.
+    assert!(
+        invented(&causes),
+        "a value chiero made up is `NoInformation`, or the assertions above are about a \
+         cause that never fires: {causes:?}"
     );
 }
 
@@ -121,7 +149,7 @@ fn a_genuinely_uninitialized_read_is_still_reported() {
 /// "everything is reported".
 #[test]
 fn an_initialized_local_is_not_reported() {
-    let (findings, fid) = run("int f(void) { int x = 7; return x; }");
+    let (findings, causes) = run("int f(void) { int x = 7; return x; }");
     assert!(findings.is_empty(), "{findings:#?}");
-    assert!(fid.iter().all(|f| *f == chiero_exec::Fidelity::Exact));
+    assert!(!invented(&causes), "{causes:?}");
 }

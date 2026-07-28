@@ -225,7 +225,6 @@ fn a_replayed_witness_covers_the_lines_gcov_reports() {
 
 /// **The two branches differ**, which is what makes the agreement above mean something.
 #[test]
-#[ignore = "blocked by the same defect as the test above"]
 fn the_two_replays_walk_different_lines() {
     let (m, sm) = lower(SRC);
     let hot = chiero_executed(&m, &sm, 42);

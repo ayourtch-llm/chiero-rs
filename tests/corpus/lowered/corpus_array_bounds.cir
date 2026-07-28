@@ -13,8 +13,8 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 2462:2492:0
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 2494:2536:0
 
 func @main() -> i32 { ; span 247:453:0
-  alloca %0 : i8 x 32 align 4 scope 0 lifetime scope "buf" ; span 266:303:0
-  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope "i" ; span 307:316:0
+  alloca %0 : i8 x 32 align 4 scope 1 lifetime scope "buf" ; span 266:303:0
+  alloca %1 : i32 x 1 align 4 scope 1 lifetime scope "i" ; span 307:316:0
 entry: ; span 247:453:0
   .line 7
   .line 8
@@ -22,7 +22,8 @@ entry: ; span 247:453:0
   .line 10
   .line 11
   .line 12
-  .scope enter 0 ; span 262:453:0
+  .scope enter 0 ; span 247:453:0
+  .scope enter 1 ; span 262:453:0
   %7 = addrlocal %0 ; span 266:303:0
   setmem %7, 0i8, 32i64 ; span 266:303:0
   store i32 0i32 -> %7 align 4 ; span 266:303:0
@@ -72,6 +73,7 @@ entry: ; span 247:453:0
   %38 = zext i1 %37 to i32 ; span 426:437:0
   %39 = call @chiero_assert(%38) ; span 412:438:0
   .seqpoint ; span 412:439:0
+  .scope exit 1 ; span 442:451:0
   .scope exit 0 ; span 442:451:0
   ret 0i32
 }

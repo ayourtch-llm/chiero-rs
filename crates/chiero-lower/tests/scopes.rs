@@ -236,13 +236,17 @@ fn goto_out_of_two_scopes_exits_innermost_first() {
     assert!(check_scope_balance(f).is_empty());
 }
 
-/// **Contract 11.** `return` from inside three nested scopes emits three `Scope(Exit)`
-/// markers, **before** the `Return`.
+/// **Contract 11.** `return` from inside nested scopes emits a `Scope(Exit)` for **every**
+/// open scope, before the `Return`.
 #[test]
 fn return_from_three_scopes_exits_all_three_first() {
-    // Three scopes: the function body's own compound, and two nested inside it. The
-    // function body is a compound statement, so it has a `ScopeId` like any other —
-    // wrapping the fixture in another brace pair would make it four.
+    // **Four scopes, not three.** The function body's own compound, two nested inside it,
+    // and — enclosing all of them — the scope the *parameters* live in (C11 6.2.1p4).
+    //
+    // That fourth one arrived in wave 109 and is the whole point of it: parameters used to
+    // share `ScopeId(0)` with the body's compound, so entering the body replaced every
+    // parameter slot *after* the prologue had stored into it, and every function that read
+    // its own parameter reported an uninitialized read. A `return` has to leave it too.
     let m = probe("int a = 1; { int b = 2; { int c = 3; return c; } }");
     let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
 
@@ -266,8 +270,9 @@ fn return_from_three_scopes_exits_all_three_first() {
         .count();
     assert_eq!(
         exits,
-        3,
-        "three open scopes, three exits before the `Return`: {:#?}",
+        4,
+        "four open scopes — the parameter scope, the body's, and two nested — so four \
+         exits before the `Return`: {:#?}",
         returning.insts.iter().map(|i| &i.kind).collect::<Vec<_>>()
     );
     assert!(check_scope_balance(f).is_empty());
@@ -467,4 +472,44 @@ fn switch_falls_through_by_goto_and_expands_case_ranges() {
         "`case 3 ... 6` is four cases, sorted — a range kept as one entry would make the \
          engine take the default for 4 and 5"
     );
+}
+
+/// **A function that falls off the end still exits its parameter scope.**
+///
+/// Every other fixture in this file returns, and a `return` already emits an exit for each
+/// open scope on its way out — so the explicit exit after the body is only reachable when
+/// control reaches the closing brace. A `void` function with no `return` is that case, and
+/// it is extremely common.
+///
+/// An unexited scope is not cosmetic: 021 retires stack objects on `Scope(Exit)`, so a
+/// scope that never closes is a set of objects that never die, and use-after-scope stops
+/// being detectable for everything the function owned.
+#[test]
+fn a_function_falling_off_the_end_exits_its_parameter_scope() {
+    let m = lower("void f(int n) { int t = n; }");
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    assert!(
+        check_scope_balance(f).is_empty(),
+        "{:#?}",
+        check_scope_balance(f)
+    );
+
+    // And the parameter scope's exit is really there — balance alone is satisfied by a
+    // function that never *entered* it either.
+    let (enters, exits) = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            chiero_cir::InstKind::Marker(MarkerKind::Scope(ScopeEvent { scope, kind })) => {
+                Some((*scope, *kind))
+            }
+            _ => None,
+        })
+        .fold((0, 0), |(e, x), (_, k)| match k {
+            ScopeKind::Enter => (e + 1, x),
+            ScopeKind::Exit => (e, x + 1),
+        });
+    assert!(enters >= 2, "the parameter scope and the body's: {enters}");
+    assert_eq!(enters, exits, "every scope entered is left");
 }

@@ -14,12 +14,13 @@ func @chiero_mark_fidelity(%6: ptr) -> void ; span 2709:2751:0
 
 func @my_abs(%8: i32) -> i32 { ; span 287:338:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "v" ; span 287:338:0
-  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope ; span 321:335:0
+  alloca %1 : i32 x 1 align 4 scope 1 lifetime scope ; span 321:335:0
 entry: ; span 287:338:0
   .line 8
+  .scope enter 0 ; span 287:338:0
   %9 = addrlocal %0 ; span 287:338:0
   store i32 %8 -> %9 align 4 ; span 287:338:0
-  .scope enter 0 ; span 312:338:0
+  .scope enter 1 ; span 312:338:0
   %10 = addrlocal %0 ; span 321:322:0
   %11 = load i32, %10 align 1 ; span 321:322:0
   %12 = cmp slt i32 %11, 0i32 ; span 321:326:0
@@ -45,18 +46,20 @@ bb2: ; span 287:338:0
 bb3: ; span 287:338:0
   %22 = addrlocal %1 ; span 321:335:0
   %23 = load i32, %22 align 4 ; span 321:335:0
+  .scope exit 1 ; span 314:336:0
   .scope exit 0 ; span 314:336:0
   ret %23
 }
 
 func @main() -> i32 { ; span 340:668:0
-  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "x" ; span 359:368:0
+  alloca %0 : i32 x 1 align 4 scope 1 lifetime scope "x" ; span 359:368:0
 entry: ; span 340:668:0
   .line 11
   .line 12
   .line 15
   .line 16
-  .scope enter 0 ; span 355:668:0
+  .scope enter 0 ; span 340:668:0
+  .scope enter 1 ; span 355:668:0
   %24 = addrlocal %0 ; span 359:368:0
   store i32 3i32 -> %24 align 4 ; span 359:368:0
   .seqpoint ; span 359:368:0
@@ -78,6 +81,7 @@ entry: ; span 340:668:0
   %38 = zext i1 %37 to i32 ; span 638:652:0
   %39 = call @chiero_assert(%38) ; span 624:653:0
   .seqpoint ; span 624:654:0
+  .scope exit 1 ; span 657:666:0
   .scope exit 0 ; span 657:666:0
   ret 0i32
 }

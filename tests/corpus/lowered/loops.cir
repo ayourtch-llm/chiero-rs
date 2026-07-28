@@ -2,16 +2,17 @@ target x86_64-unknown-linux-gnu
 
 func @f(%1: i32) -> i32 { ; span 0:77:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "n" ; span 0:77:0
-  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope "t" ; span 15:24:0
-  alloca %2 : i32 x 1 align 4 scope 1 lifetime scope "i" ; span 31:40:0
+  alloca %1 : i32 x 1 align 4 scope 1 lifetime scope "t" ; span 15:24:0
+  alloca %2 : i32 x 1 align 4 scope 2 lifetime scope "i" ; span 31:40:0
 entry: ; span 0:77:0
+  .scope enter 0 ; span 0:77:0
   %2 = addrlocal %0 ; span 0:77:0
   store i32 %1 -> %2 align 4 ; span 0:77:0
-  .scope enter 0 ; span 13:77:0
+  .scope enter 1 ; span 13:77:0
   %3 = addrlocal %1 ; span 15:24:0
   store i32 0i32 -> %3 align 4 ; span 15:24:0
   .seqpoint ; span 15:24:0
-  .scope enter 1 ; span 26:65:0
+  .scope enter 2 ; span 26:65:0
   %4 = addrlocal %2 ; span 31:40:0
   store i32 0i32 -> %4 align 4 ; span 31:40:0
   .seqpoint ; span 31:40:0
@@ -26,7 +27,7 @@ bb1: ; span 0:77:0
   %11 = cmp ne i32 %10, 0i32 ; span 26:65:0
   br %11, bb2, bb4
 bb2: ; span 0:77:0
-  .scope enter 2 ; span 54:65:0
+  .scope enter 3 ; span 54:65:0
   %12 = addrlocal %1 ; span 56:62:0
   %13 = load i32, %12 align 1 ; span 56:62:0
   %14 = addrlocal %2 ; span 61:62:0
@@ -34,7 +35,7 @@ bb2: ; span 0:77:0
   %16 = add i32 %13, %15 ; span 56:62:0
   store i32 %16 -> %12 align 1 ; span 56:62:0
   .seqpoint ; span 56:63:0
-  .scope exit 2 ; span 54:65:0
+  .scope exit 3 ; span 54:65:0
   goto bb3
 bb3: ; span 0:77:0
   %17 = addrlocal %2 ; span 49:52:0
@@ -44,9 +45,10 @@ bb3: ; span 0:77:0
   .seqpoint ; span 26:65:0
   goto bb1
 bb4: ; span 0:77:0
-  .scope exit 1 ; span 26:65:0
+  .scope exit 2 ; span 26:65:0
   %20 = addrlocal %1 ; span 73:74:0
   %21 = load i32, %20 align 1 ; span 73:74:0
+  .scope exit 1 ; span 66:75:0
   .scope exit 0 ; span 66:75:0
   ret %21
 }

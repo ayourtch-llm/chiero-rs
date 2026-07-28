@@ -556,6 +556,24 @@ impl Lowerer<'_> {
         self.fs().entry = entry;
         self.switch_to(entry);
 
+        // **Parameters live in a scope that encloses the body** (C11 6.2.1p4: a parameter's
+        // scope is the function body's *enclosing* one), and this is not a formality.
+        //
+        // Without it, a parameter slot took `ScopeId(0)` — `open_scopes` is empty here —
+        // and the body's own compound statement then opened `ScopeId(0)` too, because
+        // `next_scope` also starts at 0. Entering a scope creates fresh objects for the
+        // locals in it, which is exactly what 020 §4.4 says scope markers are for, so
+        // every parameter's slot was replaced *after* the prologue stored into it. The
+        // read that followed was of an object nobody had written, and every function that
+        // read its own scalar parameter reported an `uninitialized-read` — 021 §3.1's
+        // false-positive storm, in the one shape almost all C has.
+        //
+        // The same shape 015 contract 12 already fixes for `for (int i = 0; …)`: the init
+        // declaration lives in a scope enclosing the body, or it would be retired and
+        // recreated on every iteration.
+        let param_scope = self.enter_scope(span);
+        let _ = param_scope;
+
         // Parameters get a slot each and are stored into it on entry, so the body reads
         // them exactly the way it reads any other local. Without that, `&param` would
         // have nowhere to point.
@@ -611,6 +629,7 @@ impl Lowerer<'_> {
         }
 
         self.stmt(body);
+        self.exit_scope(span);
 
         self.resolve_gotos();
         self.finish_blocks();
