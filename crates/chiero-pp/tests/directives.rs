@@ -360,6 +360,48 @@ fn configured_defines_are_real_macros_and_undef_stops_them() {
 }
 
 #[test]
+fn macro_definitions_are_public_symbolized_and_closed_by_redefinition() {
+    let tu = preprocess_str(
+        "defs.c",
+        "#define F(x) x\n#define F(y) y + 1\nF(2)\n",
+        Config::default(),
+    );
+    let definitions: Vec<_> = tu
+        .macro_defs
+        .iter()
+        .filter(|definition| tu.symbol_text(definition.name) == Some("F"))
+        .collect();
+    assert_eq!(definitions.len(), 2);
+    assert_ne!(definitions[0].id, definitions[1].id);
+    assert!(
+        definitions[0].undef_span.is_some(),
+        "redefinition must close the previous definition"
+    );
+    assert_eq!(tu.symbol_text(definitions[0].name), Some("F"));
+    let chiero_pp::MacroKind::FunctionLike { params, .. } = &definitions[1].kind else {
+        panic!("F must be function-like")
+    };
+    assert_eq!(tu.symbol_text(params[0]), Some("y"));
+    assert!(
+        tu.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("redefinition"))
+    );
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["2", "+", "1"]);
+}
+
+#[test]
+fn gcc_function_like_predefines_are_installed_as_functions() {
+    let config = Config {
+        defines: vec![("__UINT64_C(c)".into(), "c ## UL".into())],
+        ..Config::default()
+    };
+    let tu = preprocess_str("configured.c", "__UINT64_C(42)\n", config);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["42UL"]);
+}
+
+#[test]
 fn leading_whitespace_hash_still_starts_a_directive() {
     let tu = preprocess_str(
         "spacing.c",
