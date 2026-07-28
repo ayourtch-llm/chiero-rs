@@ -487,7 +487,57 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 106, `7a9ebb3`) — 1011 tests, M1 163/165, frontend 114/117
+> ### ⏭️ START HERE (wave 107, `bffd5af`) — 1017 tests, M1 164/165, frontend 114/117
+>
+> **021 is complete.** Contract 19 closes it: the engine now materializes lazy objects
+> *recursively* (it did not before — `p->next->next` ended the path as unresolvable), bounded
+> by `LazyPolicy::max_depth`, with every link past the bound resolving to **one shared
+> object** so the walk still reaches the return. `AccessPath` finally has a consumer: the
+> `Bounded` note names `next` rather than `+8`.
+>
+> **One contract remains in M1: 023 c17** — 1, 2 and 8 worker threads produce identical
+> `RunResult`s with `wall_clock: None`. The engine is single-threaded, so this is real work,
+> not a test. Two pieces are already in place: per-state `CheckerState` (023 §4 names it as
+> what makes this achievable) and wave 106's `pick`, which takes the whole queue and is the
+> single place a parallel scheduler changes. **023 c21** (per-witness replay at line
+> granularity against gcov) is also open and is the last of 023.
+>
+> ### Two rules earned this wave
+>
+> **A comment claiming a property is not the property.** Wave 107's worst bug was denied by
+> its own comment: the cut object was left out of `lazy_depth` *because* "giving it a depth
+> would let a walk through it start counting again" — and leaving it absent made
+> `unwrap_or(0)` do exactly that. When a comment asserts something, mutate the line it
+> describes; if nothing fails, the comment is a wish.
+>
+> **Comparing two configurations cannot see a leak that affects both.**
+> `raising_the_bound_materializes_more_links` compares bounds 2 and 6; a leak past the cut
+> makes bound 2 allocate more while still leaving it below bound 6, so it passes. Only two
+> *depths at the same bound* — three links and six must cost the same — can see a floor that
+> is not a floor. Pair every "A differs from B" assertion with an "A equals A'" one.
+>
+> ### The survivor pattern (six waves running)
+>
+> **The fixture never reached the comparison the design exists for.** Before running a
+> mutation, ask what the fixture would have to look like for the mutant to survive; for every
+> `&&` in a predicate there should be a fixture where that conjunct alone is false. Wave 107
+> also hit the *coincidence* form: at four links two different bounds give the same object
+> count, so the assertion compared two equal numbers.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**, not a survivor; two guards only ever true together are
+> equivalent mutants; a genuine no-op mutant is neither; **`cargo fmt` moves anchors** —
+> re-grep after formatting (hit twice now); and anything claiming to be stable forever needs
+> a **pinned literal**, not a self-consistency check.
+>
+> Owed and written down: **lowering still builds no `AccessPath`s** — wave 107 is the first
+> consumer and its fixture supplies them by hand, so the naming half is untested against
+> real C; the engine's own findings cite `ObjectId(N)`; `typeof` types to `Ty::Error` in
+> sema; the parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U`
+> string literals lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 106, `7a9ebb3`) — 1011 tests, M1 163/165, frontend 114/117
 >
 > **010 is complete but for its deliberately-uncovered metric, and 023 c7 is closed.**
 > `CookedSite` carries a `config` and the deduplication key includes it; the engine has a
