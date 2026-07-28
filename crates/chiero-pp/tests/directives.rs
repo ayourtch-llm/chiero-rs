@@ -4,6 +4,7 @@ use chiero_pp::{Config, FileLoader, preprocess_str, preprocess_with_loader};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Default)]
 struct MemoryFiles {
@@ -45,6 +46,44 @@ fn live_division_by_zero_diagnoses_but_short_circuit_does_not() {
     );
     assert!(dead.diagnostics.is_empty());
     assert_eq!(dead.token_texts().collect::<Vec<_>>(), ["ok"]);
+}
+
+#[test]
+fn deeply_parenthesized_if_does_not_abort_the_process() {
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "deep_if_expression_child"])
+        .env("CHIERO_DEEP_IF_CHILD", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "deep #if child aborted: {status}");
+}
+
+#[test]
+fn deep_if_expression_child() {
+    if std::env::var_os("CHIERO_DEEP_IF_CHILD").is_none() {
+        return;
+    }
+    let mut src = String::from("#if ");
+    src.extend(std::iter::repeat_n('(', 20_000));
+    src.push('1');
+    src.extend(std::iter::repeat_n(')', 20_000));
+    src.push_str("\nselected\n#endif\n");
+    let tu = preprocess_str("deep-if.c", &src, Config::default());
+    assert!(
+        tu.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("#if nesting")),
+        "bounded parsing must diagnose the limit"
+    );
+}
+
+#[test]
+fn unsuffixed_if_literals_promote_to_uintmax_when_needed() {
+    let src = "#if 0x8000000000000000 > 0\nhex\n#endif\n\
+               #if 12345678901234567890 > 0\ndecimal\n#endif\n";
+    let tu = preprocess_str("uintmax.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["hex", "decimal"]);
 }
 
 #[test]

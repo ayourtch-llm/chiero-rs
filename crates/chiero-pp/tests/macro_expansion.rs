@@ -132,6 +132,27 @@ fn nested_parentheses_stay_inside_one_argument() {
 }
 
 #[test]
+fn function_macro_arity_mismatches_are_diagnosed_without_fabricating_output() {
+    for src in [
+        "#define two(a,b) [a|b]\ntwo(1)\n",
+        "#define two(a,b) [a|b]\ntwo(1,2,3)\n",
+    ] {
+        let tu = preprocess_str("arity.c", src, Config::default());
+        assert_eq!(tu.diagnostics.len(), 1, "{src}: {:?}", tu.diagnostics);
+        assert!(
+            tu.diagnostics[0].message.contains("argument"),
+            "{src}: {:?}",
+            tu.diagnostics
+        );
+        assert_eq!(
+            tu.token_texts().next(),
+            Some("two"),
+            "malformed invocation must remain distinguishable from expanded output"
+        );
+    }
+}
+
+#[test]
 fn taken_if_skips_else_and_elif_is_evaluated() {
     assert_eq!(texts("#if 1\nfirst\n#else\nwrong\n#endif\n"), ["first"]);
     assert_eq!(
