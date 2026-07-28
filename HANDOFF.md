@@ -487,7 +487,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 100, `d1c19af`) — 938 tests, M1 155/165, frontend 113/117
+> ### ⏭️ START HERE (wave 101, `6d7cda9`) — 949 tests, M1 157/165, frontend 113/117
+>
+> **`chiero-opt` exists.** 020 §9's `simplify_cfg` and `const_fold` are implemented behind
+> a **registry**, and §9's four prohibitions — no dropped `Marker`, no merge across a
+> `Volatile` access, no discarded `Span`, no widened `LoadBits`/`StoreBits` — are swept
+> over every registered pass and the whole checked-in corpus. That closes 020's **17 and
+> 44**. Eight contracts remain in M1:
+>
+> 1. **020 c16 — `mem2reg`**, the last of §9's three passes. It needs a `Phi` instruction
+>    the IR does not have yet, which only this pass may emit. **Register it in
+>    `chiero_opt::PASSES` when it lands**: `the_registry_holds_every_pass_the_spec_names`
+>    asserts `pass("mem2reg").is_none()` today and will fail until you do, which is the
+>    point — an implemented-but-unregistered pass is covered by no sweep in that file.
+> 2. **020's 18** (order sensitivity, both halves — syntactic during lowering *and*
+>    interprocedural via the 040 checker), **23** (`Opaque`), **29, 30** (the union-pun
+>    checker, the endianness `ConfigId`).
+> 3. **021 c19**, **023's 7, 17, 21**.
+> 4. **010 contract 19**, small and unblocked since wave 84.
+>
+> **A test at the wrong layer is a design error, not a dependency problem.** Wave 101's RED
+> lowered C for its fixtures, which made a vertical dev-depend on the frontend; `check-deps`
+> caught it. Rewriting against `.cir` was the correction — 020's contracts are written about
+> CIR and the corpus is already in that language.
+>
+> **A mutation harness backs up to a scratch copy, never to git** (wave 100 destroyed a
+> whole GREEN with `git checkout --`, and the mutants that followed ran against reverted
+> source, so four verdicts were fictional). **A mutant that fails to compile is
+> inconclusive, not a survivor.** And **two guards that are only ever true together are
+> equivalent mutants of each other** — neither can be killed while both stand; collapse
+> them and write the fixture that reaches the one that remains.
+>
+> Standing instructions that keep earning themselves: **read a golden diff when it
+> changes**, and **add a `probe` fixture to `differential.rs` for anything with a
+> computable value**.
+>
+> Owed and written down: `typeof` types to `Ty::Error` in sema; the parser's speculative
+> type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element
+> width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered
+> `#[ignore]`d metrics.
+>
+> ### Earlier (wave 100, `d1c19af`) — 938 tests, M1 155/165, frontend 113/117
 >
 > **Lowering no longer drops anything in ordinary C.** Wave 100 closed 020 contract 14 and
 > the `GlobalInit` gap 020 §6 records: string literals are pooled read-only `.str.N`
