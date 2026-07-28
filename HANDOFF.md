@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 142) — 1125 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 143) — 1126 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -499,7 +499,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > literal an object and let it take postfix suffixes; **139 built the generator, and it
 > found a defect on its first run; 140 gave it structs and helpers and it found two more; 141 gave it
 > arrays, pointers and six spellings of one access, and it found another; 142 gave it
-> bit-fields and unions and it found a *wrong answer***.*
+> bit-fields and unions and it found a *wrong answer*; 143 gave it file-scope declarations
+> and it found a global pointer reading as null**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -558,7 +559,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     unspecified program teaches nothing. The generator also **runs the verifier** now and
 >     reports `InvalidCir` separately from `SilentNoState`, since wave 141 showed the
 >     engine's silence can be a consequence rather than the fault.
->   - **File-scope declarations**, which is where the pointer-global defect lived.
+>   - ~~File-scope declarations.~~ **Done in wave 143**: global scalars, arrays, and a
+>     pointer aimed at one, read and written and checksummed. It found `int *gp = &g;`
+>     making `gp == 0` answer 1.
 >   - **An AST shrinker** (~250 lines) emitting `agree_with("…", "…")` directly. Wave 139
 >     shrank by hand in about five minutes; that will not scale.
 >   - **A refusal allowlist ratchet.** The ledger is printed and currently empty, so nothing
@@ -646,6 +649,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A surviving mutation can be telling you the code is dead** (wave 143). A
+> local-shadowing guard in `global_addr_of` survived deletion, and the reason was not a
+> missing fixture: the function has one caller, on a path where no local is in scope, and
+> the case it guarded is a program gcc rejects outright. The guard went, not a test in.
+> **Ask first whether a survivor is unreachable** — a guard against a case that cannot
+> arise is dead code wearing a confident comment, which is waves 107/112/118/124/132's
+> hazard in its cheapest form.
 > **A wrong write can be repaired by the next one** (wave 142). Widening a bit-field's
 > written range by one bit survived `{15, 2}`, because the stray bit lands in the neighbour
 > and the neighbour is stored immediately afterwards over the same bit; it survived `{7, 2}`
@@ -1083,8 +1093,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `packed` anchor matched twice and the assert caught it. An oracle that can silently not
 > run is not an oracle — **announce every skip**.
 >
-> Owed and written down: the wave-117 `fork_on_offset` survivor; designated, bit-field and
-> address initializers refused; a fault in a non-entry frame is untested; `Bits` path steps
+> Owed and written down: the wave-117 `fork_on_offset` survivor; designated and bit-field initializers refused; a fault in a non-entry frame is untested; `Bits` path steps
 > are not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
 > diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
 > `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered.
