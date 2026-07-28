@@ -4304,9 +4304,13 @@ impl<'m> Engine<'m> {
 
         if matches!(
             name,
-            "chiero_assume" | "chiero_assert" | "chiero_mark_fidelity"
+            "chiero_assume"
+                | "chiero_assert"
+                | "chiero_mark_fidelity"
+                | "chiero_make_symbolic"
+                | "chiero_is_symbolic"
         ) {
-            self.intrinsic(a, s, name, args, span);
+            self.intrinsic(a, s, name, dst, args, span);
             return;
         }
 
@@ -4706,25 +4710,106 @@ impl<'m> Engine<'m> {
         }
     }
 
-    /// 024 §7. The harness intrinsics take no memory, so they are handled apart from the
-    /// models that do.
+    /// 024 §7. The harness intrinsics, handled apart from the models that take memory.
     fn intrinsic(
         &mut self,
         a: &mut TermArena,
         s: &mut State,
         name: &str,
+        dst: Option<ValueId>,
         args: &[Operand],
         span: Span,
     ) {
         use chiero_model::{IntrinsicOutcome, intrinsics};
+
+        // **The two that introduce and inspect symbolism**, handled first because neither
+        // is about a condition. Without a model for `chiero_make_symbolic` the call is an
+        // unmodeled extern and *nothing becomes symbolic*: every corpus program is
+        // explored along one concrete path with every assertion holding, which is a whole
+        // suite reporting success over a symbolic execution that never happened.
+        if name == "chiero_make_symbolic" {
+            let (Some(Value::Ptr(p)), Some(n)) = (
+                args.first().and_then(|o| self.operand(a, s, o)),
+                args.get(1).and_then(|o| self.concrete_size(a, s, o)),
+            ) else {
+                // A symbolic length is 023 §10's territory: guessing one would symbolize
+                // the wrong extent, which is worse than declining.
+                self.note_once(
+                    s,
+                    AssumptionKind::OpaqueCode,
+                    span,
+                    "`chiero_make_symbolic` with a non-pointer target or symbolic length                      was not applied",
+                );
+                s.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::NoInformation,
+                    span,
+                    "a harness asked for symbolic bytes and did not get them",
+                );
+                return;
+            };
+            // The harness's own name reaches the witness, which is the whole point of the
+            // third parameter: a binding called `x` is what a reader can act on.
+            let label = args
+                .get(2)
+                .and_then(|o| match self.operand(a, s, o) {
+                    Some(Value::Ptr(q)) => s.mem.c_string_at(q),
+                    _ => None,
+                })
+                .unwrap_or_else(|| format!("sym{}", self.fresh_count + 1));
+            for i in 0..n {
+                self.fresh_count += 1;
+                let t = self.input(
+                    a,
+                    s,
+                    chiero_solver::Sort::BitVec(8),
+                    &format!("{label}#{i}"),
+                    InputOrigin::Param {
+                        index: i as usize,
+                        name: label.clone(),
+                        span,
+                    },
+                );
+                let at = chiero_mem::Pointer {
+                    base: p.base,
+                    off: p.off + i as i64,
+                };
+                let r = s
+                    .mem
+                    .write_term(a, at, t, 1, chiero_mem::Endian::Little, span);
+                self.report_faults(s, &r.faults, span);
+            }
+            return;
+        }
+        if name == "chiero_is_symbolic" {
+            // **Introspection, and honest about being introspection.** The answer is a
+            // fact about chiero's own representation, not about the program, so it is
+            // decided here rather than by the solver: a term the arena can fold is
+            // concrete, anything else is not.
+            if let Some(d) = dst {
+                let sym = match args.first().and_then(|o| self.operand(a, s, o)) {
+                    Some(Value::Scalar(t)) => a.eval_ground(t).is_err(),
+                    // A pointer is a tracked object, not a symbol the harness introduced.
+                    Some(Value::Ptr(_)) => false,
+                    _ => false,
+                };
+                let w = bits_of_cty(&CTy::Int(32)).expect("int has a width");
+                let v = a.bv(w, u128::from(sym));
+                s.set_local(d, Value::Scalar(v));
+            }
+            return;
+        }
         // `None` means the condition could not be decided here, which the two intrinsics
         // treat differently on purpose: `assume` constrains, `assert` reports. Hardcoding
         // "true" was the safe reading for `assume` and the *unsafe* one for `assert` —
         // every assertion in a harness passed.
-        let cond = args.first().and_then(|o| match self.operand(a, s, o) {
-            Some(Value::Scalar(t)) => a.eval_ground(t).ok().map(|c| c.bits() != 0),
+        // **The term, not only its truth value.** `assume` on a symbolic condition
+        // returns `Constrain`, and constraining needs something to add to the path.
+        let cond_term = match args.first().map(|o| self.operand(a, s, o)) {
+            Some(Some(Value::Scalar(t))) => Some(t),
             _ => None,
-        });
+        };
+        let cond = cond_term.and_then(|t| a.eval_ground(t).ok().map(|c| c.bits() != 0));
         let out = match name {
             "chiero_assume" => intrinsics::assume(cond),
             "chiero_assert" => intrinsics::assert_(cond),
@@ -4742,7 +4827,31 @@ impl<'m> Engine<'m> {
             }
         };
         match out {
-            IntrinsicOutcome::Continue | IntrinsicOutcome::Constrain => {}
+            IntrinsicOutcome::Continue => {}
+            // **`Constrain` used to fall in with `Continue` and do nothing**, which made
+            // `chiero_assume` a no-op for exactly the conditions it exists for: a ground
+            // one is decided by `Some(true)`/`Some(false)` above, so `Constrain` is
+            // reached only when the condition is *symbolic*. Every harness assumption
+            // over a symbolic value was silently discarded — `chiero_assume(i < 8)`
+            // followed by `buf[i]` reported an out-of-bounds access on a program that has
+            // none, and the reverse, a harness narrowing inputs to reach a bug, explored
+            // everything else instead.
+            //
+            // 022 §6.1 note: this adds a constraint **without a feasibility check**, which
+            // is the situation `PathCondition::possibly_infeasible` exists for. `s.path`
+            // is a bare `Vec<Term>` today; when it becomes a `PathCondition` this is a
+            // fourth call site for `push_unchecked` and belongs on §6.1's list.
+            IntrinsicOutcome::Constrain => {
+                if let Some(t) = cond_term {
+                    // A non-boolean condition is C's "nonzero is true", so the term is
+                    // compared against zero rather than asserted as a bit.
+                    let w = a.width(t);
+                    let zero = a.bv(w, 0);
+                    let is_zero = a.eq(t, zero);
+                    let nonzero = a.not(is_zero);
+                    s.path.push(nonzero);
+                }
+            }
             IntrinsicOutcome::KillState => {
                 s.status = Status::Terminated(TermReason::Return);
             }

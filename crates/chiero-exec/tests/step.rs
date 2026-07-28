@@ -2806,6 +2806,12 @@ fn every_dispatchable_name_is_actually_performed_by_the_engine() {
             vec![CTy::Ptr, CTy::Ptr],
             vec![p0.clone(), p1.clone()],
         ),
+        (
+            "chiero_make_symbolic",
+            vec![CTy::Ptr, CTy::Int(64), CTy::Ptr],
+            vec![p0.clone(), sz(4), p1.clone()],
+        ),
+        ("chiero_is_symbolic", vec![CTy::Int(64)], vec![sz(1)]),
         ("chiero_assume", vec![CTy::Int(32)], vec![i32v(1)]),
         ("chiero_assert", vec![CTy::Int(32)], vec![i32v(1)]),
         ("chiero_mark_fidelity", vec![CTy::Ptr], vec![p1.clone()]),

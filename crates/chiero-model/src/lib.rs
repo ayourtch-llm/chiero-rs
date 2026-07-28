@@ -215,6 +215,14 @@ impl ModelRegistry {
             ModelEntry::exact("__builtin_add_overflow"),
             ModelEntry::exact("__builtin_sub_overflow"),
             ModelEntry::exact("__builtin_mul_overflow"),
+            // **The two that introduce and inspect symbolism** (024 §7). Without a model
+            // for `chiero_make_symbolic` the call is an unmodeled extern: it havocs, the
+            // run degrades to `Approximated`, and — the part that matters — *nothing
+            // becomes symbolic*. Every corpus program would then be explored along one
+            // concrete path with every assertion holding, which is a whole test suite
+            // reporting success over a symbolic execution that never happened.
+            ModelEntry::exact("chiero_make_symbolic"),
+            ModelEntry::exact("chiero_is_symbolic"),
             ModelEntry::exact("chiero_assume"),
             ModelEntry::exact("chiero_assert"),
             ModelEntry::exact("chiero_mark_fidelity"),
@@ -431,6 +439,8 @@ pub const DISPATCHABLE: &[&str] = &[
     "memset",
     "strlen",
     "strcpy",
+    "chiero_make_symbolic",
+    "chiero_is_symbolic",
     "chiero_assume",
     "chiero_assert",
     "chiero_mark_fidelity",
@@ -477,6 +487,8 @@ pub mod models {
                 | "__builtin_add_overflow"
                 | "__builtin_sub_overflow"
                 | "__builtin_mul_overflow"
+                | "chiero_make_symbolic"
+                | "chiero_is_symbolic"
                 | "chiero_assume"
                 | "chiero_assert"
                 | "chiero_mark_fidelity"
