@@ -297,3 +297,49 @@ fn a_finding_in_a_callee_names_the_callees_local() {
         "and not the caller's local of the same slot index: {findings:#?}"
     );
 }
+
+/// **An initialized global's value reaches the engine**, not just the CIR.
+///
+/// `chiero-lower` records the bytes; nothing had checked that the engine *reads* them. The
+/// two are separate mechanisms — `GlobalInit::Bytes` is written into the object at
+/// materialization — so an encoding that landed in the module and never in memory would
+/// pass every lowering test and still return zero here.
+///
+/// The branch is the assertion: with `g == 7` the run has one path and no finding. If the
+/// engine saw zero it would take the other arm, and if it saw *nothing* the condition would
+/// be symbolic and both arms would be explored.
+#[test]
+fn an_initialized_global_is_read_as_its_value() {
+    let m = lower("int g = 7; int f(void) { if (g == 7) { return 1; } return 0; }");
+    let errs = chiero_cir::verify::verify(&m);
+    assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.states().len(),
+        1,
+        "`g == 7` is decidable, so there is one path — two means the engine saw a symbol"
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(1),
+        "and it took the arm the initializer implies"
+    );
+    assert!(r.findings().is_empty(), "{:#?}", r.findings());
+}
+
+/// The negative: an **uninitialized** global reads as zero (C11 6.7.9p10), so the same
+/// fixture with no initializer takes the other arm. Without this, the test above passes
+/// against an engine that reports 7 for everything.
+#[test]
+fn an_uninitialized_global_reads_as_zero() {
+    let m = lower("int g; int f(void) { if (g == 7) { return 1; } return 0; }");
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).run(&mut a);
+    assert_eq!(r.states().len(), 1);
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(0),
+        "static storage with no initializer is zero, and 7 is not zero"
+    );
+}

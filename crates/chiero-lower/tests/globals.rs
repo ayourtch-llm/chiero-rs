@@ -269,3 +269,44 @@ fn uninitialized_and_extern_globals_are_unchanged() {
         "bytes chiero has never seen are not zero"
     );
 }
+
+/// **A designated initializer is refused, not silently reordered.**
+///
+/// `int g[4] = {[2] = 5};` puts 5 at index 2. Encoding the items positionally would put it
+/// at index 0 — a wrong answer, and exactly the class this wave exists to remove. Chiero
+/// does not encode designators yet, so the initializer is refused whole and the global
+/// falls back to `Zero`: less information, but nothing invented.
+#[test]
+fn a_designated_initializer_is_refused_rather_than_reordered() {
+    assert_eq!(
+        init_of("int g[4] = {[2] = 5};", "g"),
+        chiero_cir::GlobalInit::Zero,
+        "refused whole — encoding it positionally would put 5 at index 0"
+    );
+
+    // The struct form, which reaches a different arm of the encoder.
+    assert_eq!(
+        init_of("struct S { int a; int b; }; struct S g = {.b = 5};", "g"),
+        chiero_cir::GlobalInit::Zero
+    );
+
+    // And the *undesignated* forms still encode, or "refuse designators" would be
+    // indistinguishable from "refuse everything".
+    assert!(matches!(
+        init_of("int g[4] = {9};", "g"),
+        chiero_cir::GlobalInit::Bytes(_)
+    ));
+}
+
+/// A **bit-field member** is refused too: its bytes are not a whole-field write, and
+/// encoding it as one would overwrite the neighbours it shares a storage unit with.
+#[test]
+fn a_bitfield_initializer_is_refused() {
+    assert_eq!(
+        init_of(
+            "struct B { unsigned a:3; unsigned b:5; }; struct B g = {1, 2};",
+            "g"
+        ),
+        chiero_cir::GlobalInit::Zero
+    );
+}

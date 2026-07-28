@@ -545,7 +545,15 @@ impl Lowerer<'_> {
         let init = if storage.extern_ && init.is_none() {
             chiero_cir::GlobalInit::Extern
         } else {
-            chiero_cir::GlobalInit::Zero
+            match init.and_then(|e| self.encode_init(e, sty, size)) {
+                Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
+                // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
+                // must not become bytes for the part it understood: the rest would read as
+                // zeros the program never wrote, which is the confidently-wrong direction.
+                // `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct; for one
+                // chiero failed to encode it is at least not a fabrication.
+                None => chiero_cir::GlobalInit::Zero,
+            }
         };
         let linkage = if storage.static_ {
             chiero_cir::Linkage::Internal
@@ -563,6 +571,114 @@ impl Lowerer<'_> {
             span,
         });
         self.globals.insert(name, gid);
+    }
+
+    /// Encode a file-scope initializer into `size` bytes, or `None` if chiero cannot.
+    ///
+    /// **Zero-filled to the object's full size** (C11 6.7.9p21): a partial initializer
+    /// leaves the remainder zero, and stopping at the last written element would make every
+    /// consumer reading past it see the end of a byte string rather than the zeros the
+    /// standard promises.
+    fn encode_init(&mut self, e: ExprId, ty: TyId, size: u64) -> Option<Vec<u8>> {
+        let mut out = vec![0u8; size as usize];
+        self.encode_into(e, ty, 0, &mut out)?;
+        Some(out)
+    }
+
+    /// Write `e`'s encoding at `at` in `out`. **The layout is the only source of offsets**
+    /// (015 c7), so struct padding falls out rather than being computed a second way.
+    fn encode_into(&mut self, e: ExprId, ty: TyId, at: u64, out: &mut [u8]) -> Option<()> {
+        match self.analysis.ty(ty).clone() {
+            Ty::Array { elem, len } => {
+                let esz = self.analysis.size_of(elem)?;
+                match self.ast.expr(e).kind.clone() {
+                    chiero_ast::ExprKind::InitList(items) => {
+                        for (i, it) in items.iter().enumerate() {
+                            // A designator moves the cursor; chiero does not encode those
+                            // yet, so an initializer containing one is refused whole rather
+                            // than silently written in positional order.
+                            if !it.designators.is_empty() {
+                                return None;
+                            }
+                            // A fixed bound stops the walk; any other kind (flexible,
+                            // zero-length, VLA) has no compile-time extent, and the
+                            // caller's `size` bound already clips the writes.
+                            if let chiero_sema::ArrayLen::Fixed(n) = len
+                                && (i as u64) >= n
+                            {
+                                break;
+                            }
+                            self.encode_into(it.value, elem, at + i as u64 * esz, out)?;
+                        }
+                        Some(())
+                    }
+                    // `char s[4] = "hi"` — the literal's bytes, truncated to the array and
+                    // zero-filled by the caller.
+                    chiero_ast::ExprKind::Str { .. } => {
+                        let bytes = self.string_bytes(e)?;
+                        for (i, b) in bytes.iter().enumerate() {
+                            let o = at as usize + i;
+                            if o >= out.len() {
+                                break;
+                            }
+                            out[o] = *b;
+                        }
+                        Some(())
+                    }
+                    _ => None,
+                }
+            }
+            Ty::Record(r) => {
+                let chiero_ast::ExprKind::InitList(items) = self.ast.expr(e).kind.clone() else {
+                    return None;
+                };
+                let fields = self.analysis.layout(r).fields.clone();
+                for (i, it) in items.iter().enumerate() {
+                    if !it.designators.is_empty() {
+                        return None;
+                    }
+                    let f = fields.get(i)?;
+                    // A bit-field's bytes are not a whole-field write; refuse rather than
+                    // overwrite its neighbours.
+                    if f.bits.is_some() {
+                        return None;
+                    }
+                    self.encode_into(it.value, f.ty, at + f.offset, out)?;
+                }
+                Some(())
+            }
+            _ => {
+                let v = self.const_of(e)?;
+                let sz = self.analysis.size_of(ty)?;
+                // Little-endian, matching 020's target and `GlobalInit::Bytes`'s reader.
+                for i in 0..sz {
+                    let o = at as usize + i as usize;
+                    if o >= out.len() {
+                        break;
+                    }
+                    out[o] = ((v >> (8 * i)) & 0xff) as u8;
+                }
+                Some(())
+            }
+        }
+    }
+
+    /// A string literal's bytes, including its terminator.
+    fn string_bytes(&mut self, e: ExprId) -> Option<Vec<u8>> {
+        let chiero_ast::ExprKind::Str { fragments } = self.ast.expr(e).kind.clone() else {
+            return None;
+        };
+        let mut bytes = Vec::new();
+        for fr in &fragments {
+            let text = self.names.text(fr.spelling).unwrap_or("").to_owned();
+            bytes.extend_from_slice(&unescape(unquote(&text)));
+        }
+        // **No explicit terminator.** The caller zero-fills the object to its full size
+        // before writing, so appending one is invisible in every case — `char s[4] = "hi"`
+        // and `char s[2] = "hi"` (which C allows, with no room for a terminator) both come
+        // out right without it. Mutation could not tell the two apart, which is what said
+        // it was redundant rather than untested.
+        Some(bytes)
     }
 
     fn item(&mut self, id: chiero_ast::DeclId) {
