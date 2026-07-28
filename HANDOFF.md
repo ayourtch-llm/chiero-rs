@@ -487,27 +487,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 84, `44ca77c`) — 835 tests, M1 152/165, frontend 48/117
+> ### ⏭️ START HERE (wave 85, `5d2d379`) — 847 tests, M1 152/165, frontend 57/117
 >
-> **M2's frontend is merged and the parallel worktree is gone.** `chiero-lex` and
-> `chiero-pp` are in-tree and match gcc token-for-token on seven real vppinfra headers
-> under gcc's full predefine set. There is no second agent and no second branch any more:
-> everything is on `master` in this one tree.
+> **The parser exists** (013: 9/20). `chiero-ast` and `chiero-parse` were one-line stubs
+> two commits ago; they now cover declarations, declarators, tags, statements,
+> precedence-climbing expressions, designated initializers, attributes and §6 recovery.
+> M2's frontend is merged and the parallel worktree is gone — everything is on `master`
+> in this one tree, and there is no second agent.
 >
-> The three highest-value things now, in order:
+> Next, in order:
 >
-> 1. **`013-parser.md` — the parser. Nothing exists (0/20).** It is the only thing standing
->    between a working preprocessor and real C reaching the symbolic core, and 014 (0/20)
->    and 015 (0/25) queue behind it. This is the milestone.
-> 2. **010 contract 19, now unblocked by the merge.** `ConfigId` lives in `chiero-pp`
->    (001 §180), which is finally in-tree, so `CookedSite.config` has somewhere to come
->    from. Small, and it was blocked for twenty waves.
-> 3. **M1's remaining 13 contracts** — 020's 14–18/23/29/30/44 (the optional passes,
->    `Opaque`, `GlobalInit`/`Linkage`, `Marker::Line`), 021 c19, 023's 7/17/21.
+> 1. **Finish 013.** Uncited: 4, 6, 7, 8, 9, 10, 11, 14, 18, 19, 20. Most of 6–11 and 18
+>    are **already implemented and merely untested** — write the tests and find out, which
+>    is exactly how wave 85 found two defects. 4 (K&R), 10 (asm operands) and 14 (nested
+>    functions) need code. **19 and 20 are the real gate**: parse every preprocessed VPP TU
+>    with zero panics, and hold the AST under 10× the token stream.
+> 2. **014 and 015** (0/20, 0/25) — types/layout, then AST→CIR lowering, which is what
+>    finally connects the frontend to the symbolic core.
+> 3. **010 contract 19**, unblocked since the wave-84 merge: `ConfigId` lives in
+>    `chiero-pp` (001 §180), so `CookedSite.config` finally has somewhere to come from.
+> 4. **M1's remaining 13** — 020's 14–18/23/29/30/44, 021 c19, 023's 7/17/21.
 >
-> Before touching the frontend, read wave 84's predefine lesson below — a differential
-> number taken without `gcc -dM -E` fed through `Config::defines` is about code neither
-> tool ran.
+> Two rules this front keeps re-teaching, both earned the hard way in wave 85:
+> **a mutation no fixture can observe is not a killed mutation** (the span-splice mutant
+> needed a third fixture, because a macro body's byte positions are *below* its use site),
+> and a differential number taken without `gcc -dM -E` fed through `Config::defines` is
+> about code neither tool ran (wave 84).
 
 **You are here:** ✅ **ALL 24 SPEC DOCUMENTS ARE WRITTEN AND COMMITTED.** The spec set is
 complete at **draft-3** (post-review, three review waves applied). ~7030 lines,
