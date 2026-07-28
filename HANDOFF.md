@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 141) — 1124 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 142) — 1125 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -498,7 +498,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > enumeration constant its value, at its own type and in its own scope; 138 made a compound
 > literal an object and let it take postfix suffixes; **139 built the generator, and it
 > found a defect on its first run; 140 gave it structs and helpers and it found two more; 141 gave it
-> arrays, pointers and six spellings of one access, and it found another**.*
+> arrays, pointers and six spellings of one access, and it found another; 142 gave it
+> bit-fields and unions and it found a *wrong answer***.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -552,7 +553,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     fixed arrays with braced initializers, six spellings of one element access, pointers
 >     walked with `p += 1`/`p++`, writes through every spelling, and a checksum over every
 >     element. It found the `*(&a[i] + 0)` defect immediately.
->   - **Structs, bit-fields and unions**, with the checksum reading every field.
+>   - ~~Structs, bit-fields and unions.~~ **Done in waves 140 and 142.** A union writes and
+>     reads only its first member — reading one not last stored is unspecified, and an
+>     unspecified program teaches nothing. The generator also **runs the verifier** now and
+>     reports `InvalidCir` separately from `SilentNoState`, since wave 141 showed the
+>     engine's silence can be a consequence rather than the fault.
 >   - **File-scope declarations**, which is where the pointer-global defect lived.
 >   - **An AST shrinker** (~250 lines) emitting `agree_with("…", "…")` directly. Wave 139
 >     shrank by hand in about five minutes; that will not scale.
@@ -641,6 +646,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A wrong write can be repaired by the next one** (wave 142). Widening a bit-field's
+> written range by one bit survived `{15, 2}`, because the stray bit lands in the neighbour
+> and the neighbour is stored immediately afterwards over the same bit; it survived `{7, 2}`
+> because 7 in four bits has that bit clear. Only the **partial** initializer `{15}` shows
+> it, where the neighbour gets nothing but the zero-fill. Two conditions had to hold at once
+> — the extra bit set *and* nothing written after it — and neither alone was enough. When a
+> mutation survives, ask what downstream write is undoing it.
 > **A grammar production that never fires is a silent gap in the generator** (wave 141).
 > Three new statement arms were added *after* the `0..=3` range arm and were unreachable.
 > The only symptom was a suspiciously unchanged number — same programs compared, same zero
