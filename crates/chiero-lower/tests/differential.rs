@@ -146,6 +146,84 @@ fn next_seq() -> u64 {
     SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// **Every binary operator's precedence class, and their left-associativity.**
+///
+/// 013's contracts say nothing about precedence — it is the kind of thing that looks
+/// self-evidently right in a table and is checked by nobody. A mutation sweep over
+/// `binop_of` found it: **demoting `<<` from its own class to the additive one survived the
+/// whole suite**, so `1 << 2+3` would have parsed as `(1<<2)+3` and answered 7 where C says
+/// 32. Nothing else in the workspace writes a shift beside an addition without parentheses.
+///
+/// Each case below is a *discriminator*, not an example: the parenthesised readings differ,
+/// and both were run through gcc before being written down. `7 % 4 + 1` is the shape to
+/// avoid — it gives 4 under either grouping, so a fixture built from it proves nothing;
+/// `1 + 7 % 4` is the same operators arranged so the answers diverge.
+///
+/// The last case is associativity rather than precedence. `9 - 4 - 2` is 3 in C and 7 if
+/// the parser recurses at `prec` instead of `prec + 1` — a one-character edit that changes
+/// every non-commutative operator at once.
+#[test]
+fn every_operator_binds_at_its_own_precedence() {
+    // Multiplicative over additive, both orders — `a + b * c` is the textbook case and
+    // `a * b + c` groups identically under a wrong table, so only the first discriminates.
+    agree("return 1 + 2 * 3;");
+    agree("return 1 + 7 % 4;");
+    agree("return 2 * 3 + 1;");
+    // **Additive over shift.** The survivor. `<<` binds *looser* than `+`, which is the
+    // one precedence relation in C that surprises people, and the reason
+    // `1 << n + 1` is a bug magnet in real code.
+    agree("return 1 << 2 + 3;");
+    agree("return 16 >> 1 + 1;");
+    // And shift binds tighter than relational but looser than multiplicative.
+    agree("return 16 >> 1 * 2;");
+    agree("return 1 << 2 < 8;");
+    // Relational over equality. `3 < 4 == 1` is **not** a discriminator and was in the
+    // first draft: with `<` and `==` in one class, left-associativity gives `(3<4)==1`
+    // either way. The relational operator has to come *second* for the trees to differ —
+    // `2 == 1 < 3` is `2 == (1<3)` = 0 in C and `(2==1) < 3` = 1 if they share a class.
+    agree("return 3 < 4 == 1;");
+    agree("return 2 == 1 < 3;");
+    agree("return 2 != 3 > 1;");
+    // **Equality over bitwise-and** — the classic `x & MASK == v` trap, which C reads as
+    // `x & (MASK == v)`. The `&` has to come *first*: with the two in one class,
+    // left-associativity makes `a == b & c` group as `(a==b) & c`, which is what C does
+    // anyway, so only this order can tell them apart. Both operators need their own case,
+    // since the table gives `==` and `!=` separate entries that a mutation can move apart.
+    agree("return 6 & 2 == 2;");
+    agree("return 6 & 2 != 3;");
+    // `<=` and `>=` are separate entries too, and equality has to come first for the same
+    // reason it had to come second above.
+    agree("return 2 == 1 <= 0;");
+    agree("return 2 == 1 >= 0;");
+    // And the three bitwise levels in order: `&` over `^` over `|`.
+    agree("return 6 ^ 3 & 2;");
+    agree("return 1 | 6 ^ 3;");
+    // `&&` over `||`. `0 || 1 && 0` is 0 under either grouping, so it is useless here;
+    // `1 || 0 && 0` is 1 in C and 0 if `||` bound tighter.
+    agree("return 1 || 0 && 0;");
+    // **And the logical operators sit *below* the bitwise ones**, which is the half the
+    // pair above cannot see: moving `&&` up past `|` leaves `1 || 0 && 0` at 1 either way.
+    // C reads `1 | 0 && 0` as `(1|0) && 0` = 0; a `&&` that bound tighter than `|` gives
+    // `1 | (0&&0)` = 1.
+    agree("return 1 | 0 && 0;");
+    agree("return 2 ^ 1 && 0;");
+    // Additive over shift, with the shift on the *right* — this one is about `-` reaching
+    // the shift class from *below*, and `8 - (4>>1)` is 6 where C says 2.
+    agree("return 8 - 4 >> 1;");
+    // **And with the shift first, which is the direction that catches `-` being demoted.**
+    // `8 - 4 >> 1` groups as `(8-4)>>1` under *either* reading, so it survived a mutation
+    // putting `-` in the shift class; `16 >> 2 - 1` is `16 >> (2-1)` = 8 in C and
+    // `(16>>2) - 1` = 3 if they share one. `+` and `-` are separate table entries and a
+    // mutation moves one without the other, so each needs its own case.
+    agree("return 16 >> 2 - 1;");
+    agree("return 1 << 3 - 1;");
+    // **Left-associativity**, which no precedence number expresses.
+    agree("return 9 - 4 - 2;");
+    agree("return 64 / 4 / 2;");
+    agree("return 17 % 7 % 3;");
+    agree("return 64 >> 2 >> 1;");
+}
+
 /// **Signed versus unsigned division and remainder.**
 ///
 /// C has one `/` and CIR has `SDiv` and `UDiv`; the operand types decide which. Getting it
