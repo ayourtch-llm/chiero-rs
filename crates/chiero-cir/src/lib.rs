@@ -636,18 +636,46 @@ impl AccessPath {
             PathRoot::Global { name, .. } => name.to_string(),
             PathRoot::Value(v) => format!("%{}", v.0),
         };
+        // **A `Deref` immediately followed by a member renders as `->`**, which is what
+        // 020 §4.4's own example writes (`b->opaque as ip4_rewrite_t.adj_index`). Rendering
+        // it as `(*b).opaque` is equivalent C and is not what anybody typed, so a reader
+        // matching a finding against their source has to translate it back.
+        let mut pending_deref = false;
         for st in &self.steps {
+            let sep = if std::mem::take(&mut pending_deref) {
+                "->"
+            } else {
+                "."
+            };
             match st {
-                PathStep::Deref => out = format!("(*{out})"),
-                PathStep::Field { name, .. } => out = format!("{out}.{name}"),
+                PathStep::Deref => {
+                    // A trailing deref with no member after it is a plain dereference.
+                    if sep == "->" {
+                        out = format!("(*{out})");
+                    }
+                    pending_deref = true;
+                }
+                PathStep::Field { name, .. } => out = format!("{out}{sep}{name}"),
                 // **`as` rather than `.`**, because the whole value of this step is saying
                 // the bytes were viewed *through* something that may not be what wrote
                 // them. `.adj_index` alone reads like an ordinary field access.
-                PathStep::UnionMember { name, view, .. } => out = format!("{out} as {view}.{name}"),
+                // **The deref binds to the base, not to the view.** §4.4 writes
+                // `b->opaque as ip4_rewrite_t.adj_index`: the `->` reaches the bytes and
+                // the `.` selects within the view. `… as ip4_rewrite_t->adj_index` would
+                // read as a pointer hop through the view's *name*, which is not a thing.
+                PathStep::UnionMember { name, view, .. } => {
+                    if sep == "->" {
+                        out = format!("(*{out})");
+                    }
+                    out = format!("{out} as {view}.{name}");
+                }
                 PathStep::Bits { name, bits } => {
-                    out = format!("{out}.{name}:{}..{}", bits.off, bits.off + bits.width)
+                    out = format!("{out}{sep}{name}:{}..{}", bits.off, bits.off + bits.width)
                 }
                 PathStep::Index(o) => {
+                    if sep == "->" {
+                        out = format!("(*{out})");
+                    }
                     let idx = match o {
                         Operand::Const(Const::Int { val, .. }) => val.to_string(),
                         Operand::Value(v) => format!("%{}", v.0),

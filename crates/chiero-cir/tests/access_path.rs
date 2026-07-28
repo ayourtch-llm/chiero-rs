@@ -66,7 +66,7 @@ fn fields_and_indices_render_as_c_writes_them() {
         .into_iter()
         .collect(),
     };
-    assert_eq!(p.render(), "(*p).adj[3].counter");
+    assert_eq!(p.render(), "p->adj[3].counter", "020 §4.4's own spelling");
 }
 
 /// A bit-field step names its range, because "the wrong bits" and "the wrong bytes" are

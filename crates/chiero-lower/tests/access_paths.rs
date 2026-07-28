@@ -81,7 +81,7 @@ fn the_root_names_the_variable() {
     }
     assert!(
         p.render().starts_with('s'),
-        "so the finding reads `s…` and not `%7…`: {}",
+        "so the finding reads `s->…` and not `%7…`: {}",
         p.render()
     );
 }
@@ -116,7 +116,7 @@ fn nested_members_accumulate() {
     );
     assert_eq!(
         p.render(),
-        "o.inner.leaf",
+        "o->inner.leaf",
         "the whole chain, not just the last hop: {:?}",
         p.steps
     );

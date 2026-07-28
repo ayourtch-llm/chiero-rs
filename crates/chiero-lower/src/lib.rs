@@ -118,9 +118,10 @@ fn lower(
 
 use chiero_ast::{DeclKind, ExprId, StmtId, StmtKind};
 use chiero_cir::{
-    AllocaDecl, AllocaId, BinOp as CBinOp, Block, BlockId, Body, CTy, Callee, Const, FnAttrs,
-    FuncId, Function, Inst, InstKind, Lifetime, MarkerKind, Operand, Param, RValue, ScopeEvent,
-    ScopeId, ScopeKind, Terminator, UnOp as CUnOp, ValueId, Volatility,
+    AccessPath, AllocaDecl, AllocaId, BinOp as CBinOp, Block, BlockId, Body, CTy, Callee, Const,
+    FnAttrs, FuncId, Function, Inst, InstKind, Lifetime, MarkerKind, Operand, Param, PathRoot,
+    PathStep, RValue, ScopeEvent, ScopeId, ScopeKind, Terminator, UnOp as CUnOp, ValueId,
+    Volatility,
 };
 use chiero_sema::{Conversion, FloatKind, Ty, TyId, TypedId, TypedNode};
 use indexmap::IndexMap;
@@ -128,6 +129,8 @@ use indexmap::IndexMap;
 /// The function currently being built.
 struct FnState {
     id: FuncId,
+    /// 020 §4.4's reporting-only paths, keyed by the address value they describe.
+    access_paths: IndexMap<ValueId, AccessPath>,
     /// 020 §7, contract 18a. Computed from the **syntax** before any lowering happens, so
     /// it is a property of what was written rather than of the order lowering chose —
     /// which is the point: CIR picks one order, and this records that the source did not.
@@ -532,6 +535,7 @@ impl Lowerer<'_> {
         };
         self.f = Some(FnState {
             id: fid,
+            access_paths: IndexMap::new(),
             order_sensitive: order_sensitive_body(self.ast, body),
             name: cir_name.clone(),
             params: Vec::new(),
@@ -662,11 +666,11 @@ impl Lowerer<'_> {
             allocas: fs.allocas,
             blocks: fs.blocks,
             entry: fs.entry,
+            access_paths: fs.access_paths,
             attrs: FnAttrs {
                 order_sensitive: fs.order_sensitive,
                 ..FnAttrs::default()
             },
-            access_paths: Default::default(),
             body: Body::Defined,
             span,
         };
@@ -2180,6 +2184,75 @@ impl Lowerer<'_> {
     }
 
     /// The address of an lvalue, computed **once**.
+    /// Record the reporting-only `AccessPath` for an address value (020 §4.4).
+    ///
+    /// Called only where lowering already knows a member's name *and* its offset, which is
+    /// the member-access site — the two facts nothing downstream can recover, and the whole
+    /// reason paths are built here rather than reconstructed from `PtrAdd` offsets.
+    fn record_path(&mut self, v: ValueId, e: ExprId) {
+        let Some(p) = self.path_of(e) else { return };
+        self.fs().access_paths.insert(v, p);
+    }
+
+    /// The path an lvalue expression denotes, or `None` when lowering cannot name it.
+    ///
+    /// **`None` rather than a guess.** A path is a reporting aid; one that names the wrong
+    /// member is worse than none, because a reader acts on it.
+    fn path_of(&mut self, e: ExprId) -> Option<AccessPath> {
+        match self.ast.expr(e).kind.clone() {
+            chiero_ast::ExprKind::Ident(sym) => {
+                let (slot, _) = self.fs().locals.get(&sym).cloned()?;
+                Some(AccessPath {
+                    root: PathRoot::Local {
+                        alloca: slot,
+                        name: self.sym(sym),
+                    },
+                    steps: Default::default(),
+                })
+            }
+            chiero_ast::ExprKind::Member { base, field, arrow } => {
+                let (byte_off, _) = self.field_of(base, field, arrow)?;
+                let mut p = self.path_of(base)?;
+                // `->` is a dereference and `.` is not; 020 §4.4 has a step for it and a
+                // path that dropped it would render `p.next` for `p->next`.
+                if arrow {
+                    p.steps.push(PathStep::Deref);
+                }
+                // **A union member is a `UnionMember` step, not a `Field`** (020 §4.5:
+                // "lowering emits `PtrAdd` plus a `UnionMember` path step for reporting").
+                // The difference is the whole point of the step: `as ip4_rewrite_t.x` says
+                // the bytes were *viewed through* something that may not be what wrote
+                // them, and `.x` says they were not.
+                let name = self.sym(field)?;
+                let rec = self.record_of(base, arrow);
+                match rec {
+                    Some((r, true)) => p.steps.push(PathStep::UnionMember {
+                        name,
+                        off: byte_off,
+                        view: r,
+                    }),
+                    _ => p.steps.push(PathStep::Field {
+                        name,
+                        off: byte_off,
+                    }),
+                }
+                Some(p)
+            }
+            chiero_ast::ExprKind::Index { base, index } => {
+                let mut p = self.path_of(base)?;
+                // The index as written when it is a constant; a symbolic one renders as
+                // its value id, which is still better than nothing.
+                let idx = match self.const_of(index) {
+                    Some(v) => Operand::Const(Const::Int { bits: 64, val: v }),
+                    None => Operand::Const(Const::Undef(CTy::Int(64))),
+                };
+                p.steps.push(PathStep::Index(idx));
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
         match self.ast.expr(e).kind.clone() {
             chiero_ast::ExprKind::Ident(sym) => {
@@ -2209,6 +2282,14 @@ impl Lowerer<'_> {
                 };
                 let (byte_off, _) = self.field_of(base, field, arrow)?;
                 if byte_off == 0 {
+                    // **The offset-0 member still gets a path**, and it is the case a
+                    // reader hits most: the first member of every struct. Lowering returns
+                    // the base address unchanged here, so the path is attached to *that*
+                    // value — which is why `record_path` keys on the value rather than on
+                    // the instruction it would otherwise have emitted.
+                    if let Operand::Value(v) = base_addr {
+                        self.record_path(v, e);
+                    }
                     return Some(base_addr);
                 }
                 let dst = self.new_value();
@@ -2225,6 +2306,7 @@ impl Lowerer<'_> {
                     },
                     span,
                 );
+                self.record_path(dst, e);
                 Some(Operand::Value(dst))
             }
             chiero_ast::ExprKind::Index { base, index } => {
@@ -2310,6 +2392,29 @@ impl Lowerer<'_> {
     /// verifies it against gcc over 520 real VPP records; a second derivation here would
     /// be an unverified answer to a settled question, and the two would disagree on
     /// exactly the packed wire-format structs where it matters most.
+    /// The record a member access goes through, and whether it is a union.
+    ///
+    /// The name is the *view* a `UnionMember` step reports — an anonymous union has none,
+    /// so it renders as `union`, which is still what a reader needs to know.
+    fn record_of(&mut self, base: ExprId, arrow: bool) -> Option<(chiero_cir::Symbol, bool)> {
+        let bty = self.type_of(base)?;
+        let rec = match self.analysis.ty(bty).clone() {
+            Ty::Record(r) => r,
+            Ty::Ptr(p) if arrow => match self.analysis.ty(p).clone() {
+                Ty::Record(r) => r,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let l = self.analysis.layout(rec);
+        let name = self
+            .analysis
+            .tag_of(rec)
+            .and_then(|n| self.sym(n))
+            .unwrap_or_else(|| chiero_cir::Symbol::from("union"));
+        Some((name, l.is_union))
+    }
+
     fn field_of(
         &mut self,
         base: ExprId,
