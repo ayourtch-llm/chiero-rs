@@ -1129,6 +1129,119 @@ fn next() -> u64 {
 }
 
 // ---------------------------------------------------------------------------------------
+// Shrinking
+// ---------------------------------------------------------------------------------------
+
+/// Reduce a failing program while it keeps failing the same way.
+///
+/// **Line-based, not AST-based, and the distinction is deliberate.** A true AST reducer
+/// needs the generator to hand back a tree; it builds strings, one statement per line, and
+/// over *that* shape line-deletion is already a valid reduction operator. Deleting a
+/// declaration breaks every later reference — and the pipeline discards the result, because
+/// gcc refuses to compile it — so a broken deletion costs one compile and is rejected
+/// automatically. That is the whole reason this is affordable without a tree.
+///
+/// The interestingness predicate is the *verdict class*, not the verdict: a mismatch that
+/// shrinks from `chiero 20, gcc 12` to `chiero 2, gcc 1` is the same defect, and demanding
+/// the exact numbers would stop the reduction almost immediately.
+///
+/// Runs to a fixpoint over single-line deletions, then over the prelude's declarations.
+/// Quadratic in lines and each step is a compile, which is why the batch shrinks only what
+/// it is about to report rather than everything it finds.
+fn shrink(prelude: &str, body: &str, interesting: &dyn Fn(&str, &str) -> bool) -> (String, String) {
+    let mut prelude = prelude.to_string();
+    let mut body = body.to_string();
+    if !interesting(&prelude, &body) {
+        // Nothing to do, and shrinking a program whose failure we cannot reproduce would
+        // "reduce" it to something unrelated.
+        return (prelude, body);
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        // Body lines, last first: a later statement is more likely to be the one that can
+        // go, and removing it does not invalidate the declarations above it.
+        let mut i = body.lines().count();
+        while i > 0 {
+            i -= 1;
+            // **A `return` is never deleted.** The first version of this reducer removed
+            // one, leaving a value-returning function that falls off its end — undefined
+            // behaviour that the `-fsanitize=undefined,address` filter does not catch,
+            // because gcc's return check is not part of it for C. The reduction still
+            // "failed", so it was kept, and the report was a program whose failure meant
+            // nothing. Cheaper to protect the line than to widen the UB filter.
+            if body
+                .lines()
+                .nth(i)
+                .is_some_and(|l| l.trim_start().starts_with("return"))
+            {
+                continue;
+            }
+            let kept: String = body
+                .lines()
+                .enumerate()
+                .filter(|(n, _)| *n != i)
+                .map(|(_, l)| format!("{l}\n"))
+                .collect();
+            if interesting(&prelude, &kept) {
+                body = kept;
+                changed = true;
+            }
+        }
+        // Then the prelude, whole declarations at a time. A `struct` or a helper spans
+        // several lines, so this deletes from one `}` to the next rather than by line.
+        let decls = split_prelude(&prelude);
+        for d in 0..decls.len() {
+            let kept: String = decls
+                .iter()
+                .enumerate()
+                .filter(|(n, _)| *n != d)
+                .map(|(_, t)| t.clone())
+                .collect();
+            if interesting(&kept, &body) {
+                prelude = kept;
+                changed = true;
+                break;
+            }
+        }
+    }
+    (prelude, body)
+}
+
+/// The prelude as whole declarations — a `struct`/`union` body or a function body is one
+/// unit, so a brace-depth counter is enough and no parsing is needed.
+fn split_prelude(prelude: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    for line in prelude.lines() {
+        cur.push_str(line);
+        cur.push('\n');
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if depth <= 0 && !cur.trim().is_empty() {
+            out.push(std::mem::take(&mut cur));
+            depth = 0;
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Whether two verdicts are the same *kind* of failure.
+fn same_class(a: &Verdict, b: &Verdict) -> bool {
+    matches!(
+        (a, b),
+        (Verdict::Mismatch { .. }, Verdict::Mismatch { .. })
+            | (Verdict::SilentNoState { .. }, Verdict::SilentNoState { .. })
+            | (Verdict::Panic(_), Verdict::Panic(_))
+            | (Verdict::InvalidCir { .. }, Verdict::InvalidCir { .. })
+    )
+}
+
+// ---------------------------------------------------------------------------------------
 // The batch
 // ---------------------------------------------------------------------------------------
 
@@ -1151,7 +1264,28 @@ fn generated_programs_agree_with_gcc() {
             Verdict::Agree => compared += 1,
             Verdict::Discarded => discarded += 1,
             Verdict::Refused { stage, message } => refused.push((stage, message)),
-            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
+            v => {
+                // Shrunk before it is recorded, so the report is something a human can read
+                // and paste into `differential.rs` rather than a 40-line program to bisect
+                // by hand. Only the *reported* failure is shrunk — each step is a compile.
+                let want = &v;
+                let (p2, b2) = if defects.is_empty() {
+                    shrink(&prelude, &body, &|p: &str, b: &str| {
+                        same_class(&judge(p, b), want)
+                    })
+                } else {
+                    (prelude.clone(), body.clone())
+                };
+                // **Re-judged after shrinking, not carried over.** A reduction keeps the
+                // failure's *class*, not its numbers — the reduced program computes
+                // something simpler — so reporting the original verdict beside the reduced
+                // source prints a `gcc:` value that source cannot produce. The first
+                // version did exactly that, and the numbers were the part a reader would
+                // have trusted most.
+                let shown = judge(&p2, &b2);
+                let shown = if same_class(&shown, &v) { shown } else { v };
+                defects.push((seed, format!("{p2}\nint probe(void) {{\n{b2}}}"), shown));
+            }
         }
     }
 
@@ -1190,4 +1324,92 @@ fn generated_programs_agree_with_gcc() {
         defects[0].1,
         defects[0].2
     );
+}
+
+/// **The shrinker keeps the failure and loses the rest.**
+///
+/// Tested against a *synthetic* predicate rather than a real defect, deliberately: a test
+/// that needs chiero to be broken cannot live in a green suite, and the property being
+/// checked — "reduce while the predicate holds" — is independent of what the predicate is.
+/// The predicate here is "the body still mentions `MARK`", which is exactly the shape a
+/// verdict-class check has: cheap, deterministic, and true of the original.
+#[test]
+fn the_shrinker_reduces_while_the_failure_survives() {
+    let prelude = "struct Keep { int a; };\nstruct Drop { int b; };\n\
+                   static int unused(int x) { return x; }\n";
+    let body = "  int a = 1;\n  int b = 2;\n  int MARK = 3;\n  int c = 4;\n                   int d = 5;\n  return MARK;\n";
+    let interesting = |_p: &str, b: &str| b.contains("MARK") && b.contains("return");
+    let (p2, b2) = shrink(prelude, body, &interesting);
+
+    assert!(
+        interesting(&p2, &b2),
+        "the reduction must still fail the way the original did: {p2}\n{b2}"
+    );
+    assert!(
+        b2.lines().count() < body.lines().count(),
+        "and it must actually be smaller: {} lines from {}",
+        b2.lines().count(),
+        body.lines().count()
+    );
+    // Every line the predicate does not need is gone — this is the property that makes a
+    // report readable rather than merely shorter.
+    for gone in ["int a = 1", "int b = 2", "int c = 4", "int d = 5"] {
+        assert!(!b2.contains(gone), "`{gone}` survived: {b2}");
+    }
+    // And the prelude reduces by whole declarations, not by line — a `struct` cut in half
+    // would not compile and could never be interesting.
+    assert!(
+        !p2.contains("struct Drop") && !p2.contains("unused"),
+        "unneeded declarations survived: {p2}"
+    );
+    assert_eq!(
+        p2.matches('{').count(),
+        p2.matches('}').count(),
+        "and the prelude stayed brace-balanced — half a struct would not compile and so \
+         could never be interesting: {p2}"
+    );
+}
+
+/// **A `return` is never shrunk away.**
+///
+/// Found by using the reducer on a live defect: it deleted the trailing `return`, leaving a
+/// value-returning function that falls off its end. That is undefined behaviour, the
+/// sanitizer filter does not catch it — gcc's return check is not part of
+/// `-fsanitize=undefined` for C — and the reduced program still "failed", so it was kept.
+/// The report was then a program whose failure meant nothing.
+#[test]
+fn the_shrinker_keeps_the_return() {
+    let body = "  int a = 1;\n  int b = 2;\n  return 0;\n";
+    // A predicate that would happily accept the empty program, so only the guard can
+    // preserve the `return`.
+    let (_, b2) = shrink("", body, &|_, _| true);
+    assert!(
+        b2.contains("return"),
+        "the reduction dropped the return and is undefined C: {b2:?}"
+    );
+}
+
+/// **Shrinking a program whose failure cannot be reproduced changes nothing.**
+///
+/// The guard that stops the reducer "reducing" an unrelated program to noise: if the
+/// predicate is false at the start, there is nothing to preserve and the input comes back
+/// untouched.
+#[test]
+fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
+    let prelude = "struct S { int a; };\n";
+    let body = "  int a = 1;\n  int b = 2;\n  return a;\n";
+
+    // A predicate that is *false for the original and true for a reduction* — which is the
+    // only shape that can tell the guard apart from its absence. An always-false predicate
+    // cannot: without the guard the reducer would keep nothing anyway, so both readings
+    // return the input and the mutation is equivalent. That was the first version of this
+    // test, and it survived deleting the very guard it was written for.
+    let interesting = |_p: &str, b: &str| b.lines().count() == 2;
+    let (p2, b2) = shrink(prelude, body, &interesting);
+    assert_eq!(
+        b2, body,
+        "a program whose failure cannot be reproduced must come back untouched, not be \
+         'reduced' into an unrelated one that happens to satisfy the predicate"
+    );
+    assert_eq!(p2, prelude);
 }
