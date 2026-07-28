@@ -522,6 +522,7 @@ impl Lowerer<'_> {
             name: Some(name),
             init,
             storage,
+            ty: decl_ty,
             ..
         } = self.ast.decl(id).kind.clone()
         else {
@@ -565,12 +566,34 @@ impl Lowerer<'_> {
             name: text,
             size,
             align,
-            is_const: false,
+            // **Read-only if the object's own type says so.** Hardcoded `false` here made
+            // 021 contract 21 — "writing to a `readonly` global is exactly one finding" —
+            // correct and unreachable: nothing marked a global read-only, so the checker
+            // could never fire. VPP's tables are `const` precisely so writing to one is a
+            // bug.
+            is_const: self.is_const_type(decl_ty),
             init,
             linkage,
             span,
         });
         self.globals.insert(name, gid);
+    }
+
+    /// Whether a declared type is `const`-qualified.
+    ///
+    /// **An array looks at its element.** `const int t[4]` puts the qualifier on the
+    /// element type, not on the array — C11 6.7.3p9 says the array takes it from there —
+    /// and checking only the outer type misses every `const` table, which is the shape
+    /// that matters.
+    fn is_const_type(&self, ty: chiero_ast::TypeId) -> bool {
+        let t = self.ast.ty(ty);
+        if t.quals.const_ {
+            return true;
+        }
+        match &t.kind {
+            chiero_ast::TypeKind::Array { elem, .. } => self.is_const_type(*elem),
+            _ => false,
+        }
     }
 
     /// Encode a file-scope initializer into `size` bytes, or `None` if chiero cannot.

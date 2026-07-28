@@ -1,0 +1,112 @@
+target x86_64-unknown-linux-gnu
+
+global const static @table : size 16 align 4 bytes 0a000000140000001e00000028000000 ; span 805:849:0
+
+global static @calls : size 4 align 4 ; span 967:983:0
+
+global static @cfg : size 8 align 4 bytes 0100000028000000 ; span 1153:1187:0
+
+global const static @.str.0 : size 2 align 1 bytes 6900 ; span 1327:1330:0
+
+func @chiero_make_symbolic(%0: ptr, %1: i64, %2: ptr) -> void ; span 3779:3844:0
+
+func @chiero_assume(%3: i32) -> void ; span 3846:3874:0
+
+func @chiero_assert(%4: i32) -> void ; span 3876:3904:0
+
+func @chiero_is_symbolic(%5: i64) -> i32 ; span 3906:3936:0
+
+func @chiero_mark_fidelity(%6: ptr) -> void ; span 3938:3980:0
+
+func @lookup(%8: i32) -> i32 { ; span 1190:1258:0
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "i" ; span 1190:1258:0
+entry: ; span 1190:1258:0
+  .line 28
+  .line 29
+  .line 30
+  .scope enter 0 ; span 1190:1258:0
+  %9 = addrlocal %0 ; span 1190:1258:0
+  store i32 %8 -> %9 align 4 ; span 1190:1258:0
+  .scope enter 1 ; span 1215:1258:0
+  %10 = addrglobal @calls ; span 1219:1236:0
+  %11 = addrglobal @calls ; span 1227:1232:0
+  %12 = load i32, %11 align 4 ; span 1227:1232:0
+  %13 = add i32 %12, 1i32 ; span 1227:1236:0
+  store i32 %13 -> %10 align 1 ; span 1219:1236:0
+  .seqpoint ; span 1219:1237:0
+  %14 = addrglobal @table ; span 1247:1255:0
+  %15 = addrlocal %0 ; span 1253:1254:0
+  %16 = load i32, %15 align 1 ; span 1253:1254:0
+  %17 = sext i32 %16 to i64 ; span 1247:1255:0
+  %18 = mul i64 %17, 4i64 ; span 1247:1255:0
+  %19 = ptradd %14, %18 ; span 1247:1255:0
+  %20 = load i32, %19 align 1 ; span 1247:1255:0
+  .scope exit 1 ; span 1240:1256:0
+  .scope exit 0 ; span 1240:1256:0
+  ret %20
+}
+
+func @main() -> i32 { ; span 1260:1897:0
+  alloca %0 : i32 x 1 align 4 scope 1 lifetime scope "i" ; span 1279:1288:0
+  alloca %1 : i32 x 1 align 4 scope 1 lifetime scope "v" ; span 1520:1537:0
+entry: ; span 1260:1897:0
+  .line 34
+  .line 35
+  .line 38
+  .line 39
+  .line 41
+  .line 45
+  .line 46
+  .line 47
+  .scope enter 0 ; span 1260:1897:0
+  .scope enter 1 ; span 1275:1897:0
+  %21 = addrlocal %0 ; span 1279:1288:0
+  store i32 2i32 -> %21 align 4 ; span 1279:1288:0
+  .seqpoint ; span 1279:1288:0
+  %22 = addrlocal %0 ; span 1313:1315:0
+  %23 = call @chiero_make_symbolic(%22, 4i64, globaladdr:@.str.0:0) ; span 1292:1331:0
+  .seqpoint ; span 1292:1332:0
+  %24 = addrlocal %0 ; span 1484:1485:0
+  %25 = load i32, %24 align 1 ; span 1484:1485:0
+  %26 = cmp sge i32 %25, 0i32 ; span 1484:1490:0
+  %27 = zext i1 %26 to i32 ; span 1484:1490:0
+  %28 = call @chiero_assume(%27) ; span 1470:1491:0
+  .seqpoint ; span 1470:1492:0
+  %29 = addrlocal %0 ; span 1509:1510:0
+  %30 = load i32, %29 align 1 ; span 1509:1510:0
+  %31 = cmp slt i32 %30, 4i32 ; span 1509:1514:0
+  %32 = zext i1 %31 to i32 ; span 1509:1514:0
+  %33 = call @chiero_assume(%32) ; span 1495:1515:0
+  .seqpoint ; span 1495:1516:0
+  %34 = addrlocal %0 ; span 1535:1536:0
+  %35 = load i32, %34 align 1 ; span 1535:1536:0
+  %36 = call @lookup(%35) ; span 1528:1537:0
+  %37 = addrlocal %1 ; span 1520:1537:0
+  store i32 %36 -> %37 align 4 ; span 1520:1537:0
+  .seqpoint ; span 1520:1537:0
+  %38 = addrlocal %1 ; span 1808:1809:0
+  %39 = load i32, %38 align 1 ; span 1808:1809:0
+  %40 = srem i32 %39, 10i32 ; span 1808:1814:0
+  %41 = cmp eq i32 %40, 0i32 ; span 1808:1819:0
+  %42 = zext i1 %41 to i32 ; span 1808:1819:0
+  %43 = call @chiero_assert(%42) ; span 1794:1820:0
+  .seqpoint ; span 1794:1821:0
+  %44 = addrlocal %1 ; span 1838:1839:0
+  %45 = load i32, %44 align 1 ; span 1838:1839:0
+  %46 = addrglobal @cfg ; span 1843:1852:0
+  %47 = ptradd %46, 4i64 ; span 1843:1852:0
+  %48 = load i32, %47 align 1 ; span 1843:1852:0
+  %49 = cmp sle i32 %45, %48 ; span 1838:1852:0
+  %50 = zext i1 %49 to i32 ; span 1838:1852:0
+  %51 = call @chiero_assert(%50) ; span 1824:1853:0
+  .seqpoint ; span 1824:1854:0
+  %52 = addrglobal @calls ; span 1871:1876:0
+  %53 = load i32, %52 align 4 ; span 1871:1876:0
+  %54 = cmp eq i32 %53, 1i32 ; span 1871:1881:0
+  %55 = zext i1 %54 to i32 ; span 1871:1881:0
+  %56 = call @chiero_assert(%55) ; span 1857:1882:0
+  .seqpoint ; span 1857:1883:0
+  .scope exit 1 ; span 1886:1895:0
+  .scope exit 0 ; span 1886:1895:0
+  ret 0i32
+}

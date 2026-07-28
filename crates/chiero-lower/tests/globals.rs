@@ -310,3 +310,51 @@ fn a_bitfield_initializer_is_refused() {
         chiero_cir::GlobalInit::Zero
     );
 }
+
+/// **A `const` global is marked read-only.**
+///
+/// Found by reading wave 114's new corpus golden: `static const int table[4]` printed as
+/// `global static @table`, with no `const`. `is_const` was hardcoded `false`.
+///
+/// It is not cosmetic. 021 contract 21 — "writing to a `readonly` global is exactly one
+/// finding and does not alter the bytes" — cannot fire on any global while nothing marks
+/// one read-only, so the checker is correct and unreachable. VPP's tables are `const`
+/// precisely so that writing to one is a bug.
+#[test]
+fn a_const_global_is_read_only() {
+    let m = lower("const int g = 1; int f(void) { return g; }");
+    assert!(
+        m.globals
+            .iter()
+            .find(|x| &*x.name == "g")
+            .expect("g")
+            .is_const,
+        "{:?}",
+        m.globals
+    );
+
+    // An array of `const` elements, which is where the qualifier sits on the *element*
+    // type rather than on the declaration's — and is the shape the corpus file uses.
+    let m = lower("static const int t[4] = {1, 2, 3, 4}; int f(void) { return t[0]; }");
+    assert!(
+        m.globals
+            .iter()
+            .find(|x| &*x.name == "t")
+            .expect("t")
+            .is_const,
+        "{:?}",
+        m.globals
+    );
+
+    // The control: a mutable global is not marked, or `is_const` is just `true`.
+    let m = lower("int g = 1; int f(void) { return g; }");
+    assert!(
+        !m.globals
+            .iter()
+            .find(|x| &*x.name == "g")
+            .expect("g")
+            .is_const,
+        "a writable global stays writable: {:?}",
+        m.globals
+    );
+}

@@ -27,6 +27,24 @@ impl SymbolText for Names<'_> {
 }
 
 /// Whether any path degraded because chiero **invented** a value.
+/// gcc's system include directories, so the corpus file's `#include`s resolve.
+fn gcc_system_paths() -> Vec<std::path::PathBuf> {
+    let Ok(out) = std::process::Command::new("gcc")
+        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .skip_while(|l| !l.starts_with("#include <...>"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("End of search"))
+        .map(|l| std::path::PathBuf::from(l.trim()))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
 fn invented(causes: &[(chiero_exec::AssumptionKind, String)]) -> bool {
     causes
         .iter()
@@ -341,5 +359,93 @@ fn an_uninitialized_global_reads_as_zero() {
         r.states()[0].return_value_bits(&mut a),
         Some(0),
         "static storage with no initializer is zero, and 7 is not zero"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The corpus, executed
+// ---------------------------------------------------------------------------------------
+
+/// **`tests/corpus/c/globals.c` runs clean.**
+///
+/// Lowering it and comparing against a golden says the *shape* is stable; it says nothing
+/// about whether the values are right. This runs it: every `chiero_assert` in the file
+/// holds, and the run reports nothing.
+///
+/// The file's assertions are chosen so that an engine reading the table as zeros cannot
+/// pass — `calls == 1` depends on a global being written and read back across a call, which
+/// neither an `Undef` read (wave 112's defect) nor a zero read (wave 113's) satisfies.
+#[test]
+fn the_globals_corpus_file_runs_clean() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let path = root.join("tests/corpus/c/globals.c");
+    let include = root.join("include");
+
+    struct Disk;
+    impl chiero_pp::FileLoader for Disk {
+        fn load(&mut self, p: &std::path::Path) -> std::io::Result<String> {
+            std::fs::read_to_string(p)
+        }
+    }
+    let src = std::fs::read_to_string(&path).expect("the corpus file exists");
+    let cfg = Config {
+        include_paths: vec![include.clone()],
+        iquote_paths: vec![include],
+        system_paths: gcc_system_paths(),
+        defines: vec![("__CHIERO__".into(), "1".into())],
+        ..Config::default()
+    };
+    if cfg.system_paths.is_empty() {
+        // **Skipping is announced.** A silent skip is how an oracle stops running and a
+        // suite keeps reporting success; this project has had to fix that six times.
+        eprintln!("skipping the_globals_corpus_file_runs_clean: no gcc system include path");
+        return;
+    }
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(&path, &src, cfg, &mut Disk);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let lowered = chiero_lower::lower_tu(&parsed.ast, &analysis, &names);
+    assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    let m = lowered.module;
+
+    let errs = chiero_cir::verify::verify(&m);
+    assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
+
+    // The table's bytes really are in the module, so a run that reports nothing is
+    // reporting about the right program.
+    let t = m
+        .globals
+        .iter()
+        .find(|g| &*g.name == "table")
+        .expect("the table is a global");
+    assert!(t.is_const, "`static const int table[4]`");
+    assert_eq!(
+        t.init,
+        chiero_cir::GlobalInit::Bytes(vec![10, 0, 0, 0, 20, 0, 0, 0, 30, 0, 0, 0, 40, 0, 0, 0])
+    );
+
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).run(&mut a);
+    assert!(
+        !r.states().is_empty(),
+        "the entry function ran on at least one path"
+    );
+    assert!(
+        r.findings().is_empty(),
+        "every assertion in the file holds: {:#?}",
+        r.findings()
     );
 }
