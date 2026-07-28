@@ -674,3 +674,78 @@ fn the_globals_corpus_file_runs_clean() {
         r.findings()
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 021 contract 21 — writing to a read-only global
+// ---------------------------------------------------------------------------------------
+
+/// **021 contract 21.** "Writing to a `readonly` global is exactly one finding and does not
+/// alter the bytes."
+///
+/// Reachable since wave 114 taught lowering to set `is_const`, and untested since — the
+/// checker was correct and unreachable before that, and nothing exercised it after.
+///
+/// **Not a corpus fixture**: the corpus sweep asserts no *definite* defect in any file, and
+/// this program's whole point is to commit one. A fixture that must report belongs beside
+/// the fixtures that must not.
+#[test]
+fn writing_to_a_const_global_is_exactly_one_finding() {
+    let src = "const int g = 7;\n\
+               int f(void) { *(int *)&g = 2; return g; }\n";
+    let m = lower(src);
+    let errs = chiero_cir::verify::verify(&m);
+    assert!(errs.iter().all(|e| !e.is_error()), "{errs:#?}");
+
+    let gd = m.globals.iter().find(|x| &*x.name == "g").expect("g");
+    assert!(gd.is_const, "the fixture must actually be read-only");
+
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).run(&mut a);
+
+    let ro: Vec<String> = r
+        .findings()
+        .into_iter()
+        .filter(|x| x.contains("readonly") || x.contains("read-only"))
+        .collect();
+    assert_eq!(
+        ro.len(),
+        1,
+        "exactly one — not one per byte written, and not none: {:#?}",
+        r.findings()
+    );
+    assert!(
+        ro[0].contains('g'),
+        "and it names the global (wave 111): {}",
+        ro[0]
+    );
+
+    // **The bytes are unchanged**, which is the half a count cannot show. The write is
+    // refused, so the read after it still sees the initializer — an engine that reported
+    // *and* wrote would satisfy the assertion above and corrupt the program's state.
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(7),
+        "the initializer survived the refused write"
+    );
+}
+
+/// **Writing to a mutable global is not a finding**, or the check above is satisfied by an
+/// engine that reports every store to any global.
+#[test]
+fn writing_to_a_mutable_global_is_not_a_finding() {
+    let src = "int g = 7;\n\
+               int f(void) { g = 2; return g; }\n";
+    let m = lower(src);
+    let mut a = chiero_solver::TermArena::new();
+    let r = chiero_exec::Engine::new(&m).run(&mut a);
+    assert!(
+        r.findings().is_empty(),
+        "an ordinary global is writable: {:#?}",
+        r.findings()
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(2),
+        "and the write took effect"
+    );
+}
