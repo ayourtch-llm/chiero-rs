@@ -507,7 +507,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > caught it because the one aggregate-copy path with coverage, `y = x`, goes through
 > `lvalue_addr` and never reaches here — so 1102 tests passed over it.
 >
-> ### The four defects wave 132 fixed
+> ### The six defects wave 132 fixed
 >
 > 1. **A local aggregate named as a value is its address** (`998d999`). The wild pointer.
 > 2. **A pointer-typed global names its contents** (`f7bc88f`). The global arm's guard was
@@ -518,10 +518,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    `raw_width_of`, which answers 32 for anything that is not an integer. A pointer in a
 >    struct member, in an array element, or reached through a second pointer was stored and
 >    loaded as an `i32` and kept half of itself.
-> 4. **A struct parameter is the callee's own copy** (`3b44c9e` red, green after). The
->    prologue gave it a slot of its lowered `CTy` — eight bytes of `CTy::Ptr` — stored the
->    caller's address into it, and the body read fields out of a pointer. `span_of({3, 8})`
->    returned 28663: no fault, no finding, just a wrong number.
+> 4. **A struct parameter is the callee's own copy** (`e66a29f`). The prologue gave it a
+>    slot of its lowered `CTy` — eight bytes of `CTy::Ptr` — stored the caller's address
+>    into it, and the body read fields out of a pointer. `span_of({3, 8})` returned 28663:
+>    no fault, no finding, just a wrong number.
+> 5. **Pointer arithmetic is scaled `PtrAdd`** (`d9b4171`), in all six spellings.
+> 6. **`p += 1` does not convert `1` to a pointer** (`d9b4171`, in sema).
 >
 > One rule now covers all four: **an aggregate lvalue names its address; every other lvalue
 > is loaded and stored at `cty(type_of(e))`.** `cty_of` and `is_aggregate_expr` are the two
@@ -537,18 +539,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > running the binary with an empty PATH, where it reports 85 skips and goes red instead of
 > 19 tests passing over nothing.
 >
-> ### 🔴 Do this first: three defects found and recorded, not yet fixed
+> ### Pointer arithmetic, fixed in the same wave
 >
-> All three have a one-line reproduction, all three are red today, and none has a test yet —
+> **Every spelling but `a[i]` was broken**, not just the one recorded. `*(a + 1)` emitted
+> `add i32 %addr, 1i32` — thirty-two bits on a sixty-four-bit address, and unscaled.
+> `ptr_arith` and `displace` now cover `p + n`, `n + p`, `p - n`, `p - q`, `p += n`, `p++`
+> and `--p`; `p - q` divides by the element size because C11 6.5.6p9 makes it a count.
+>
+> It also exposed a **sema** defect: `type_expr` coerced the RHS of every `Assign` to the
+> lvalue's type, so `p += 1` produced `inttoptr i32 1 to ptr` and lowering got a pointer
+> where the count belonged. C11 6.5.16.2p1 keeps the right operand an integer for `+=`/`-=`
+> on a pointer. That is the *only* sema change wave 132 made — everything else was lowering.
+>
+> ### 🔴 Do this first: two defects found and recorded, not yet fixed
+>
+> Both have a one-line reproduction, both are red today, and neither has a test yet —
 > **write the red test before fixing**, or they are worth nothing:
 >
-> - **`*(a + 1)` on a decayed local** emits `add i32 %addr, 1i32` — an *unscaled 32-bit* add
->   on a pointer. gcc says 7 for `int a[3]; a[1] = 7; return *(a + 1);`, chiero says nothing.
->   Pointer arithmetic is `PtrAdd` with a scaled 64-bit offset (020: PtrAdd-not-Add), and
->   this path does neither.
 > - **`y = (0, x);` for aggregates emits nothing at all** — no store, no `CopyMem`. The
->   assignment vanishes from the CIR. `struct S y; y = (0, x);` where the *initializer* form
->   `struct S y = (0, x);` now works, so it is the assignment path specifically.
+>   assignment vanishes from the CIR. The *initializer* form `struct S y = (0, x);` works,
+>   so it is `assign`'s aggregate path specifically: it uses `lvalue_addr(rhs)`, which
+>   returns `None` for a comma expression, and returns `Undef` instead of refusing.
 > - **A statement-expression aggregate value is copied after its scope dies.**
 >   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
 >   `.scope exit 2`, reading `t` once 021 has retired it.
@@ -617,7 +628,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
 >
-> Owed and written down: the three defects above; the wave-117 `fork_on_offset` survivor;
+> Owed and written down: the two defects above; the wave-117 `fork_on_offset` survivor;
 > floats do not execute; `Ty::Vector` is not in `is_aggregate`; designated, bit-field and
 > address initializers refused; a fault in a non-entry frame is untested; `Bits` path steps
 > are not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
