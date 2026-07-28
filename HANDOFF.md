@@ -487,9 +487,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 129, `HEAD`) — 1102 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 130, `ce169c3`) — 1102 tests, 5 ignored, M1 165/165 by contract
 >
-> ## 🔴 The sret wild pointer: three subsystems eliminated, one place left
+> ## 🔴 The sret wild pointer: the return never reaches the caller
+>
+> **Wave 130's finding, and the sharpest lead yet.** Instrumenting the engine's
+> return-to-caller path — the branch that does `s.set_local(ret_dst, val)` after popping a
+> frame — shows it **never fires at all** for the lowered aggregate fixture. Not with a
+> `None` destination, not with a `None` value: the branch is not reached.
+>
+> Yet the `copymem` *after* the call does execute, and reports the wild pointer. So the call
+> returns control without ever delivering a value, and the caller's `%18` is whatever an
+> unbound local resolves to.
+>
+> Next: find which path `mk` actually returns through. Candidates, in order —
+> `Body::Declared` being taken because the module's `mk` looks bodyless from the callee
+> lookup; `Callee::Direct` resolving to a `FuncId` that is not `mk`; or a second return
+> handler that this instrumentation missed. `grep` for every site that pops a `Frame`.
+> The same fixture as a **hand-built** module delivers its value correctly (wave 128), so
+> diffing the two modules' `FuncId`s and `Body` values is the cheap first move.
+>
+> ### Previously eliminated, each with a guarding test
+>
+> - **The engine's sret mechanics** (wave 128): a hand-built module of the same shape runs
+>   correctly and reports nothing.
+> - **The call ABI** (wave 127): sret param first, one slot per call site —
+>   `an_aggregate_return_uses_an_sret_slot`.
+> - **Scope balance** (wave 129): the callee exited each scope twice; fixed and guarded by
+>   `a_returning_function_exits_each_scope_once`. **It was not the cause.**
 >
 > `a_struct_returned_by_value_carries_its_fields` still reports
 > `wild-pointer: … at address 30064771075` — `0x700000003`, the struct's bytes `{3, 7}` used
@@ -500,13 +525,6 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   `an_aggregate_return_uses_an_sret_slot`.
 > - **Scope balance** (wave 129): the callee exited each scope twice; fixed, and
 >   `a_returning_function_exits_each_scope_once` guards it. **It was not the cause.**
->
-> What is left is the one thing not yet examined: **where the caller's `CopyMem` source
-> comes from**. The lowered caller reads `%18 = call @mk(…)` then
-> `copymem %19 -> %18, 8i64`. If `%18` holds the struct's *bytes* rather than the returned
-> pointer, that is exactly the observed address. Print what the engine binds `%18` to right
-> after the call returns — `Value::Ptr` or `Value::Scalar` — and compare against the
-> hand-built module, where the same instruction works.
 >
 > Blocked on it: `a_struct_returned_by_value_carries_its_fields`,
 > `two_aggregate_returns_are_distinct`, `tests/corpus/owed/header_inline.c`.
@@ -521,6 +539,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **When instrumentation prints nothing, that is the finding** (wave 130). Two probes on the
+> engine's return-to-caller path produced no output at all — which says more than any value
+> would have: the path is not reached. An empty log is evidence, not a failed experiment.
 > **A real defect found while hunting another is still not the cause** (wave 129). The
 > duplicated scope exits were genuine, fixed, and guarded — and the symptom did not move.
 > Fixing what you find is right; *claiming* it was the cause because it was a bug is not.
