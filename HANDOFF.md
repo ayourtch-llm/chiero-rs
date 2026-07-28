@@ -487,7 +487,54 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 102, `9cb2fb7`) — 968 tests, M1 158/165, frontend 113/117
+> ### ⏭️ START HERE (wave 103, `21f5be7`) — 980 tests, M1 159/165, frontend 113/117
+>
+> **`chiero-check` exists.** 020 contract 18 is closed — both halves, in the two crates
+> 020 §7 assigns them to. The syntactic scan runs over the AST in `chiero-lower`; the
+> interprocedural `OrderDependence` checker is the first real 040 checker, and the pattern
+> for the rest: a `chiero_exec::Checker` with per-path `CheckerState`, off unless
+> registered, fixtures in `.cir`.
+>
+> Six contracts remain in M1:
+>
+> 1. **020's 23** — `Opaque`: a 40-byte `opaque[10]` written through one struct view and
+>    read through another returns the bytes exactly, and an OOB finding names the second
+>    view's member (`UnionMember { view }`).
+> 2. **020's 29, 30** — the union-pun checker (off by default per 040 §1: gcc defines it
+>    and VPP depends on it) and the endianness `ConfigId`. Both are `chiero-check` work
+>    now that the crate has a shape.
+> 3. **021 c19**, **023's 7, 17, 21**.
+> 4. **010 contract 19**, small and unblocked since wave 84.
+>
+> **Reading the C standard paragraph is the work.** Contract 18(a) turns entirely on
+> C11 6.5.16p3 — an assignment's write is sequenced after its operands' *value
+> computations* but not after their *side effects* — which is the only reason `i = i + 1`
+> and `i = i++` differ. A plausible implementation that treats every write alike gets one
+> of them wrong and passes a suite that only tests the other.
+>
+> **A checker needs the module.** `CheckerCtx::module()` was added this wave; without it a
+> finding can only cite an `ObjectId`, an engine-internal counter. That also **closes wave
+> 102's owed item** for new findings — but `chiero-opt`'s transparency sweep still
+> normalizes `ObjectId(N)` out of the *engine's* existing findings, and those still need
+> the same treatment at their source.
+>
+> **`value_provenance_of` is not "which object does this pointer point at".** It records
+> only `PtrToInt` casts, so it is empty for an ordinary address. A checker wanting the
+> object reads the local's `Value::Ptr`.
+>
+> Mutation lessons still in force: **back up to a scratch copy, never `git checkout`**; **a
+> mutant that does not compile is inconclusive, not a survivor**; **two guards only ever
+> true together are equivalent mutants**. And the recurring shape of every survivor this
+> wave and last: *the fixture never reached the comparison the design exists for* — one
+> call writing one object twice, a golden with an out-of-order line, a phi that is its own
+> incoming.
+>
+> Owed and written down: the engine's own findings cite `ObjectId(N)`; `typeof` types to
+> `Ty::Error` in sema; the parser's speculative type-name diagnostic rollback is unpinned;
+> `L`/`u`/`U` string literals lose their element width in `unquote`; 010's 18, 011's 12 and
+> 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 102, `9cb2fb7`) — 968 tests, M1 158/165, frontend 113/117
 >
 > **020 §9 is complete.** All three optional passes exist — `simplify_cfg`, `const_fold`,
 > `mem2reg` — behind `chiero_opt::PASSES`, with §9's four prohibitions swept over every
