@@ -1,0 +1,57 @@
+target x86_64-unknown-linux-gnu
+
+func @f(%3: i32, %5: i32, %7: i32) -> i32 { ; span 0:50:0
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "a" ; span 0:50:0
+  alloca %1 : i32 x 1 align 4 scope 0 lifetime scope "b" ; span 0:50:0
+  alloca %2 : i32 x 1 align 4 scope 0 lifetime scope "c" ; span 0:50:0
+  alloca %3 : i32 x 1 align 4 scope 0 lifetime scope ; span 36:47:0
+  alloca %4 : i32 x 1 align 4 scope 0 lifetime scope ; span 36:42:0
+entry: ; span 0:50:0
+  %4 = addrlocal %0 ; span 0:50:0
+  store i32 %3 -> %4 align 4 ; span 0:50:0
+  %6 = addrlocal %1 ; span 0:50:0
+  store i32 %5 -> %6 align 4 ; span 0:50:0
+  %8 = addrlocal %2 ; span 0:50:0
+  store i32 %7 -> %8 align 4 ; span 0:50:0
+  .scope enter 0 ; span 27:50:0
+  %9 = addrlocal %0 ; span 36:37:0
+  %10 = load i32, %9 align 1 ; span 36:37:0
+  %11 = cmp ne i32 %10, 0i32 ; span 36:42:0
+  .seqpoint ; span 36:42:0
+  br %11, bb1, bb2
+bb1: ; span 0:50:0
+  %12 = addrlocal %1 ; span 41:42:0
+  %13 = load i32, %12 align 1 ; span 41:42:0
+  %14 = cmp ne i32 %13, 0i32 ; span 36:42:0
+  %15 = zext i1 %14 to i32 ; span 36:42:0
+  %16 = addrlocal %4 ; span 36:42:0
+  store i32 %15 -> %16 align 4 ; span 36:42:0
+  goto bb3
+bb2: ; span 0:50:0
+  %17 = addrlocal %4 ; span 36:42:0
+  store i32 0i32 -> %17 align 4 ; span 36:42:0
+  goto bb3
+bb3: ; span 0:50:0
+  %18 = addrlocal %4 ; span 36:42:0
+  %19 = load i32, %18 align 4 ; span 36:42:0
+  %20 = cmp ne i32 %19, 0i32 ; span 36:47:0
+  .seqpoint ; span 36:47:0
+  br %20, bb5, bb4
+bb4: ; span 0:50:0
+  %21 = addrlocal %2 ; span 46:47:0
+  %22 = load i32, %21 align 1 ; span 46:47:0
+  %23 = cmp ne i32 %22, 0i32 ; span 36:47:0
+  %24 = zext i1 %23 to i32 ; span 36:47:0
+  %25 = addrlocal %3 ; span 36:47:0
+  store i32 %24 -> %25 align 4 ; span 36:47:0
+  goto bb6
+bb5: ; span 0:50:0
+  %26 = addrlocal %3 ; span 36:47:0
+  store i32 1i32 -> %26 align 4 ; span 36:47:0
+  goto bb6
+bb6: ; span 0:50:0
+  %27 = addrlocal %3 ; span 36:47:0
+  %28 = load i32, %27 align 4 ; span 36:47:0
+  .scope exit 0 ; span 29:48:0
+  ret %28
+}

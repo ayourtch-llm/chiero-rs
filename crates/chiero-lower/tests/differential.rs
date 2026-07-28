@@ -263,6 +263,11 @@ fn conditionals_and_aggregate_initializers_compute_what_gcc_computes() {
     agree("int a = 4; int b = 9; return a ?: b;");
     // Nested, so the two slots cannot be confused for one.
     agree("int a = 1; int b = 0; int c = 6; return a ? (b ? 1 : 2) : c;");
+    // **A result wider than `int`.** 015 §2.1 types the slot as the *result* type, and
+    // nothing above could tell an `int` slot from a correct one — every arm fitted in 32
+    // bits. `0x100000000` does not, so an `int` slot truncates it to 0.
+    agree("long a = 1; long b = 0x100000000; long c = 2; return (int)((a ? b : c) >> 32);");
+    agree("long a = 0; long b = 0x100000000; long c = 2; return (int)((a ? b : c) >> 32);");
 
     // Aggregate initializers (contract 19): a full one, a partial one — C11 6.7.9p21
     // zero-initializes the rest — and an array.

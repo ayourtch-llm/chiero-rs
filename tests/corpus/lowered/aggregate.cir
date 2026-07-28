@@ -1,0 +1,19 @@
+target x86_64-unknown-linux-gnu
+
+func @f() -> i32 { ; span 29:96:0
+  alloca %0 : i8 x 8 align 4 scope 0 lifetime scope "x" ; span 43:53:0
+  alloca %1 : i8 x 8 align 4 scope 0 lifetime scope "y" ; span 55:65:0
+entry: ; span 29:96:0
+  .scope enter 0 ; span 41:96:0
+  %0 = addrlocal %0 ; span 67:74:0
+  store i32 1i32 -> %0 align 1 ; span 67:74:0
+  .seqpoint ; span 67:75:0
+  %1 = addrlocal %1 ; span 76:81:0
+  %2 = addrlocal %0 ; span 76:81:0
+  copymem %1 -> %2, 8i64 align 4 ; span 76:81:0
+  .seqpoint ; span 76:82:0
+  %3 = addrlocal %1 ; span 90:93:0
+  %4 = load i32, %3 align 1 ; span 90:93:0
+  .scope exit 0 ; span 83:94:0
+  ret %4
+}

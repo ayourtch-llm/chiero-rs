@@ -984,6 +984,40 @@ impl Lowerer<'_> {
             self.fs().locals.insert(n, (slot, cty.clone()));
         }
         if let Some(init) = init {
+            // **An aggregate initializer is a zero-fill plus the written elements**
+            // (015 §6, contract 19). C11 6.7.9p21 zero-initializes everything the braces
+            // do not mention, so `struct S s = {.b = 3}` gives `s.a` a *defined* 0 — and
+            // 021 contract 28 marks a `SetMem` range initialized, which is what makes the
+            // read produce no finding. Storing only the written members would leave the
+            // rest reading as uninitialized and turn well-defined C into a finding.
+            if let Some(size) = self.aggregate_size_of_ty(sty)
+                && matches!(self.ast.expr(init).kind, chiero_ast::ExprKind::InitList(_))
+            {
+                let base = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst: base,
+                        rv: RValue::AddrOfLocal { alloca: slot },
+                    },
+                    span,
+                );
+                self.generated(|s| {
+                    s.emit(
+                        InstKind::SetMem {
+                            dst: Operand::Value(base),
+                            byte: Operand::Const(Const::Int { bits: 8, val: 0 }),
+                            size: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: size as i128,
+                            }),
+                        },
+                        span,
+                    )
+                });
+                self.init_list(Operand::Value(base), sty, init, span);
+                self.seq_point(span);
+                return;
+            }
             let v = self.expr(init);
             let addr = self.new_value();
             self.emit(
@@ -1210,6 +1244,42 @@ impl Lowerer<'_> {
                         self.widen_bool(dst, self.raw_width_of(e), span)
                     }
                     None => {
+                        let w = self.raw_width_of(e);
+                        // **A shift's count is widened to the operation's width.** C
+                        // promotes the two operands *independently* and gives the result
+                        // the left operand's type, so `l << 1` legitimately has a 64-bit
+                        // value and a 32-bit count — but CIR's verifier requires both
+                        // operands at the declared width. This is lowering's own
+                        // bookkeeping, not a C conversion: 014 correctly inserted none,
+                        // and inventing one for any *other* operator would be the bug
+                        // 015 §2 forbids.
+                        let b = if matches!(op, chiero_ast::BinOp::Shl | chiero_ast::BinOp::Shr) {
+                            let bw = self.raw_width_of(*rhs);
+                            if bw < w {
+                                let wide = self.new_value();
+                                self.emit(
+                                    InstKind::Assign {
+                                        dst: wide,
+                                        rv: RValue::Cast {
+                                            kind: if self.is_signed(*rhs) {
+                                                chiero_cir::CastKind::SExt
+                                            } else {
+                                                chiero_cir::CastKind::ZExt
+                                            },
+                                            a: b,
+                                            from: CTy::Int(bw),
+                                            to: CTy::Int(w),
+                                        },
+                                    },
+                                    span,
+                                );
+                                Operand::Value(wide)
+                            } else {
+                                b
+                            }
+                        } else {
+                            b
+                        };
                         self.emit(
                             InstKind::Assign {
                                 dst,
@@ -1217,7 +1287,7 @@ impl Lowerer<'_> {
                                     op: cir_binop(*op, self.is_signed(*lhs)),
                                     a,
                                     b,
-                                    ty: CTy::Int(self.raw_width_of(e)),
+                                    ty: CTy::Int(w),
                                 },
                             },
                             span,
@@ -1325,6 +1395,11 @@ impl Lowerer<'_> {
                     span,
                 );
                 Operand::Value(dst)
+            }
+            // 015 §2.1: `?:` uses the same four-block shape as `&&`, with the slot typed
+            // as the **result** type rather than `int`.
+            chiero_ast::ExprKind::Cond { cond, then, els } => {
+                self.conditional(e, *cond, *then, *els, span)
             }
             chiero_ast::ExprKind::Comma { lhs, rhs } => {
                 self.expr(*lhs);
@@ -1500,6 +1575,81 @@ impl Lowerer<'_> {
             span,
         );
         Operand::Value(dst)
+    }
+
+    /// 015 §2.1's `?:`, which shares the `&&` shape and differs in three ways it names:
+    /// the slot is the **result** type, a `void`-typed `?:` has no slot at all, and the
+    /// GNU elvis form `a ?: b` evaluates `a` **once** — into the slot, then branches on
+    /// it.
+    fn conditional(
+        &mut self,
+        e: ExprId,
+        cond: ExprId,
+        then: Option<ExprId>,
+        els: ExprId,
+        span: Span,
+    ) -> Operand {
+        let width = self.raw_width_of(e);
+        let slot_ty = CTy::Int(width.max(1));
+        let slot = self.alloca(slot_ty.clone(), 4, None, span);
+
+        let c = self.expr(cond);
+        // **The elvis form evaluates `a` once.** Storing it into the slot here and
+        // branching on the stored value is what makes that true; re-evaluating `cond` in
+        // the true arm would run its side effects twice, and no shape test can see the
+        // difference when it has none.
+        if then.is_none() {
+            self.generated(|s| s.store_slot(slot, c.clone(), &slot_ty, span));
+        }
+        let test = self.truth_of(c, self.width_of(cond), span);
+        self.seq_point(span);
+
+        let then_b = self.new_block();
+        let else_b = self.new_block();
+        let join = self.new_block();
+        self.set_term(Terminator::Br {
+            cond: test,
+            t: then_b,
+            f: else_b,
+        });
+
+        self.switch_to(then_b);
+        if let Some(t) = then {
+            let v = self.expr(t);
+            self.generated(|s| s.store_slot(slot, v, &slot_ty, span));
+        }
+        self.set_term(Terminator::Goto(join));
+
+        self.switch_to(else_b);
+        let v = self.expr(els);
+        self.generated(|s| s.store_slot(slot, v, &slot_ty, span));
+        self.set_term(Terminator::Goto(join));
+
+        self.switch_to(join);
+        self.generated(|s| {
+            let addr = s.new_value();
+            s.emit(
+                InstKind::Assign {
+                    dst: addr,
+                    rv: RValue::AddrOfLocal { alloca: slot },
+                },
+                span,
+            );
+            let dst = s.new_value();
+            s.emit(
+                InstKind::Assign {
+                    dst,
+                    rv: RValue::Load {
+                        addr: Operand::Value(addr),
+                        ty: slot_ty.clone(),
+                        align: 4,
+                        vol: Volatility::Normal,
+                    },
+                },
+                span,
+            );
+            Operand::Value(dst)
+        })
     }
 
     fn store_slot(&mut self, slot: AllocaId, val: Operand, ty: &CTy, span: Span) {
@@ -2346,6 +2496,105 @@ impl Lowerer<'_> {
             self.switch_to(block);
             self.unwind_leaving(&open_at_jump, &at_label, span);
             self.set_term(Terminator::Goto(target));
+        }
+    }
+}
+
+impl Lowerer<'_> {
+    fn aggregate_size_of_ty(&mut self, t: TyId) -> Option<u64> {
+        matches!(
+            self.analysis.ty(t),
+            Ty::Record(_) | Ty::Array { .. } | Ty::Vector { .. }
+        )
+        .then(|| self.analysis.size_of(t))?
+    }
+
+    /// Store a braced initializer's written elements at their offsets in `base`.
+    ///
+    /// Offsets come from `RecordLayout` for a record and from the element size for an
+    /// array — the same single source as every other member access (015 contract 7). A
+    /// designator moves the cursor; everything after it continues from there, which is
+    /// what C11 6.7.9p17 says and what makes `{1, .c = 3, 4}` place `4` after `c`.
+    fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {
+        let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
+            return;
+        };
+        // The fields to walk, as (byte offset, type), in declaration order.
+        let slots: Vec<(u64, TyId, Option<chiero_span::Symbol>)> =
+            match self.analysis.ty(ty).clone() {
+                Ty::Record(r) => {
+                    let l = self.analysis.layout(r);
+                    l.fields.iter().map(|f| (f.offset, f.ty, f.name)).collect()
+                }
+                Ty::Array { elem, len } => {
+                    let n = match len {
+                        chiero_sema::ArrayLen::Fixed(n) => n,
+                        _ => items.len() as u64,
+                    };
+                    let esz = self.analysis.size_of(elem).unwrap_or(1);
+                    (0..n).map(|i| (i * esz, elem, None)).collect()
+                }
+                _ => return,
+            };
+
+        let mut cursor = 0usize;
+        for item in items {
+            // A designator repositions the cursor; C11 6.7.9p17 continues from there.
+            if let Some(chiero_ast::Designator::Field(name)) = item.designators.first() {
+                if let Some(i) = slots.iter().position(|(_, _, n)| *n == Some(*name)) {
+                    cursor = i;
+                }
+            } else if let Some(chiero_ast::Designator::Index(idx)) = item.designators.first()
+                && let Some(v) = self.const_of(*idx)
+            {
+                cursor = v.max(0) as usize;
+            }
+            let Some(&(off, fty, _)) = slots.get(cursor) else {
+                break;
+            };
+            cursor += 1;
+
+            let addr = if off == 0 {
+                base.clone()
+            } else {
+                let dst = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::PtrAdd {
+                            base: base.clone(),
+                            off: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: off as i128,
+                            }),
+                        },
+                    },
+                    span,
+                );
+                Operand::Value(dst)
+            };
+
+            // A nested braced initializer recurses; anything else is a scalar store.
+            if matches!(
+                self.ast.expr(item.value).kind,
+                chiero_ast::ExprKind::InitList(_)
+            ) {
+                self.init_list(addr, fty, item.value, span);
+                continue;
+            }
+            let v = self.expr(item.value);
+            let cty = self.cty(fty);
+            let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
+            self.emit(
+                InstKind::Store {
+                    addr,
+                    val: v,
+                    ty: cty,
+                    align,
+                    vol: Volatility::Normal,
+                },
+                span,
+            );
         }
     }
 }
