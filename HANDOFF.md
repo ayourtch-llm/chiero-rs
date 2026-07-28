@@ -487,7 +487,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 94, `ab34e1b`) — 916 tests, M1 152/165, frontend 103/117
+> ### ⏭️ START HERE (wave 95, `2b6e3ef`) — 920 tests, M1 152/165, frontend 106/117
+>
+> **Aggregates and bit-fields lower** (015: 18/25). Struct copies are one `CopyMem` of the
+> layout size, bit-field access takes its `BitRange` **from `RecordLayout`** and nowhere
+> else, and member/array addressing reads field offsets from the same place. Only 2, 8, 9c,
+> 12, 14, 20 and 22 remain.
+>
+> Next, in rough order:
+>
+> 1. **Golden `.cir` files — contracts 2 and 22.** This is what makes M1's hand-written
+>    fixtures and M2's real lowering the same language, and it is the last structural piece.
+>    015 §5 notes the `.line` directive is how a hand-written fixture populates
+>    `gcov_lines`, so the golden format already has a place for what wave 94 computes.
+> 2. **Contracts 8, 12, 14, 19, 20** — statement expressions, `for`-scope, VLAs, aggregate
+>    initializers (`struct S x = {1, 2};` is **not lowered**, and a differential probe had
+>    to be rewritten because of it), and refusing nested functions with one diagnostic.
+> 3. **Contract 9c** — `goto` *into* a scope, and a backward `goto` creating a new
+>    generation of its objects.
+> 4. **010 contract 19**; **M1's remaining 13** (020's 14/16/17/18/23/29/30/44, 021 c19,
+>    023's 7/17/21).
+>
+> Owed and written down, in rough order of how likely they are to bite:
+> **aggregate initializers are not lowered**; `&a[i]` and pointer arithmetic are not
+> lowered, which is why **sign-vs-zero extension of an array index is unpinned** (a
+> mutation survives — distinguishing them needs a negative index);
+> `InitList`/`StmtExpr`/`typeof` type to `Ty::Error` in sema; VLA bounds are treated as
+> flexible; the parser's speculative type-name diagnostic rollback is unpinned.
+>
+> ### Earlier (wave 94, `ab34e1b`) — 916 tests, frontend 103/117
 >
 > **`gcov_lines` is computed and checked against `gcov --json-format`** (015: 15/25). That
 > closes the join point of §4.1 → 030 → 031 → 032: a statement in a macro body is
