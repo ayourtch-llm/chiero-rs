@@ -91,6 +91,8 @@ impl Rng {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Ty {
     Bool,
+    F32,
+    F64,
     SChar,
     UChar,
     Short,
@@ -105,6 +107,8 @@ impl Ty {
     fn c(self) -> &'static str {
         match self {
             Ty::Bool => "_Bool",
+            Ty::F32 => "float",
+            Ty::F64 => "double",
             Ty::SChar => "signed char",
             Ty::UChar => "unsigned char",
             Ty::Short => "short",
@@ -120,6 +124,8 @@ impl Ty {
     fn bits(self) -> u32 {
         match self {
             Ty::Bool => 1,
+            Ty::F32 => 32,
+            Ty::F64 => 64,
             Ty::SChar | Ty::UChar => 8,
             Ty::Short | Ty::UShort => 16,
             Ty::Int | Ty::UInt => 32,
@@ -128,11 +134,21 @@ impl Ty {
     }
 
     fn signed(self) -> bool {
-        matches!(self, Ty::SChar | Ty::Short | Ty::Int | Ty::Long)
+        matches!(
+            self,
+            Ty::SChar | Ty::Short | Ty::Int | Ty::Long | Ty::F32 | Ty::F64
+        )
     }
 
-    const ALL: [Ty; 9] = [
+    /// Floating types take a different constant syntax and cannot be masked into range.
+    fn is_float(self) -> bool {
+        matches!(self, Ty::F32 | Ty::F64)
+    }
+
+    const ALL: [Ty; 11] = [
         Ty::Bool,
+        Ty::F32,
+        Ty::F64,
         Ty::SChar,
         Ty::UChar,
         Ty::Short,
@@ -492,6 +508,19 @@ impl Gen {
 
     /// A constant literal, suffixed so its own type is not in doubt.
     fn konst(&mut self, ty: Ty) -> String {
+        // **Float constants are small integers.** The point is to exercise float *types* —
+        // loads, stores, conversions, arithmetic — not float *precision*. A pool with
+        // fractions would make gcc -O0, gcc -O2 and clang legitimately disagree on the last
+        // bit and every such program would be discarded, testing nothing while looking
+        // busy.
+        if ty.is_float() {
+            let v = self.rng.below(5);
+            return if ty == Ty::F32 {
+                format!("{v}.0f")
+            } else {
+                format!("{v}.0")
+            };
+        }
         let v = *self.rng.pick(&POOL);
         // Mask into the target type's range so the *initializer* is never itself a
         // conversion the generator did not intend. Signed overflow in a constant expression
@@ -545,15 +574,19 @@ impl Gen {
             }
             6 => {
                 // Division and remainder, by a **nonzero** constant only: `x / 0` is UB and
-                // a generated program that hits it teaches nothing.
-                let op = *self.rng.pick(&["/", "%"]);
+                // a generated program that hits it teaches nothing. `%` is integer-only.
+                let op = if want.is_float() {
+                    "/"
+                } else {
+                    *self.rng.pick(&["/", "%"])
+                };
                 let a = self.expr(want);
                 let d = 1 + self.rng.below(15);
                 format!("{a} {op} {d}")
             }
-            7 => {
+            7 if !want.is_float() => {
                 // Shifts, with the count forced below the width — a count at or above it is
-                // UB and would be discarded rather than compared.
+                // UB and would be discarded rather than compared. Integer-only.
                 let op = *self.rng.pick(&["<<", ">>"]);
                 let a = self.expr(want);
                 let n = self.rng.below(want.bits().max(2) as usize - 1);
@@ -767,7 +800,11 @@ impl Gen {
                 // `_Bool` solver panic. `/=` and `>>=` are included deliberately: `+= 1`
                 // followed by truncation absorbs a wrong sign-extension and these do not.
                 if let Some(v) = self.pick_var() {
-                    let op = *self.rng.pick(&["+=", "-=", "*=", "|=", "&=", "^="]);
+                    let op = if v.ty.is_float() {
+                        *self.rng.pick(&["+=", "-=", "*="])
+                    } else {
+                        *self.rng.pick(&["+=", "-=", "*=", "|=", "&=", "^="])
+                    };
                     let e = self.expr(v.ty);
                     let _ = writeln!(self.body, "  {} {op} {e};", v.name);
                 }
