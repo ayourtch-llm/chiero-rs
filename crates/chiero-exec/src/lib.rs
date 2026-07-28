@@ -340,6 +340,8 @@ pub struct State {
     pub pc: (BlockId, usize),
     /// Append-only (023 §1).
     pub path: Vec<Term>,
+    /// One object per accessed arena element index (021 §5.2), keyed by the index term.
+    arena_objs: IndexMap<u32, ObjectId>,
     /// 022 §6.1's `possibly_infeasible`, carried alongside the terms.
     ///
     /// Set whenever a constraint is added **without** a feasibility check. While it is
@@ -456,6 +458,7 @@ impl State {
         State {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
+            arena_objs: IndexMap::new(),
             id,
             mem: Memory::new(),
             pc: (BlockId(0), 0),
@@ -1114,6 +1117,34 @@ impl std::fmt::Debug for Checkers {
     }
 }
 
+/// A registered striding region — 021 §5.2.
+///
+/// **Three sizes, not two**, and the spec argues the point at length: `index_scale` is
+/// the byte width of the program's index unit, `pitch` is the distance between
+/// consecutive elements, and `elem_size` is the addressable extent within one. For VPP's
+/// buffer pool those are 64, `vlib_buffer_alloc_size()` (~2.5 KB) and the buffer's own
+/// extent. Collapsing `index_scale` into `pitch` forces a choice between an `elem_size`
+/// of 64 — making every access to `b->data` out of bounds — and overlapping elements,
+/// which violates §7's disjointness.
+///
+/// **Deviation from 021 §5.2, recorded.** The spec's `Arena` carries `base: Term`. A
+/// caller cannot name a term before the run starts, so the base is supplied by
+/// [`Engine::with_arena`] as an entry-parameter index and bound when the entry state is
+/// built. `chiero-vpp` (060) will register the buffer pool the same way, from whichever
+/// value holds `buffer_mem_start`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaShape {
+    /// Bytes between consecutive elements. Elements are disjoint, so
+    /// `elem_size <= pitch`.
+    pub pitch: u64,
+    /// Addressable bytes within an element; `[elem_size, pitch)` is a gap.
+    pub elem_size: u64,
+    /// Bytes per unit of the *index* the program uses, which is not the pitch.
+    pub index_scale: u64,
+    /// How many elements the region holds.
+    pub count: u64,
+}
+
 /// Run ids are distinct so a witness cannot bless a different run (023 §7.1). This does
 /// not affect determinism, which is about the `StateId` sequence *within* a run.
 static NEXT_RUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -1144,6 +1175,10 @@ pub struct Engine<'m> {
     fork_on_alias: bool,
     /// 023 §6. Registered in order; each gets one `CheckerState` slot per state.
     checkers: Checkers,
+    /// 021 §5.2, as `(entry parameter index, shape)` until the entry state binds a term.
+    arenas: Vec<(usize, ArenaShape)>,
+    /// The same, with the parameter's term filled in.
+    arena_bases: Vec<(Term, ArenaShape)>,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -1165,6 +1200,8 @@ impl<'m> Engine<'m> {
     pub fn new(module: &'m Module) -> Engine<'m> {
         Engine {
             checkers: Checkers::default(),
+            arenas: Vec::new(),
+            arena_bases: Vec::new(),
             module,
             tier: SolverTier::LiteOnly,
             next_state: 0,
@@ -1220,6 +1257,17 @@ impl<'m> Engine<'m> {
     /// saying that it made the assumption, which it does.
     pub fn with_fork_on_alias(mut self, on: bool) -> Self {
         self.fork_on_alias = on;
+        self
+    }
+
+    /// Register a striding region over an entry parameter (021 §5.2).
+    ///
+    /// Without this, `base + (i << 6)` where `base` is an unconstrained symbol is §5.1
+    /// step 4 — an unresolvable pointer, and the end of the path. That is
+    /// `vlib_buffer_ptr_from_index`, so it is the end of essentially every VPP node
+    /// analysis at its first buffer access.
+    pub fn with_arena(mut self, param: usize, shape: ArenaShape) -> Self {
+        self.arenas.push((param, shape));
         self
     }
 
@@ -1440,6 +1488,7 @@ impl<'m> Engine<'m> {
             let mut bad = State {
                 checker_states: CheckerStates::default(),
                 path_unchecked: false,
+                arena_objs: IndexMap::new(),
                 id: self.new_id(),
                 mem,
                 pc: (f.entry, 0),
@@ -1546,11 +1595,21 @@ impl<'m> Engine<'m> {
             if let Value::Ptr(q) = v {
                 ptr_params.push((p.value, q.base));
             }
+            // 021 §5.2: an arena is registered against a parameter, and this is where
+            // that parameter finally has a term to be registered against.
+            if let Value::Scalar(t) = v {
+                for (idx, shape) in &self.arenas {
+                    if *idx == i {
+                        self.arena_bases.push((t, *shape));
+                    }
+                }
+            }
             entry_locals.insert(p.value, v);
         }
         let mut start = State {
             checker_states: CheckerStates::default(),
             path_unchecked: false,
+            arena_objs: IndexMap::new(),
             id: self.new_id(),
             mem,
             pc: (f.entry, 0),
@@ -3753,6 +3812,201 @@ impl<'m> Engine<'m> {
         s.status = Status::Terminated(TermReason::Unsupported);
     }
 
+    /// 021 §5.2. Resolve `base + n` against a registered arena, before §5.1's search.
+    ///
+    /// Returns `None` when the address does not name a registered arena, in which case
+    /// the caller falls through to the ordinary five-step resolution.
+    ///
+    /// **Three outcomes, so three states.** With `n` symbolic, both the element index
+    /// `k = (n * index_scale) / pitch` and the within-element offset
+    /// `d = (n * index_scale) % pitch` are symbolic, and an unconstrained index genuinely
+    /// admits all three:
+    ///
+    /// - `d == 0` and `k < count` — a well-formed element pointer;
+    /// - `d` in `[elem_size, pitch)` — §5.2 step 3's inter-element gap, one finding, and
+    ///   **not** a pointer into element `k+1`, which is the silent failure: it reports
+    ///   nothing and analyses the wrong buffer for the rest of the function;
+    /// - `k >= count` — past the end of the region, which is step 4's bounds check.
+    ///
+    /// Assuming the first outcome instead of forking would be cheaper and would delete
+    /// the two bug classes an arena exists to expose. Reporting the gap whenever it is
+    /// *feasible* would be sound and useless, since for an unconstrained index it always
+    /// is. Two extra states per arena access is bounded by the access count, not by the
+    /// object count — which is what §5.2 step 4 rules out when it forbids "a fork over
+    /// the whole address space".
+    fn resolve_in_arena(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        addr: Term,
+        span: Span,
+    ) -> Option<Option<Value>> {
+        let arenas = self.arena_bases.clone();
+        for (base, shape) in arenas {
+            // `base + n`, in either operand order. Nothing else is an arena address —
+            // matching more loosely would claim regions the caller never registered.
+            let Some((chiero_solver::BinKind::Add, x, y)) = a.as_bin(addr) else {
+                continue;
+            };
+            let n = if x == base {
+                y
+            } else if y == base {
+                x
+            } else {
+                continue;
+            };
+
+            let w = a.width(n);
+            let pitch = a.bv(w, shape.pitch as u128);
+            let esz = a.bv(w, shape.elem_size as u128);
+            let cnt = a.bv(w, shape.count as u128);
+            let zero = a.bv(w, 0);
+            // `n` is already in **bytes** here: the program computed `i << 6`, and
+            // `index_scale` is what says those 64s are index units rather than a stride.
+            // Recovering `i` and multiplying it back would be the same term.
+            let k = a.udiv(n, pitch);
+            let d = a.urem(n, pitch);
+
+            let in_range = a.ult(k, cnt);
+            let aligned = a.eq(d, zero);
+            let in_elem = a.ult(d, esz);
+
+            // **Each case is created only if it is feasible.** A ground index decomposes
+            // to a ground `k` and `d`, so three of the four are refuted immediately and
+            // the access produces one state. Creating them unconditionally would litter
+            // every concrete buffer access with siblings whose path conditions are
+            // unsatisfiable — states that cost a fork, report a finding, and describe
+            // nothing the program can do.
+            let not_in_elem = a.not(in_elem);
+            let past = a.not(in_range);
+            let not_aligned = a.not(aligned);
+            let mid = a.and(not_aligned, in_elem);
+
+            // (a) the inter-element gap: out of bounds, and **not** a pointer into
+            // element k+1 — that is the silent failure, reporting nothing and analysing
+            // the wrong buffer for the rest of the function.
+            let gap_cond = a.and(not_in_elem, in_range);
+            if !matches!(self.feasible(a, s, gap_cond), Feas::No) {
+                let mut gap = s.clone();
+                gap.id = self.new_id();
+                gap.constrain_unchecked(gap_cond);
+                self.finding_seq += 1;
+                gap.findings.push(StateFinding {
+                    id: self.finding_seq,
+                    key: None,
+                    message: format!(
+                        "address falls in the {}-byte gap between arena elements \
+                         (elem_size {}, pitch {}), which is out of bounds and is not a \
+                         pointer into the next element",
+                        shape.pitch - shape.elem_size,
+                        shape.elem_size,
+                        shape.pitch
+                    ),
+                    span,
+                });
+                gap.status = Status::Terminated(TermReason::Crashed);
+                self.pending.push(gap);
+            }
+
+            // (b) past the end of the region — §5.2 step 4's bounds check against
+            // `count`. An arena that resolves every index has stopped being a bound.
+            if !matches!(self.feasible(a, s, past), Feas::No) {
+                let mut over = s.clone();
+                over.id = self.new_id();
+                over.constrain_unchecked(past);
+                self.finding_seq += 1;
+                over.findings.push(StateFinding {
+                    id: self.finding_seq,
+                    key: None,
+                    message: format!(
+                        "arena index is out of bounds: the region holds {} element(s), \
+                         and `count` is what bounds it",
+                        shape.count
+                    ),
+                    span,
+                });
+                over.status = Status::Terminated(TermReason::Crashed);
+                self.pending.push(over);
+            }
+
+            // (c) **a valid offset that is not an element start.** §5.2 step 3 puts the
+            // gap at `d >= elem_size`, so `0 < d < elem_size` is a legitimate pointer
+            // *into* element `k` — and `Pointer::off` is an `i64`, so chiero cannot
+            // represent it. Saying so is the point: forcing `d == 0` on the good path
+            // would silently delete every one of these, which is the whole failure mode
+            // 021 §5.1 calls "a wrong answer instead of an honest unknown".
+            let mid_cond = a.and(mid, in_range);
+            if !matches!(self.feasible(a, s, mid_cond), Feas::No) {
+                let mut part = s.clone();
+                part.id = self.new_id();
+                part.constrain_unchecked(mid_cond);
+                part.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::NoInformation,
+                    span,
+                    "an arena address lands inside an element at a symbolic offset, \
+                     which this memory model cannot represent",
+                );
+                part.status = Status::Terminated(TermReason::Unsupported);
+                self.pending.push(part);
+            }
+
+            // (d) the well-formed element start, on the state that continues.
+            let good = a.and(aligned, in_range);
+            if matches!(self.feasible(a, s, good), Feas::No) {
+                // Nothing left for this state to be; the siblings carry the outcomes.
+                // **`Some(None)`, not `None`** — the address *was* an arena address, and
+                // falling through to §5.1's search would report it as an unresolvable
+                // pointer on top of the finding a sibling already carries.
+                s.status = Status::Terminated(TermReason::Unreachable);
+                return Some(None);
+            }
+            s.constrain_unchecked(good);
+            let detail = format!(
+                "an address was resolved through a registered arena element (pitch {}, \
+                 elem_size {}, index_scale {}); the index names an element start on this \
+                 path, and the other cases are explored separately",
+                shape.pitch, shape.elem_size, shape.index_scale
+            );
+            self.note_once(s, AssumptionKind::OpaqueCode, span, &detail);
+            s.degrade(
+                Fidelity::Approximated,
+                AssumptionKind::OpaqueCode,
+                span,
+                &detail,
+            );
+            let obj = self.arena_element(a, s, k, shape, span);
+            return Some(Some(Value::Ptr(chiero_mem::Pointer { base: obj, off: 0 })));
+        }
+        None
+    }
+
+    /// One lazily-materialized object per accessed element index (021 §5.2 step 4).
+    ///
+    /// Keyed by the *term* of `k`, so two accesses computing the same index reach the
+    /// same object — without that, `b->data[0]` and `b->data[1]` would live in different
+    /// buffers and every intra-buffer invariant would be invisible.
+    fn arena_element(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        k: Term,
+        shape: ArenaShape,
+        span: Span,
+    ) -> chiero_mem::ObjectId {
+        let _ = a;
+        if let Some(id) = s.arena_objs.get(&k.0) {
+            return *id;
+        }
+        let id = s
+            .mem
+            .alloc(chiero_mem::ObjKind::Heap, shape.elem_size, 64, span);
+        // 021 §6: its contents are whatever the program put there, not zero.
+        s.mem.mark_lazy(id);
+        s.arena_objs.insert(k.0, id);
+        id
+    }
+
     fn resolve_symbolic_base(
         &mut self,
         a: &mut TermArena,
@@ -3760,6 +4014,12 @@ impl<'m> Engine<'m> {
         addr: Term,
         span: Span,
     ) -> Option<Value> {
+        // 021 §5.2 comes first: an arena address is *not* a search over the address
+        // space, and running §5.1 on it would either concretize it (step 5) or end the
+        // path (step 4) before the arena was consulted.
+        if let Some(v) = self.resolve_in_arena(a, s, addr, span) {
+            return v;
+        }
         // **Freed objects are searchable** (021 §4): the access through the resolved
         // pointer is what reports the use-after-free, and a search that cannot see the
         // object reports a wild pointer at address 0 instead.

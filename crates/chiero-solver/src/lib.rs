@@ -1461,6 +1461,37 @@ impl Solver for SolverLite {
         // a disjunction, a nested `Ite`, a non-atomic assertion — leaves the fragment,
         // and the answer is `Unknown`. A propagator that descended into an `or` and
         // applied both sides would report a false `Unsat` for a satisfiable formula.
+        // **Ground assertions are decided here, before the fragment test.** A constant
+        // is not an atom, so `false` — the term a folded contradiction collapses to —
+        // left §3.2's fragment, came back `Unknown`, and was then handed to a backend
+        // that cannot assert a bare constant either: the answer was
+        // `Unknown(BackendError)` for a formula whose truth needs no solver at all.
+        // Downstream that is worse than slow, because 023 §3 takes a branch the solver
+        // could not refute, so a ground-refutable condition was explored as though it
+        // were undecidable. Found while implementing 021 §5.2, where every concrete
+        // arena index produces exactly this shape.
+        let mut all: Vec<Term> = all;
+        let mut ground_true = 0usize;
+        for t in &all {
+            if let Ok(c) = a.eval_ground(*t) {
+                if c.bits() == 0 {
+                    return CheckResult::Unsat;
+                }
+                ground_true += 1;
+            }
+        }
+        if ground_true > 0 {
+            all.retain(|t| a.eval_ground(*t).is_err());
+            if all.is_empty() {
+                // Everything asserted is true, so any complete assignment is a model.
+                let mut m = Model::new();
+                for (i, (_, sort)) in a.vars.iter().enumerate() {
+                    m.set(VarId(i as u32), BvConst::zero(sort.width()));
+                }
+                return CheckResult::Sat(m);
+            }
+        }
+
         let mut atoms = Vec::new();
         for t in &all {
             match a.as_atom(*t) {

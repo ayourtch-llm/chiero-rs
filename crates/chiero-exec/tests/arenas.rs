@@ -179,13 +179,14 @@ fn without_an_arena_a_buffer_access_is_an_unresolvable_pointer() {
     let r = Engine::new(&m).run(&mut a);
     let msgs: Vec<String> = r.reports().iter().map(|f| f.message.clone()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("unresolvable pointer")),
-        "an `IntToPtr` over an unconstrained symbol is step 4: {msgs:?}"
+        msgs.iter()
+            .any(|m| m.contains("could not be resolved") || m.contains("unresolvable pointer")),
+        "an `IntToPtr` over an unconstrained symbol does not resolve: {msgs:?}"
     );
-    assert_eq!(
+    assert_ne!(
         r.fidelity(),
-        Fidelity::Unknown,
-        "and the run knows it learned nothing about that memory"
+        Fidelity::Exact,
+        "and the run does not claim to have modelled that memory"
     );
 }
 
@@ -211,10 +212,21 @@ fn a_symbolic_buffer_index_resolves_into_one_element() {
 
     // Two states: the well-formed one and the gap one (see the header note). Not more —
     // "one object per accessed index", never a sweep over the address space.
+    // **Three, not two.** An unconstrained index genuinely admits all three outcomes:
+    // a well-formed element, the inter-element gap, and past the end of the region. The
+    // header note argues why none of them may be assumed away.
+    // Four outcomes, and each is created only where it is feasible: the element start,
+    // the inter-element gap, past `count`, and — the one that would otherwise be dropped
+    // in silence — a valid offset *inside* an element that this memory model cannot
+    // represent, since `Pointer::off` is an `i64`.
     assert_eq!(
         r.states().len(),
-        2,
-        "an arena access forks once, into the element and the inter-element gap"
+        4,
+        "an unconstrained index admits all four outcomes: {:#?}",
+        r.states()
+            .iter()
+            .map(|s| (s.findings(), s.fidelity()))
+            .collect::<Vec<_>>()
     );
 
     let good = r
@@ -237,7 +249,7 @@ fn a_symbolic_buffer_index_resolves_into_one_element() {
     assert!(
         good.findings().is_empty(),
         "`b->data` at +128 is in bounds for a 2432-byte element: {:#?}",
-        good.findings().iter().map(|f| &f.message).collect::<Vec<_>>()
+        good.findings()
     );
 }
 
@@ -266,18 +278,18 @@ fn an_offset_in_the_inter_element_gap_is_one_finding_and_not_the_next_element() 
         .iter()
         .filter(|s| !s.findings().is_empty())
         .collect();
+    let gap: Vec<&_> = gap
+        .into_iter()
+        .filter(|s| s.findings().iter().any(|m| m.contains("gap")))
+        .collect();
     assert_eq!(gap.len(), 1, "one state explores the gap");
     assert_eq!(
         gap[0].findings().len(),
         1,
         "and reports it exactly once: {:#?}",
-        gap[0]
-            .findings()
-            .iter()
-            .map(|f| &f.message)
-            .collect::<Vec<_>>()
+        gap[0].findings()
     );
-    let msg = &gap[0].findings()[0].message;
+    let msg = gap[0].findings()[0];
     assert!(
         msg.contains("gap") || msg.contains("out of bounds"),
         "the finding names what happened: {msg}"
@@ -309,11 +321,210 @@ fn an_index_beyond_count_does_not_resolve_to_an_element() {
         .states()
         .iter()
         .flat_map(|s| s.findings())
-        .map(|f| f.message.clone())
+        .map(|f| f.to_string())
         .collect();
     assert!(
         msgs.iter()
             .any(|m| m.contains("count") || m.contains("out of bounds")),
         "an index past the arena's element count is reported: {msgs:?}"
+    );
+}
+
+/// **The arithmetic itself, with a ground index.** The tests above assert *structure* —
+/// how many states, which findings — and every one of them survived mutating `k` to
+/// divide by `elem_size`, mutating the gap test to compare against `pitch`, and deleting
+/// the `count` bound. Structure is produced by the fork whatever the decomposition says.
+///
+/// A ground offset from a symbolic base gives ground `k` and `d`, so the feasibility gate
+/// leaves exactly one state and the decomposition is observable.
+fn buffer_access_at(byte_off: i128, delta: i128) -> Module {
+    let mut m = buffer_access(delta);
+    // Replace `i << 6` with the constant, leaving `base + <const>`.
+    m.funcs[0].blocks[0].insts[0] = assign(
+        2,
+        RValue::Use(Operand::Const(Const::Int {
+            bits: 64,
+            val: byte_off,
+        })),
+    );
+    m
+}
+
+#[test]
+fn a_ground_offset_decomposes_exactly_as_the_spec_says() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    // pitch 2496: one whole pitch is element 1, offset 0 — a well-formed pointer.
+    let r = |off: i128, delta: i128| {
+        let m = buffer_access_at(off, delta);
+        let mut a = TermArena::new();
+        Engine::new(&m)
+            .with_backend(SmtLib::discover().expect("checked"))
+            .with_arena(0, vpp_buffer_pool())
+            .run(&mut a)
+    };
+    let _ = backend;
+
+    let one = r(2496, 0);
+    assert_eq!(
+        one.states().len(),
+        1,
+        "a ground index refutes the other three cases outright: {:#?}",
+        one.states()
+            .iter()
+            .map(|s| s.findings())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        one.states()[0].findings().is_empty(),
+        "2496 is exactly one pitch, so it is element 1 at offset 0: {:#?}",
+        one.states()[0].findings()
+    );
+
+    // 2496 + 2440: still element 1, but 2440 >= elem_size (2432) — the gap. If `k` were
+    // computed with `elem_size` as the divisor, or the gap tested against `pitch`, this
+    // would come out clean.
+    // Only the gap outcome is feasible here. The *continuing* state has nowhere left to
+    // go and terminates as unreachable rather than vanishing, so the run carries it as
+    // an empty extra state — an artifact of the current state being the one that
+    // continues, not a second outcome.
+    let gap = r(2496 + 2440, 0);
+    let msgs: Vec<&str> = gap
+        .states()
+        .iter()
+        .flat_map(|s| s.findings().into_iter())
+        .collect();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "exactly one finding, from the one feasible outcome: {msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("gap")),
+        "an offset of 2440 into a 2432-byte element is the inter-element gap: {msgs:?}"
+    );
+
+    // And past the end: 1024 elements of 2496 bytes.
+    let over = r(2496 * 1024, 0);
+    let msgs: Vec<&str> = over
+        .states()
+        .iter()
+        .flat_map(|s| s.findings().into_iter())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("out of bounds")),
+        "element 1024 does not exist in a 1024-element region: {msgs:?}"
+    );
+
+    // The access at +128 lands inside element 1, which is the `index_scale` vs `pitch`
+    // distinction: in a 64-byte element this would be out of bounds.
+    let deep = r(2496, 128);
+    let deep_msgs: Vec<&str> = deep
+        .states()
+        .iter()
+        .flat_map(|s| s.findings().into_iter())
+        .collect();
+    assert!(
+        deep_msgs.is_empty(),
+        "+128 is inside a 2432-byte element: {deep_msgs:?}"
+    );
+}
+
+/// **The divisor is `pitch`, and the constants have to be able to tell.**
+///
+/// A first cut of this file used 2496 as the only offset, where `n / pitch` and
+/// `n / elem_size` are both 1 — so mutating the divisor changed nothing and the test
+/// passed. `n = 4864` is two `elem_size`s but only one `pitch`, which is exactly the
+/// distinction §5.2 spends its length on.
+#[test]
+fn the_element_index_is_the_offset_divided_by_pitch_not_by_elem_size() {
+    if SmtLib::discover().is_none() {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    }
+    // Two elements, so index 1 is in range and index 2 is not.
+    let shape = ArenaShape {
+        count: 2,
+        ..vpp_buffer_pool()
+    };
+    let m = buffer_access_at(4864, 0);
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(SmtLib::discover().expect("checked"))
+        .with_arena(0, shape)
+        .run(&mut a);
+    let msgs: Vec<&str> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.findings().into_iter())
+        .collect();
+    assert!(
+        !msgs.iter().any(|m| m.contains("out of bounds")),
+        "4864 / 2496 is element 1, which exists; dividing by elem_size gives element 2, \
+         which does not: {msgs:?}"
+    );
+}
+
+/// **The same index reaches the same buffer.**
+///
+/// §5.2 step 4 says "one object per accessed index". Two `IntToPtr`s of the same address
+/// term must resolve into the same object, or `b->data[0]` and `b->data[1]` live in
+/// different buffers and every intra-buffer invariant is invisible — a store through one
+/// and a load through the other would read lazily-materialized bytes rather than what was
+/// written.
+#[test]
+fn two_accesses_at_one_index_reach_one_object() {
+    if SmtLib::discover().is_none() {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    }
+    let mut m = buffer_access_at(2496, 0);
+    let b = &mut m.funcs[0].blocks[0];
+    // A *second*, independent `IntToPtr` of the same address term, stored through first.
+    b.insts.insert(
+        4,
+        assign(
+            10,
+            RValue::Cast {
+                kind: CastKind::IntToPtr,
+                a: Operand::Value(ValueId(3)),
+                from: CTy::Int(64),
+                to: CTy::Ptr,
+            },
+        ),
+    );
+    b.insts.insert(
+        5,
+        Inst {
+            kind: InstKind::Store {
+                addr: Operand::Value(ValueId(10)),
+                val: Operand::Const(Const::Int { bits: 8, val: 0xAB }),
+                ty: CTy::Int(8),
+                align: 1,
+                vol: Volatility::Normal,
+            },
+            span: Span::DUMMY,
+        },
+    );
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_backend(SmtLib::discover().expect("checked"))
+        .with_arena(0, vpp_buffer_pool())
+        .run(&mut a);
+    let live: Vec<&_> = r
+        .states()
+        .iter()
+        .filter(|s| s.findings().is_empty())
+        .collect();
+    assert_eq!(live.len(), 1, "one well-formed path");
+    assert_eq!(
+        live[0].return_value_bits(&mut a),
+        Some(0xAB),
+        "the load reads what the store wrote, which it can only do if both `IntToPtr`s \
+         resolved into the same element object"
     );
 }
