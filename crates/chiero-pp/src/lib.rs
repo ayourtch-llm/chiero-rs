@@ -466,8 +466,15 @@ impl Engine {
             });
             return Vec::new();
         }
-        let expanded = self.expand(line.get(2..).unwrap_or_default().to_vec());
-        let Some((name, quoted)) = parse_header_name(&expanded) else {
+        let operand = line.get(2..).unwrap_or_default();
+        let expanded;
+        let header_tokens = if parse_header_name(operand).is_some() {
+            operand
+        } else {
+            expanded = self.expand(operand.to_vec());
+            &expanded
+        };
+        let Some((name, quoted)) = parse_header_name(header_tokens) else {
             self.diagnostics.push(Diagnostic {
                 span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
                 message: "invalid computed include".into(),
@@ -1018,21 +1025,24 @@ impl Engine {
         while let Some(token) = input.pop_front() {
             if token.text == "_Pragma"
                 && input.front().is_some_and(|token| token.text == "(")
-                && input
-                    .get(1)
-                    .is_some_and(|token| matches!(token.token.kind, PpTokenKind::StringLit { .. }))
-                && input.get(2).is_some_and(|token| token.text == ")")
+                && let Some((mut args, close)) = parse_args(&input, 0)
+                && args.len() == 1
             {
-                self.source_map.add_expansion(
-                    token.token.span.ctx,
-                    None,
-                    token.token.span,
-                    span_from_ends(token.token.span, input[2].token.span),
-                    Vec::new(),
-                    ExpnKind::Pragma,
-                );
-                input.drain(..3);
-                continue;
+                let expanded = self.expand(args.pop().unwrap_or_default());
+                if expanded.len() == 1
+                    && matches!(expanded[0].token.kind, PpTokenKind::StringLit { .. })
+                {
+                    self.source_map.add_expansion(
+                        token.token.span.ctx,
+                        None,
+                        token.token.span,
+                        span_from_ends(token.token.span, input[close].token.span),
+                        Vec::new(),
+                        ExpnKind::Pragma,
+                    );
+                    input.drain(..=close);
+                    continue;
+                }
             }
             let Some(&macro_index) = self.by_name.get(&token.text) else {
                 output.push(token);
@@ -1262,9 +1272,12 @@ impl Engine {
                         hide: HideSet::default(),
                     });
                 }
-                for mut arg in selected {
+                for (index, mut arg) in selected.into_iter().enumerate() {
                     if arg.token.span.ctx.is_root() {
                         arg.token.span.ctx = expn;
+                    }
+                    if index == 0 {
+                        arg.token.leading_space = body.token.leading_space;
                     }
                     arg.hide.extend(&call.hide);
                     arg.hide.insert(def.def.id);
@@ -1288,8 +1301,12 @@ impl Engine {
             if index != 0 && token.token.leading_space {
                 inside.push(' ');
             }
+            let escape = matches!(
+                token.token.kind,
+                PpTokenKind::CharLit { .. } | PpTokenKind::StringLit { .. }
+            );
             for ch in token.text.chars() {
-                if matches!(ch, '\\' | '"') {
+                if escape && matches!(ch, '\\' | '"') {
                     inside.push('\\');
                 }
                 inside.push(ch);

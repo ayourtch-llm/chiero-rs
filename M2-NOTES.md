@@ -108,3 +108,10 @@
   hide set also avoids quadratic copying along long acyclic chains. Four hundred
   sequential invocations and a 20,000-link chain now finish fully expanded without a
   diagnostic or subprocess abort.
+- Findings 12–14 all reproduced with the review's minimal cases. A syntactic
+  `<h-char-sequence>` is now resolved before considering computed-include expansion;
+  substituted arguments inherit the replacement parameter's leading-space bit;
+  stringization escapes backslash and quote only inside literal tokens; and `_Pragma`
+  fully expands its parenthesized operand before recognizing the required string.
+  Under the complete GCC predefine set all four required VPP headers again preprocess
+  with zero diagnostics.
