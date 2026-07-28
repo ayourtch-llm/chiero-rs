@@ -487,92 +487,114 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 131, `d194b4d`) — 1102 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 132) — M1 165/165 by contract
 >
-> *Context refreshed after wave 131. Nothing is in flight: the working tree is clean, every
-> wave is committed, and the suite is green. Waves 130 and 131 were docs-only — they narrowed
-> one bug and corrected one misreading, and produced no code change. Start with the section
-> immediately below.*
+> *The working tree is clean and every wave is committed. Wave 132 closed the sret wild
+> pointer that waves 126–131 were chasing, plus three more defects it uncovered, and
+> graduated `header_inline.c` out of `tests/corpus/owed/` — that directory is now empty
+> except its README.*
 >
-> ## 🔴 The sret wild pointer: the return never reaches the caller
+> ## ✅ The sret wild pointer is fixed, and it was never where six waves looked
 >
-> **The crash is inside the callee, before it returns.** Wave 131 corrected wave 130's
-> reading: the return-to-caller branch never fires because the state is already dead when
-> `mk` reaches its terminator. `WildPointer` is fatal (`is_fatal`), so the path ends at the
-> faulting access.
+> **The cause was in lowering, one line, in `expr`'s `Ident` arm.** A local aggregate read
+> as a value emitted `load ptr`, so `return p;` in an aggregate-returning callee lowered to
+> `addrlocal p` / `load ptr` / `copymem sret <- <p's bytes>`. The `0x700000003` in every
+> diagnostic was the struct's own `{3, 7}` used as an address. The engine, the call ABI and
+> scope balance were each eliminated in turn *because each was innocent*.
 >
-> Ruled out this wave: the module is well formed — `mk` is `FuncId(0)`, `Body::Defined`,
-> one block, three params, called as `Direct(FuncId(0))` with three arguments and a
-> destination. No `lowering_gap("a return operand")` fires either, so the return operand
-> itself evaluates.
+> The **global** half of the same arm had the guard already, under the comment "an array
+> names its own address; a scalar names its contents". The local half never got it. Nothing
+> caught it because the one aggregate-copy path with coverage, `y = x`, goes through
+> `lvalue_addr` and never reaches here — so 1102 tests passed over it.
 >
-> **So the faulting access is one of the two `CopyMem`s, and the address is `p`'s own
-> contents `{3, 7}`** — 0x700000003. In the callee that is `copymem %3 -> %16` (dst = the
-> sret parameter, src = `addrlocal p`). The next step is to print, inside the engine's
-> `CopyMem` handling, what `dst` and `src` each evaluate to for this instruction, and which
-> of the two is the faulting one. If `dst` (`%3`) resolves to `p`'s bytes rather than to the
-> caller's slot, the parameter binding is handing the callee a *value* where a pointer
-> belongs — which is the shape wave 127's surviving mutant predicted.
+> ### The four defects wave 132 fixed
 >
-> The same fixture as a **hand-built** module runs correctly (wave 128), and its callee does
-> the same `CopyMem` through a pointer parameter — so diffing what the two bind for that one
-> instruction is the cheapest remaining move.
+> 1. **A local aggregate named as a value is its address** (`998d999`). The wild pointer.
+> 2. **A pointer-typed global names its contents** (`f7bc88f`). The global arm's guard was
+>    `matches!(ty, CTy::Ptr)`, which is equally true of `int *gp` — so reading a global
+>    pointer yielded the address *of* `gp`. Found only because the local arm needed the
+>    narrower predicate.
+> 3. **Every lvalue is loaded and stored at its sema type** (`f7bc88f`). Three sites asked
+>    `raw_width_of`, which answers 32 for anything that is not an integer. A pointer in a
+>    struct member, in an array element, or reached through a second pointer was stored and
+>    loaded as an `i32` and kept half of itself.
+> 4. **A struct parameter is the callee's own copy** (`3b44c9e` red, green after). The
+>    prologue gave it a slot of its lowered `CTy` — eight bytes of `CTy::Ptr` — stored the
+>    caller's address into it, and the body read fields out of a pointer. `span_of({3, 8})`
+>    returned 28663: no fault, no finding, just a wrong number.
 >
-> ### Previously eliminated, each with a guarding test
+> One rule now covers all four: **an aggregate lvalue names its address; every other lvalue
+> is loaded and stored at `cty(type_of(e))`.** `cty_of` and `is_aggregate_expr` are the two
+> helpers, used at every lvalue site.
 >
-> - **The engine's sret mechanics** (wave 128): a hand-built module of the same shape runs
->   correctly and reports nothing.
-> - **The call ABI** (wave 127): sret param first, one slot per call site —
->   `an_aggregate_return_uses_an_sret_slot`.
-> - **Scope balance** (wave 129): the callee exited each scope twice; fixed and guarded by
->   `a_returning_function_exits_each_scope_once`. **It was not the cause.**
+> ### The oracle grew a prelude, and now announces
 >
-> `a_struct_returned_by_value_carries_its_fields` still reports
-> `wild-pointer: … at address 30064771075` — `0x700000003`, the struct's bytes `{3, 7}` used
-> as an **address**. Ruled out so far, each with a test that now guards it:
+> `agree_with(prelude, body)` emits file-scope text before `probe`, so globals and helper
+> functions are testable — defects 2 and 4 were outside the oracle's reach entirely before.
+> `gcc_answer` returns `Result<i32, Oracle>`; only a failure to *spawn* counts as absence,
+> and everything else panics with its real reason instead of being reported as "gcc not
+> available". `zz_the_oracle_actually_ran` fails if any fixture skipped — verified by
+> running the binary with an empty PATH, where it reports 85 skips and goes red instead of
+> 19 tests passing over nothing.
 >
-> - **The engine** (wave 128): a hand-built module with the same shape runs correctly.
-> - **The call ABI** (wave 127): sret param is first, one slot per call site, verified by
->   `an_aggregate_return_uses_an_sret_slot`.
-> - **Scope balance** (wave 129): the callee exited each scope twice; fixed, and
->   `a_returning_function_exits_each_scope_once` guards it. **It was not the cause.**
+> ### 🔴 Do this first: three defects found and recorded, not yet fixed
 >
-> Blocked on it: `a_struct_returned_by_value_carries_its_fields`,
-> `two_aggregate_returns_are_distinct`, `tests/corpus/owed/header_inline.c`.
+> All three have a one-line reproduction, all three are red today, and none has a test yet —
+> **write the red test before fixing**, or they are worth nothing:
+>
+> - **`*(a + 1)` on a decayed local** emits `add i32 %addr, 1i32` — an *unscaled 32-bit* add
+>   on a pointer. gcc says 7 for `int a[3]; a[1] = 7; return *(a + 1);`, chiero says nothing.
+>   Pointer arithmetic is `PtrAdd` with a scaled 64-bit offset (020: PtrAdd-not-Add), and
+>   this path does neither.
+> - **`y = (0, x);` for aggregates emits nothing at all** — no store, no `CopyMem`. The
+>   assignment vanishes from the CIR. `struct S y; y = (0, x);` where the *initializer* form
+>   `struct S y = (0, x);` now works, so it is the assignment path specifically.
+> - **A statement-expression aggregate value is copied after its scope dies.**
+>   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
+>   `.scope exit 2`, reading `t` once 021 has retired it.
 >
 > ### Also open
 >
 > - Shapes untried: a union inside a struct under a symbolic index; `goto` out of three
 >   nested scopes; a `switch` on a struct member read through a pointer.
+> - **Floats do not execute at all** — `float f; f = 2.5f; return (int)f;` returns nothing,
+>   for a *local*, so it is not a lowering-type problem. Untouched by wave 132 and untested.
+> - `is_aggregate` excludes `Ty::Vector` while `aggregate_size` includes it, and `cty` maps
+>   `Ty::Vector` to `CTy::Ptr` — so a vector lvalue read as a value may have defect 1's shape
+>   still. Unverified; a GNU `vector_size` fixture would settle it.
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
 > - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
 >
 > ### Rules earned, most recent first
 >
-> **An empty log means "not reached" — then ask *why* not** (waves 130–131). Wave 130 read
-> "the return branch never fires" as "the return delivers nothing"; wave 131 found the state
-> was already dead. Both readings fit an empty log, and only one is true. Instrument the
-> *predecessor* before theorising about the site that stayed silent. Two probes on the
-> engine's return-to-caller path produced no output at all — which says more than any value
-> would have: the path is not reached. An empty log is evidence, not a failed experiment.
-> **A real defect found while hunting another is still not the cause** (wave 129). The
-> duplicated scope exits were genuine, fixed, and guarded — and the symptom did not move.
-> Fixing what you find is right; *claiming* it was the cause because it was a bug is not.
+> **Instrument the value, not the theory** (wave 132). Six waves argued about *where* the
+> wild pointer came from. One `eprintln!` of what `dst` and `src` actually evaluated to in
+> the engine's `CopyMem` handler ended it in a single step — `src` was a wild pointer whose
+> offset was the struct's own bytes, which named the defect immediately. Printing the CIR
+> next showed `load ptr` in black and white. Neither probe took five minutes.
+> **A guard added to one arm of a match is not added to the other** (wave 132, and wave 121
+> from the other side). The global ident arm had the rule *and the comment explaining it*;
+> the local arm had neither. Grep for the sibling every time.
+> **The predicate a comment describes is usually narrower than the one it is spelled with**
+> (wave 132). "An array names its own address" was implemented as `matches!(ty, CTy::Ptr)`,
+> which is also every pointer. Fixing one arm forced the narrower predicate, which then
+> exposed the other arm as wrong — the fix found the bug.
+> **An empty log means "not reached" — then ask *why* not** (waves 130–131).
+> **A real defect found while hunting another is still not the cause** (wave 129).
 > **Eliminating halves is progress worth committing** (wave 128).
 > **Build the hand-built equivalent** to decide whether a bug is in the IR or in what
 > consumes it (waves 109, 128).
 > **An ABI change has to reach the declaration pass** (wave 127).
 > **The reporting you built pays off on defects you did not anticipate** (wave 126).
 > **Mutation is what makes "already correct" worth committing** (wave 125).
-> **A comment claiming a property is not the property** — waves 107, 112, 118, 124.
+> **A comment claiming a property is not the property** — waves 107, 112, 118, 124, 132.
 > **A defect can hide behind another of the same shape** (wave 123).
 > **A corpus fixture that runs is coverage; a mutation needs something sharper** (wave 122).
-> **A fix does not generalise to a second code path on its own** (wave 121) — wave 129 is
-> the same lesson from the other side: the scalar return path had the dead block and a
-> comment explaining it, and the sret path added later did not.
+> **A fix does not generalise to a second code path on its own** (wave 121).
 > **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120).
-> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture parked in `owed/` covers nothing** (wave 120) — discharged in wave 132: the
+> directory is empty and every defect it motivated has a gcc-differential test.
 > **A fixture that will not lower is still evidence** (wave 119).
 > **An aggregate diagnostic hides the cause** — print diagnostics before 015 §7 truncates.
 > **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
@@ -581,27 +603,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **Exhaustion and "the solver gave up" are different answers** (wave 116).
 > **An assertion of absence needs a companion assertion that the run got there** (wave 115).
 > **Read the golden, not just the test result** (wave 114).
-> **A wrong answer is worse than a missing one** (wave 113).
+> **A wrong answer is worse than a missing one** (wave 113) — defect 4 above is the sharpest
+> instance yet: it returned 28663 with no finding at all.
 > **A survivor is not automatically a fixture gap** (waves 112, 113).
 > **A workaround marks a defect; go back and delete it** (wave 111).
-> **The fixture never reached the comparison the design exists for** — twenty waves.
 >
 > Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
-> compile is **inconclusive**; an **ambiguous anchor is inconclusive too** — wave 129 had
-> four `new_block`/`switch_to` pairs; two guards only ever true together are equivalent
-> mutants; a no-op mutant is neither; **`cargo fmt` moves anchors** and reflows
-> `#[ignore = "…"]` onto one line; **a mutation one other site compensates for is partial**;
-> **some changes are not expressible as a one-line mutant** — say so; **check a patch script
-> printed `ok`**. An oracle that can silently not run is not an oracle — **announce every
-> skip**.
+> compile is **inconclusive**; an **ambiguous anchor is inconclusive too**; two guards only
+> ever true together are equivalent mutants; a no-op mutant is neither; **`cargo fmt` moves
+> anchors** and reflows `#[ignore = "…"]` onto one line; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so; **check a patch script printed `ok`**. An oracle that can silently not run is not
+> an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
+> rather than intend it.
 >
-> Owed and written down: the sret wild pointer (blocks two tests and
-> `tests/corpus/owed/header_inline.c`); the wave-117 `fork_on_offset` survivor; designated,
-> bit-field and address initializers refused; a fault in a non-entry frame is untested;
-> `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in sema; the parser's
-> speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose
-> their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately
-> uncovered.
+> Owed and written down: the three defects above; the wave-117 `fork_on_offset` survivor;
+> floats do not execute; `Ty::Vector` is not in `is_aggregate`; designated, bit-field and
+> address initializers refused; a fault in a non-entry frame is untested; `Bits` path steps
+> are not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
+> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered.
 >
 > ### Earlier (wave 128, `fb966c2`) — 1100 tests, 5 ignored, M1 165/165 by contract
 >

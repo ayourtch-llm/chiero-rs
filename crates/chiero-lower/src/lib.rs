@@ -865,7 +865,24 @@ impl Lowerer<'_> {
             });
             let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
             let pn_text = pname.and_then(|n| self.sym(n));
-            let slot = self.alloca(cty.clone(), align, pn_text, span);
+            // **A struct parameter is an object of its own** (C11 6.9.1p9: the parameter's
+            // value is a *copy* of the argument). The caller passes the aggregate's address,
+            // so a slot of the parameter's lowered `CTy` is eight bytes of `CTy::Ptr` — and
+            // the prologue stored the address into it, after which `p.lo` read the low half
+            // of a pointer. No fault and no finding, just a wrong number.
+            //
+            // So the slot is the struct's *size*, and the prologue copies through the
+            // incoming pointer instead of storing it. That is also what makes a callee
+            // mutating its parameter leave the caller's struct alone.
+            let aggregate = self.is_aggregate(sty);
+            let slot = if aggregate {
+                // `n` bytes: the count carries the size and the type carries the byte,
+                // which is the shape `local_decl` already uses for an aggregate local.
+                let size = self.analysis.size_of(sty).unwrap_or(1).max(1);
+                self.alloca_n(CTy::Int(8), size, align, pn_text, span)
+            } else {
+                self.alloca(cty.clone(), align, pn_text, span)
+            };
             if let Some(pn) = pname {
                 let t = cty.clone();
                 self.fs().locals.insert(pn, (slot, t));
@@ -878,6 +895,22 @@ impl Lowerer<'_> {
                 },
                 span,
             );
+            if aggregate {
+                let size = self.analysis.size_of(sty).unwrap_or(0);
+                self.emit(
+                    InstKind::CopyMem {
+                        dst: Operand::Value(addr),
+                        src: Operand::Value(v),
+                        size: Operand::Const(Const::Int {
+                            bits: 64,
+                            val: size as i128,
+                        }),
+                        align,
+                    },
+                    span,
+                );
+                continue;
+            }
             self.emit(
                 InstKind::Store {
                     addr: Operand::Value(addr),
