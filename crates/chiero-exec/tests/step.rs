@@ -4370,9 +4370,15 @@ fn the_default_havoc_covers_every_pointer_argument_at_depth_one() {
     }
 }
 
-/// **A symbolic `PtrAdd` offset is a gap, not a guess.** Concretizing to any particular
+/// **A symbolic `PtrAdd` offset is bounded, not guessed.** Concretizing to any particular
 /// value — 0 is the tempting one — produces an address the program never computes, and
 /// every access through it is then a confident report about the wrong bytes.
+///
+/// Wave 116 changed the *cause*, not the caution. This used to be a `lowering_gap`:
+/// `NoInformation`, a value chiero made up. It is now an enumeration that stopped —
+/// `Fidelity::Bounded` with `BudgetHit` — because the engine tried to fork one state per
+/// feasible offset and the default tier-1 solver could not tell it how many there were.
+/// Same refusal to fabricate an address; a reason a reader can act on.
 #[test]
 fn a_symbolic_ptr_add_offset_is_a_gap() {
     let mut caller = defined(
@@ -4410,9 +4416,25 @@ fn a_symbolic_ptr_add_offset_is_a_gap() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(r.fidelity(), Fidelity::Unknown);
+    assert_eq!(
+        r.fidelity(),
+        Fidelity::Bounded,
+        "the enumeration was cut, which is a bound — not a value nobody could know"
+    );
     assert!(
-        r.states()[0].local(ValueId(2)).is_none(),
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .any(|x| x.detail.contains("symbolic pointer offset")),
+        "and the reason names it: {:?}",
+        r.states()[0]
+            .assumptions()
+            .iter()
+            .map(|x| x.detail.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !matches!(r.states()[0].local(ValueId(2)), Some(Value::Ptr(_))),
         "no fabricated pointer was handed out"
     );
 }

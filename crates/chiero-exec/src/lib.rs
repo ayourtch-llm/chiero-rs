@@ -3614,6 +3614,120 @@ impl<'m> Engine<'m> {
     }
 
     /// One solver query under the path condition plus `extra`, keeping the model.
+    /// How many distinct offsets a symbolic `PtrAdd` is worth forking on.
+    ///
+    /// A policy number, not a contract. Large enough for the array indices real code
+    /// writes, small enough that an unconstrained `size_t` does not explode the state
+    /// space before the bound is noticed.
+    const MAX_SYMBOLIC_OFFSETS: usize = 16;
+
+    /// Enumerate the feasible values of a symbolic `PtrAdd` offset and fork one state per
+    /// answer, returning the value for the state that carries on.
+    ///
+    /// Model-driven, exactly like `resolve_symbolic_base`: each query asks for *some*
+    /// value the offset can still take and the next excludes it, so the cost is one query
+    /// per answer plus one to prove there are no more — proportional to what the offset can
+    /// name rather than to the object's size.
+    fn fork_on_offset(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        p: Pointer,
+        t: Term,
+        span: Span,
+    ) -> Option<Value> {
+        let mut found: Vec<i64> = Vec::new();
+        let mut excluded: Vec<Term> = Vec::new();
+        // **Exhaustion and the solver giving up are different answers.** `Unsat` means
+        // there are no more offsets and the enumeration is complete; `Unknown` means the
+        // solver could not tell, and treating that as complete would explore one value and
+        // call the run `Exact` — a fabricated address on every path not taken, which is the
+        // objection this whole function exists to answer. With the default tier-1 solver
+        // `Unknown` is the *common* case, so getting this wrong is not a corner.
+        let mut complete = false;
+        loop {
+            let mut extra = excluded.clone();
+            match self.probe(a, s, &extra) {
+                CheckResult::Sat(model) => {
+                    let Ok(bv) = a.eval(&model, t) else { break };
+                    let Ok(v) = i64::try_from(bv.signed()) else {
+                        break;
+                    };
+                    found.push(v);
+                }
+                CheckResult::Unsat => {
+                    complete = true;
+                    break;
+                }
+                CheckResult::Unknown(_) => break,
+            }
+            if found.len() > Self::MAX_SYMBOLIC_OFFSETS {
+                break;
+            }
+            let v = *found.last().expect("just pushed");
+            let w = a.width(t);
+            let lit = a.bv(w, v as u128);
+            let eq = a.eq(t, lit);
+            let ne = a.not(eq);
+            excluded.push(ne);
+            extra.push(ne);
+        }
+
+        if !complete || found.is_empty() || found.len() > Self::MAX_SYMBOLIC_OFFSETS {
+            s.degrade(
+                Fidelity::Bounded,
+                AssumptionKind::BudgetHit,
+                span,
+                &format!(
+                    "a symbolic pointer offset was not enumerated: {} value(s) found and \
+                     the search {}",
+                    found.len(),
+                    if complete {
+                        "exceeded the bound".to_string()
+                    } else {
+                        "was cut short by the solver".to_string()
+                    }
+                ),
+            );
+            // No fabricated address: the path continues with an unusable value rather than
+            // a plausible wrong one.
+            return Some(Value::Undef);
+        }
+
+        // Siblings for every value but the first; this state takes the first, which keeps
+        // exploration order deterministic (023 §4 — ties break by creation order).
+        let mine = found[0];
+        for &v in &found[1..] {
+            let mut sib = s.clone();
+            sib.id = self.new_id();
+            let w = a.width(t);
+            let lit = a.bv(w, v as u128);
+            let eq = a.eq(t, lit);
+            sib.constrain_checked(eq);
+            // The destination local is filled by `eval`'s caller from the returned
+            // `Value`, which a sibling never reaches — so it is set here, from the
+            // `pending_dst` the instruction dispatcher recorded for exactly this case.
+            if let Some(d) = self.pending_dst {
+                sib.set_local(
+                    d,
+                    Value::Ptr(Pointer {
+                        base: p.base,
+                        off: p.off.wrapping_add(v),
+                    }),
+                );
+            }
+            self.pending.push(sib);
+        }
+        let w = a.width(t);
+        let lit = a.bv(w, mine as u128);
+        let eq = a.eq(t, lit);
+        s.constrain_checked(eq);
+        Some(Value::Ptr(Pointer {
+            base: p.base,
+            off: p.off.wrapping_add(mine),
+        }))
+    }
+
     fn probe(&mut self, a: &mut TermArena, s: &State, extra: &[Term]) -> CheckResult {
         self.solver_calls += 1;
         let _ = self.tier;
@@ -3977,10 +4091,23 @@ impl<'m> Engine<'m> {
                 let Some(t) = self.scalar(a, s, off) else {
                     return self.lowering_gap(s, span, "PtrAdd with a non-scalar offset");
                 };
-                let Ok(c) = a.eval_ground(t) else {
-                    // A symbolic offset is 021 §7's territory and is owed; guessing a
-                    // concrete one here would be a fabricated address.
-                    return self.lowering_gap(s, span, "PtrAdd with a symbolic offset");
+                let c = match a.eval_ground(t) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        // **A symbolic offset forks, one state per feasible value.**
+                        //
+                        // `chiero_mem::Pointer` carries a concrete `i64`, so a symbolic
+                        // offset cannot be represented — and guessing one would be a
+                        // fabricated address on every path but one, which is 021 §7's
+                        // objection. Forking is the shape `Switch` already uses for a
+                        // symbolic scrutinee (020 c14): each path then has a concrete
+                        // offset and the memory model is untouched.
+                        //
+                        // Bounded, because an unconstrained index over a large object has
+                        // more answers than is worth exploring. Past the bound the state
+                        // degrades and names the offset rather than picking a value.
+                        return self.fork_on_offset(a, s, p, t, span);
+                    }
                 };
                 // **Signed, at the offset's own width.** 020 §8 rule 6 constrains the
                 // *base* to pointer width, not the offset: a 32-bit `-4` read as unsigned
