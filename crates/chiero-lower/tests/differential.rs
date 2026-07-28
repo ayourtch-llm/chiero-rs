@@ -429,6 +429,63 @@ fn a_bool_read_modify_write_converts_rather_than_truncates() {
     agree("_Bool b = 1; b ^= 1; return b;");
 }
 
+/// **A statement expression yielding an aggregate outlives its own scope.**
+///
+/// The last open defect on §9's list, carried since wave 132's implementation review.
+/// `({ struct S t; …; t; })` records `t`'s *address* as the construct's value, and the
+/// address is all an aggregate expression can be (020 §1.4) — but by the time the enclosing
+/// initializer copies from it, the block has ended and 021 has retired the object. The
+/// `CopyMem` reads bytes that are gone, and the program produces no state.
+///
+/// The scalar form has always worked, because a scalar's value is a *value*: `({ int t = 3;
+/// t + 1; })` hands back the number, which no scope exit can invalidate. That pairing is
+/// why this survived — the construct looks implemented, and is, for half the types.
+///
+/// The fix has to copy **before** the scope exits, which means the destination has to be
+/// allocated outside it. Same shape as wave 138's compound literal: an unnamed object with
+/// the enclosing block's lifetime.
+#[test]
+fn a_statement_expression_yielding_an_aggregate_outlives_its_scope() {
+    const S: &str = "struct S { int a; int b; };\n";
+    // The recorded case: a local declared, filled and yielded.
+    agree_with(
+        S,
+        "struct S y = ({ struct S t; t.a = 4; t.b = 2; t; }); return y.a * 10 + y.b;",
+    );
+    // Yielded after being *assigned*, so the value is not simply the initializer.
+    agree_with(
+        S,
+        "struct S z = ({ struct S u = {1, 2}; u.a = 7; u; }); return z.a * 10 + z.b;",
+    );
+    // Yielded straight from its initializer.
+    agree_with(
+        S,
+        "struct S w = ({ struct S p = {8, 9}; p; }); return w.a * 10 + w.b;",
+    );
+    // A member selected off the construct, with no named destination at all.
+    agree_with(S, "return ({ struct S q; q.a = 5; q.b = 6; q; }).b;");
+    // Passed by value to a helper, which is where VPP writes this idiom.
+    agree_with(
+        "struct S { int a; int b; };\nstatic int sum(struct S p) { return p.a * 10 + p.b; }\n",
+        "return sum(({ struct S t; t.a = 3; t.b = 4; t; }));",
+    );
+    // **Two of them in one expression**, so a single hoisted scratch slot would collapse
+    // them and every case above would still pass.
+    agree_with(
+        S,
+        "struct S x = ({ struct S t; t.a = 1; t.b = 2; t; }); \
+         struct S y = ({ struct S t; t.a = 3; t.b = 4; t; }); \
+         return x.a * 1000 + x.b * 100 + y.a * 10 + y.b;",
+    );
+    // **The scalar forms must keep working** — they always have, and they are the reason
+    // the aggregate half stayed invisible.
+    agree("int n = ({ int t = 3; t + 1; }); return n;");
+    agree(
+        "int arr[2] = {3, 4}; return ({ int acc = 0; for (int i = 0; i < 2; i++) { acc += arr[i]; } acc; });",
+    );
+    agree("int x = ({ 1; 2; 3; }); return x;");
+}
+
 /// **A file-scope pointer initialized with an address holds that address.**
 ///
 /// `GlobalInit` has `Zero`, `Bytes` and `Extern` and no form for an *address*, so
