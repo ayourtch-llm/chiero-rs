@@ -487,7 +487,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 131, `934c574`) — 1102 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 131, `d194b4d`) — 1102 tests, 5 ignored, M1 165/165 by contract
+>
+> *Context refreshed after wave 131. Nothing is in flight: the working tree is clean, every
+> wave is committed, and the suite is green. Waves 130 and 131 were docs-only — they narrowed
+> one bug and corrected one misreading, and produced no code change. Start with the section
+> immediately below.*
 >
 > ## 🔴 The sret wild pointer: the return never reaches the caller
 >
