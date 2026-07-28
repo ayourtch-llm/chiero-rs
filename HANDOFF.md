@@ -2858,12 +2858,22 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    pointer is asserted to be a mismatch. **When "nothing was reported" is the expected
    answer, check *why* nothing was reported.**
 
-   **Still owed from that review:** `strlen` on a negative offset reports the **same finding
-   twice** (dispatch calls the concrete model, then the symbolic one, and both report); every
-   witness carries a binding per touched byte whose `why` says "clobbered by opaque code"
-   when it is a caller-supplied byte; §7.2's mitigation 1 (symbolic base addresses) is not
-   implemented; and the format checker does not report *too many* arguments or check length
-   modifiers against argument width — both false negatives rather than noise.
+   **WAVE 79** (720 tests) — the last two small items from that review. `strlen` on a
+   pointer before its object reported the **same defect twice**: the concrete walk reports,
+   dispatch then runs the symbolic scan over the same bytes, and it reports again in its own
+   words. `ModelCtx::report_mark`/`drop_reports_after` let the thorough pass supersede the
+   cheap one. ⚠️ *The model-level fixture could not see this* — it calls `strlen_symbolic`
+   **directly**, bypassing the dispatch that produces the pair. **A unit test of a component
+   cannot see a defect that lives in how two components are wired together.**
+
+   The wrong witness `why` ("clobbered by opaque code" for caller-supplied bytes) went away
+   with the eager fill: that string now belongs only to `havoc_range_reporting`, which the
+   entry path no longer uses.
+
+   **Still owed:** §7.2's mitigation 1 (symbolic base addresses, which would make the
+   pointer-bit fork unnecessary rather than merely honest); the format checker does not
+   report *too many* arguments and does not check length modifiers against argument width —
+   both false negatives rather than noise.
 
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
@@ -2942,7 +2952,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **719 tests, 141/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **720 tests, 141/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
