@@ -391,6 +391,44 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     );
 }
 
+/// **A read-modify-write on a `_Bool` converts, it does not truncate.**
+///
+/// **Found by the generator in `generated.rs`, on its first run**, and shrunk to this line.
+/// No hand-written fixture had it: `differential.rs` tests `b += 1` from 0, which fits, and
+/// `b -= 1` from 1, which fits. The boundary — a `_Bool` already holding 1 — is exactly the
+/// case nobody thought to spell, which is the whole reason that file exists.
+///
+/// C11 6.5.2.4 and 6.5.16.2 promote the operand to `int`, do the arithmetic there, and
+/// convert the result *back* — and conversion to `_Bool` is `!= 0` (6.3.1.2), not a
+/// narrowing. So `b++` on a true `_Bool` leaves it true. Doing the addition at the lvalue's
+/// own one-bit width wraps 1 + 1 to 0 and turns it false.
+///
+/// This is wave 136's bit-field rule in its other instance: the arithmetic happens at the
+/// promoted width and the store converts back. `_Bool` is the one scalar where the
+/// conversion is a comparison rather than a truncation, which is why it needs saying twice.
+#[test]
+fn a_bool_read_modify_write_converts_rather_than_truncates() {
+    // The generator's find, both spellings.
+    agree("_Bool b = 1; b++; return b;");
+    agree("_Bool b = 1; b += 1; return b;");
+    // Adding more than one, so a fix that special-cases the increment is not enough.
+    agree("_Bool b = 1; b += 3; return b;");
+    agree("_Bool b = 0; b += 2; return b;");
+    // `e--` from 0 gives 1 in C *and* by accident under the wrapping reading, so it is kept
+    // as the case that must not regress rather than as a discriminator.
+    agree("_Bool b = 0; b--; return b;");
+    agree("_Bool b = 1; b -= 1; return b;");
+    // The **value the expression yields**, which is the field after conversion for prefix
+    // and before it for postfix.
+    agree("_Bool b = 1; int r = b++; return r * 10 + b;");
+    agree("_Bool b = 1; int r = ++b; return r * 10 + b;");
+    agree("_Bool b = 1; int r = (b += 1); return r * 10 + b;");
+    // Multiplication and the bitwise operators reach the same path.
+    agree("_Bool b = 1; b *= 2; return b;");
+    agree("_Bool b = 1; b |= 2; return b;");
+    agree("_Bool b = 1; b ^= 1; return b;");
+}
+
 /// **A compound literal is an object.**
 ///
 /// `raw_expr` handles every `ExprKind` but three, and falls through to `Undef` for the
