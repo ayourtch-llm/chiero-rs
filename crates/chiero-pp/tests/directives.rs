@@ -283,6 +283,28 @@ fn line_error_warning_and_pragma_have_defined_effects() {
 }
 
 #[test]
+fn pragmas_are_recorded_for_downstream_target_selection() {
+    let tu = preprocess_str(
+        "pragma.c",
+        "#pragma GCC push_options\n#pragma GCC target(\"avx2\")\n_Pragma(\"GCC pop_options\")\nafter\n",
+        Config::default(),
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["after"]);
+    assert_eq!(
+        tu.pragmas
+            .iter()
+            .map(|pragma| pragma.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "GCC push_options",
+            "GCC target ( \"avx2\" )",
+            "GCC pop_options"
+        ]
+    );
+}
+
+#[test]
 fn include_next_continues_after_the_current_search_directory() {
     let mut files = MemoryFiles::default();
     files.files.insert(
