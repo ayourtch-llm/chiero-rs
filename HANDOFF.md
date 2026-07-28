@@ -487,140 +487,82 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 136) — 1117 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 137) — 1118 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
 > wild pointer plus eight more defects and emptied `tests/corpus/owed/`; 133 found pointer
 > null-testing did not work at all; 134 discharged the parser's speculative type-name
 > rollback; 135 pinned every operator's precedence class after a sweep found `<<` could be
-> moved without any test noticing; 136 fixed the bit-field read-modify-write. **013 is
-> clear** — 20/20 contracts, no owed items.*
+> moved without any test noticing; 136 fixed the bit-field read-modify-write; 137 made an
+> enumeration constant its value, at its own type and in its own scope. **013 is clear** —
+> 20/20 contracts, no owed items.*
 >
-> **Open question for the user, asked and not yet answered:** whether to build the
-> `chiero-cli` / `chiero-tool` surface now. Both are genuine stubs (5 lines and 1). That is
-> **M7 work while we are at M1**, and most of 050 §3's catalogue cannot be backed yet —
-> `gcov`, `select`, `diff`, `recipe` and `vpp` are all 1-line stubs. What *is* backed is one
-> vertical: C source → findings, plus CIR dump/verify and span provenance. The proposed
-> slice was the 050 §2 envelope in `chiero-tool` plus three clap subcommands over that
-> vertical, TDD'd against 050 contracts 1, 2 and 4b. **Do not start it without an answer** —
-> it reorders the roadmap.
+> ### 🧭 Decided this session — do these before more one-defect waves
 >
-> ## ✅ The sret wild pointer is fixed, and it was never where six waves looked
+> The user observed that defects are being found one wave at a time and that this is now the
+> bottleneck. A Fable meta-review agreed the *cause* but corrected the framing: the defects
+> came from four channels (human fixtures, adversarial review, probing around a smaller
+> reported bug, mutation), and what they share is that **each is bounded by what a human
+> thought to spell**. The rules-earned list below is mostly cross-product failures — one arm
+> guarded and not its sibling, every fixture putting the pointer on the left. The fix is a
+> channel where constructs are enumerated **once, in one auditable grammar**, and the
+> spellings × contexts × operand orders are explored mechanically.
 >
-> **The cause was in lowering, one line, in `expr`'s `Ident` arm.** A local aggregate read
-> as a value emitted `load ptr`, so `return p;` in an aggregate-returning callee lowered to
-> `addrlocal p` / `load ptr` / `copymem sret <- <p's bytes>`. The `0x700000003` in every
-> diagnostic was the struct's own `{3, 7}` used as an address. The engine, the call ABI and
-> scope balance were each eliminated in turn *because each was innocent*.
+> **1. Coverage recon (half a day, one-shot).** `cargo install cargo-llvm-cov`, run over the
+> existing suite, read region coverage for `expr`, `assign`, `lvalue_addr`, `truth_of` and
+> every `_ =>` fallback. Finds the "arm that returns `Undef`/32/`None` and never executed"
+> class — the enum defect's shape. Structurally blind to "right arm, wrong for this operand
+> type", because `width_of` answering 32 for a pointer executes the same region a passing
+> `int` test does. Reconnaissance, not a channel.
 >
-> The **global** half of the same arm had the guard already, under the comment "an array
-> names its own address; a scalar names its contents". The local half never got it. Nothing
-> caught it because the one aggregate-copy path with coverage, `y = x`, goes through
-> `lvalue_addr` and never reaches here — so 1102 tests passed over it.
+> **2. A generative differential harness (2–4 days).** Typed AST → C, both sides of the
+> existing oracle. Fable's estimate: it would have found **11–12 of the last 15 defects**.
+> Design points that matter, each earned from a specific defect:
+>   - **Multi-function generation is v1, not v2** — the struct-parameter defect is invisible
+>     to any body-only generator.
+>   - **Alternative spellings are a production**: `a[i]`, `*(a+i)`, `*(i+a)`, `p += i`, `p++`
+>     for one access. Every human fixture used `a[i]`, the only working spelling.
+>   - **Programs return a checksum over every live scalar and field**, which buys
+>     neighbour-corruption detection (the bit-field case) for free.
+>   - **Adversarial constant pool** — ±2^31, ±2^32, 2^63 — or the wide-enum class is missed.
+>   - **Five-way verdict, not pass/fail**: `Agree`, `Mismatch`, `ChieroPanic`,
+>     `SilentNoState`, `Refused{stage, diagnostic}`. Critically, `tests/harness/lower`
+>     **panics on any diagnostic**, so a clean-lowering `None` is *always* a defect — that is
+>     015 §7's "a gap is a diagnostic, not a licence" made mechanical.
+>   - **`Refused` needs an allowlist ratchet**, or the ledger becomes a suppression file: a
+>     refusal whose diagnostic code is not on the list fails CI.
+>   - **UB by sanitizer discard, not by construction** — `-fsanitize=undefined,address`,
+>     plus discard when gcc -O0 / gcc -O2 / clang -O0 disagree with each other. Building
+>     provably-UB-free generation is the csmith trap.
+>   - **Shrink over the AST, not the text** (~250 lines); emit the shrunk case as literal
+>     `agree_with("…", "…")` so the random channel *feeds* `differential.rs` rather than
+>     competing with it.
+>   - Fixed-seed batch in CI; open-ended soak as `xtask diff-soak --seed N`.
 >
-> ### The nine defects wave 132 fixed
+> **Do not**: csmith, creduce/cvise (absent, and worse than AST shrinking when you own the
+> AST), CIR well-formedness properties (all 15 defects produced verifier-clean CIR — that
+> dimension does not vary), more corpus goldens *as detection* (six broken features left them
+> byte-identical), or promoting `-O2`/clang to the primary verdict.
 >
-> 1. **A local aggregate named as a value is its address** (`998d999`). The wild pointer.
-> 2. **A pointer-typed global names its contents** (`f7bc88f`). The global arm's guard was
->    `matches!(ty, CTy::Ptr)`, which is equally true of `int *gp` — so reading a global
->    pointer yielded the address *of* `gp`. Found only because the local arm needed the
->    narrower predicate.
-> 3. **Every lvalue is loaded and stored at its sema type** (`f7bc88f`). Three sites asked
->    `raw_width_of`, which answers 32 for anything that is not an integer. A pointer in a
->    struct member, in an array element, or reached through a second pointer was stored and
->    loaded as an `i32` and kept half of itself.
-> 4. **A struct parameter is the callee's own copy** (`e66a29f`). The prologue gave it a
->    slot of its lowered `CTy` — eight bytes of `CTy::Ptr` — stored the caller's address
->    into it, and the body read fields out of a pointer. `span_of({3, 8})` returned 28663:
->    no fault, no finding, just a wrong number.
-> 5. **Pointer arithmetic is scaled `PtrAdd`** (`d9b4171`), in all six spellings.
-> 6. **`p += 1` does not convert `1` to a pointer** (`d9b4171`, in sema).
-> 7. **An aggregate assignment takes any right-hand side.** `assign` used `lvalue_addr(rhs)`
->    and returned `Undef` when that was `None`, so `y = mk(1, 2)`, `y = (0, x)`,
->    `y = c ? x : z` and `w = y = x` emitted **no `CopyMem` at all** — the assignment
->    vanished from the CIR along with the right-hand side's side effects.
-> 8. **A vector and a function designator have no value form either.** `is_aggregate`
->    matched `Record | Array` while `cty`, `aggregate_size` and `aggregate_size_of_ty` all
->    included `Vector` — so a vector reproduced defect 1 exactly, and `elem_size_of` scaled
->    vector indexing by one byte. `is_address_only` is now the predicate for "names its
->    address" and includes `Ty::Func`, which fixes `(*fp)(3)`.
+> **Known limit**: like `differential.rs`, this tests closed concrete programs only. The
+> symbolic-execution defect class (the wave-117 `fork_on_offset` survivor, unions under a
+> symbolic index) needs a v2: generate `int probe(int x)`, run symbolically, and require each
+> sampled concrete `x` to match the path whose condition it satisfies.
 >
-> 9. **A load has the width of its declared type**, not of the bytes it read. Memory is
->    byte-addressed, so `read_term` returns `size * 8` bits, and a type narrower than its
->    storage had a value wider than itself. `sizeof(_Bool)` is 1 while its CIR type is
->    `Int(1)`, so `load i1` produced eight bits and `add i1` hit an `assert_eq!` in the
->    solver — `_Bool b = 0; b += 1;` **panicked the whole run**. The branch beside it already
->    used `sort_of(ty)`; only the succeeding path disagreed. This is the one fix outside
->    lowering and sema.
->
-> Defects 7, 8 and 9 came from the adversarial review of the implementation, which also
-> confirmed the earlier tests could be satisfied by an implementation that was wrong on
-> by-value arguments — it was, until defect 4 was found independently two commits later.
->
-> One rule now covers all four: **an aggregate lvalue names its address; every other lvalue
-> is loaded and stored at `cty(type_of(e))`.** `cty_of` and `is_aggregate_expr` are the two
-> helpers, used at every lvalue site.
->
-> ### The oracle grew a prelude, and now announces
->
-> `agree_with(prelude, body)` emits file-scope text before `probe`, so globals and helper
-> functions are testable — defects 2 and 4 were outside the oracle's reach entirely before.
-> `gcc_answer` returns `Result<i32, Oracle>`; only a failure to *spawn* counts as absence,
-> and everything else panics with its real reason instead of being reported as "gcc not
-> available". `zz_the_oracle_actually_ran` fails if any fixture skipped — verified by
-> running the binary with an empty PATH, where it reports 85 skips and goes red instead of
-> 19 tests passing over nothing.
->
-> ### Pointer arithmetic, fixed in the same wave
->
-> **Every spelling but `a[i]` was broken**, not just the one recorded. `*(a + 1)` emitted
-> `add i32 %addr, 1i32` — thirty-two bits on a sixty-four-bit address, and unscaled.
-> `ptr_arith` and `displace` now cover `p + n`, `n + p`, `p - n`, `p - q`, `p += n`, `p++`
-> and `--p`; `p - q` divides by the element size because C11 6.5.6p9 makes it a count.
->
-> It also exposed a **sema** defect: `type_expr` coerced the RHS of every `Assign` to the
-> lvalue's type, so `p += 1` produced `inttoptr i32 1 to ptr` and lowering got a pointer
-> where the count belonged. C11 6.5.16.2p1 keeps the right operand an integer for `+=`/`-=`
-> on a pointer. That is the *only* sema change wave 132 made — everything else was lowering.
->
-> ## ✅ Wave 133 — a pointer could not be tested against null, in any way C spells it
->
-> Wave 133 set out to fix the `_Bool` truncation at the top of this list and found something
-> much larger sitting underneath it: **`if (p)`, `if (p == 0)`, `while (p)`, `p ? a : b`,
-> `p && q` and `!p` all produced no state at all.** Not a wrong answer — no path survived.
-> `if (p == 0)` is the plainest null check in C and VPP writes it thousands of times.
->
-> One cause, and it is wave 132's third defect in the one path that wave did not reach: the
-> comparison arm typed its `Cmp` as `CTy::Int(width_of(lhs))`, and `width_of` reports an
-> *integer's* width and answers 32 for everything else. `truth_of`, which every C condition
-> funnels through, took a *width* parameter and so forced each caller to make the same
-> mistake — while its own doc comment stated the correct rule for integers.
->
-> Fixed in four lowering sites and one engine site, all answering "what type is this
-> operand" the same way: `compare_ty` returns `CTy::Ptr` for anything address-like;
-> `truth_of` takes a `CTy` rather than a width; the comparison arm tests **either** side, so
-> `0 == p` works as well as `p == 0`; and `cmp_operand` in the engine takes a pointer as its
-> address through the same `address_term` that `PtrToInt` uses.
->
-> A conversion to `_Bool` is `x != 0` (C11 6.3.1.2p1) at both cast sites — `typed_node` for
-> sema's conversion chain, `raw_expr` for the syntax. `cast_kind` had picked `Trunc`, so
-> `b = 2` and `b = 256` both stored false, and `b = -1` was right only because its low bit
-> is set.
->
-> **Seven mutations run, seven killed** — but only after mutation found a real gap: dropping
-> the either-side test in the comparison arm *survived the whole suite*, because every
-> fixture put the pointer on the left. Three `0 == p` cases closed it. That is the wave's
-> lesson: the mutation found what two adversarial reviews and a green suite did not.
+> **3. `chiero-cli` / `chiero-tool` — approved by the user this session** ("do as you see
+> fit"). Both are genuine stubs (5 lines and 1). It is M7 work at M1 and five of the crates
+> 050 §3's catalogue needs are 1-line stubs, so only one vertical can be backed: C source →
+> findings, plus CIR dump/verify and span provenance. Build the 050 §2 envelope in
+> `chiero-tool` first — every operation returns `fidelity`/`proven`/`blind_spots`, and a
+> subcommand-per-function CLI would bypass the one design decision 050 calls the most
+> important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
+> the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
 > ### 🔴 Do this first: defects found by the implementation review, still open
 >
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
-> - **An enum constant lowers to a silent `Undef`.** `enum E { A = 3 }; enum E e; e = A;`
->   emits `store i32 undef` — the `Ident` arm falls through when the name is neither a local,
->   a global, nor a function. gcc says 3, chiero returns nothing, and no diagnostic is
->   pushed, so 015 §7 never refuses the function either.
 > - **`lvalue_addr` returning `None` for an aggregate is still silent in two places.**
 >   `struct I y = mk().i;` and the compound literals `(struct S){1, 2}` and `(int[]){5, 6}`
 >   all produce **no state and zero diagnostics**. 020 §5 says a gap is a diagnostic rather
@@ -660,6 +602,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A name is not a scope** (wave 137). The first fix recorded enumerators in a
+> `Symbol -> value` table; a mutation swapping `insert` for `or_insert` survived, because a
+> function-local `enum { K = 2 }` and a file-scope `enum { K = 1 }` are both legal and both
+> called `K` — by name the table keeps whichever came last. Keyed by `ExprId`, resolved
+> where the scope is known, the question does not arise. When a lookup can be ambiguous,
+> key it on the *use*, not the *name*.
 > **A discriminator must differ under *both* readings — check it against gcc first**
 > (waves 135, 136). Four precedence fixtures and two signedness fixtures looked like proofs
 > and were not: two operators sharing a class parse left-associatively into the *same tree*
@@ -744,7 +692,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
 >
-> Owed and written down: the three defects above; the wave-117 `fork_on_offset` survivor;
+> Owed and written down: the two defects above; the wave-117 `fork_on_offset` survivor;
 > floats do not execute; designated, bit-field and address initializers refused; a fault in a
 > non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
 > `Ty::Error` in sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
