@@ -2680,6 +2680,39 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    Recorded in the code, because a surviving mutant usually means a missing test and this
    one does not.
 
+   **WAVE 71** (`437726b`; 696 tests) — **the wave-68 forking review reported: 13 of 27
+   mutations survived, and it found two live defects with no mutation at all.** The three
+   fixed here are the ones that make chiero wrong about real programs.
+
+   1. **Every store through an entry pointer parameter was silently dropped.** Wave 64's
+      `havoc_object(Symbolic)` sets `Repr::Array`, and every byte-level *write* path
+      refuses a promoted object — so `p[1]='a'` never landed and the following
+      `if (p[1]=='a')` explored **both** sides. A path the program does not have, on the
+      most common idiom in C, reaching `memcpy`/`memset`/`strcpy` into any caller buffer.
+      ⚠️ **My first fix was worse**: suppressing the uninitialized-read *finding* left the
+      byte reading back as the backing store's **zero** — 021 §3.1's headline failure,
+      introduced while fixing something else. The pointee is filled byte-wise with symbols
+      now: `Repr::Bytes`, writable, every byte unclaimed. One term per byte; filling on
+      first touch is the optimisation, not the correctness.
+   2. **`strlen_symbolic` reported a false OOB on a *terminated* string** — no guard was
+      checked for satisfiability, so `buf[1]=0` still produced lengths 2 and 3 plus an
+      unterminated-string finding. A fabricated bug of exactly the class §4 step 4 exists
+      to catch. gcc over all 256 inputs gives 0 and 1; so does chiero now.
+   3. **A one-byte concrete prefix disabled the fork**, because dispatch gated it on the
+      concrete walk having scanned *zero* bytes.
+
+   **STILL OWED from this review** (all real, none applied yet): the `pop_if` guard removal
+   and two guard-algebra mutations survive because the fixture has **no branch after the
+   call** — the "fixture whose paths agree" trap again; the cap branch leaves `dst` unbound
+   so the first *use* of the result errors instead of terminating `Bounded` (§4 step 3);
+   a first branch that is a `Finding`/`Bounded` leaks its report onto every sibling (dead
+   code today, and wrong if reached); `Bounded` is not pinned as `Bounded`; three unguarded
+   `strlen_symbolic` edge cases; and 024 c21e's middle clause and c21d are unpinned.
+   ⚠️ Also: **three claims in my wave-68 commit message are false** — `len` is a constant
+   so a later `if (len == 2)` folds regardless of guards (the guards matter for branches
+   over the *bytes*), `malloc`'s branches never changed, and the concrete fast path does
+   *not* fall out of the same code.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2757,7 +2790,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **693 tests, 137/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **696 tests, 137/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
