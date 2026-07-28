@@ -503,6 +503,50 @@ fn a_braced_initializer_element_converts_to_its_member_type() {
     );
 }
 
+/// **A literal `0` added to a pointer is an integer, not a null pointer constant.**
+///
+/// sema converts a null constant to the pointer's type when one operand is a pointer — for
+/// *any* operator. Its own comment says why the rule exists: "a null constant **compared**
+/// against a pointer becomes that pointer type, so `p == 0` does not look like a
+/// pointer/integer mismatch downstream". Comparisons are the whole of it. C11 6.5.6 makes
+/// the other operand of `+`/`-` on a pointer an *integer*, and 6.3.2.3's null-constant rule
+/// is about assignment and comparison contexts.
+///
+/// So `&a[1] + 0` converted the `0` to a pointer, and lowering's `ptr_arith` then tried to
+/// sign-extend a `Ptr` to 64 bits: `inttoptr i32 0 to ptr` followed by `zext i32 %7 to i64`.
+/// The verifier rejects that — "cast source operand is Ptr, declared Int(32)" — but nothing
+/// runs it at lowering time, so the function was emitted and the engine produced no state.
+///
+/// Found by the generator once the alternative-spelling production existed: `*(&a[i] + 0)`
+/// is one of the six ways it writes an access, and the other five all worked.
+///
+/// The comment described a narrower rule than the code implemented, which is waves 107,
+/// 112, 118, 124 and 132's shape exactly.
+#[test]
+fn a_zero_added_to_a_pointer_is_an_integer() {
+    // The generator's find, and its siblings on both sides of the operator.
+    agree("int a[3] = {1, 2, 3}; return *(&a[1] + 0);");
+    agree("int a[3] = {1, 2, 3}; return *(0 + &a[1]);");
+    agree("int a[3] = {1, 2, 3}; return *(&a[1] - 0);");
+    agree("int a[3] = {1, 2, 3}; int *p = a; return *(p + 0);");
+    agree("int a[3] = {1, 2, 3}; int *p = &a[2]; return *(p - 0);");
+    // A **nonzero** literal on the same path, so the fix is not "stop converting" but
+    // "convert only where C says to".
+    agree("int a[3] = {1, 2, 3}; return *(&a[0] + 2);");
+    agree("int a[3] = {1, 2, 3}; return *(2 + &a[0]);");
+    // Writing through it, so the store path sees the same address computation.
+    agree("int a[3] = {1, 2, 3}; *(&a[1] + 0) = 9; return a[1];");
+    // **The comparisons the conversion exists for must keep working.** These are the half
+    // the rule is right about, and a fix that removed it wholesale breaks them.
+    agree("int x; int *p = &x; return p == 0;");
+    agree("int x; int *p = &x; return 0 != p;");
+    agree("int *p = 0; return p == 0;");
+    agree("int x; int *p = &x; return p ? 1 : 0;");
+    // And a null constant *assigned* to a pointer, the other context 6.3.2.3 covers.
+    agree("int *p = 0; return p == 0;");
+    agree("int x; int *p = &x; p = 0; return p == 0;");
+}
+
 /// **A member can be selected off a value, not only off an lvalue.**
 ///
 /// `lvalue_addr`'s `Member` arm asks `lvalue_addr` for the base, which is `None` for

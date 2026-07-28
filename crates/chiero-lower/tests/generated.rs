@@ -220,6 +220,10 @@ struct Gen {
     vars: Vec<Var>,
     /// Struct-typed locals in scope, as (name, record index).
     recs_in_scope: Vec<(String, usize)>,
+    /// Arrays in scope, as (name, element type, length). The length is kept so every
+    /// generated index can be **in range by construction** — an out-of-bounds read is UB
+    /// and would be discarded rather than compared, which wastes the program.
+    arrays: Vec<(String, Ty, usize)>,
     body: String,
     next_id: usize,
     depth: usize,
@@ -234,6 +238,7 @@ impl Gen {
             rng: Rng::new(seed),
             vars: Vec::new(),
             recs_in_scope: Vec::new(),
+            arrays: Vec::new(),
             body: String::new(),
             next_id: 0,
             depth: 0,
@@ -482,7 +487,36 @@ impl Gen {
         format!("({e})")
     }
 
+    /// **One access, spelled every way C spells it.**
+    ///
+    /// This is the production the defect record demands. Wave 132 found pointer arithmetic
+    /// broken in `p + n`, `n + p`, `p - n`, `p += n`, `p++` and `--p` — *every* spelling
+    /// except `a[i]`, which is the only one any hand-written fixture had used. A grammar
+    /// that emits one spelling reproduces exactly that blind spot; this one picks among
+    /// them, so a fix that reaches the subscript path and stops is caught by volume rather
+    /// than by somebody remembering.
+    ///
+    /// `base` is an array's name and `i` an index already known to be in range.
+    fn access(&mut self, base: &str, i: usize) -> String {
+        match self.rng.below(6) {
+            0 => format!("{base}[{i}]"),
+            1 => format!("*({base} + {i})"),
+            2 => format!("*({i} + {base})"),
+            3 => format!("*(&{base}[{i}])"),
+            // `&a[n] - k` walks back from a later element, which is where the sign of the
+            // scaled offset shows: a zero-extended -1 addresses four billion elements away.
+            4 => format!("*(&{base}[{i}] + 0)"),
+            _ => format!("(&{base}[0])[{i}]"),
+        }
+    }
+
     fn leaf(&mut self, want: Ty) -> String {
+        if !self.arrays.is_empty() && self.rng.chance(3) {
+            let (name, _, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
+            let i = self.rng.below(len);
+            let a = self.access(&name, i);
+            return format!("({}){a}", want.c());
+        }
         let usable: Vec<Var> = self.vars.clone();
         if usable.is_empty() || self.rng.chance(3) {
             return self.konst(want);
@@ -528,6 +562,59 @@ impl Gen {
     /// UB and evaluation-order divergence between compilers by construction.
     fn stmt(&mut self) {
         match self.rng.below(10) {
+            0 if self.arrays.len() < 3 && self.rng.chance(2) => {
+                // An array with a braced initializer, which is also how wave 140's
+                // element-conversion path gets exercised for every element type.
+                let ty = *self.rng.pick(&Ty::ALL);
+                let ty = if ty == Ty::Bool { Ty::Int } else { ty };
+                let len = 2 + self.rng.below(3);
+                let name = self.fresh();
+                let vals: Vec<String> = (0..len).map(|_| self.konst(ty)).collect();
+                let _ = writeln!(
+                    self.body,
+                    "  {} {name}[{len}] = {{{}}};",
+                    ty.c(),
+                    vals.join(", ")
+                );
+                self.arrays.push((name, ty, len));
+            }
+            1 if !self.arrays.is_empty() => {
+                // A write **through one of the spellings**, so the store path sees them all
+                // and not only the subscript.
+                let (name, ty, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
+                let i = self.rng.below(len);
+                let lhs = self.access(&name, i);
+                let e = self.expr(ty);
+                let _ = writeln!(self.body, "  {lhs} = {e};");
+            }
+            2 if !self.arrays.is_empty() && self.rng.chance(2) => {
+                // **A pointer walked across the array**, which is the shape `p += n` and
+                // `p++` live in. The bound keeps every dereference inside the object, so
+                // the program stays defined.
+                let (name, ty, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
+                let p = self.fresh();
+                let start = self.rng.below(len);
+                let _ = writeln!(self.body, "  {} *{p} = &{name}[{start}];", ty.c());
+                let steps = self.rng.below(len - start);
+                for _ in 0..steps {
+                    let op = *self.rng.pick(&["++", "+= 1"]);
+                    if op == "++" {
+                        let _ = writeln!(self.body, "  {p}++;");
+                    } else {
+                        let _ = writeln!(self.body, "  {p} += 1;");
+                    }
+                }
+                let e = self.expr(ty);
+                let _ = writeln!(self.body, "  *{p} = {e};");
+                // And read it back through a *different* spelling than it was written.
+                let back = self.fresh();
+                let _ = writeln!(
+                    self.body,
+                    "  {} {back} = {p}[0] + *({p} + 0) - {p}[0];",
+                    ty.c()
+                );
+                self.vars.push(Var { name: back, ty });
+            }
             0..=3 => {
                 let ty = *self.rng.pick(&Ty::ALL);
                 let name = self.fresh();
@@ -618,11 +705,13 @@ impl Gen {
     fn nested(&mut self) {
         let saved = self.vars.len();
         let saved_recs = self.recs_in_scope.len();
+        let saved_arrays = self.arrays.len();
         for _ in 0..1 + self.rng.below(2) {
             self.stmt();
         }
         self.vars.truncate(saved);
         self.recs_in_scope.truncate(saved_recs);
+        self.arrays.truncate(saved_arrays);
     }
 
     fn pick_var(&mut self) -> Option<Var> {
@@ -656,6 +745,14 @@ impl Gen {
         for (name, r) in &recs {
             for fi in 0..self.records[*r].fields.len() {
                 let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}.f{fi});");
+            }
+        }
+        // Every element of every array, for the same reason as every field: a write that
+        // lands one element over changes the checksum even when its own value is right.
+        let arrays = self.arrays.clone();
+        for (name, _, len) in &arrays {
+            for i in 0..*len {
+                let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}[{i}]);");
             }
         }
         let _ = writeln!(self.body, "  return (int)acc;");
