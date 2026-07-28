@@ -487,7 +487,61 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 117, `07524e1`) — 1070 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 118, `HEAD`) — 1074 tests, 3 ignored, M1 165/165 by contract
+>
+> **All five corpus files execute clean**, and the only `#[ignore]`s left are 010's 18,
+> 011's 12 and 012's 17 — the three deliberately-uncovered metrics. Every corpus file is
+> lowered, verified, golden-compared *and* run, with every path terminating by returning and
+> nothing invented.
+>
+> ### Next, in rough order of value
+>
+> 1. **The corpus is five files.** It is now a real oracle — waves 114–118 found five defects
+>    through it — so the cheapest way to find the sixth is to add fixtures. Loops with
+>    symbolic bounds, pointer arithmetic across struct members, `static inline` from a
+>    header, a function pointer call.
+> 2. **021 c21 is reachable and untested on a real global** (since wave 114 fixed
+>    `is_const`): `const int g = 1; *(int *)&g = 2;` should be exactly one finding that does
+>    not alter the bytes.
+> 3. Initializer forms refused: designated, bit-field, address (`int *p = &g;` — CIR cannot
+>    express a relocation).
+> 4. A fault in a non-entry frame is untested; `Bits` path steps are not emitted.
+> 5. **023 c17** — a milestone, not a wave; measurement in wave 110's entry.
+> 6. The unresolved `fork_on_offset` survivor from wave 117 (siblings given the base offset
+>    still pass) — find out whether `pending_dst` is `None` there.
+>
+> ### Rules earned, most recent first
+>
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence, not a dead
+> end** (wave 118). Three passing fixtures narrowed a wild pointer to "only under forking",
+> which no amount of reading `AddrOfGlobal` would have.
+> **State that forking clones must not be cached where forking cannot reach.** An
+> `Engine`-level map naming a `State`-level object is a hit for something that is not there.
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A comment claiming a property is not the property** (waves 107, 112).
+> **The fixture never reached the comparison the design exists for** — sixteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**; **some changes are not expressible as a one-line mutant** —
+> say so rather than claiming coverage; **check a patch script printed `ok`**. An oracle that
+> can silently not run is not an oracle — **announce every skip**.
+>
+> Owed and written down: the wave-117 `fork_on_offset` survivor; designated, bit-field and
+> address initializers refused; 021 c21 untested on a real global; a fault in a non-entry
+> frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
+> sema; the parser's speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U`
+> string literals lose their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are
+> deliberately uncovered.
+>
+> ### Earlier (wave 117, `07524e1`) — 1070 tests, 4 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: a symbolic index into a *global* array is a wild pointer
 >
