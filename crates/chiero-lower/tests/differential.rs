@@ -445,6 +445,29 @@ fn an_enumeration_constant_is_its_value() {
     // The enumerator in a condition, where a wrong value changes which branch runs rather
     // than only what is returned.
     agree_with(E, "if (A < C) { return 11; } return 22;");
+    // **An enumeration too wide for `int`.** Found by a mutation: hardcoding the constant's
+    // width to 32 passed every case above, because every case above fits. C11 6.4.4.3 says
+    // an enumeration constant is an `int`, but only because it also requires the values to
+    // fit one; gcc widens the whole enumeration to `long` when they do not, and
+    // `sizeof(X)` is then 8. Emitted 32 bits wide, `X` lowers to `5000000000i32`.
+    agree_with("enum Big { X = 5000000000 };\n", "return (int)(X >> 32);");
+    agree_with(
+        "enum Big { X = 5000000000 };\n",
+        "return (int)(X & 0xffffffff);",
+    );
+    agree_with("enum Big { X = 5000000000 };\n", "return (int)sizeof(X);");
+    // And a negative wide one, so the widening keeps its signedness. `Y >> 32` alone does
+    // not discriminate — the comparison does.
+    agree_with("enum Neg { Y = -5000000000 };\n", "return (int)(Y >> 32);");
+    agree_with("enum Neg { Y = -5000000000 };\n", "return Y < 0;");
+    // **A function-local enum does not escape its function**, and does not overwrite a
+    // file-scope name it shares. Found by a mutation: recording the values by *name* keeps
+    // whichever was seen last, so the file-scope `K` read as 2. Both uses are pinned,
+    // because a fix that made the outer one right by dropping the inner is no better.
+    const K: &str = "enum K1 { K = 1 };\nstatic int inner(void) { enum K2 { K = 2 }; return K; }\n";
+    agree_with(K, "return K;");
+    agree_with(K, "return inner();");
+    agree_with(K, "return K * 10 + inner();");
 }
 
 /// **A read-modify-write on a bit-field stays inside the bit-field.**

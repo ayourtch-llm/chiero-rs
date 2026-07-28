@@ -1881,6 +1881,24 @@ impl Lowerer<'_> {
                         );
                         return Operand::Value(dst);
                     }
+                    // **An enumeration constant is a constant, not a name to look up.**
+                    // C11 6.4.4.3 makes it an `int` with the value sema computed while
+                    // typing the enum. It is neither a local, a global, nor a function, so
+                    // it reached the `Undef` below and every use of one lowered to
+                    // `undef` — silently, since no diagnostic was pushed and 015 §7 had
+                    // nothing to refuse the function for. A `switch` over enumerators then
+                    // matched no arm and fell out with a plausible wrong answer.
+                    // **Keyed by this reference**, not by the name: a function-local
+                    // `enum { K = 2 }` and a file-scope `enum { K = 1 }` are both legal and
+                    // both called `K`, and a by-name lookup gives the outer use the inner
+                    // value. sema resolved the scope; this inherits the answer.
+                    if let Some((v, _)) = self.analysis.enum_ref(e) {
+                        // The *expression's* width, not `int`, so an enumerator used where
+                        // 014 has already widened it to `long` is not a 32-bit operand in
+                        // a 64-bit operation.
+                        let bits = self.raw_width_of(e);
+                        return Operand::Const(Const::Int { bits, val: v });
+                    }
                     let ty = CTy::Int(self.raw_width_of(e));
                     return Operand::Const(Const::Undef(ty));
                 };

@@ -418,6 +418,22 @@ pub struct Analysis {
     pub(crate) syntactic_types: IndexMap<TypeId, TyId>,
     pub(crate) target: Option<TargetConfig>,
     pub(crate) typed: TypedAst,
+    /// Enumerator name → value.
+    ///
+    /// **Kept on the output, not only on the context.** The values are computed while
+    /// typing the enum and were dropped when `analyze` returned, so lowering had no way to
+    /// ask what `A` is and every use of an enumeration constant lowered to `undef`.
+    /// `const_eval` resolves them by rebuilding a whole context, which is right for one
+    /// array bound and O(TU) per reference for a consumer that has one per expression.
+    pub(crate) enumerators: IndexMap<Symbol, (i128, TyId)>,
+    /// Each enumerator *reference* → the value and type it resolved to.
+    ///
+    /// **Keyed by the expression, not the name**, because a name is not enough: an
+    /// `enum { K = 2 }` inside a function and an `enum { K = 1 }` at file scope are both
+    /// legal and both called `K`. A by-name table keeps whichever was recorded last and
+    /// hands the file-scope use the inner value. Scope is resolved here, while it is
+    /// known; lowering asks what *this* reference is worth and needs no scope of its own.
+    pub(crate) enum_refs: IndexMap<ExprId, (i128, TyId)>,
     pub diagnostics: Vec<SemaDiagnostic>,
 }
 
@@ -435,6 +451,31 @@ impl Analysis {
     /// The record defined with this tag, if the TU defined one.
     pub fn record_by_tag(&self, tag: Symbol) -> Option<RecordId> {
         self.by_tag.get(&tag).copied()
+    }
+
+    /// The value of an enumeration constant, or `None` if the name is not one.
+    ///
+    /// 014 contract 10 gives an enum an underlying integer type; this is the other half —
+    /// what each name in it *means*. C11 6.4.4.3 makes an enumeration constant an `int`
+    /// with this value, so a consumer needs no further conversion.
+    pub fn enumerator(&self, name: Symbol) -> Option<i128> {
+        self.enumerators.get(&name).map(|&(v, _)| v)
+    }
+
+    /// The value of one enumerator *reference*, resolved in its own scope.
+    pub fn enum_ref(&self, e: ExprId) -> Option<(i128, TyId)> {
+        self.enum_refs.get(&e).copied()
+    }
+
+    /// The type an enumeration constant has.
+    ///
+    /// **Not always `int`.** C11 6.4.4.3 says `int`, but only because it also requires
+    /// every value to fit in one; gcc widens the whole enumeration to `long` when one does
+    /// not, and `sizeof(X)` is then 8. Typing the constant `int` regardless truncated it —
+    /// `enum Big { X = 5000000000 }` lowered to `5000000000i32`. Stored in the same entry
+    /// as the value so the two cannot disagree about which enum a name came from.
+    pub fn enumerator_ty(&self, name: Symbol) -> Option<TyId> {
+        self.enumerators.get(&name).map(|&(_, t)| t)
     }
 
     /// The tag a record was defined with, or `None` if it was anonymous.
@@ -852,6 +893,9 @@ impl Cx<'_> {
                         _ => Vec::new(),
                     };
                     let saved = self.values.clone();
+                    // An `enum` declared inside the body is local to it, exactly as a
+                    // parameter is, and was leaking into the rest of the TU.
+                    let saved_enums = self.enumerators.clone();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -875,6 +919,7 @@ impl Cx<'_> {
                     // A parameter does not outlive its function; restoring rather than
                     // removing also undoes any shadowing the body introduced.
                     self.values = saved;
+                    self.enumerators = saved_enums;
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -1171,6 +1216,9 @@ impl Cx<'_> {
         let mut next = 0i128;
         let mut lo = 0i128;
         let mut hi = 0i128;
+        // The constants' *type* is the enumeration's, and that is not known until every
+        // value has been seen — so they are collected here and recorded below.
+        let mut pending: Vec<(Symbol, i128)> = Vec::new();
         for m in &members {
             let DeclKind::Var {
                 name: Some(en),
@@ -1188,6 +1236,7 @@ impl Cx<'_> {
             lo = lo.min(v);
             hi = hi.max(v);
             self.enumerators.insert(en, v);
+            pending.push((en, v));
         }
         let int_bits = (self.target.sizes.int_ * 8) as u32;
         let fits_int = lo >= -(1i128 << (int_bits - 1)) && hi < (1i128 << (int_bits - 1));
@@ -1204,6 +1253,11 @@ impl Cx<'_> {
             }
         };
         let id = self.intern(t);
+        // **On the output**, so a consumer that outlives this context can ask — lowering
+        // had no way to reach `Cx::enumerators` and lowered every use to `undef`.
+        for (en, v) in pending {
+            self.out.enumerators.insert(en, (v, id));
+        }
         if let Some(n) = name {
             self.enums.insert(n, id);
         }
@@ -1892,17 +1946,19 @@ impl Cx<'_> {
                     .values
                     .get(sym)
                     .copied()
+                    // **An enumeration constant has its enumeration's type**, which is
+                    // `int` only when every value in it fits one. Hardcoding `int_bits`
+                    // here typed `enum Big { X = 5000000000 }`'s constant 32 bits wide and
+                    // lowering truncated it to `5000000000i32`.
+                    //
+                    // `self.enumerators` is the *scoped* map, so this resolves the name the
+                    // way C does; the reference and its answer are recorded together so
+                    // lowering inherits that resolution rather than repeating it by name.
                     .or_else(|| {
-                        self.enumerators.get(sym).map(|_| {
-                            self.out
-                                .interned
-                                .get(&Ty::Int {
-                                    signed: true,
-                                    bits: int_bits,
-                                })
-                                .copied()
-                                .unwrap_or(TyId(0))
-                        })
+                        let v = self.enumerators.get(sym).copied()?;
+                        let t = self.out.enumerator_ty(*sym)?;
+                        self.out.enum_refs.insert(expr, (v, t));
+                        Some(t)
                     })
                     .unwrap_or_else(|| {
                         // An undeclared name is reported **once per name**, not once per
