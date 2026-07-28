@@ -487,7 +487,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 90, `76805d0`) — 888 tests, M1 152/165, frontend 88/117
+> ### ⏭️ START HERE (wave 91, `5e9b85a`) — 898 tests, M1 152/165, frontend 93/117
+>
+> **C source reaches CIR.** `chiero-lower` exists (015: 5/25) — functions, blocks,
+> statements, expressions, the §2.1 short-circuit shape, left-to-right evaluation — and
+> every fixture produces CIR the 020 §8 verifier accepts. The pipeline is now
+> preprocess → parse → types → layout → conversions → lower, end to end.
+>
+> **Next is 015 contract 5's differential oracle against gcc, and it is the priority.**
+> Wave 91 ended with two mutations alive — ignoring signedness (always `SDiv`) and always
+> zero-extending — and *neither can be killed by a structural test*, because the block
+> shapes are identical and only the computed values differ. Every assertion in
+> `tests/shapes.rs` is about shape. The answer already exists in the tree:
+> **`chiero-exec` runs CIR**, and it is in the same layer band as `chiero-lower`
+> (001 §4 rule 2 allows the dev-dependency, rule 8 explicitly contemplates it). Lower a
+> fixture, run it, compile the same C with gcc, run that, compare. That closes contract 5
+> and turns every later shape contract into a semantic one for free.
+>
+> Then, in rough order:
+>
+> 1. **Scopes — 015 contracts 9, 9b, 9c, 10, 11.** Read 9b before implementing: contracts
+>    9–11 test scope *exits* only, so an implementation that never enters a scope on a
+>    `switch` case path passes all of them.
+> 2. **`gcov_lines` — 015 §5 and contracts 15, 15b, 16, 17.** §5 is the join point of the
+>    whole test-selection story, and 15b warns that contract 17's subset property is
+>    *vacuously satisfied by the empty set*, so the two must be tested together.
+> 3. **Golden `.cir` files — contracts 2 and 22**, which is what makes M1's hand-written
+>    fixtures and M2's real lowering the same language.
+> 4. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down: `InitList`/`StmtExpr`/`typeof` type to `Ty::Error`; VLA bounds are
+> flexible; the parser's speculative type-name diagnostic rollback is unpinned; `switch`,
+> `goto`, `break`, `continue` and `asm` are **refused** by lowering with a diagnostic
+> (015 §7) rather than lowered wrongly.
+>
+> ### Earlier (wave 90, `76805d0`) — 888 tests, frontend 88/117
 >
 > **014 is complete, 20/20, and with it the frontend.** 010–014 are done bar 010's two
 > owed contracts: preprocessor, parser, types, layout, conversions, linkage. Everything
