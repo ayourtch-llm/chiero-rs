@@ -487,12 +487,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 132) — M1 165/165 by contract
+> ### ⏭️ START HERE (wave 133) — 1114 tests, 3 ignored, M1 165/165 by contract
 >
-> *The working tree is clean and every wave is committed. Wave 132 closed the sret wild
-> pointer that waves 126–131 were chasing, plus three more defects it uncovered, and
-> graduated `header_inline.c` out of `tests/corpus/owed/` — that directory is now empty
-> except its README.*
+> *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
+> clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
+> wild pointer that waves 126–131 were chasing plus eight more defects, and emptied
+> `tests/corpus/owed/`. Wave 133 found that pointer null-testing did not work at all.*
 >
 > ## ✅ The sret wild pointer is fixed, and it was never where six waves looked
 >
@@ -572,16 +572,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > where the count belonged. C11 6.5.16.2p1 keeps the right operand an integer for `+=`/`-=`
 > on a pointer. That is the *only* sema change wave 132 made — everything else was lowering.
 >
+> ## ✅ Wave 133 — a pointer could not be tested against null, in any way C spells it
+>
+> Wave 133 set out to fix the `_Bool` truncation at the top of this list and found something
+> much larger sitting underneath it: **`if (p)`, `if (p == 0)`, `while (p)`, `p ? a : b`,
+> `p && q` and `!p` all produced no state at all.** Not a wrong answer — no path survived.
+> `if (p == 0)` is the plainest null check in C and VPP writes it thousands of times.
+>
+> One cause, and it is wave 132's third defect in the one path that wave did not reach: the
+> comparison arm typed its `Cmp` as `CTy::Int(width_of(lhs))`, and `width_of` reports an
+> *integer's* width and answers 32 for everything else. `truth_of`, which every C condition
+> funnels through, took a *width* parameter and so forced each caller to make the same
+> mistake — while its own doc comment stated the correct rule for integers.
+>
+> Fixed in four lowering sites and one engine site, all answering "what type is this
+> operand" the same way: `compare_ty` returns `CTy::Ptr` for anything address-like;
+> `truth_of` takes a `CTy` rather than a width; the comparison arm tests **either** side, so
+> `0 == p` works as well as `p == 0`; and `cmp_operand` in the engine takes a pointer as its
+> address through the same `address_term` that `PtrToInt` uses.
+>
+> A conversion to `_Bool` is `x != 0` (C11 6.3.1.2p1) at both cast sites — `typed_node` for
+> sema's conversion chain, `raw_expr` for the syntax. `cast_kind` had picked `Trunc`, so
+> `b = 2` and `b = 256` both stored false, and `b = -1` was right only because its low bit
+> is set.
+>
+> **Seven mutations run, seven killed** — but only after mutation found a real gap: dropping
+> the either-side test in the comparison arm *survived the whole suite*, because every
+> fixture put the pointer on the left. Three `0 == p` cases closed it. That is the wave's
+> lesson: the mutation found what two adversarial reviews and a green suite did not.
+>
 > ### 🔴 Do this first: defects found by the implementation review, still open
 >
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
->
-> - **A conversion to `_Bool` truncates instead of booleanizing.** `_Bool b; b = 2;` gives 0
->   where C says 1, because `cast_kind` picks `Trunc` for `Int(32) -> Int(1)` and `2 & 1` is
->   0. C11 6.3.1.2 makes the conversion `!= 0`, which is a comparison, not a narrowing —
->   `b = 5` gives 1 only by luck. The *panic* this sat behind is fixed (`load` now yields
->   its declared width); the wrong answer is not.
 > - **A compound assignment or `++` on a bit-field does a full-unit `i32` read-modify-write.**
 >   `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, and `inc_dec` has no
 >   bit-field check at all — so `v.a += 1` and `v.b++` write over their neighbours. 015
@@ -629,6 +652,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Mutation finds what review cannot** (wave 133). Two adversarial reviews and a green
+> 1113-test suite all passed over a comparison rule keyed on the left operand only. The
+> mutation that dropped the right-hand test survived — and that survival was the only signal
+> anything was missing, because `0 == p` is the same C as `p == 0` and no reader thought to
+> write both. **Mutate every branch of a predicate you just wrote**, not the predicate as a
+> whole: `A || B` needs a fixture that fails when B alone is deleted.
+> **Chase the reported defect one level down before believing its scope** (wave 133). §9 had
+> "`_Bool` truncates" as one wrong answer. Probing the shapes around it found that pointer
+> null-testing — the most common defensive idiom in C — did not work at all. The recorded
+> defect was true and was the small half of what was there.
 > **A commit message that names four shapes and a test that covers two is a lie you will
 > believe** (wave 132). 998d999 listed "a by-value argument" among the shapes its guard
 > fixed. No fixture passed a struct by value, and it was *wrong* there — and worse than
