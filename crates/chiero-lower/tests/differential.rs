@@ -20,24 +20,37 @@ use chiero_solver::TermArena;
 
 /// Run `body` through chiero and through gcc, and require the same answer.
 fn agree(body: &str) {
-    let Some(expected) = gcc_answer(body) else {
-        eprintln!("skipping `{body}`: gcc not available (015 contract 5)");
+    agree_with("", body);
+}
+
+/// The same, with `prelude` emitted at **file scope** before `probe`.
+///
+/// A body alone cannot declare a global or a second function, so every defect that only
+/// shows up through file-scope storage — a pointer-typed global read as a value, a struct
+/// passed by value to a helper — was outside this oracle's reach entirely.
+fn agree_with(prelude: &str, body: &str) {
+    let Some(expected) = gcc_answer(prelude, body) else {
+        eprintln!("skipping `{prelude} / {body}`: gcc not available (015 contract 5)");
         return;
     };
-    let got = chiero_answer(body);
+    let got = chiero_answer(prelude, body);
     assert_eq!(
         got,
         Some(expected),
-        "`int probe(void) {{ {body} }}`: chiero says {got:?}, gcc says {expected}"
+        "`{prelude} int probe(void) {{ {body} }}`: chiero says {got:?}, gcc says {expected}"
     );
 }
 
 /// Lower, execute, and read the returned value as a 32-bit signed integer.
-fn chiero_answer(body: &str) -> Option<i32> {
-    let src = format!("int probe(void) {{ {body} }}");
+fn chiero_answer(prelude: &str, body: &str) -> Option<i32> {
+    let src = format!("{prelude}\nint probe(void) {{ {body} }}");
     let m = harness::lower(&src);
     let mut arena = TermArena::new();
-    let r = chiero_exec::Engine::new(&m).run(&mut arena);
+    // **`probe` by name**, not "the first function": a prelude declaring a helper puts
+    // something else first, and the oracle would then compare the helper's answer.
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
     // A concrete function has one path; take the first state that actually returned.
     let bits = r
         .states()
@@ -46,7 +59,7 @@ fn chiero_answer(body: &str) -> Option<i32> {
     Some(bits as u32 as i32)
 }
 
-fn gcc_answer(body: &str) -> Option<i32> {
+fn gcc_answer(prelude: &str, body: &str) -> Option<i32> {
     let dir =
         std::env::temp_dir().join(format!("chiero-diff-{}-{}", std::process::id(), next_seq()));
     std::fs::create_dir_all(&dir).ok()?;
@@ -54,7 +67,7 @@ fn gcc_answer(body: &str) -> Option<i32> {
     let bin = dir.join("p");
     std::fs::write(
         &c,
-        format!("#include <stdio.h>\nint probe(void) {{ {body} }}\nint main(void) {{ printf(\"%d\\n\", probe()); return 0; }}\n"),
+        format!("#include <stdio.h>\n{prelude}\nint probe(void) {{ {body} }}\nint main(void) {{ printf(\"%d\\n\", probe()); return 0; }}\n"),
     )
     .ok()?;
     let out = std::process::Command::new("gcc")
@@ -172,8 +185,8 @@ fn increment_yields_the_pre_or_post_value_as_written() {
     agree("int i = 5; int a = i--; return a * 10 + i;");
     agree("int i = 5; int a = --i; return a * 10 + i;");
 
-    let post = chiero_answer("int i = 5; int a = i++; return a * 10 + i;");
-    let pre = chiero_answer("int i = 5; int a = ++i; return a * 10 + i;");
+    let post = chiero_answer("", "int i = 5; int a = i++; return a * 10 + i;");
+    let pre = chiero_answer("", "int i = 5; int a = ++i; return a * 10 + i;");
     assert_eq!(post, Some(56), "`i++` hands back 5 and leaves 6");
     assert_eq!(pre, Some(66), "`++i` hands back 6 and leaves 6");
     assert_ne!(
@@ -341,6 +354,41 @@ fn an_aggregate_lvalue_is_an_address_not_a_load() {
     );
 }
 
+/// **A pointer-typed global names its contents, like any other scalar.**
+///
+/// The global ident arm's guard is `matches!(ty, CTy::Ptr)`, under a comment reading "an
+/// array names its own address; a scalar names its contents". The comment is right and the
+/// code does not implement it: pointers are untyped in CIR (020 §2), so `CTy::Ptr` is the
+/// lowered type of `int *gp` every bit as much as of `int a[4]`. A global pointer read as a
+/// value therefore yielded **its own address** instead of the address it holds, and `*gp`
+/// read the first four bytes of `gp` as an `int`.
+///
+/// Found while fixing the local arm, which needed the narrower predicate to avoid doing the
+/// same thing to every scalar local. It is the wave-107/112/118/124 shape once more: a
+/// comment claiming a property is not the property.
+///
+/// The prelude is what makes it testable at all — a global cannot be declared inside a
+/// function body, so this defect sat outside the oracle's reach.
+#[test]
+fn a_pointer_global_names_its_contents_not_its_own_address() {
+    agree_with("int x; int *gp;", "x = 7; gp = &x; return *gp;");
+    // A write through it, so a read that happened to land somewhere plausible is caught.
+    agree_with("int x; int *gp;", "x = 1; gp = &x; *gp = 9; return x;");
+    // Indexed through the global pointer, which scales an offset off the loaded base.
+    agree_with(
+        "int a[4]; int *gp;",
+        "a[0] = 5; a[2] = 8; gp = a; return gp[2] - gp[0];",
+    );
+    // **The array global must still name its own address** — the half the guard got right,
+    // and the half a fix that simply deleted it would break.
+    agree_with("int a[4]; ", "a[1] = 3; int *p = a; return p[1];");
+    // A pointer *inside* a global struct, reached through a member rather than by name.
+    agree_with(
+        "int x; struct H { int *p; }; struct H h;",
+        "x = 6; h.p = &x; return *h.p;",
+    );
+}
+
 /// **Statement expressions and VLAs**, checked for what they compute.
 ///
 /// A statement expression's value is the last expression statement's, and its side
@@ -405,8 +453,8 @@ fn wide_ranges_and_string_literals_compute_what_gcc_computes() {
 /// differing by the same machinery.
 #[test]
 fn the_oracle_can_observe_a_disagreement() {
-    let a = chiero_answer("signed char c = -1; int i = c; return i;");
-    let b = chiero_answer("unsigned char c = 255; int i = c; return i;");
+    let a = chiero_answer("", "signed char c = -1; int i = c; return i;");
+    let b = chiero_answer("", "unsigned char c = 255; int i = c; return i;");
     assert_eq!(a, Some(-1));
     assert_eq!(b, Some(255));
     assert_ne!(
@@ -415,8 +463,8 @@ fn the_oracle_can_observe_a_disagreement() {
          are comparing a constant against itself"
     );
     if let (Some(ga), Some(gb)) = (
-        gcc_answer("signed char c = -1; int i = c; return i;"),
-        gcc_answer("unsigned char c = 255; int i = c; return i;"),
+        gcc_answer("", "signed char c = -1; int i = c; return i;"),
+        gcc_answer("", "unsigned char c = 255; int i = c; return i;"),
     ) {
         assert_ne!(ga, gb, "and gcc agrees they differ");
     }
