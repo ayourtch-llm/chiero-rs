@@ -107,9 +107,63 @@ fn lower(
     for &item in ast.items() {
         cx.item(item);
     }
+    refuse_unverifiable(&mut cx.module, &mut cx.diagnostics);
     Lowered {
         module: cx.module,
         diagnostics: cx.diagnostics,
+    }
+}
+
+/// **015 §7 for the errors lowering did not know it made.**
+///
+/// The refusal in `function` fires when lowering *detected* something it could not
+/// represent. Wave 141 found the other class: `*(&a[1] + 0)` emitted `zext i32 %v to i64`
+/// on a `Ptr` — which the verifier rejects — and nothing complained, so the module was
+/// handed to the engine, which stopped on an instruction it could not interpret and
+/// reported a program that produced nothing. The caller had no way to tell that from a
+/// program that legitimately produces nothing.
+///
+/// So the verifier runs here and a function it rejects is discarded exactly as a detected
+/// gap is: body back to `Declared`, one diagnostic naming it. 020 §5's rule, applied to the
+/// case lowering cannot self-diagnose.
+///
+/// **Whole-module rather than per-function**, because `verify` quantifies over a `Module` —
+/// a call's arity is checked against the callee's declaration, and a single function lifted
+/// into a module of its own would lose that. `VerifyError` carries the `FuncId`, so the
+/// blame is per-function even though the check is not.
+///
+/// **Errors only.** `verify` also reports warnings, and refusing a function over one would
+/// turn advice into a capability loss.
+fn refuse_unverifiable(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
+    let mut blamed: Vec<(chiero_cir::FuncId, String, Span)> = Vec::new();
+    for e in chiero_cir::verify::verify(module) {
+        if !e.is_error() {
+            continue;
+        }
+        if blamed.iter().any(|(f, _, _)| *f == e.func) {
+            // One diagnostic per function, not per instruction: 015 §7's rule that a
+            // partial body is worse than none makes the first error decisive, and a
+            // malformed function usually produces several.
+            continue;
+        }
+        blamed.push((e.func, e.detail.clone(), e.span));
+    }
+    for (id, detail, span) in blamed {
+        let Some(f) = module.funcs.iter_mut().find(|f| f.id == id) else {
+            continue;
+        };
+        let name = f.name.clone();
+        f.blocks.clear();
+        f.allocas.clear();
+        f.access_paths.clear();
+        f.body = Body::Declared;
+        diagnostics.push(LowerDiagnostic {
+            span,
+            message: format!(
+                "`{}` lowered to CIR the verifier rejects ({detail}), so it was skipped",
+                &*name
+            ),
+        });
     }
 }
 
