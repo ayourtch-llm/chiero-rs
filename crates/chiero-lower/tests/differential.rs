@@ -391,6 +391,66 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     );
 }
 
+/// **A compound literal is an object.**
+///
+/// `raw_expr` handles every `ExprKind` but three, and falls through to `Undef` for the
+/// rest. Found by enumerating the variants against the arms rather than by writing a
+/// fixture: `Error`, `TypeName` and `InitList` reach the catch-all. The first two are
+/// **honestly refused** — `__builtin_types_compatible_p(int, int)` pushes "contains a
+/// construct lowering cannot represent" and 015 §7 discards the function, which is a gap
+/// behaving correctly. `InitList` is the silent one: `(struct S){1, 2}` preprocesses,
+/// parses, types and lowers with **zero diagnostics** and produces no state at all.
+///
+/// C99 6.5.2.5 makes a compound literal an unnamed *object* with automatic storage at
+/// block scope, not a value — so it has an address, it is an lvalue, and it can be
+/// assigned through. That is why the fix cannot be "evaluate the braces into a register".
+///
+/// VPP writes them in 9 files.
+#[test]
+fn a_compound_literal_is_an_object() {
+    const S: &str = "struct S { int a; int b; };\n";
+    // As an initializer, which is the spelling that reads most like a value.
+    agree_with(S, "struct S s = (struct S){1, 2}; return s.a * 10 + s.b;");
+    // **Its address**, which is the half that proves it is an object rather than a value.
+    agree_with(
+        S,
+        "struct S *p = &(struct S){5, 6}; return p->a * 10 + p->b;",
+    );
+    // An array compound literal decaying, which is how a caller passes a temporary list.
+    agree("int *q = (int[]){7, 8}; return q[0] * 10 + q[1];");
+    // Passed by value to a helper, so it composes with the wave-132 parameter copy.
+    agree_with(
+        "struct S { int a; int b; };\nstatic int sum_of(struct S s) { return s.a * 10 + s.b; }\n",
+        "return sum_of((struct S){3, 4});",
+    );
+    // A member selected straight off the literal, with no named object anywhere.
+    agree_with(S, "return (struct S){9, 1}.a;");
+    // A **scalar** compound literal, which is legal and is not an aggregate at all.
+    agree("int n = (int){42}; return n;");
+    // Assigned *from*, so the aggregate-assignment path sees a non-lvalue right-hand side
+    // that is nonetheless an object.
+    agree_with(
+        S,
+        "struct S u = (struct S){1, 2}; u = (struct S){7, 8}; return u.a * 10 + u.b;",
+    );
+    // A designated initializer inside one, and a nested literal, so the initializer
+    // machinery is reached rather than a two-field special case.
+    agree_with(S, "struct S t = (struct S){.b = 3}; return t.a * 10 + t.b;");
+    agree_with(S, "return ((struct S){(int){2}, 5}).b;");
+    // **Two literals are two objects.** One shared scratch slot would make both reads see
+    // the second, which every case above would still pass.
+    agree_with(
+        S,
+        "struct S *p = &(struct S){1, 2}; struct S *q = &(struct S){3, 4}; \
+         return p->a * 1000 + p->b * 100 + q->a * 10 + q->b;",
+    );
+    // Written through, which C permits because it is an lvalue.
+    agree_with(
+        S,
+        "struct S *p = &(struct S){1, 2}; p->a = 9; return p->a * 10 + p->b;",
+    );
+}
+
 /// **An enumeration constant is its value.**
 ///
 /// `expr`'s `Ident` arm resolves a local, then a global, then a function name, and falls
