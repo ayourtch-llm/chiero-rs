@@ -372,6 +372,22 @@ impl<'a> ModelCtx<'a> {
     pub fn endian(&self) -> Endian {
         self.endian
     }
+    /// How many reports have been made so far, and a way to drop the ones after that
+    /// point.
+    ///
+    /// For a model that runs a cheap pass and then a thorough one over the same input:
+    /// `strlen`'s concrete walk reports what it could not do, and the symbolic scan that
+    /// follows reports the same thing in its own words, so the caller saw one defect
+    /// twice. 021 c26's "exactly one finding, not two" is the governing precedent. Found
+    /// by review.
+    pub fn report_mark(&self) -> usize {
+        self.reports.len()
+    }
+
+    pub fn drop_reports_after(&mut self, mark: usize) {
+        self.reports.truncate(mark);
+    }
+
     pub fn findings(&self) -> Vec<String> {
         self.reports.iter().map(|(_, t)| t.clone()).collect()
     }

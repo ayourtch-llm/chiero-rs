@@ -577,3 +577,99 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
     uniq.dedup();
     assert_eq!(lens, uniq, "one state per length: {seen:?}");
 }
+
+/// **One defect, one finding.** `strlen` on a pointer before its object was reported
+/// twice: the concrete walk reports what it could not do, dispatch then runs the symbolic
+/// scan over the same bytes, and that reports the same thing in its own words. 021 c26's
+/// "exactly one … finding, not two" is the governing precedent, and the model-level
+/// fixture could not see this because it calls `strlen_symbolic` directly, bypassing the
+/// dispatch that produces the pair. Found by review.
+#[test]
+fn a_pointer_before_its_object_is_one_finding_not_two() {
+    let strlen = Function {
+        id: FuncId(1),
+        name: "strlen".into(),
+        params: vec![Param {
+            value: ValueId(0),
+            ty: CTy::Ptr,
+        }],
+        ret: CTy::Int(64),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Declared,
+        span: Span::DUMMY,
+    };
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![AllocaDecl {
+            id: AllocaId(0),
+            ty: CTy::Int(8),
+            count: 16,
+            align: 1,
+            scope: ScopeId(0),
+            lifetime: Lifetime::Scope,
+            name: None,
+            span: Span::DUMMY,
+        }],
+        blocks: vec![block(
+            0,
+            vec![
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(0),
+                        rv: RValue::AddrOfLocal {
+                            alloca: AllocaId(0),
+                        },
+                    },
+                    span: Span::DUMMY,
+                },
+                // One byte *before* the object.
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::PtrAdd {
+                            base: Operand::Value(ValueId(0)),
+                            off: Operand::Const(Const::Int { bits: 64, val: -1 }),
+                        },
+                    },
+                    span: Span::DUMMY,
+                },
+                Inst {
+                    kind: InstKind::Call {
+                        dst: Some(ValueId(2)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![Operand::Value(ValueId(1))],
+                    },
+                    span: Span::DUMMY,
+                },
+            ],
+            Terminator::Return(Some(i32c(0))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f, strlen],
+        ..Default::default()
+    };
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(
+        r.findings()
+            .iter()
+            .filter(|x| x.contains("before the object"))
+            .count(),
+        1,
+        "one pointer, one defect, one finding: {:#?}",
+        r.findings()
+    );
+}

@@ -3909,6 +3909,11 @@ impl<'m> Engine<'m> {
                     _ => None,
                 },
                 "strlen" => ptr(0).map(|p| {
+                    // The concrete walk's reports are **superseded** when the symbolic
+                    // scan re-does the same work: both describe the same defect in their
+                    // own words, and the caller saw a negative offset reported twice.
+                    // Found by review.
+                    let mark = cx.report_mark();
                     let r = models::strlen(&mut cx, p, strp);
                     match r {
                         chiero_model::StrScan::Exact(n) => {
@@ -3928,6 +3933,7 @@ impl<'m> Engine<'m> {
                         // that *may* be zero; the prefix is not a reason to stop. Found by
                         // review.
                         chiero_model::StrScan::CapReached { .. } => {
+                            cx.drop_reports_after(mark);
                             models::strlen_symbolic(&mut cx, p, strp)
                         }
                         // A length nobody established is not a number to hand back —
