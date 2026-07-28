@@ -296,6 +296,51 @@ fn address_of_and_dereference_compute_what_gcc_computes() {
     agree("struct S { int a; int b; }; struct S s; s.a = 2; struct S *p = &s; return p->a;");
 }
 
+/// **An aggregate lvalue used as a value is its address, not a load of its bytes.**
+///
+/// CIR has no aggregate values (020 §1.4), so a `struct` or array read as a value can only
+/// be its address. Lowering's *global* ident arm says so in as many words — "an array names
+/// its own address; a scalar names its contents" — and returns the address whenever the
+/// lowered type is `CTy::Ptr`. The **local** arm never got that guard, so it emitted
+/// `load ptr` and handed on the object's first eight bytes *as a pointer*.
+///
+/// Nothing caught it, because the one aggregate-copy path with coverage is `y = x`, which
+/// goes through `lvalue_addr` and never through here. Copy-*initialization*, array decay
+/// from a local, a by-value argument and an aggregate `return` all do — four shapes, one
+/// missing guard. This is wave 121's lesson from the other side again: the fix reached the
+/// global path and stopped.
+///
+/// gcc is the oracle rather than a shape assertion on purpose. `load ptr` is perfectly
+/// well-formed CIR that the verifier accepts; only the number it computes is wrong.
+#[test]
+fn an_aggregate_lvalue_is_an_address_not_a_load() {
+    // **Copy-initialization**, the case `y = x` does not reach. Both fields, so a copy
+    // that moved only the first eight bytes by luck still fails.
+    agree(
+        "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S y = x; \
+         return y.a * 10 + y.b;",
+    );
+    // Larger than a pointer, so no width coincidence can make a `load ptr` look right.
+    agree(
+        "struct S { int a; int b; int c; int d; }; struct S x; x.a = 1; x.b = 2; x.c = 3; \
+         x.d = 4; struct S y = x; return y.a * 1000 + y.b * 100 + y.c * 10 + y.d;",
+    );
+    // **Array decay from a local.** `int *p = a;` must give `a`'s address; loading `a`'s
+    // first eight bytes instead yields the pointer 0x0000000900000005 for the array below.
+    agree("int a[4]; a[0] = 5; a[1] = 9; int *p = a; return p[1] - p[0];");
+    // A write *through* the decayed pointer, so an alias that reads plausibly but points
+    // elsewhere is caught too.
+    agree("int a[3]; a[0] = 1; int *p = a; p[2] = 8; return a[2] - a[0];");
+    // The same decay for a `char` array, where the first eight bytes are the whole object.
+    agree("char a[8]; a[0] = 3; a[7] = 4; char *p = a; return p[7] * 10 + p[0];");
+    // And the copy is a **copy**: mutating the source afterwards must not move the
+    // destination. An initializer that aliased instead of copying passes every case above.
+    agree(
+        "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S y = x; \
+         x.a = 9; return y.a * 10 + y.b;",
+    );
+}
+
 /// **Statement expressions and VLAs**, checked for what they compute.
 ///
 /// A statement expression's value is the last expression statement's, and its side
