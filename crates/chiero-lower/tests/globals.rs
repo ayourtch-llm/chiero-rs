@@ -563,3 +563,68 @@ fn builtin_names_are_not_undeclared() {
         "a name that really is undeclared is still reported"
     );
 }
+
+/// **An aggregate initializer copies; it does not store a pointer.**
+///
+/// CIR has no aggregate values (020 §1.4), so a call returning a struct gives back a
+/// `Ptr`. Storing *that* put the pointer's eight bytes where the struct belonged, and
+/// `p.lo` read the low half of an address as an `int` — the program ran and every field was
+/// wrong. 015 contract 6's rule for assignment applies here too: one `CopyMem` of the
+/// *layout's* size.
+#[test]
+fn an_aggregate_initializer_is_a_copymem() {
+    let src = "struct pair { int lo; int hi; };\n\
+               struct pair mk(void);\n\
+               int f(void) { struct pair p = mk(); return p.lo; }\n";
+    assert!(errors(src).is_empty(), "{:#?}", errors(src));
+    let m = lower(src);
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    let copies: Vec<u64> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match &i.kind {
+            chiero_cir::InstKind::CopyMem {
+                size: chiero_cir::Operand::Const(chiero_cir::Const::Int { val, .. }),
+                ..
+            } => Some(*val as u64),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copies, vec![8], "one copy, of the layout's eight bytes");
+    assert!(
+        !f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(
+                &i.kind,
+                chiero_cir::InstKind::Store {
+                    ty: chiero_cir::CTy::Ptr,
+                    ..
+                }
+            )),
+        "and no store of a pointer where the struct goes"
+    );
+}
+
+/// **A scalar initializer is still a store**, or "copy aggregates" would be indistinguishable
+/// from "copy everything".
+#[test]
+fn a_scalar_initializer_is_still_a_store() {
+    let m = lower("int f(void) { int x = 7; return x; }");
+    let f = m.funcs.iter().find(|f| &*f.name == "f").expect("f");
+    assert!(
+        f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(i.kind, chiero_cir::InstKind::Store { .. })),
+        "a scalar is stored"
+    );
+    assert!(
+        !f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(i.kind, chiero_cir::InstKind::CopyMem { .. })),
+        "and not copied"
+    );
+}

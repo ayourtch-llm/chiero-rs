@@ -1403,6 +1403,31 @@ impl Lowerer<'_> {
                 },
                 span,
             );
+            // **An aggregate initializer is a copy, not a store** (015 contract 6: one
+            // `CopyMem` of the *layout's* size, never a store of something else).
+            //
+            // CIR has no aggregate values (020 §1.4), so `struct pair p = make_pair(…)`
+            // gives back a `Ptr` — and storing *that* put the pointer's eight bytes where
+            // the struct belonged, so `p.lo` read the low half of an address as an `int`.
+            // The program ran and every field was wrong. A struct returned by value is
+            // what every VPP accessor in a header does.
+            if matches!(cty, CTy::Ptr) && self.is_aggregate(sty) {
+                let size = self.analysis.size_of(sty).unwrap_or(0);
+                self.emit(
+                    InstKind::CopyMem {
+                        dst: Operand::Value(addr),
+                        src: v,
+                        size: Operand::Const(Const::Int {
+                            bits: 64,
+                            val: size as i128,
+                        }),
+                        align,
+                    },
+                    span,
+                );
+                self.seq_point(span);
+                return;
+            }
             self.emit(
                 InstKind::Store {
                     addr: Operand::Value(addr),
@@ -2554,6 +2579,12 @@ impl Lowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    /// Whether a sema type is a struct, union or array — something CIR has no value form
+    /// for (020 §1.4), so it lives in memory and moves by `CopyMem`.
+    fn is_aggregate(&self, t: TyId) -> bool {
+        matches!(self.analysis.ty(t), Ty::Record(_) | Ty::Array { .. })
     }
 
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
