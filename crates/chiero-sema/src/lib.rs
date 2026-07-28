@@ -1053,7 +1053,7 @@ impl Cx<'_> {
         }
     }
 
-    fn builtin(&self, b: chiero_ast::Builtin) -> Ty {
+    fn builtin(&mut self, b: chiero_ast::Builtin) -> Ty {
         use chiero_ast::Builtin as B;
         let s = &self.target.sizes;
         let int = |signed, bits| Ty::Int { signed, bits };
@@ -1076,12 +1076,28 @@ impl Cx<'_> {
             B::Int128 => int(true, 128),
             B::UInt128 => int(false, 128),
             B::VaList => {
-                // On x86-64 `__builtin_va_list` is `struct __va_list_tag [1]`, 24 bytes
-                // aligned 8. Modelled by its ABI shape rather than as a record, because
-                // nothing declares the record and 021 only needs the size.
+                // On x86-64 `__builtin_va_list` is `struct __va_list_tag [1]`:
+                //
+                //     unsigned int gp_offset;    //  0
+                //     unsigned int fp_offset;    //  4
+                //     void *overflow_arg_area;   //  8
+                //     void *reg_save_area;       // 16
+                //
+                // 24 bytes, aligned 8 because of the pointers. Modelled by its ABI *shape*
+                // — three pointer-width words — rather than as a record, because nothing
+                // declares the record and 021 needs only the extent and alignment.
+                //
+                // This arm used to build `Array { elem: <sentinel>, len: Fixed(0) }` under
+                // a comment claiming the numbers above. `size_of` returned `None` for the
+                // sentinel element, lowering's `.max(1)` made `va_list ap` one byte, and
+                // every read of it was out of bounds.
+                let word = self.intern(Ty::Int {
+                    signed: false,
+                    bits: self.target.pointer_width,
+                });
                 Ty::Array {
-                    elem: TyId(u32::MAX),
-                    len: ArrayLen::Fixed(0),
+                    elem: word,
+                    len: ArrayLen::Fixed(24 / u64::from(self.target.pointer_width / 8).max(1)),
                 }
             }
             B::Float => Ty::Float(FloatKind::F32),
