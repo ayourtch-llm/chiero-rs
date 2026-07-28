@@ -239,6 +239,36 @@ fn stringize_collapses_internal_whitespace_and_comments() {
 }
 
 #[test]
+fn substitution_inherits_parameter_spacing_and_stringize_escapes_only_literals() {
+    assert_eq!(
+        texts("#define S(x) #x\n#define T(x) S(a x)\nT(b)\n"),
+        ["\"a b\""]
+    );
+    assert_eq!(
+        texts(
+            "#define S(x) #x\n#define ASSERT(t) S(t)\n#define ELT(h,i) ASSERT((i) < len(h))\nELT(a, handle)\n"
+        ),
+        ["\"(handle) < len(a)\""]
+    );
+    assert_eq!(texts("#define S(x) #x\nS(a\\b)\n"), ["\"a\\b\""]);
+    assert_eq!(
+        texts("#define S(x) #x\nS(\"a\\\\b\")\n"),
+        ["\"\\\"a\\\\\\\\b\\\"\""]
+    );
+}
+
+#[test]
+fn pragma_operator_accepts_a_macro_produced_string() {
+    let tu = preprocess_str(
+        "pragma.c",
+        "#define STR(x) #x\n#define P(x) _Pragma (STR(GCC diagnostic x))\nP(push)\nafter\n",
+        Config::default(),
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["after"]);
+}
+
+#[test]
 fn deterministic_context_numbering_covers_nested_user_macros() {
     let src = "#define B(x) [x]\n#define A(x) B(x)\nA(1) A(2)\n";
     let first = preprocess_str("deterministic.c", src, Config::default());

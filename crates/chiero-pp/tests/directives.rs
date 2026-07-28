@@ -100,6 +100,24 @@ fn inactive_include_does_not_touch_the_loader() {
 }
 
 #[test]
+fn literal_angle_header_names_are_not_macro_expanded() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("sys/foo/bar.h"), "right_header\n".into());
+    let config = Config {
+        include_paths: vec![PathBuf::from("sys")],
+        defines: vec![("foo".into(), "1".into())],
+        ..Config::default()
+    };
+    let tu = preprocess_with_loader("main.c", "#include <foo/bar.h>\n", config, &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["right_header"]);
+    assert_eq!(files.reads.get(Path::new("sys/foo/bar.h")), Some(&1));
+    assert!(!files.reads.contains_key(Path::new("sys/1/bar.h")));
+}
+
+#[test]
 fn included_builtins_and_spans_name_the_header() {
     let mut files = MemoryFiles::default();
     files.files.insert(
