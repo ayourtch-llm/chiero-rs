@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 140) — 1123 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 141) — 1124 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -497,7 +497,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > moved without any test noticing; 136 fixed the bit-field read-modify-write; 137 made an
 > enumeration constant its value, at its own type and in its own scope; 138 made a compound
 > literal an object and let it take postfix suffixes; **139 built the generator, and it
-> found a defect on its first run; 140 gave it structs and helpers and it found two more**.*
+> found a defect on its first run; 140 gave it structs and helpers and it found two more; 141 gave it
+> arrays, pointers and six spellings of one access, and it found another**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -547,9 +548,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     with `struct` definitions, by-value struct parameters, struct returns, calls in the
 >     expression grammar, and a checksum that reads every field. It found two defects on the
 >     first run: `make(7).a` and a braced element narrower than `int`.
->   - **Pointers, arrays and the alternative-spelling production** — `a[i]`, `*(a+i)`,
->     `*(i+a)`, `p += i`, `p++` for one access. Every hand-written fixture used `a[i]`, the
->     one spelling that worked.
+>   - ~~Pointers, arrays and the alternative-spelling production.~~ **Done in wave 141**:
+>     fixed arrays with braced initializers, six spellings of one element access, pointers
+>     walked with `p += 1`/`p++`, writes through every spelling, and a checksum over every
+>     element. It found the `*(&a[i] + 0)` defect immediately.
 >   - **Structs, bit-fields and unions**, with the checksum reading every field.
 >   - **File-scope declarations**, which is where the pointer-global defect lived.
 >   - **An AST shrinker** (~250 lines) emitting `agree_with("…", "…")` directly. Wave 139
@@ -639,6 +641,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A grammar production that never fires is a silent gap in the generator** (wave 141).
+> Three new statement arms were added *after* the `0..=3` range arm and were unreachable.
+> The only symptom was a suspiciously unchanged number — same programs compared, same zero
+> mismatches as the run before. **When a generator is extended and the counts do not move,
+> the extension is not running.** Print what the grammar actually emitted before believing
+> a clean result.
+> **Do not run a mutation sweep and a suite in the same tree** (waves 135 and 141 — recorded
+> after 135 and then not followed). The sweep rewrites source while `cargo test --workspace`
+> is building, and the suite compiles against a mutant. Run them serially; when a result
+> surprises you, check `git diff` before believing it.
 > **A defect that hides behind a working sibling is the last one anyone finds** (wave 140).
 > `struct S { signed char a; int b; } s = {3, 5};` produced nothing, while `s.a = 3;` on the
 > same struct worked perfectly — because sema converts an assignment *expression* and not a
@@ -734,6 +746,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > say so; **check a patch script printed `ok`**. An oracle that can silently not run is not
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
+>
+> **Also owed, found in wave 141**: lowering does not run the CIR verifier, so a function
+> it emits with invalid CIR is *not* refused. `*(&a[i] + 0)` produced `zext i32 %v to i64`
+> on a `Ptr`, which the verifier rejects — and the module was emitted anyway and the engine
+> produced no state. 015 §7 refuses what lowering knows it cannot represent; this is the
+> class it does not know about. Running `verify` at the end of `function()` and refusing on
+> an error would turn every such defect from a silent nothing into a diagnostic.
 >
 > Owed and written down: the one defect above; the wave-117 `fork_on_offset` survivor;
 > floats do not execute; designated, bit-field and address initializers refused; a fault in a
