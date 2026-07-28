@@ -1756,12 +1756,20 @@ impl Lowerer<'_> {
                             },
                             span,
                         );
-                        // **An array names its own address; a scalar names its contents.**
-                        // One test, not two: `cty` of an array type is already `CTy::Ptr`
-                        // (020 §2 — pointers are untyped and CIR has no aggregate values),
-                        // so an explicit `is_array` check was a second spelling of the same
-                        // condition and no mutation could tell them apart.
-                        if matches!(ty, CTy::Ptr) {
+                        // **An aggregate names its own address; a scalar names its
+                        // contents** — including a scalar of pointer type.
+                        //
+                        // The `CTy::Ptr` test alone was the *wrong* spelling of that, and
+                        // said so in a comment calling the second condition redundant.
+                        // Pointers are untyped in CIR (020 §2), so `int *gp` lowers to
+                        // `CTy::Ptr` exactly as `int a[4]` does; this arm therefore handed
+                        // back the address *of* `gp` where the program asked for the
+                        // address `gp` holds, and `*gp` read `gp`'s own bytes as an `int`.
+                        // The sema type is the only thing that distinguishes them, which is
+                        // why the check has to reach past `cty`.
+                        if matches!(ty, CTy::Ptr)
+                            && self.type_of(e).is_some_and(|t| self.is_aggregate(t))
+                        {
                             return Operand::Value(addr);
                         }
                         let dst = self.new_value();

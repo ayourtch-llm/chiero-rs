@@ -389,6 +389,54 @@ fn a_pointer_global_names_its_contents_not_its_own_address() {
     );
 }
 
+/// **An lvalue is loaded and stored at the type sema gave it**, not at an integer width.
+///
+/// The sibling of the case above, and the reason it could not be fixed on its own. Three
+/// sites ask `raw_width_of` for an lvalue's CIR type — the `Member` and `Deref`/`Index`
+/// arms of `expr`, and `lvalue_ty`, which decides the width of every `Store` — and
+/// `raw_width_of` answers `32` for **everything that is not an integer**, by design: it
+/// exists to report an integer's width. A pointer held in a struct member, in an array
+/// element, or reached through a second pointer was therefore loaded and stored as an
+/// `i32`, keeping half of it.
+///
+/// `lvalue_ty` gets it right for a plain local only because locals carry their declared
+/// `CTy` in the frame; nothing else does, which is the same "one path has it, the other
+/// does not" shape as wave 121 and as the two tests above.
+///
+/// Every case here is C that VPP writes constantly: a pointer inside a struct is what a
+/// graph node's `vlib_buffer_t *` fields are, and `**pp` is every out-parameter.
+#[test]
+fn a_pointer_lvalue_keeps_its_width_wherever_it_lives() {
+    // A pointer **inside a struct**, written and read back through the member.
+    agree("struct H { int *p; }; int x = 6; struct H h; h.p = &x; return *h.p;");
+    // A pointer **in an array element**, so the index path is checked as well as members.
+    agree("int x = 5; int *pa[2]; pa[1] = &x; return *pa[1];");
+    // A **pointer to a pointer**: `*pp` is itself a pointer-typed lvalue, so the `Deref`
+    // arm has to load eight bytes to have anything to dereference again.
+    agree("int x = 4; int *q = &x; int **pp = &q; return **pp;");
+    // A write through the double pointer, which is what an out-parameter does.
+    agree("int x = 1; int y = 9; int *q = &x; int **pp = &q; *pp = &y; return *q;");
+    // The truncation is only visible when the two halves differ, so put something in the
+    // high half: an `i32` store of this address keeps the low word and drops the rest.
+    agree(
+        "int a[2]; a[0] = 3; a[1] = 8; struct H { int *p; }; struct H h; h.p = &a[1]; \
+           return *h.p - a[0];",
+    );
+    // **Integers must not change**, since `raw_width_of` is right about them and a fix
+    // that routed everything through the sema type has to agree with it here.
+    agree(
+        "struct W { long v; short s; }; struct W w; w.v = 0x100000000; w.s = -300; \
+           return (int)(w.v >> 32) + w.s;",
+    );
+    agree("long a[2]; a[1] = 0x400000000; return (int)(a[1] >> 32);");
+    // And a **nested aggregate member read as a value** — an aggregate lvalue however it
+    // is spelled, so the address rule cannot be an ident-only special case.
+    agree(
+        "struct I { int a; int b; }; struct O { struct I i; }; struct O o; o.i.a = 2; \
+           o.i.b = 3; struct I y = o.i; return y.a * 10 + y.b;",
+    );
+}
+
 /// **Statement expressions and VLAs**, checked for what they compute.
 ///
 /// A statement expression's value is the last expression statement's, and its side
