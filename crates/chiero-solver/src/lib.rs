@@ -2159,7 +2159,7 @@ impl TieredSolver {
     fn components(a: &TermArena, all: &[Term], query_vars: &[VarId]) -> (Vec<Term>, Vec<Term>) {
         // Union-find over term indices, joined through a first-seen-owner per variable.
         let mut parent: Vec<usize> = (0..all.len()).collect();
-        fn find(p: &mut Vec<usize>, mut i: usize) -> usize {
+        fn find(p: &mut [usize], mut i: usize) -> usize {
             while p[i] != i {
                 p[i] = p[p[i]];
                 i = p[i];
@@ -2291,8 +2291,8 @@ impl TieredSolver {
                 .map(|j| *comp_all[j].0)
                 .collect();
             let (comp, _) = Self::components(a, &remaining, &seed);
-            for j in 0..comp_all.len() {
-                if !seen.contains(&j) && comp.contains(comp_all[j].0) {
+            for (j, (t, _)) in comp_all.iter().enumerate() {
+                if !seen.contains(&j) && comp.contains(t) {
                     seen.push(j);
                 }
             }

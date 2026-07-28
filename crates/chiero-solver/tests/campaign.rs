@@ -108,7 +108,7 @@ fn formula(a: &mut TermArena, r: &mut Rng, vars: &[Term]) -> Vec<Term> {
                 let e = a.eq(x, y);
                 a.not(e)
             }
-            3 | 4 | 5 | 6 | 7 => a.ult(x, y),
+            3..=7 => a.ult(x, y),
             8 => a.slt(x, y),
             9 => {
                 let s = a.add(x, y);

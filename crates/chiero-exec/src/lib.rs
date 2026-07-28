@@ -333,6 +333,9 @@ pub struct Frame {
 #[derive(Clone, Debug)]
 pub struct State {
     pub id: StateId,
+    /// 023 §6.1: one slot per registered checker, cloned on fork by `CheckerStates`'s
+    /// own `Clone` so a `State` clone cannot forget to.
+    pub checker_states: CheckerStates,
     pub mem: Memory,
     pub pc: (BlockId, usize),
     /// Append-only (023 §1).
@@ -437,6 +440,7 @@ impl State {
 
     fn errored(id: StateId, why: &str) -> State {
         State {
+            checker_states: CheckerStates::default(),
             id,
             mem: Memory::new(),
             pc: (BlockId(0), 0),
@@ -784,6 +788,259 @@ impl RunResult {
     }
 }
 
+// ===========================================================================
+// 023 §6 — checkers
+// ===========================================================================
+
+use std::any::Any;
+
+/// An observer of execution (023 §6).
+///
+/// A checker "sees everything and decides nothing about execution order". It is
+/// **stateless**: everything it remembers lives in the `State`, via
+/// [`Checker::initial_state`] and [`CheckerCtx::state_mut`]. §6.1 spells out why —
+/// the searcher interleaves events from unrelated states arbitrarily, so memory kept in
+/// `&mut self` accumulates across paths that have nothing to do with each other, and
+/// contract 17's "1, 2 and 8 worker threads produce identical results" becomes
+/// unachievable.
+pub trait Checker {
+    fn name(&self) -> &'static str;
+
+    fn on_event(&mut self, ev: &Event, ctx: &mut CheckerCtx) -> Vec<Action>;
+
+    /// The per-state memory this checker starts each path with. A checker that remembers
+    /// nothing can leave this alone.
+    fn initial_state(&self) -> Box<dyn CheckerState> {
+        Box::new(NoCheckerState)
+    }
+}
+
+/// What the engine tells checkers about.
+///
+/// **Only the variants the engine actually emits are defined here.** §6 also specifies
+/// `MemFault` and `ArithEvent`; they arrive with the checkers that consume them (040)
+/// rather than sitting in the enum unemitted, because a checker matching on a variant
+/// that can never fire is indistinguishable from one whose logic is wrong.
+#[allow(missing_debug_implementations)]
+pub enum Event<'a> {
+    BeforeInst {
+        st: &'a State,
+        inst: &'a Inst,
+    },
+    AfterInst {
+        st: &'a State,
+        inst: &'a Inst,
+    },
+    Fork {
+        st: &'a State,
+        cond: Term,
+        feasible: (bool, bool),
+    },
+    Call {
+        st: &'a State,
+        callee: Callee,
+        args: &'a [Value],
+    },
+    /// Fired **in the caller** once the callee's result exists, for defined, modeled and
+    /// unmodeled callees alike (023 contract 24). `Event::Return` fires in the callee's
+    /// frame and never fires at all for an unmodeled extern, whose fresh return value has
+    /// no return instruction behind it — which is the whole reason this exists.
+    CallReturn {
+        st: &'a State,
+        callee: Callee,
+        ret: Option<Value>,
+        dst: Option<ValueId>,
+    },
+    Return {
+        st: &'a State,
+        val: Option<Value>,
+    },
+    Terminated {
+        st: &'a State,
+        why: TermReason,
+    },
+}
+
+/// What a checker asks the engine to do.
+#[allow(missing_debug_implementations)]
+pub enum Action {
+    Report(String),
+    /// Constrain the state and continue. Contract 19: subsequent branch feasibility
+    /// reflects it, which means it joins the path condition rather than a side list.
+    Assume(Term),
+    Kill(TermReason),
+}
+
+impl Action {
+    /// The common case, spelled so a checker does not have to build a `String` inline.
+    pub fn report(msg: impl Into<String>) -> Action {
+        Action::Report(msg.into())
+    }
+}
+
+/// What `emit` is asked to send, before the `&State` borrow is attached.
+///
+/// `Event<'a>` ties the state and the payload to one lifetime, so a closure building it
+/// would have to hold the payload for *any* state borrow — `'static` in practice. Keeping
+/// the payload separate lets `emit` attach the two borrows where they are both live.
+enum Ev<'i> {
+    BeforeInst(&'i Inst),
+    AfterInst(&'i Inst),
+    Fork {
+        cond: Term,
+        feasible: (bool, bool),
+    },
+    Call {
+        callee: Callee,
+        args: Vec<Value>,
+    },
+    CallReturn {
+        callee: Callee,
+        ret: Option<Value>,
+        dst: Option<ValueId>,
+    },
+    Return(Option<Value>),
+    Terminated(TermReason),
+}
+
+/// A checker's per-state memory (023 §6.1).
+///
+/// **Deviation from §6.1, recorded here rather than silently.** The spec writes
+/// `CheckerState: DynClone + Any` with `on_fork` defaulted to `dyn_clone::clone_box`.
+/// `dyn_clone` is not a workspace dependency and `cargo xtask check-deps` gates new ones,
+/// so `on_fork` is required and the `Any` projections are explicit. The cost is two lines
+/// per implementor; the semantics are identical.
+pub trait CheckerState: Any {
+    /// The child's copy at a fork. §6.1: "cloned on fork alongside `Memory`".
+    fn on_fork(&self) -> Box<dyn CheckerState>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// For a checker that remembers nothing.
+#[derive(Debug)]
+pub struct NoCheckerState;
+
+impl CheckerState for NoCheckerState {
+    fn on_fork(&self) -> Box<dyn CheckerState> {
+        Box::new(NoCheckerState)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// One `CheckerState` per registered checker, carried by the `State`.
+///
+/// The fork semantics live in this type's `Clone`, so a `State` clone cannot forget to
+/// call `on_fork` — that is the mistake §6.1 warns about, and putting it anywhere else
+/// makes it one edit away from returning.
+#[derive(Default)]
+pub struct CheckerStates(Vec<Box<dyn CheckerState>>);
+
+impl Clone for CheckerStates {
+    fn clone(&self) -> Self {
+        CheckerStates(self.0.iter().map(|s| s.on_fork()).collect())
+    }
+}
+
+impl std::fmt::Debug for CheckerStates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CheckerStates({})", self.0.len())
+    }
+}
+
+/// The only interface through which a checker reaches the solver, the arena, or its own
+/// memory (023 §6). Routing it all through one object is what lets §9 insist every
+/// finding either carries a counterexample or says why it does not.
+#[allow(missing_debug_implementations)]
+pub struct CheckerCtx<'a, 'm> {
+    a: &'a mut TermArena,
+    /// Which registered checker is running, so `state_mut` reaches the right slot.
+    idx: usize,
+    states: &'a mut CheckerStates,
+    module: &'m Module,
+    solver: &'a mut TieredSolver,
+    path: &'a [Term],
+}
+
+impl<'a, 'm> CheckerCtx<'a, 'm> {
+    pub fn arena(&mut self) -> &mut TermArena {
+        self.a
+    }
+
+    /// This checker's memory for the current state, downcast to its own type.
+    ///
+    /// Panics if the type does not match what [`Checker::initial_state`] returned, which
+    /// is a programming error in the checker rather than a condition to handle.
+    pub fn state_mut<T: CheckerState>(&mut self) -> &mut T {
+        self.states.0[self.idx]
+            .as_any_mut()
+            .downcast_mut::<T>()
+            .expect("checker state type does not match the checker's initial_state")
+    }
+
+    /// Is `cond` possible on this path?
+    pub fn may(&mut self, cond: Term) -> bool {
+        if let Ok(b) = self.a.eval_ground_bool(cond) {
+            return b;
+        }
+        let mut all: Vec<Term> = self.path.to_vec();
+        all.push(cond);
+        matches!(self.solver.check(self.a, &all), CheckResult::Sat(_))
+    }
+
+    /// Is `cond` forced on this path? **`Unknown` answers `false`** — a checker asking
+    /// "must" is about to act on certainty, and the solver declining to decide is not it.
+    ///
+    /// **A ground condition is decided here, not by the solver.** `must(1 == 1)` sends
+    /// tier 1 a constant, which is not an atom and so leaves §3.2's fragment: the answer
+    /// comes back `Unknown` and `must` says `false` for a tautology. With the engine's
+    /// default tier-1-only solver that is every ground question a checker can ask —
+    /// including "did this path return the constant I care about", which is the shape
+    /// §6.1's own lock example needs.
+    pub fn must(&mut self, cond: Term) -> bool {
+        if let Ok(b) = self.a.eval_ground_bool(cond) {
+            return b;
+        }
+        let neg = self.a.not(cond);
+        let mut all: Vec<Term> = self.path.to_vec();
+        all.push(neg);
+        matches!(self.solver.check(self.a, &all), CheckResult::Unsat)
+    }
+
+    /// The callee's name, for a checker that keys on it. Indirect calls the engine has
+    /// not resolved have none.
+    pub fn callee_name(&self, callee: &Callee) -> &str {
+        match callee {
+            Callee::Direct(id) => self
+                .module
+                .funcs
+                .iter()
+                .find(|f| f.id == *id)
+                .map(|f| &f.name[..])
+                .unwrap_or("<unknown>"),
+            Callee::Indirect(_) => "<indirect>",
+        }
+    }
+}
+
+/// The registered checkers. A newtype only so `Engine` can keep deriving `Debug`;
+/// `dyn Checker` cannot.
+#[derive(Default)]
+pub struct Checkers(Vec<Box<dyn Checker>>);
+
+impl std::fmt::Debug for Checkers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|c| c.name()))
+            .finish()
+    }
+}
+
 /// Run ids are distinct so a witness cannot bless a different run (023 §7.1). This does
 /// not affect determinism, which is about the `StateId` sequence *within* a run.
 static NEXT_RUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -812,6 +1069,8 @@ pub struct Engine<'m> {
     entry_param_bytes: u64,
     /// 021 §6's `--fork-on-alias`. Off by default, because it multiplies states.
     fork_on_alias: bool,
+    /// 023 §6. Registered in order; each gets one `CheckerState` slot per state.
+    checkers: Checkers,
     /// **One solver for the run.** A fresh one per query spawned a process per
     /// escalation and threw away the cache each time, so its hit rate was structurally
     /// zero — and 023 §1.1's argument that sibling states hit the caches constantly was
@@ -832,6 +1091,7 @@ pub struct Engine<'m> {
 impl<'m> Engine<'m> {
     pub fn new(module: &'m Module) -> Engine<'m> {
         Engine {
+            checkers: Checkers::default(),
             module,
             tier: SolverTier::LiteOnly,
             next_state: 0,
@@ -888,6 +1148,102 @@ impl<'m> Engine<'m> {
     pub fn with_fork_on_alias(mut self, on: bool) -> Self {
         self.fork_on_alias = on;
         self
+    }
+
+    /// Register a checker (023 §6). Order is the registration order, and each checker
+    /// gets one `CheckerState` slot per state.
+    pub fn with_checker(mut self, c: Box<dyn Checker>) -> Self {
+        self.checkers.0.push(c);
+        self
+    }
+
+    /// Give `s` one `CheckerState` per registered checker. Called once per *root* state;
+    /// forks inherit through `CheckerStates`'s `Clone`.
+    fn seed_checker_states(&self, s: &mut State) {
+        s.checker_states =
+            CheckerStates(self.checkers.0.iter().map(|c| c.initial_state()).collect());
+    }
+
+    /// Dispatch one event to every registered checker and apply what they ask for.
+    ///
+    /// **The checker's own memory is moved out of the state for the call.** `Event`
+    /// borrows the `State` immutably while `CheckerCtx::state_mut` needs it mutably;
+    /// taking the slots out and putting them back is what makes both available without
+    /// handing a checker the ability to mutate the state it is observing — §6's "sees
+    /// everything and decides nothing about execution order", enforced by the borrow
+    /// checker rather than by convention.
+    fn emit(&mut self, a: &mut TermArena, s: &mut State, span: Span, ev: Ev<'_>) {
+        if self.checkers.0.is_empty() {
+            return;
+        }
+        // `may`/`must` go through the engine's one long-lived solver (022 §4), so it has
+        // to exist before the borrow below hands it out.
+        if self.solver.is_none() {
+            self.solver_inits += 1;
+            self.solver = Some(match self.backend.clone() {
+                Some(b) => TieredSolver::with_backend(b),
+                None => TieredSolver::new(),
+            });
+        }
+        let solver = self.solver.as_mut().expect("just created");
+        let mut states = std::mem::take(&mut s.checker_states);
+        let mut actions: Vec<(usize, Action)> = Vec::new();
+        for (idx, c) in self.checkers.0.iter_mut().enumerate() {
+            let event = match &ev {
+                Ev::BeforeInst(i) => Event::BeforeInst { st: s, inst: i },
+                Ev::AfterInst(i) => Event::AfterInst { st: s, inst: i },
+                Ev::Fork { cond, feasible } => Event::Fork {
+                    st: s,
+                    cond: *cond,
+                    feasible: *feasible,
+                },
+                Ev::Call { callee, args } => Event::Call {
+                    st: s,
+                    callee: callee.clone(),
+                    args,
+                },
+                Ev::CallReturn { callee, ret, dst } => Event::CallReturn {
+                    st: s,
+                    callee: callee.clone(),
+                    ret: *ret,
+                    dst: *dst,
+                },
+                Ev::Return(v) => Event::Return { st: s, val: *v },
+                Ev::Terminated(why) => Event::Terminated { st: s, why: *why },
+            };
+            let mut cx = CheckerCtx {
+                a,
+                idx,
+                states: &mut states,
+                module: self.module,
+                solver: &mut *solver,
+                path: &s.path,
+            };
+            for act in c.on_event(&event, &mut cx) {
+                actions.push((idx, act));
+            }
+        }
+        s.checker_states = states;
+        for (idx, act) in actions {
+            let who = self.checkers.0[idx].name();
+            match act {
+                Action::Report(message) => {
+                    self.finding_seq += 1;
+                    s.findings.push(StateFinding {
+                        id: self.finding_seq,
+                        key: None,
+                        message,
+                        span,
+                    });
+                    let _ = who;
+                }
+                // **Onto the path condition, not a side list** (contract 19). A
+                // constraint the solver never sees changes nothing, and every checker
+                // written against it would appear to work.
+                Action::Assume(t) => s.path.push(t),
+                Action::Kill(why) => s.status = Status::Terminated(why),
+            }
+        }
     }
 
     /// 024 §4's `max_string_scan` and friends.
@@ -975,6 +1331,7 @@ impl<'m> Engine<'m> {
             .collect();
         if !errs.is_empty() {
             let mut bad = State {
+                checker_states: CheckerStates::default(),
                 id: self.new_id(),
                 mem,
                 pc: (f.entry, 0),
@@ -1082,7 +1439,8 @@ impl<'m> Engine<'m> {
             }
             entry_locals.insert(p.value, v);
         }
-        let start = State {
+        let mut start = State {
+            checker_states: CheckerStates::default(),
             id: self.new_id(),
             mem,
             pc: (f.entry, 0),
@@ -1121,6 +1479,10 @@ impl<'m> Engine<'m> {
         // *caller*, not a fact about the program, and §6 requires it recorded and printed.
         // A run that quietly assumed `memcpy(dst, src, n)` never overlaps would miss the
         // bug that idiom exists to have.
+        // **One `CheckerState` per checker, on the root only.** Every other state is a
+        // descendant, and `CheckerStates::clone` calls `on_fork` — seeding a fork here
+        // instead would silently reset a checker's memory at every branch.
+        self.seed_checker_states(&mut start);
         let mut work = vec![start];
         if ptr_params.len() > 1 {
             if self.fork_on_alias {
@@ -1219,6 +1581,12 @@ impl<'m> Engine<'m> {
                         &format!("max_states ({}) reached", self.budget.max_states),
                     );
                 }
+            }
+            // **Before the witness is attached**, so a report a checker makes on the way
+            // out is witnessed like any other. Firing it afterwards would give the last
+            // finding of every path an empty witness.
+            if let Status::Terminated(why) = s.status {
+                self.emit(a, &mut s, Span::DUMMY, Ev::Terminated(why));
             }
             self.attach_witness(a, &mut s);
             done.push(s);
@@ -1696,8 +2064,18 @@ impl<'m> Engine<'m> {
                 );
                 return None;
             }
-            let i = &b.insts[s.pc.1].clone();
+            let i = b.insts[s.pc.1].clone();
+            let i = &i;
+            self.emit(a, s, i.span, Ev::BeforeInst(i));
+            // An `Assume` or a `Kill` at `BeforeInst` has to take effect *before* the
+            // instruction runs, or contract 19's "subsequent branch feasibility reflects
+            // it" is off by one instruction — which for a two-block fixture is the whole
+            // difference.
+            if !matches!(s.status, Status::Running) {
+                return None;
+            }
             self.exec_inst(a, s, i);
+            self.emit(a, s, i.span, Ev::AfterInst(i));
             // A call re-points `pc` at the callee; anything else advances within the
             // block. `usize::MAX` is the sentinel a call leaves behind so this lands on 0.
             s.pc.1 = s.pc.1.wrapping_add(1);
@@ -2087,6 +2465,19 @@ impl<'m> Engine<'m> {
                 return;
             }
         };
+        // **`Value`, not `Term`** (§6): a checker that cannot tell which tracked object an
+        // argument refers to cannot implement `free(p)` or `memcpy` overlap detection, and
+        // 021 §7's guard gaps make recovering it by address search lossy by construction.
+        let arg_vals: Vec<Value> = args.iter().filter_map(|o| self.operand(a, s, o)).collect();
+        self.emit(
+            a,
+            s,
+            span,
+            Ev::Call {
+                callee: callee.clone(),
+                args: arg_vals,
+            },
+        );
         let Some(f) = self.module.funcs.iter().find(|f| f.id == *id) else {
             s.give_up("call to an unknown function".into(), span);
             return;
@@ -2199,6 +2590,23 @@ impl<'m> Engine<'m> {
                     self.havoc_args(a, s, &name, args, span);
                 }
             }
+            // **Contract 24's hard case.** A modeled or unmodeled extern produces its
+            // result here and has no return instruction anywhere, so `Event::Return`
+            // never fires for it. An implementation that emitted `CallReturn` from the
+            // callee's epilogue would be correct for every defined function and silently
+            // never fire for any extern — which is exactly the hook 042's only worked
+            // example needs.
+            let ret = dst.and_then(|d| s.local(d));
+            self.emit(
+                a,
+                s,
+                span,
+                Ev::CallReturn {
+                    callee: callee.clone(),
+                    ret,
+                    dst,
+                },
+            );
             if noreturn {
                 s.status = Status::Terminated(TermReason::Return);
             }
@@ -2303,6 +2711,7 @@ impl<'m> Engine<'m> {
                 };
                 // Returning from an inner frame resumes the caller; returning from the
                 // outermost one ends the state.
+                self.emit(a, s, Span::DUMMY, Ev::Return(val));
                 // The outermost frame is **not** popped: its locals are the result of the
                 // run, and a terminated state whose locals have vanished can report
                 // nothing about what it computed.
@@ -2347,6 +2756,20 @@ impl<'m> Engine<'m> {
                             s.remember_value_provenance(d, p);
                         }
                     }
+                    // **In the caller, once the result exists** (contract 24). The frame
+                    // is gone and `pc` is back at the call site, so a checker keying on
+                    // the returned value sees the state the caller will continue from.
+                    let ret = f.ret_dst.and_then(|d| s.local(d));
+                    self.emit(
+                        a,
+                        s,
+                        at,
+                        Ev::CallReturn {
+                            callee: Callee::Direct(f.func),
+                            ret,
+                            dst: f.ret_dst,
+                        },
+                    );
                 } else {
                     s.ret = val;
                     s.status = Status::Terminated(TermReason::Return);
@@ -2527,6 +2950,19 @@ impl<'m> Engine<'m> {
         let neg = negate(a, c);
         let t_ok = self.feasible(a, s, c);
         let f_ok = self.feasible(a, s, neg);
+        // **After the feasibility questions, before the split.** A checker is told which
+        // sides are live, which it cannot work out for itself without repeating both
+        // solver calls — and it is told once, on the state that is about to become two,
+        // so an `Assume` here still applies to both children.
+        self.emit(
+            a,
+            s,
+            Span::DUMMY,
+            Ev::Fork {
+                cond: c,
+                feasible: (matches!(t_ok, Feas::Yes), matches!(f_ok, Feas::Yes)),
+            },
+        );
         let mut sibling = s.clone();
         sibling.id = self.new_id();
         // The clone shares the trace up to here; each side records its own next block.

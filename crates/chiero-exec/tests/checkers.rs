@@ -125,8 +125,8 @@ fn two_checkers_on_one_event_make_two_findings() {
         .with_checker(Box::new(Noisy("beta")))
         .run(&mut a);
 
-    let msgs: Vec<&str> = r
-        .reports()
+    let reports = r.reports();
+    let msgs: Vec<&str> = reports
         .iter()
         .map(|f| f.message.as_str())
         .filter(|m| m.contains("saw a call"))
@@ -273,13 +273,20 @@ fn call_return_fires_for_a_defined_function_and_for_an_unmodeled_extern() {
 // 023 contract 19 — `Action::Assume`.
 // ---------------------------------------------------------------------------
 
-/// Assumes `x != 0` the first time it sees an instruction, which — for the fixture below
+/// Assumes `x == 5` the first time it sees an instruction, which — for the fixture below
 /// — must kill the `x == 0` branch.
-struct AssumeNonZero;
+///
+/// **`x == 5`, not `x != 0`.** The engine's default solver is tier-1-only (022 §3), whose
+/// domain has no transfer for `Ne`: `x != 0 ∧ x == 0` comes back `Unknown`, the engine
+/// takes the branch anyway per 023 §3, and both sides survive whether or not the assume
+/// worked. Two conflicting equalities are inside tier 1's fragment, so this fixture
+/// decides the question with the solver the engine actually uses by default rather than
+/// depending on z3 being installed.
+struct AssumeIsFive;
 
-impl Checker for AssumeNonZero {
+impl Checker for AssumeIsFive {
     fn name(&self) -> &'static str {
-        "assume-nonzero"
+        "assume-is-five"
     }
 
     fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
@@ -289,10 +296,9 @@ impl Checker for AssumeNonZero {
         let Some(Value::Scalar(x)) = st.local(ValueId(0)) else {
             return vec![];
         };
-        let zero = cx.arena().bv(32, 0);
-        let is_zero = cx.arena().eq(x, zero);
-        let nonzero = cx.arena().not(is_zero);
-        vec![Action::Assume(nonzero)]
+        let five = cx.arena().bv(32, 5);
+        let is_five = cx.arena().eq(x, five);
+        vec![Action::Assume(is_five)]
     }
 }
 
@@ -361,7 +367,7 @@ fn an_assumed_constraint_reaches_the_solver_and_kills_a_branch() {
 
     let mut a = TermArena::new();
     let r = Engine::new(&m)
-        .with_checker(Box::new(AssumeNonZero))
+        .with_checker(Box::new(AssumeIsFive))
         .run(&mut a);
     let rets: Vec<u128> = r
         .states()
@@ -371,7 +377,7 @@ fn an_assumed_constraint_reaches_the_solver_and_kills_a_branch() {
     assert_eq!(
         rets,
         vec![2],
-        "`x != 0` was assumed, so `x == 0` is infeasible and only the else branch survives"
+        "`x == 5` was assumed, so `x == 0` is infeasible and only the else branch survives"
     );
 }
 
@@ -456,8 +462,8 @@ fn checker_state_forks_with_the_state_and_the_copies_are_independent() {
     let mut a = TermArena::new();
     let r = Engine::new(&m).with_checker(Box::new(Locking)).run(&mut a);
 
-    let mut held: Vec<&str> = r
-        .reports()
+    let reports = r.reports();
+    let mut held: Vec<&str> = reports
         .iter()
         .filter_map(|f| f.message.strip_prefix("held="))
         .collect();
