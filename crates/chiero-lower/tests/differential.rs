@@ -391,6 +391,62 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     );
 }
 
+/// **An enumeration constant is its value.**
+///
+/// `expr`'s `Ident` arm resolves a local, then a global, then a function name, and falls
+/// through to `Undef` — enumerators are none of the three, so every use of one lowered to
+/// `undef` and no diagnostic was pushed, which means 015 §7 never refused the function
+/// either. `enum E { A = 3 }; return A;` produced `ret undef:i32`.
+///
+/// sema knows the values: `Cx::enumerators` holds them and `const_eval` resolves them,
+/// which is why `int arr[C];` gets the right bound. The map lives on the throwaway context
+/// and is dropped when `analyze` returns, so lowering never sees it.
+///
+/// **The `switch` case is the one that returns a wrong answer rather than none.** With the
+/// selector and both labels `undef`, no arm matches and control reaches the code after the
+/// statement — `switch (B) { case A: return 1; case B: return 2; }` falls out and returns
+/// 0. Wave 113's rule: a wrong answer is worse than a missing one.
+#[test]
+fn an_enumeration_constant_is_its_value() {
+    const E: &str = "enum E { A = 3, B, C = 7 };\n";
+    // The three shapes an enumerator takes its value from: written, implicit successor,
+    // and written again after an implicit one.
+    agree_with(E, "return A;");
+    agree_with(E, "return B;");
+    agree_with(E, "return C;");
+    // Implicit numbering from zero, and a negative start — `N1` is 0, not 1, because it
+    // succeeds -1.
+    agree_with("enum F { F0, F1, F2 };\n", "return F2;");
+    agree_with("enum N { N0 = -1, N1 };\n", "return N0 * 10 + N1;");
+    // **Declared inside the function**, which is where VPP puts most of them, and at file
+    // scope, which is the path through the global table rather than the local one.
+    agree("enum E { A = 3, B, C = 7 }; return B;");
+    agree_with("enum G { GA = 10, GB };\n", "return GB;");
+    // Used as a value, not just returned: initializing, assigning, and in arithmetic.
+    agree_with(E, "enum E e = B; return e;");
+    agree_with(E, "enum E e; e = C; return e;");
+    agree_with(E, "return A + C;");
+    agree_with(
+        E,
+        "int n = 0; for (int i = A; i < C; i++) { n++; } return n;",
+    );
+    // **`switch` over enumerators**, selector and labels alike. This is the case that
+    // silently returned 0.
+    agree_with(
+        E,
+        "switch (B) { case A: return 1; case B: return 2; case C: return 3; } return 0;",
+    );
+    // A `case` whose label is an enumerator but whose selector is a plain int, so the two
+    // halves are pinned separately.
+    agree_with(
+        E,
+        "int x = 7; switch (x) { case A: return 1; case C: return 3; } return 0;",
+    );
+    // The enumerator in a condition, where a wrong value changes which branch runs rather
+    // than only what is returned.
+    agree_with(E, "if (A < C) { return 11; } return 22;");
+}
+
 /// **A read-modify-write on a bit-field stays inside the bit-field.**
 ///
 /// `assign`'s `StoreBits` guard is `op.is_none() && bitfield_of(lhs)`, so it fires for
