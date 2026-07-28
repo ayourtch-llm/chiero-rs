@@ -1689,7 +1689,15 @@ impl Lowerer<'_> {
                     );
                     return Operand::Value(dst);
                 }
-                let ty = CTy::Int(self.raw_width_of(e));
+                // **An aggregate member names its address**, like an aggregate local —
+                // `o.i` used as a value, or an array member decaying. Loading it would put
+                // the nested object's first bytes where a pointer belongs.
+                if self.is_aggregate_expr(e) {
+                    return self
+                        .lvalue_addr(e, span)
+                        .unwrap_or(Operand::Const(Const::Undef(CTy::Ptr)));
+                }
+                let ty = self.cty_of(e);
                 let Some(addr) = self.lvalue_addr(e, span) else {
                     return Operand::Const(Const::Undef(ty));
                 };
@@ -1715,7 +1723,14 @@ impl Lowerer<'_> {
                 ..
             }
             | chiero_ast::ExprKind::Index { .. } => {
-                let ty = CTy::Int(self.raw_width_of(e));
+                // The same rule: `*p` where `p` is a `struct S *`, and `a[k]` over an array
+                // of structs, are aggregate lvalues too.
+                if self.is_aggregate_expr(e) {
+                    return self
+                        .lvalue_addr(e, span)
+                        .unwrap_or(Operand::Const(Const::Undef(CTy::Ptr)));
+                }
+                let ty = self.cty_of(e);
                 let Some(addr) = self.lvalue_addr(e, span) else {
                     return Operand::Const(Const::Undef(ty));
                 };
@@ -1767,9 +1782,7 @@ impl Lowerer<'_> {
                         // address `gp` holds, and `*gp` read `gp`'s own bytes as an `int`.
                         // The sema type is the only thing that distinguishes them, which is
                         // why the check has to reach past `cty`.
-                        if matches!(ty, CTy::Ptr)
-                            && self.type_of(e).is_some_and(|t| self.is_aggregate(t))
-                        {
+                        if self.is_aggregate_expr(e) {
                             return Operand::Value(addr);
                         }
                         let dst = self.new_value();
@@ -1834,7 +1847,7 @@ impl Lowerer<'_> {
                 // `lvalue_addr` and never does. The global arm got this guard when
                 // `g[1]` indexed off the wrong base; the local arm did not, and the
                 // resulting wild pointer cost waves 126 through 131.
-                if matches!(ty, CTy::Ptr) && self.type_of(e).is_some_and(|t| self.is_aggregate(t)) {
+                if self.is_aggregate_expr(e) {
                     return Operand::Value(addr);
                 }
                 let dst = self.new_value();
@@ -2644,13 +2657,18 @@ impl Lowerer<'_> {
     }
 
     /// The declared type of an lvalue.
+    ///
+    /// A local carries its declared `CTy` in the frame, so that answer comes first. **Every
+    /// other lvalue** — a global, a member, an array element, a dereference — has to ask
+    /// sema, because the old fallback reported `Int(32)` for all of them and silently
+    /// truncated every `Store` of a pointer to four bytes.
     fn lvalue_ty(&mut self, e: ExprId) -> CTy {
         if let chiero_ast::ExprKind::Ident(sym) = self.ast.expr(e).kind
             && let Some((_, ty)) = self.fs().locals.get(&sym)
         {
             return ty.clone();
         }
-        CTy::Int(self.raw_width_of(e))
+        self.cty_of(e)
     }
 
     /// The address of an lvalue, computed **once**.
@@ -2721,6 +2739,28 @@ impl Lowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    /// An expression's CIR type, **from sema**.
+    ///
+    /// `raw_width_of` reports an *integer's* width and answers 32 for everything else, which
+    /// is right for what it is for and wrong as an answer to "what type is this lvalue".
+    /// Three sites asked it that question, and every pointer that was not a plain local —
+    /// one in a struct member, in an array element, or reached through a second pointer —
+    /// was loaded and stored as an `i32` and kept half of itself.
+    fn cty_of(&self, e: ExprId) -> CTy {
+        match self.type_of(e) {
+            Some(t) => self.cty(t),
+            None => CTy::Int(self.raw_width_of(e)),
+        }
+    }
+
+    /// Whether `e` denotes something CIR has no value form for, however it is spelled.
+    ///
+    /// `o.i` and `a[k]` are aggregate lvalues exactly as `x` is, so the "an aggregate names
+    /// its own address" rule cannot be an ident-only special case.
+    fn is_aggregate_expr(&self, e: ExprId) -> bool {
+        self.type_of(e).is_some_and(|t| self.is_aggregate(t))
     }
 
     /// Whether a sema type is a struct, union or array — something CIR has no value form
