@@ -2765,6 +2765,25 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    of a *registered but unimplemented* model — `fscanf` takes that role, since the list must
    keep at least one **registered** name or it only tests that made-up names are missing.
 
+   **WAVE 75** (`711d574`; 710 tests, **139/165 cited**) — 021 contract 25, promotion
+   preserves initialization. This one had been **owed on a premise that stopped being
+   true**: the note said "the byte API refuses a promoted object, so comparing the three
+   init states before and after needs an array-aware accessor" — and `init_bit_via` has
+   been that accessor for several waves. *An owed item's reason expires; re-read it before
+   trusting it.*
+
+   Flattening `Cond` either way decides a question the program left open — to `Yes` and a
+   genuine uninitialized read stops being reported, to `No` and every guarded write becomes
+   a false one. Both flattenings now fail. The fixture asserts it contains all three states
+   before comparing, and `Cond` is compared by **meaning** rather than term identity: the
+   array form is `ite(t,1,0) == 1`, a different expression for the same guard.
+
+   A review of waves 70–75 is running, aimed squarely at the highest-risk thing in them:
+   whether `independent_bin` and `fold` **both** get the semantics right, checked against
+   z3 over random operands at four widths. A shared wrong rule is invisible to model
+   validation by construction, which is why 022 §2 wanted two implementations in the first
+   place — and having two is worth nothing if nobody differentially tests them.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2842,7 +2861,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **708 tests, 138/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **710 tests, 139/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
