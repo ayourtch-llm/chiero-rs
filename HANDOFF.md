@@ -487,7 +487,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 97, `d4fe3ce`) — 926 tests, M1 152/165, frontend 108/117
+> ### ⏭️ START HERE (wave 98, `75a7a4a`) — 931 tests, M1 152/165, frontend 112/117
+>
+> **015 is 24/25.** Only **contract 9c** remains: `goto` *into* a scope enters it exactly
+> once, and a backward `goto` that re-enters creates a **new generation** of its objects.
+> 015 §4 says re-entering matches the loop-body rule in §3, so the shape to copy is the one
+> a loop body already has.
+>
+> After 9c the frontend is complete — 010 through 015, every contract cited. Then:
+>
+> 1. **010 contract 19** — per-`ConfigId` expansion sites, unblocked since wave 84.
+> 2. **M1's remaining 13**: 020's 14/16/17/18/23/29/30/44 (the optional passes, `Opaque`,
+>    `GlobalInit`/`Linkage` in the text format, `Marker::Line` at instruction position),
+>    021 c19, 023's 7/17/21.
+> 3. **020 c29/c30 — `GlobalInit`** is worth doing early: string literals currently lower
+>    to `Undef` because a `Global` carries no initializer, and that is the last construct
+>    in ordinary C that lowering silently drops.
+>
+> **Read the goldens when they change.** Wave 98 moved two of them and the diff was exactly
+> contract 12 — `i` from scope 0 to a new scope 1, `.scope enter 1`/`exit 1` bracketing the
+> loop, the body renumbering to 2. A diff that cannot be explained in one sentence is a
+> shape that moved for a reason nobody chose.
+>
+> Owed and written down: string literals lower to `Undef` (needs 020's `GlobalInit`);
+> `typeof` types to `Ty::Error` in sema; the parser's speculative type-name diagnostic
+> rollback is unpinned.
+>
+> ### Earlier (wave 97, `d4fe3ce`) — 926 tests, frontend 108/117
 >
 > **015 is 20/25 and the corpus round trip closes.** All four files in
 > `tests/corpus/c/` lower to CIR that verifies, matches a golden in
