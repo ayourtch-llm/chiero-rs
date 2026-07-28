@@ -1814,6 +1814,21 @@ impl Lowerer<'_> {
                     },
                     span,
                 );
+                // **The same rule as the global arm above**, and for the same reason: CIR
+                // has no aggregate values (020 §1.4), so a struct, union or array named as
+                // a value can only be its address. `cty` of every one of them is already
+                // `CTy::Ptr`, which is why one test covers all three.
+                //
+                // Without it this arm loaded the object's first eight bytes and passed
+                // them on *as a pointer*. `struct pair p = q;`, `int *p = a;`, a by-value
+                // argument and an aggregate `return` all reach here — and the one
+                // aggregate-copy path that had coverage, `y = x`, goes through
+                // `lvalue_addr` and never does. The global arm got this guard when
+                // `g[1]` indexed off the wrong base; the local arm did not, and the
+                // resulting wild pointer cost waves 126 through 131.
+                if matches!(ty, CTy::Ptr) && self.type_of(e).is_some_and(|t| self.is_aggregate(t)) {
+                    return Operand::Value(addr);
+                }
                 let dst = self.new_value();
                 self.emit(
                     InstKind::Assign {

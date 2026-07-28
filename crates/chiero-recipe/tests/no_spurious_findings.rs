@@ -764,7 +764,6 @@ fn writing_to_a_mutable_global_is_not_a_finding() {
 /// The memory has to be the caller's. Every VPP accessor in a header returns a struct by
 /// value, so this is the common case rather than a corner.
 #[test]
-#[ignore = "blocked: sret lowers correctly and the engine runs a hand-built equivalent, yet this reports a wild pointer — wave 128 eliminated both halves separately; see HANDOFF §9"]
 fn a_struct_returned_by_value_carries_its_fields() {
     let src = "struct pair { int lo; int hi; };\n\
                static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
@@ -790,7 +789,6 @@ fn a_struct_returned_by_value_carries_its_fields() {
 /// **Two calls do not share one slot**, which a single caller-side scratch buffer would
 /// make invisible in the test above.
 #[test]
-#[ignore = "blocked by the same engine gap"]
 fn two_aggregate_returns_are_distinct() {
     let src = "struct pair { int lo; int hi; };\n\
                static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; return p; }\n\
