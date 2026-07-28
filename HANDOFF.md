@@ -487,7 +487,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 86, `5d50c7e`) — 860 tests, M1 152/165, frontend 68/117
+> ### ⏭️ START HERE (wave 87, `ffc6da7`) — 874 tests, M1 152/165, frontend 80/117
+>
+> **`chiero-sema` has a layout engine and gcc agrees with it** (014: 12/20). Records,
+> bit-fields including straddling and zero-width, packed, `aligned` at record and member
+> level, unions, flexible arrays, enum widening, target-dependent `char` signedness, and
+> typed integer constant evaluation.
+>
+> **014 §7's differential is the technique to keep using.** The harness emits
+> `_Static_assert`s for size/alignment/offsets and compiles them, *and* — because
+> `__builtin_offsetof` is ill-formed on a bit-field — writes all-ones into each bit-field
+> at run time and compares the object's bytes against the mask chiero predicts. Layout is
+> the one place where a hand-written expected number is worthless, since the expectation
+> is exactly what a layout bug corrupts.
+>
+> Next, in order:
+>
+> 1. **Finish 014.** Uncited: 11, 12, 14, 15, 16, 17, 18, 20. Contract 11 (every implicit
+>    conversion becomes an explicit `Cast`) is the big one — it is what makes CIR
+>    unambiguous about bit-widths, and 015 cannot be trusted without it. 14–16 are name
+>    resolution and linkage; 17–18 are address constants and `__builtin_constant_p`.
+>    **Contract 12 is the gate**: point the `_Static_assert` generator at every record in
+>    the VPP corpus, which is already in-tree at
+>    `crates/chiero-parse/tests/corpus/vpp/`.
+> 2. **015 — AST→CIR lowering** (0/25), which finally connects the frontend to the
+>    symbolic core.
+> 3. **010 contract 19**, unblocked since wave 84.
+> 4. **M1's remaining 13** — 020's 14–18/23/29/30/44, 021 c19, 023's 7/17/21.
+>
+> Owed and recorded, not forgotten: `typeof` resolves to `Ty::Error` until contract 11
+> lands; a VLA bound is treated as flexible; `const_eval` standalone cannot size a tag;
+> and the parser's speculative type-name diagnostic rollback is still unpinned.
+>
+> ### Earlier (wave 86, `5d50c7e`) — 860 tests, frontend 68/117
 >
 > **013 is complete, 20/20, and the parser eats real VPP.** Six vppinfra headers,
 > **1,702,754 tokens of unmodified upstream C, zero diagnostics and zero panics**, AST at
