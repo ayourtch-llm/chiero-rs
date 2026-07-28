@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 139) — 1121 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 140) — 1123 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -497,7 +497,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > moved without any test noticing; 136 fixed the bit-field read-modify-write; 137 made an
 > enumeration constant its value, at its own type and in its own scope; 138 made a compound
 > literal an object and let it take postfix suffixes; **139 built the generator, and it
-> found a defect on its first run**.*
+> found a defect on its first run; 140 gave it structs and helpers and it found two more**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -543,9 +543,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > sanitizer discard filter with gcc-O2/clang cross-checks, and fixed seeds.
 >
 > **What v1 still lacks, in the order the defect record says to add it:**
->   - **Helper functions with struct parameters and struct returns.** Wave 132's
->     struct-parameter defect is invisible to a body-only generator; this is the single
->     biggest gap.
+>   - ~~Helper functions with struct parameters and struct returns.~~ **Done in wave 140**,
+>     with `struct` definitions, by-value struct parameters, struct returns, calls in the
+>     expression grammar, and a checksum that reads every field. It found two defects on the
+>     first run: `make(7).a` and a braced element narrower than `int`.
 >   - **Pointers, arrays and the alternative-spelling production** — `a[i]`, `*(a+i)`,
 >     `*(i+a)`, `p += i`, `p++` for one access. Every hand-written fixture used `a[i]`, the
 >     one spelling that worked.
@@ -605,11 +606,6 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Each has a one-line reproduction and is red today. None has a test yet — **write the red
 > test before fixing**, or they are worth nothing. Ranked by how much of C they break:
-> - **`lvalue_addr` returning `None` for an aggregate is still silent in one place.**
->   `struct I y = mk().i;` — a member selected off a *call result* — produces **no state and
->   zero diagnostics**. 020 §5 says a gap is a diagnostic rather than a licence, and
->   `callee_of` in the same file quotes that norm; the aggregate read arms in `expr` do not
->   follow it. (The compound-literal half of this item was fixed in wave 138.)
 > - **A statement-expression aggregate value is copied after its scope dies.**
 >   `struct S y = ({ struct S t; t.a = 4; t.b = 2; t; });` emits the `CopyMem` *after*
 >   `.scope exit 2`, reading `t` once 021 has retired it.
@@ -643,6 +639,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A defect that hides behind a working sibling is the last one anyone finds** (wave 140).
+> `struct S { signed char a; int b; } s = {3, 5};` produced nothing, while `s.a = 3;` on the
+> same struct worked perfectly — because sema converts an assignment *expression* and not a
+> braced element. Every struct with a member narrower than `int` was affected, and the suite
+> used `{ int a; int b; }` throughout. When a construct works one way and not another, the
+> working spelling is what keeps the broken one invisible.
 > **A name is not a scope** (wave 137). The first fix recorded enumerators in a
 > `Symbol -> value` table; a mutation swapping `insert` for `or_insert` survived, because a
 > function-local `enum { K = 2 }` and a file-scope `enum { K = 1 }` are both legal and both
@@ -733,7 +735,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > an oracle — **announce every skip**, and wave 132 made `differential.rs` enforce that
 > rather than intend it.
 >
-> Owed and written down: the two defects above; the wave-117 `fork_on_offset` survivor;
+> Owed and written down: the one defect above; the wave-117 `fork_on_offset` survivor;
 > floats do not execute; designated, bit-field and address initializers refused; a fault in a
 > non-entry frame is untested; `Bits` path steps are not emitted; `typeof` types to
 > `Ty::Error` in sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
