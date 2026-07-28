@@ -4984,6 +4984,31 @@ impl<'m> Engine<'m> {
     /// Memory faults from an instruction become findings and degrade, the same way a
     /// model's do. A fault that only reached the memory model is a bug chiero found and
     /// did not report.
+    /// What a reader calls the object `o`: a local's declared name, a global's, or `None`
+    /// when chiero invented the object and there is nothing to call it.
+    fn object_name(&self, s: &State, o: chiero_mem::ObjectId) -> Option<String> {
+        if let Some(g) = self.global_objs.iter().find(|(_, id)| **id == o) {
+            return self
+                .module
+                .globals
+                .iter()
+                .find(|x| x.id == *g.0)
+                .map(|x| x.name.to_string());
+        }
+        // The *current* frame only: an `AllocaId` is unique within a function, so a
+        // caller's slot of the same id is a different object and naming this fault after
+        // it would be worse than not naming it at all.
+        let fr = s.stack.last()?;
+        let a = fr.frame_objs.iter().find(|(_, id)| **id == o)?.0;
+        let f = self.module.funcs.iter().find(|f| f.id == s.func())?;
+        f.allocas
+            .iter()
+            .find(|d| d.id == *a)?
+            .name
+            .as_ref()
+            .map(|n| n.to_string())
+    }
+
     /// The rendered `AccessPath` for the address the current instruction accesses.
     ///
     /// Looked up from the instruction at the program counter rather than threaded through
@@ -5043,6 +5068,23 @@ impl<'m> Engine<'m> {
             let message = match self.path_for_current_access(s) {
                 Some(p) => format!("{f} through {p}"),
                 None => f.to_string(),
+            };
+            // **Name the object the fault is about.** `MemFault` prints an `ObjectId`
+            // because `chiero-mem` has no module and cannot know what a variable is
+            // called; the engine does. The substitution is exact rather than a regex —
+            // `f.object()` says precisely which id this fault names, so the token replaced
+            // is the one meant and nothing else.
+            //
+            // The id is an allocation counter: it means nothing to a reader, and it is not
+            // stable across pass configurations, so the *same defect in the same program*
+            // printed differently with `mem2reg` on. `chiero-opt`'s transparency sweep
+            // normalized it away for eight waves to keep working; that workaround goes
+            // with this.
+            let message = match f.object().and_then(|o| self.object_name(s, o)) {
+                Some(name) => {
+                    message.replace(&format!("{:?}", f.object().expect("just matched")), &name)
+                }
+                None => message,
             };
             s.findings.push(StateFinding {
                 id: self.finding_seq,

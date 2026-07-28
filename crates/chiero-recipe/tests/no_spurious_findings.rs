@@ -214,3 +214,87 @@ fn a_member_finding_names_the_member() {
         "the path names the member that was read: {findings:#?}"
     );
 }
+
+/// **The naming picks the right local out of several**, not simply the first.
+///
+/// `int f(void) { int a = 1; int b; int c = 3; return a + b + c; }` — `b` is the
+/// uninitialized one and it is neither the first alloca nor the last. Every earlier
+/// fixture has exactly one local, so "look up the object" and "take any object" are
+/// indistinguishable in all of them.
+#[test]
+fn the_naming_picks_the_right_local() {
+    let (findings, _) = run("int f(void) { int a = 1; int b; int c = 3; return a + b + c; }");
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert!(
+        findings[0].contains('b'),
+        "`b` is the uninitialized one: {}",
+        findings[0]
+    );
+    assert!(
+        !findings[0].contains(" a ") && !findings[0].contains(" c "),
+        "and neither of its neighbours is named: {}",
+        findings[0]
+    );
+}
+
+/// **A global is named too.**
+///
+/// Globals live in a different table from locals (`global_objs` rather than the frame's
+/// `frame_objs`), so naming them is a separate lookup that no local fixture exercises — and
+/// mutation confirms it: making `object_name` never look at globals survives every other
+/// test in this file.
+///
+/// **Blocked, and by two lowering defects rather than by anything here.** Every ordinary
+/// way to make a global fault produces invalid CIR:
+///
+/// - `int g[4]; … g[1]` — `PtrAdd base must be pointer-typed, got Int(32)`. Indexing a
+///   *global* array is broken; `lvalue_addr`'s `Ident` arm only looks in `fs().locals`.
+/// - `const int g = 1; *(int *)&g = 2` — `WidthMismatch`.
+///
+/// An `extern int g` reads cleanly and reports nothing, which is correct (021 §6: a global
+/// chiero cannot see is symbolic, not uninitialized) and therefore useless here.
+///
+/// Both defects are recorded in HANDOFF §9. Un-ignore this once a global can fault.
+#[test]
+#[ignore = "blocked: indexing a global array lowers to invalid CIR — see HANDOFF §9"]
+fn a_global_is_named_in_a_finding() {
+    let (findings, _) = run("int g[4]; int f(void) { return g[9]; }");
+    assert!(
+        findings.iter().any(|f| f.contains('g')),
+        "the out-of-bounds access names `g`: {findings:#?}"
+    );
+    for f in &findings {
+        assert!(!f.contains("ObjectId"), "{f}");
+    }
+}
+
+/// **A finding raised inside a callee names the callee's local**, not the caller's.
+///
+/// An `AllocaId` is unique only within a function, so the caller's slot of the same id is a
+/// *different object*. Naming a fault after it would be worse than leaving it unnamed — the
+/// reader would go and look at the wrong variable.
+///
+/// **Honest limit**: this does not distinguish `stack.last()` from `stack.first()`, and
+/// mutation confirms it. The engine enters `module.funcs.first()`, and valid C requires a
+/// callee to be declared before it is used — so the callee is always the first function in
+/// the module and the fault has one frame under it either way. Reaching the two-frame case
+/// needs a hand-built `.cir` module with the entry first, which belongs in `chiero-exec`'s
+/// own suite rather than here. Recorded in HANDOFF §9 rather than left as a silent gap.
+#[test]
+fn a_finding_in_a_callee_names_the_callees_local() {
+    // **`f` is defined first, and that is load-bearing**: the engine enters
+    // `module.funcs.first()`, so defining the callee first would run *it* as the entry —
+    // one frame, and `stack.first()` and `stack.last()` become the same thing, which makes
+    // taking the wrong frame unobservable.
+    let (findings, _) = run("static int inner(void);\n\
+         int f(void) { int shallow = 1; return inner() + shallow; }\n\
+         static int inner(void) { int deep; return deep; }\n");
+    assert!(
+        findings.iter().any(|f| f.contains("deep")),
+        "the fault is `inner`'s: {findings:#?}"
+    );
+    assert!(
+        !findings.iter().any(|f| f.contains("shallow")),
+        "and not the caller's local of the same slot index: {findings:#?}"
+    );
+}

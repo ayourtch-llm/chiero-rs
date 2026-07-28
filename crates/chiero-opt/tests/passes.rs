@@ -472,40 +472,20 @@ fn every_pass_is_observationally_transparent_over_the_corpus() {
 
 /// The engine's findings for a module, as the reader would see them.
 ///
-/// **`ObjectId`s are normalized out**, and that deserves an explanation rather than a
-/// quiet regex. `mem2reg` removes allocas, so the objects the engine creates are numbered
-/// differently afterwards — the same four uninitialized reads on the same four variables
-/// report as `ObjectId(4..6)` before and `ObjectId(6..8)` after. No finding appears or
-/// disappears and no counterexample changes; only an internal allocation counter does,
-/// and §9's promise is about findings and counterexamples.
-///
-/// The leak itself is a real defect and is recorded as owed in HANDOFF §9: a finding's
-/// text should name the *variable* — a span, a declaration — and not an engine-internal
-/// id, because as written the same defect in the same program reads differently under a
-/// different pass configuration, which is exactly what a reader would take as a change.
+/// **Compared verbatim.** For eight waves this normalized `ObjectId(N)` out of the text,
+/// because `mem2reg` removes allocas and the remaining objects renumber — so the same
+/// defect printed differently with the pass on, and the sweep would have read that as a
+/// pass changing what the engine reports. Wave 111 fixed the finding instead: it names the
+/// variable now, which is stable across pass configurations because it is a property of
+/// the program rather than of the allocator. The normalization is gone, and this
+/// comparison is stronger for it.
 fn run_report(m: &Module) -> Vec<String> {
     let mut a = chiero_solver::TermArena::new();
     let r = chiero_exec::Engine::new(m).run(&mut a);
-    let mut out: Vec<String> = r.findings().iter().map(|s| strip_object_ids(s)).collect();
+    let mut out = r.findings();
     // The *set* is the contract; completion order is a scheduling detail a pass may
     // legitimately disturb, so sorting keeps a reordering from reading as a regression.
     out.sort();
-    out
-}
-
-/// Replace `ObjectId(N)` with `ObjectId(_)`, leaving every other word of the finding —
-/// including the offset, the bit and the defect class — compared exactly.
-fn strip_object_ids(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find("ObjectId(") {
-        out.push_str(&rest[..i]);
-        out.push_str("ObjectId(_");
-        rest = &rest[i + "ObjectId(".len()..];
-        let j = rest.find(')').unwrap_or(0);
-        rest = &rest[j..];
-    }
-    out.push_str(rest);
     out
 }
 
