@@ -2939,7 +2939,49 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    report *too many* arguments and does not check length modifiers against argument width —
    both false negatives rather than noise.
 
-   **M2 MERGE GATE, ROUND 2 running.** Codex reports the REVIEW-1 remediation complete —
+   **M2 MERGE GATE, ROUND 2: REJECTED** (report handed over as `REVIEW-2.md` in the codex
+   worktree; remediation dispatched). The reviewer's own summary of the good news is worth
+   keeping: with **gcc's real predefine set**, `clib.h` preprocesses **token-for-token
+   identical to gcc across 257,310 tokens**, the 010 provenance model is correct end to end
+   including through headers and through `#`/`##`, and every round-1 mutation survivor is
+   closed. The engine is sound; what remains are surface defects.
+
+   **The finding that generalises past M2 — and the reason a self-report is not a gate.**
+   Codex's "real VPP headers preprocess with zero diagnostics" was *literally true and
+   analytically worthless*: it ran with chiero's 5-macro predefine stub, under which
+   glibc's `__GNUC_PREREQ(3,3)` is 0 and `__THROW`/`__attribute__`/`__extension__` all
+   vanish, so those headers take **different branches from gcc** and 13% of the token
+   stream differs (257,310 vs 224,074) with nothing reported. Agreement was never tested on
+   the same code. Re-running with gcc's actual 401 predefines is what exposed all three
+   blockers. **This is wave 79's instrumentation rule in another costume**: a green
+   behavioural signal that cannot distinguish "it works" from "the test never reached it".
+
+   Three blockers, each corrupting the token stream for ordinary C with **no diagnostic**:
+   - the macro-expansion depth cap counts *sequential* expansions, because `expand_inner`
+     is tail-recursive over the rest of the stream — the 257th macro in any directive-free
+     region silently stops expanding (`ip4_forward.c` emits it 9 times), and a test
+     *asserts* the bogus diagnostic;
+   - `#include <…>` macro-expands its operand, which C11 §6.10.2p4 forbids when the
+     directive matches a header-name form — gnu-mode predefines `linux`/`unix` as `1`, and
+     VPP has 307 angle includes with those as path components;
+   - substituted argument tokens keep their *call-site* `leading_space` instead of the
+     parameter's, corrupting `#` — 34 of the 36 divergent hunks across 57 vppinfra headers.
+
+   Judged before dispatch rather than forwarded: F12 and F13 are checkable directly against
+   C11 §6.10.2p4 and §6.10.3.2p2 and both hold; F11 is code reasoning with a reproducer and
+   measured VPP fallout. Also owed: the dead cross-TU header cache (0 hits / 4 misses; its
+   test passes only because it preprocesses the same path twice), two `SIGABRT` paths
+   `catch_unwind` cannot contain, no argument-count checking, no `intmax_t`→`uintmax_t`
+   promotion, `#pragma` dropped entirely (375 in `clib.h`, including the 113 `GCC target`
+   that 060's multiarch depends on), and **no test using `__VA_ARGS__` at all** for a spec
+   citing 230 uses in VPP.
+
+   ⚠️ **`cargo xtask contract-coverage` only measures 020–024**, so every `Covers:` line in
+   011/012 is unverified prose — which is how `contracts.rs` came to cite 011 c12 while its
+   only test is `#[ignore]`d, contradicting `M2-NOTES.md` in the same branch. Widening the
+   gate is the mechanical fix.
+
+   *(superseded)* Codex reports the REVIEW-1 remediation complete —
    all 20 differential cases matching gcc *and* clang, real `vppinfra` headers preprocessing
    with zero diagnostics, multi-line macro calls and rescanning and `#if` and real includes
    fixed, `__VA_OPT__` diagnosing per the new spec text, and ignored tests no longer
