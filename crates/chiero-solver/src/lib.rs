@@ -277,6 +277,19 @@ impl PathCondition {
         self.possibly_infeasible = true;
     }
 
+    /// Rebuild a path condition from a caller that stores the two halves separately.
+    ///
+    /// The engine keeps its constraints in `State::path` and the flag alongside them, and
+    /// hands both over per query. Going through `push_checked`/`push_unchecked` in a loop
+    /// would work but reads as though the *last* push decided the flag, which is exactly
+    /// the confusion §6.1 is about.
+    pub fn from_parts(terms: Vec<Term>, possibly_infeasible: bool) -> Self {
+        PathCondition {
+            terms,
+            possibly_infeasible,
+        }
+    }
+
     pub fn terms(&self) -> &[Term] {
         &self.terms
     }

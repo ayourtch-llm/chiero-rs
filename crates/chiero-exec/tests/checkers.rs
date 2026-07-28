@@ -24,7 +24,7 @@
 
 use chiero_cir::*;
 use chiero_exec::*;
-use chiero_solver::TermArena;
+use chiero_solver::{SmtLib, TermArena};
 use chiero_span::Span;
 use std::any::Any;
 use std::cell::RefCell;
@@ -891,5 +891,109 @@ fn an_errored_state_still_fires_terminated() {
         *n.borrow(),
         1,
         "a checker is told the path ended, whichever way it ended"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 022 §6 reaches a real run.
+// ---------------------------------------------------------------------------
+
+/// **Independence slicing runs during execution, not only in the solver's own tests.**
+///
+/// `probe` called `check` rather than `check_path`, so wave 79's slicing was implemented,
+/// tested, and never executed by the engine — a feature with a full test suite and no
+/// users. `check` cannot slice because it cannot tell which variables the *question* is
+/// about; that distinction is the entire reason `check_path` takes the query separately.
+///
+/// The fixture gives the path condition several variable-disjoint clusters — the shape
+/// 022 §6.2 says a real path condition has — and then asks a question about one of them.
+#[test]
+fn a_real_run_slices_its_path_condition() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    // Four independent parameters, each narrowed by its own branch, then one final branch
+    // that asks about the first. Nothing relates the clusters, so three of the four are
+    // irrelevant to every query after them.
+    let n = 4u32;
+    let params: Vec<Param> = (0..n)
+        .map(|i| Param {
+            value: ValueId(i),
+            ty: CTy::Int(32),
+        })
+        .collect();
+    let mut blocks = Vec::new();
+    for i in 0..n {
+        blocks.push(block(
+            i,
+            vec![Inst {
+                kind: InstKind::Assign {
+                    dst: ValueId(100 + i),
+                    rv: RValue::Cmp {
+                        op: CmpOp::ULt,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(i)),
+                        b: i32c(1000),
+                    },
+                },
+                span: Span::DUMMY,
+            }],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(100 + i)),
+                t: BlockId(i + 1),
+                f: BlockId(n + 1),
+            },
+        ));
+    }
+    // The query block: one more comparison on the *first* parameter.
+    blocks.push(block(
+        n,
+        vec![Inst {
+            kind: InstKind::Assign {
+                dst: ValueId(200),
+                rv: RValue::Cmp {
+                    op: CmpOp::ULt,
+                    ty: CTy::Int(32),
+                    a: Operand::Value(ValueId(0)),
+                    b: i32c(7),
+                },
+            },
+            span: Span::DUMMY,
+        }],
+        Terminator::Br {
+            cond: Operand::Value(ValueId(200)),
+            t: BlockId(n + 1),
+            f: BlockId(n + 1),
+        },
+    ));
+    blocks.push(block(n + 1, vec![], Terminator::Return(Some(i32c(0)))));
+
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params,
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks,
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    assert!(verify(&m).is_empty(), "{:?}", verify(&m));
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_backend(backend).run(&mut a);
+    assert!(
+        r.sliced_terms_skipped > 0,
+        "the engine never sliced anything, so 022 §6.2 is still unreachable from a run: \
+         {} solver calls",
+        r.solver_calls
     );
 }

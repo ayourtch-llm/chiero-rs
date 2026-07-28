@@ -23,7 +23,7 @@ use chiero_model::{
     AllocPolicy, HavocInit, HavocSpec, ModelCtx, ModelOutcome, ModelRegistry, Precision,
     StringPolicy,
 };
-use chiero_solver::{CheckResult, SmtLib, Solver, Term, TermArena, TieredSolver};
+use chiero_solver::{CheckResult, PathCondition, SmtLib, Solver, Term, TermArena, TieredSolver};
 use chiero_span::Span;
 use indexmap::IndexMap;
 
@@ -340,6 +340,20 @@ pub struct State {
     pub pc: (BlockId, usize),
     /// Append-only (023 §1).
     pub path: Vec<Term>,
+    /// 022 §6.1's `possibly_infeasible`, carried alongside the terms.
+    ///
+    /// Set whenever a constraint is added **without** a feasibility check. While it is
+    /// set, independence slicing and the subset/superset cache rules are disabled for
+    /// this state's queries. §6.1 lists three sites in the specification; the engine has
+    /// five, the two extra ones being a checker's `Action::Assume` (023 §6) and
+    /// `chiero_assume` on a symbolic condition (024 §7).
+    ///
+    /// **Known limit:** §6.1 says "a single full check that returns `Sat` clears it", and
+    /// nothing here clears it — the engine only ever asks feasibility questions *with*
+    /// assumptions, which prove something other than the path condition alone. The
+    /// consequence is that a state downstream of one solver `Unknown` stays unsliced for
+    /// the rest of its life. That is the slow direction, not the wrong one.
+    path_unchecked: bool,
     /// **Private.** A public field here let a consumer set a genuinely degraded run to
     /// `Exact` and have `seal` bless it — §7.1's claim rests on this not being writable.
     fidelity: Fidelity,
@@ -441,6 +455,7 @@ impl State {
     fn errored(id: StateId, why: &str) -> State {
         State {
             checker_states: CheckerStates::default(),
+            path_unchecked: false,
             id,
             mem: Memory::new(),
             pc: (BlockId(0), 0),
@@ -522,6 +537,23 @@ impl State {
         if let Some(f) = self.stack.last_mut() {
             f.lane_w.insert(v, w);
         }
+    }
+
+    /// Add a constraint whose feasibility, together with everything already on the path,
+    /// has been established — the ordinary branch case.
+    fn constrain_checked(&mut self, t: Term) {
+        self.path.push(t);
+    }
+
+    /// Add one without that check (022 §6.1), which disables slicing for this state.
+    fn constrain_unchecked(&mut self, t: Term) {
+        self.path.push(t);
+        self.path_unchecked = true;
+    }
+
+    /// Whether anything on this path was added without a feasibility check.
+    pub fn path_possibly_infeasible(&self) -> bool {
+        self.path_unchecked
     }
 
     fn lane_width_of(&self, v: ValueId) -> Option<u32> {
@@ -667,6 +699,13 @@ pub struct RunResult {
     pub backend_spawns: u64,
     /// How many solvers the run built. One, or the caches are discarded between queries.
     pub solver_inits: u64,
+    /// How many assertions independence slicing kept out of a backend query (022 §6.2).
+    ///
+    /// Exposed because the alternative is having no way to tell a run that sliced from
+    /// one that could not: slicing was implemented, tested in the solver's own suite, and
+    /// **never executed by the engine**, because `probe` called `check` rather than
+    /// `check_path`. A number in the result is what makes that visible.
+    pub sliced_terms_skipped: u64,
     /// The order states *finished*, so a change of searcher is visible in the output
     /// rather than hidden by sorting.
     completion_order: Vec<u32>,
@@ -1289,7 +1328,7 @@ impl<'m> Engine<'m> {
                 // it is a fourth `push_unchecked` site once `s.path` becomes a
                 // `PathCondition`.
                 Action::Assume(t) => {
-                    s.path.push(t);
+                    s.constrain_unchecked(t);
                     s.degrade(
                         Fidelity::Approximated,
                         AssumptionKind::OpaqueCode,
@@ -1356,6 +1395,7 @@ impl<'m> Engine<'m> {
         let Some(f) = self.module.funcs.first() else {
             let s = State::errored(self.new_id(), "the module defines no functions");
             return RunResult {
+                sliced_terms_skipped: 0,
                 id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 states: vec![s],
                 solver_calls: 0,
@@ -1399,6 +1439,7 @@ impl<'m> Engine<'m> {
         if !errs.is_empty() {
             let mut bad = State {
                 checker_states: CheckerStates::default(),
+                path_unchecked: false,
                 id: self.new_id(),
                 mem,
                 pc: (f.entry, 0),
@@ -1431,6 +1472,7 @@ impl<'m> Engine<'m> {
                 "the module was never executed, so nothing is known about it",
             );
             return RunResult {
+                sliced_terms_skipped: 0,
                 id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 states: vec![bad],
                 solver_calls: 0,
@@ -1508,6 +1550,7 @@ impl<'m> Engine<'m> {
         }
         let mut start = State {
             checker_states: CheckerStates::default(),
+            path_unchecked: false,
             id: self.new_id(),
             mem,
             pc: (f.entry, 0),
@@ -1675,11 +1718,16 @@ impl<'m> Engine<'m> {
         let completion_order: Vec<u32> = done.iter().map(|s| s.id.0).collect();
         done.sort_by_key(|s| s.id.0);
         let backend_spawns = self.solver.as_ref().map_or(0, |s| s.stats().backend_spawns);
+        let sliced_terms_skipped = self
+            .solver
+            .as_ref()
+            .map_or(0, |s| s.stats().sliced_terms_skipped);
         RunResult {
             id: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             states: done,
             solver_calls: self.solver_calls,
             backend_spawns,
+            sliced_terms_skipped,
             solver_inits: self.solver_inits,
             completion_order,
             budget: self.budget,
@@ -3052,18 +3100,18 @@ impl<'m> Engine<'m> {
 
         match (t_ok, f_ok) {
             (Feas::Yes, Feas::Yes) => {
-                s.path.push(c);
+                s.constrain_checked(c);
                 self.take_edge(s, bt);
-                sibling.path.push(neg);
+                sibling.constrain_checked(neg);
                 self.take_edge(&mut sibling, bf);
                 Some(sibling)
             }
             (Feas::Yes, Feas::No) => {
-                s.path.push(c);
+                s.constrain_checked(c);
                 self.take_edge(s, bt)
             }
             (Feas::No, Feas::Yes) => {
-                s.path.push(neg);
+                s.constrain_checked(neg);
                 self.take_edge(s, bf)
             }
             (Feas::No, Feas::No) => {
@@ -3086,7 +3134,7 @@ impl<'m> Engine<'m> {
             // unsatisfiable, and any checker firing there produces a false finding with
             // an impossible witness. §3 says take a branch the solver *could not* refute.
             (Feas::No, Feas::Unknown) => {
-                s.path.push(neg);
+                s.constrain_unchecked(neg);
                 self.take_edge(s, bf);
                 s.degrade(
                     Fidelity::Unknown,
@@ -3097,7 +3145,7 @@ impl<'m> Engine<'m> {
                 None
             }
             (Feas::Unknown, Feas::No) => {
-                s.path.push(c);
+                s.constrain_unchecked(c);
                 self.take_edge(s, bt);
                 s.degrade(
                     Fidelity::Unknown,
@@ -3112,7 +3160,7 @@ impl<'m> Engine<'m> {
             // is `Unknown`, not `Approximated` — §7's table is explicit that the engine
             // does not know whether the path exists.
             _ => {
-                s.path.push(c);
+                s.constrain_unchecked(c);
                 self.take_edge(s, bt);
                 s.degrade(
                     Fidelity::Unknown,
@@ -3120,7 +3168,7 @@ impl<'m> Engine<'m> {
                     Span::DUMMY,
                     "solver could not decide a branch; both sides explored",
                 );
-                sibling.path.push(neg);
+                sibling.constrain_unchecked(neg);
                 self.take_edge(&mut sibling, bf);
                 sibling.degrade(
                     Fidelity::Unknown,
@@ -3154,9 +3202,13 @@ impl<'m> Engine<'m> {
         // The path condition goes in as *assumptions* rather than assertions, so the
         // solver's own stack stays empty between queries and sibling states share both
         // the process and the caches.
-        let mut asks: Vec<Term> = s.path.clone();
-        asks.extend_from_slice(extra);
-        solver.check(a, &asks)
+        // **`check_path`, not `check`** — 022 §6.2's independence slicing needs to know
+        // which variables the *question* is about, and a bare `check` with everything in
+        // one list cannot tell. Calling `check` here left slicing unreachable from any
+        // real run: it was implemented, tested, and never executed. `extra` is the query,
+        // which is exactly the distinction `check_path` is built around.
+        let mut pc = PathCondition::from_parts(s.path.clone(), s.path_unchecked);
+        solver.check_path(a, &mut pc, extra)
     }
 
     fn feasible(&mut self, a: &mut TermArena, s: &State, t: Term) -> Feas {
@@ -4022,7 +4074,7 @@ impl<'m> Engine<'m> {
             sib.id = self.new_id();
             sib.pc.1 = sib.pc.1.wrapping_add(1);
             let c = constrain(a, &ranges, p);
-            sib.path.push(c);
+            sib.constrain_checked(c);
             let off = offset_in(self, a, &mut sib, p);
             if let Some(d) = self.pending_dst {
                 sib.set_local(d, Value::Ptr(Pointer { off, ..p }));
@@ -4039,7 +4091,7 @@ impl<'m> Engine<'m> {
             self.pending.push(sib);
         }
         let c = constrain(a, &ranges, mine);
-        s.path.push(c);
+        s.constrain_checked(c);
         let mine_off = offset_in(self, a, s, mine);
         let mine = Pointer {
             off: mine_off,
@@ -4069,6 +4121,11 @@ impl<'m> Engine<'m> {
         let model = {
             self.solver_calls += 1;
             let solver = self.solver.as_mut()?;
+            // A **full** check — no query, so §6.2's slicing has nothing to slice and
+            // §6.1's "a single full check that returns `Sat` clears it" would apply. The
+            // clearing is not done here because `pinned_offset` holds `&State`; see the
+            // note on `State::path_unchecked` for why leaving the flag set is the slow
+            // direction rather than the wrong one.
             match solver.check(a, &s.path) {
                 CheckResult::Sat(m) => m,
                 _ => return None,
@@ -4673,7 +4730,10 @@ impl<'m> Engine<'m> {
         // Siblings are created *after* this state's own result is in place, so each
         // carries the same history and differs only in what the model returned.
         if let Some(g) = mine_guard {
-            s.path.push(g);
+            // 022 §6.1's third site: 024 §4's `strlen` cap "constrains a terminator to
+            // exist within the bound — infeasible if those bytes are already constrained
+            // non-zero". The guard is added without checking that.
+            s.constrain_unchecked(g);
         }
         let took_bound = !branch_bounds.is_empty();
         let took_finding = !branch_findings.is_empty();
@@ -4709,7 +4769,7 @@ impl<'m> Engine<'m> {
                 sib.path.pop_if(|last| *last == g);
             }
             if let Some(g) = guard {
-                sib.path.push(g);
+                sib.constrain_unchecked(g);
             }
             match report {
                 Some(BranchNote::Finding(msg)) => {
@@ -4932,7 +4992,7 @@ impl<'m> Engine<'m> {
                     let zero = a.bv(w, 0);
                     let is_zero = a.eq(t, zero);
                     let nonzero = a.not(is_zero);
-                    s.path.push(nonzero);
+                    s.constrain_unchecked(nonzero);
                 }
             }
             IntrinsicOutcome::KillState => {
