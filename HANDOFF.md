@@ -2806,6 +2806,49 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 80** (`fc9414d` RED, `f9eb9c3` GREEN; 732 tests, **147/165 cited**) — 023 §6,
+   **the checker interface**: `Checker`, `Event`, `Action`, `CheckerCtx`, `CheckerState`,
+   `Engine::with_checker`. Contracts 19, 20, 22, 24. `chiero-check` had been an empty stub
+   since the crate graph was laid out, which is why these four had never been citable.
+
+   Events are emitted at `BeforeInst`, `AfterInst`, `Fork`, `Call`, `CallReturn`, `Return`
+   and `Terminated`. **`Event` defines only those** — §6 also lists `MemFault` and
+   `ArithEvent`, and they arrive with the checkers that consume them rather than sitting
+   in the enum unemitted, because a checker matching a variant that can never fire is
+   indistinguishable from one whose logic is wrong. Leaving them out is a compile error
+   later; leaving them in is a silent gap.
+
+   Two defects the wave's own tests found, both worth carrying:
+   - **`must` on a ground condition returned `false` for a tautology.** `must(1 == 1)`
+     hands tier 1 a constant, which is not an atom and so leaves §3.2's fragment; the
+     answer is `Unknown` and `must` reports `false`. With the engine's **default
+     tier-1-only solver** that is every ground question a checker can ask, including "did
+     this path return the value I care about" — §6.1's own lock example. Now folded before
+     the solver is consulted.
+   - **Contract 19's obvious fixture cannot fail.** Assuming `x != 0` and branching on
+     `x == 0` looks like the test, but tier 1 has no `Ne` transfer, so the conjunction is
+     `Unknown`, 023 §3 takes the branch anyway, and both sides survive whether or not the
+     assume reached the solver. The fixture assumes `x == 5` instead — two conflicting
+     equalities, inside tier 1's fragment — so it decides the question with the solver the
+     engine actually uses.
+
+   ⚠️ **A default that makes tests lie.** `Engine::new` is tier-1-only; `with_backend` is
+   opt-in. Any engine test whose expectation needs a solver answer tier 1 cannot give
+   passes for the wrong reason — it sees the `Unknown`-take-both-branches path, not the
+   behaviour it names. Wave 80 hit this twice in one file. When writing an engine fixture,
+   check that tier 1 can decide it, or attach a backend deliberately.
+
+   Fork semantics live in `CheckerStates::clone` rather than at the fork sites, so a
+   `State` clone cannot forget `on_fork`. Deviations recorded in source: `on_fork` is
+   required rather than defaulted through `dyn_clone` (not a workspace dependency).
+
+   ⚠️ **Suspect citation found while surveying:** 023 contract 20 was already "cited" by
+   `witness.rs`, but that citation is about the engine not deduplicating *one* checker's
+   findings across a fork — not about two checkers on one event, which is what the
+   contract says. `tests/checkers.rs` now covers it properly. Worth assuming other
+   citations are similarly approximate; the coverage tool checks that a contract is
+   *named*, not that it is *tested*.
+
    **WAVE 79** (`16542c6` RED, `2e12723` GREEN; 727 tests, **144/165 cited**) — 022
    contracts 9 and 9b: independence slicing, `PathCondition`, and §6.1. Union-find
    partition of the assertion set into variable-disjoint components, a per-slice model
@@ -3069,7 +3112,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **727 tests, 144/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **732 tests, 147/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
