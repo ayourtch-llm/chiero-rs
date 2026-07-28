@@ -2837,16 +2837,33 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **Contract 25's `Cond` half silently passed without z3** (`!Sat` is satisfied by
      `Unknown`) — 022 contract 2 says skipped with a reason, not silently passed.
 
-   **STILL OWED from this review:** the `printf` checker has real false positives — `%*d`
-   width/precision does not consume its argument, positional `%n$` forms are consumed in
-   order, glibc `%m` is reported as missing an argument, unknown conversions *do* make a
-   type claim (contradicting the code's own comment, and `%v`/`%U` are VPP's own), a
-   symbolic `%s` reports chiero's gap as a program bug, and an untranslatable argument is
-   described as "a pointer". Five more format mutations survive, including the
-   `Bounded`-not-a-finding rule that is the headline design decision. Also: `strlen` on a
-   negative offset reports the **same finding twice** (the dispatch calls both models), and
-   every witness now carries a binding per touched byte whose `why` string says "clobbered
-   by opaque code" when it is a caller-supplied byte.
+   **WAVE 78** (`fd6c463`; 719 tests) — the `printf` false positives, all six. The review
+   found them by compiling the same calls with **`gcc -Wformat`**, which is the strongest
+   oracle available on this side of the project and the reason the frontend's differential
+   was worth so much. *A format checker that fires on correct code is one that gets turned
+   off, so the false positives are worth more than the true positives beside them.*
+
+   `%*d`/`%.*f` consume their width and precision arguments; positional `%n$` forms are
+   **declined** rather than guessed at (half-understanding a format produces findings about
+   chiero's parser); `%m` takes no argument; unknown conversions really do claim nothing
+   now, which the code's comment already said and the code did not do; a `%s` string chiero
+   cannot read is a **bound**, not a memory finding — the most common `printf` call there
+   is, since entry pointees are symbolic; and an untranslatable argument is no longer
+   described as "a pointer".
+
+   ⚠️ *Method note:* two assertions could not see their own mutants. "No mismatch" was
+   satisfied by a parser that misreads `%2$d` as an unknown conversion and claims nothing —
+   so the **decline** is asserted, not just the silence. And `%zu` cannot show that length
+   modifiers are skipped, because `z` alone reads as an unknown conversion — so `%ld` of a
+   pointer is asserted to be a mismatch. **When "nothing was reported" is the expected
+   answer, check *why* nothing was reported.**
+
+   **Still owed from that review:** `strlen` on a negative offset reports the **same finding
+   twice** (dispatch calls the concrete model, then the symbolic one, and both report); every
+   witness carries a binding per touched byte whose `why` says "clobbered by opaque code"
+   when it is a caller-supplied byte; §7.2's mitigation 1 (symbolic base addresses) is not
+   implemented; and the format checker does not report *too many* arguments or check length
+   modifiers against argument width — both false negatives rather than noise.
 
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
@@ -2925,7 +2942,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **714 tests, 141/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **719 tests, 141/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
