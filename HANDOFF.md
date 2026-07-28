@@ -487,7 +487,88 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 128, `fb966c2`) — 1100 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 129, `HEAD`) — 1102 tests, 5 ignored, M1 165/165 by contract
+>
+> ## 🔴 The sret wild pointer: three subsystems eliminated, one place left
+>
+> `a_struct_returned_by_value_carries_its_fields` still reports
+> `wild-pointer: … at address 30064771075` — `0x700000003`, the struct's bytes `{3, 7}` used
+> as an **address**. Ruled out so far, each with a test that now guards it:
+>
+> - **The engine** (wave 128): a hand-built module with the same shape runs correctly.
+> - **The call ABI** (wave 127): sret param is first, one slot per call site, verified by
+>   `an_aggregate_return_uses_an_sret_slot`.
+> - **Scope balance** (wave 129): the callee exited each scope twice; fixed, and
+>   `a_returning_function_exits_each_scope_once` guards it. **It was not the cause.**
+>
+> What is left is the one thing not yet examined: **where the caller's `CopyMem` source
+> comes from**. The lowered caller reads `%18 = call @mk(…)` then
+> `copymem %19 -> %18, 8i64`. If `%18` holds the struct's *bytes* rather than the returned
+> pointer, that is exactly the observed address. Print what the engine binds `%18` to right
+> after the call returns — `Value::Ptr` or `Value::Scalar` — and compare against the
+> hand-built module, where the same instruction works.
+>
+> Blocked on it: `a_struct_returned_by_value_carries_its_fields`,
+> `two_aggregate_returns_are_distinct`, `tests/corpus/owed/header_inline.c`.
+>
+> ### Also open
+>
+> - Shapes untried: a union inside a struct under a symbolic index; `goto` out of three
+>   nested scopes; a `switch` on a struct member read through a pointer.
+> - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
+>   untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+>
+> ### Rules earned, most recent first
+>
+> **A real defect found while hunting another is still not the cause** (wave 129). The
+> duplicated scope exits were genuine, fixed, and guarded — and the symptom did not move.
+> Fixing what you find is right; *claiming* it was the cause because it was a bug is not.
+> **Eliminating halves is progress worth committing** (wave 128).
+> **Build the hand-built equivalent** to decide whether a bug is in the IR or in what
+> consumes it (waves 109, 128).
+> **An ABI change has to reach the declaration pass** (wave 127).
+> **The reporting you built pays off on defects you did not anticipate** (wave 126).
+> **Mutation is what makes "already correct" worth committing** (wave 125).
+> **A comment claiming a property is not the property** — waves 107, 112, 118, 124.
+> **A defect can hide behind another of the same shape** (wave 123).
+> **A corpus fixture that runs is coverage; a mutation needs something sharper** (wave 122).
+> **A fix does not generalise to a second code path on its own** (wave 121) — wave 129 is
+> the same lesson from the other side: the scalar return path had the dead block and a
+> comment explaining it, and the sret path added later did not.
+> **A wrong diagnosis is expensive; disprove it with tests you keep** (wave 120).
+> **A fixture parked in `owed/` covers nothing** (wave 120).
+> **A fixture that will not lower is still evidence** (wave 119).
+> **An aggregate diagnostic hides the cause** — print diagnostics before 015 §7 truncates.
+> **When a hypothesis is wrong, the fixtures that disprove it are the evidence** (wave 118).
+> **State that forking clones must not be cached where forking cannot reach** (wave 118).
+> **A failing test is not automatically a failing engine** (wave 117).
+> **Exhaustion and "the solver gave up" are different answers** (wave 116).
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** (wave 114).
+> **A wrong answer is worse than a missing one** (wave 113).
+> **A survivor is not automatically a fixture gap** (waves 112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **The fixture never reached the comparison the design exists for** — twenty waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; an **ambiguous anchor is inconclusive too** — wave 129 had
+> four `new_block`/`switch_to` pairs; two guards only ever true together are equivalent
+> mutants; a no-op mutant is neither; **`cargo fmt` moves anchors** and reflows
+> `#[ignore = "…"]` onto one line; **a mutation one other site compensates for is partial**;
+> **some changes are not expressible as a one-line mutant** — say so; **check a patch script
+> printed `ok`**. An oracle that can silently not run is not an oracle — **announce every
+> skip**.
+>
+> Owed and written down: the sret wild pointer (blocks two tests and
+> `tests/corpus/owed/header_inline.c`); the wave-117 `fork_on_offset` survivor; designated,
+> bit-field and address initializers refused; a fault in a non-entry frame is untested;
+> `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in sema; the parser's
+> speculative type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose
+> their element width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately
+> uncovered.
+>
+> ### Earlier (wave 128, `fb966c2`) — 1100 tests, 5 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: a `return` unwinds its scopes twice
 >
