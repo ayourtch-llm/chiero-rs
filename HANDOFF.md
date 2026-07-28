@@ -487,7 +487,59 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 108, `72fa18d`) — 1017 tests, 4 ignored, M1 164/165
+> ### ⏭️ START HERE (wave 109, `eb11102`) — 1025 tests, 3 ignored, M1 165/165 by contract
+>
+> **The false-positive storm is fixed and 023 c21 is closed with it.** A parameter's slot
+> took `ScopeId(0)` (allocated while `open_scopes` was empty) and the body's compound then
+> opened `ScopeId(0)` too (`next_scope` also starts at 0), so entering the body replaced
+> every parameter slot *after* the prologue stored into it. Parameters now live in a scope
+> **enclosing** the body — C11 6.2.1p4, and the same shape 015 c12 already fixes for
+> `for (int i = 0; …)`.
+>
+> **One contract remains: 023 c17** — 1, 2 and 8 worker threads produce identical
+> `RunResult`s with `wall_clock: None`. Real work, not a test: the engine is
+> single-threaded, `TermArena` is not shared, and every `State` holds `Term`s from one
+> arena. Per-state `CheckerState` (023 §4 names it as what makes this achievable) and wave
+> 106's `pick` (which takes the whole queue) are the two pieces already in place. **Expect
+> an arena-sharing decision, not a scheduling tweak** — that is the design question to
+> settle before writing any test.
+>
+> ### The test shape this project was missing
+>
+> **Assert that correct code produces no findings.** 1017 tests passed while every function
+> that read its own scalar parameter reported a spurious `uninitialized-read`, because every
+> differential probe compares the *value* chiero computes against gcc and none asked whether
+> it also reported something. `chiero-recipe/tests/no_spurious_findings.rs` is that shape;
+> extend it whenever a new construct lands. Its controls are the load-bearing half — a
+> genuinely uninitialized read must still be reported **and still degrade**, or the whole
+> file is satisfied by an engine that went quiet.
+>
+> ### Rules earned, most recent first
+>
+> **When a result surprises you, read what the engine already recorded** — `fidelity()`,
+> `assumptions()`, `findings()` — before theorising (wave 108; it is how 109's cause was
+> found).
+> **Bisect a hand-built module against the lowered one** to decide which crate owns a bug:
+> wave 109 took three probes to go from "somewhere in exec or lowering" to one instruction.
+> **A comment claiming a property is not the property** (wave 107).
+> **Comparing two configurations cannot see a leak that affects both** — pair every
+> "A differs from B" with an "A equals A'" (wave 107).
+> **Anything claiming to be stable forever needs a pinned literal** (wave 106).
+> **The fixture never reached the comparison the design exists for** — seven waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; and **a mutation that one other
+> site compensates for is a partial mutation, not a surviving gap** — mutate every source of
+> the effect (wave 109's `NoInformation` has two).
+>
+> Owed and written down: lowering still builds no `AccessPath`s (wave 107 is the first
+> consumer and its fixture supplies them by hand); the engine's own findings cite
+> `ObjectId(N)`; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
+> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 108, `72fa18d`) — 1017 tests, 4 ignored, M1 164/165
 >
 > ## 🔴 Do this first: a scalar parameter reads as uninitialized from its own slot
 >
