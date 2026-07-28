@@ -487,7 +487,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 87, `ffc6da7`) — 874 tests, M1 152/165, frontend 80/117
+> ### ⏭️ START HERE (wave 88, `2b1e308`) — 875 tests, M1 152/165, frontend 81/117
+>
+> **The 014 layout gate is live and green**: 2909 generated `_Static_assert`s over **520
+> real VPP records**, zero rejected by gcc. `cargo test -p chiero-sema --test
+> vpp_layout_gate`. The corpus now lives at the workspace `tests/corpus/vpp/` (001 §6),
+> since both `chiero-parse` and `chiero-sema` read it.
+>
+> Next, in order:
+>
+> 1. **014 contract 11 — every implicit conversion becomes an explicit `Cast`.** This is
+>    what 015 waits on: lowering must never infer a conversion, because one it gets wrong
+>    is an invisible semantic bug, and making conversions explicit is what makes CIR
+>    unambiguous about bit-widths for the solver. It needs full expression typing, which
+>    also unblocks `typeof` (currently `Ty::Error`).
+> 2. **014's 14–18 and 20** — tentative definitions and linkage (`GlobalId`, and *static*
+>    functions in different TUs must stay distinct), address constants,
+>    `__builtin_constant_p`, and `Ty::Error` not cascading.
+> 3. **015 — AST→CIR lowering** (0/25).
+> 4. **010 contract 19**; **M1's remaining 13**.
+>
+> Two things wave 88 established that are easy to get wrong later:
+> **gcc has two alignments for a vector** — `_Alignof(u64x4)` is 16 but a `u64x4` member
+> is *placed* at 32 — so `Ty::Vector` stores the placement value and `align_of_ty` applies
+> the psABI cap. And that cap (`TargetConfig::max_vector_align`) is **target data**: 16
+> baseline, 32 under `-mavx`, 64 under `-mavx512f`. That is 060's multiarch 1:N mapping
+> arriving early — one source file, several layouts, distinguished by `ConfigId`.
+>
+> ### Earlier (wave 87, `ffc6da7`) — 874 tests, frontend 80/117
 >
 > **`chiero-sema` has a layout engine and gcc agrees with it** (014: 12/20). Records,
 > bit-fields including straddling and zero-width, packed, `aligned` at record and member
