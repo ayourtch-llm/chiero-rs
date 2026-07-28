@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigId(pub u64);
@@ -88,7 +89,9 @@ pub struct PreprocessedTu {
     pub config: ConfigId,
     pub deps: Vec<FileId>,
     pub pragmas: Vec<PragmaRecord>,
+    pub macro_defs: Vec<MacroDef>,
     spellings: Vec<String>,
+    symbols: BTreeMap<Symbol, Arc<str>>,
 }
 
 impl PreprocessedTu {
@@ -102,6 +105,10 @@ impl PreprocessedTu {
             .position(|candidate| std::ptr::eq(candidate, token))
             .and_then(|index| self.spellings.get(index))
             .map(String::as_str)
+    }
+
+    pub fn symbol_text(&self, symbol: Symbol) -> Option<&str> {
+        self.symbols.get(&symbol).map(AsRef::as_ref)
     }
 }
 
@@ -386,6 +393,29 @@ impl Engine {
         let output = self.process_tokens(input, &root_path, 0, loader);
         let tokens = output.iter().map(|t| t.token.clone()).collect();
         let spellings = output.into_iter().map(|t| t.text).collect();
+        let macro_defs: Vec<_> = self
+            .macros
+            .iter()
+            .map(|stored| stored.def.clone())
+            .collect();
+        let mut symbols = BTreeMap::new();
+        for definition in &macro_defs {
+            let symbol_iter = std::iter::once(definition.name).chain(match &definition.kind {
+                MacroKind::FunctionLike { params, variadic } => {
+                    let mut symbols = params.clone();
+                    if let Variadic::Named(symbol) = variadic {
+                        symbols.push(*symbol);
+                    }
+                    symbols
+                }
+                MacroKind::ObjectLike => Vec::new(),
+            });
+            for symbol in symbol_iter {
+                if let Some(text) = self.lex_session.symbol_text(symbol) {
+                    symbols.insert(symbol, text);
+                }
+            }
+        }
         PreprocessedTu {
             tokens,
             source_map: std::mem::take(&mut self.source_map),
@@ -393,7 +423,9 @@ impl Engine {
             config: self.config.id,
             deps: std::mem::take(&mut self.deps),
             pragmas: std::mem::take(&mut self.pragmas),
+            macro_defs,
             spellings,
+            symbols,
         }
     }
 
@@ -625,6 +657,7 @@ impl Engine {
     }
 
     fn add_builtin(&mut self, name: &str) {
+        let name_symbol = self.lex_session.intern_symbol(name);
         let id = self
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
@@ -632,7 +665,7 @@ impl Engine {
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
-                name: Symbol(index as u32),
+                name: name_symbol,
                 kind: MacroKind::ObjectLike,
                 body: Vec::new(),
                 def_span: Span::DUMMY,
@@ -648,6 +681,7 @@ impl Engine {
     }
 
     fn add_predefined_object(&mut self, name: &str, value: &str) {
+        let name_symbol = self.lex_session.intern_symbol(name);
         let id = self
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
@@ -656,7 +690,7 @@ impl Engine {
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
-                name: Symbol(index as u32),
+                name: name_symbol,
                 kind: MacroKind::ObjectLike,
                 body: body.iter().map(|token| token.token.clone()).collect(),
                 def_span: Span::DUMMY,
@@ -672,6 +706,8 @@ impl Engine {
     }
 
     fn add_predefined_query(&mut self, name: &str) {
+        let name_symbol = self.lex_session.intern_symbol(name);
+        let parameter_symbol = self.lex_session.intern_symbol("query");
         let id = self
             .source_map
             .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
@@ -680,9 +716,9 @@ impl Engine {
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
-                name: Symbol(index as u32),
+                name: name_symbol,
                 kind: MacroKind::FunctionLike {
-                    params: vec![Symbol(0)],
+                    params: vec![parameter_symbol],
                     variadic: Variadic::No,
                 },
                 body: body.iter().map(|token| token.token.clone()).collect(),
@@ -699,6 +735,8 @@ impl Engine {
     }
 
     fn add_config_object(&mut self, name: &str, value: &str) {
+        let (name, params) = parse_configured_name(name);
+        let name_symbol = self.lex_session.intern_symbol(&name);
         let mut temporary = SourceMap::new();
         let file = temporary.add_file("<command-line>", value);
         let lexed = self.lex_session.lex(&temporary, file, LexConfig::default());
@@ -720,24 +758,38 @@ impl Engine {
             .collect();
         let id = self
             .source_map
-            .add_macro_at(name, Span::DUMMY, Span::DUMMY, None, 0);
+            .add_macro_at(&name, Span::DUMMY, Span::DUMMY, None, 0);
         let index = self.macros.len();
+        let kind = if params.is_empty() {
+            MacroKind::ObjectLike
+        } else {
+            MacroKind::FunctionLike {
+                params: params
+                    .iter()
+                    .map(|parameter| self.lex_session.intern_symbol(parameter))
+                    .collect(),
+                variadic: Variadic::No,
+            }
+        };
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
-                name: Symbol(index as u32),
-                kind: MacroKind::ObjectLike,
+                name: name_symbol,
+                kind,
                 body: body.iter().map(|token| token.token.clone()).collect(),
                 def_span: Span::DUMMY,
                 undef_span: None,
             },
-            name: name.into(),
-            params: Vec::new(),
+            name: name.clone(),
+            params,
             variadic_name: None,
             std_variadic: false,
             body,
         });
-        self.by_name.insert(name.into(), index);
+        if let Some(previous) = self.by_name.get(&name).copied() {
+            self.macros[previous].def.undef_span = Some(Span::DUMMY);
+        }
+        self.by_name.insert(name, index);
     }
 
     fn directive(
@@ -991,15 +1043,18 @@ impl Engine {
             .source_map
             .add_macro(&name, name_tok.token.span, body_extent);
         let index = self.macros.len();
+        let name_symbol = self.lex_session.intern_symbol(&name);
         let kind = if function_like {
             MacroKind::FunctionLike {
                 params: params
                     .iter()
-                    .enumerate()
-                    .map(|(i, _)| Symbol(i as u32))
+                    .map(|parameter| self.lex_session.intern_symbol(parameter))
                     .collect(),
                 variadic: if variadic_name.is_some() {
-                    Variadic::Named(Symbol(params.len() as u32))
+                    Variadic::Named(
+                        self.lex_session
+                            .intern_symbol(variadic_name.as_deref().unwrap_or_default()),
+                    )
                 } else if std_variadic {
                     Variadic::Std
                 } else {
@@ -1012,7 +1067,7 @@ impl Engine {
         self.macros.push(StoredMacro {
             def: MacroDef {
                 id,
-                name: Symbol(index as u32),
+                name: name_symbol,
                 kind,
                 body: body.iter().map(|t| t.token.clone()).collect(),
                 def_span: name_tok.token.span,
@@ -1024,6 +1079,27 @@ impl Engine {
             std_variadic,
             body,
         });
+        if let Some(previous) = self.by_name.get(&name).copied() {
+            let equivalent = {
+                let old = &self.macros[previous];
+                let new = &self.macros[index];
+                old.params == new.params
+                    && old.variadic_name == new.variadic_name
+                    && old.std_variadic == new.std_variadic
+                    && old
+                        .body
+                        .iter()
+                        .map(|token| &token.text)
+                        .eq(new.body.iter().map(|token| &token.text))
+            };
+            self.macros[previous].def.undef_span = Some(name_tok.token.span);
+            if !equivalent {
+                self.diagnostics.push(Diagnostic {
+                    span: name_tok.token.span,
+                    message: format!("redefinition of macro `{name}`"),
+                });
+            }
+        }
         self.by_name.insert(name, index);
     }
 
@@ -1589,6 +1665,24 @@ fn parse_args(input: &VecDeque<Tok>, open: usize) -> Option<(Vec<Vec<Tok>>, usiz
         i += 1;
     }
     None
+}
+
+fn parse_configured_name(declaration: &str) -> (String, Vec<String>) {
+    let Some((name, parameters)) = declaration.split_once('(') else {
+        return (declaration.to_owned(), Vec::new());
+    };
+    let Some(parameters) = parameters.strip_suffix(')') else {
+        return (declaration.to_owned(), Vec::new());
+    };
+    (
+        name.to_owned(),
+        parameters
+            .split(',')
+            .map(str::trim)
+            .filter(|parameter| !parameter.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 fn synthetic_punct(text: &str, punct: Punct, at: Span) -> Tok {

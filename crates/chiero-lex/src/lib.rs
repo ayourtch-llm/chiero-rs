@@ -216,6 +216,18 @@ impl LexSession {
         Self::default()
     }
 
+    pub fn intern_symbol(&self, text: &str) -> Symbol {
+        self.interner.borrow_mut().intern(text)
+    }
+
+    pub fn symbol_text(&self, symbol: Symbol) -> Option<Arc<str>> {
+        self.interner
+            .borrow()
+            .strings
+            .get(symbol.0 as usize)
+            .cloned()
+    }
+
     pub fn lex(&self, map: &SourceMap, file: FileId, config: LexConfig) -> LexedFile {
         let source_file = map.file(file);
         let source: Arc<str> = Arc::from(source_file.src());

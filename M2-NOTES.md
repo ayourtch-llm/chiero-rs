@@ -136,3 +136,8 @@
 - The misleading umbrella citation was corrected: `contracts.rs` now claims only the
   011 contracts it tests. Non-ignored tests in `performance.rs` carry 011 contracts 11
   and 13; contract 12 remains explicitly owed because its throughput test is ignored.
+- Finding 20's implementation gaps reproduced. `PreprocessedTu` now exposes every
+  `MacroDef` and resolves its real lexer-interner `Symbol`s; redefinition closes the
+  prior definition and incompatible replacement diagnoses. `Config::defines` also
+  recognizes GCC's function-like `NAME(param)` entries, so the standing 401-definition
+  harness installs all ten function-like predefines as functions rather than inert names.
