@@ -982,6 +982,22 @@ enum Verdict {
         errors: Vec<String>,
         gcc: i32,
     },
+    /// **The engine declared a modelling limit.**
+    ///
+    /// **Currently unexercised, and that is recorded rather than hidden.** Since
+    /// `refuse_floating` stops every float program at lowering, nothing in this grammar
+    /// reaches the engine and degrades — a mutation deleting this arm survives. It is kept
+    /// because the contract is 023 §7's and the next thing to degrade (a budget, an
+    /// unmodeled extern, an engine `lowering_gap`) needs it, and because deleting it would
+    /// mean rediscovering the distinction the next time a gap appears. Unlike wave 143's
+    /// dead guard, this is unreachable *from today's grammar*, not in principle. 023 §7 makes `Fidelity` the contract
+    /// that separates "chiero cannot model this" from "chiero is wrong": a run that hits a
+    /// gap degrades below `Exact` and says so. Not a defect — but ledgered and ratcheted
+    /// with the refusals, because a limit nobody looks at is indistinguishable from a bug
+    /// nobody found.
+    Gap {
+        fidelity: String,
+    },
     /// The program was undefined, or the compilers disagreed with each other about it.
     /// Not compared, and not a defect on either side.
     Discarded,
@@ -996,12 +1012,18 @@ fn judge(prelude: &str, body: &str) -> Verdict {
         return Verdict::Discarded;
     }
     match chiero_answer(prelude, body) {
-        Ok(Ok(Some(v))) if v == gcc => Verdict::Agree,
-        Ok(Ok(Some(v))) => Verdict::Mismatch {
+        Ok(Ok((Some(v), _))) if v == gcc => Verdict::Agree,
+        // **A degraded run is a declared limit, whatever it answered.** 023 §7 forbids a
+        // claim of exactness once a gap has been reached, so a wrong number from an
+        // `Unknown` run is chiero saying "I could not model this" — which is the honest
+        // outcome, not a defect. A wrong number at `Exact` is the opposite, and stays a
+        // `Mismatch`: that is the case the fidelity contract exists to make impossible.
+        Ok(Ok((_, f))) if f != "Exact" => Verdict::Gap { fidelity: f },
+        Ok(Ok((Some(v), _))) => Verdict::Mismatch {
             chiero: Some(v),
             gcc,
         },
-        Ok(Ok(None)) => Verdict::SilentNoState { gcc },
+        Ok(Ok((None, _))) => Verdict::SilentNoState { gcc },
         Ok(Err(errors)) => Verdict::InvalidCir { errors, gcc },
         Err(ChieroErr::Refused { stage, message }) => Verdict::Refused { stage, message },
         Err(ChieroErr::Panic(m)) => Verdict::Panic(m),
@@ -1022,7 +1044,10 @@ enum ChieroErr {
 /// wrong here — a refusal is information, not a test failure. So the stages are run
 /// directly and each one's diagnostics are reported as themselves.
 #[allow(clippy::type_complexity)]
-fn chiero_answer(prelude: &str, body: &str) -> Result<Result<Option<i32>, Vec<String>>, ChieroErr> {
+fn chiero_answer(
+    prelude: &str,
+    body: &str,
+) -> Result<Result<(Option<i32>, String), Vec<String>>, ChieroErr> {
     use chiero_parse::{ScopedTypedefs, parse_tu};
     use chiero_pp::{Config, preprocess_str};
     use chiero_sema::{SymbolText, TargetConfig, analyze};
@@ -1069,11 +1094,14 @@ fn chiero_answer(prelude: &str, body: &str) -> Result<Result<Option<i32>, Vec<St
         let r = chiero_exec::Engine::new(&m.module)
             .with_entry("probe")
             .run(&mut arena);
-        Ok(Ok(r
-            .states()
-            .iter()
-            .find_map(|s| s.return_value_bits(&mut arena))
-            .map(|b| b as u32 as i32)))
+        let fidelity = format!("{:?}", r.fidelity());
+        Ok(Ok((
+            r.states()
+                .iter()
+                .find_map(|s| s.return_value_bits(&mut arena))
+                .map(|b| b as u32 as i32),
+            fidelity,
+        )))
     });
     match out {
         Ok(Ok(v)) => Ok(v),
@@ -1282,6 +1310,51 @@ fn same_class(a: &Verdict, b: &Verdict) -> bool {
 // The batch
 // ---------------------------------------------------------------------------------------
 
+/// **The gaps this suite knows about**, each with the reason it is tolerated.
+///
+/// A refusal or a declared limit is not a defect — it is chiero saying so out loud, which
+/// is what 015 §7 and 023 §7 ask for. But a ledger nobody has to look at becomes a
+/// suppression file within a month: the first unexplained entry is noticed, the tenth is
+/// scrolled past. So the list is *closed*. A refusal whose text matches nothing here fails
+/// the run, and closing it means either fixing the gap or writing down why it stays.
+///
+/// Matched by substring against the diagnostic, because the messages carry spans and
+/// operand types that vary per program while the *reason* does not.
+const KNOWN_GAPS: &[(&str, &str)] = &[
+    (
+        "uses floating point",
+        "023 §7 approximates floating point and 020 has `CTy::Float`, but nothing bridges \
+         them — a float literal lowers as an `Int(32)` operand. `refuse_floating` declares \
+         that rather than emitting CIR that sometimes verifies and then panics the solver. \
+         Deleting that function is what implementing floats looks like, and this entry is \
+         what will fail when it happens.",
+    ),
+    (
+        "bitfield store value operand is Int(64)",
+        "wave 142's `StoreBits` does not narrow a value wider than the field's unit — a \
+         `long` into an `int:3`. Narrow, real, and owed rather than tolerated.",
+    ),
+    (
+        "Unknown",
+        "the engine reached a modelling limit and degraded, which 023 §7 requires it to \
+         announce. A degraded run is chiero saying it could not model something, which is \
+         the honest outcome and not a defect.",
+    ),
+    (
+        "Bounded",
+        "a budget was hit. 042 §3 makes `Bounded` the realistic default, not a failure.",
+    ),
+    (
+        "Approximated",
+        "an operation chiero models approximately, declared as such.",
+    ),
+];
+
+/// Whether a ledger entry is one the suite has been told about.
+fn is_known_gap(text: &str) -> bool {
+    KNOWN_GAPS.iter().any(|(pat, _)| text.contains(pat))
+}
+
 /// **Fixed seeds, so this is a test and not a slot machine.**
 ///
 /// An unseeded random test that fails one run in ten gets muted within a month, and a muted
@@ -1301,6 +1374,7 @@ fn generated_programs_agree_with_gcc() {
             Verdict::Agree => compared += 1,
             Verdict::Discarded => discarded += 1,
             Verdict::Refused { stage, message } => refused.push((stage, message)),
+            Verdict::Gap { fidelity } => refused.push(("engine", fidelity)),
             v => {
                 // Shrunk before it is recorded, so the report is something a human can read
                 // and paste into `differential.rs` rather than a 40-line program to bisect
@@ -1352,6 +1426,22 @@ fn generated_programs_agree_with_gcc() {
         compared > 0,
         "the generator compared nothing at all — every program was discarded or refused, \
          which means this test is green while testing nothing"
+    );
+
+    // **The ratchet.** Every ledger entry must be one the suite was told about; an entry
+    // matching nothing is a gap that appeared without a decision being made, which is
+    // exactly the moment to make one.
+    let unknown: Vec<&(&str, String)> = refused.iter().filter(|(_, m)| !is_known_gap(m)).collect();
+    assert!(
+        unknown.is_empty(),
+        "{} refusal(s) the suite has no entry for. Each is a gap that appeared without a \
+         decision: either fix it, or add it to KNOWN_GAPS with the reason it stays.\n{}",
+        unknown.len(),
+        unknown
+            .iter()
+            .map(|(s, m)| format!("  {s}: {m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     assert!(
         defects.is_empty(),

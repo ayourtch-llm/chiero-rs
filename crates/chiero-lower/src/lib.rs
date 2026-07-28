@@ -107,10 +107,65 @@ fn lower(
     for &item in ast.items() {
         cx.item(item);
     }
+    refuse_floating(&mut cx.module, &mut cx.diagnostics);
     refuse_unverifiable(&mut cx.module, &mut cx.diagnostics);
     Lowered {
         module: cx.module,
         diagnostics: cx.diagnostics,
+    }
+}
+
+/// **015 §7 for floating point, which lowering does not implement.**
+///
+/// 023 §7 approximates floating point and 020 has `CTy::Float`, but nothing bridges them:
+/// a float literal lowers as an `Int(32)` operand, so `float f = 2.5f;` produces a store
+/// whose value and slot disagree. Most such functions are caught by `refuse_unverifiable`
+/// below — but not all. A `double` reaching a `_Bool` conversion produces CIR that
+/// *verifies* and then panics the solver with "extract out of range", and a panic is worse
+/// than any wrong answer: it takes the run and every other finding in it.
+///
+/// So a function that mentions a floating type at all is refused here, before the verifier
+/// runs and long before the engine sees it. **This is a capability statement, not a
+/// workaround**: floats do not work, they have never worked, and 015 §7's rule is that a
+/// construct lowering cannot represent is a diagnostic rather than a silent gamble. When
+/// float lowering is implemented this function is what gets deleted, and the tests that
+/// currently expect a refusal are the ones that will say so.
+fn refuse_floating(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
+    let is_float = |t: &CTy| matches!(t, CTy::Float(_));
+    let mut blamed: Vec<(chiero_cir::FuncId, Span)> = Vec::new();
+    for f in &module.funcs {
+        if !matches!(f.body, Body::Defined) {
+            continue;
+        }
+        let in_allocas = f.allocas.iter().any(|a| is_float(&a.ty));
+        let in_sig = is_float(&f.ret) || f.params.iter().any(|p| is_float(&p.ty));
+        // No type-walker on `Inst`, and writing one for a single caller would be a
+        // maintenance burden that silently misses a variant added later. The printed form
+        // names every type it carries, so matching on it cannot fall behind the enum.
+        let in_body = f.blocks.iter().flat_map(|b| b.insts.iter()).any(|i| {
+            let t = format!("{:?}", i.kind);
+            t.contains("Float(")
+        });
+        if in_allocas || in_sig || in_body {
+            blamed.push((f.id, f.span));
+        }
+    }
+    for (id, span) in blamed {
+        let Some(f) = module.funcs.iter_mut().find(|f| f.id == id) else {
+            continue;
+        };
+        let name = f.name.clone();
+        f.blocks.clear();
+        f.allocas.clear();
+        f.access_paths.clear();
+        f.body = Body::Declared;
+        diagnostics.push(LowerDiagnostic {
+            span,
+            message: format!(
+                "`{}` uses floating point, which lowering does not implement",
+                &*name
+            ),
+        });
     }
 }
 
@@ -2581,6 +2636,14 @@ impl Lowerer<'_> {
         match ty {
             CTy::Ptr => Operand::Const(Const::Null),
             CTy::Int(w) => Operand::Const(Const::Int { bits: *w, val: 0 }),
+            // **A float compares against 0.0, not against `undef`.** C11 6.3.1.2 makes a
+            // conversion to `_Bool` a comparison with zero whatever the source type is, and
+            // 6.5.15 does the same for a condition — so `if (d)` and `(_Bool)d` both land
+            // here. `Undef` made the comparison meaningless and the engine then panicked
+            // with "extract out of range" trying to use the result: a *source-triggerable
+            // panic*, which is the worst outcome there is because it takes the run and
+            // every other finding in it.
+            CTy::Float(k) => Operand::Const(Const::Float(*k, 0)),
             other => Operand::Const(Const::Undef(other.clone())),
         }
     }
