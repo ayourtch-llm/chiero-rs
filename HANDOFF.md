@@ -487,7 +487,53 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 101, `6d7cda9`) — 949 tests, M1 157/165, frontend 113/117
+> ### ⏭️ START HERE (wave 102, `9cb2fb7`) — 968 tests, M1 158/165, frontend 113/117
+>
+> **020 §9 is complete.** All three optional passes exist — `simplify_cfg`, `const_fold`,
+> `mem2reg` — behind `chiero_opt::PASSES`, with §9's four prohibitions swept over every
+> registered pass and the whole `.cir` corpus. `Phi` is an `InstKind` with verifier rules,
+> a textual form, execution, and a corpus fixture. That closes **020's 16, 17 and 44**.
+>
+> Seven contracts remain in M1:
+>
+> 1. **020's 18** — order sensitivity, both halves: *syntactic* (`i = i++` sets
+>    `order_sensitive` during lowering, `i = i + 1` sets neither) **and** *interprocedural*
+>    (`f(g(), h())` mutating one global yields one finding from the 040 checker, mutating
+>    different globals yields none). §10 says outright that testing only (a) is passed by
+>    an implementation that does no analysis.
+> 2. **020's 23** (`Opaque` — a 40-byte `opaque[10]` written through one struct view and
+>    read through another), **29, 30** (the union-pun checker, the endianness `ConfigId`).
+> 3. **021 c19**, **023's 7, 17, 21**.
+> 4. **010 contract 19**, small and unblocked since wave 84.
+>
+> **Adding a variant to `InstKind` is a guided tour of every place that must know.** The
+> compiler found all of them because `chiero-exec`'s dispatch, `chiero-cir`'s printer and
+> `verify`'s `operands_of` have **no catch-all arms**, and `text_format`'s
+> `every_variant_is_accounted_for` demanded a fixture. Keep it that way — `Switch` went
+> unimplemented for eight waves behind an `_` arm.
+>
+> **A phi is the one instruction ordinary dominance is the wrong rule for.** Its operands
+> live on edges, so `operands_of` returns nothing for it and `check_phis` verifies against
+> the CFG instead. Anything new that walks uses must make the same exception.
+>
+> Mutation lessons still in force: **back up to a scratch copy, never `git checkout`** (a
+> wave-100 campaign destroyed a whole GREEN and made four later verdicts fictional); **a
+> mutant that does not compile is inconclusive, not a survivor**; **two guards only ever
+> true together are equivalent mutants** — collapse them and write the fixture that reaches
+> the survivor.
+>
+> Owed and written down:
+> - **A finding's text names `ObjectId(N)`, an engine-internal counter.** `mem2reg` removes
+>   allocas, so the same defect in the same program prints with different ids under a
+>   different pass configuration — `passes.rs` normalizes them to keep the transparency
+>   sweep meaningful, which is a workaround, not a fix. Findings should name the variable:
+>   a span, a declaration.
+> - `typeof` types to `Ty::Error` in sema; the parser's speculative type-name diagnostic
+>   rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+>   `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered `#[ignore]`d
+>   metrics.
+>
+> ### Earlier (wave 101, `6d7cda9`) — 949 tests, M1 157/165, frontend 113/117
 >
 > **`chiero-opt` exists.** 020 §9's `simplify_cfg` and `const_fold` are implemented behind
 > a **registry**, and §9's four prohibitions — no dropped `Marker`, no merge across a
