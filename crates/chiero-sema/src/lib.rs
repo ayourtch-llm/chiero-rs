@@ -444,6 +444,21 @@ impl Analysis {
         self.decl_types.get(&d).copied()
     }
 
+    /// The id of the interned `Ty::Error`, if this analysis produced one.
+    ///
+    /// A consumer that needs a poison type must ask for it rather than assuming an id:
+    /// `TyId(0)` is whichever type was interned first, which is an arbitrary type wearing
+    /// the name of an error.
+    pub fn interned_error(&self) -> Option<TyId> {
+        self.interned.get(&Ty::Error).copied()
+    }
+
+    /// Any valid id, for a caller that must return *something*. Prefer
+    /// [`Self::interned_error`].
+    pub fn any_ty(&self) -> TyId {
+        TyId(0)
+    }
+
     /// The semantic type of a **syntactic** type node, if one was resolved for it.
     ///
     /// Needed by an explicit cast: `(int)x` names its target type with an AST node rather
@@ -795,6 +810,22 @@ impl Cx<'_> {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
                 self.values.insert(name, t);
+                // **A declaration's parameters are typed too.** Only definitions used to
+                // get this, so `void f(void *p, size_t n);` left both parameters with no
+                // recorded type — and a consumer asking `ty_of_decl` got `None` and
+                // substituted something. The harness intrinsics in `chiero.h` are exactly
+                // this shape: declarations with no body, whose parameter types are the
+                // whole interface.
+                let params = match &self.ast.ty(ty).kind {
+                    chiero_ast::TypeKind::Func { params, .. } => params.clone(),
+                    _ => Vec::new(),
+                };
+                for p in &params {
+                    if let DeclKind::Var { ty: pty, .. } = self.ast.decl(*p).kind.clone() {
+                        let t = self.ty_of(pty);
+                        self.out.decl_types.insert(*p, t);
+                    }
+                }
                 if let Some(body) = body {
                     // **Parameters are in scope in the body.** They are declared on the
                     // function's *type*, not as items, so nothing else brings them in —

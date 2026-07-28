@@ -139,3 +139,77 @@ fn every_golden_is_non_empty_and_reparses() {
         );
     }
 }
+
+/// **Contract 22.** For every corpus C file, `lower(parse(f))` printed as text equals the
+/// checked-in `.cir` golden.
+///
+/// This is the round trip that makes M1's hand-written fixtures and M2's real lowering
+/// **the same language**. The corpus files are the ones 024's harness intrinsics were
+/// written for — they call `chiero_make_symbolic`, `chiero_assume` and `chiero_assert`,
+/// which lowering emits as ordinary calls to `Body::Declared` functions and 024's model
+/// registry resolves by name.
+#[test]
+fn every_corpus_c_file_matches_its_lowered_golden() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let src_dir = root.join("tests/corpus/c");
+    let include = root.join("include");
+    if harness::gcc_system_paths().is_empty() {
+        eprintln!("skipping: no gcc system include path (015 contract 22)");
+        return;
+    }
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&src_dir)
+        .expect("the C corpus exists")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    // Sorted: `read_dir` order is the filesystem's, and a test that walks it in a
+    // different order on another machine is a different test.
+    files.sort();
+    assert!(
+        files.len() >= 4,
+        "the corpus has files: found {} in {}",
+        files.len(),
+        src_dir.display()
+    );
+
+    for path in files {
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let (m, _) = harness::lower_file(&path, std::slice::from_ref(&include));
+
+        // Every corpus module must **verify**. A golden of invalid CIR would freeze a
+        // shape the rest of the system rejects.
+        let errs = chiero_cir::verify::verify(&m);
+        assert!(errs.is_empty(), "{stem} does not verify: {errs:#?}");
+
+        let text = print(&m);
+        let golden = golden_dir().join(format!("corpus_{stem}.cir"));
+        if std::env::var("CHIERO_BLESS").is_ok() {
+            std::fs::create_dir_all(golden_dir()).expect("golden dir");
+            std::fs::write(&golden, &text).expect("write");
+            continue;
+        }
+        let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+            panic!(
+                "no golden at {}. `CHIERO_BLESS=1 cargo test -p chiero-lower --test \
+                 goldens` writes it; read the diff first.",
+                golden.display()
+            )
+        });
+        assert_eq!(text, expected, "{stem} no longer matches its golden");
+
+        // **The round trip is the contract, not the file compare.** A golden that the
+        // `.cir` parser cannot read would still compare equal to itself forever, and
+        // would not be the same language as M1's hand-written fixtures.
+        let back = chiero_cir::text::parse(&text)
+            .unwrap_or_else(|e| panic!("{stem}'s golden does not reparse: {e:?}"));
+        assert_eq!(
+            print(&back),
+            text,
+            "{stem} does not survive a print/parse/print round trip"
+        );
+    }
+}

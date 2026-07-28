@@ -69,6 +69,8 @@ pub fn lower_file(
     let cfg = Config {
         include_paths: includes.to_vec(),
         iquote_paths: includes.to_vec(),
+        system_paths: gcc_system_paths(),
+        defines: vec![("__CHIERO__".into(), "1".into())],
         ..Config::default()
     };
     let session = chiero_pp::PreprocessorSession::new();
@@ -87,6 +89,25 @@ pub fn lower_file(
     let lowered = chiero_lower::lower_tu_with_map(&parsed.ast, &analysis, &names, &tu.source_map);
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     (lowered.module, tu.source_map)
+}
+
+/// gcc's own include directories, asked of gcc rather than guessed. A corpus file
+/// includes `<stddef.h>`, so without these it does not preprocess at all.
+pub fn gcc_system_paths() -> Vec<std::path::PathBuf> {
+    let Ok(out) = std::process::Command::new("gcc")
+        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .skip_while(|l| !l.starts_with("#include <...>"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("End of search"))
+        .map(|l| std::path::PathBuf::from(l.trim()))
+        .filter(|p| p.is_dir())
+        .collect()
 }
 
 pub fn print(m: &Module) -> String {

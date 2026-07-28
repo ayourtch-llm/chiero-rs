@@ -667,8 +667,15 @@ impl Lowerer<'_> {
         seen
     }
 
-    fn error_ty(&self) -> TyId {
-        TyId(0)
+    /// The poison type.
+    ///
+    /// **Not `TyId(0)`**, which is whichever type happened to be interned first — an
+    /// arbitrary type wearing the name of an error. A caller substituting it for a type it
+    /// could not resolve got `int` or `long` depending on the file, silently.
+    fn error_ty(&mut self) -> TyId {
+        self.analysis
+            .interned_error()
+            .unwrap_or_else(|| self.analysis.any_ty())
     }
 
     fn zero_of(&self, ty: &CTy) -> Operand {
@@ -1081,6 +1088,13 @@ impl Lowerer<'_> {
                 // **The cast kind follows from the widths**, and sign-extension is the
                 // half that matters: widening a `signed char` with `ZExt` turns -1 into
                 // 255 and nothing downstream can tell.
+                // **A pointer-to-pointer conversion emits nothing.** 020 makes pointers
+                // address-sized and *untyped*, so `(char *)p` changes no bits — and
+                // `Bitcast` is the wrong instruction for it, since the verifier requires
+                // a bitcast to preserve total bit width and `CTy::Ptr` has none.
+                if matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
+                    return inner;
+                }
                 let kind = cast_kind(&from, &to, from_signed);
                 let dst = self.new_value();
                 self.emit(
@@ -1159,7 +1173,13 @@ impl Lowerer<'_> {
                 );
                 Operand::Value(dst)
             }
-            chiero_ast::ExprKind::Index { .. } => {
+            // `*p` as a *value*: the pointer's value is the address, and the result is a
+            // load of the pointee. `lvalue_addr` already handles the assignment side.
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::Deref,
+                ..
+            }
+            | chiero_ast::ExprKind::Index { .. } => {
                 let ty = CTy::Int(self.raw_width_of(e));
                 let Some(addr) = self.lvalue_addr(e, span) else {
                     return Operand::Const(Const::Undef(ty));
@@ -1231,7 +1251,11 @@ impl Lowerer<'_> {
                                     op: cop,
                                     a,
                                     b,
-                                    ty: CTy::Int(self.raw_width_of(*lhs)),
+                                    // **Post-conversion**: `a` and `b` are what `expr`
+                                    // returned, and 014 already promoted a `char` operand
+                                    // to `int`. Using the written width declared `Int(8)`
+                                    // for an operand the typed AST had widened to 32.
+                                    ty: CTy::Int(self.width_of(*lhs)),
                                 },
                             },
                             span,
@@ -1296,6 +1320,18 @@ impl Lowerer<'_> {
                     }
                 }
             }
+            // `&x` — the **address**, not the value. Like the pre-increment arm below,
+            // this has to precede the general `Unary` one: it fell through to the
+            // operand's loaded value, which is the right answer for every fixture that
+            // only *reads* through the pointer and the wrong program for every one that
+            // writes.
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::AddrOf,
+                operand,
+            } => match self.lvalue_addr(*operand, span) {
+                Some(a) => a,
+                None => Operand::Const(Const::Undef(CTy::Ptr)),
+            },
             // **Before the general `Unary` arm.** Rust matches in order, so an arm that
             // refines an earlier pattern has to precede it — this one did not, and `++x`
             // matched the general arm, fell through its `_ =>` to the operand's loaded
@@ -1382,7 +1418,7 @@ impl Lowerer<'_> {
                 let a = self.expr(*operand);
                 let from = CTy::Int(self.width_of(*operand));
                 let to = self.cty_of_syntactic(*ty);
-                if from == to {
+                if from == to || matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
                     return a;
                 }
                 let dst = self.new_value();
@@ -1949,10 +1985,20 @@ impl Lowerer<'_> {
                 Some(Operand::Value(dst))
             }
             chiero_ast::ExprKind::Index { base, index } => {
-                let base_addr = self.lvalue_addr(base, span).or_else(|| {
-                    // An array name decays; a pointer already is one.
-                    Some(self.expr(base))
-                })?;
+                // **An array and a pointer index differently.** `a[i]` starts from the
+                // *address of* `a`; `p[i]` starts from the *value of* `p`. Taking the
+                // address in both cases indexes off the pointer variable's own storage,
+                // which is a wild access that happens to look plausible.
+                let base_is_ptr = self
+                    .type_of(base)
+                    .map(|t| matches!(self.analysis.ty(t), Ty::Ptr(_)))
+                    .unwrap_or(false);
+                let base_addr = if base_is_ptr {
+                    self.expr(base)
+                } else {
+                    self.lvalue_addr(base, span)
+                        .unwrap_or_else(|| self.expr(base))
+                };
                 let idx = self.expr(index);
                 // **The index is widened to pointer width before scaling.** `a[i]` has an
                 // `int` index and a byte offset is 64 bits, so multiplying them directly
