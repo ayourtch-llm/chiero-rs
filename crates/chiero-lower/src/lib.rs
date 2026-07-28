@@ -315,9 +315,46 @@ impl Lowerer<'_> {
         self.names.text(s).map(std::sync::Arc::from)
     }
 
+    /// A slot for an object of semantic type `sty`.
+    ///
+    /// **An aggregate is `count` bytes, not one `CTy::Ptr`.** `cty` maps a record to
+    /// `CTy::Ptr` because CIR has no aggregate values (020 §1.4) — but that is the type of
+    /// a *value*, and a slot needs an *extent*. Sizing the slot by the value type gave a
+    /// 12-byte struct an 8-byte object, and the first store past byte 8 faulted: the
+    /// engine reported `Crashed` on a module the verifier had accepted.
+    fn alloca_for(
+        &mut self,
+        sty: TyId,
+        align: u64,
+        name: Option<chiero_cir::Symbol>,
+        span: Span,
+    ) -> AllocaId {
+        let is_aggregate = matches!(
+            self.analysis.ty(sty),
+            Ty::Record(_) | Ty::Array { .. } | Ty::Vector { .. }
+        );
+        if is_aggregate {
+            let bytes = self.analysis.size_of(sty).unwrap_or(0).max(1);
+            return self.alloca_n(CTy::Int(8), bytes, align, name, span);
+        }
+        let ty = self.cty(sty);
+        self.alloca_n(ty, 1, align, name, span)
+    }
+
     fn alloca(
         &mut self,
         ty: CTy,
+        align: u64,
+        name: Option<chiero_cir::Symbol>,
+        span: Span,
+    ) -> AllocaId {
+        self.alloca_n(ty, 1, align, name, span)
+    }
+
+    fn alloca_n(
+        &mut self,
+        ty: CTy,
+        count: u64,
         align: u64,
         name: Option<chiero_cir::Symbol>,
         span: Span,
@@ -328,7 +365,7 @@ impl Lowerer<'_> {
         fs.allocas.push(AllocaDecl {
             id,
             ty,
-            count: 1,
+            count,
             align,
             scope: ScopeId(0),
             lifetime: Lifetime::Scope,
@@ -942,7 +979,7 @@ impl Lowerer<'_> {
         let cty = self.cty(sty);
         let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
         let text = name.and_then(|n| self.sym(n));
-        let slot = self.alloca(cty.clone(), align, text, span);
+        let slot = self.alloca_for(sty, align, text, span);
         if let Some(n) = name {
             self.fs().locals.insert(n, (slot, cty.clone()));
         }
@@ -1044,6 +1081,69 @@ impl Lowerer<'_> {
                     }
                     _ => Operand::Const(Const::Int { bits, val: 0 }),
                 }
+            }
+            // A member **read**: `LoadBits` for a bit-field, an ordinary `Load` at the
+            // member's address otherwise. Both take their offset from `RecordLayout`.
+            chiero_ast::ExprKind::Member { .. } => {
+                if let Some((unit, bits)) = self.bitfield_of(e) {
+                    let Some(addr) = self.lvalue_addr(e, span) else {
+                        return Operand::Const(Const::Undef(unit));
+                    };
+                    let dst = self.new_value();
+                    let signed = self.is_signed(e);
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::LoadBits {
+                                addr,
+                                unit,
+                                bits,
+                                signed,
+                                align: 1,
+                            },
+                        },
+                        span,
+                    );
+                    return Operand::Value(dst);
+                }
+                let ty = CTy::Int(self.raw_width_of(e));
+                let Some(addr) = self.lvalue_addr(e, span) else {
+                    return Operand::Const(Const::Undef(ty));
+                };
+                let dst = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::Load {
+                            addr,
+                            ty,
+                            align: 1,
+                            vol: Volatility::Normal,
+                        },
+                    },
+                    span,
+                );
+                Operand::Value(dst)
+            }
+            chiero_ast::ExprKind::Index { .. } => {
+                let ty = CTy::Int(self.raw_width_of(e));
+                let Some(addr) = self.lvalue_addr(e, span) else {
+                    return Operand::Const(Const::Undef(ty));
+                };
+                let dst = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::Load {
+                            addr,
+                            ty,
+                            align: 1,
+                            vol: Volatility::Normal,
+                        },
+                    },
+                    span,
+                );
+                Operand::Value(dst)
             }
             chiero_ast::ExprKind::Ident(sym) => {
                 let Some((slot, ty)) = self.fs().locals.get(sym).cloned() else {
@@ -1432,6 +1532,62 @@ impl Lowerer<'_> {
         rhs: ExprId,
         span: Span,
     ) -> Operand {
+        // **A bit-field is a different instruction, not a narrower store.** Its range
+        // comes from `RecordLayout` (015 contract 7), and the check has to come before
+        // the ordinary path or a 3-bit field becomes a 4-byte store over its neighbours.
+        if op.is_none()
+            && let Some((unit, bits)) = self.bitfield_of(lhs)
+        {
+            let addr = match self.lvalue_addr(lhs, span) {
+                Some(a) => a,
+                None => return Operand::Const(Const::Undef(unit)),
+            };
+            let val = self.expr(rhs);
+            self.emit(
+                InstKind::StoreBits {
+                    addr,
+                    val: val.clone(),
+                    unit,
+                    bits,
+                    align: 1,
+                },
+                span,
+            );
+            return val;
+        }
+
+        // **An aggregate assignment is one `CopyMem` of the layout's size** (contract 6),
+        // never a field-by-field sequence. CIR has no aggregate values (020 §1.4), so
+        // there is nothing to load; and a sequence would silently drop the padding C
+        // copies, leaving 021 to see those bytes uninitialized where the program had
+        // defined them.
+        if op.is_none()
+            && let Some(size) = self.aggregate_size(lhs)
+        {
+            let dst = match self.lvalue_addr(lhs, span) {
+                Some(a) => a,
+                None => return Operand::Const(Const::Undef(CTy::Ptr)),
+            };
+            let src = match self.lvalue_addr(rhs, span) {
+                Some(a) => a,
+                None => return Operand::Const(Const::Undef(CTy::Ptr)),
+            };
+            let align = self.aggregate_align(lhs).unwrap_or(1).max(1);
+            self.emit(
+                InstKind::CopyMem {
+                    dst: dst.clone(),
+                    src,
+                    size: Operand::Const(Const::Int {
+                        bits: 64,
+                        val: size as i128,
+                    }),
+                    align,
+                },
+                span,
+            );
+            return dst;
+        }
+
         // The **declared** type of the lvalue, so the store's width matches the slot.
         let ty = self.lvalue_ty(lhs);
         let Some(addr) = self.lvalue_addr(lhs, span) else {
@@ -1549,6 +1705,41 @@ impl Lowerer<'_> {
         }
     }
 
+    /// If `e` names a bit-field, its storage unit and the `BitRange` **from the layout**.
+    fn bitfield_of(&mut self, e: ExprId) -> Option<(CTy, chiero_cir::BitRange)> {
+        let chiero_ast::ExprKind::Member { base, field, arrow } = self.ast.expr(e).kind.clone()
+        else {
+            return None;
+        };
+        let (_, f) = self.field_of(base, field, arrow)?;
+        let b = f.bits?;
+        // The offset is relative to the byte the address computation landed on, and
+        // `FieldLayout::offset` is that byte — so the two are consistent by construction
+        // rather than by a second calculation here.
+        Some((
+            self.cty(f.ty),
+            chiero_cir::BitRange {
+                off: (b.bit_offset - f.offset * 8) as u32,
+                width: b.width as u32,
+            },
+        ))
+    }
+
+    /// The size of `e`'s type when it is an aggregate — a record or an array.
+    fn aggregate_size(&mut self, e: ExprId) -> Option<u64> {
+        let t = self.type_of(e)?;
+        matches!(
+            self.analysis.ty(t),
+            Ty::Record(_) | Ty::Array { .. } | Ty::Vector { .. }
+        )
+        .then(|| self.analysis.size_of(t))?
+    }
+
+    fn aggregate_align(&mut self, e: ExprId) -> Option<u64> {
+        let t = self.type_of(e)?;
+        self.analysis.align_of(t)
+    }
+
     /// The declared type of an lvalue.
     fn lvalue_ty(&mut self, e: ExprId) -> CTy {
         if let chiero_ast::ExprKind::Ident(sym) = self.ast.expr(e).kind
@@ -1561,9 +1752,9 @@ impl Lowerer<'_> {
 
     /// The address of an lvalue, computed **once**.
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
-        match &self.ast.expr(e).kind {
+        match self.ast.expr(e).kind.clone() {
             chiero_ast::ExprKind::Ident(sym) => {
-                let (slot, _) = self.fs().locals.get(sym).cloned()?;
+                let (slot, _) = self.fs().locals.get(&sym).cloned()?;
                 let addr = self.new_value();
                 self.emit(
                     InstKind::Assign {
@@ -1574,7 +1765,151 @@ impl Lowerer<'_> {
                 );
                 Some(Operand::Value(addr))
             }
+            // `*p` — the pointer's value *is* the address.
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::Deref,
+                operand,
+            } => Some(self.expr(operand)),
+            // `s.f` and `p->f`. The offset comes from `RecordLayout` and nowhere else —
+            // 015 contract 7's "checked by construction: the layout is the only source".
+            chiero_ast::ExprKind::Member { base, field, arrow } => {
+                let base_addr = if arrow {
+                    self.expr(base)
+                } else {
+                    self.lvalue_addr(base, span)?
+                };
+                let (byte_off, _) = self.field_of(base, field, arrow)?;
+                if byte_off == 0 {
+                    return Some(base_addr);
+                }
+                let dst = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::PtrAdd {
+                            base: base_addr,
+                            off: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: byte_off as i128,
+                            }),
+                        },
+                    },
+                    span,
+                );
+                Some(Operand::Value(dst))
+            }
+            chiero_ast::ExprKind::Index { base, index } => {
+                let base_addr = self.lvalue_addr(base, span).or_else(|| {
+                    // An array name decays; a pointer already is one.
+                    Some(self.expr(base))
+                })?;
+                let idx = self.expr(index);
+                // **The index is widened to pointer width before scaling.** `a[i]` has an
+                // `int` index and a byte offset is 64 bits, so multiplying them directly
+                // is a width mismatch the verifier rejects — and sign extension is the
+                // right widening, since `a[-1]` is a legal (if unwise) C expression.
+                let iw = self.width_of(index);
+                let idx = if iw < 64 {
+                    let w = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: w,
+                            rv: RValue::Cast {
+                                kind: if self.is_signed(index) {
+                                    chiero_cir::CastKind::SExt
+                                } else {
+                                    chiero_cir::CastKind::ZExt
+                                },
+                                a: idx,
+                                from: CTy::Int(iw),
+                                to: CTy::Int(64),
+                            },
+                        },
+                        span,
+                    );
+                    Operand::Value(w)
+                } else {
+                    idx
+                };
+                let elem = self.elem_size_of(base).unwrap_or(1);
+                let scaled = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst: scaled,
+                        rv: RValue::Bin {
+                            op: CBinOp::Mul,
+                            a: idx,
+                            b: Operand::Const(Const::Int {
+                                bits: 64,
+                                val: elem as i128,
+                            }),
+                            ty: CTy::Int(64),
+                        },
+                    },
+                    span,
+                );
+                let dst = self.new_value();
+                self.emit(
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::PtrAdd {
+                            base: base_addr,
+                            off: Operand::Value(scaled),
+                        },
+                    },
+                    span,
+                );
+                Some(Operand::Value(dst))
+            }
             _ => None,
+        }
+    }
+
+    /// The `(byte offset, field layout)` of a member, **read from `RecordLayout`**.
+    ///
+    /// 015 contract 7 puts it plainly: the layout is the only source. 014 computes it and
+    /// verifies it against gcc over 520 real VPP records; a second derivation here would
+    /// be an unverified answer to a settled question, and the two would disagree on
+    /// exactly the packed wire-format structs where it matters most.
+    fn field_of(
+        &mut self,
+        base: ExprId,
+        field: chiero_span::Symbol,
+        arrow: bool,
+    ) -> Option<(u64, chiero_sema::FieldLayout)> {
+        let bty = self.type_of(base)?;
+        let rec = match self.analysis.ty(bty).clone() {
+            Ty::Record(r) => r,
+            Ty::Ptr(p) if arrow => match self.analysis.ty(p).clone() {
+                Ty::Record(r) => r,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let l = self.analysis.layout(rec);
+        let f = l.fields.iter().find(|f| f.name == Some(field))?;
+        Some((f.offset, f.clone()))
+    }
+
+    /// The element size of whatever `base` indexes.
+    fn elem_size_of(&mut self, base: ExprId) -> Option<u64> {
+        let t = self.type_of(base)?;
+        let elem = match self.analysis.ty(t).clone() {
+            Ty::Array { elem, .. } | Ty::Ptr(elem) => elem,
+            _ => return None,
+        };
+        self.analysis.size_of(elem)
+    }
+
+    /// An expression's semantic type, before conversions.
+    fn type_of(&self, e: ExprId) -> Option<TyId> {
+        let typed = self.analysis.typed();
+        let mut id = typed.top(e)?;
+        loop {
+            match typed.node(id) {
+                TypedNode::Cast { operand, .. } => id = *operand,
+                TypedNode::Value { ty, .. } => return Some(*ty),
+            }
         }
     }
 
@@ -1957,7 +2292,7 @@ impl Lowerer<'_> {
         let cty = self.cty(sty);
         let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
         let text = name.and_then(|n| self.sym(n));
-        let slot = self.alloca(cty.clone(), align, text, span);
+        let slot = self.alloca_for(sty, align, text, span);
         if let Some(n) = name {
             self.fs().locals.insert(n, (slot, cty));
         }

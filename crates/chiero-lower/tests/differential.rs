@@ -218,7 +218,11 @@ fn switch_break_continue_and_goto_compute_what_gcc_computes() {
 #[test]
 fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     agree(
-        "struct S { int a; int b; }; struct S x = {1, 2}; struct S y; y = x; return y.a * 10 + y.b;",
+        // Fields set explicitly rather than with a braced initializer: aggregate
+        // initializers are 015 contract 19 and are not lowered yet, so a probe using one
+        // would be testing the gap instead of the copy.
+        "struct S { int a; int b; }; struct S x; x.a = 1; x.b = 2; struct S y; y = x; \
+         return y.a * 10 + y.b;",
     );
     agree("struct B { int a:3; int b:5; }; struct B v; v.a = 3; v.b = 9; return v.a * 100 + v.b;");
     // Signedness of a narrow bit-field: `int a:3` holds -4..3, so 5 reads back as -3.
@@ -229,7 +233,18 @@ fn struct_copies_and_bitfields_compute_what_gcc_computes() {
     agree("struct B { int a:30; int b:6; }; struct B v; v.a = 7; v.b = 3; return v.a * 10 + v.b;");
     // Ordinary members, so the byte-offset path is checked too.
     agree(
-        "struct P { int a; char b; int c; }; struct P v; v.a = 1; v.b = 2; v.c = 3; return v.a + v.b + v.c;",
+        "struct P { int a; char b; int c; }; struct P v; v.a = 1; v.b = 2; v.c = 3; \
+         return v.a + v.b + v.c;",
+    );
+    // **Array indexing**, which scales the index by the element size. A mutation dropping
+    // the scale survived every test above, because nothing here indexed anything —
+    // `a[2]` would read byte 2 of the array instead of element 2, and the shape is
+    // identical either way.
+    agree("int a[4]; a[0] = 1; a[1] = 2; a[2] = 3; return a[1] * 10 + a[2];");
+    agree("char a[4]; a[0] = 1; a[3] = 9; return a[0] * 10 + a[3];");
+    agree("int a[3]; int i = 2; a[i] = 7; return a[2];");
+    agree(
+        "struct S { int v[3]; }; struct S s; s.v[0] = 4; s.v[2] = 6; return s.v[0] * 10 + s.v[2];",
     );
 }
 

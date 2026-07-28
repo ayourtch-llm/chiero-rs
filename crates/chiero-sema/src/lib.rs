@@ -419,6 +419,8 @@ impl Analysis {
         &self.types[id.0 as usize]
     }
 
+    /// The layout of a record. Panics on an unknown id, which cannot arise from a
+    /// `Ty::Record` this analysis produced.
     pub fn layout(&self, id: RecordId) -> &RecordLayout {
         &self.records[id.0 as usize]
     }

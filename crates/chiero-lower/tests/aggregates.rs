@@ -41,9 +41,13 @@ fn insts_of<'a>(m: &'a chiero_cir::Module, name: &str) -> Vec<&'a InstKind> {
 /// produce — silently dropping the tail padding C requires it to copy.
 #[test]
 fn a_struct_assignment_is_one_copymem_of_the_layout_size() {
+    // **Locals, not pointer parameters.** A parameter is stored into its own slot on
+    // entry, so `void use(struct S *p, struct S *q) { *p = *q; }` contains two perfectly
+    // legitimate `Store`s of the pointers themselves — and the "no stores beside it"
+    // assertion below would be measuring the prologue rather than the assignment.
     let m = probe(
         "struct S { int a[9]; char b; };\n\
-         void use(struct S *p, struct S *q) { *p = *q; }\n",
+         void use(void) { struct S x; struct S y; y = x; }\n",
     );
     let copies: Vec<(u64, ())> = insts_of(&m, "use")
         .iter()
@@ -155,12 +159,13 @@ fn an_ordinary_member_is_a_byte_offset_not_a_bit_range() {
         .iter()
         .filter_map(|k| match k {
             InstKind::Assign {
-                rv: RValue::PtrAdd { off, .. },
+                rv:
+                    RValue::PtrAdd {
+                        off: chiero_cir::Operand::Const(chiero_cir::Const::Int { val, .. }),
+                        ..
+                    },
                 ..
-            } => match off {
-                chiero_cir::Operand::Const(chiero_cir::Const::Int { val, .. }) => Some(*val),
-                _ => None,
-            },
+            } => Some(*val),
             _ => None,
         })
         .collect();
