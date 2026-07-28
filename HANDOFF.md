@@ -487,7 +487,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 95, `2b6e3ef`) — 920 tests, M1 152/165, frontend 106/117
+> ### ⏭️ START HERE (wave 96, `a12bde3`) — 924 tests, M1 152/165, frontend 107/117
+>
+> **015 is 19/25.** Goldens exist at `tests/corpus/lowered/` (7 files), `?:` and aggregate
+> initializers lower, and every golden reparses and verifies. Only 8, 9c, 12, 14, 20 and
+> 22 remain.
+>
+> **Blessing a golden:** `CHIERO_BLESS=1 cargo test -p chiero-lower --test goldens`. Read
+> the diff first — a golden that changes for a reason nobody can state is a shape that was
+> never fixed, and re-blessing without reading is how that gets lost.
+>
+> Next, in rough order:
+>
+> 1. **Contract 22 — the corpus round trip.** Its one remaining blocker is that
+>    `tests/corpus/c/`'s four files call `chiero.h` intrinsics
+>    (`chiero_make_symbolic`, `chiero_assume`, `chiero_assert`), which lowering does not
+>    model. 024 owns the intrinsic registry and `chiero-exec` already implements them, so
+>    the work is to lower a call to one into whatever CIR shape the engine expects — check
+>    `crates/chiero-exec/tests/harness_intrinsics.rs` for that shape before designing one.
+> 2. **Contracts 8, 12, 14, 20** — statement expressions (`({ ... })`, 217 VPP files),
+>    `for`-scope, VLAs (`AllocaDyn`), and refusing a nested function with exactly one
+>    diagnostic.
+> 3. **Contract 9c** — `goto` *into* a scope, and a backward `goto` creating a new
+>    generation of its objects.
+> 4. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down, ordered by how likely each is to bite: `&a[i]` and pointer
+> arithmetic are **not lowered**, which is why sign-vs-zero extension of an array index is
+> unpinned (a mutation survives); `StmtExpr`/`typeof` type to `Ty::Error` in sema; VLA
+> bounds are treated as flexible; the parser's speculative type-name diagnostic rollback is
+> unpinned.
+>
+> ### Earlier (wave 95, `2b6e3ef`) — 920 tests, frontend 106/117
 >
 > **Aggregates and bit-fields lower** (015: 18/25). Struct copies are one `CopyMem` of the
 > layout size, bit-field access takes its `BitRange` **from `RecordLayout`** and nowhere
