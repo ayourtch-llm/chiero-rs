@@ -546,6 +546,62 @@ fn a_file_scope_pointer_holds_the_address_it_was_given() {
     agree_with("int *gp;\n", "return gp == 0;");
 }
 
+/// **A braced initializer converts to the bit-field's unit before storing.**
+///
+/// Wave 142 gave `init_list` a `StoreBits` for bit-field members and passed the value
+/// straight through. `StoreBits` declares the *unit* — `Int(32)` for an `int:3` — so an
+/// initializer of any other width is a mismatch: `long l = 9; struct B v = {l, 2};` emits
+/// a 64-bit value into a 32-bit unit and the function is refused.
+///
+/// **Found by the refusal ledger** the moment wave 147 gave it something to hold. It sat
+/// among the float entries as the one line that was not about floats, which is exactly what
+/// a ledger is for — the float gap is known and tolerated, and this was neither.
+///
+/// Assignment already worked: `w.a = l;` is an assignment expression and sema converts its
+/// right-hand side, so the same struct behaves correctly when filled field by field. Wave
+/// 140's pairing again, and wave 142 reintroduced it in the path it had just fixed.
+#[test]
+fn a_braced_bitfield_initializer_converts_to_its_unit() {
+    const B: &str = "struct B { int a:3; int b:5; };\n";
+    // Wider than the unit, which is what the ledger caught.
+    agree_with(B, "long l = 9; struct B v = {l, 2}; return v.a * 10 + v.b;");
+    agree_with(B, "long l = 9; struct B v = {2, l}; return v.a * 10 + v.b;");
+    // Narrower than the unit, the other direction of the same mismatch.
+    agree_with(
+        B,
+        "short s = 9; struct B v = {s, 2}; return v.a * 10 + v.b;",
+    );
+    agree_with(
+        B,
+        "signed char c = 9; struct B v = {c, 2}; return v.a * 10 + v.b;",
+    );
+    // **Signedness on the way in.** A negative `long` narrowed to the unit and then to a
+    // 3-bit field must still be -1, and a zero-extension would make it 7.
+    agree_with(
+        B,
+        "long l = -1; struct B v = {l, 2}; return v.a * 10 + v.b;",
+    );
+    agree_with(
+        "struct U { unsigned a:3; unsigned b:5; };\n",
+        "unsigned long l = 9; struct U v = {l, 2}; return (int)(v.a * 10 + v.b);",
+    );
+    // A compound literal reaches the same code.
+    agree_with(
+        B,
+        "long l = 9; struct B v = (struct B){l, 2}; return v.a * 10 + v.b;",
+    );
+    // **Assignment already worked and must keep working** — it is the pairing that hid
+    // this, and the fix must not disturb it.
+    agree_with(
+        B,
+        "long l = 9; struct B w; w.a = l; w.b = 2; return w.a * 10 + w.b;",
+    );
+    agree_with(
+        B,
+        "long l = 9; struct B x; x.a = 1; x.b = 2; x.a += l; return x.a * 10 + x.b;",
+    );
+}
+
 /// **A braced initializer stores a bit-field as bits, not as its storage unit.**
 ///
 /// 015 contract 7 says a bit-field access uses the `BitRange` from `RecordLayout`, and
