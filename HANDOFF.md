@@ -2806,6 +2806,48 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    looks exactly like a passing negative assertion. Now written into the fixture's own
    comments rather than only into this file.
 
+   **WAVE 77** (`6bbc598`; 714 tests, **141/165 cited**) — 021 contract 17b, plus the
+   wave-74 review, which **verified the most important thing and then found five defects**.
+
+   *Verified sound:* `fold` vs `independent_bin` vs z3 over **675 000 cases** — 20 000
+   random at four widths plus every operand pair at width 8 for the ten hardest operators.
+   Zero disagreements. The semantics are right; what was wrong was the apparatus.
+
+   - **021 c17b:** a branch on pointer bits below the object's alignment explores both
+     sides and says why. §7.2's point is that chiero's answer is *stable* — the bump
+     allocator decides it deterministically, so the wrong answer never looks flaky.
+     Detection is per-`ValueId`, because the arena folds `address & 63` to a constant and
+     the structure that revealed the question is gone by branch time. Bits *within* the
+     alignment are still decided normally, or every aligned-pointer test in VPP doubles.
+   - **The entry-parameter fill was not affordable.** 4096 symbols per pointee are paid on
+     every state *clone*: 1.3 GB at 8192 states, process abort with four pointer
+     parameters, against a default `max_states` of 10 000. §6 says "on **first
+     dereference**" and my comment had called laziness "the optimisation, not the
+     correctness" — inverting the spec. Lazy again, properly; k=13 went 1.45 s → 0.34 s.
+   - **Contract 7d's mechanical check tested the wrong function**: replacing
+     `independent_bin`'s body with `fold(k, x, y)` passed all 710 tests. **The two
+     implementations could collapse into one and nothing noticed** — the one scenario the
+     contract exists for.
+   - **The z3 test never reached the evaluator** (constants fold at construction), so it
+     passed with the evaluator gutted to return zero — the same trap the sibling test
+     documents, in the test written to avoid it.
+   - **My "equivalent mutant" claim was false at width 128.** `wrapping_shl(128)` masks the
+     *count* to zero. *Declaring a mutant equivalent is a claim, and it needs checking at
+     every width the type allows.*
+   - **Contract 25's `Cond` half silently passed without z3** (`!Sat` is satisfied by
+     `Unknown`) — 022 contract 2 says skipped with a reason, not silently passed.
+
+   **STILL OWED from this review:** the `printf` checker has real false positives — `%*d`
+   width/precision does not consume its argument, positional `%n$` forms are consumed in
+   order, glibc `%m` is reported as missing an argument, unknown conversions *do* make a
+   type claim (contradicting the code's own comment, and `%v`/`%U` are VPP's own), a
+   symbolic `%s` reports chiero's gap as a program bug, and an untranslatable argument is
+   described as "a pointer". Five more format mutations survive, including the
+   `Bounded`-not-a-finding rule that is the headline design decision. Also: `strlen` on a
+   negative offset reports the **same finding twice** (the dispatch calls both models), and
+   every witness now carries a binding per touched byte whose `why` string says "clobbered
+   by opaque code" when it is a caller-supplied byte.
+
    **STILL OWED from wave 51, in the reviewer's priority order:**
    - ~~**D3**~~ DONE (wave 52). Steps 4 and 5 merged whenever live objects exceeded the cap: `over_cap` returns
      *before* step 4's test, so with `max_resolutions = 8` and ≥9 objects an unconstrained
@@ -2883,7 +2925,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **712 tests, 140/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **714 tests, 141/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
