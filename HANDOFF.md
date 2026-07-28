@@ -487,7 +487,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 93, `8c38524`) — 912 tests, M1 152/165, frontend 99/117
+> ### ⏭️ START HERE (wave 94, `ab34e1b`) — 916 tests, M1 152/165, frontend 103/117
+>
+> **`gcov_lines` is computed and checked against `gcov --json-format`** (015: 15/25). That
+> closes the join point of §4.1 → 030 → 031 → 032: a statement in a macro body is
+> attributed to the `.c` line where the macro was *used*, and a `static inline` in a header
+> keeps its header lines. `Inst` now carries a **recorded** `generated` flag (020 c15).
+>
+> **Two process notes from this wave, both worth not repeating.**
+> `cargo build --workspace` does **not** compile tests — a scripted field addition across
+> 96 sites left five test files broken and nothing surfaced until `cargo test`. Use
+> `cargo test --workspace --no-run` after any mechanical edit. And an oracle helper that
+> returns `Option` will be wrapped in `if let Some(...)` at the call site and then silently
+> skip; `gcov` was in fact failing in two tests that reported success. Make oracles panic.
+>
+> Next, in rough order:
+>
+> 1. **Aggregates and bitfields — 015 contracts 6 and 7.** A struct assignment is one
+>    `CopyMem`, and bitfield access uses the `BitRange` **from `RecordLayout`** — lowering
+>    must never re-derive a bit offset, so there is exactly one place to be wrong. Sema
+>    already computes the layout and it is gcc-verified over 520 records.
+> 2. **Golden `.cir` files — contracts 2 and 22.** This is what makes M1's hand-written
+>    fixtures and M2's real lowering the same language, and 015 §5 notes the `.line`
+>    directive is how a hand-written fixture populates `gcov_lines`.
+> 3. **Contracts 8, 12, 14, 19, 20** — statement expressions, `for`-scope, VLAs, aggregate
+>    initializers, and refusing nested functions.
+> 4. **Contract 9c** — `goto` *into* a scope, and a backward `goto` creating a new
+>    generation of its objects. Not implemented.
+> 5. **010 contract 19**; **M1's remaining 13**.
+>
+> Owed and written down: `InitList`/`StmtExpr`/`typeof` type to `Ty::Error` in sema; VLA
+> bounds are treated as flexible; the parser's speculative type-name diagnostic rollback is
+> unpinned.
+>
+> ### Earlier (wave 93, `8c38524`) — 912 tests, frontend 99/117
 >
 > **Lowering handles all of C's control flow** (015: 11/25) — scopes, `switch`, `goto`,
 > labels, `break`, `continue` — and `chiero-exec` can now execute a `Switch`, which it
