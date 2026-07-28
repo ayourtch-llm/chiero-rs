@@ -487,7 +487,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 89, `6d50b57`) — 883 tests, M1 152/165, frontend 83/117
+> ### ⏭️ START HERE (wave 90, `76805d0`) — 888 tests, M1 152/165, frontend 88/117
+>
+> **014 is complete, 20/20, and with it the frontend.** 010–014 are done bar 010's two
+> owed contracts: preprocessor, parser, types, layout, conversions, linkage. Everything
+> below is verified against gcc or against real VPP, or both.
+>
+> **Next is 015 — AST→CIR lowering (0/25), and it is the milestone.** It is the last thing
+> between the frontend and the symbolic core, and M1's engine has been waiting for it
+> since wave 84. What it can now assume, none of which it has to re-derive:
+>
+> - every implicit conversion is already an explicit `Cast` with a recorded reason
+>   (014 c11) — 014 §5's whole point is that lowering never infers one;
+> - every record layout agrees with gcc over 520 real VPP records (014 c12);
+> - `GlobalTable` resolves names across TUs, with `static` per-TU and `extern` shared
+>   (014 c15/c16) — this is what 031's call graph spans TUs with;
+> - `Block::gcov_lines` is **015 §5's own** responsibility and must be settled before
+>   M1's hand-written fixtures entrench a different convention.
+>
+> Then: **010 contract 19** (unblocked since wave 84 — `ConfigId` lives in `chiero-pp`);
+> **M1's remaining 13** (020's 14–18/23/29/30/44, 021 c19, 023's 7/17/21).
+>
+> Owed and written down: `ExprKind::InitList` and `StmtExpr` type to `Ty::Error`
+> (a braced initializer needs the target type threaded through, a statement expression the
+> block's last value — both are 015's shape); `typeof` resolves to `Ty::Error`; VLA bounds
+> are treated as flexible; the parser's speculative type-name diagnostic rollback is
+> unpinned.
+>
+> ### Earlier (wave 89, `6d50b57`) — 883 tests, frontend 83/117
 >
 > **014 is 15/20 and the typed AST exists.** Every implicit conversion is an explicit
 > `Cast` with a recorded *reason*, verified over **2234 arithmetic operations of real VPP**
