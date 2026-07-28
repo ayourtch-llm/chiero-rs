@@ -2720,11 +2720,24 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    *and* a fault. **Pick the fixture where the guard is the only thing standing between you
    and the wrong answer.**
 
-   **Still owed from that review:** 024 c21e's middle clause (a fixture where
-   `HavocInit::Uninitialized` *does* produce a finding) and c21d (`reachable_depth`), and
-   `a_run_that_called_scanf_cannot_be_sealed_as_a_proof` cannot tell the *modeled* path from
-   the unmodeled one — its assertion matches both strings, and 024 §2.1's whole point is
-   that the modeled path is the dangerous one.
+   **WAVE 73** (703 tests) — that review is now **fully closed**. 024 c21e's middle clause
+   (the fixture writes the bytes first, so the *havoc* is what un-initializes them — a
+   fresh object would report anyway and the test would pass without the havoc doing
+   anything), c21d (the inner object is found by reading its address out of the outer
+   one's bytes, and depth 0 is asserted *not* to follow it), and the `scanf` test, which
+   could not tell the modeled path from the unmodeled fallback because `contains("scanf")`
+   matches both — de-registering the model left it passing. It asserts
+   `AssumptionKind::ModelApproximate` and the model's own reason now.
+
+   One survivor is left **and explained in the code**: the `HavocInit::Uninitialized` arm
+   in `apply_havoc` is unreachable, because a `ModelEntry` carries only a name and a
+   precision and no built-in model returns that fill. The memory side is pinned directly;
+   the translation cannot be until a model can declare a havoc. *An unexplained survivor
+   reads as a missing test; a named one is a fact about the design.*
+
+   ⚠️ *Method note:* the 21e fixture needed 4-byte alignment — at align 1 the read reports
+   `Misaligned`, so "the fixture starts clean" was false for a reason with nothing to do
+   with initialization. **A precondition assertion can fail for the wrong reason too.**
    ⚠️ Also: **three claims in my wave-68 commit message are false** — `len` is a constant
    so a later `if (len == 2)` folds regardless of guards (the guards matter for branches
    over the *bytes*), `malloc`'s branches never changed, and the concrete fast path does
@@ -2807,7 +2820,7 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
    - **E5** every `OpaqueWrite` fixture has exactly one entry, so "each declared write is
      honoured" is untested.
 
-   **M1's instruction set is complete**, but M1's *exit* is not — **701 tests, 137/165
+   **M1's instruction set is complete**, but M1's *exit* is not — **703 tests, 137/165
    contracts cited** (`cargo xtask contract-coverage`); the remaining 55 contracts are the real M1 backlog, and 080 also requires the z3
    `paranoid` cross-check over the corpus, the fidelity `trybuild` test, and an OOB finding
    **with a witness** (`Witness` does not exist yet). Still owed on the engine: `Store`/`Load` ignore
