@@ -1,0 +1,354 @@
+//! Independence slicing and the satisfiability invariant it rests on — 022 contracts 9
+//! and 9b.
+//!
+//! Covers: 022 contracts 9, 9b.
+//!
+//! §6.2: "partition the assertion set into connected components by shared variables, and
+//! solve only the component(s) containing the query's variables, subject to §6.1. A path
+//! condition of 200 constraints usually decomposes into many small independent ones; this
+//! is the single largest measured win in KLEE and is specified here as required, not
+//! optional."
+//!
+//! Contract 9 is deliberately worded against the easy test: slicing "sends only the
+//! relevant component to the backend **and returns the same answer as the unsliced
+//! query**, over the whole corpus. Verifying only that the dumped query got smaller tests
+//! that slicing happened, not that it was correct." Both halves are needed and neither
+//! alone is worth anything — a slicer that returns the whole set passes the correctness
+//! half, and a slicer that drops constraints at random passes the size half.
+//!
+//! §6.1 is the reason 9b exists. Slicing is equisatisfiable *only if every other component
+//! is already known satisfiable*, and chiero breaks that invariant in three places on
+//! purpose (023 §3's `Unknown` branch, 021 §5's continue-after-OOB, 024 §4's `strlen`
+//! cap). When it is broken, a quietly-`Unsat` component sits in a corner of the path
+//! condition while the query slices to a different corner, and every finding on that dead
+//! path gets reported with a witness that does not satisfy the path condition.
+
+use chiero_solver::*;
+
+/// A tiny deterministic PRNG — same reasoning as the campaign: a corpus that changes
+/// between runs cannot be re-run against a fix.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// A path condition made of `groups` variable-disjoint clusters, which is the shape §6.2
+/// says a real one has. Returns the assertions and the variables of each group, so a
+/// query can be aimed at one cluster and the rest left as the part slicing is supposed to
+/// skip.
+fn clustered(a: &mut TermArena, r: &mut Rng, groups: usize) -> (Vec<Term>, Vec<Vec<Term>>) {
+    let mut asserts = Vec::new();
+    let mut vars = Vec::new();
+    for g in 0..groups {
+        // Three variables per cluster, named per-cluster so nothing accidentally joins
+        // two clusters into one component and makes the test measure nothing.
+        let vs: Vec<Term> = (0..3)
+            .map(|i| a.var(Sort::BitVec(8), &format!("g{g}v{i}")))
+            .collect();
+        for _ in 0..2 + r.below(3) {
+            let x = vs[r.below(3) as usize];
+            let y = if r.below(3) == 0 {
+                vs[r.below(3) as usize]
+            } else {
+                a.bv(8, r.below(64) as u128)
+            };
+            let (l, rr) = if r.below(2) == 0 { (x, y) } else { (y, x) };
+            asserts.push(match r.below(4) {
+                0 => a.eq(l, rr),
+                1 => {
+                    let e = a.eq(l, rr);
+                    a.not(e)
+                }
+                _ => a.ult(l, rr),
+            });
+        }
+        vars.push(vs);
+    }
+    (asserts, vars)
+}
+
+/// **022 contract 9, the correctness half.** Over a corpus, the sliced answer is the
+/// unsliced answer — and when it is `Sat`, the model is complete and satisfies *every*
+/// assertion, not merely the ones in the slice that produced it. A slicer that returns a
+/// model covering only the query's component satisfies "same verdict" and still breaks
+/// 023 contract 16, whose witnesses have to satisfy the whole path condition.
+#[test]
+fn a_sliced_query_answers_what_the_unsliced_query_answers() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut rng = Rng(0x0BAD_C0DE_0BAD_C0DE);
+    let mut sat = 0u32;
+    let mut unsat = 0u32;
+
+    for case in 0..120u32 {
+        let mut a = TermArena::new();
+        let (asserts, groups) = clustered(&mut a, &mut rng, 4);
+        // The query touches exactly one cluster, so three of the four components are the
+        // part slicing is entitled to leave alone.
+        let g = &groups[(case as usize) % groups.len()];
+        let k = a.bv(8, rng.below(64) as u128);
+        let query = a.ult(g[0], k);
+
+        let mut pc = PathCondition::new();
+        for t in &asserts {
+            pc.push_checked(*t);
+        }
+
+        let mut on = TieredSolver::with_backend(backend.clone());
+        let mut off = TieredSolver::with_backend(backend.clone());
+        off.set_slicing(false);
+        let r_on = on.check_path(&mut a, &mut pc.clone(), &[query]);
+        let r_off = off.check_path(&mut a, &mut pc.clone(), &[query]);
+
+        match (&r_on, &r_off) {
+            (CheckResult::Sat(m), CheckResult::Sat(_)) => {
+                sat += 1;
+                for t in asserts.iter().chain(std::iter::once(&query)) {
+                    assert_eq!(
+                        a.eval(m, *t).map(|c| c.bits()),
+                        Ok(1),
+                        "case {case}: the sliced model does not satisfy an assertion \
+                         outside the slice it was solved from"
+                    );
+                }
+            }
+            (CheckResult::Unsat, CheckResult::Unsat) => unsat += 1,
+            // A backend `Unknown` on either side is not a disagreement; it is the one
+            // answer that is always permitted.
+            (CheckResult::Unknown(_), _) | (_, CheckResult::Unknown(_)) => {}
+            _ => panic!("case {case}: slicing changed the answer: {r_on:?} vs {r_off:?}"),
+        }
+    }
+    // Both verdicts have to occur, or "the same answer" was demonstrated for one of them.
+    assert!(sat > 0 && unsat > 0, "corpus is one-sided: {sat} sat, {unsat} unsat");
+}
+
+/// **022 contract 9, the other half.** Slicing has to actually happen. Without this the
+/// test above passes for a `set_slicing` that does nothing at all — the same-answer trap,
+/// where the two sides agree because they are the same code.
+#[test]
+fn slicing_sends_less_to_the_backend_than_the_whole_path_condition() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let mut rng = Rng(0x51CE_51CE_51CE_51CE);
+    let (asserts, groups) = clustered(&mut a, &mut rng, 6);
+    let k = a.bv(8, 7);
+    let query = a.ult(groups[0][0], k);
+
+    let mut pc = PathCondition::new();
+    for t in &asserts {
+        pc.push_checked(*t);
+    }
+
+    let mut on = TieredSolver::with_backend(backend.clone());
+    on.check_path(&mut a, &mut pc.clone(), &[query]);
+    let skipped = on.stats().sliced_terms_skipped;
+
+    let mut off = TieredSolver::with_backend(backend);
+    off.set_slicing(false);
+    off.check_path(&mut a, &mut pc.clone(), &[query]);
+
+    assert_eq!(
+        off.stats().sliced_terms_skipped,
+        0,
+        "with slicing off nothing may be withheld from the backend"
+    );
+    // Five of six clusters are irrelevant to the query, so most of the path condition
+    // should never reach z3.
+    assert!(
+        skipped * 2 > asserts.len() as u64,
+        "slicing withheld only {skipped} of {} assertions, which is not a partition into \
+         components — it is a rounding error",
+        asserts.len()
+    );
+}
+
+/// A path condition holding `x == 1 && x == 2` in one cluster and a satisfiable
+/// constraint on an unrelated variable in another. The contradiction is added *without* a
+/// feasibility check, which is exactly what 023 §3 does on solver `Unknown`.
+fn poisoned(a: &mut TermArena) -> (PathCondition, Term) {
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let one = a.bv(8, 1);
+    let two = a.bv(8, 2);
+    let ten = a.bv(8, 10);
+
+    let mut pc = PathCondition::new();
+    let x1 = a.eq(x, one);
+    pc.push_checked(x1);
+    // The unchecked one: nothing established that this is consistent with what is
+    // already there, and it is not.
+    let x2 = a.eq(x, two);
+    pc.push_unchecked(x2);
+    let ylt = a.ult(y, ten);
+    pc.push_checked(ylt);
+
+    let three = a.bv(8, 3);
+    let query = a.ult(y, three);
+    (pc, query)
+}
+
+/// **022 contract 9b.** "A state whose path condition contains an unsatisfiable component
+/// reports `Unsat` for every subsequent feasibility query, with slicing on and off."
+#[test]
+fn an_unsatisfiable_component_is_reported_even_when_the_query_is_elsewhere() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    for slicing in [true, false] {
+        let mut a = TermArena::new();
+        let (mut pc, query) = poisoned(&mut a);
+        assert!(
+            pc.possibly_infeasible(),
+            "a constraint added without a feasibility check sets the flag"
+        );
+        let mut s = TieredSolver::with_backend(backend.clone());
+        s.set_slicing(slicing);
+        assert!(
+            matches!(s.check_path(&mut a, &mut pc, &[query]), CheckResult::Unsat),
+            "slicing={slicing}: the dead component is in another part of the path \
+             condition, and the query is satisfiable in isolation — reporting `Sat` here \
+             hands every finding on this path a witness that does not satisfy it"
+        );
+        assert_eq!(
+            s.stats().sliced_terms_skipped,
+            0,
+            "slicing={slicing}: §6.1 disables slicing while the flag is set"
+        );
+    }
+}
+
+/// **The negative control, which is what makes the test above mean anything.** The same
+/// terms with the contradiction declared *checked* — a lie, but the point is that the
+/// flag is the only difference — slice to `Sat`. So 9b's `Unsat` comes from §6.1's rule
+/// and not from slicing quietly failing to slice.
+#[test]
+fn without_the_flag_the_same_path_condition_slices_to_the_wrong_answer() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let (poisoned_pc, query) = poisoned(&mut a);
+    let mut lying = PathCondition::new();
+    for t in poisoned_pc.terms() {
+        lying.push_checked(*t);
+    }
+    assert!(!lying.possibly_infeasible());
+
+    let mut s = TieredSolver::with_backend(backend);
+    assert!(
+        matches!(
+            s.check_path(&mut a, &mut lying, &[query]),
+            CheckResult::Sat(_)
+        ),
+        "with the invariant asserted, slicing is entitled to skip the dead component — \
+         this is the wrong answer that §6.1 exists to prevent, and it is reachable"
+    );
+}
+
+/// §6.1: "A single full check that returns `Sat` clears it." A flag that is never cleared
+/// makes every state after the first `Unknown` branch permanently unsliced, which is the
+/// slow-but-correct failure — worth a test because nothing else would notice.
+#[test]
+fn a_full_satisfiable_check_clears_the_flag() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let five = a.bv(8, 5);
+    let mut pc = PathCondition::new();
+    let t = a.ult(x, five);
+    pc.push_unchecked(t);
+    assert!(pc.possibly_infeasible());
+
+    let mut s = TieredSolver::with_backend(backend);
+    // A *full* check — no assumptions, so what was proved satisfiable is the path
+    // condition itself. A check with assumptions proves something else and must not
+    // clear the flag.
+    assert!(matches!(
+        s.check_path(&mut a, &mut pc, &[]),
+        CheckResult::Sat(_)
+    ));
+    assert!(
+        !pc.possibly_infeasible(),
+        "the path condition was proved satisfiable in full, so the invariant holds again"
+    );
+}
+
+/// §6.1 disables "slicing **and the subset/superset cache rules**" together. The cache
+/// half is invisible in the verdict — a superset of an `Unsat` set is `Unsat` either way —
+/// so it is only observable in whether the backend was asked.
+#[test]
+fn the_subsumption_index_is_bypassed_while_the_flag_is_set() {
+    let Some(backend) = SmtLib::discover() else {
+        eprintln!("skipping: no SMT-LIB backend found (022 contract 2)");
+        return;
+    };
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(8), "x");
+    let y = a.var(Sort::BitVec(8), "y");
+    let one = a.bv(8, 1);
+    let two = a.bv(8, 2);
+    let x1 = a.eq(x, one);
+    let x2 = a.eq(x, two);
+    let y1 = a.eq(y, one);
+
+    // Prime the index with an `Unsat` set.
+    let mut s = TieredSolver::with_backend(backend);
+    let mut base = PathCondition::new();
+    base.push_checked(x1);
+    base.push_checked(x2);
+    assert!(matches!(
+        s.check_path(&mut a, &mut base.clone(), &[]),
+        CheckResult::Unsat
+    ));
+
+    // A superset, with the invariant intact: answered from the index, no backend call.
+    let before = s.stats().backend_calls;
+    let mut sup = base.clone();
+    sup.push_checked(y1);
+    assert!(matches!(
+        s.check_path(&mut a, &mut sup, &[]),
+        CheckResult::Unsat
+    ));
+    assert_eq!(
+        s.stats().backend_calls,
+        before,
+        "a superset of a known-`Unsat` set needs no solver (022 contract 11)"
+    );
+
+    // The same superset with the flag set has to go to the backend instead.
+    let before = s.stats().backend_calls;
+    let mut poisoned_sup = base.clone();
+    poisoned_sup.push_unchecked(y1);
+    assert!(matches!(
+        s.check_path(&mut a, &mut poisoned_sup, &[]),
+        CheckResult::Unsat
+    ));
+    assert!(
+        s.stats().backend_calls > before,
+        "§6.1 disables the subset/superset rules while the flag is set, and this query \
+         was answered from the index anyway"
+    );
+}
