@@ -487,7 +487,72 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 114, `7db8fc5`) — 1060 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 115, `870b145`) — 1064 tests, 6 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: `PtrAdd` with a symbolic offset is not modeled
+>
+> `buf[i]` with symbolic `i` on a local array falls through to an invented value, and three
+> more "not modeled" reports cascade from it. **This is core to what a symbolic executor
+> does**, and `array_bounds.c` was written specifically to exercise it. It blocks both
+> corpus-execution sweeps in `chiero-recipe/tests/no_spurious_findings.rs`
+> (`every_corpus_file_runs_clean`, `no_corpus_file_invents_a_value` — both `#[ignore]`d
+> naming it, both correct as written).
+>
+> Reproduce: `cargo test -p chiero-recipe --test no_spurious_findings -- --ignored`.
+>
+> ## What wave 115 found, and why nothing had
+>
+> **The engine had never executed a corpus file.** `run()` entered `funcs.first()`, which in
+> every real TU is the first *declaration* — `chiero_make_symbolic`, with no blocks — so
+> every run ended `Errored("no such block BlockId(0)")` before one instruction. Eighteen
+> waves of green suite over it, because goldens compare lowered *text* and an errored state
+> reports no findings. **Wave 114's own "executes clean" test passed for that reason.**
+>
+> The lesson is sharper than "read the artifact": **an assertion of absence needs a
+> companion assertion that the run got there.** `findings().is_empty()` over files written so
+> that absence is the property is close to asserting nothing. Requiring every path to
+> terminate by *returning* is what broke it open — three separate defects in one sweep.
+>
+> ### Also open
+>
+> - With the default tier-1 solver, `abs_branch.c`'s `my_abs(x) >= 0` cannot be discharged.
+>   Honest incompleteness ("could not rule it out"), but the file does not demonstrate what
+>   it was written to demonstrate.
+> - Initializer forms still refused: designated, bit-field, address (`int *p = &g;` — a CIR
+>   question, `GlobalInit::Bytes` cannot express a relocation).
+> - **021 c21 is reachable and untested on a real global** since wave 114 fixed `is_const`.
+> - A fault in a non-entry frame is untested; `Bits` path steps are not emitted.
+> - **023 c17** — a milestone, not a wave; measurement in wave 110's entry.
+>
+> ### Rules earned, most recent first
+>
+> **An assertion of absence needs a companion assertion that the run got there** (wave 115).
+> **Read the golden, not just the test result** — the artifact says what happened, the suite
+> says what you asked (wave 114).
+> **A wrong answer is worse than a missing one**; refuse whole rather than encode partially
+> (wave 113).
+> **A survivor is not automatically a fixture gap** — remove the code and re-run (112, 113).
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (waves 107, 112).
+> **The fixture never reached the comparison the design exists for** — thirteen waves.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial**. An oracle that can silently not run is not an oracle —
+> **announce every skip**.
+>
+> Owed and written down: symbolic `PtrAdd` unmodeled (blocks both corpus sweeps); tier-1
+> cannot discharge `abs_branch.c`; designated, bit-field and address initializers refused;
+> 021 c21 untested on a real global; a fault in a non-entry frame is untested; `Bits` path
+> steps are not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative
+> type-name diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element
+> width in `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered.
+>
+> ### Earlier (wave 114, `7db8fc5`) — 1060 tests, 3 ignored, M1 165/165 by contract
 >
 > **The corpus has globals.** `tests/corpus/c/globals.c` — a `static const` initialized
 > table, a counter with no initializer, a file-scope struct with padding — lowers, matches
