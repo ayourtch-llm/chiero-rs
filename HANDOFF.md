@@ -487,7 +487,67 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 112, `775c406`) — 1048 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 113, `738a6ee`) — 1058 tests, 3 ignored, M1 165/165 by contract
+>
+> ## 🔴 Do this first: put globals in the corpus
+>
+> **Still true, and now the last thing standing between two waves of global work and any
+> confidence in it**: not one C file in `tests/corpus/c/` has a file-scope variable. Waves
+> 112 and 113 fixed a missing feature (globals lowered to `Undef`) and a wrong answer
+> (initializers parsed and discarded); both were found by hand-written probes, and neither
+> would have been caught by the corpus.
+>
+> Add corpus C files with file-scope arrays, structs, `static` counters and initializers,
+> re-bless, and **read the goldens**. Two waves of new encoding have never been seen by a
+> golden.
+>
+> ### Known gaps in what wave 113 built
+>
+> Chiero refuses what it cannot encode and falls back to `GlobalInit::Zero` — correct, and
+> less information than the program has. Each of these is a refusal today:
+>
+> - **Designated initializers** (`{[2] = 5}`, `{.b = 5}`). VPP uses these heavily for node
+>   registration.
+> - **Bit-field members** in a struct initializer.
+> - **An address as an initializer** (`int *p = &g;`) — `const_of` cannot fold it, so it
+>   refuses. `GlobalInit::Bytes` has no way to express a relocation, which is a CIR question
+>   before it is a lowering one.
+>
+> ### Also open
+>
+> - **A fault in a non-entry frame is untested** (`object_name` uses `stack.last()`; no C
+>   fixture distinguishes it from `first()`). Needs a hand-built `.cir` module.
+> - **`Bits` path steps are not emitted** for bit-field accesses (020 §4.4).
+> - **023 c17** — the last contract, a milestone not a wave; measurement in wave 110's entry.
+>
+> ### Rules earned, most recent first
+>
+> **A wrong answer is worse than a missing one.** Wave 112 fixed reads of globals returning
+> `Undef`; wave 113 fixed them returning *zero*. The first suppresses findings and degrades
+> fidelity; the second is asserted with `Fidelity::Exact`. When you cannot compute something,
+> refuse it whole — a partial encoding is the confidently-wrong direction.
+> **Dump the control when it passes** (wave 112).
+> **A survivor is not automatically a fixture gap** — remove the code and re-run to tell dead
+> code from missing coverage. Waves 112 and 113 each had one of each.
+> **A workaround marks a defect; go back and delete it** (wave 111).
+> **A renderer that disagrees with the spec's own example is a defect** (wave 110).
+> **When a result surprises you, read what the engine already recorded** (wave 108).
+> **Bisect a hand-built module against the lowered one** (wave 109).
+> **A comment claiming a property is not the property** (wave 107, and wave 112 again).
+> **The fixture never reached the comparison the design exists for** — eleven waves running.
+>
+> Harness rules: back up to a scratch copy, **never `git checkout`**; a mutant that does not
+> compile is **inconclusive**; two guards only ever true together are equivalent mutants; a
+> no-op mutant is neither; **`cargo fmt` moves anchors**; **a mutation one other site
+> compensates for is partial, not a surviving gap**.
+>
+> Owed and written down: the corpus has no globals; designated, bit-field and address
+> initializers are refused; a fault in a non-entry frame is untested; `Bits` path steps are
+> not emitted; `typeof` types to `Ty::Error` in sema; the parser's speculative type-name
+> diagnostic rollback is unpinned; `L`/`u`/`U` string literals lose their element width in
+> `unquote`; 010's 18, 011's 12 and 012's 17 are deliberately uncovered `#[ignore]`d metrics.
+>
+> ### Earlier (wave 112, `775c406`) — 1048 tests, 3 ignored, M1 165/165 by contract
 >
 > ## 🔴 Do this first: put globals in the corpus
 >
