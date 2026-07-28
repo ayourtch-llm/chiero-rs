@@ -1660,6 +1660,25 @@ impl Lowerer<'_> {
                         );
                         return Operand::Value(dst);
                     }
+                    // **A function name used as a value is its address** (C11 6.3.2.1p4:
+                    // a function designator decays to a pointer). Falling through to
+                    // `Undef` here made `int (*fn)(int) = twice;` store an `Int(32)` into a
+                    // `Ptr` slot, which the verifier rejects — so the whole enclosing
+                    // function was refused and `indirect_call.c` lowered to nothing.
+                    if let Some(f) = self
+                        .sym(*sym)
+                        .and_then(|t| self.module.funcs.iter().find(|f| f.name == t).map(|f| f.id))
+                    {
+                        let dst = self.new_value();
+                        self.emit(
+                            InstKind::Assign {
+                                dst,
+                                rv: RValue::AddrOfFunc(f),
+                            },
+                            span,
+                        );
+                        return Operand::Value(dst);
+                    }
                     let ty = CTy::Int(self.raw_width_of(e));
                     return Operand::Const(Const::Undef(ty));
                 };
@@ -2742,7 +2761,22 @@ impl Lowerer<'_> {
                 if let Some(f) = self.module.funcs.iter().find(|f| *f.name == *text) {
                     return Callee::Direct(f.id);
                 }
-                // Nothing declared this name. Rather than inventing a signature the
+                // **A name can be declared without being a function.** `int (*fn)(int)`
+                // is a local — or a global, or a parameter — holding a function pointer,
+                // and calling through it is how VPP dispatches every graph node. Looking
+                // only in `module.funcs` reported it as *undeclared*, which 015 §7 turns
+                // into refusing the whole enclosing function: `indirect_call.c` lowered to
+                // nothing at all.
+                //
+                // So the value is evaluated and the call goes indirect through it, which
+                // is what `Callee::Indirect` is for.
+                if let chiero_ast::ExprKind::Ident(sym) = self.ast.expr(callee).kind
+                    && (self.fs().locals.contains_key(&sym) || self.globals.contains_key(&sym))
+                {
+                    let op = self.expr(callee);
+                    return Callee::Indirect(op);
+                }
+                // Nothing declared this name at all. Rather than inventing a signature the
                 // verifier would then reject, the call goes indirect through an
                 // undefined address — honest about knowing nothing, and 020 §5's rule
                 // that a gap is a diagnostic rather than a licence.
