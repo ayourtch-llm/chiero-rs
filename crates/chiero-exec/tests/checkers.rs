@@ -1,0 +1,471 @@
+//! The checker interface — 023 contracts 19, 20, 22 and 24.
+//!
+//! Covers: 023 contracts 19, 20, 22, 24.
+//!
+//! §6 makes a checker a stateless **observer**: it sees every event and decides nothing
+//! about execution order. Everything it remembers lives in the `State`, because the
+//! `Searcher` interleaves events from unrelated states arbitrarily — DFS backtracks
+//! between them, `RandomPath` jumps constantly, and §11's parallel workers cannot share
+//! `&mut self` at all. A checker holding its memory in `&mut self` is not merely
+//! imprecise; it produces a different answer depending on the exploration order, which
+//! contract 17 forbids outright.
+//!
+//! The four contracts here are the ones that pin the interface's shape rather than any
+//! particular checker's cleverness:
+//!
+//! - **19** — `Action::Assume` constrains the state, and the *subsequent branch
+//!   feasibility reflects it*. An `Assume` that is recorded but does not reach the solver
+//!   is the silent failure: every checker written against it would appear to work.
+//! - **20** — two checkers reporting the same event produce two findings. The engine does
+//!   not deduplicate; that is 040's job, by `(checker, span, object, kind)`.
+//! - **22** — `CheckerState` is cloned on fork, and the copies are independent.
+//! - **24** — `CallReturn` fires in the caller for all three callee kinds, including the
+//!   unmodeled extern whose fresh return value has no return instruction at all.
+
+use chiero_cir::*;
+use chiero_exec::*;
+use chiero_solver::TermArena;
+use chiero_span::Span;
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+fn i32c(v: i128) -> Operand {
+    Operand::Const(Const::Int { bits: 32, val: v })
+}
+
+fn block(id: u32, insts: Vec<Inst>, term: Terminator) -> Block {
+    Block {
+        id: BlockId(id),
+        insts,
+        term,
+        gcov_lines: Default::default(),
+        span: Span::DUMMY,
+    }
+}
+
+fn func(id: u32, name: &str, params: Vec<Param>, ret: CTy, blocks: Vec<Block>) -> Function {
+    Function {
+        id: FuncId(id),
+        name: name.into(),
+        params,
+        ret,
+        variadic: false,
+        allocas: vec![],
+        blocks,
+        entry: BlockId(0),
+        attrs: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 023 contract 20 — two checkers, two findings.
+// ---------------------------------------------------------------------------
+
+/// A checker that reports on every `Call` it sees. Two of these registered under
+/// different names must produce two findings from one call.
+struct Noisy(&'static str);
+
+impl Checker for Noisy {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn on_event(&mut self, ev: &Event, _cx: &mut CheckerCtx) -> Vec<Action> {
+        match ev {
+            Event::Call { .. } => vec![Action::report(format!("{} saw a call", self.0))],
+            _ => vec![],
+        }
+    }
+}
+
+/// `int f(void) { g(); return 0; }` with `g` defined and trivial.
+fn calls_g() -> Module {
+    let f = func(
+        0,
+        "f",
+        vec![],
+        CTy::Int(32),
+        vec![block(
+            0,
+            vec![Inst {
+                kind: InstKind::Call {
+                    dst: None,
+                    callee: Callee::Direct(FuncId(1)),
+                    args: vec![],
+                },
+                span: Span::DUMMY,
+            }],
+            Terminator::Return(Some(i32c(0))),
+        )],
+    );
+    let g = func(
+        1,
+        "g",
+        vec![],
+        CTy::Void,
+        vec![block(0, vec![], Terminator::Return(None))],
+    );
+    Module {
+        funcs: vec![f, g],
+        ..Default::default()
+    }
+}
+
+/// **023 contract 20.** "Two checkers reporting the same event produce two findings at
+/// the engine level (the engine does not deduplicate)."
+#[test]
+fn two_checkers_on_one_event_make_two_findings() {
+    let m = calls_g();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_checker(Box::new(Noisy("alpha")))
+        .with_checker(Box::new(Noisy("beta")))
+        .run(&mut a);
+
+    let msgs: Vec<&str> = r
+        .reports()
+        .iter()
+        .map(|f| f.message.as_str())
+        .filter(|m| m.contains("saw a call"))
+        .collect();
+    assert_eq!(
+        msgs.len(),
+        2,
+        "the engine deduplicated what 040 is responsible for deduplicating: {msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("alpha")) && msgs.iter().any(|m| m.contains("beta")),
+        "and one came from each checker: {msgs:?}"
+    );
+}
+
+/// The other half, which is what stops the test above from passing for an engine that
+/// emits two copies of *one* checker's finding: a single registered checker produces
+/// exactly one.
+#[test]
+fn one_checker_on_one_event_makes_one_finding() {
+    let m = calls_g();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_checker(Box::new(Noisy("alpha")))
+        .run(&mut a);
+    assert_eq!(
+        r.reports()
+            .iter()
+            .filter(|f| f.message.contains("saw a call"))
+            .count(),
+        1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 023 contract 24 — `CallReturn` for all three callee kinds.
+// ---------------------------------------------------------------------------
+
+/// Records `(callee name, whether a return value was carried)` for every `CallReturn`.
+struct WatchReturns(Rc<RefCell<Vec<(String, bool)>>>);
+
+impl Checker for WatchReturns {
+    fn name(&self) -> &'static str {
+        "watch-returns"
+    }
+
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        if let Event::CallReturn { callee, ret, .. } = ev {
+            self.0
+                .borrow_mut()
+                .push((cx.callee_name(callee).to_string(), ret.is_some()));
+        }
+        vec![]
+    }
+}
+
+/// `int f(void) { int a = defined(); int b = modeled(); int c = unmodeled(); return a; }`
+///
+/// `strlen` stands in for the modeled extern because 024 models it; `mystery` is declared
+/// and unmodeled, which is the case with no return instruction anywhere — §6 says
+/// `Event::Return` "never fires at all" for it, which is the whole reason `CallReturn`
+/// exists.
+fn three_callee_kinds() -> Module {
+    let f = func(
+        0,
+        "f",
+        vec![],
+        CTy::Int(32),
+        vec![block(
+            0,
+            vec![
+                Inst {
+                    kind: InstKind::Call {
+                        dst: Some(ValueId(0)),
+                        callee: Callee::Direct(FuncId(1)),
+                        args: vec![],
+                    },
+                    span: Span::DUMMY,
+                },
+                Inst {
+                    kind: InstKind::Call {
+                        dst: Some(ValueId(1)),
+                        callee: Callee::Direct(FuncId(2)),
+                        args: vec![],
+                    },
+                    span: Span::DUMMY,
+                },
+            ],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )],
+    );
+    let defined = func(
+        1,
+        "defined_one",
+        vec![],
+        CTy::Int(32),
+        vec![block(0, vec![], Terminator::Return(Some(i32c(7))))],
+    );
+    let mut mystery = func(2, "mystery", vec![], CTy::Int(32), vec![]);
+    mystery.body = Body::Declared;
+    Module {
+        funcs: vec![f, defined, mystery],
+        ..Default::default()
+    }
+}
+
+/// **023 contract 24.** `CallReturn` fires in the caller for a defined function and for
+/// an unmodeled extern, and carries the value the caller will observe.
+///
+/// The unmodeled case is the one worth the contract: its fresh return value has no return
+/// instruction behind it, so an implementation that fires `CallReturn` from the callee's
+/// epilogue passes for the defined function and silently never fires here.
+#[test]
+fn call_return_fires_for_a_defined_function_and_for_an_unmodeled_extern() {
+    let m = three_callee_kinds();
+    let mut a = TermArena::new();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    Engine::new(&m)
+        .with_checker(Box::new(WatchReturns(seen.clone())))
+        .run(&mut a);
+
+    let seen = seen.borrow();
+    let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"defined_one"),
+        "a defined callee fires CallReturn in the caller: {names:?}"
+    );
+    assert!(
+        names.contains(&"mystery"),
+        "and so does an unmodeled extern, which has no return instruction at all: \
+         {names:?}"
+    );
+    // And the value the caller will observe is carried, not merely the fact of a return.
+    for (n, has_val) in seen.iter() {
+        assert!(
+            *has_val,
+            "{n}'s CallReturn carried no value, so a checker guarding on a call's result \
+             — 042's only worked example — has nothing to guard on"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 023 contract 19 — `Action::Assume`.
+// ---------------------------------------------------------------------------
+
+/// Assumes `x != 0` the first time it sees an instruction, which — for the fixture below
+/// — must kill the `x == 0` branch.
+struct AssumeNonZero;
+
+impl Checker for AssumeNonZero {
+    fn name(&self) -> &'static str {
+        "assume-nonzero"
+    }
+
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        let Event::BeforeInst { st, .. } = ev else {
+            return vec![];
+        };
+        let Some(Value::Scalar(x)) = st.local(ValueId(0)) else {
+            return vec![];
+        };
+        let zero = cx.arena().bv(32, 0);
+        let is_zero = cx.arena().eq(x, zero);
+        let nonzero = cx.arena().not(is_zero);
+        vec![Action::Assume(nonzero)]
+    }
+}
+
+/// `int f(int x) { if (x == 0) return 1; else return 2; }` — both sides live unless
+/// something constrains `x`.
+fn branch_on_zero() -> Module {
+    let f = func(
+        0,
+        "f",
+        vec![Param {
+            value: ValueId(0),
+            ty: CTy::Int(32),
+        }],
+        CTy::Int(32),
+        vec![
+            block(
+                0,
+                vec![Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(0)),
+                            b: i32c(0),
+                        },
+                    },
+                    span: Span::DUMMY,
+                }],
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(1)),
+                    t: BlockId(1),
+                    f: BlockId(2),
+                },
+            ),
+            block(1, vec![], Terminator::Return(Some(i32c(1)))),
+            block(2, vec![], Terminator::Return(Some(i32c(2)))),
+        ],
+    );
+    Module {
+        funcs: vec![f],
+        ..Default::default()
+    }
+}
+
+/// **023 contract 19.** "A checker returning `Action::Assume` constrains the state and
+/// the subsequent branch feasibility reflects it."
+///
+/// The second clause is the whole contract. An `Assume` that is pushed onto a list the
+/// solver never sees produces exactly the same run as one that works, for every fixture
+/// that does not branch on the assumed condition.
+#[test]
+fn an_assumed_constraint_reaches_the_solver_and_kills_a_branch() {
+    let m = branch_on_zero();
+
+    // Without the checker, both sides are live — otherwise this proves nothing.
+    let mut a = TermArena::new();
+    let plain = Engine::new(&m).run(&mut a);
+    let mut rets: Vec<u128> = plain
+        .states()
+        .iter()
+        .filter_map(|s| s.return_value_bits(&mut a))
+        .collect();
+    rets.sort_unstable();
+    assert_eq!(rets, vec![1, 2], "the fixture forks without any checker");
+
+    let mut a = TermArena::new();
+    let r = Engine::new(&m)
+        .with_checker(Box::new(AssumeNonZero))
+        .run(&mut a);
+    let rets: Vec<u128> = r
+        .states()
+        .iter()
+        .filter_map(|s| s.return_value_bits(&mut a))
+        .collect();
+    assert_eq!(
+        rets,
+        vec![2],
+        "`x != 0` was assumed, so `x == 0` is infeasible and only the else branch survives"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 023 contract 22 — per-state checker state, cloned on fork.
+// ---------------------------------------------------------------------------
+
+/// §6.1's own example: "a lock acquired before a fork is held in both children, and
+/// released in one leaves it held in the other."
+#[derive(Clone, Default)]
+struct LockSet {
+    held: Vec<String>,
+}
+
+impl CheckerState for LockSet {
+    fn on_fork(&self) -> Box<dyn CheckerState> {
+        Box::new(self.clone())
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Acquires a lock at the first instruction, then releases it only on the *true* side of
+/// the fork. What each terminated state believes it holds is reported at `Terminated`, so
+/// the two paths' beliefs are visible in the findings.
+struct Locking;
+
+impl Checker for Locking {
+    fn name(&self) -> &'static str {
+        "locking"
+    }
+
+    fn initial_state(&self) -> Box<dyn CheckerState> {
+        Box::new(LockSet::default())
+    }
+
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        match ev {
+            Event::BeforeInst { .. } => {
+                let ls: &mut LockSet = cx.state_mut();
+                if ls.held.is_empty() {
+                    ls.held.push("m".into());
+                }
+                vec![]
+            }
+            // Released on the branch that returns 1 — that is block 1 in the fixture, so
+            // the release is keyed on the value the state is about to return.
+            Event::Return { val, .. } => {
+                if matches!(val, Some(Value::Scalar(_))) {
+                    let one = cx.arena().bv(32, 1);
+                    let Some(Value::Scalar(v)) = val else {
+                        return vec![];
+                    };
+                    let is_one = cx.arena().eq(*v, one);
+                    if cx.must(is_one) {
+                        cx.state_mut::<LockSet>().held.clear();
+                    }
+                }
+                vec![]
+            }
+            Event::Terminated { .. } => {
+                let held = cx.state_mut::<LockSet>().held.join(",");
+                vec![Action::report(format!("held=[{held}]"))]
+            }
+            _ => vec![],
+        }
+    }
+}
+
+/// **023 contract 22.** The lock acquired before the fork is held in both children, and
+/// releasing it in one leaves it held in the other.
+///
+/// A `CheckerState` shared between the children — the natural mistake, and the one a
+/// `&mut self` on the `Checker` makes automatically — reports the same set twice.
+#[test]
+fn checker_state_forks_with_the_state_and_the_copies_are_independent() {
+    let m = branch_on_zero();
+    let mut a = TermArena::new();
+    let r = Engine::new(&m).with_checker(Box::new(Locking)).run(&mut a);
+
+    let mut held: Vec<&str> = r
+        .reports()
+        .iter()
+        .filter_map(|f| f.message.strip_prefix("held="))
+        .collect();
+    held.sort_unstable();
+    assert_eq!(
+        held,
+        vec!["[]", "[m]"],
+        "one path released the lock and the other did not; a shared `CheckerState` \
+         reports the same answer on both"
+    );
+}
