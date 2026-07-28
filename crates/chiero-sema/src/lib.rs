@@ -228,6 +228,113 @@ pub struct SemaDiagnostic {
     pub message: String,
 }
 
+/// 014 §5's typed AST: the syntactic tree with **every implicit conversion made
+/// explicit**.
+///
+/// It is an overlay rather than a second copy of every expression kind. The syntactic
+/// tree already records what was written and 013 §5 keeps it that way; what 014 adds is
+/// the *conversions*, and those are the only new nodes here. A [`TypedNode::Value`]
+/// points back at its syntactic expression and holds its operands **already converted**,
+/// so a consumer that reads operand types never has to ask what C would have done.
+///
+/// That is the whole point, and 014 §5 states the reason: lowering must never infer a
+/// conversion, because one it gets wrong is an invisible semantic bug rather than a
+/// crash. Making them explicit here is what makes CIR unambiguous about bit-widths, which
+/// is what the solver needs.
+#[derive(Debug, Default)]
+pub struct TypedAst {
+    nodes: Vec<TypedNode>,
+    by_expr: IndexMap<ExprId, TypedId>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TypedId(pub u32);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypedNode {
+    /// A syntactic expression, typed, with its operands already converted.
+    Value {
+        expr: ExprId,
+        ty: TyId,
+        operands: Vec<TypedId>,
+    },
+    /// An inserted conversion — 014 §5's explicit `Cast`, with **its own span**.
+    ///
+    /// The span is the operand's, not a synthesized one: the conversion happened
+    /// *because of* that operand, and a diagnostic about a bad implicit conversion has to
+    /// point at the code that caused it rather than at nothing.
+    Cast {
+        operand: TypedId,
+        ty: TyId,
+        span: Span,
+        why: Conversion,
+    },
+}
+
+/// Why a conversion was inserted. Recorded rather than derived, because "this is a
+/// widening" does not say whether C required it here — and 015 lowers an argument
+/// conversion differently from an arithmetic one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Conversion {
+    /// C11 §6.3.1.1: anything narrower than `int` becomes `int`.
+    IntegerPromotion,
+    /// C11 §6.3.1.8: the common type of a binary operation's operands.
+    UsualArithmetic,
+    /// An array becomes a pointer to its first element.
+    ArrayDecay,
+    /// A function becomes a pointer to itself.
+    FunctionDecay,
+    /// A null pointer constant becomes the target pointer type.
+    NullPointer,
+    /// Conversion to the type being assigned to or initialized.
+    Assignment,
+    /// Conversion to a parameter's declared type.
+    Argument,
+    /// Conversion to the function's return type.
+    Return,
+    /// The operand of a condition, converted to the scalar the branch tests.
+    Condition,
+}
+
+impl TypedAst {
+    pub fn nodes(&self) -> &[TypedNode] {
+        &self.nodes
+    }
+
+    pub fn node(&self, id: TypedId) -> &TypedNode {
+        &self.nodes[id.0 as usize]
+    }
+
+    pub fn ty_of(&self, id: TypedId) -> TyId {
+        match self.node(id) {
+            TypedNode::Value { ty, .. } | TypedNode::Cast { ty, .. } => *ty,
+        }
+    }
+
+    /// The **outermost** node for a syntactic expression — after every conversion applied
+    /// to it. Asking for the type of `c` in `i + c` gives `int`, not `char`, because that
+    /// is what the addition actually consumes.
+    pub fn top(&self, expr: ExprId) -> Option<TypedId> {
+        self.by_expr.get(&expr).copied()
+    }
+
+    /// The conversions applied to a syntactic expression, outermost first.
+    pub fn conversions_of(&self, expr: ExprId) -> Vec<Conversion> {
+        let mut out = Vec::new();
+        let mut cur = self.top(expr);
+        while let Some(id) = cur {
+            match self.node(id) {
+                TypedNode::Cast { operand, why, .. } => {
+                    out.push(*why);
+                    cur = Some(*operand);
+                }
+                TypedNode::Value { .. } => break,
+            }
+        }
+        out
+    }
+}
+
 /// 014 §6's integer subset — enough for array bounds, bit-field widths, enum values,
 /// `_Static_assert` and case labels.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -244,6 +351,7 @@ pub struct Analysis {
     pub(crate) by_tag: IndexMap<Symbol, RecordId>,
     pub(crate) decl_types: IndexMap<DeclId, TyId>,
     pub(crate) target: Option<TargetConfig>,
+    pub(crate) typed: TypedAst,
     pub diagnostics: Vec<SemaDiagnostic>,
 }
 
@@ -273,6 +381,11 @@ impl Analysis {
 
     pub fn ty_of_decl(&self, d: DeclId) -> Option<TyId> {
         self.decl_types.get(&d).copied()
+    }
+
+    /// 014 §5's typed AST.
+    pub fn typed(&self) -> &TypedAst {
+        &self.typed
     }
 
     pub fn records(&self) -> &[RecordLayout] {

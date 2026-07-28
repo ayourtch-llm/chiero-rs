@@ -123,6 +123,122 @@ pub fn expression(src: &str) -> (ParsedTu, chiero_ast::ExprId) {
     (parsed, init)
 }
 
+/// The VPP corpus, preprocessed, parsed and analysed — shared by the contract-11 and
+/// contract-12 gates so neither has to rebuild the pipeline.
+///
+/// Returns `None` when gcc is absent, and the caller skips with a printed reason rather
+/// than passing: a corpus test that silently succeeded because it analysed nothing is the
+/// vacuity this project has repeatedly had to fix.
+pub fn corpus_analyses() -> Option<Vec<(&'static str, Parsed)>> {
+    let sys = system_include_paths()?;
+    let defines = gcc_predefines();
+    let mut out = Vec::new();
+    for seed in CORPUS_SEEDS {
+        let cfg = Config {
+            include_paths: vec![corpus_dir()],
+            system_paths: sys.clone(),
+            defines: defines.clone(),
+            ..Config::default()
+        };
+        let session = chiero_pp::PreprocessorSession::new();
+        let tu = session.preprocess_with_loader(
+            corpus_dir().join("tu.c"),
+            &format!("#include <{seed}>\n"),
+            cfg,
+            &mut Disk,
+        );
+        assert!(tu.diagnostics.is_empty(), "{seed}: {:?}", tu.diagnostics);
+        let mut oracle = ScopedTypedefs::new();
+        let parsed = parse_tu(&tu, &mut oracle);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{seed}: {:?}",
+            parsed.diagnostics
+        );
+        let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &Names(&parsed));
+        out.push((*seed, Parsed { parsed, analysis }));
+    }
+    Some(out)
+}
+
+pub const CORPUS_SEEDS: &[&str] = &[
+    "vppinfra/vec.h",
+    "vppinfra/pool.h",
+    "vppinfra/bitmap.h",
+    "vppinfra/format.h",
+    "vppinfra/hash.h",
+    "vppinfra/error.h",
+];
+
+pub fn corpus_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/<name>/ has a workspace root above it")
+        .join("tests/corpus/vpp")
+}
+
+struct Disk;
+impl chiero_pp::FileLoader for Disk {
+    fn load(&mut self, path: &std::path::Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+}
+
+pub fn system_include_paths() -> Option<Vec<std::path::PathBuf>> {
+    let out = std::process::Command::new("gcc")
+        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    let mut paths = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("#include <...>") {
+            inside = true;
+            continue;
+        }
+        if line.starts_with("End of search list") {
+            break;
+        }
+        if inside {
+            let p = std::path::PathBuf::from(line.trim());
+            if p.is_dir() {
+                paths.push(p);
+            }
+        }
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+pub fn gcc_predefines() -> Vec<(String, String)> {
+    let Ok(out) = std::process::Command::new("gcc")
+        .args(["-dM", "-E", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.splitn(3, ' ');
+            if it.next() != Some("#define") {
+                return None;
+            }
+            let name = it.next()?;
+            if name.contains('(')
+                || matches!(
+                    name,
+                    "__FILE__" | "__LINE__" | "__DATE__" | "__TIME__" | "__COUNTER__"
+                )
+            {
+                return None;
+            }
+            Some((name.to_string(), it.next().unwrap_or("1").to_string()))
+        })
+        .collect()
+}
+
 pub fn gcc_available() -> bool {
     std::process::Command::new("gcc")
         .arg("--version")
