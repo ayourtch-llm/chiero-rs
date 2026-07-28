@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 146) — 1132 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 147) — 1132 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -502,7 +502,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > bit-fields and unions and it found a *wrong answer*; 143 gave it file-scope declarations
 > and it found a global pointer reading as null; 144 closed the last defect on the open
 > list; 145 made lowering refuse CIR the verifier rejects;
-> 146 gave the generator a shrinker**.*
+> 146 gave the generator a shrinker;
+> 147 gave the refusal ledger teeth and declared floating point unimplemented**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -633,8 +634,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   over that shape, and a deletion that breaks a reference is rejected by the compile the
 >   pipeline runs anyway. The prelude reduces by whole declarations, counted by brace depth.
 >   On a reintroduced wave-142 defect it goes from a full program to four lines.
-> - **The refusal-ledger ratchet.** The ledger prints and is empty; the moment it is not, an
->   unlisted diagnostic code has to fail CI or it becomes a suppression file.
+> - ~~The refusal-ledger ratchet.~~ **Done in wave 147.** `KNOWN_GAPS` in `generated.rs` is
+>   a closed list with a reason beside each entry; an unmatched refusal fails the run. It is
+>   populated because floats joined the grammar: 101 refusals, all accounted for.
+>   **`refuse_floating` in lowering is a capability statement, not a workaround** — floats
+>   have never worked, and 015 §7's rule is that a construct lowering cannot represent is a
+>   diagnostic rather than a silent gamble. Deleting that function is what implementing
+>   floats looks like, and the `KNOWN_GAPS` entry is what will fail when it happens.
+> - **The `Gap` verdict is unexercised.** It reads `Fidelity` to tell a declared modelling
+>   limit from a defect (023 §7), and two mutations deleting it survive — because
+>   `refuse_floating` stops floats before the engine and nothing else in the grammar
+>   degrades. Kept deliberately, with the reason in the code. The next thing that degrades —
+>   a budget, an unmodeled extern, an engine `lowering_gap` — is what will exercise it.
 > - `xtask diff-soak --seed N` for open-ended search, with CI keeping the fixed batch.
 >
 > ### The corpus misses every path this wave touched
@@ -666,6 +677,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **`cargo fmt` moves anchors — and a missed anchor can fake a *green*** (waves 146, 147).
+> Wave 146's missed anchor produced a false *survivor*; wave 147's produced a false *pass*:
+> the ratchet assertion was never inserted, so the run printed "refused 101" and went green
+> with nothing checking them. Clippy's `never used` on the helper is what caught it. **After
+> inserting a check, confirm it can fail** — a new assertion that has never been red is
+> indistinguishable from no assertion.
 > **A test written for a guard can be equivalent under the guard's own mutation** (wave 146).
 > `the_shrinker_refuses_to_reduce_what_does_not_fail` used an always-false predicate — under
 > which the reducer keeps nothing anyway, so deleting the guard changed nothing and the
@@ -814,7 +831,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > class it does not know about. Running `verify` at the end of `function()` and refusing on
 > an error would turn every such defect from a silent nothing into a diagnostic.
 >
-> Owed and written down — **no open defects**, these are gaps and deferrals: the refusal ratchet is unwritten; the
+> Owed and written down — **no open defects**, these are gaps and deferrals:  the
 > wave-117 `fork_on_offset` survivor; floats do not execute; designated and bit-field
 > initializers refused (address initializers were fixed in wave 143); a fault in a non-entry
 > frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
