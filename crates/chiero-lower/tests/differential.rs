@@ -513,6 +513,64 @@ fn a_pointer_lvalue_keeps_its_width_wherever_it_lives() {
     );
 }
 
+/// **A struct parameter is the callee's own copy.**
+///
+/// The prologue gives every parameter a slot of its lowered `CTy` and stores the incoming
+/// value into it. For an aggregate that `CTy` is `CTy::Ptr` (020 §1.4), so a `struct pair`
+/// parameter got an **eight-byte pointer slot**, the caller's address was stored into it,
+/// and the body then read `p.lo` and `p.hi` out of *the pointer's own bytes*.
+///
+/// The caller is right — it passes the struct's address, which is what wave 132 made
+/// `expr` do — and the wrongness is entirely on the callee's side. It is also the worst
+/// failure mode there is: no fault, no finding, just a wrong number, which is wave 113's
+/// rule exactly. `span_of(p)` with `p = {3, 8}` returns 28663.
+///
+/// C11 6.9.1p9 is explicit that a parameter is an object whose value is a *copy* of the
+/// argument, so the callee needs a slot of the struct's size and a `CopyMem` into it. Every
+/// VPP helper taking a `vlib_buffer_t` or a `struct pair` by value depends on it, and
+/// `tests/corpus/owed/header_inline.c` is blocked on this alone now.
+#[test]
+fn a_struct_parameter_is_the_callees_own_copy() {
+    const H: &str = "struct pair { int lo; int hi; };\n\
+         static int span_of(struct pair p) { return p.hi - p.lo; }\n\
+         static int first_of(struct pair p) { return p.lo; }\n\
+         static int bump(struct pair p) { p.lo = p.lo + 100; return p.lo; }\n\
+         static struct pair mk(int a, int b) { struct pair p; p.lo = a; p.hi = b; \
+                                               return p; }\n";
+    // Both fields read out of the parameter, so a slot holding only the low half fails.
+    agree_with(H, "struct pair p; p.lo = 3; p.hi = 8; return span_of(p);");
+    agree_with(H, "struct pair p; p.lo = 3; p.hi = 8; return first_of(p);");
+    // **The copy is a copy.** A callee that received the caller's address and wrote through
+    // it would compute every value above correctly and still corrupt the caller's struct —
+    // C11 6.9.1p9 makes the parameter an object of its own.
+    agree_with(
+        H,
+        "struct pair p; p.lo = 1; p.hi = 2; int r = bump(p); return r * 100 + p.lo;",
+    );
+    // Composed with the aggregate *return*, which is the shape every VPP header accessor
+    // has and the one `header_inline.c` is written around.
+    agree_with(H, "struct pair p = mk(4, 9); return span_of(p);");
+    agree_with(
+        H,
+        "struct pair p = mk(3, 5); struct pair q = mk(p.hi, p.lo); return span_of(q) + q.lo;",
+    );
+    // Two struct parameters, so one slot cannot stand in for both.
+    agree_with(
+        "struct pair { int lo; int hi; };\n\
+         static int cross(struct pair a, struct pair b) { return a.lo * 1000 + a.hi * 100 \
+                                                         + b.lo * 10 + b.hi; }\n",
+        "struct pair x; x.lo = 1; x.hi = 2; struct pair y; y.lo = 3; y.hi = 4; \
+         return cross(x, y);",
+    );
+    // An **array inside the struct**, so the copy is of the layout's size rather than of
+    // the fields lowering happens to know about.
+    agree_with(
+        "struct box { int v[3]; int tag; };\n\
+         static int sum_of(struct box b) { return b.v[0] + b.v[1] + b.v[2] + b.tag; }\n",
+        "struct box b; b.v[0] = 1; b.v[1] = 2; b.v[2] = 3; b.tag = 40; return sum_of(b);",
+    );
+}
+
 /// **Statement expressions and VLAs**, checked for what they compute.
 ///
 /// A statement expression's value is the last expression statement's, and its side
