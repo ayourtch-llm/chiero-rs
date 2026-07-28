@@ -107,6 +107,10 @@ use indexmap::IndexMap;
 /// The function currently being built.
 struct FnState {
     id: FuncId,
+    /// 020 §7, contract 18a. Computed from the **syntax** before any lowering happens, so
+    /// it is a property of what was written rather than of the order lowering chose —
+    /// which is the point: CIR picks one order, and this records that the source did not.
+    order_sensitive: bool,
     name: chiero_cir::Symbol,
     params: Vec<Param>,
     ret: CTy,
@@ -506,6 +510,7 @@ impl Lowerer<'_> {
         };
         self.f = Some(FnState {
             id: fid,
+            order_sensitive: order_sensitive_body(self.ast, body),
             name: cir_name.clone(),
             params: Vec::new(),
             ret: ret.clone(),
@@ -616,7 +621,10 @@ impl Lowerer<'_> {
             allocas: fs.allocas,
             blocks: fs.blocks,
             entry: fs.entry,
-            attrs: FnAttrs::default(),
+            attrs: FnAttrs {
+                order_sensitive: fs.order_sensitive,
+                ..FnAttrs::default()
+            },
             body: Body::Defined,
             span,
         };
@@ -3037,4 +3045,292 @@ fn unescape(s: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------------------
+// 020 §7: syntactic order sensitivity
+// ---------------------------------------------------------------------------------------
+
+/// Whether a function body contains a **syntactically decidable** unsequenced conflict
+/// (020 §7, contract 18a).
+///
+/// §7 restricts this deliberately: two unsequenced accesses to the same *lvalue root*
+/// within one full expression, at least one a write, **with no intervening call**. That is
+/// a local, call-free check over syntax, which 001 §2 permits `chiero-lower` to do without
+/// becoming an analysis. Everything a call makes uncertain belongs to 040's checker, which
+/// has the memory model to answer "is this the same object?".
+///
+/// The model of "unsequenced" that matches C and §7's three examples:
+///
+/// - Reads never conflict with each other. §7 says "at least one a write".
+/// - Two **side-effect writes** in one region always conflict: C11 6.5p2.
+/// - An assignment's *own* write is sequenced after its operands' value computations
+///   (C11 6.5.16p3), so `i = i + 1` is defined — the read is not a conflict. It is *not*
+///   sequenced after their side effects, so `i = i++` is two writes and is not.
+///
+/// That last distinction is the whole reason the assignment's write is tracked separately
+/// from the writes inside its operands.
+fn order_sensitive_body(ast: &Ast, body: chiero_ast::StmtId) -> bool {
+    let mut cx = OrderScan { ast, found: false };
+    cx.stmt(body);
+    cx.found
+}
+
+struct OrderScan<'a> {
+    ast: &'a Ast,
+    found: bool,
+}
+
+/// One access in an unsequenced region.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Read,
+    /// A side-effect write: `++`, `--`, or a nested assignment.
+    Write,
+    /// The write of the assignment whose operands this region is. Sequenced *after* the
+    /// reads in the region, but not after its writes.
+    AssignWrite,
+}
+
+impl OrderScan<'_> {
+    fn stmt(&mut self, s: chiero_ast::StmtId) {
+        use chiero_ast::StmtKind as K;
+        // Every expression a statement contains is its own full expression: the statement
+        // boundary *is* the sequence point (C11 6.8p4). Walking statements here rather
+        // than expressions is what gives `i++; i++;` two regions for free.
+        match self.ast.stmt(s).kind.clone() {
+            K::Expr(e) | K::Return(Some(e)) | K::GotoIndirect(e) => self.full_expr(e),
+            K::If { cond, then, els } => {
+                self.full_expr(cond);
+                self.stmt(then);
+                if let Some(e) = els {
+                    self.stmt(e);
+                }
+            }
+            K::While { cond, body } | K::DoWhile { body, cond } => {
+                self.full_expr(cond);
+                self.stmt(body);
+            }
+            K::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                match init {
+                    Some(chiero_ast::ForInit::Expr(e)) => self.full_expr(e),
+                    Some(chiero_ast::ForInit::Decl(ds)) => {
+                        for d in ds {
+                            if let chiero_ast::DeclKind::Var { init: Some(e), .. } =
+                                self.ast.decl(d).kind.clone()
+                            {
+                                self.full_expr(e);
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                if let Some(c) = cond {
+                    self.full_expr(c);
+                }
+                if let Some(st) = step {
+                    self.full_expr(st);
+                }
+                self.stmt(body);
+            }
+            K::Switch { cond, body } => {
+                self.full_expr(cond);
+                self.stmt(body);
+            }
+            K::Compound(ss) => {
+                for x in ss {
+                    self.stmt(x);
+                }
+            }
+            K::Label { body, .. } | K::Case { body, .. } | K::Default { body } => self.stmt(body),
+            K::Decl(ds) => {
+                for d in ds {
+                    if let chiero_ast::DeclKind::Var { init: Some(e), .. } =
+                        self.ast.decl(d).kind.clone()
+                    {
+                        self.full_expr(e);
+                    }
+                }
+            }
+            K::Asm(a) => {
+                for op in a.outputs.iter().chain(a.inputs.iter()) {
+                    self.full_expr(op.expr);
+                }
+            }
+            K::Return(None) | K::Goto(_) | K::Break | K::Continue | K::Empty | K::Error => {}
+        }
+    }
+
+    /// Scan one full expression, splitting at the operators C sequences.
+    fn full_expr(&mut self, e: chiero_ast::ExprId) {
+        let mut acc: Vec<(chiero_span::Symbol, Access)> = Vec::new();
+        if self.region(e, false, &mut acc) && conflicts(&acc) {
+            self.found = true;
+        }
+    }
+
+    /// Collect the accesses in `e` into `acc`, returning `false` if the region contains a
+    /// **call** — after one, §7 hands the question to 040.
+    ///
+    /// Operators with their own sequence points (`&&`, `||`, `?:`, `,`) recurse as
+    /// *separate* regions instead of contributing here, which is why `i++ && i++` is
+    /// defined and `i++ + i++` is not.
+    fn region(
+        &mut self,
+        e: chiero_ast::ExprId,
+        writing: bool,
+        acc: &mut Vec<(chiero_span::Symbol, Access)>,
+    ) -> bool {
+        use chiero_ast::ExprKind as K;
+        match self.ast.expr(e).kind.clone() {
+            K::Ident(name) => {
+                acc.push((name, if writing { Access::Write } else { Access::Read }));
+                true
+            }
+            K::Assign { lhs, rhs, op } => {
+                // The assigned root's write. A *compound* assignment also reads it, and
+                // both are the assignment's own accesses — sequenced after the operands'
+                // value computations either way.
+                if let Some(root) = self.root_of(lhs) {
+                    acc.push((root, Access::AssignWrite));
+                    if op.is_some() {
+                        acc.push((root, Access::Read));
+                    }
+                }
+                // The subexpressions *within* the lvalue are ordinary reads: in
+                // `a[i] = i++` the subscript's read of `i` is what races the increment.
+                self.lvalue_interior(lhs, acc) && self.region(rhs, false, acc)
+            }
+            K::Unary { op, operand } => match op {
+                chiero_ast::UnOp::PreInc | chiero_ast::UnOp::PreDec => {
+                    self.region(operand, true, acc)
+                }
+                _ => self.region(operand, false, acc),
+            },
+            K::Postfix { operand, .. } => self.region(operand, true, acc),
+            K::Binary { op, lhs, rhs } => {
+                // `&&`, `||` and `,` sequence their operands (C11 6.5.13p4, 6.5.14p4,
+                // 6.5.17p2), so each side is its own region rather than part of this one.
+                if matches!(op, chiero_ast::BinOp::LogAnd | chiero_ast::BinOp::LogOr) {
+                    self.full_expr(lhs);
+                    self.full_expr(rhs);
+                    return true;
+                }
+                self.region(lhs, false, acc) && self.region(rhs, false, acc)
+            }
+            K::Comma { lhs, rhs } => {
+                self.full_expr(lhs);
+                self.full_expr(rhs);
+                true
+            }
+            K::Cond { cond, then, els } => {
+                self.full_expr(cond);
+                if let Some(t) = then {
+                    self.full_expr(t);
+                }
+                self.full_expr(els);
+                true
+            }
+            // **A call ends the syntactic region.** Its arguments are still scanned — they
+            // are unsequenced with each other, which is `g(i++, i++)` — but anything
+            // *outside* it in the same expression is no longer decidable here.
+            K::Call { args, .. } => {
+                let mut inner: Vec<(chiero_span::Symbol, Access)> = Vec::new();
+                for a in &args {
+                    self.region(*a, false, &mut inner);
+                }
+                if conflicts(&inner) {
+                    self.found = true;
+                }
+                false
+            }
+            K::Index { base, index } => {
+                self.region(base, false, acc) && self.region(index, false, acc)
+            }
+            K::Member { base, .. } => self.region(base, writing, acc),
+            K::Cast { operand, .. } => self.region(operand, writing, acc),
+            K::SizeofExpr(_) | K::SizeofType(_) | K::AlignofType(_) | K::TypeName(_) => true,
+            // A statement expression contains statements, each its own full expression.
+            K::StmtExpr(s) => {
+                self.stmt(s);
+                false
+            }
+            K::InitList(items) => {
+                for it in &items {
+                    self.full_expr(it.value);
+                }
+                true
+            }
+            K::Number(_) | K::Char { .. } | K::Str { .. } | K::Error => true,
+        }
+    }
+
+    /// The reads inside an lvalue — `a[i]`'s `i`, `p->f`'s `p` — as distinct from the
+    /// write to its root.
+    fn lvalue_interior(
+        &mut self,
+        e: chiero_ast::ExprId,
+        acc: &mut Vec<(chiero_span::Symbol, Access)>,
+    ) -> bool {
+        use chiero_ast::ExprKind as K;
+        match self.ast.expr(e).kind.clone() {
+            K::Ident(_) => true,
+            K::Index { base, index } => {
+                self.lvalue_interior(base, acc) && self.region(index, false, acc)
+            }
+            K::Member { base, .. } => self.lvalue_interior(base, acc),
+            K::Unary {
+                op: chiero_ast::UnOp::Deref,
+                operand,
+            } => self.region(operand, false, acc),
+            other => {
+                let _ = other;
+                self.region(e, false, acc)
+            }
+        }
+    }
+
+    /// The identifier an lvalue is rooted at, if there is one.
+    fn root_of(&self, e: chiero_ast::ExprId) -> Option<chiero_span::Symbol> {
+        use chiero_ast::ExprKind as K;
+        match self.ast.expr(e).kind.clone() {
+            K::Ident(n) => Some(n),
+            K::Index { base, .. } | K::Member { base, .. } => self.root_of(base),
+            K::Unary { operand, .. } | K::Cast { operand, .. } => self.root_of(operand),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a region's accesses contain an unsequenced conflict.
+fn conflicts(acc: &[(chiero_span::Symbol, Access)]) -> bool {
+    for (i, (root, a)) in acc.iter().enumerate() {
+        for (other, b) in acc.iter().skip(i + 1) {
+            if other != root {
+                continue;
+            }
+            let bad = match (a, b) {
+                // Two side effects, in either order: always a conflict.
+                (Access::Write, Access::Write)
+                | (Access::Write, Access::AssignWrite)
+                | (Access::AssignWrite, Access::Write)
+                | (Access::AssignWrite, Access::AssignWrite) => true,
+                // A side-effect write racing a read.
+                (Access::Write, Access::Read) | (Access::Read, Access::Write) => true,
+                // **The assignment's own write does not race its operands' reads**
+                // (C11 6.5.16p3), which is what makes `i = i + 1` defined.
+                (Access::AssignWrite, Access::Read) | (Access::Read, Access::AssignWrite) => false,
+                (Access::Read, Access::Read) => false,
+            };
+            if bad {
+                return true;
+            }
+        }
+    }
+    false
 }

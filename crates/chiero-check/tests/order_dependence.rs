@@ -246,3 +246,52 @@ fn the_checker_is_named() {
         "order-dependence"
     );
 }
+
+/// **One call writing one object twice is still not a conflict.**
+///
+/// `a_single_call_is_not_a_conflict` uses a callee that writes once, so it never asks
+/// whether the checker distinguishes *which* call wrote — a checker that reported the
+/// second write to an object it had already seen, without comparing call sites, passes
+/// that test and fires here. A function's own statements are sequenced; writing a counter
+/// twice inside `g()` is ordinary code.
+#[test]
+fn one_call_writing_twice_is_not_a_conflict() {
+    let mut m = caller(0, 1, false);
+    // Give `g` a second store to the same global. Both are its own, and its own
+    // statements are sequenced.
+    let extra = inst(
+        InstKind::Store {
+            addr: Operand::Value(ValueId(0)),
+            val: i32c(99),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        },
+        115,
+    );
+    m.funcs[1].blocks[0].insts.push(extra);
+    let got = findings(&m);
+    assert!(
+        got.is_empty(),
+        "two writes by one call are sequenced by that call's own statements: {got:#?}"
+    );
+
+    // And the conflict still fires when the *other* call joins in — so the fixture above
+    // is not passing merely because the checker went quiet.
+    let mut m = caller(0, 0, false);
+    m.funcs[1].blocks[0].insts.push(inst(
+        InstKind::Store {
+            addr: Operand::Value(ValueId(0)),
+            val: i32c(99),
+            ty: CTy::Int(32),
+            align: 4,
+            vol: Volatility::Normal,
+        },
+        115,
+    ));
+    assert_eq!(
+        findings(&m).len(),
+        1,
+        "still exactly one finding, however many times each call writes"
+    );
+}

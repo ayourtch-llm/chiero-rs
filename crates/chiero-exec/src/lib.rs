@@ -1097,6 +1097,16 @@ impl<'a, 'm> CheckerCtx<'a, 'm> {
 
     /// The callee's name, for a checker that keys on it. Indirect calls the engine has
     /// not resolved have none.
+    /// The module under execution.
+    ///
+    /// 040's checkers "run over CIR" (020 §7), so a checker that wants to name what it
+    /// found — a global, a function — needs the table those names live in. Without this a
+    /// finding can only cite an `ObjectId`, which is an engine-internal counter and means
+    /// nothing to a reader.
+    pub fn module(&self) -> &'m Module {
+        self.module
+    }
+
     pub fn callee_name(&self, callee: &Callee) -> &str {
         match callee {
             Callee::Direct(id) => self
