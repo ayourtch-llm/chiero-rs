@@ -429,6 +429,49 @@ fn a_bool_read_modify_write_converts_rather_than_truncates() {
     agree("_Bool b = 1; b ^= 1; return b;");
 }
 
+/// **A member can be selected off a value, not only off an lvalue.**
+///
+/// `lvalue_addr`'s `Member` arm asks `lvalue_addr` for the base, which is `None` for
+/// anything that is not an lvalue — so `make(7).a`, a field of a call's result, produced
+/// **no state and zero diagnostics**. §9 has carried this since wave 132's implementation
+/// review found it; the generator drove into it the moment struct-returning helpers were
+/// added to the grammar, because `h(...).f0` is how it uses one.
+///
+/// C11 6.5.2.3p3 allows it: the `.` operator's left operand is an *expression* of struct
+/// type, not necessarily an lvalue. Since wave 132 an aggregate expression already
+/// evaluates to its address — that is the whole point of "CIR has no aggregate values" —
+/// so the base is available; the arm simply never asked for it that way.
+#[test]
+fn a_member_selects_off_a_value_as_well_as_an_lvalue() {
+    const P: &str = "struct S { int a; int b; };\n\
+         static struct S make(int x) { struct S o; o.a = x; o.b = x + 1; return o; }\n\
+         static struct S thru(struct S p) { struct S o; o.a = p.b; o.b = p.a; return o; }\n";
+    // The call result, both fields, so an implementation that returns the base address
+    // without the offset passes only the first.
+    agree_with(P, "return make(7).a;");
+    agree_with(P, "return make(7).b;");
+    agree_with(P, "return make(7).a * 10 + make(7).b;");
+    // Through a helper that takes a struct too, so the sret slot and the by-value
+    // parameter are both live in the same expression.
+    agree_with(P, "return thru((struct S){1, 2}).a;");
+    agree_with(P, "return thru((struct S){1, 2}).b;");
+    // **Off a compound literal**, which wave 138 made work through the parser and which
+    // reaches the same arm.
+    agree_with(P, "return (struct S){9, 4}.b;");
+    // Nested: a member of a struct member, where the outer base is a call result.
+    agree_with(
+        "struct I { int x; int y; };\nstruct O { struct I i; };\n\
+         static struct O mk(void) { struct O o; o.i.x = 3; o.i.y = 4; return o; }\n",
+        "return mk().i.x * 10 + mk().i.y;",
+    );
+    // And assigned from, so the aggregate-assignment path sees it as a source.
+    agree_with(
+        "struct I { int x; int y; };\nstruct O { struct I i; };\n\
+         static struct O mk(void) { struct O o; o.i.x = 3; o.i.y = 4; return o; }\n",
+        "struct I y = mk().i; return y.x * 10 + y.y;",
+    );
+}
+
 /// **A compound literal is an object.**
 ///
 /// `raw_expr` handles every `ExprKind` but three, and falls through to `Undef` for the

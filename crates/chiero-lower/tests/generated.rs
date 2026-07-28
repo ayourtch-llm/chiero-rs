@@ -182,12 +182,50 @@ const POOL: [i128; 21] = [
     5000000000,
 ];
 
+/// A generated `struct` type: its C tag and its members' types.
+#[derive(Clone)]
+struct Rec {
+    tag: String,
+    fields: Vec<Ty>,
+}
+
+impl Rec {
+    fn field(&self, i: usize) -> String {
+        format!("f{i}")
+    }
+}
+
+/// A generated helper: its name, parameter types and return type.
+///
+/// **`None` return means the helper returns a struct**, named by `ret_rec`. Wave 132's
+/// struct-parameter defect — the callee reading its fields out of a pointer's own bytes,
+/// silently, for a plausible wrong number — is invisible to any generator that cannot emit
+/// one of these.
+#[derive(Clone)]
+struct Fun {
+    name: String,
+    params: Vec<Param>,
+    ret: Option<Ty>,
+    ret_rec: Option<usize>,
+}
+
+#[derive(Clone)]
+enum Param {
+    Scalar(Ty),
+    Struct(usize),
+}
+
 struct Gen {
     rng: Rng,
     vars: Vec<Var>,
+    /// Struct-typed locals in scope, as (name, record index).
+    recs_in_scope: Vec<(String, usize)>,
     body: String,
     next_id: usize,
     depth: usize,
+    /// The record and helper definitions this program needs, emitted as its prelude.
+    records: Vec<Rec>,
+    funs: Vec<Fun>,
 }
 
 impl Gen {
@@ -195,15 +233,154 @@ impl Gen {
         Gen {
             rng: Rng::new(seed),
             vars: Vec::new(),
+            recs_in_scope: Vec::new(),
             body: String::new(),
             next_id: 0,
             depth: 0,
+            records: Vec::new(),
+            funs: Vec::new(),
         }
     }
 
     fn fresh(&mut self) -> String {
         self.next_id += 1;
         format!("v{}", self.next_id)
+    }
+
+    /// Declare the records and helpers this program may use.
+    ///
+    /// Emitted before `probe`, which is what `agree_with`'s prelude parameter exists for
+    /// and what a body-only generator cannot reach: a struct passed **by value** to a
+    /// helper, and a struct **returned** from one, are two of the four shapes wave 132's
+    /// missing guard broke, and neither is expressible inside one function.
+    fn prelude(&mut self) -> String {
+        let nrec = 1 + self.rng.below(2);
+        for i in 0..nrec {
+            let nf = 1 + self.rng.below(3);
+            let fields: Vec<Ty> = (0..nf)
+                .map(|_| {
+                    // `_Bool` members are excluded: a `_Bool` field's *padding* is
+                    // unspecified, so two structs with equal members can compare unequal
+                    // byte-wise and the checksum would be reading something C does not
+                    // define. The scalar `_Bool` cases live in `differential.rs`.
+                    let t = *self.rng.pick(&Ty::ALL);
+                    if t == Ty::Bool { Ty::Int } else { t }
+                })
+                .collect();
+            self.records.push(Rec {
+                tag: format!("S{i}"),
+                fields,
+            });
+        }
+        let nfun = 1 + self.rng.below(3);
+        for i in 0..nfun {
+            let np = self.rng.below(3);
+            let params: Vec<Param> = (0..np)
+                .map(|_| {
+                    if !self.records.is_empty() && self.rng.chance(2) {
+                        Param::Struct(self.rng.below(self.records.len()))
+                    } else {
+                        Param::Scalar(*self.rng.pick(&Ty::ALL))
+                    }
+                })
+                .collect();
+            let returns_struct = !self.records.is_empty() && self.rng.chance(3);
+            self.funs.push(Fun {
+                name: format!("h{i}"),
+                params,
+                ret: if returns_struct {
+                    None
+                } else {
+                    Some(*self.rng.pick(&Ty::ALL))
+                },
+                ret_rec: if returns_struct {
+                    Some(self.rng.below(self.records.len()))
+                } else {
+                    None
+                },
+            });
+        }
+        self.render_prelude()
+    }
+
+    fn render_prelude(&mut self) -> String {
+        let mut out = String::new();
+        for r in &self.records.clone() {
+            let _ = writeln!(out, "struct {} {{", r.tag);
+            for (i, f) in r.fields.iter().enumerate() {
+                let _ = writeln!(out, "  {} {};", f.c(), r.field(i));
+            }
+            let _ = writeln!(out, "}};");
+        }
+        for f in &self.funs.clone() {
+            let sig_ret = match (f.ret, f.ret_rec) {
+                (_, Some(r)) => format!("struct {}", self.records[r].tag),
+                (Some(t), _) => t.c().to_string(),
+                _ => "int".into(),
+            };
+            let ps: Vec<String> = f
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| match p {
+                    Param::Scalar(t) => format!("{} p{i}", t.c()),
+                    Param::Struct(r) => format!("struct {} p{i}", self.records[*r].tag),
+                })
+                .collect();
+            let args = if ps.is_empty() {
+                "void".to_string()
+            } else {
+                ps.join(", ")
+            };
+            let _ = writeln!(out, "static {sig_ret} {}({args}) {{", f.name);
+            // The body reads every parameter, so a parameter that arrives wrong is
+            // observed rather than ignored — wave 132's `span_of` returned 28663 precisely
+            // because the callee read its fields.
+            match f.ret_rec {
+                Some(r) => {
+                    let tag = self.records[r].tag.clone();
+                    let _ = writeln!(out, "  struct {tag} out;");
+                    let nf = self.records[r].fields.len();
+                    for i in 0..nf {
+                        let mut e = format!("{}", 1 + i as i64);
+                        for (pi, p) in f.params.iter().enumerate() {
+                            match p {
+                                Param::Scalar(_) => {
+                                    let _ = write!(e, " + (long)p{pi}");
+                                }
+                                Param::Struct(pr) => {
+                                    for fi in 0..self.records[*pr].fields.len() {
+                                        let _ = write!(e, " + (long)p{pi}.f{fi}");
+                                    }
+                                }
+                            }
+                        }
+                        let ft = self.records[r].fields[i];
+                        let _ = writeln!(out, "  out.f{i} = ({})({e});", ft.c());
+                    }
+                    let _ = writeln!(out, "  return out;");
+                }
+                None => {
+                    let t = f.ret.unwrap_or(Ty::Int);
+                    let mut e = String::from("0");
+                    for (pi, p) in f.params.iter().enumerate() {
+                        match p {
+                            Param::Scalar(_) => {
+                                let _ = write!(e, " + (long)p{pi}");
+                            }
+                            Param::Struct(pr) => {
+                                for fi in 0..self.records[*pr].fields.len() {
+                                    let _ = write!(e, " + (long)p{pi}.f{fi}");
+                                }
+                            }
+                        }
+                    }
+                    let _ = writeln!(out, "  return ({})({e});", t.c());
+                }
+            }
+            let _ = writeln!(out, "}}");
+        }
+        out
     }
 
     /// A constant literal, suffixed so its own type is not in doubt.
@@ -280,6 +457,21 @@ impl Gen {
                 let a = self.expr(t);
                 format!("({}){a}", want.c())
             }
+            9 if !self.funs.is_empty() => {
+                // **A call, with its arguments** — including structs passed by value, which
+                // is the shape a body-only generator cannot produce at all.
+                let f = self.funs[self.rng.below(self.funs.len())].clone();
+                if f.ret_rec.is_some() {
+                    // A struct-returning helper is not a scalar; use it through a member.
+                    let r = f.ret_rec.unwrap();
+                    let args = self.args_for(&f);
+                    let fi = self.rng.below(self.records[r].fields.len());
+                    format!("({}){}({args}).f{fi}", want.c(), f.name)
+                } else {
+                    let args = self.args_for(&f);
+                    format!("({}){}({args})", want.c(), f.name)
+                }
+            }
             _ => {
                 let c = self.expr(Ty::Int);
                 let a = self.expr(want);
@@ -298,6 +490,39 @@ impl Gen {
         }
         let v = self.rng.pick(&usable).clone();
         format!("({}){}", want.c(), v.name)
+    }
+
+    /// Arguments for one call. A struct parameter is given a struct-typed local when one
+    /// is in scope and a **compound literal** otherwise — which is also how the wave-138
+    /// compound-literal work gets exercised by every program that needs an argument.
+    fn args_for(&mut self, f: &Fun) -> String {
+        let params = f.params.clone();
+        let mut out: Vec<String> = Vec::new();
+        for p in &params {
+            match p {
+                Param::Scalar(t) => {
+                    let e = self.expr(*t);
+                    out.push(e);
+                }
+                Param::Struct(r) => {
+                    let candidates: Vec<(String, usize)> = self
+                        .recs_in_scope
+                        .iter()
+                        .filter(|(_, ri)| ri == r)
+                        .cloned()
+                        .collect();
+                    if !candidates.is_empty() && self.rng.chance(2) {
+                        out.push(self.rng.pick(&candidates).0.clone());
+                    } else {
+                        let tag = self.records[*r].tag.clone();
+                        let fields = self.records[*r].fields.clone();
+                        let vals: Vec<String> = fields.iter().map(|t| self.konst(*t)).collect();
+                        out.push(format!("(struct {tag}){{{}}}", vals.join(", ")));
+                    }
+                }
+            }
+        }
+        out.join(", ")
     }
 
     /// One statement. **At most one side effect**, which removes unsequenced-modification
@@ -338,6 +563,32 @@ impl Gen {
                     }
                 }
             }
+            8 if !self.records.is_empty() && self.rng.chance(2) => {
+                // A struct local, initialized from a compound literal or from a
+                // struct-returning helper — the aggregate-return path.
+                let r = self.rng.below(self.records.len());
+                let tag = self.records[r].tag.clone();
+                let name = self.fresh();
+                let from_call = self
+                    .funs
+                    .iter()
+                    .position(|f| f.ret_rec == Some(r))
+                    .filter(|_| self.rng.chance(2));
+                let init = match from_call {
+                    Some(fi) => {
+                        let f = self.funs[fi].clone();
+                        let args = self.args_for(&f);
+                        format!("{}({args})", f.name)
+                    }
+                    None => {
+                        let fields = self.records[r].fields.clone();
+                        let vals: Vec<String> = fields.iter().map(|t| self.konst(*t)).collect();
+                        format!("(struct {tag}){{{}}}", vals.join(", "))
+                    }
+                };
+                let _ = writeln!(self.body, "  struct {tag} {name} = {init};");
+                self.recs_in_scope.push((name, r));
+            }
             8 => {
                 let c = self.expr(Ty::Int);
                 let _ = writeln!(self.body, "  if ({c}) {{");
@@ -367,10 +618,12 @@ impl Gen {
     /// makes the checksum below well defined.
     fn nested(&mut self) {
         let saved = self.vars.len();
+        let saved_recs = self.recs_in_scope.len();
         for _ in 0..1 + self.rng.below(2) {
             self.stmt();
         }
         self.vars.truncate(saved);
+        self.recs_in_scope.truncate(saved_recs);
     }
 
     fn pick_var(&mut self) -> Option<Var> {
@@ -397,18 +650,28 @@ impl Gen {
                 v.name, i as i64
             );
         }
+        // **Every field of every struct**, for the same reason as every scalar: a write
+        // that lands on a neighbouring field changes the checksum even when the value it
+        // was supposed to produce is right.
+        let recs = self.recs_in_scope.clone();
+        for (name, r) in &recs {
+            for fi in 0..self.records[*r].fields.len() {
+                let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}.f{fi});");
+            }
+        }
         let _ = writeln!(self.body, "  return (int)acc;");
         self.body
     }
 }
 
-fn program(seed: u64) -> String {
+fn program(seed: u64) -> (String, String) {
     let mut g = Gen::new(seed);
+    let prelude = g.prelude();
     let n = 3 + g.rng.below(7);
     for _ in 0..n {
         g.stmt();
     }
-    g.finish()
+    (prelude, g.finish())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -436,14 +699,14 @@ enum Verdict {
 }
 
 /// Run one generated body through both sides.
-fn judge(body: &str) -> Verdict {
-    let Some((gcc, defined)) = gcc_answer(body) else {
+fn judge(prelude: &str, body: &str) -> Verdict {
+    let Some((gcc, defined)) = gcc_answer(prelude, body) else {
         return Verdict::Discarded;
     };
     if !defined {
         return Verdict::Discarded;
     }
-    match chiero_answer(body) {
+    match chiero_answer(prelude, body) {
         Ok(Some(v)) if v == gcc => Verdict::Agree,
         Ok(Some(v)) => Verdict::Mismatch {
             chiero: Some(v),
@@ -468,7 +731,7 @@ enum ChieroErr {
 /// `harness::lower` panics on any diagnostic, which is right for a hand-written fixture and
 /// wrong here — a refusal is information, not a test failure. So the stages are run
 /// directly and each one's diagnostics are reported as themselves.
-fn chiero_answer(body: &str) -> Result<Option<i32>, ChieroErr> {
+fn chiero_answer(prelude: &str, body: &str) -> Result<Option<i32>, ChieroErr> {
     use chiero_parse::{ScopedTypedefs, parse_tu};
     use chiero_pp::{Config, preprocess_str};
     use chiero_sema::{SymbolText, TargetConfig, analyze};
@@ -480,7 +743,7 @@ fn chiero_answer(body: &str) -> Result<Option<i32>, ChieroErr> {
         }
     }
 
-    let src = format!("int probe(void) {{\n{body}}}\n");
+    let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
     let out = std::panic::catch_unwind(|| {
         let tu = preprocess_str("g.c", &src, Config::default());
         if let Some(d) = tu.diagnostics.first() {
@@ -531,12 +794,12 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
 /// `defined` is false when the sanitizers trip, when the binary does not run, or when
 /// `-O0`, `-O2` and clang do not all agree — three compilers disagreeing about a program
 /// means the program is the problem, not any of them.
-fn gcc_answer(body: &str) -> Option<(i32, bool)> {
+fn gcc_answer(prelude: &str, body: &str) -> Option<(i32, bool)> {
     let dir = std::env::temp_dir().join(format!("chiero-gen-{}-{}", std::process::id(), next()));
     std::fs::create_dir_all(&dir).ok()?;
     let c = dir.join("g.c");
     let src = format!(
-        "#include <stdio.h>\nint probe(void) {{\n{body}}}\n\
+        "#include <stdio.h>\n{prelude}\nint probe(void) {{\n{body}}}\n\
          int main(void) {{ printf(\"%d\\n\", probe()); return 0; }}\n"
     );
     std::fs::write(&c, src).ok()?;
@@ -617,12 +880,12 @@ fn generated_programs_agree_with_gcc() {
     let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
 
     for seed in 0..200u64 {
-        let body = program(seed);
-        match judge(&body) {
+        let (prelude, body) = program(seed);
+        match judge(&prelude, &body) {
             Verdict::Agree => compared += 1,
             Verdict::Discarded => discarded += 1,
             Verdict::Refused { stage, message } => refused.push((stage, message)),
-            v => defects.push((seed, body, v)),
+            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
         }
     }
 
