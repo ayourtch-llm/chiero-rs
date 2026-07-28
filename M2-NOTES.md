@@ -128,3 +128,11 @@
   leave the invocation visibly unexpanded. Unsuffixed constants above `INTMAX_MAX`
   become `uintmax_t`, closing the final 57-expression oracle gap. Both `#pragma` and
   `_Pragma` now create public, ordered `PragmaRecord`s for downstream target selection.
+- REVIEW-2 mutations 21–29 do not reproduce against the repaired tree. Dedicated
+  discriminators now pin empty GNU comma swallowing without a diagnostic, invalid-paste
+  preservation, multi-argument `__VA_ARGS__`, raw `##` operands, guard reactivation
+  after `#undef`, `__has_include` load reuse, object-like definitions with whitespace,
+  zero-parameter empty calls, literal escaping, and paste hide-set propagation.
+- The misleading umbrella citation was corrected: `contracts.rs` now claims only the
+  011 contracts it tests. Non-ignored tests in `performance.rs` carry 011 contracts 11
+  and 13; contract 12 remains explicitly owed because its throughput test is ignored.

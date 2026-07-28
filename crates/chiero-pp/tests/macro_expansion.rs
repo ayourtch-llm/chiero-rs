@@ -56,6 +56,66 @@ fn paste_empty_arguments_and_gnu_comma_swallowing() {
 }
 
 #[test]
+fn variadic_and_paste_edge_cases_are_semantically_pinned() {
+    let comma_swallow = preprocess_str(
+        "varargs.c",
+        "#define D(f,a...) g(f,##a)\nD(\"x\")\n",
+        Config::default(),
+    );
+    assert!(
+        comma_swallow.diagnostics.is_empty(),
+        "{:?}",
+        comma_swallow.diagnostics
+    );
+    assert_eq!(
+        comma_swallow.token_texts().collect::<Vec<_>>(),
+        ["g", "(", "\"x\"", ")"]
+    );
+
+    assert_eq!(
+        texts("#define V(...) [__VA_ARGS__]\nV(1,2,3)\n"),
+        ["[", "1", ",", "2", ",", "3", "]"]
+    );
+    assert_eq!(
+        texts("#define CAT(a,b) a##b\nCAT(__COUNTER__,x) __COUNTER__\n"),
+        ["__COUNTER__x", "0"]
+    );
+}
+
+#[test]
+fn invalid_paste_diagnoses_and_preserves_both_operands() {
+    let tu = preprocess_str(
+        "paste.c",
+        "#define CAT(a,b) a##b\nCAT(x,+)\n",
+        Config::default(),
+    );
+    assert_eq!(tu.diagnostics.len(), 1, "{:?}", tu.diagnostics);
+    assert!(
+        tu.diagnostics[0]
+            .message
+            .contains("not one preprocessing token")
+    );
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["x", "+"]);
+}
+
+#[test]
+fn function_like_definition_requires_no_space_before_the_parameter_list() {
+    assert_eq!(
+        texts("#define f (x)\nf(1)\n"),
+        ["(", "x", ")", "(", "1", ")"]
+    );
+    assert_eq!(texts("#define empty() ok\nempty()\n"), ["ok"]);
+}
+
+#[test]
+fn pasted_tokens_retain_the_callers_hide_set() {
+    assert_eq!(
+        texts("#define CAT(a,b) a##b\n#define A() CAT(A,)\nA()\n"),
+        ["A"]
+    );
+}
+
+#[test]
 fn preexpanded_argument_parent_is_the_caller_not_the_callee() {
     let tu = preprocess_str(
         "fixture.c",

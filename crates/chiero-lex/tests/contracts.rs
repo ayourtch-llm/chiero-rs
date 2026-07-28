@@ -1,4 +1,4 @@
-//! Covers: 011 contracts 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14.
+//! Covers: 011 contracts 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14.
 
 use chiero_lex::{EncPrefix, LexConfig, LexSession, PpTokenKind, Punct};
 use chiero_span::SourceMap;

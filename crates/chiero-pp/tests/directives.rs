@@ -122,6 +122,24 @@ fn include_guards_and_pragma_once_avoid_second_read() {
 }
 
 #[test]
+fn include_guard_skip_depends_on_the_guard_macro_remaining_defined() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("guard.h"),
+        "#ifndef GUARD_H\n#define GUARD_H\nbody\n#endif\n".into(),
+    );
+    let tu = preprocess_with_loader(
+        "main.c",
+        "#include \"guard.h\"\n#undef GUARD_H\n#include \"guard.h\"\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["body", "body"]);
+    assert_eq!(files.reads.get(Path::new("guard.h")), Some(&2));
+}
+
+#[test]
 fn inactive_include_does_not_touch_the_loader() {
     let mut files = MemoryFiles::default();
     files
@@ -366,6 +384,19 @@ fn has_include_queries_the_configured_search() {
     let tu = preprocess_with_loader("main.c", src, config, &mut files);
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
     assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["yes"]);
+}
+
+#[test]
+fn successful_has_include_probe_is_reused_by_the_real_include() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("present.h"), "from_header\n".into());
+    let src = "#if __has_include(\"present.h\")\n#include \"present.h\"\n#endif\n";
+    let tu = preprocess_with_loader("main.c", src, Config::default(), &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["from_header"]);
+    assert_eq!(files.reads.get(Path::new("present.h")), Some(&1));
 }
 
 #[test]
