@@ -170,7 +170,11 @@ dependencies = [
  "chiero-check",
  "chiero-cir",
  "chiero-exec",
+ "chiero-lower",
+ "chiero-parse",
+ "chiero-pp",
  "chiero-sema",
+ "chiero-solver",
  "chiero-span",
  "indexmap",
 ]

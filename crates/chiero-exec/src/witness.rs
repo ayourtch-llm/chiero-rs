@@ -105,4 +105,29 @@ impl Witness {
             bindings: Vec::new(),
         }
     }
+
+    /// A witness that pins the entry function's parameters to concrete values, in order.
+    ///
+    /// 023 contract 21 replays "with all inputs concretized", and this is what that means
+    /// for the common case. The bindings are consumed **positionally** by the engine, so
+    /// the origins here are descriptive rather than load-bearing — which is why the span
+    /// is `DUMMY` rather than a fabricated location (010 §4 forbids inventing one).
+    pub fn concrete(values: Vec<(u32, u128)>) -> Witness {
+        Witness {
+            bindings: values
+                .into_iter()
+                .enumerate()
+                .map(|(index, (width, value))| Binding {
+                    origin: InputOrigin::Param {
+                        index,
+                        name: format!("arg{index}"),
+                        span: Span::DUMMY,
+                    },
+                    width,
+                    value,
+                    pinned: true,
+                })
+                .collect(),
+        }
+    }
 }
