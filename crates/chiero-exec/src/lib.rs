@@ -1298,6 +1298,8 @@ pub struct Engine<'m> {
     strategy: Strategy,
     /// 021 §6.
     lazy: LazyPolicy,
+    /// The function to analyse, if a caller named one.
+    entry: Option<String>,
     /// 023 §6. Registered in order; each gets one `CheckerState` slot per state.
     checkers: Checkers,
     /// 021 §5.2, as `(entry parameter index, shape)` until the entry state binds a term.
@@ -1326,6 +1328,7 @@ impl<'m> Engine<'m> {
         Engine {
             strategy: Strategy::default(),
             lazy: LazyPolicy::default(),
+            entry: None,
             checkers: Checkers::default(),
             arenas: Vec::new(),
             arena_bases: Vec::new(),
@@ -1400,6 +1403,17 @@ impl<'m> Engine<'m> {
 
     /// Register a checker (023 §6). Order is the registration order, and each checker
     /// gets one `CheckerState` slot per state.
+    /// Analyse `name` rather than the default entry.
+    ///
+    /// The default prefers a defined `main` and falls back to the first defined function,
+    /// which is right for a whole program and arbitrary for a library — 021 §6's
+    /// under-constrained symbolic execution wants to start at each exported function in
+    /// turn, and that caller needs to say which.
+    pub fn with_entry(mut self, name: &str) -> Self {
+        self.entry = Some(name.to_owned());
+        self
+    }
+
     /// 021 §6.
     pub fn with_lazy_policy(mut self, p: LazyPolicy) -> Self {
         self.lazy = p;
@@ -1588,7 +1602,31 @@ impl<'m> Engine<'m> {
     pub fn run(mut self, a: &mut TermArena) -> RunResult {
         // **An empty module is an error, not a panic.** `Module::default()` is what three
         // of the four proof-surface probes construct.
-        let Some(f) = self.module.funcs.first() else {
+        // **The entry is a *defined* function, and `main` when there is one.**
+        //
+        // `funcs.first()` was whatever the translation unit declared first — for every
+        // corpus file that is `chiero_make_symbolic` from `chiero.h`, a `Body::Declared`
+        // function with no blocks. The engine set `pc` to its nonexistent entry block and
+        // every run ended `Errored("no such block BlockId(0)")` before executing a single
+        // instruction. The goldens stayed green because they compare lowered *text*, and
+        // "no findings" stayed true because an errored state reports none.
+        let entry = self
+            .entry
+            .as_deref()
+            .and_then(|n| {
+                self.module
+                    .funcs
+                    .iter()
+                    .find(|f| &*f.name == n && f.body == Body::Defined)
+            })
+            .or_else(|| {
+                self.module
+                    .funcs
+                    .iter()
+                    .find(|f| &*f.name == "main" && f.body == Body::Defined)
+            })
+            .or_else(|| self.module.funcs.iter().find(|f| f.body == Body::Defined));
+        let Some(f) = entry else {
             let s = State::errored(self.new_id(), "the module defines no functions");
             return RunResult {
                 sliced_terms_skipped: 0,
