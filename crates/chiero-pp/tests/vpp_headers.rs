@@ -1,5 +1,5 @@
-//! Real-header smoke/regression metric. This is evidence toward owed 012 contract 17,
-//! but does not claim `Covers:` credit without the configured compilation database.
+//! Real-header smoke/regression metric. This provides useful external evidence, but does
+//! not claim contract credit without the configured compilation database.
 
 use chiero_pp::{Config, FileLoader, PreprocessorSession};
 use std::io;

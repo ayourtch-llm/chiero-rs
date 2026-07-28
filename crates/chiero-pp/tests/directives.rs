@@ -505,8 +505,8 @@ fn elifdef_and_elifndef_select_exactly_one_branch() {
 
 #[test]
 #[ignore = "external corpus regression metric"]
-/// External evidence for 012 contract 17. Ignored tests do not carry contract coverage
-/// credit under 070 §4.
+/// External configured-corpus evidence. Ignored tests do not carry contract coverage
+/// credit under 070 §4, so this comment intentionally cites no contract number.
 fn every_vpp_compile_command_preprocesses_without_panicking() {
     let compile_commands = Path::new("/home/ubuntu/vpp/build-root/compile_commands.json");
     if !compile_commands.exists() {
