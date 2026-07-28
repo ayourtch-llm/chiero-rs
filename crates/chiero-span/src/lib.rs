@@ -7,6 +7,20 @@
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BytePos(pub u32);
 
+/// An interned identifier or spelling. Which interner it indexes is the holder's
+/// business; this crate only owns the *type*.
+///
+/// **It lives here because a second crate needs it.** `chiero-lex` defined it and
+/// `chiero-ast` now needs the same one: an AST node holds an identifier, and
+/// `chiero-ast` may not depend on `chiero-lex` — the 001 §2 graph hangs both off
+/// `chiero-span` and the arrows between them are pp-token *data flow*, not dependencies.
+/// Two structurally identical `Symbol(u32)` types would be worse than one: the compiler
+/// would not stop `lex::Symbol(3)` from being read against the AST's interner, and the
+/// symptom would be a wrong identifier name in a diagnostic, not a type error.
+/// `chiero-lex` re-exports this, so its public API is unchanged.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol(pub u32);
+
 /// Index into `SourceMap::expansions`. `ROOT` means "written literally in a source
 /// file, not produced by any macro".
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

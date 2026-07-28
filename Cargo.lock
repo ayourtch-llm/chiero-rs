@@ -145,6 +145,7 @@ dependencies = [
  "chiero-lex",
  "chiero-pp",
  "chiero-span",
+ "indexmap",
 ]
 
 [[package]]

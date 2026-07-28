@@ -10,8 +10,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(pub u32);
+/// Re-exported, not defined here: `chiero-ast` needs the same `Symbol` and may not
+/// depend on this crate. See the type's own comment in `chiero-span` for why one type
+/// beats two identical ones.
+pub use chiero_span::Symbol;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LexConfig {

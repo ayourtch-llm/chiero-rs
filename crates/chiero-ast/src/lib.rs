@@ -1,1 +1,569 @@
-//! `chiero-ast` — see `docs/specs/`.
+//! `chiero-ast` — the syntactic AST. See `docs/specs/013-parser.md` §5.
+//!
+//! **The AST is syntactic** (013 §5): it records what was written, not what it means. No
+//! implicit conversions, no resolved types, no folded constants — all of that is 014.
+//! That is not minimalism for its own sake; change-impact analysis diffs *entities*, and
+//! it can only do that if the tree is a faithful, printable record of source. A tree that
+//! had already normalized `2+2` could not tell an edit that changed the source from one
+//! that did not.
+//!
+//! Arena-allocated and id-indexed, no `Rc`: the tree is walked far more often than it is
+//! built, whole-tree analysis holds many TUs at once, and a `Span` is a 12-byte `Copy`
+//! value rather than a handle, so nodes stay small.
+
+use chiero_span::{Span, Symbol};
+
+macro_rules! node_id {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(pub u32);
+    };
+}
+
+node_id!(
+    /// Index into the expression arena.
+    ExprId
+);
+node_id!(
+    /// Index into the statement arena.
+    StmtId
+);
+node_id!(
+    /// Index into the declaration arena.
+    DeclId
+);
+node_id!(
+    /// Index into the type arena.
+    TypeId
+);
+
+/// Every node carries a `Span` with its `ExpnCtx` (013 §5). A node the parser
+/// *synthesized* — an error node, an implicit piece — uses a zero-width span at the
+/// relevant position, never a fabricated range over unrelated source (010 §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExprKind {
+    Ident(Symbol),
+    /// The literal's **spelling**, interned. Not its value: `0x10`, `16` and `16u` are
+    /// three different source texts and 014 owns turning any of them into a number.
+    /// Folding here would make the AST lie about what was written.
+    Number(Symbol),
+    /// A character constant, spelling retained for the same reason.
+    Char {
+        spelling: Symbol,
+    },
+    /// A string literal, possibly the result of phase-6 concatenation.
+    ///
+    /// `fragments` is **per-constituent provenance** (013 §2, contract 18) and is
+    /// non-empty even for an unconcatenated literal. VPP builds format strings out of
+    /// macro-produced pieces, and a diagnostic that cannot say which fragment came from
+    /// which macro is not actionable — so the fragments are retained rather than
+    /// recomputed from the joined span, which is impossible once they are joined.
+    Str {
+        fragments: Vec<StrFragment>,
+    },
+    Unary {
+        op: UnOp,
+        operand: ExprId,
+    },
+    /// Post-increment and post-decrement. A separate variant rather than a flag on
+    /// `Unary`, because prefix and postfix differ in value, not in spelling.
+    Postfix {
+        op: PostfixOp,
+        operand: ExprId,
+    },
+    Binary {
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    /// `=` and the compound assignments. `op: None` is plain `=`.
+    Assign {
+        op: Option<BinOp>,
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    Cond {
+        cond: ExprId,
+        /// `None` is the GNU elvis form `a ?: b`.
+        then: Option<ExprId>,
+        els: ExprId,
+    },
+    Comma {
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    Call {
+        callee: ExprId,
+        args: Vec<ExprId>,
+    },
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
+    Member {
+        base: ExprId,
+        field: Symbol,
+        /// `true` for `->`, `false` for `.`. Kept syntactic: 014 decides whether either
+        /// was legal.
+        arrow: bool,
+    },
+    Cast {
+        ty: TypeId,
+        operand: ExprId,
+    },
+    SizeofExpr(ExprId),
+    SizeofType(TypeId),
+    AlignofType(TypeId),
+    /// GNU statement expression `({ ... })` (013 §4, contract 7). 217 VPP files use it.
+    StmtExpr(StmtId),
+    /// A braced initializer list. Syntactic: `{ .a = 1, [3] = 4 }` keeps its designators
+    /// and its order, because 014 needs both to place the values.
+    InitList(Vec<InitItem>),
+    /// The parser could not make sense of this position. **It never returns `Err`**
+    /// (013 §1) — a partial tree for a file chiero half-understands is worth more than a
+    /// hard failure, because whole-tree analysis has to degrade rather than stop.
+    Error,
+}
+
+/// One constituent of a (possibly concatenated) string literal, with its own span — and
+/// therefore its own `ExpnCtx`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrFragment {
+    pub spelling: Symbol,
+    pub span: Span,
+}
+
+/// One element of a braced initializer, with its designator chain (contract 11).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitItem {
+    /// Empty for a positional element; `.a.b` is two entries, in written order.
+    pub designators: Vec<Designator>,
+    pub value: ExprId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Designator {
+    Field(Symbol),
+    Index(ExprId),
+    /// GNU range designator `[1 ... 2] =`.
+    Range(ExprId, ExprId),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnOp {
+    Plus,
+    Minus,
+    Not,
+    BitNot,
+    Deref,
+    AddrOf,
+    PreInc,
+    PreDec,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PostfixOp {
+    Inc,
+    Dec,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    Mul,
+    Div,
+    Rem,
+    Add,
+    Sub,
+    Shl,
+    Shr,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Ne,
+    BitAnd,
+    BitXor,
+    BitOr,
+    LogAnd,
+    LogOr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StmtKind {
+    /// An expression statement. `A * B;` inside a function is this when `A` is not a
+    /// typedef name, and a `Decl` when it is — 013 §3, and the whole reason the parser
+    /// needs a symbol table.
+    Expr(ExprId),
+    /// A declaration appearing where a statement may (C99 block-scope declarations).
+    /// One per declared name, matching [`DeclKind`]'s split.
+    Decl(Vec<DeclId>),
+    Compound(Vec<StmtId>),
+    If {
+        cond: ExprId,
+        then: StmtId,
+        els: Option<StmtId>,
+    },
+    While {
+        cond: ExprId,
+        body: StmtId,
+    },
+    DoWhile {
+        body: StmtId,
+        cond: ExprId,
+    },
+    For {
+        init: Option<ForInit>,
+        cond: Option<ExprId>,
+        step: Option<ExprId>,
+        body: StmtId,
+    },
+    Switch {
+        cond: ExprId,
+        body: StmtId,
+    },
+    /// `hi` is `Some` for a GNU case range `case 1 ... 5:` (contract 9).
+    Case {
+        lo: ExprId,
+        hi: Option<ExprId>,
+        body: StmtId,
+    },
+    Default {
+        body: StmtId,
+    },
+    Label {
+        name: Symbol,
+        body: StmtId,
+    },
+    Goto(Symbol),
+    /// Computed goto `goto *p;` — GNU, and VPP's node-dispatch shape.
+    GotoIndirect(ExprId),
+    Break,
+    Continue,
+    Return(Option<ExprId>),
+    Empty,
+    /// `asm`/`__asm__`, **parsed but not modeled** (013 §4). Lowering turns it into an
+    /// opaque effect that clobbers its outputs and marks the path `Approximated`.
+    /// Treating asm as a no-op would be unsound in the direction that produces confident
+    /// wrong answers.
+    Asm(Box<AsmStmt>),
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForInit {
+    Decl(Vec<DeclId>),
+    Expr(ExprId),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AsmStmt {
+    /// The template string's spelling. Never interpreted.
+    pub template: Vec<StrFragment>,
+    pub volatile: bool,
+    pub goto: bool,
+    pub outputs: Vec<AsmOperand>,
+    pub inputs: Vec<AsmOperand>,
+    pub clobbers: Vec<Symbol>,
+    pub labels: Vec<Symbol>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsmOperand {
+    /// `[name]` in `[name] "=r" (x)`, if written.
+    pub symbolic_name: Option<Symbol>,
+    pub constraint: Symbol,
+    pub expr: ExprId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decl {
+    pub kind: DeclKind,
+    pub span: Span,
+}
+
+/// **One `Decl` per declared name.** `int a, b;` is two `Decl`s, not one node with a
+/// declarator list.
+///
+/// The C grammar groups them, so this is a deliberate deviation, recorded here: 031's
+/// unit of change is an *entity*, and a grouped node makes "did `b` change?" a question
+/// about a subrange of a node rather than about a node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeclKind {
+    Var {
+        /// `None` for an abstract declarator — a parameter or a cast with no name.
+        name: Option<Symbol>,
+        ty: TypeId,
+        init: Option<ExprId>,
+        storage: Storage,
+    },
+    Typedef {
+        name: Symbol,
+        ty: TypeId,
+    },
+    Func {
+        name: Symbol,
+        /// The function type, so the return type and parameters have one home.
+        ty: TypeId,
+        /// `None` for a declaration, `Some` for a definition.
+        body: Option<StmtId>,
+        storage: Storage,
+    },
+    /// `_Static_assert(cond, "msg")` (contract 12) — 140 VPP files reach it through
+    /// `STATIC_ASSERT`.
+    StaticAssert {
+        cond: ExprId,
+        msg: Option<Symbol>,
+    },
+    /// A struct/union/enum definition with no declarator: `struct S { int a; };`
+    TagDef {
+        ty: TypeId,
+    },
+    Error,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Storage {
+    pub extern_: bool,
+    pub static_: bool,
+    pub thread_local: bool,
+    pub auto: bool,
+    pub register: bool,
+    pub inline: bool,
+    pub noreturn: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeExpr {
+    pub kind: TypeKind,
+    pub span: Span,
+    pub quals: Quals,
+    /// Attributes attach to the entity the *parser* saw them on (contract 6).
+    /// Only `packed`, `aligned` and `may_alias` change analysis semantics and are
+    /// interpreted by 014; the rest are recorded and ignored, which is not the same as
+    /// dropped — 031 must see an attribute edit as a change.
+    pub attrs: Vec<Attr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeKind {
+    Builtin(Builtin),
+    /// A typedef name, resolved to a name and nothing more. 014 resolves it to a type.
+    Named(Symbol),
+    Tag {
+        tag: TagKind,
+        name: Option<Symbol>,
+        /// `None` for a reference (`struct S *p`), `Some` for a definition — including
+        /// `Some(vec![])` for `struct S {};`, which is not the same thing as a reference.
+        members: Option<Vec<DeclId>>,
+    },
+    Ptr(TypeId),
+    Array {
+        elem: TypeId,
+        len: ArrayLen,
+    },
+    Func {
+        ret: TypeId,
+        params: Vec<DeclId>,
+        variadic: bool,
+        /// Old-style K&R parameter list (contract 4): the names appeared in the
+        /// declarator and their types in declarations before the body.
+        kr: bool,
+    },
+    /// `typeof(x)` / `__typeof__(*p)` (contract 8). 52 VPP files.
+    TypeofExpr(ExprId),
+    TypeofType(TypeId),
+    Error,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ArrayLen {
+    /// `int a[4]`
+    Fixed(ExprId),
+    /// `int a[]` — a flexible array member in a struct, or an unsized parameter
+    /// (contract 5). Distinguished from `Zero`, because C and GNU treat them
+    /// differently and 1165 VPP files use one or the other.
+    Unspecified,
+    /// `int a[0]` — the GNU zero-length array. Kept apart from `Fixed(0)` so 014 does not
+    /// have to constant-fold to find out which idiom was written.
+    Zero,
+    /// `int a[*]` in a prototype.
+    Star,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TagKind {
+    Struct,
+    Union,
+    Enum,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Quals {
+    pub const_: bool,
+    pub volatile_: bool,
+    pub restrict_: bool,
+    pub atomic: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Builtin {
+    Void,
+    Bool,
+    Char,
+    SChar,
+    UChar,
+    Short,
+    UShort,
+    Int,
+    UInt,
+    Long,
+    ULong,
+    LongLong,
+    ULongLong,
+    /// `__int128` / `unsigned __int128` (contract 13).
+    Int128,
+    UInt128,
+    Float,
+    Double,
+    LongDouble,
+}
+
+/// An attribute as written, with its arguments left as expressions.
+///
+/// The arguments are *unevaluated*: `aligned(64)` and `aligned(CLIB_CACHE_LINE_BYTES)`
+/// are both a name and one argument expression, and which macro produced the second is
+/// exactly what 031 wants to know.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attr {
+    pub name: Symbol,
+    pub args: Vec<ExprId>,
+    pub span: Span,
+}
+
+/// The arena. Ids index these vectors directly; nothing is ever removed, so an id stays
+/// valid for the life of the `Ast`.
+#[derive(Clone, Debug, Default)]
+pub struct Ast {
+    exprs: Vec<Expr>,
+    stmts: Vec<Stmt>,
+    decls: Vec<Decl>,
+    types: Vec<TypeExpr>,
+    /// Top-level declarations in written order.
+    ///
+    /// 013 §5's sketch lists only the four arenas, which leaves the TU's own contents
+    /// with nowhere to live; a parser that returned a bag of nodes and no roots would be
+    /// unusable. Recorded as a deviation rather than smuggled in.
+    items: Vec<DeclId>,
+}
+
+impl Ast {
+    pub fn new() -> Ast {
+        Ast::default()
+    }
+
+    pub fn add_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
+        self.exprs.push(Expr { kind, span });
+        ExprId((self.exprs.len() - 1) as u32)
+    }
+
+    pub fn add_stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
+        self.stmts.push(Stmt { kind, span });
+        StmtId((self.stmts.len() - 1) as u32)
+    }
+
+    pub fn add_decl(&mut self, kind: DeclKind, span: Span) -> DeclId {
+        self.decls.push(Decl { kind, span });
+        DeclId((self.decls.len() - 1) as u32)
+    }
+
+    pub fn add_type(&mut self, kind: TypeKind, span: Span) -> TypeId {
+        self.types.push(TypeExpr {
+            kind,
+            span,
+            quals: Quals::default(),
+            attrs: Vec::new(),
+        });
+        TypeId((self.types.len() - 1) as u32)
+    }
+
+    pub fn expr(&self, id: ExprId) -> &Expr {
+        &self.exprs[id.0 as usize]
+    }
+
+    pub fn stmt(&self, id: StmtId) -> &Stmt {
+        &self.stmts[id.0 as usize]
+    }
+
+    pub fn decl(&self, id: DeclId) -> &Decl {
+        &self.decls[id.0 as usize]
+    }
+
+    pub fn ty(&self, id: TypeId) -> &TypeExpr {
+        &self.types[id.0 as usize]
+    }
+
+    pub fn ty_mut(&mut self, id: TypeId) -> &mut TypeExpr {
+        &mut self.types[id.0 as usize]
+    }
+
+    pub fn decl_mut(&mut self, id: DeclId) -> &mut Decl {
+        &mut self.decls[id.0 as usize]
+    }
+
+    pub fn items(&self) -> &[DeclId] {
+        &self.items
+    }
+
+    pub fn push_item(&mut self, id: DeclId) {
+        self.items.push(id);
+    }
+
+    pub fn exprs(&self) -> &[Expr] {
+        &self.exprs
+    }
+
+    pub fn stmts(&self) -> &[Stmt] {
+        &self.stmts
+    }
+
+    pub fn decls(&self) -> &[Decl] {
+        &self.decls
+    }
+
+    pub fn types(&self) -> &[TypeExpr] {
+        &self.types
+    }
+
+    /// Every node's span, in one iterator — what contract 17 quantifies over.
+    ///
+    /// A caller that had to know the four arenas in order to check a property of "every
+    /// node" would silently stop covering a fifth if one were ever added.
+    pub fn all_spans(&self) -> impl Iterator<Item = Span> + '_ {
+        self.exprs
+            .iter()
+            .map(|n| n.span)
+            .chain(self.stmts.iter().map(|n| n.span))
+            .chain(self.decls.iter().map(|n| n.span))
+            .chain(self.types.iter().map(|n| n.span))
+    }
+
+    /// Total node count across every arena — the denominator for contract 20's memory
+    /// bound, and a cheap guard against a test asserting a property of an empty tree.
+    pub fn node_count(&self) -> usize {
+        self.exprs.len() + self.stmts.len() + self.decls.len() + self.types.len()
+    }
+}
