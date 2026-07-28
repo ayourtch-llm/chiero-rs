@@ -2255,7 +2255,12 @@ impl<'a> Parser<'a> {
                     if self.is_punct(0, Punct::LBrace) {
                         let operand = self.initializer();
                         let span = self.span_from(start);
-                        return self.ast.add_expr(ExprKind::Cast { ty, operand }, span);
+                        let lit = self.ast.add_expr(ExprKind::Cast { ty, operand }, span);
+                        // **A compound literal is a postfix expression**, so `.a`, `[i]`
+                        // and `->f` may follow it. Returning here consumed the braces and
+                        // left the `.a` for the statement parser, which reported "expected
+                        // `;` after `return`" — a parse failure with no hint of the cause.
+                        return self.postfix_suffixes(start, lit);
                     }
                     let operand = self.unary_expr();
                     let span = self.span_from(start);
@@ -2269,7 +2274,18 @@ impl<'a> Parser<'a> {
 
     fn postfix_expr(&mut self) -> ExprId {
         let start = self.pos;
-        let mut e = self.primary_expr();
+        let e = self.primary_expr();
+        self.postfix_suffixes(start, e)
+    }
+
+    /// The `[]`, `()`, `.`, `->`, `++` and `--` that may follow a postfix expression.
+    ///
+    /// Split out so a **compound literal** can use it. `(struct S){9, 1}.a` is valid C99 —
+    /// 6.5.2.5p4 makes the literal an lvalue, and a postfix operator applies to it like any
+    /// other — but the literal was built in `unary_expr` and returned straight to the
+    /// caller, so the `.a` was never consumed and the statement failed to parse at all.
+    fn postfix_suffixes(&mut self, start: usize, e: ExprId) -> ExprId {
+        let mut e = e;
         loop {
             if self.eat_punct(Punct::LBracket) {
                 let index = self.expression();

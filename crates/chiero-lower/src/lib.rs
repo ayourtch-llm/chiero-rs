@@ -2203,6 +2203,18 @@ impl Lowerer<'_> {
             // and it is a different AST node — missing it made every `(int)(a / 2u)` an
             // `Undef` and every fixture containing one unanswerable.
             chiero_ast::ExprKind::Cast { ty, operand } => {
+                // **`(T){...}` is a compound literal, not a cast** — the parser spells both
+                // with `Cast`, and the type comes from the parenthesis rather than from the
+                // braces. Reading it as a conversion evaluated the list as a *scalar*, gave
+                // the object an `i32` slot, and then `inttoptr`-ed the first element into
+                // the address a `CopyMem` was about to read.
+                if matches!(
+                    self.ast.expr(*operand).kind,
+                    chiero_ast::ExprKind::InitList(_)
+                ) && let Some(sty) = self.analysis.ty_of_syntactic(*ty)
+                {
+                    return self.compound_literal(sty, *operand, span);
+                }
                 let a = self.expr(*operand);
                 // **The operand's real type, not an assumed integer.** `from` was
                 // `CTy::Int(width_of(operand))` unconditionally, so `(int *)&g` declared a
@@ -2256,6 +2268,20 @@ impl Lowerer<'_> {
                 self.expr(*lhs);
                 self.seq_point(span);
                 self.expr(*rhs)
+            }
+            // A braced list reaching here without a type in front of it is not
+            // representable — `local_decl` consumes the ones attached to a declaration, and
+            // `(T){...}` is a `Cast` and handled there. Anything else is a gap, and 020 §5
+            // says a gap is a diagnostic rather than a licence.
+            chiero_ast::ExprKind::InitList(_) => {
+                let Some(sty) = self.type_of(e) else {
+                    self.diagnostics.push(LowerDiagnostic {
+                        span,
+                        message: "a braced initializer with no type".into(),
+                    });
+                    return Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e))));
+                };
+                self.compound_literal(sty, e, span)
             }
             _ => Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))),
         }
@@ -3105,6 +3131,17 @@ impl Lowerer<'_> {
     }
 
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
+        // **A compound literal is an lvalue** (C99 6.5.2.5p4), so `&(struct S){5, 6}` and
+        // `p->a = 9` through one are both legal. Its address is its object's.
+        if let chiero_ast::ExprKind::Cast { ty, operand } = self.ast.expr(e).kind
+            && matches!(
+                self.ast.expr(operand).kind,
+                chiero_ast::ExprKind::InitList(_)
+            )
+            && let Some(sty) = self.analysis.ty_of_syntactic(ty)
+        {
+            return Some(self.compound_literal_addr(sty, operand, span));
+        }
         match self.ast.expr(e).kind.clone() {
             chiero_ast::ExprKind::Ident(sym) => {
                 // **Locals first, then file-scope.** Looking only at locals is what made
@@ -4225,6 +4262,124 @@ impl Lowerer<'_> {
     /// array — the same single source as every other member access (015 contract 7). A
     /// designator moves the cursor; everything after it continues from there, which is
     /// what C11 6.7.9p17 says and what makes `{1, .c = 3, 4}` place `4` after `c`.
+    /// A compound literal: an unnamed object with the enclosing block's lifetime.
+    ///
+    /// C99 6.5.2.5 makes it an *object*, not a value — it has an address, it is an lvalue,
+    /// and it can be written through — so it gets a slot exactly as a named local would and
+    /// yields that slot's address when its type is one CIR has no value form for.
+    ///
+    /// **A fresh slot per literal.** `alloca` files it under the scope currently open,
+    /// which is the block lifetime C99 asks for, and two literals in one expression are two
+    /// objects rather than one reused scratch buffer.
+    /// The byte size an array literal needs when its type carries no bound.
+    ///
+    /// `None` for everything else, so the ordinary `alloca_for` path stays the default.
+    fn completed_array_bytes(&mut self, sty: TyId, init: ExprId) -> Option<u64> {
+        let Ty::Array { elem, len } = self.analysis.ty(sty).clone() else {
+            return None;
+        };
+        if matches!(len, chiero_sema::ArrayLen::Fixed(_)) {
+            return None;
+        }
+        let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
+            return None;
+        };
+        let esz = self.analysis.size_of(elem).unwrap_or(1).max(1);
+        Some((items.len() as u64).max(1) * esz)
+    }
+
+    fn compound_literal_addr(&mut self, sty: TyId, init: ExprId, span: Span) -> Operand {
+        let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
+        // **An unsized array literal takes its size from its braces** (C99 6.5.2.5p4, via
+        // 6.7.9p22): `(int[]){7, 8}` is a two-element array. sema types `int[]` as
+        // `ArrayLen::Flexible`, whose `size_of` is 0 — right for a flexible *member* and
+        // wrong here — so `alloca_for`'s `.max(1)` gave the object one byte and both
+        // element stores went off the end of it. `init_list` already falls back to the item
+        // count for a non-`Fixed` length; only the storage was short.
+        let slot = match self.completed_array_bytes(sty, init) {
+            Some(bytes) => self.alloca_n(CTy::Int(8), bytes, align, None, span),
+            None => self.alloca_for(sty, align, None, span),
+        };
+        let base = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: base,
+                rv: RValue::AddrOfLocal { alloca: slot },
+            },
+            span,
+        );
+        if self.is_aggregate(sty) {
+            // Zero first, then the written elements — C11 6.7.9p21, and the same reason
+            // `local_decl` does it: a member the braces do not mention is *defined* zero,
+            // and 021 contract 28 needs the `SetMem` to say so or reading it is a finding
+            // in well-defined C.
+            let size = self.analysis.size_of(sty).unwrap_or(0);
+            self.generated(|s| {
+                s.emit(
+                    InstKind::SetMem {
+                        dst: Operand::Value(base),
+                        byte: Operand::Const(Const::Int { bits: 8, val: 0 }),
+                        size: Operand::Const(Const::Int {
+                            bits: 64,
+                            val: size as i128,
+                        }),
+                    },
+                    span,
+                )
+            });
+            self.init_list(Operand::Value(base), sty, init, span);
+            return Operand::Value(base);
+        }
+        // A **scalar** compound literal — `(int){42}` is legal C and is not an aggregate.
+        // It is still an object: `&(int){42}` is valid, so the element is stored and the
+        // *address* returned like every other case. The value form loads it back.
+        let cty = self.cty(sty);
+        let val = match self.ast.expr(init).kind.clone() {
+            chiero_ast::ExprKind::InitList(items) if !items.is_empty() => self.expr(items[0].value),
+            _ => Operand::Const(Const::Int {
+                bits: match &cty {
+                    CTy::Int(w) => *w,
+                    _ => 32,
+                },
+                val: 0,
+            }),
+        };
+        self.emit(
+            InstKind::Store {
+                addr: Operand::Value(base),
+                val,
+                ty: cty,
+                align,
+                vol: Volatility::Normal,
+            },
+            span,
+        );
+        Operand::Value(base)
+    }
+
+    /// A compound literal used as a *value*: its object, then a load for a scalar.
+    fn compound_literal(&mut self, sty: TyId, init: ExprId, span: Span) -> Operand {
+        let addr = self.compound_literal_addr(sty, init, span);
+        if self.is_aggregate(sty) {
+            return addr;
+        }
+        let cty = self.cty(sty);
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Load {
+                    addr,
+                    ty: cty,
+                    align: 1,
+                    vol: Volatility::Normal,
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {
         let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
             return;
