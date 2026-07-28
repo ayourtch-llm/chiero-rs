@@ -2350,9 +2350,24 @@ impl Cx<'_> {
                 _ if is_ptr(self, aty) => aty,
                 _ => bty,
             };
-            // A null constant compared against a pointer becomes that pointer type, so
+            // A null constant **compared** against a pointer becomes that pointer type, so
             // `p == 0` does not look like a pointer/integer mismatch downstream.
-            let (a, b) = if is_ptr(self, aty) && !is_ptr(self, bty) && self.is_null_constant(be) {
+            //
+            // **Comparisons only**, which is what this comment always said and what the
+            // code did not do. C11 6.5.6 makes the other operand of `+` or `-` on a pointer
+            // an *integer*, and 6.3.2.3's null-constant rule is about assignment and
+            // comparison contexts — `p + 0` is neither. Converting there turned the `0`
+            // into a pointer, and lowering then tried to sign-extend a `Ptr` to 64 bits for
+            // the scaled offset: `inttoptr i32 0 to ptr`, then `zext i32 %v to i64`. The
+            // verifier rejects that and nothing runs it at lowering time, so the function
+            // was emitted and every `*(&a[i] + 0)` produced no state at all.
+            let comparison = matches!(
+                op,
+                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
+            );
+            let (a, b) = if !comparison {
+                (a, b)
+            } else if is_ptr(self, aty) && !is_ptr(self, bty) && self.is_null_constant(be) {
                 let b = self.convert(b, aty, Conversion::NullPointer, span);
                 let b = self.set_top(be, b);
                 (a, b)
