@@ -122,3 +122,9 @@
   than cloning the session's full interner. The discriminator now reports 1 hit and
   3 misses with correct header provenance; the four-header GCC-predefine run reports
   8 cross-TU hits and 808 misses.
+- Findings 16–19 reproduced. A 20,000-parenthesis `#if` aborted its subprocess with
+  `SIGABRT`; expression nesting is now capped at 256 with a diagnostic and iterative
+  recovery over the remainder. Function-like macro arity mismatches now diagnose and
+  leave the invocation visibly unexpanded. Unsuffixed constants above `INTMAX_MAX`
+  become `uintmax_t`, closing the final 57-expression oracle gap. Both `#pragma` and
+  `_Pragma` now create public, ordered `PragmaRecord`s for downstream target selection.

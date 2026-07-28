@@ -49,6 +49,12 @@ pub struct Diagnostic {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PragmaRecord {
+    pub span: Span,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Variadic {
     No,
     Std,
@@ -81,6 +87,7 @@ pub struct PreprocessedTu {
     pub diagnostics: Vec<Diagnostic>,
     pub config: ConfigId,
     pub deps: Vec<FileId>,
+    pub pragmas: Vec<PragmaRecord>,
     spellings: Vec<String>,
 }
 
@@ -277,6 +284,7 @@ struct Engine {
     macros: Vec<StoredMacro>,
     by_name: BTreeMap<String, usize>,
     diagnostics: Vec<Diagnostic>,
+    pragmas: Vec<PragmaRecord>,
     counter: u64,
     expansion_depth: usize,
 }
@@ -332,6 +340,7 @@ impl Engine {
             macros: Vec::new(),
             by_name: BTreeMap::new(),
             diagnostics,
+            pragmas: Vec::new(),
             counter: 0,
             expansion_depth: 0,
         };
@@ -383,6 +392,7 @@ impl Engine {
             diagnostics: std::mem::take(&mut self.diagnostics),
             config: self.config.id,
             deps: std::mem::take(&mut self.deps),
+            pragmas: std::mem::take(&mut self.pragmas),
             spellings,
         }
     }
@@ -423,6 +433,7 @@ impl Engine {
                     && line.get(1).is_some_and(|token| token.text == "pragma")
                     && line.get(2).is_some_and(|token| token.text == "once")
                 {
+                    self.record_pragma_tokens(&line[2..]);
                     self.once.insert(path.to_path_buf());
                 } else {
                     self.directive(&line, &mut conditionals, path, loader);
@@ -853,13 +864,25 @@ impl Engine {
                     message: format!("#{}: {message}", directive.unwrap_or_default()),
                 });
             }
-            Some("pragma") => {}
+            Some("pragma") => self.record_pragma_tokens(line.get(2..).unwrap_or_default()),
             Some(other) => self.diagnostics.push(Diagnostic {
                 span: line[1].token.span,
                 message: format!("unsupported preprocessing directive #{other}"),
             }),
             None => {}
         }
+    }
+
+    fn record_pragma_tokens(&mut self, tokens: &[Tok]) {
+        let Some(first) = tokens.first() else { return };
+        self.pragmas.push(PragmaRecord {
+            span: extent(tokens).unwrap_or(first.token.span),
+            text: tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        });
     }
 
     fn eval_if(&mut self, tokens: &[Tok], current: &Path, loader: &mut dyn FileLoader) -> bool {
@@ -902,6 +925,8 @@ impl Engine {
                 pos: 0,
                 diagnostics: &mut self.diagnostics,
                 pedantic: self.config.pedantic,
+                nesting: 0,
+                nesting_diagnosed: false,
             };
             let value = parser.expression(true);
             (value, parser.pos)
@@ -1032,6 +1057,10 @@ impl Engine {
                 if expanded.len() == 1
                     && matches!(expanded[0].token.kind, PpTokenKind::StringLit { .. })
                 {
+                    self.pragmas.push(PragmaRecord {
+                        span: token.token.span,
+                        text: destringize_pragma(&expanded[0].text),
+                    });
                     self.source_map.add_expansion(
                         token.token.span.ctx,
                         None,
@@ -1098,6 +1127,29 @@ impl Engine {
                         output.push(token);
                         continue;
                     };
+                    let actual = if args.len() == 1 && args[0].is_empty() && def.params.is_empty() {
+                        0
+                    } else {
+                        args.len()
+                    };
+                    let valid_arity = if def.std_variadic || def.variadic_name.is_some() {
+                        actual >= def.params.len()
+                    } else {
+                        actual == def.params.len()
+                    };
+                    if !valid_arity {
+                        self.diagnostics.push(Diagnostic {
+                            span: token.token.span,
+                            message: format!(
+                                "macro `{}` expects {} argument(s), but {} provided",
+                                def.name,
+                                def.params.len(),
+                                actual
+                            ),
+                        });
+                        output.push(token);
+                        continue;
+                    }
                     let close_token = input[close].clone();
                     input.drain(..=close);
                     let replacement = self.expand_function(&token, &close_token, &def, args);
@@ -1565,11 +1617,37 @@ fn synthetic_number(text: &str, at: Span) -> Tok {
     }
 }
 
+fn destringize_pragma(text: &str) -> String {
+    let inside = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .unwrap_or(text);
+    let mut output = String::new();
+    let mut chars = inside.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some(next @ ('\\' | '"')) => output.push(next),
+                Some(next) => {
+                    output.push('\\');
+                    output.push(next);
+                }
+                None => output.push('\\'),
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 struct ExprParser<'a> {
     tokens: &'a [Tok],
     pos: usize,
     diagnostics: &'a mut Vec<Diagnostic>,
     pedantic: bool,
+    nesting: usize,
+    nesting_diagnosed: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -1837,8 +1915,32 @@ impl ExprParser<'_> {
 
     fn primary(&mut self, live: bool) -> IfValue {
         if self.take("(") {
+            if self.nesting >= 256 {
+                if !self.nesting_diagnosed {
+                    self.diagnostics.push(Diagnostic {
+                        span: self
+                            .tokens
+                            .get(self.pos.saturating_sub(1))
+                            .map_or(Span::DUMMY, |token| token.token.span),
+                        message: "maximum #if nesting depth 256 exceeded".into(),
+                    });
+                    self.nesting_diagnosed = true;
+                }
+                let mut depth = 1_usize;
+                while self.pos < self.tokens.len() && depth != 0 {
+                    match self.tokens[self.pos].text.as_str() {
+                        "(" => depth += 1,
+                        ")" => depth -= 1,
+                        _ => {}
+                    }
+                    self.pos += 1;
+                }
+                return IfValue::ZERO;
+            }
+            self.nesting += 1;
             let value = self.expression(live);
             self.take(")");
+            self.nesting -= 1;
             return value;
         }
         let Some(token) = self.tokens.get(self.pos) else {
@@ -1905,7 +2007,7 @@ fn parse_if_literal(token: &Tok) -> IfValue {
     if matches!(token.token.kind, PpTokenKind::CharLit { .. }) {
         return IfValue::signed(parse_char_constant(&token.text));
     }
-    let unsigned = token.text.bytes().any(|byte| matches!(byte, b'u' | b'U'));
+    let explicit_unsigned = token.text.bytes().any(|byte| matches!(byte, b'u' | b'U'));
     let digits = token.text.trim_end_matches(['u', 'U', 'l', 'L']);
     let (radix, digits) = if let Some(hex) = digits
         .strip_prefix("0x")
@@ -1922,9 +2024,10 @@ fn parse_if_literal(token: &Tok) -> IfValue {
     } else {
         (10, digits)
     };
+    let bits = u64::from_str_radix(digits, radix).unwrap_or(0);
     IfValue {
-        bits: u64::from_str_radix(digits, radix).unwrap_or(0),
-        unsigned,
+        bits,
+        unsigned: explicit_unsigned || bits > i64::MAX as u64,
     }
 }
 
