@@ -3028,10 +3028,19 @@ impl<'m> Engine<'m> {
                 }
                 self.take_edge(s, mine)
             }
-            _ => {
-                s.give_up("unsupported terminator".into(), Span::DUMMY);
-                None
-            }
+            // 020's `Switch`. Nothing produced one until 015's lowering existed, which is
+            // why this arm was missing and every `switch` in a C program reached the
+            // catch-all below as "unsupported terminator".
+            Terminator::Switch {
+                scrut,
+                cases,
+                default,
+                ..
+            } => self.switch(a, s, scrut, cases, *default),
+            // **No catch-all.** Every `Terminator` 020 defines is handled above, and the
+            // compiler now says so — an `_` arm here would silently absorb a variant
+            // added later, which is exactly how `Switch` went unimplemented until 015
+            // produced one.
         }
     }
 
@@ -3077,6 +3086,113 @@ impl<'m> Engine<'m> {
         let fid = s.func();
         s.trace.push((fid, to));
         None
+    }
+
+    /// A `Switch`, which is a multi-way `Br`.
+    ///
+    /// A **ground** scrutinee makes no solver call at all and takes exactly one edge —
+    /// the same fast path 023 §3 step 4 requires of a constant branch, and the one that
+    /// carries essentially all real traffic, since a `switch` on a symbolic value is rare
+    /// next to a `switch` on a parsed opcode.
+    ///
+    /// A symbolic one forks per *feasible* case, with `scrut == value` on each and the
+    /// conjunction of the negations on the default. Forking unconditionally would create
+    /// a state per case label with an unsatisfiable path condition — states that cost a
+    /// fork and describe nothing the program can do, which is the same mistake 021 §5.2's
+    /// arenas had to avoid.
+    fn switch(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        scrut: &Operand,
+        cases: &[(i128, BlockId)],
+        default: BlockId,
+    ) -> Option<State> {
+        let Some(v) = self.operand(a, s, scrut) else {
+            s.give_up("a switch on an unreadable operand".into(), Span::DUMMY);
+            return None;
+        };
+        let Value::Scalar(t) = v else {
+            // `Undef` selects nothing in particular, so every edge is possible and none
+            // is constrained — the same rule as a branch on `Undef` (020 contract 43).
+            s.degrade(
+                Fidelity::Unknown,
+                AssumptionKind::NoInformation,
+                Span::DUMMY,
+                "a switch on undef: every edge explored, none constrained",
+            );
+            let mut targets: Vec<BlockId> = cases.iter().map(|(_, b)| *b).collect();
+            targets.push(default);
+            let mine = targets.pop().expect("at least the default");
+            for to in targets {
+                let mut sib = s.clone();
+                sib.id = self.new_id();
+                self.take_edge(&mut sib, to);
+                self.pending.push(sib);
+            }
+            return self.take_edge(s, mine);
+        };
+
+        if let Ok(g) = a.eval_ground(t) {
+            // The case values are `i128` and the scrutinee's bits are unsigned, so the
+            // comparison has to happen at the scrutinee's width with C's sign — a
+            // `case -1:` on an `int` scrutinee is `0xffffffff` in the bits.
+            let w = a.width(t).min(127);
+            let bits = g.bits();
+            let val = if w > 0 && (bits >> (w - 1)) & 1 == 1 {
+                (bits as i128) - (1i128 << w)
+            } else {
+                bits as i128
+            };
+            let to = cases
+                .iter()
+                .find(|(c, _)| *c == val)
+                .map(|(_, b)| *b)
+                .unwrap_or(default);
+            return self.take_edge(s, to);
+        }
+
+        // Symbolic: one edge per feasible case, plus the default if no case must match.
+        let w = a.width(t);
+        let mut live: Vec<(BlockId, Term)> = Vec::new();
+        let mut negs: Vec<Term> = Vec::new();
+        for (val, to) in cases {
+            let k = a.bv(w, *val as u128);
+            let eq = a.eq(t, k);
+            negs.push(negate(a, eq));
+            if !matches!(self.feasible(a, s, eq), Feas::No) {
+                live.push((*to, eq));
+            }
+        }
+        let mut none_matches = None;
+        for n in negs {
+            none_matches = Some(match none_matches {
+                None => n,
+                Some(acc) => a.and(acc, n),
+            });
+        }
+        if let Some(nm) = none_matches {
+            if !matches!(self.feasible(a, s, nm), Feas::No) {
+                live.push((default, nm));
+            }
+        } else {
+            // A `switch` with no cases is just a jump to the default.
+            live.push((default, a.bv(1, 1)));
+        }
+        let Some((mine, mine_c)) = live.pop() else {
+            s.give_up("every switch edge is infeasible".into(), Span::DUMMY);
+            return None;
+        };
+        for (to, c) in live {
+            self.forks += 1;
+            let mut sib = s.clone();
+            sib.id = self.new_id();
+            sib.constrain_checked(c);
+            self.take_edge(&mut sib, to);
+            self.pending.push(sib);
+        }
+        s.constrain_checked(mine_c);
+        self.take_edge(s, mine)
     }
 
     fn branch(

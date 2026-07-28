@@ -7742,31 +7742,16 @@ fn every_way_of_erroring_degrades_the_state() {
         )],
         ..Default::default()
     };
-    // **The targets exist**, so `verify` passes and the only thing that can go wrong is
-    // the terminator being unimplemented. An earlier version branched to a missing block,
-    // which `verify` rejects — so the run errored on the *verification* path and the
-    // engine's own site was never reached.
-    let unsupported_term = Module {
-        funcs: vec![defined(
-            0,
-            "main",
-            vec![
-                block(
-                    0,
-                    vec![],
-                    Terminator::Switch {
-                        scrut: i32c(1),
-                        ty: CTy::Int(32),
-                        cases: vec![(1, BlockId(1))],
-                        default: BlockId(1),
-                    },
-                ),
-                block(1, vec![], Terminator::Return(Some(i32c(0)))),
-            ],
-            CTy::Int(32),
-        )],
-        ..Default::default()
-    };
+    // **This case is gone, and its absence is the point.** It used `Switch` as the
+    // example of a terminator the engine did not implement — which was true until 015's
+    // lowering produced one, at which point `Switch` was implemented and the assertion
+    // here started failing. There is now no unimplemented terminator to point at: the
+    // dispatch has no catch-all arm, so the compiler rejects a `Terminator` variant
+    // nobody handles rather than the engine giving up at run time.
+    //
+    // Removing the case rather than finding another unhandled terminator is the honest
+    // move. Keeping a "some terminator errors" test alive by hunting for a victim would
+    // assert a property the design no longer has.
     let bad_branch = Module {
         funcs: vec![defined(
             0,
@@ -7794,7 +7779,6 @@ fn every_way_of_erroring_degrades_the_state() {
     };
     for (what, m) in [
         ("an unknown callee", unknown_callee),
-        ("an unsupported terminator", unsupported_term),
         ("a non-scalar branch condition", bad_branch),
     ] {
         let mut m = m;

@@ -70,8 +70,8 @@ pub fn lower_tu(ast: &Ast, analysis: &Analysis, names: &dyn SymbolText) -> Lower
 use chiero_ast::{DeclKind, ExprId, StmtId, StmtKind};
 use chiero_cir::{
     AllocaDecl, AllocaId, BinOp as CBinOp, Block, BlockId, Body, CTy, Callee, Const, FnAttrs,
-    FuncId, Function, Inst, InstKind, Lifetime, MarkerKind, Operand, Param, RValue, ScopeId,
-    Terminator, UnOp as CUnOp, ValueId, Volatility,
+    FuncId, Function, Inst, InstKind, Lifetime, MarkerKind, Operand, Param, RValue, ScopeEvent,
+    ScopeId, ScopeKind, Terminator, UnOp as CUnOp, ValueId, Volatility,
 };
 use chiero_sema::{Conversion, FloatKind, Ty, TyId, TypedId, TypedNode};
 use indexmap::IndexMap;
@@ -98,6 +98,24 @@ struct FnState {
     locals: IndexMap<chiero_span::Symbol, (AllocaId, CTy)>,
     next_alloca: u32,
     next_block: u32,
+    /// The scopes currently open, innermost last. Exits are emitted from the top down, so
+    /// a `return` or a `goto` out can unwind exactly the scopes it leaves.
+    open_scopes: Vec<ScopeId>,
+    next_scope: u32,
+    /// `break` and `continue` targets for the enclosing loop or switch, innermost last.
+    /// Each records the scope depth at the point the construct began, so an abrupt exit
+    /// knows how many scopes it is leaving.
+    breaks: Vec<(BlockId, usize)>,
+    continues: Vec<(BlockId, usize)>,
+    /// Label name → its block and the **scopes open at the label**.
+    ///
+    /// The open scopes, not a depth: resolving a forward `goto` needs the *ids* to emit
+    /// exit markers for, and by the time the function is walked the scopes have been
+    /// popped. A depth alone would tell you how many markers to emit and not which.
+    labels: IndexMap<chiero_span::Symbol, (BlockId, Vec<ScopeId>)>,
+    /// `goto`s emitted before their label was seen: the block to terminate, the target
+    /// name, the scopes open at the jump, and the span.
+    pending_gotos: Vec<(BlockId, chiero_span::Symbol, Vec<ScopeId>, Span)>,
     span: Span,
 }
 
@@ -167,8 +185,70 @@ impl Lowerer<'_> {
         b.term = t;
     }
 
+    /// Open a scope and emit its `Enter` **here**, on the edge that is entering it.
+    ///
+    /// 015 §4 says "every entering edge", not "at the lexical top", because C gives
+    /// automatic objects storage on entry into the block *however entered* (C11 6.2.4p6) —
+    /// and a `switch` jumps straight past the top to a case label.
+    fn enter_scope(&mut self, span: Span) -> ScopeId {
+        let fs = self.fs();
+        let id = ScopeId(fs.next_scope);
+        fs.next_scope += 1;
+        fs.open_scopes.push(id);
+        self.emit(
+            InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                scope: id,
+                kind: ScopeKind::Enter,
+            })),
+            span,
+        );
+        id
+    }
+
+    /// Close the innermost scope, emitting its `Exit`.
+    fn exit_scope(&mut self, span: Span) {
+        let Some(id) = self.fs().open_scopes.pop() else {
+            return;
+        };
+        self.emit(
+            InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                scope: id,
+                kind: ScopeKind::Exit,
+            })),
+            span,
+        );
+    }
+
+    /// Emit `Exit` markers for every scope down to `depth`, **innermost first**, without
+    /// closing them — an abrupt exit leaves scopes on one path while the fallthrough path
+    /// still has them open.
+    ///
+    /// The order is the contract (015 contract 10): 021 retires objects as the markers
+    /// arrive, and retiring an outer scope first frees storage the inner scope's objects
+    /// are still inside.
+    fn unwind_to(&mut self, depth: usize, span: Span) {
+        let open: Vec<ScopeId> = self.fs().open_scopes[depth..].to_vec();
+        for id in open.into_iter().rev() {
+            self.emit(
+                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope: id,
+                    kind: ScopeKind::Exit,
+                })),
+                span,
+            );
+        }
+    }
+
+    fn scope_depth(&mut self) -> usize {
+        self.fs().open_scopes.len()
+    }
+
     fn seq_point(&mut self, span: Span) {
         self.emit(InstKind::Marker(MarkerKind::SeqPoint), span);
+    }
+
+    fn text(&self, sym: chiero_span::Symbol) -> Option<&str> {
+        self.names.text(sym)
     }
 
     /// CIR names are `Arc<str>` (020), not the per-TU `Symbol` the AST uses — a CIR
@@ -295,6 +375,12 @@ impl Lowerer<'_> {
             locals: IndexMap::new(),
             next_alloca: 0,
             next_block: 0,
+            open_scopes: Vec::new(),
+            next_scope: 0,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+            labels: IndexMap::new(),
+            pending_gotos: Vec::new(),
             span,
         });
         let entry = self.new_block();
@@ -357,6 +443,7 @@ impl Lowerer<'_> {
 
         self.stmt(body);
 
+        self.resolve_gotos();
         self.finish_blocks();
         let fs = self.f.take().expect("inside a function");
         self.module.funcs[slot] = Function {
@@ -391,8 +478,13 @@ impl Lowerer<'_> {
                     || reachable.contains(&b.id)
                     // A block nothing reaches but which holds real instructions is left
                     // alone, so the verifier reports it rather than lowering deleting
-                    // code quietly.
-                    || !b.insts.is_empty()
+                    // code quietly. **Markers do not count as real instructions**: a
+                    // compound statement emits its `Scope(Exit)` after its last statement,
+                    // and when that statement was a `return` the marker lands in the dead
+                    // block after it. The exit already happened — `return` unwinds every
+                    // open scope first — so the copy in the dead block is bookkeeping, not
+                    // code, and keeping it made the module fail to verify.
+                    || b.insts.iter().any(|i| !matches!(i.kind, InstKind::Marker(_)))
             });
             if self.fs().blocks.len() == before {
                 break;
@@ -492,9 +584,11 @@ impl Lowerer<'_> {
         let span = self.ast.stmt(s).span;
         match kind {
             StmtKind::Compound(ss) => {
+                self.enter_scope(span);
                 for s in ss {
                     self.stmt(s);
                 }
+                self.exit_scope(span);
             }
             StmtKind::Expr(e) => {
                 self.expr(e);
@@ -513,6 +607,8 @@ impl Lowerer<'_> {
                     (None, CTy::Void) => None,
                     (None, other) => Some(self.zero_of(other)),
                 };
+                // 015 §3: every open scope is exited **before** the `Return`.
+                self.unwind_to(0, span);
                 self.set_term(Terminator::Return(op));
                 // Anything after a `return` is unreachable but must still have somewhere
                 // to be emitted, or the next statement writes into a terminated block.
@@ -555,7 +651,12 @@ impl Lowerer<'_> {
                     f: exit,
                 });
                 self.switch_to(body_b);
+                let depth = self.scope_depth();
+                self.fs().breaks.push((exit, depth));
+                self.fs().continues.push((header, depth));
                 self.stmt(body);
+                self.fs().breaks.pop();
+                self.fs().continues.pop();
                 self.goto_if_open(header);
                 self.switch_to(exit);
             }
@@ -565,7 +666,12 @@ impl Lowerer<'_> {
                 let exit = self.new_block();
                 self.goto_if_open(body_b);
                 self.switch_to(body_b);
+                let depth = self.scope_depth();
+                self.fs().breaks.push((exit, depth));
+                self.fs().continues.push((latch, depth));
                 self.stmt(body);
+                self.fs().breaks.pop();
+                self.fs().continues.pop();
                 self.goto_if_open(latch);
                 self.switch_to(latch);
                 let c = self.expr(cond);
@@ -618,7 +724,15 @@ impl Lowerer<'_> {
                     None => self.set_term(Terminator::Goto(body_b)),
                 }
                 self.switch_to(body_b);
+                let depth = self.scope_depth();
+                self.fs().breaks.push((exit, depth));
+                // `continue` in a `for` goes to the **latch**, not the header — the step
+                // expression still runs. Sending it to the header instead skips the step
+                // and turns `for (i=0;i<n;i++) { if (c) continue; }` into an infinite loop.
+                self.fs().continues.push((latch, depth));
                 self.stmt(body);
+                self.fs().breaks.pop();
+                self.fs().continues.pop();
                 self.goto_if_open(latch);
                 self.switch_to(latch);
                 if let Some(st) = step {
@@ -627,6 +741,73 @@ impl Lowerer<'_> {
                 }
                 self.set_term(Terminator::Goto(header));
                 self.switch_to(exit);
+            }
+            StmtKind::Break => {
+                let Some(&(target, depth)) = self.fs().breaks.last() else {
+                    self.diagnostics.push(LowerDiagnostic {
+                        span,
+                        message: "`break` outside a loop or switch".into(),
+                    });
+                    return;
+                };
+                self.unwind_to(depth, span);
+                self.set_term(Terminator::Goto(target));
+                let dead = self.new_block();
+                self.switch_to(dead);
+            }
+            StmtKind::Continue => {
+                let Some(&(target, depth)) = self.fs().continues.last() else {
+                    self.diagnostics.push(LowerDiagnostic {
+                        span,
+                        message: "`continue` outside a loop".into(),
+                    });
+                    return;
+                };
+                self.unwind_to(depth, span);
+                self.set_term(Terminator::Goto(target));
+                let dead = self.new_block();
+                self.switch_to(dead);
+            }
+            StmtKind::Label { name, body } => {
+                let target = self.new_block();
+                let open = self.fs().open_scopes.clone();
+                self.fs().labels.insert(name, (target, open));
+                self.set_term(Terminator::Goto(target));
+                self.switch_to(target);
+                self.emit(
+                    InstKind::Marker(MarkerKind::Label(
+                        self.sym(name).unwrap_or_else(|| std::sync::Arc::from("?")),
+                    )),
+                    span,
+                );
+                self.stmt(body);
+            }
+            StmtKind::Goto(name) => {
+                let open = self.fs().open_scopes.clone();
+                let here = self.fs().cur;
+                match self.fs().labels.get(&name).cloned() {
+                    // A backward `goto`: the label's scopes are known, so unwind now.
+                    Some((target, at_label)) => {
+                        self.unwind_leaving(&open, &at_label, span);
+                        self.set_term(Terminator::Goto(target));
+                    }
+                    // A forward `goto`: the label has not been seen. Recorded with the
+                    // scopes open *here*, and resolved once the whole function is walked —
+                    // guessing would emit the wrong markers for every forward jump, which
+                    // is most of them.
+                    None => self.fs().pending_gotos.push((here, name, open, span)),
+                }
+                let dead = self.new_block();
+                self.switch_to(dead);
+            }
+            StmtKind::Switch { cond, body } => self.switch_stmt(cond, body, span),
+            StmtKind::Case { .. } | StmtKind::Default { .. } => {
+                // Reached only outside a `switch`, which is a C error the parser accepts;
+                // 015 §7 refuses rather than inventing a target.
+                self.diagnostics.push(LowerDiagnostic {
+                    span,
+                    message: "`case` or `default` outside a switch".into(),
+                });
             }
             StmtKind::Empty | StmtKind::Error => {}
             other => {
@@ -1503,4 +1684,221 @@ fn cir_cmpop(op: chiero_ast::BinOp, signed: bool) -> Option<chiero_cir::CmpOp> {
         }
         _ => return None,
     })
+}
+
+impl Lowerer<'_> {
+    /// 015 §3 and contract 18: a `Switch` terminator, cases sorted, ranges expanded.
+    ///
+    /// **The body's scope is entered on every case edge, not at its lexical top**
+    /// (015 §4, contract 9b). The `Switch` jumps straight to a case label *inside* the
+    /// compound statement, so an enter emitted at the top would never run: 021 §4 would
+    /// never create the scope's objects, the eventual exit would retire objects that never
+    /// existed, and every access on the case path would be a wild access. Any `switch`
+    /// with a local has this shape.
+    fn switch_stmt(&mut self, cond: ExprId, body: StmtId, span: Span) {
+        let scrut = self.expr(cond);
+        let ty = CTy::Int(self.width_of(cond));
+        let exit = self.new_block();
+        let head = self.fs().cur;
+
+        // Walk the body's statements once, giving each `case`/`default` its own block.
+        // The body is a compound statement whose scope every case edge enters.
+        let stmts = match &self.ast.stmt(body).kind {
+            StmtKind::Compound(ss) => ss.clone(),
+            _ => vec![body],
+        };
+
+        // **One scope for the whole body**, entered on every case edge.
+        //
+        // The cases are alternatives, not nested blocks: the body is a single compound
+        // statement and 015 §4's rule is that *every entering edge* carries the marker.
+        // Allocating a scope per case would leave one open for every case the path did
+        // not take. The scope is pushed here so a `break` or `return` inside any case
+        // unwinds it, and the `Enter` marker is emitted separately in each case block.
+        let body_scope = ScopeId(self.fs().next_scope);
+        self.fs().next_scope += 1;
+        self.fs().open_scopes.push(body_scope);
+        let depth = self.scope_depth() - 1;
+        self.fs().breaks.push((exit, depth));
+
+        let mut cases: Vec<(i128, BlockId)> = Vec::new();
+        let mut default: Option<BlockId> = None;
+        // Statements before the first label are unreachable but may still declare —
+        // `switch (x) { int y; case 1: … }` is exactly that, and the declaration is why
+        // the scope exists at all.
+        let mut cur: Option<BlockId> = None;
+
+        for &st in &stmts {
+            let kind = self.ast.stmt(st).kind.clone();
+            let sspan = self.ast.stmt(st).span;
+            match kind {
+                StmtKind::Case { lo, hi, body } => {
+                    let b = self.new_block();
+                    // Fallthrough: the previous case's block flows into this one.
+                    if let Some(prev) = cur {
+                        self.switch_to(prev);
+                        self.goto_if_open(b);
+                    }
+                    self.switch_to(b);
+                    // The enter goes **here**, in the block the switch jumps to — not at
+                    // the lexical top the `Switch` terminator leaps over.
+                    self.emit(
+                        InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                            scope: body_scope,
+                            kind: ScopeKind::Enter,
+                        })),
+                        sspan,
+                    );
+                    let lo_v = self.const_of(lo).unwrap_or(0);
+                    let hi_v = hi.and_then(|h| self.const_of(h)).unwrap_or(lo_v);
+                    // A range becomes one case per value (contract 18). Kept as a single
+                    // entry, the engine would take the default for every value inside it.
+                    for v in lo_v..=hi_v.max(lo_v) {
+                        cases.push((v, b));
+                    }
+                    self.stmt(body);
+                    cur = Some(self.fs().cur);
+                }
+                StmtKind::Default { body } => {
+                    let b = self.new_block();
+                    if let Some(prev) = cur {
+                        self.switch_to(prev);
+                        self.goto_if_open(b);
+                    }
+                    self.switch_to(b);
+                    self.emit(
+                        InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                            scope: body_scope,
+                            kind: ScopeKind::Enter,
+                        })),
+                        sspan,
+                    );
+                    default = Some(b);
+                    self.stmt(body);
+                    cur = Some(self.fs().cur);
+                }
+                _ => {
+                    match cur {
+                        // Inside a case: an ordinary statement. **`cur` is refreshed
+                        // afterwards**, because the statement may have terminated its
+                        // block and moved on — a `break` does exactly that. Leaving `cur`
+                        // stale made the *next* case label re-terminate the block the
+                        // `break` had already pointed at the switch's exit, silently
+                        // turning `case 2: t += 2; break;` into a fallthrough to
+                        // `default`.
+                        Some(_) => {
+                            self.stmt(st);
+                            cur = Some(self.fs().cur);
+                        }
+                        // Before any label: reachable only as a declaration, and lowering
+                        // it here would run it on no path. The alloca is what matters and
+                        // `local_decl` records that without emitting anything reachable.
+                        None => {
+                            if let StmtKind::Decl(ds) = kind {
+                                for d in ds {
+                                    self.declare_local_slot(d);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The last case falls out of the body: exit the scope it entered.
+        if let Some(last) = cur {
+            self.switch_to(last);
+            self.emit(
+                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope: body_scope,
+                    kind: ScopeKind::Exit,
+                })),
+                span,
+            );
+            self.goto_if_open(exit);
+        }
+        self.fs().breaks.pop();
+        self.fs().open_scopes.pop();
+
+        cases.sort_by_key(|(v, _)| *v);
+        cases.dedup_by_key(|(v, _)| *v);
+        self.switch_to(head);
+        self.set_term(Terminator::Switch {
+            scrut,
+            ty,
+            cases,
+            default: default.unwrap_or(exit),
+        });
+        self.switch_to(exit);
+    }
+
+    /// Reserve a local's slot without emitting anything.
+    ///
+    /// A declaration before the first `case` label is on no path, but its object still
+    /// exists for the whole scope — `switch (x) { int y; case 1: y = 1; }` is legal C and
+    /// `y` must have somewhere to live.
+    fn declare_local_slot(&mut self, d: chiero_ast::DeclId) {
+        let DeclKind::Var { name, .. } = self.ast.decl(d).kind.clone() else {
+            return;
+        };
+        let Some(sty) = self.analysis.ty_of_decl(d) else {
+            return;
+        };
+        let span = self.ast.decl(d).span;
+        let cty = self.cty(sty);
+        let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
+        let text = name.and_then(|n| self.sym(n));
+        let slot = self.alloca(cty.clone(), align, text, span);
+        if let Some(n) = name {
+            self.fs().locals.insert(n, (slot, cty));
+        }
+    }
+
+    fn const_of(&mut self, e: ExprId) -> Option<i128> {
+        let mut diags = Vec::new();
+        match chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags) {
+            Some(chiero_sema::ConstVal::Int(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Emit an `Exit` for every scope open at the jump but **not** open at the target,
+    /// innermost first.
+    ///
+    /// Comparing the two lists rather than two depths is what makes a `goto` between
+    /// sibling scopes correct: both sides can be at depth 2 and be in *different* scopes,
+    /// and a depth comparison would emit nothing while the jump really does leave one
+    /// scope and enter another.
+    fn unwind_leaving(&mut self, from: &[ScopeId], to: &[ScopeId], span: Span) {
+        for id in from.iter().rev() {
+            if to.contains(id) {
+                continue;
+            }
+            self.emit(
+                InstKind::Marker(MarkerKind::Scope(ScopeEvent {
+                    scope: *id,
+                    kind: ScopeKind::Exit,
+                })),
+                span,
+            );
+        }
+    }
+
+    /// Resolve forward `goto`s once every label in the function is known.
+    fn resolve_gotos(&mut self) {
+        let pending = std::mem::take(&mut self.fs().pending_gotos);
+        for (block, name, open_at_jump, span) in pending {
+            let Some((target, at_label)) = self.fs().labels.get(&name).cloned() else {
+                let text = self.text(name).unwrap_or("?").to_owned();
+                self.diagnostics.push(LowerDiagnostic {
+                    span,
+                    message: format!("`goto` to an undefined label `{text}`"),
+                });
+                continue;
+            };
+            self.switch_to(block);
+            self.unwind_leaving(&open_at_jump, &at_label, span);
+            self.set_term(Terminator::Goto(target));
+        }
+    }
 }

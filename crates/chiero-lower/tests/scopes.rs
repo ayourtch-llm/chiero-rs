@@ -240,7 +240,10 @@ fn goto_out_of_two_scopes_exits_innermost_first() {
 /// markers, **before** the `Return`.
 #[test]
 fn return_from_three_scopes_exits_all_three_first() {
-    let m = probe("{ int a = 1; { int b = 2; { int c = 3; return c; } } }");
+    // Three scopes: the function body's own compound, and two nested inside it. The
+    // function body is a compound statement, so it has a `ScopeId` like any other —
+    // wrapping the fixture in another brace pair would make it four.
+    let m = probe("int a = 1; { int b = 2; { int c = 3; return c; } }");
     let f = m.funcs.iter().find(|f| &*f.name == "probe").expect("probe");
 
     let returning = f
