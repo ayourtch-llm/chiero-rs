@@ -288,6 +288,15 @@ struct Gen {
     /// read and written through all of `access`'s spellings — and forking the grammar to
     /// get them would mean maintaining two of everything and grading the copy.
     memory_ub: bool,
+    /// **Allow a zero divisor.** Off for every channel that compares *values*, for the same
+    /// reason `memory_ub` is: `x / 0` is undefined, so `judge` discards the program and the
+    /// value differential learns nothing from it.
+    ///
+    /// Separate from `memory_ub` rather than folded into it, because the two serve different
+    /// oracles. The memory corpus wants faults ASan can see and pays for them with a program
+    /// that dies at the first one; the arithmetic corpus wants every site gcc's UBSan can
+    /// see and needs the program to *keep running* to reach the later ones.
+    div_zero: bool,
     /// Pointers holding the address of a local that has left its scope, as (name, type).
     ///
     /// Populated only under [`Gen::memory_ub`]. Kept separate from `vars` because the
@@ -318,6 +327,7 @@ impl Gen {
             global_arrays: Vec::new(),
             global_ptrs: Vec::new(),
             memory_ub: false,
+            div_zero: false,
             heaps: Vec::new(),
             escaped: Vec::new(),
         }
@@ -631,7 +641,14 @@ impl Gen {
                     *self.rng.pick(&["/", "%"])
                 };
                 let a = self.expr(want);
-                let d = 1 + self.rng.below(15);
+                // **One in five, and integers only.** A float division by zero is not
+                // undefined — C99 Annex F gives it an infinity — so emitting one would add
+                // a site gcc never reports and chiero correctly stays quiet about.
+                let d = if self.div_zero && !want.is_float() && self.rng.chance(5) {
+                    0
+                } else {
+                    1 + self.rng.below(15)
+                };
                 format!("{a} {op} {d}")
             }
             7 if !want.is_float() => {
@@ -1154,6 +1171,21 @@ impl Gen {
 
 fn program(seed: u64) -> (String, String) {
     program_with(seed, false)
+}
+
+/// The same grammar with a zero divisor allowed, for the arithmetic per-site oracle.
+///
+/// `memory_ub` stays **off**: a memory fault ends the process at the first one, and this
+/// corpus is graded on every arithmetic site in the run.
+fn program_arith_ub(seed: u64) -> (String, String) {
+    let mut g = Gen::new(seed);
+    g.div_zero = true;
+    let prelude = g.prelude();
+    let n = 3 + g.rng.below(7);
+    for _ in 0..n {
+        g.stmt();
+    }
+    (prelude, g.finish())
 }
 
 /// The same grammar with [`Gen::oob`] on, for the memory-UB oracle.
@@ -1903,7 +1935,7 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
     let mut by_kind: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
     let mut shown = 0u32;
     for seed in 0..200u64 {
-        let (prelude, body) = program(seed);
+        let (prelude, body) = program_arith_ub(seed);
         let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
         let csrc = format!(
             "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
@@ -1985,7 +2017,22 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
                 }
             }
         }
+        // **A trapping fault ends gcc's run and not chiero's.** Integer division by zero
+        // raises SIGFPE on x86-64, so gcc stops there while chiero records the event and
+        // carries on (020 §4.1: an arithmetic UB event does not end the path). Every site
+        // after that point is one gcc never executed, so counting them as disagreements
+        // would compare chiero against a run that did not happen.
+        //
+        // Only the *extras* are suppressed. `miss` still applies: whatever gcc did manage
+        // to report before dying, chiero must have found.
+        let truncated = {
+            use std::os::unix::process::ExitStatusExt as _;
+            run.status.signal().is_some()
+        };
         for (l, k) in &ours {
+            if truncated {
+                break;
+            }
             if !gcc_sites.iter().any(|(gl, gk)| gl == l && gk == k) {
                 extra += 1;
                 println!("EXTRA seed {seed}: chiero {k} at line {l}; gcc {gcc_sites:?}");
@@ -2052,103 +2099,6 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
              arithmetic whose result is used only as a condition, taking UBSan's check with \
              it, so this is not by itself a false positive."
         );
-    }
-}
-
-#[test]
-#[ignore]
-fn zz_census() {
-    use std::collections::BTreeMap;
-    let dir =
-        std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or("/tmp".into())).join("census");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut tab: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    let (mut n, mut skipped) = (0u32, 0u32);
-    let mut false_examples = 0u32;
-    for seed in 0..300u64 {
-        let (prelude, body) = program(seed);
-        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
-        let csrc = format!(
-            "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
-        );
-        let c = dir.join(format!("s{seed}.c"));
-        let x = dir.join(format!("s{seed}"));
-        std::fs::write(&c, &csrc).unwrap();
-        let comp = std::process::Command::new("gcc")
-            .args([
-                "-O0",
-                "-fsanitize=undefined,address,float-cast-overflow",
-                "-o",
-            ])
-            .arg(&x)
-            .arg(&c)
-            .output()
-            .unwrap();
-        if !comp.status.success() {
-            skipped += 1;
-            continue;
-        }
-        let out = std::process::Command::new(&x).output().unwrap();
-        let err = String::from_utf8_lossy(&out.stderr).to_string();
-        let m = harness::lower_maybe(&src);
-        let Some(m) = m else {
-            skipped += 1;
-            continue;
-        };
-        let mut arena = chiero_solver::TermArena::new();
-        let r = chiero_exec::Engine::new(&m)
-            .with_entry("probe")
-            .run(&mut arena);
-        let kinds: Vec<String> = r
-            .states()
-            .iter()
-            .flat_map(|s| s.ub_events())
-            .map(|u| format!("{:?}", u.kind))
-            .collect();
-        n += 1;
-        // **The reverse direction, which the table below cannot see.** It counts only rows
-        // where gcc said something, so a chiero report on a program gcc runs clean is
-        // invisible to it — and by wave 171's rule that is the expensive kind of wrong.
-        if err.is_empty() && !kinds.is_empty() {
-            tab.entry("ZZ FALSE POSITIVE (gcc silent)".into())
-                .or_default()
-                .0 += 1;
-            if false_examples < 3 {
-                false_examples += 1;
-                println!("\n--- chiero reports {kinds:?}, gcc silent, seed {seed} ---\n{src}");
-            }
-        }
-        for pat in [
-            "signed integer overflow",
-            "left shift of negative",
-            // **`places cannot be represented`, not `cannot be represented`.** The shorter
-            // substring also matches gcc's *signed overflow* message — "signed integer
-            // overflow: X * 31 cannot be represented in type 'long int'" — so this row was
-            // counting row 1's programs a second time and grading them against `Shift`,
-            // which is not the kind they produce. It read 7/22 for three waves and the
-            // gap was the measurement.
-            "places cannot be represented",
-            "shift exponent",
-            "outside the range of representable values",
-        ] {
-            if err.contains(pat) {
-                let want = match pat {
-                    "signed integer overflow" => "SignedOverflow",
-                    "outside the range of representable values" => "FloatCastOverflow",
-                    _ => "Shift",
-                };
-                let e = tab.entry(pat.into()).or_default();
-                e.0 += 1;
-                if kinds.iter().any(|k| k == want) {
-                    e.1 += 1;
-                }
-            }
-        }
-    }
-    println!("\n=== census over 300 seeds ({n} compared, {skipped} skipped) ===");
-    println!("seen / chiero");
-    for (k, (seen, got)) in &tab {
-        println!("{seen:4} / {got:<4}  {k}");
     }
 }
 
