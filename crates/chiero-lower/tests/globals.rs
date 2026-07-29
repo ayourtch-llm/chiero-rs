@@ -270,24 +270,34 @@ fn uninitialized_and_extern_globals_are_unchanged() {
     );
 }
 
-/// **A designated initializer is refused, not silently reordered.**
+/// **A designated initializer is encoded where the designator points.**
 ///
-/// `int g[4] = {[2] = 5};` puts 5 at index 2. Encoding the items positionally would put it
-/// at index 0 — a wrong answer, and exactly the class this wave exists to remove. Chiero
-/// does not encode designators yet, so the initializer is refused whole and the global
-/// falls back to `Zero`: less information, but nothing invented.
+/// `int g[4] = {[2] = 5};` puts 5 at index 2, and encoding the items positionally would put
+/// it at index 0. This test used to assert the *refusal* that stood in for doing it
+/// properly — and the refusal turned out not to be one: the caller maps `None` to
+/// `GlobalInit::Zero`, so "refused whole, nothing invented" was in fact "the whole object
+/// reads as zeros", which is `g[2] == 0` where C says 5.
+///
+/// Wave 149 encodes them. The assertion moved from "it is `Zero`" to "the byte at index 2
+/// is 5", which is the thing anyone cared about either way.
 #[test]
-fn a_designated_initializer_is_refused_rather_than_reordered() {
+fn a_designated_initializer_lands_where_the_designator_points() {
+    // Index 2 of an `int[4]` is byte 8. Positional encoding would put the 5 at byte 0,
+    // which is the wrong answer this asserts against — not merely a different one.
+    let mut want = vec![0u8; 16];
+    want[8] = 5;
     assert_eq!(
         init_of("int g[4] = {[2] = 5};", "g"),
-        chiero_cir::GlobalInit::Zero,
-        "refused whole — encoding it positionally would put 5 at index 0"
+        chiero_cir::GlobalInit::Bytes(want),
+        "5 belongs at index 2, not at index 0"
     );
 
     // The struct form, which reaches a different arm of the encoder.
+    let mut want = vec![0u8; 8];
+    want[4] = 5;
     assert_eq!(
         init_of("struct S { int a; int b; }; struct S g = {.b = 5};", "g"),
-        chiero_cir::GlobalInit::Zero
+        chiero_cir::GlobalInit::Bytes(want)
     );
 
     // And the *undesignated* forms still encode, or "refuse designators" would be
@@ -298,16 +308,19 @@ fn a_designated_initializer_is_refused_rather_than_reordered() {
     ));
 }
 
-/// A **bit-field member** is refused too: its bytes are not a whole-field write, and
-/// encoding it as one would overwrite the neighbours it shares a storage unit with.
+/// A **bit-field member** is encoded into its bits, not over its bytes — the hazard the
+/// old refusal was protecting against is real, and `RecordLayout`'s absolute bit offset is
+/// what removes it: the neighbours are untouched by construction rather than by avoidance.
 #[test]
-fn a_bitfield_initializer_is_refused() {
+fn a_bitfield_initializer_is_packed_into_its_unit() {
+    // `a:3 = 1` occupies bits 0..2 and `b:5 = 2` bits 3..7, so the first byte is
+    // 0b0001_0001 = 17 and the neighbour bits are exactly where 014 put them.
     assert_eq!(
         init_of(
             "struct B { unsigned a:3; unsigned b:5; }; struct B g = {1, 2};",
             "g"
         ),
-        chiero_cir::GlobalInit::Zero
+        chiero_cir::GlobalInit::Bytes(vec![17, 0, 0, 0])
     );
 }
 

@@ -759,22 +759,36 @@ impl Lowerer<'_> {
                 let esz = self.analysis.size_of(elem)?;
                 match self.ast.expr(e).kind.clone() {
                     chiero_ast::ExprKind::InitList(items) => {
-                        for (i, it) in items.iter().enumerate() {
-                            // A designator moves the cursor; chiero does not encode those
-                            // yet, so an initializer containing one is refused whole rather
-                            // than silently written in positional order.
-                            if !it.designators.is_empty() {
+                        // **A designator moves the cursor and the walk continues from
+                        // there** (C11 6.7.9p17), which is what `init_list` already does
+                        // for a local. This used to return `None` — and the caller turns
+                        // `None` into `Zero`, so an initializer with a designator was not
+                        // "refused whole" as its comment said but silently replaced by
+                        // zeros.
+                        let mut cursor = 0u64;
+                        for it in items.iter() {
+                            if let Some(chiero_ast::Designator::Index(idx)) = it.designators.first()
+                            {
+                                let k = self.const_of(*idx)?;
+                                if k < 0 {
+                                    return None;
+                                }
+                                cursor = k as u64;
+                            } else if !it.designators.is_empty() {
+                                // A `.field` designator on an array is not C; refuse rather
+                                // than guess an offset for it.
                                 return None;
                             }
                             // A fixed bound stops the walk; any other kind (flexible,
                             // zero-length, VLA) has no compile-time extent, and the
                             // caller's `size` bound already clips the writes.
                             if let chiero_sema::ArrayLen::Fixed(n) = len
-                                && (i as u64) >= n
+                                && cursor >= n
                             {
                                 break;
                             }
-                            self.encode_into(it.value, elem, at + i as u64 * esz, out)?;
+                            self.encode_into(it.value, elem, at + cursor * esz, out)?;
+                            cursor += 1;
                         }
                         Some(())
                     }
@@ -799,17 +813,43 @@ impl Lowerer<'_> {
                     return None;
                 };
                 let fields = self.analysis.layout(r).fields.clone();
-                for (i, it) in items.iter().enumerate() {
-                    if !it.designators.is_empty() {
+                let mut cursor = 0usize;
+                for it in items.iter() {
+                    // `.field` repositions the cursor, and the walk continues from there —
+                    // the same rule as the array case above and as `init_list`.
+                    if let Some(chiero_ast::Designator::Field(name)) = it.designators.first() {
+                        cursor = fields.iter().position(|f| f.name == Some(*name))?;
+                    } else if !it.designators.is_empty() {
                         return None;
                     }
-                    let f = fields.get(i)?;
-                    // A bit-field's bytes are not a whole-field write; refuse rather than
-                    // overwrite its neighbours.
-                    if f.bits.is_some() {
-                        return None;
+                    let f = fields.get(cursor)?.clone();
+                    cursor += 1;
+                    match f.bits {
+                        // **A bit-field is written into its bits, not over its bytes.** The
+                        // old code refused here to avoid clobbering neighbours — correct
+                        // about the hazard, wrong about the outcome, since refusing meant
+                        // the whole object became zeros. `RecordLayout` already carries the
+                        // absolute bit offset and the width, so the bits go where 014 put
+                        // them and the neighbours are untouched by construction.
+                        Some(b) => {
+                            let v = self.const_of(it.value)?;
+                            for i in 0..b.width {
+                                let bit = (v >> i) & 1;
+                                let abs = b.bit_offset + i;
+                                let byte = at as usize + (abs / 8) as usize;
+                                if byte >= out.len() {
+                                    break;
+                                }
+                                let mask = 1u8 << (abs % 8);
+                                if bit == 1 {
+                                    out[byte] |= mask;
+                                } else {
+                                    out[byte] &= !mask;
+                                }
+                            }
+                        }
+                        None => self.encode_into(it.value, f.ty, at + f.offset, out)?,
                     }
-                    self.encode_into(it.value, f.ty, at + f.offset, out)?;
                 }
                 Some(())
             }

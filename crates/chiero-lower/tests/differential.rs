@@ -535,6 +535,26 @@ fn a_global_initializer_handles_designators_and_bitfields() {
         "struct B { int a:3; int b:5; };\nstruct B g = {.b = 3};\n",
         "return g.a * 10 + g.b;",
     );
+    // **A value whose extra bits are set, with the neighbour left unwritten.** Wave 142
+    // learned this and this test did not apply it: `{7, 2}` cannot see a store one bit too
+    // wide, because 7 in four bits is `0111` so the extra bit is clear — and `{15, 2}`
+    // cannot either, because `b`'s own write repairs the damage a moment later. Only a
+    // *partial* initializer shows it, where `b` gets nothing but the zero-fill.
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {15};\n",
+        "return g.a * 10 + g.b;",
+    );
+    // **A bit written and then written back to zero.** `out` starts zeroed, so clearing a
+    // bit is a no-op unless something set it first — which only a repeated designator does.
+    // C11 6.7.9p19: the last initializer for an object is the one that counts.
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {.a = 7, .a = 0};\n",
+        "return g.a * 10 + g.b;",
+    );
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {.b = 31, .b = 0};\n",
+        "return g.a * 10 + g.b;",
+    );
     // Nested, with designators at both levels.
     agree_with(
         "struct S { int a; int b; int c; };\nstruct N { struct S s; int n; };\n\
