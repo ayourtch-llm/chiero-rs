@@ -1891,6 +1891,117 @@ fn the_ub_filter_discards_a_float_cast_overflow() {
 }
 
 #[test]
+fn arithmetic_ub_agrees_with_gcc_site_for_site() {
+    let dir = std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()))
+        .join("chiero-sites");
+    let _ = std::fs::create_dir_all(&dir);
+    let (mut agree, mut miss, mut extra, mut progs) = (0u32, 0u32, 0u32, 0u32);
+    let mut shown = 0u32;
+    for seed in 0..200u64 {
+        let (prelude, body) = program(seed);
+        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
+        let csrc = format!(
+            "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
+        );
+        let c = dir.join(format!("s{seed}.c"));
+        let x = dir.join(format!("s{seed}"));
+        if std::fs::write(&c, &csrc).is_err() {
+            continue;
+        }
+        let ok = std::process::Command::new("gcc")
+            .args([
+                "-O0",
+                "-g",
+                "-fsanitize=undefined,float-cast-overflow",
+                "-o",
+            ])
+            .arg(&x)
+            .arg(&c)
+            .output();
+        match ok {
+            Ok(o) if o.status.success() => {}
+            _ => continue,
+        }
+        let Ok(run) = std::process::Command::new(&x).output() else {
+            continue;
+        };
+        let err = String::from_utf8_lossy(&run.stderr).to_string();
+        let mut gcc_sites: Vec<(u32, &str)> = Vec::new();
+        for l in err.lines().filter(|l| l.contains("runtime error:")) {
+            let line: Option<u32> = l.split(':').nth(1).and_then(|n| n.parse().ok());
+            let kind = if l.contains("signed integer overflow") {
+                "SignedOverflow"
+            } else if l.contains("shift") {
+                "Shift"
+            } else if l.contains("outside the range of representable") {
+                "FloatCastOverflow"
+            } else if l.contains("division by zero") {
+                "DivByZero"
+            } else {
+                "?"
+            };
+            if let Some(n) = line {
+                gcc_sites.push((n, kind));
+            }
+        }
+        if gcc_sites.is_empty() {
+            continue;
+        }
+        let Some((m, map)) = harness::lower_maybe_with_map(&src) else {
+            continue;
+        };
+        let mut arena = chiero_solver::TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let mut ours: Vec<(u32, String)> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .filter_map(|u| {
+                map.lookup_loc(u.span.lo)
+                    .map(|l| (l.line, format!("{:?}", u.kind)))
+            })
+            .collect();
+        ours.sort();
+        ours.dedup();
+        progs += 1;
+        for (gl, gk) in &gcc_sites {
+            if ours.iter().any(|(l, k)| l == gl && k == gk) {
+                agree += 1;
+            } else {
+                miss += 1;
+                if shown < 6 {
+                    shown += 1;
+                    println!("seed {seed}: gcc {gk} at line {gl}; chiero {ours:?}");
+                }
+            }
+        }
+        for (l, k) in &ours {
+            if !gcc_sites.iter().any(|(gl, gk)| gl == l && gk == k) {
+                extra += 1;
+                println!("EXTRA seed {seed}: chiero {k} at line {l}; gcc {gcc_sites:?}");
+                std::fs::write("/tmp/extra.c", &csrc).unwrap();
+                for u in r.states().iter().flat_map(|s| s.ub_events()) {
+                    println!("    ub {:?}: {}", u.kind, u.detail);
+                }
+                let src_lines: Vec<&str> = src.lines().collect();
+                if let Some(t) = src_lines.get(*l as usize - 1) {
+                    println!("    line {l}: {t}");
+                }
+            }
+        }
+    }
+    println!("arithmetic sites: programs={progs} agree={agree} miss={miss} extra={extra}");
+    assert!(
+        progs >= 10,
+        "too few programs commit arithmetic UB to grade anything: {progs}"
+    );
+    assert_eq!(miss, 0, "gcc reported UB at a site chiero did not");
+    assert_eq!(extra, 0, "chiero reported UB at a site gcc did not");
+}
+
+#[test]
 #[ignore]
 fn zz_census() {
     use std::collections::BTreeMap;
