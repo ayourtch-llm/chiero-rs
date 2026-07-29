@@ -705,11 +705,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `ENTRY_PARAM_BYTES` (021 §7: "the caller is outside the analysis, so there is no right
 > answer — this is a bound chiero chose"), so `int probe(int *p){ return *p; }` is silent.
 >
-> That bound is defensible for array *extent* and much weaker for *nullability*: a VPP node
-> function takes pointers from callers outside the analysis, and "may be null" is exactly the
-> question worth asking about them. Worth revisiting as a policy — probably an option rather
-> than a change of default, since making every entry pointer possibly-null would report every
-> unchecked dereference in a codebase that mostly cannot receive null.
+> **DECIDED BY THE USER (wave 185), do not re-litigate:** *"you can also assume all pointers
+> to be nullable unless there is an assert(p) or thereabout."*
+>
+> So the default changes: an entry-function pointer parameter is **possibly null**, and a
+> guard discharges it. `ENTRY_PARAM_BYTES` keeps its job — it bounds the *extent* of the
+> object when there is one — and nullability becomes a separate question with the opposite
+> default. Note what this does *not* require: the discharging machinery already exists and is
+> already path-sensitive, which the division probe showed in both directions
+> (`if (x == 0) return` silences, the inverted guard does not). An `assert(p)` lowers to a
+> conditional abort, so the surviving path carries `p != 0` for free.
+>
+> Expect the reported volume to rise sharply — every unchecked dereference of a parameter
+> becomes a finding. That is the intended consequence, not a regression: 023 §9's witness
+> makes each one replayable, and a codebase that genuinely cannot receive null says so with a
+> check. The thing to watch is the *ordering* rule below, which shares the machinery.
+>
+> This is the next wave.
 >
 > ### 🔴 And a checker nobody has written: a guard *below* a dereference
 >
