@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 150) — 1135 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 151) — 1141 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -505,7 +505,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 146 gave the generator a shrinker;
 > 147 gave the refusal ledger teeth and declared floating point unimplemented;
 > 148 paid the first debt the ledger recorded; 149 audited the owed list
-> and found three entries stale; 150 gave prefixed string literals their element width**.*
+> and found three entries stale; 150 gave prefixed string literals their element width;
+> 151 replaced the second string-literal decoder with one shared one**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -676,9 +677,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
 > - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+> - **String literals: what wave 151 did *not* close.** `chiero_sema::strlit` now owns phase
+>   5 for string literals, but three things sit beside it and were left alone deliberately:
+>   *character constants* (`u'\uFFFF'`, `'\x41'`) still have their own reading and were not
+>   routed through it — the same two-decoder shape, one crate over, and the next place to
+>   look; `string_element` hardcodes a plain literal's `char` as **signed** rather than
+>   asking `target.char_signed`, which is right for the one target 014 models and wrong the
+>   moment a second one exists; and a value that is not a Unicode scalar (a lone surrogate,
+>   anything above U+10FFFF) is passed through truncated rather than diagnosed, because gcc
+>   rejects those literals outright so nothing well-formed reaches the arm. The last is a
+>   *silent* fallback in a module whose entire point is not having one — if a front end ever
+>   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
 >
+> **A mutation sweep needs a control run** (wave 151). A sweep whose restore step silently
+> failed reported all six mutants KILLED — the mirror of wave 146's false survivor, and far
+> harder to see, because all-killed is exactly what a *good* sweep reports. The restore was
+> `git checkout -- <paths>` with one path an untracked new file; git rejects the whole
+> pathspec when any element is unknown, so nothing was restored and the mutants stacked.
+> **Every sweep gets an unmutated control that must SURVIVE**, plus an md5 check that the
+> mutation changed the file and a `git diff --quiet` that the restore worked. This is the
+> existing harness rule ("never `git checkout`") earned a second time, the expensive way.
+> **Two channels that kill the same defect are not redundant** (wave 151). The first sweep
+> had three mutants dying only in the unit tests and surviving the gcc oracle — gcc had
+> never been asked about a greedy hex escape, a three-digit octal, or an astral code point.
+> Fixtures were added and they die in both now. Keeping both is deliberate: the unit test
+> names the property in its own units, so its failure says *which rule* broke, while the
+> differential says only which integer differed — but only the differential is checked
+> against something that does not share the implementation's assumptions.
+> **An unkillable mutant names a missing fixture, so record it rather than dropping it**
+> (wave 151). Wave 150 could not kill `char16_t`'s signedness: it is observable only above
+> 32767 and no fixture could reach one. Wave 151's `u"\uFFFF"` is 65535 and killed it for
+> free. An equivalent mutant is a statement about the *suite*, not only about the code.
+> **Two readings of one input will disagree; the fix is one reading** (wave 151). sema sized
+> a string literal by counting source characters while lowering filled it by re-scanning the
+> escapes, so `"a\nb"` was five elements and four bytes at once. Adding a `\u` case to the
+> decoder would have fixed one of them. **When two passes must agree about a derived value,
+> derive it once and have both consume it** — here one function returns the element list,
+> sema takes its length and lowering takes its values, and there is no invariant left to
+> maintain. The sharper form of wave 150's rule: not "keep the copies in step", but "have
+> one".
 > **A fix that lands in one of two copies is worse than no fix** (wave 150). `string_bytes`
 > and `raw_expr`'s `Str` arm both built a literal's bytes; teaching one about element widths
 > made `sizeof(L"AB")` 12 while the object behind it stayed 3 bytes — the size and the
