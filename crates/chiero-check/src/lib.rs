@@ -5,7 +5,7 @@
 use std::any::Any;
 
 use chiero_cir::{InstKind, MarkerKind, Operand, RValue};
-use chiero_exec::{Action, Checker, CheckerCtx, CheckerState, Event};
+use chiero_exec::{Action, Checker, CheckerCtx, CheckerState, Event, UbKind};
 use chiero_mem::ObjectId;
 use indexmap::IndexMap;
 
@@ -16,7 +16,10 @@ use indexmap::IndexMap;
 /// Enabling it by default would bury every real finding under tens of thousands about code
 /// working as designed.
 pub fn default_checkers() -> Vec<Box<dyn Checker>> {
-    vec![Box::new(OrderDependence::new())]
+    vec![
+        Box::new(OrderDependence::new()),
+        Box::new(UndefinedArithmetic::new()),
+    ]
 }
 
 /// **020 contract 29 / 040 §1** — reading a union member other than the one last written.
@@ -289,5 +292,130 @@ impl Checker for OrderDependence {
             },
             _ => vec![],
         }
+    }
+}
+
+/// **020 §4.1** — the checker that turns the engine's UB events into findings.
+///
+/// §4.1 divides the work deliberately: "CIR is not the place to encode UB as
+/// unpredictability: the semantics are defined and total, and a `Checker` observes the
+/// overflow event and reports it." The engine computes the value C leaves undefined,
+/// records what happened, and **continues** — an earlier draft stopped the path on division
+/// alone, "hiding everything downstream of it for no reason the other cases don't share".
+/// Everything after the event is this checker's side of the line, and until wave 157 nobody
+/// stood on it: the events were recorded and `reports()` was empty.
+///
+/// # Why this needs per-path memory rather than a counter
+///
+/// Two different duplications have to be suppressed and they are not the same problem.
+///
+/// **The path continues past the fault**, so on every subsequent instruction the state
+/// still carries the event. A checker asking "does this state have a UB event?" reports
+/// once per instruction from the division onward.
+///
+/// **A loop runs one site many times**, and 023 §6.1 says that is one finding. The engine
+/// cannot help: `Action::Report` carries no §6.1 key, so `RunResult::reports` deduplicates
+/// a *fork's* copies by report id and leaves the rest to the checker.
+///
+/// `reported` — keyed by kind and span — answers **both**, and that is worth being precise
+/// about, because an earlier version of this comment credited the cursor with the first.
+/// Mutation said otherwise: freezing the cursor changed no test, since the same event
+/// re-read on the next instruction has the same key and is suppressed anyway. The cursor
+/// is therefore a **scan bound and nothing more** — without it every instruction after the
+/// first fault re-reads the whole log, which is quadratic in a long path and correct.
+/// Keeping it is a performance decision, and it is documented as one rather than
+/// re-mutated in the hope of a different answer.
+///
+/// Both live in [`UbState`], which is cloned at a fork, so two paths that reach the same
+/// site each report it. That is deliberate and matches the memory checkers: two paths that
+/// fault differently are two reports, and collapsing them throws away a witness.
+#[derive(Debug, Default)]
+pub struct UndefinedArithmetic;
+
+impl UndefinedArithmetic {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// Per-path memory: how much of the state's UB log has been read, and what has been said.
+#[derive(Debug, Default)]
+struct UbState {
+    /// How many of `State::ub_events` this path has already considered. The log is
+    /// append-only, so a cursor is enough to find what is new.
+    cursor: usize,
+    /// `(kind, span)` of everything already reported on this path, for 023 §6.1's
+    /// "one site, one finding" across a loop.
+    reported: Vec<(UbKind, chiero_span::Span)>,
+}
+
+impl CheckerState for UbState {
+    fn on_fork(&self) -> Box<dyn CheckerState> {
+        Box::new(UbState {
+            cursor: self.cursor,
+            reported: self.reported.clone(),
+        })
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// How a kind reads in a finding.
+///
+/// Spelled out rather than derived from `Debug`: `Shl` is what the operator is called and
+/// "shift" is what went wrong, and a reader looking for the second should not have to know
+/// the first. The operation itself is in the event's own detail, which the message carries.
+fn ub_phrase(kind: UbKind) -> &'static str {
+    match kind {
+        UbKind::DivByZero => "division by zero",
+        UbKind::Shift => "shift past the operand width",
+        UbKind::SignedOverflow => "signed overflow",
+    }
+}
+
+impl Checker for UndefinedArithmetic {
+    fn name(&self) -> &'static str {
+        "undefined-arithmetic"
+    }
+
+    fn initial_state(&self) -> Box<dyn CheckerState> {
+        Box::new(UbState::default())
+    }
+
+    fn on_event(&mut self, ev: &Event, cx: &mut CheckerCtx) -> Vec<Action> {
+        // **`AfterInst`, not `BeforeInst`.** The event is recorded while the instruction
+        // executes, so it exists only once the instruction is done.
+        let Event::AfterInst { st, .. } = ev else {
+            return Vec::new();
+        };
+        // Read the log before touching the checker's own state: `cx.state_mut` borrows the
+        // context, and the events belong to the engine's state.
+        let fresh: Vec<(UbKind, chiero_span::Span, String)> = {
+            let seen = cx.state_mut::<UbState>().cursor;
+            let all = st.ub_events();
+            if all.len() <= seen {
+                return Vec::new();
+            }
+            all[seen..]
+                .iter()
+                .map(|u| (u.kind, u.span, u.detail.clone()))
+                .collect()
+        };
+        let total = st.ub_events().len();
+        let mem = cx.state_mut::<UbState>();
+        mem.cursor = total;
+        let mut out = Vec::new();
+        for (kind, span, detail) in fresh {
+            if mem.reported.contains(&(kind, span)) {
+                continue;
+            }
+            mem.reported.push((kind, span));
+            out.push(Action::report(format!("{}: {detail}", ub_phrase(kind))));
+        }
+        out
     }
 }

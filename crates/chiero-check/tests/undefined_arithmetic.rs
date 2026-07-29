@@ -238,3 +238,79 @@ fn one_faulting_site_in_a_loop_is_one_finding() {
         "the same division at the same place, twice on one path, is one bug: {f:?}"
     );
 }
+
+/// **A site already reported before a fork is not reported again on either child**
+/// (023 §6.1).
+///
+/// The engine deduplicates a fork's copies of one report by id, and measurement says that
+/// is what carries this case: both children finish holding the *same* pre-fork report and
+/// `reports()` collapses them. The children do not re-report at the second site.
+///
+/// So this fixture pins the observable property — one site, one finding, across a fork —
+/// **without** reaching `on_fork`'s copy of `reported`. That copy is currently unobservable:
+/// a mutation emptying it survives every test here. Recorded in §9 rather than deleted,
+/// because the field is right and the missing fixture is a statement about the suite.
+#[test]
+fn a_site_reported_before_a_fork_is_not_reported_again_after_it() {
+    let divide = |dst: u32| {
+        inst(
+            InstKind::Assign {
+                dst: ValueId(dst),
+                rv: RValue::Bin {
+                    op: BinOp::SDiv,
+                    ty: CTy::Int(32),
+                    a: k(100),
+                    b: k(0),
+                },
+            },
+            10,
+        )
+    };
+    let m = module(vec![
+        // Fault, then branch on something symbolic so both sides are explored.
+        block(
+            0,
+            vec![
+                divide(0),
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(5),
+                        rv: RValue::Fresh { ty: CTy::Int(32) },
+                    },
+                    20,
+                ),
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(6),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(5)),
+                            b: k(0),
+                        },
+                    },
+                    21,
+                ),
+            ],
+            Terminator::Br {
+                cond: Operand::Value(ValueId(6)),
+                t: BlockId(1),
+                f: BlockId(2),
+            },
+        ),
+        block(1, vec![], Terminator::Goto(BlockId(3))),
+        block(2, vec![], Terminator::Goto(BlockId(3))),
+        // Both children reach the same faulting site again.
+        block(
+            3,
+            vec![divide(1)],
+            Terminator::Return(Some(Operand::Value(ValueId(1)))),
+        ),
+    ]);
+    let f = findings(&m);
+    assert_eq!(
+        f.len(),
+        1,
+        "the site was reported before the fork; neither child should say it again: {f:?}"
+    );
+}
