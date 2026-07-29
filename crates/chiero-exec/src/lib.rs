@@ -219,6 +219,13 @@ pub struct Finding {
 /// an access past it is reported as one rather than silently allowed.
 pub const ENTRY_PARAM_BYTES: u64 = 4096;
 
+/// The one degradation a later proof can answer.
+///
+/// Written once and matched against, rather than spelled at each site: discharging it means
+/// recognising it, and a reason recognised by a string literal repeated in three places is
+/// a reason that stops being discharged the first time someone rewords one of them.
+const BRANCH_UNDECIDED: &str = "solver could not decide a branch; both sides explored";
+
 /// 023 §7 rule 3: every degradation names its cause. "Approximated with no reason" is a
 /// bug, so this is recorded at the point of degradation, never after the fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +233,14 @@ pub struct Assumption {
     pub kind: AssumptionKind,
     pub span: Span,
     pub detail: String,
+    /// The fidelity this degradation imposed.
+    ///
+    /// `State::fidelity` is a running worst-of, which cannot be undone — and one
+    /// degradation *can* be answered later. "The solver could not decide this branch" says
+    /// the path may not exist; a validated model of the path condition proves it does, and
+    /// at that point the reason is discharged rather than merely outvoted. Recomputing the
+    /// worst over what remains needs each assumption to remember its own severity.
+    pub fidelity: Fidelity,
 }
 
 /// 023 §1.1. A pointer keeps its object; a scalar is a term.
@@ -517,6 +532,7 @@ impl State {
                 kind: AssumptionKind::NoInformation,
                 span: Span::DUMMY,
                 detail: why.to_string(),
+                fidelity: Fidelity::Unknown,
             }],
             status: Status::Errored(why.to_string()),
             trace: Vec::new(),
@@ -701,9 +717,38 @@ impl State {
         }
     }
 
+    /// **A validated model of the path condition proves the path exists**, which answers
+    /// the one degradation that said it might not.
+    ///
+    /// When tier 1 cannot decide a branch the engine takes both edges and degrades each
+    /// side to `Unknown`: the path may not be real. That is right at the branch and stale
+    /// at the end, because `attach_witness` then solves the path condition — and 022 §3.1
+    /// makes `Sat` self-certifying, so a model satisfying it *is* a proof of reachability.
+    /// Leaving the caveat on labels a reproducible fault as undecided, which is the label a
+    /// reader uses to decide what to ignore.
+    ///
+    /// **Only that reason, and only recomputed.** Everything else a path assumed still
+    /// holds — an unmodeled call is not made modeled by the path being real — so the
+    /// remaining assumptions are re-folded rather than the fidelity being set outright. A
+    /// path with an undecided branch *and* an opaque call keeps `Unknown` from the call.
+    fn discharge_unproven_path(&mut self) {
+        let before = self.assumptions.len();
+        self.assumptions
+            .retain(|a| !(a.kind == AssumptionKind::SolverUnknown && a.detail == BRANCH_UNDECIDED));
+        if self.assumptions.len() == before {
+            return;
+        }
+        self.path_unchecked = false;
+        self.fidelity = self
+            .assumptions
+            .iter()
+            .fold(Fidelity::Exact, |f, a| f.degrade(a.fidelity));
+    }
+
     fn degrade(&mut self, to: Fidelity, kind: AssumptionKind, span: Span, detail: &str) {
         self.fidelity = self.fidelity.degrade(to);
         self.assumptions.push(Assumption {
+            fidelity: to,
             kind,
             span,
             detail: detail.to_string(),
@@ -2306,7 +2351,12 @@ impl<'m> Engine<'m> {
             _ => self.probe(a, s, &[]),
         };
         let model = match attempt {
-            CheckResult::Sat(m) => m,
+            CheckResult::Sat(m) => {
+                // The model satisfies the path condition — with or without the findings'
+                // extra requirements, both of which imply it — so the path is reachable.
+                s.discharge_unproven_path();
+                m
+            }
             CheckResult::Unsat => {
                 s.unwitnessed = Some(
                     "the path condition is unsatisfiable at termination, so no input \
@@ -3853,7 +3903,7 @@ impl<'m> Engine<'m> {
                     Fidelity::Unknown,
                     AssumptionKind::SolverUnknown,
                     Span::DUMMY,
-                    "solver could not decide a branch; both sides explored",
+                    BRANCH_UNDECIDED,
                 );
                 sibling.constrain_unchecked(neg);
                 self.take_edge(&mut sibling, bf);
@@ -3861,7 +3911,7 @@ impl<'m> Engine<'m> {
                     Fidelity::Unknown,
                     AssumptionKind::SolverUnknown,
                     Span::DUMMY,
-                    "solver could not decide a branch; both sides explored",
+                    BRANCH_UNDECIDED,
                 );
                 Some(sibling)
             }

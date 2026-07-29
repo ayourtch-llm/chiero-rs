@@ -551,7 +551,7 @@ fn an_undecidable_divisor_is_a_declared_gap_not_a_silent_one() {
 /// satisfies the path condition is a *proof that the path is reachable*. The reason for the
 /// degradation has been discharged, and nothing discharges it.
 ///
-/// So a real, reproducible null dereference at `x = 11` is presented as a run that could not
+/// So a real, reproducible out-of-bounds write at `x = 11` is presented as a run that could not
 /// decide anything, which is exactly the label a reader uses to decide what to ignore. The
 /// mirror of wave 158: there the finding was right and the number beside it wrong; here the
 /// finding and the number are both right and the *confidence* beside them is wrong.
@@ -562,13 +562,18 @@ fn an_undecidable_divisor_is_a_declared_gap_not_a_silent_one() {
 /// assertion and break the first.
 #[test]
 fn a_witnessed_fault_is_not_reported_as_undecided() {
+    // **An out-of-bounds write, not a null dereference.** A null store also degrades for
+    // `IntToPtr of an integer with no provenance` — a real second caveat, about finding an
+    // object by address — so such a path can never be `Exact` and the fixture would be
+    // testing two things at once. This write's only caveat is the branch, which is the
+    // subject.
     for (body, reachable) in [
         (
-            "if (x > 10) { if (x > 3) { int *p = 0; *p = 1; } } return 0;",
+            "int a[4] = {0,0,0,0}; if (x > 10) { if (x > 3) { a[7] = 1; } } return 0;",
             true,
         ),
         (
-            "if (x > 10) { if (x < 5) { int *p = 0; *p = 1; } } return 0;",
+            "int a[4] = {0,0,0,0}; if (x > 10) { if (x < 5) { a[7] = 1; } } return 0;",
             false,
         ),
     ] {
@@ -581,8 +586,8 @@ fn a_witnessed_fault_is_not_reported_as_undecided() {
         let f = r
             .reports()
             .into_iter()
-            .find(|f| f.message.contains("null"))
-            .unwrap_or_else(|| panic!("`{body}`: the null store was not reported"));
+            .find(|f| f.message.contains("out-of-bounds"))
+            .unwrap_or_else(|| panic!("`{body}`: the out-of-bounds store was not reported"));
 
         if reachable {
             let w = f
@@ -613,6 +618,58 @@ fn a_witnessed_fault_is_not_reported_as_undecided() {
             );
         }
     }
+}
+
+/// **Discharging the branch does not discharge everything else.**
+///
+/// A null store on the same undecided path degrades twice: once for the branch, and once
+/// for `IntToPtr of an integer with no provenance` — the object was found by address, which
+/// is wrong if a different object now occupies it. Proving the path reachable answers the
+/// first and says nothing about the second.
+///
+/// So this finding keeps `Unknown`, and it is the case that makes the fix a *recomputation*
+/// rather than an assignment. Two mutations survived the whole suite without it: setting
+/// the fidelity to `Exact` outright, and recording every assumption's severity as `Exact`
+/// so the fold could only ever produce one. Both are invisible while every fixture has at
+/// most one reason to degrade.
+#[test]
+fn a_proven_path_keeps_the_caveats_the_proof_did_not_answer() {
+    let src = "int probe(int x) { if (x > 10) { if (x > 3) { int *p = 0; *p = 1; } } return 0; }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("null"))
+        .expect("the null store is reported");
+    assert!(
+        f.witness.is_some(),
+        "reachable at x = 11, so the path is proven and witnessed"
+    );
+    assert_eq!(
+        f.fidelity,
+        chiero_exec::Fidelity::Unknown,
+        "the branch was answered; `IntToPtr ... no provenance` was not, and it is the \
+         reason this path is still not exact"
+    );
+    let s = r
+        .states()
+        .iter()
+        .find(|s| !s.findings().is_empty())
+        .expect("the faulting state");
+    assert!(
+        s.assumptions()
+            .iter()
+            .all(|a| a.detail != "solver could not decide a branch; both sides explored"),
+        "the branch reason should be gone, not merely outvoted: {:?}",
+        s.assumptions()
+            .iter()
+            .map(|a| &a.detail)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
