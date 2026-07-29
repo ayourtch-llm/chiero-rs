@@ -688,25 +688,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: the concrete paths cannot read a promoted object
+> ### 🔴 Do this first: the concrete paths cannot reach a promoted object
 >
-> Wave 197 made the symbolic store write, and promotion is the price:
+> **Wave 198 attempted this and did not land it.** The attempt is recorded here because the
+> diagnosis is most of the work and there is no reason for the next wave to repeat it.
+>
+> The symptom, after any symbolic write promotes an object:
 >
 > ```text
->   ca[i & 63] = 7;  ca[1] = 3;  return ca[1];   ->  no value, gap recorded
+>   ca[i & 63] = 7;  ca[1] = 3;  return ca[1];
+>       findings: symbolic-byte: byte 1 of ca holds a symbolic value, which a
+>                 concrete access cannot answer for
+>       solved ret = 0        <- the concrete store was lost
 > ```
 >
-> A symbolic write promotes the object to an array representation, and a promoted object
-> refuses the **arena-free** byte and bit APIs (`promoted_fault`) that the *concrete* store and
-> load still use. So every ordinary access to that object afterwards declines.
+> What is established:
 >
-> That was a deliberate trade — before wave 197 the store was silently *dropped* and `ca[0]`
-> answered a confident `0` for a byte the write may have hit, wrong one time in sixty-four.
-> 023 §7 prefers a recorded refusal to a wrong byte. But it is a refusal, and the fix is to
-> give the concrete `Load`/`Store` paths an arena-carrying route for a promoted object —
-> `read_term_at` and `write_at_symbolic_offset` already serve a *concrete* offset, so this is
-> plumbing rather than new capability. `a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing`
-> is pinned to the current behaviour precisely so the next wave sees it change.
+> - The engine's concrete paths use `write_term` (exec:3266) and `read_term` (exec:4582), both
+>   of which take an arena. **`read_term` already handles promotion** — it has a
+>   `Some(arr) => select(...)` branch and a comment saying the frozen `Bytes` view must not be
+>   consulted again.
+> - **`write_term` does not.** It loops over bytes calling `write_sym_byte`, which is
+>   *arena-free* and therefore refuses a promoted object via `promoted_fault`. That is the
+>   blocker, and it is why the store is lost while the read looks fine.
+> - Adding a promoted branch to `write_term` — mirroring `read_term`'s, writing
+>   `store(arr.data, off, byte)` and marking `arr.init` — **was tried and did not fix it.**
+>   The `symbolic-byte` finding still appeared, so either `entry.arr` is `None` while
+>   `promoted_fault`'s `repr == Repr::Array` is true (the two disagree about what "promoted"
+>   means), or a second arena-free call in the chain also refuses. **Check that disagreement
+>   first**: `promoted_fault` keys on `repr`, the read keys on `arr`, and if promotion sets one
+>   without the other then every fix keyed on `arr` will miss.
+> - The value also becomes non-ground once promoted, so a test must **solve** for it
+>   (`TieredSolver` + `return_value_under`) rather than use `return_value_bits` — the same trap
+>   wave 196 hit.
+>
+> The RED written for this was reverted rather than left failing (`13470a5` reverts `ec70860`);
+> wave 197's pinned test stands, and it is still the thing that should change.
 >
 > **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
 > does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store
@@ -1084,6 +1101,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Stop and hand over the diagnosis rather than guess at a fix** (wave 198). The attempt at
+> the promoted-object plumbing reached the point of *guessing* — the object reports promoted to
+> `promoted_fault` while the branch keyed on `entry.arr` does not fire, and the next step would
+> have been trying things. The wave was reverted to green with the diagnosis written into §9,
+> which is worth more than a half-fix and far more than a red suite. A reverted RED
+> (`13470a5` reverts `ec70860`) is a normal outcome, not a failure to hide.
+>
+> **Two fields for one concept is the bug behind the bug** (wave 198, suspected). `promoted_fault`
+> keys on `repr == Repr::Array`; the read path keys on `entry.arr`. If promotion can set one
+> without the other, every fix written against either will miss half the time — and that is the
+> first thing to check, before any plumbing.
 >
 > **A write that does not record having happened is indistinguishable from no write** (wave
 > 197). `write_at_symbolic_offset` iterated its candidate list and wrote an if-then-else at
