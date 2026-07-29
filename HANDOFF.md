@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 155) — 1168 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 156) — 1173 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -510,7 +510,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 152 deleted the third; **153 built the symbolic differential oracle, and it found that
 > the solver could decide only one side of every branch; 154 gave it the other half of three
 > narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
-> replaced a linear scan with an index**.*
+> replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
+> the engine asks**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -700,6 +701,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   still. Unverified; a GNU `vector_size` fixture would settle it.
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
+> - **Shift and signed-overflow UB are still concrete-only** (wave 156). `note_ub` answers
+>   for two constants; wave 156 added a solver query for *division* only, because a division
+>   is rare and its question is one narrow feasibility check. Overflow is a question about
+>   every `Add`/`Sub`/`Mul` in the program and a shift amount is nearly as common, so asking
+>   there is the per-instruction cost the original decision was about. **Not an oversight —
+>   a scope line**, and the mechanism to extend it is `symbolic_div_by_zero`.
+> - **A UB event is not yet a finding.** Every `UbEvent` this wave produces is recorded on
+>   the state and visible through `ub_events()`, but `reports()` is empty for all of them —
+>   including the *concrete* cases, which behaved that way before. 020 §4.1 says "a checker
+>   observes the event and reports it"; no checker does. That is the next thing to write, and
+>   it is what would give a division by zero the witness the null dereference already gets.
 > - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor, now
 >   *reproduced* by wave 153 (`a[x & 3]` enumerates one offset of four and says so) but not
 >   fixed. It is a declared gap, not a wrong answer.
@@ -712,7 +724,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   can never be atoms and both readings end in `Unknown`. `vars-of-immediate-only` survives
 >   because nothing observes the walk's **depth** — `witness.rs`'s hand-built CIR puts the
 >   variable one level down, and only a C-lowered program has the four-wrapper shape. The
->   fixture that kills it is a witnessed fault from a symbolic run, which is owed above.
+>   fixture that kills it is a witnessed fault from a symbolic run. ~~owed~~ **written in
+>   wave 156, and it kills the mutant.**
 > - **String literals: what wave 151 did *not* close.** `chiero_sema::strlit` now owns phase
 >   5 for string literals, but three things sit beside it and were left alone deliberately:
 >   ~~*character constants* still have their own reading~~ **done in wave 152** — and the
@@ -728,6 +741,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A recorded decision is still worth re-reading against the case in front of you**
+> (wave 156). `note_ub` skipped every symbolic operand with a stated reason: the query costs
+> "one per arithmetic instruction", which is 040's business. The reason is sound — for
+> `Add`/`Sub`/`Mul`. It was written once, for the general case, and then applied to division,
+> where a query is *one per division* and divisions are rare. **A comment explaining why
+> something is not done is evidence, not a verdict**; check whether its argument covers the
+> instance.
+> **A mutant that changes nothing is a question, not a result** (wave 156). Removing the
+> early return on a constant divisor survived every channel — and the reason was not that
+> the tests were weak but that the guard was *hiding a defect*: the concrete path needs both
+> operands constant, so `x / 0` with a symbolic numerator matched neither, and the guard
+> sent it home. **When a mutation is invisible, ask what the code would do without the line
+> before concluding the tests are at fault.**
+> **Build the mutant before believing its verdict** (wave 156). One mutation this wave did
+> not compile, and the sweep read the failure as a *survivor* rather than as nothing. The
+> sweep now builds first and reports INCONCLUSIVE — which the harness rules have said since
+> wave 112 and the script did not implement.
 > **A capability that widens breaks the tests that depended on the limit — expect it, and
 > ask what the fixture was really asserting** (waves 153, 154, 155). Eight instances across
 > three waves now: a slicing test that needed the backend, a `pinned` flag that meant "the
