@@ -486,6 +486,61 @@ fn a_statement_expression_yielding_an_aggregate_outlives_its_scope() {
     agree("int x = ({ 1; 2; 3; }); return x;");
 }
 
+/// **A universal character name is one character, at the literal's width.**
+///
+/// Two spellings, one defect. `unescape` has no case for `\\u`/`\\U`, so its catch-all keeps
+/// the escaped character and drops the backslash: `u"\\uFFFF"` becomes the five characters
+/// `u F F F F`, and the first element reads 117 instead of 65535. A character written
+/// *directly* in the source fares no better — `u"￿"` keeps its three UTF-8 bytes as three
+/// elements and reads 239. C11 5.2.1.1 makes the two spellings the same thing by the end of
+/// translation phase 5, so one decoder owes both. Both are **silent wrong answers**, found
+/// while mutation-testing wave 150 rather than by anyone reading the code.
+///
+/// C11 6.4.3 makes a UCN denote one character of the execution set. The width decides how
+/// it is stored: a wide literal gets one *element* holding the code point, and a plain one
+/// gets its **UTF-8 bytes** — `"\\u00E9"` is two bytes, `L"\\u00E9"` is one four-byte
+/// element holding 233.
+///
+/// **`\\x` is not a UCN and must not become UTF-8.** `"\\xFF"` is the single byte 255;
+/// `"\\u00FF"` is the two bytes `C3 BF`. A decoder that treated every escape as a code
+/// point would conflate them, which is why the two sit next to each other below.
+///
+/// Fixing this also pins what wave 150 could not: `char16_t`'s **signedness**, which needs
+/// a value above 32767 to observe and had no way to reach one.
+#[test]
+fn a_universal_character_name_is_one_character() {
+    // The **escape** spelling and the **direct** spelling must land on the same answer.
+    agree(r#"return (int)u"\uFFFF"[0];"#);
+    agree(r#"return (int)sizeof(u"\uFFFF");"#);
+    agree(r#"return (int)(u"\uFFFF"[0] == u"￿"[0]);"#);
+    agree(r#"return (int)L"\u00E9"[0] * 10 + (int)sizeof(L"\u00E9");"#);
+    agree(r#"return (int)sizeof("\u00E9") * 1000 + (int)(unsigned char)"\u00E9"[0];"#);
+    // The code point, at each width.
+    agree(r#"return (int)u"￿"[0];"#);
+    agree(r#"return (int)sizeof(u"￿");"#);
+    agree(r#"return (int)U"\U0001F600"[0];"#);
+    agree(r#"return (int)sizeof(U"\U0001F600");"#);
+    agree(r#"return (int)L"é"[0];"#);
+    agree(r#"return (int)sizeof(L"é");"#);
+    // **`char16_t` is unsigned**, which only a value above 32767 can show — `u"￿"[0]`
+    // is 65535 and would be -1 if the element type were signed.
+    agree(r#"return u"￿"[0] > 0;"#);
+    agree(r#"return (int)(u"￿"[0] + 1);"#);
+    // A plain literal encodes the character as **UTF-8**, not as one byte.
+    agree(r#"return (int)sizeof("é");"#);
+    agree(r#"return (int)(unsigned char)"é"[0] * 1000 + (int)(unsigned char)"é"[1];"#);
+    // **`\x` is a byte, not a code point**, in both a plain and a wide literal.
+    agree(r#"return (int)(unsigned char)"\xFF"[0] * 10 + (int)sizeof("\xFF");"#);
+    agree(r#"return (int)u"\xFF"[0] * 10 + (int)sizeof(u"\xFF");"#);
+    // Mixed with ordinary characters, so the decoder tracks position rather than assuming
+    // the escape is alone.
+    agree(r#"return (int)u"AéB"[0] * 1000 + (int)u"AéB"[1];"#);
+    agree(r#"return (int)sizeof(u"AéB");"#);
+    // The escapes that already worked must keep working.
+    agree(r#"return (int)sizeof("a\nb") * 100 + (int)"a\nb"[1];"#);
+    agree(r#"return (int)sizeof("AB");"#);
+}
+
 /// **A prefixed string literal keeps its element width.**
 ///
 /// sema types every string literal `char[n]` and lowering writes one byte per character,
