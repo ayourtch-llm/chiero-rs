@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 157) — 1178 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 158) — 1182 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -511,7 +511,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the solver could decide only one side of every branch; 154 gave it the other half of three
 > narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
 > replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
-> the engine asks; 157 shipped the checker that turns a UB event into a finding**.*
+> the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
+> witness beside it one that actually faults**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -711,15 +712,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   UndefinedArithmetic`, in `default_checkers()`. No engine change was needed — a checker
 >   already reaches `st.ub_events()` through `Event::AfterInst`, which is worth knowing
 >   before designing: the gap was a missing *consumer*, not a missing mechanism.
-> - **🔴 The witness beside a division by zero can be wrong** (found in wave 157, the next
->   wave's RED). `int probe(int x) { return 100 / (x - 42); }` reports the division and
->   attaches a witness of **x = 0**, which divides by -42. The engine proved zero reachable
->   with a model naming x = 42 and discarded it: the witness is built from the *path*
->   condition, and an unconstrained path yields the filler zero. The finding is right and
->   the number beside it is wrong, which is worse than no number — 023 §9's whole point is
->   that a witness is a claim someone can re-run. The fix has to carry the model that
->   proved the fault feasible, which is a *per-finding* witness where today there is one
->   per state.
+> - ~~The witness beside a division by zero can be wrong.~~ **Fixed in wave 158.**
+>   `State::witness_requires` carries the *condition* a finding depends on — the term, not
+>   the model, because a model answers for the path as it was at that instruction and the
+>   state runs on. The witness is solved against the path **and** those, and `pinned` counts
+>   them, so `100 / (x - 42)` now names x = 42 and says the fault needs it.
+> - **A witness is still one per *state*, and the complete answer is one per *finding*.**
+>   Two findings on one path can need contradictory inputs (`100/(x-1)` and `100/(x-2)`);
+>   their conjunction is unsatisfiable, and wave 158 falls back to the witness the path alone
+>   supports rather than refusing — which reports two real faults with one imperfect number
+>   instead of two real faults and no number. `contradictory_requirements_fall_back_rather_
+>   than_refuse` pins the fallback; what it does *not* pin is that either witness reproduces
+>   its own finding, because neither can. `StateFinding` would need its own `requires` and
+>   its own solve.
 > - **A symbolic divisor tier 1 cannot decide is a declared miss** (wave 157).
 >   `100 / (x + 1)` says `Fidelity::Unknown` with "whether the divisor of this SDiv can be
 >   zero was not decided" — honest, and still a miss: `x = -1` makes it zero and the
@@ -760,6 +765,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Narrowing what is *reported* is not narrowing what is *run*** (wave 158). The witness
+> for `100 / (x - 42)` needs `x == 42`, and the one-line way to get it is to push that onto
+> the path condition — which then refutes every later branch the value contradicts, so a
+> finding would delete the execution it was reporting on. 023 contract 19 already draws this
+> line for a checker's `Assume`, which *does* join the path and degrades fidelity for it.
+> **Before adding a constraint, ask whether it is about the program or about the report**;
+> the two want different fields and only one of them is a lie if you pick wrong.
+> **Keep the term, not the model** (wave 158). The solver call that proves a fault feasible
+> hands back a model, and storing it is the obvious fix. It answers for the path *as it was
+> at that instruction*, and the state runs on — a later branch can refute it. The condition
+> stays true; the assignment satisfying it may not. **When a fact and a witness to it are
+> both available, keep the fact.**
 > **Establish that the mechanism is missing before building one** (wave 157). The obvious
 > reading of "no checker reports UB" is that the engine needs a new `Event` variant to
 > announce it. It does not: `Event::AfterInst` already carries `&State`, and `ub_events()`
