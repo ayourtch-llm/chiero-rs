@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 170) — 1209 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 171) — 1210 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -519,7 +519,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
 > agree with gcc; 169 finished them with comparisons and `_Bool`; 170 fixed mixed int/float
-> operands**.*
+> operands; 171 closed a hole in the generator's UB filter**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -791,6 +791,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   * **`eval_ground` is not `as_const`.** `sitofp` of a `sext` of a loaded byte is ground
 >     and is not a `Const` node, so `char c = 2; c < 2.5` produced no value until all four
 >     float evaluators read ground terms. Wave 162 hit this in the solver; it recurred here.
+> - **🔴 chiero does not detect float-to-integer overflow at all.** Raised by the user during
+>   wave 171 — "UB is something that should be warned about?" — and the instinct was right.
+>   Two separate things were being conflated, and only one of them was fine:
+>   * **Discarding a UB program from the *differential* channel is correct** and says nothing
+>     about caring. gcc's answer for an undefined program is not an oracle, so there is no
+>     truth to compare a *value* against. That is all wave 171's filter fix did.
+>   * **Reporting the UB is a different job, and chiero does most of it.** Measured:
+>     `7 / z`, `1 << 33` and `INT_MAX + 1` all produce findings (wave 157's
+>     `UndefinedArithmetic`). `(unsigned short)(-4294905087.0)` produces **nothing** —
+>     `note_ub` covers `DivByZero`, `Shift` and `SignedOverflow`, and C11 6.3.1.4's
+>     float-to-integer conversion is not in `UbKind` at all.
+>   So the fix is a new `UbKind` plus a concrete check in `note_ub` (the operand is a folded
+>   float there, so it needs no solver query), and the checker picks it up for free.
+> - **🔴 Nothing cross-checks the discards against chiero's own findings.** The sanitizer
+>   labels ~220 of every 600 generated programs as undefined — a free, labelled UB corpus —
+>   and the generator throws it away. Every discarded program is one chiero *should* have a
+>   finding for, and no test says so. That is a whole detection channel sitting unused, and
+>   it is how the gap above would have been found without anyone asking.
 > - **🔴 Next on floats**: x87 80-bit arithmetic and comparison (no Rust primitive — its
 >   width works, so loads and stores do), and **symbolic** floats, which still need an FP
 >   theory or a bit-blasted encoding in the solver. The concrete path is now complete. `refuse_float_compare` now declares the two operations
@@ -885,6 +903,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A false defect costs more than a missed one** (wave 171). The generator reported a
+> mismatch that was two implementations of undefined behaviour disagreeing. Its own doc says
+> a test that fails one run in ten "gets muted within a month" — a fixed-seed one that reports
+> a non-defect spends the attention the channel exists to focus, *every run*, and trains its
+> reader to skim. **When a detection channel reports something, its credibility is the asset;
+> protect that before adding reach.**
+> **Tightening a filter has an obvious cheat, so assert the negative** (wave 171). Any UB
+> filter can be made to stop reporting mismatches by discarding more, and "no defects" is
+> then achievable by deleting coverage. The test pairs the out-of-range conversion with an
+> **in-range** one that must still be compared, and a mutation discarding everything dies on
+> it. **A test that a filter catches X needs a companion that it does not catch Y.**
+> **Discarding is about the oracle, not about caring** (wave 171). A program with undefined
+> behaviour has no defined *value*, so gcc cannot arbitrate one — that is why it leaves the
+> differential channel. It says nothing about whether chiero should *report* the UB, which is
+> a separate job it mostly does. **Keep "cannot compare" and "do not care" apart**; conflating
+> them is how a discard pile becomes an excuse.
 > **Ask which layer already did the work** (wave 170). Lowering emitted `Add` over an int
 > and a double, and the obvious repair — convert the operands — produced *three* chained
 > casts, because 014 inserts the conversion itself under contract 11. The values were always
