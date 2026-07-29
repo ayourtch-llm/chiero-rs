@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 156) — 1173 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 157) — 1178 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -511,7 +511,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the solver could decide only one side of every branch; 154 gave it the other half of three
 > narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
 > replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
-> the engine asks**.*
+> the engine asks; 157 shipped the checker that turns a UB event into a finding**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -707,11 +707,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   every `Add`/`Sub`/`Mul` in the program and a shift amount is nearly as common, so asking
 >   there is the per-instruction cost the original decision was about. **Not an oversight —
 >   a scope line**, and the mechanism to extend it is `symbolic_div_by_zero`.
-> - **A UB event is not yet a finding.** Every `UbEvent` this wave produces is recorded on
->   the state and visible through `ub_events()`, but `reports()` is empty for all of them —
->   including the *concrete* cases, which behaved that way before. 020 §4.1 says "a checker
->   observes the event and reports it"; no checker does. That is the next thing to write, and
->   it is what would give a division by zero the witness the null dereference already gets.
+> - ~~A UB event is not yet a finding.~~ **Done in wave 157**: `chiero_check::
+>   UndefinedArithmetic`, in `default_checkers()`. No engine change was needed — a checker
+>   already reaches `st.ub_events()` through `Event::AfterInst`, which is worth knowing
+>   before designing: the gap was a missing *consumer*, not a missing mechanism.
+> - **🔴 The witness beside a division by zero can be wrong** (found in wave 157, the next
+>   wave's RED). `int probe(int x) { return 100 / (x - 42); }` reports the division and
+>   attaches a witness of **x = 0**, which divides by -42. The engine proved zero reachable
+>   with a model naming x = 42 and discarded it: the witness is built from the *path*
+>   condition, and an unconstrained path yields the filler zero. The finding is right and
+>   the number beside it is wrong, which is worse than no number — 023 §9's whole point is
+>   that a witness is a claim someone can re-run. The fix has to carry the model that
+>   proved the fault feasible, which is a *per-finding* witness where today there is one
+>   per state.
+> - **A symbolic divisor tier 1 cannot decide is a declared miss** (wave 157).
+>   `100 / (x + 1)` says `Fidelity::Unknown` with "whether the divisor of this SDiv can be
+>   zero was not decided" — honest, and still a miss: `x = -1` makes it zero and the
+>   candidate search cannot exhibit it. Escalating that one query to the backend would
+>   settle it.
+> - **`fork-drops-reported` survives in `UndefinedArithmetic`** (wave 157). Emptying the
+>   per-path `reported` at a fork changes no test. A fixture was written — fault, branch,
+>   both children return to the same site — and measurement shows both children finish
+>   holding the *same* pre-fork report, which `reports()` collapses by id, so the cloned
+>   field is never consulted. The field is right; the fixture that would observe it is not
+>   yet known.
 > - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor, now
 >   *reproduced* by wave 153 (`a[x & 3]` enumerates one offset of four and says so) but not
 >   fixed. It is a declared gap, not a wrong answer.
@@ -741,6 +760,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Establish that the mechanism is missing before building one** (wave 157). The obvious
+> reading of "no checker reports UB" is that the engine needs a new `Event` variant to
+> announce it. It does not: `Event::AfterInst` already carries `&State`, and `ub_events()`
+> is public, so a checker could always have seen them. Ten minutes with a scratch checker
+> settled it and saved an enum variant, an emit site and a migration. **Probe the seam
+> before widening it.**
+> **A comment that credits the wrong mechanism is a defect the tests cannot catch** (wave
+> 157). `UndefinedArithmetic`'s doc said the cursor prevented re-reporting on every
+> instruction; mutation froze the cursor and nothing failed, because the key-based
+> deduplication was doing that work all along. The code was right and the explanation was
+> wrong — and the explanation is what the next reader will change the code from. **When a
+> mutation survives, re-read what the surviving line was documented to do.**
 > **A recorded decision is still worth re-reading against the case in front of you**
 > (wave 156). `note_ub` skipped every symbolic operand with a stated reason: the query costs
 > "one per arithmetic instruction", which is 040's business. The reason is sound — for
