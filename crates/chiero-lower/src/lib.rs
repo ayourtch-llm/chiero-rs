@@ -614,6 +614,21 @@ impl Lowerer<'_> {
         let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
         let text = self.sym(name).unwrap_or_else(|| std::sync::Arc::from("?"));
         let gid = chiero_cir::GlobalId(self.module.globals.len() as u32);
+        // **The slot is reserved before the initializer is computed.** 020 §3 indexes
+        // `globals` by `GlobalId`, and computing the initializer can *push more globals* —
+        // `char *tab[2] = { "ab", "cd" };` interns a literal per element — which left `tab`
+        // at index 2 holding `GlobalId(0)`. The verifier caught it as `IdNotIndex`, which is
+        // exactly the rule it was added for.
+        self.module.globals.push(chiero_cir::Global {
+            id: gid,
+            name: text.clone(),
+            size,
+            align,
+            is_const: self.is_const_type(decl_ty),
+            init: chiero_cir::GlobalInit::Zero,
+            linkage: chiero_cir::Linkage::External,
+            span,
+        });
         // **C11 6.7.9p10: static storage with no initializer is zero**, and `Extern` is
         // for a declaration whose definition is in another TU — its bytes are unknown, not
         // zero, and saying zero would let the engine prove things about a value it has
@@ -635,8 +650,14 @@ impl Lowerer<'_> {
                 Some(f) => chiero_cir::GlobalInit::FuncAddr(f),
                 None => match init.and_then(|e| self.global_addr_init(e, to_ptr)) {
                     Some((g, off)) => chiero_cir::GlobalInit::Addr { g, off },
-                    None => match init.and_then(|e| self.encode_init(e, sty, size)) {
-                        Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
+                    None => match init.and_then(|e| self.encode_init_relocs(e, sty, size)) {
+                        // **Only when there is one.** An aggregate of plain scalars stays
+                        // `Bytes`, so the new variant appears exactly where an address had
+                        // to be dropped before and nothing else changes shape.
+                        Some((bytes, relocs)) if !relocs.is_empty() => {
+                            chiero_cir::GlobalInit::Relocated { bytes, relocs }
+                        }
+                        Some((bytes, _)) => chiero_cir::GlobalInit::Bytes(bytes),
                         // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
                         // must not become bytes for the part it understood: the rest would read as
                         // zeros the program never wrote, which is the confidently-wrong direction.
@@ -652,7 +673,9 @@ impl Lowerer<'_> {
         } else {
             chiero_cir::Linkage::External
         };
-        self.module.globals.push(chiero_cir::Global {
+        // Fill the slot reserved above, rather than pushing a second entry.
+        let is_const = self.is_const_type(decl_ty);
+        self.module.globals[gid.0 as usize] = chiero_cir::Global {
             id: gid,
             name: text,
             size,
@@ -662,11 +685,11 @@ impl Lowerer<'_> {
             // correct and unreachable: nothing marked a global read-only, so the checker
             // could never fire. VPP's tables are `const` precisely so writing to one is a
             // bug.
-            is_const: self.is_const_type(decl_ty),
+            is_const,
             init,
             linkage,
             span,
-        });
+        };
         self.globals.insert(name, gid);
     }
 
@@ -693,10 +716,22 @@ impl Lowerer<'_> {
     /// leaves the remainder zero, and stopping at the last written element would make every
     /// consumer reading past it see the end of a byte string rather than the zeros the
     /// standard promises.
-    fn encode_init(&mut self, e: ExprId, ty: TyId, size: u64) -> Option<Vec<u8>> {
+    /// Encode a file-scope initializer, keeping any addresses the aggregate contains.
+    ///
+    /// There is no bytes-only variant on purpose. One existed and returned `None` when the
+    /// initializer held an address, which the caller turned into `Zero` — the exact
+    /// fall-through waves 189–191 are about. A caller that cannot hold relocations should
+    /// not be able to ask for an encoding that quietly loses them.
+    fn encode_init_relocs(
+        &mut self,
+        e: ExprId,
+        ty: TyId,
+        size: u64,
+    ) -> Option<(Vec<u8>, Vec<chiero_cir::Reloc>)> {
         let mut out = vec![0u8; size as usize];
-        self.encode_into(e, ty, 0, &mut out)?;
-        Some(out)
+        let mut relocs = Vec::new();
+        self.encode_into(e, ty, 0, &mut out, &mut relocs)?;
+        Some((out, relocs))
     }
 
     /// Write `e`'s encoding at `at` in `out`. **The layout is the only source of offsets**
@@ -727,7 +762,36 @@ impl Lowerer<'_> {
         }
     }
 
-    fn encode_into(&mut self, e: ExprId, ty: TyId, at: u64, out: &mut [u8]) -> Option<()> {
+    fn encode_into(
+        &mut self,
+        e: ExprId,
+        ty: TyId,
+        at: u64,
+        out: &mut [u8],
+        relocs: &mut Vec<chiero_cir::Reloc>,
+    ) -> Option<()> {
+        // **An address, wherever it appears.** Checked before the type-directed walk, so a
+        // pointer slot inside a struct or an array element is the same case as a whole
+        // global initialized to one — and `&g`, `ga + 2`, a cast and a string literal all
+        // arrive here already understood by the functions waves 189 and 190 wrote.
+        if matches!(self.analysis.ty(ty), Ty::Ptr(_)) {
+            if let Some(f) = self.func_addr_init(e) {
+                relocs.push(chiero_cir::Reloc {
+                    off: at,
+                    target: chiero_cir::RelocTarget::Func(f),
+                    addend: 0,
+                });
+                return Some(());
+            }
+            if let Some((g, off)) = self.global_addr_init(e, true) {
+                relocs.push(chiero_cir::Reloc {
+                    off: at,
+                    target: chiero_cir::RelocTarget::Global(g),
+                    addend: off,
+                });
+                return Some(());
+            }
+        }
         match self.analysis.ty(ty).clone() {
             Ty::Array { elem, len } => {
                 let esz = self.analysis.size_of(elem)?;
@@ -761,7 +825,7 @@ impl Lowerer<'_> {
                             {
                                 break;
                             }
-                            self.encode_into(it.value, elem, at + cursor * esz, out)?;
+                            self.encode_into(it.value, elem, at + cursor * esz, out, relocs)?;
                             cursor += 1;
                         }
                         Some(())
@@ -822,7 +886,7 @@ impl Lowerer<'_> {
                                 }
                             }
                         }
-                        None => self.encode_into(it.value, f.ty, at + f.offset, out)?,
+                        None => self.encode_into(it.value, f.ty, at + f.offset, out, relocs)?,
                     }
                 }
                 Some(())

@@ -759,6 +759,31 @@ pub enum GlobalInit {
     /// equal to null and a call through it was a null call. A function has no `GlobalId`, so
     /// `Addr` cannot carry it.
     FuncAddr(FuncId),
+    /// **Bytes with addresses patched into them**, which is what a linker calls a
+    /// relocation and is here for the same reason: an aggregate can hold scalars and
+    /// addresses in one object, and neither `Bytes` nor `Addr` can say so. `Bytes` carries
+    /// no provenance (020 §3) and `Addr` describes the whole global as one address.
+    ///
+    /// `struct S { int *p; int n; } s = { &g, 3 };` is bytes for `n` and a relocation for
+    /// `p`. So is a table of string literals, and so is the array of function pointers a
+    /// `VLIB_REGISTER_NODE` builds.
+    Relocated { bytes: Vec<u8>, relocs: Vec<Reloc> },
+}
+
+/// One address written into a global's bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reloc {
+    /// Byte offset within the global.
+    pub off: u64,
+    pub target: RelocTarget,
+    /// Added to the target's address — `&ga[2]` is `ga` with an addend of 8.
+    pub addend: i64,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RelocTarget {
+    Global(GlobalId),
+    Func(FuncId),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]

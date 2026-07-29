@@ -5744,6 +5744,40 @@ impl<'m> Engine<'m> {
             // operand uses — so a function pointer that starts life in a global and one
             // assigned at run time are the same value, and an indirect call through either
             // resolves to the same function.
+            // **Bytes first, then each address patched over them.** The order matters:
+            // `write_bytewise` would otherwise overwrite a term already placed, and a
+            // pointer that lost its provenance reads back as an integer with no object.
+            Some(chiero_cir::GlobalInit::Relocated { bytes, relocs }) => {
+                let (bytes, relocs) = (bytes.clone(), relocs.clone());
+                s.mem
+                    .write_bytewise(chiero_mem::Pointer { base: o, off: 0 }, &bytes, span);
+                for r in &relocs {
+                    let base = match r.target {
+                        chiero_cir::RelocTarget::Global(g) => self.global_object(a, s, g),
+                        chiero_cir::RelocTarget::Func(f) => self.func_object(s, f),
+                    };
+                    let p = chiero_mem::Pointer {
+                        base,
+                        off: r.addend,
+                    };
+                    // Per relocation, not once for the object: `address_term` records the
+                    // term's provenance, and each slot in the aggregate names a different
+                    // object.
+                    if let Some(t) = self.address_term(a, s, p, span) {
+                        let _ = s.mem.write_term(
+                            a,
+                            chiero_mem::Pointer {
+                                base: o,
+                                off: r.off as i64,
+                            },
+                            t,
+                            8,
+                            chiero_mem::Endian::Little,
+                            span,
+                        );
+                    }
+                }
+            }
             Some(chiero_cir::GlobalInit::FuncAddr(target)) => {
                 let base = self.func_object(s, *target);
                 let p = chiero_mem::Pointer { base, off: 0 };

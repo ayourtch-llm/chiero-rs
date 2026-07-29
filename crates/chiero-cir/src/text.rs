@@ -232,6 +232,44 @@ impl<'a> Parser<'a> {
                     off,
                 }
             }
+            Some("reloc") => {
+                let hex = self.tok(t, o + 7)?.to_string();
+                let mut bytes = Vec::with_capacity(hex.len() / 2);
+                for i in (0..hex.len()).step_by(2) {
+                    bytes.push(
+                        u8::from_str_radix(&hex[i..i + 2], 16)
+                            .map_err(|_| self.perr("bad hex byte"))?,
+                    );
+                }
+                let mut relocs = Vec::new();
+                for tok in t.iter().skip(o + 8) {
+                    let mut it = tok.split(':');
+                    let off: u64 = it
+                        .next()
+                        .and_then(|x| x.parse().ok())
+                        .ok_or_else(|| self.perr("bad reloc offset"))?;
+                    let tgt = it.next().ok_or_else(|| self.perr("bad reloc target"))?;
+                    let n: u32 = tgt[1..]
+                        .parse()
+                        .map_err(|_| self.perr("bad reloc target id"))?;
+                    let target = match tgt.as_bytes().first() {
+                        Some(b'g') => RelocTarget::Global(GlobalId(n)),
+                        Some(b'f') => RelocTarget::Func(FuncId(n)),
+                        _ => return self.err("reloc target must be gN or fN"),
+                    };
+                    let addend: i64 = it
+                        .next()
+                        .and_then(|x| x.parse().ok())
+                        .ok_or_else(|| self.perr("bad reloc addend"))?;
+                    relocs.push(Reloc {
+                        off,
+                        target,
+                        addend,
+                    });
+                }
+                self.tok_hi.set(t.len());
+                GlobalInit::Relocated { bytes, relocs }
+            }
             Some("funcaddr") => {
                 let f = self
                     .tok(t, o + 7)?
@@ -1482,6 +1520,19 @@ pub fn print(m: &Module) -> String {
             // trip has to be exact.
             GlobalInit::Addr { g, off } => format!(" addr @{} {}", g.0, off),
             GlobalInit::FuncAddr(f) => format!(" funcaddr @{}", f.0),
+            // `reloc <hex> [off:target:addend ...]` — the bytes as usual, then each address
+            // patched into them. One token per relocation so the line stays greppable.
+            GlobalInit::Relocated { bytes, relocs } => {
+                let hex: String = bytes.iter().map(|x| format!("{x:02x}")).collect();
+                let rs: String = relocs
+                    .iter()
+                    .map(|r| match r.target {
+                        RelocTarget::Global(g) => format!(" {}:g{}:{}", r.off, g.0, r.addend),
+                        RelocTarget::Func(f) => format!(" {}:f{}:{}", r.off, f.0, r.addend),
+                    })
+                    .collect();
+                format!(" reloc {hex}{rs}")
+            }
         };
         o.push_str(&format!(
             "\nglobal {}{}@{} : size {} align {}{}{}\n",
