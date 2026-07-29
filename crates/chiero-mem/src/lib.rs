@@ -2086,6 +2086,66 @@ impl Memory {
         if let Some(f) = too_wide(size, at) {
             return AccessResult::fault(f);
         }
+        // **A promoted object is written through its array, and this check comes before the
+        // ground-constant fast path below.**
+        //
+        // The fast path delegates to `write`, which is arena-free and *refuses* a promoted
+        // object — so once any symbolic write promoted an object, every ordinary store of a
+        // constant into it declined and the value was lost. Wave 197 shipped that refusal
+        // knowingly and pinned it; wave 198 added an array branch further down this function
+        // and it never ran, because a constant store returns here first. Order is the whole
+        // fix.
+        //
+        // Symmetric with `read_term`, which has read through the array all along: the
+        // `Bytes` view is frozen at promotion, so a write that went there while the read came
+        // from the array would let the two representations drift.
+        if self.entry(p.base).is_some_and(|x| x.repr == Repr::Array) {
+            let obj_size = self.entry(p.base).map_or(0, |x| x.size);
+            let mut faults = Vec::new();
+            for i in 0..size {
+                let idx = if e == Endian::Big { size - 1 - i } else { i };
+                let lo = (idx * 8) as u32;
+                let byte = a.extract(t, lo + 7, lo);
+                let off = p.off + i as i64;
+                // Promotion changes the representation, not the object's extent.
+                if off < 0 || off as u64 >= obj_size {
+                    faults.push(MemFault::OutOfBounds {
+                        obj: p.base,
+                        off,
+                        size: 1,
+                        obj_size,
+                        at,
+                    });
+                    continue;
+                }
+                let Some(arr) = self.entry(p.base).and_then(|x| x.arr) else {
+                    break;
+                };
+                let ix = a.bv(arr.idx_bits, off as u128);
+                let data = a.store(arr.data, ix, byte);
+                // **`init` is indexed per *bit*, `data` per byte** — and getting that wrong
+                // is invisible except as a `maybe-uninitialized-read` on a byte the program
+                // just stored. `init_bit_via` selects `arr.init` at `bit`, and the candidate
+                // write above loops `b * 8 .. b * 8 + 8`; a byte-indexed store here writes
+                // one bit of the wrong byte and leaves the other eight unset.
+                let one = a.bv(1, 1);
+                let mut init = arr.init;
+                for bit in off as u64 * 8..off as u64 * 8 + 8 {
+                    let bi = a.bv(arr.idx_bits, bit as u128);
+                    init = a.store(init, bi, one);
+                }
+                if let Some(entry) = self.entry_mut(p.base)
+                    && let Some(arr) = entry.arr.as_mut()
+                {
+                    arr.data = data;
+                    arr.init = init;
+                }
+            }
+            return AccessResult {
+                value: Some(()),
+                faults,
+            };
+        }
         if let Ok(c) = a.eval_ground(t) {
             let v = c.bits();
             let mut bytes: Vec<u8> = (0..size).map(|i| (v >> (8 * i)) as u8).collect();
