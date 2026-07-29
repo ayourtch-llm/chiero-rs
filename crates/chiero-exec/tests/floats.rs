@@ -263,3 +263,132 @@ fn a_symbolic_float_operand_is_unknown_not_folded() {
         "no float sort exists, so this cannot be modelled and must say so"
     );
 }
+
+fn f32c(v: f32) -> Operand {
+    Operand::Const(Const::Float(FloatKind::F32, u64::from(v.to_bits())))
+}
+
+/// **The single-precision path is a second implementation and needs its own fixtures.**
+///
+/// `f32` and `f64` are separate arms computing at separate widths, so every test written
+/// only in `double` leaves half the arithmetic unchecked — a mutation making `FAdd` subtract
+/// in the 32-bit arm survived the whole suite until this existed.
+///
+/// The values are chosen so single precision *shows*: `0.1f + 0.2f` is a different bit
+/// pattern from the double it would widen to, so an implementation that computed in `f64`
+/// and narrowed at the end fails here.
+#[test]
+fn single_precision_arithmetic_is_exact_at_its_own_width() {
+    for (op, x, y, want) in [
+        (BinOp::FAdd, 2.5f32, 1.25f32, 3.75f32),
+        (BinOp::FSub, 2.5, 1.25, 1.25),
+        (BinOp::FMul, 2.5, 4.0, 10.0),
+        (BinOp::FDiv, 10.0, 4.0, 2.5),
+        (BinOp::FRem, 10.0, 4.0, 2.0),
+        (BinOp::FAdd, 0.1, 0.2, 0.1f32 + 0.2f32),
+        (BinOp::FDiv, 1.0, 3.0, 1.0f32 / 3.0f32),
+    ] {
+        let (r, mut a) = run(
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Bin {
+                        op,
+                        ty: CTy::Float(FloatKind::F32),
+                        a: f32c(x),
+                        b: f32c(y),
+                    },
+                },
+                10,
+            )],
+            Operand::Value(ValueId(0)),
+            CTy::Float(FloatKind::F32),
+        );
+        assert_eq!(
+            r.states()[0].return_value_bits(&mut a),
+            Some(u128::from(want.to_bits())),
+            "{op:?} {x}f {y}f should be {want}f at single precision"
+        );
+    }
+}
+
+/// **`SiToFp` reads its source as signed and `UiToFp` does not.**
+///
+/// Asserted on the *float* rather than on a round trip, because a round trip through 32 bits
+/// hides it: `-7` read as unsigned is 4294967289, and truncating that back to `int` gives
+/// `-7` again. A mutation making `SiToFp` unsigned survived the round-trip test for exactly
+/// that reason, and the two conversions genuinely differ — one produces `-7.0` and the other
+/// four billion.
+#[test]
+fn the_two_int_to_float_casts_differ_in_signedness() {
+    for (kind, want) in [
+        (CastKind::SiToFp, -7.0f64),
+        (CastKind::UiToFp, 4_294_967_289.0f64),
+    ] {
+        let (r, mut a) = run(
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Cast {
+                        kind,
+                        to: CTy::Float(FloatKind::F64),
+                        from: CTy::Int(32),
+                        a: i32c(-7),
+                    },
+                },
+                10,
+            )],
+            Operand::Value(ValueId(0)),
+            CTy::Float(FloatKind::F64),
+        );
+        assert_eq!(
+            r.states()[0].return_value_bits(&mut a),
+            Some(u128::from(want.to_bits())),
+            "{kind:?} of the bits of -7 is {want}"
+        );
+    }
+}
+
+/// **Narrowing and widening between the two precisions.**
+///
+/// `FpTrunc` loses bits and must lose exactly the ones the hardware would; `FpExt` is
+/// lossless. Round-tripping a value single precision cannot hold is what shows the first
+/// actually narrowed.
+#[test]
+fn the_two_precisions_convert_both_ways() {
+    let (r, mut a) = run(
+        vec![
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Cast {
+                        kind: CastKind::FpTrunc,
+                        to: CTy::Float(FloatKind::F32),
+                        from: CTy::Float(FloatKind::F64),
+                        a: f64c(0.1),
+                    },
+                },
+                10,
+            ),
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Cast {
+                        kind: CastKind::FpExt,
+                        to: CTy::Float(FloatKind::F64),
+                        from: CTy::Float(FloatKind::F32),
+                        a: Operand::Value(ValueId(0)),
+                    },
+                },
+                11,
+            ),
+        ],
+        Operand::Value(ValueId(1)),
+        CTy::Float(FloatKind::F64),
+    );
+    assert_eq!(
+        r.states()[0].return_value_bits(&mut a),
+        Some(u128::from(f64::from(0.1f32).to_bits())),
+        "0.1 narrowed to single and widened back is single's 0.1, not double's"
+    );
+}

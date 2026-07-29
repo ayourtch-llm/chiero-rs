@@ -1131,10 +1131,15 @@ fn nothing_unmodeled_can_end_at_exact() {
                     0,
                     vec![inst(InstKind::Assign {
                         dst: ValueId(0),
-                        rv: RValue::Use(Operand::Const(Const::Float(
-                            FloatKind::F64,
-                            0x4000_0000_0000_0000,
-                        ))),
+                        // **A wide constant, not a float.** This said `Float(F64)` until
+                        // wave 167 taught the engine concrete floating point, at which
+                        // point the case stopped being unrepresentable and the test stopped
+                        // testing anything. `Const::Wide` is the >128-bit form and the
+                        // engine has no arm for it at all, which is what this case is for.
+                        rv: RValue::Use(Operand::Const(Const::Wide {
+                            bits: 256,
+                            words: vec![1, 0, 0, 0],
+                        })),
                     })],
                     Terminator::Return(Some(i32c(0))),
                 )],
@@ -6720,8 +6725,13 @@ fn a_store_chiero_cannot_perform_forbids_a_proof() {
                 // float constant at all — so the store cannot happen.
                 inst(InstKind::Store {
                     addr: Operand::Value(ValueId(0)),
-                    val: Operand::Const(Const::Float(FloatKind::F64, 0x4000_0000_0000_0000)),
-                    ty: CTy::Float(FloatKind::F64),
+                    // Wide rather than float, for the reason above: wave 167 made a
+                    // concrete `F64` store perfectly performable.
+                    val: Operand::Const(Const::Wide {
+                        bits: 256,
+                        words: vec![1, 0, 0, 0],
+                    }),
+                    ty: CTy::Int(256),
                     align: 8,
                     vol: Volatility::Normal,
                 }),
@@ -6732,7 +6742,7 @@ fn a_store_chiero_cannot_perform_forbids_a_proof() {
     );
     caller.allocas = vec![AllocaDecl {
         align: 8,
-        ..alloca(0, CTy::Float(FloatKind::F64), 1)
+        ..alloca(0, CTy::Int(256), 1)
     }];
     let m = Module {
         funcs: vec![caller],
@@ -8042,7 +8052,11 @@ fn an_unrepresentable_vararg_does_not_shift_the_ones_after_it() {
                 callee: Callee::Direct(FuncId(1)),
                 args: vec![
                     Operand::Const(Const::Int { bits: 32, val: 3 }),
-                    Operand::Const(Const::Float(FloatKind::F64, 0x3FF8_0000_0000_0000)),
+                    // Wide rather than float: wave 167 made a concrete float a value.
+                    Operand::Const(Const::Wide {
+                        bits: 256,
+                        words: vec![1, 0, 0, 0],
+                    }),
                     Operand::Const(Const::Int { bits: 32, val: 42 }),
                     Operand::Const(Const::Int { bits: 32, val: 7 }),
                 ],

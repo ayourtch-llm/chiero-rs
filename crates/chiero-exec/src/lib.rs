@@ -4376,6 +4376,24 @@ impl<'m> Engine<'m> {
                     // A `Bitcast` between equal widths is the identity on bits, which is
                     // exactly what 021 §3 means by "bytes are bytes".
                     CastKind::Bitcast if tw == fw => Value::Scalar(xv),
+                    // **The six FP casts, concretely.** Symbolic operands fall through to
+                    // the gap below, for the same reason float arithmetic does: there is no
+                    // float sort to constrain.
+                    CastKind::SiToFp
+                    | CastKind::UiToFp
+                    | CastKind::FpToSi
+                    | CastKind::FpToUi
+                    | CastKind::FpTrunc
+                    | CastKind::FpExt => match fcast(a, *kind, xv, fw, tw) {
+                        Some(t) => Value::Scalar(t),
+                        None => {
+                            return self.lowering_gap(
+                                s,
+                                span,
+                                &format!("{kind:?} {fw} -> {tw} on a symbolic operand"),
+                            );
+                        }
+                    },
                     other => {
                         return self.lowering_gap(s, span, &format!("{other:?} {fw} -> {tw}"));
                     }
@@ -6594,6 +6612,19 @@ impl<'m> Engine<'m> {
             Operand::Const(Const::Int { bits, val }) => {
                 Some(Value::Scalar(a.bv(*bits, *val as u128)))
             }
+            // **A float literal is its bits.** `Const::Float` carries the raw pattern so a
+            // NaN payload survives a round trip, and `sort_of` already gives F32 32 bits
+            // and F64 64 — so the value the engine wants is the one CIR already holds. The
+            // 80-bit x87 form has no Rust primitive to compute with and stays a gap; its
+            // *width* is representable, which is why the guard is on the kind and not here.
+            Operand::Const(Const::Float(k, bits)) => Some(Value::Scalar(a.bv(
+                match k {
+                    FloatKind::F32 => 32,
+                    FloatKind::F64 => 64,
+                    FloatKind::X87_80 => 80,
+                },
+                u128::from(*bits),
+            ))),
             Operand::Const(Const::Null) => Some(Value::Ptr(Pointer {
                 base: chiero_mem::ObjectId::NULL,
                 off: 0,
@@ -6727,10 +6758,21 @@ fn bits_of_cty(t: &CTy) -> Option<u32> {
         // `u8x16` view of a `u32x4` did not produce a wrong answer, it produced no answer,
         // and the run degraded to `Unknown` for a construct the CIR fully specifies.
         CTy::Vector { elem, lanes } => elem.bit_width().map(|w| w * lanes),
-        // **Not a fallthrough.** `Float` is 023 §7's `Approximated` territory and `Void`
-        // has no width at all; both are genuine `None`, and writing them out means a new
-        // `CTy` is a compile error here rather than a silent gap of the kind above.
-        CTy::Float(_) | CTy::Void => None,
+        // **A float has a width now.** This was `None` on the grounds that floats were
+        // 023 §7's `Approximated` territory — true while nothing could evaluate one, and
+        // the reason the FP casts could not even reach their own match arm: the guard above
+        // bailed on the *width* before the kind was looked at. The width was never the
+        // uncertain part; `sort_of` has always given F32 32 bits. What is uncertain is a
+        // *symbolic* float, and that is declared where it happens rather than by pretending
+        // the type has no size.
+        CTy::Float(k) => Some(match k {
+            FloatKind::F32 => 32,
+            FloatKind::F64 => 64,
+            FloatKind::X87_80 => 80,
+        }),
+        // `Void` has no width at all, and writing it out means a new `CTy` is a compile
+        // error here rather than a silent gap of the kind above.
+        CTy::Void => None,
     }
 }
 
@@ -6755,6 +6797,69 @@ fn sort_of(ty: &CTy) -> chiero_solver::Sort {
 /// `LoweringGap`; defaulting to addition made `5 - 3` come out `8` at `Fidelity::Exact`,
 /// which is a wrong answer wearing a proof. 023 §2's "the mapping from CIR ops to solver
 /// ops is 1:1 by construction" is only true if the map is total or says when it is not.
+/// One concrete floating-point conversion, or `None` if the operand is symbolic.
+///
+/// **`FpToSi`/`FpToUi` truncate toward zero**, which is C11 6.3.1.4's rule and not the
+/// rounding a reader expects: `(int)-2.7` is `-2`. Rust's `as` on floats does the same and
+/// also saturates instead of being undefined at the edges, which is a better answer than
+/// the hardware's and is recorded here rather than silently relied upon — a program whose
+/// value depends on it is undefined in C, so nothing chiero reports about it is a claim.
+fn fcast(a: &mut TermArena, kind: CastKind, x: Term, fw: u32, tw: u32) -> Option<Term> {
+    let c = a.as_const(x)?;
+    let as_f64 = |w: u32, b: u128| -> Option<f64> {
+        match w {
+            32 => Some(f64::from(f32::from_bits(b as u32))),
+            64 => Some(f64::from_bits(b as u64)),
+            _ => None,
+        }
+    };
+    let bits = match kind {
+        // The source is an integer; its signedness is the cast's, not the width's.
+        CastKind::SiToFp | CastKind::UiToFp => {
+            let v = if kind == CastKind::SiToFp {
+                c.signed() as f64
+            } else {
+                c.bits() as f64
+            };
+            match tw {
+                32 => u128::from((v as f32).to_bits()),
+                64 => u128::from(v.to_bits()),
+                _ => return None,
+            }
+        }
+        CastKind::FpToSi => {
+            let v = as_f64(fw, c.bits())?;
+            // Truncate toward zero, then keep the low `tw` bits — a narrowing conversion
+            // that does not fit is undefined in C, so any bit pattern is a legal answer and
+            // this one at least does not panic.
+            ((v as i128) as u128) & mask_bits(tw)
+        }
+        CastKind::FpToUi => {
+            let v = as_f64(fw, c.bits())?;
+            (v as u128) & mask_bits(tw)
+        }
+        CastKind::FpTrunc | CastKind::FpExt => {
+            let v = as_f64(fw, c.bits())?;
+            match tw {
+                32 => u128::from((v as f32).to_bits()),
+                64 => u128::from(v.to_bits()),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(a.bv(tw, bits))
+}
+
+/// The low `w` bits set, for widths up to 128.
+fn mask_bits(w: u32) -> u128 {
+    if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    }
+}
+
 fn bin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
     Some(match op {
         BinOp::Add => a.add(x, y),
@@ -6770,8 +6875,71 @@ fn bin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
         BinOp::Shl => a.shl(x, y),
         BinOp::LShr => a.lshr(x, y),
         BinOp::AShr => a.ashr(x, y),
-        // Floats and pointer differences are not modeled yet, and saying so is the whole
-        // point of this function returning an `Option`.
+        // **Floating point, when both operands are concrete.**
+        //
+        // There is no float sort in `chiero-solver`, so a symbolic float cannot be
+        // constrained and `fbin` returns `None` for one — a declared gap rather than a
+        // folded guess. Concrete operands need no theory at all: the bits are already in
+        // the arena, IEEE-754 is what `f32`/`f64` implement, and the answer goes back as
+        // bits. Pointer differences remain unmodelled.
+        BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem => {
+            return fbin(a, op, x, y);
+        }
+        _ => return None,
+    })
+}
+
+/// One concrete floating-point operation, or `None` if either operand is symbolic.
+///
+/// **Width comes from the terms, not from the instruction's `ty`.** The two agree in
+/// well-formed CIR, and where they disagree the bits are what exist — computing at a width
+/// the value does not have is how a reinterpretation becomes a wrong number.
+fn fbin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
+    let (xc, yc) = (a.as_const(x)?, a.as_const(y)?);
+    let w = xc.width();
+    if w != yc.width() {
+        return None;
+    }
+    let bits = match w {
+        32 => {
+            let (p, q) = (
+                f32::from_bits(xc.bits() as u32),
+                f32::from_bits(yc.bits() as u32),
+            );
+            u128::from(fop32(op, p, q)?.to_bits())
+        }
+        64 => {
+            let (p, q) = (
+                f64::from_bits(xc.bits() as u64),
+                f64::from_bits(yc.bits() as u64),
+            );
+            u128::from(fop64(op, p, q)?.to_bits())
+        }
+        // x87's 80-bit extended format has no Rust primitive, and emulating it to get one
+        // operation right would be a second float implementation nobody tests.
+        _ => return None,
+    };
+    Some(a.bv(w, bits))
+}
+
+fn fop32(op: BinOp, p: f32, q: f32) -> Option<f32> {
+    Some(match op {
+        BinOp::FAdd => p + q,
+        BinOp::FSub => p - q,
+        BinOp::FMul => p * q,
+        BinOp::FDiv => p / q,
+        BinOp::FRem => p % q,
+        _ => return None,
+    })
+}
+
+fn fop64(op: BinOp, p: f64, q: f64) -> Option<f64> {
+    Some(match op {
+        BinOp::FAdd => p + q,
+        BinOp::FSub => p - q,
+        BinOp::FMul => p * q,
+        BinOp::FDiv => p / q,
+        BinOp::FRem => p % q,
         _ => return None,
     })
 }
