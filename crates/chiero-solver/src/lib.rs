@@ -2161,6 +2161,18 @@ pub struct SmtLib {
 }
 
 impl SmtLib {
+    /// What to call this backend in a result (022 §4).
+    ///
+    /// The file stem, not the path: 022's own examples are `z3` and `cvc5`, and a finding
+    /// that named `/usr/bin/z3` would make two machines running the same solver look like
+    /// they disagreed. The full path stays available for anyone diagnosing *which* z3.
+    pub fn name(&self) -> &str {
+        self.path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("smtlib")
+    }
+
     /// `$CHIERO_SMT_SOLVER`, then z3, cvc5, bitwuzla on `PATH`.
     ///
     /// Discovery is a **runtime** fact. A Cargo feature cannot be conditionally enabled

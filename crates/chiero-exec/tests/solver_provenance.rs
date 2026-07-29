@@ -126,6 +126,15 @@ fn the_result_records_which_solver_decided() {
         return;
     };
     let name = b.name().to_string();
+    // **A name, not a path.** Comparing the result against `b.name()` alone is
+    // self-consistent: both move together if `name()` starts returning the full path, and a
+    // mutation doing exactly that survived. Two machines running the same solver from
+    // different prefixes must produce the same string, or a finding compared across them
+    // reads as a disagreement about the solver rather than about the program.
+    assert!(
+        !name.contains(std::path::MAIN_SEPARATOR),
+        "the recorded solver should be a name like `z3`, not a path: {name:?}"
+    );
     let mut a = TermArena::new();
     let full = Engine::new(&m).with_backend(b).run(&mut a);
     assert_eq!(

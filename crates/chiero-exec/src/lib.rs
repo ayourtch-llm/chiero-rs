@@ -212,6 +212,13 @@ pub struct Finding {
     /// The fidelity of the path this was found on — not the run's. A definite fault on an
     /// `Exact` path stays actionable in a run some *other* path degraded.
     pub fidelity: Fidelity,
+    /// **022 §4: which solver decided the path this was found on.**
+    ///
+    /// `solver-lite` when tier 1 answered alone. Carried on the finding rather than left to
+    /// the run because that is the clause's stated purpose — a reader looking at one report
+    /// should not have to go back to the run to learn what stands behind it, and an upstream
+    /// solver bug is reported *from* a finding.
+    pub solver: String,
 }
 
 /// How big an object an entry function's pointer parameter points at. The caller is
@@ -830,6 +837,9 @@ pub fn seal(r: &RunResult, w: ExactWitness) -> Result<Proven<'_>, NotProven> {
 pub struct RunResult {
     id: u32,
     states: Vec<State>,
+    /// Which solver decided this run (022 §4). Private: it is a fact the run establishes,
+    /// not a knob, and `RunResult` is already forgery-proof by construction.
+    solver: String,
     pub solver_calls: u64,
     /// 022 §4 wants this at one for a whole run. A per-query spawn shows up immediately.
     pub backend_spawns: u64,
@@ -865,6 +875,17 @@ impl RunResult {
 
     pub fn states(&self) -> &[State] {
         &self.states
+    }
+
+    /// **022 §4: which solver decided this run.**
+    ///
+    /// Never blank. `solver-lite` says tier 1 answered alone, which is a different fact
+    /// from a backend having been used and is not the same as silence — before this,
+    /// `backend_spawns == 0` was what a run reported both when tier 1 sufficed and when no
+    /// solver was installed, and wave 161 made the choice implicit so nothing else records
+    /// it.
+    pub fn solver(&self) -> &str {
+        &self.solver
     }
 
     /// 023 contract 7: the seed the strategy used.
@@ -945,6 +966,7 @@ impl RunResult {
                     })
                 }),
                 fidelity: st.fidelity,
+                solver: self.solver.clone(),
             });
         }
         out
@@ -1720,6 +1742,18 @@ impl<'m> Engine<'m> {
         self
     }
 
+    /// What to record as the solver behind this run (022 §4).
+    ///
+    /// Resolved from the same `backend_for_run` the queries use, so the name cannot
+    /// disagree with what actually answered. Reported even on the error paths that make no
+    /// query at all — the question a reader is asking is "what was this run configured to
+    /// decide with", and "no queries were made" is `solver_calls`'s job.
+    fn solver_name(&self) -> String {
+        self.backend_for_run()
+            .map(|b| b.name().to_string())
+            .unwrap_or_else(|| "solver-lite".to_string())
+    }
+
     /// Which backend this run should use, if any — 022 §4's discovery, in one place.
     ///
     /// Three solvers get built during a run (the query path, the checker path, and the
@@ -1807,6 +1841,7 @@ impl<'m> Engine<'m> {
                 seed: self.seed(),
                 budget: self.budget,
                 _seal: Sealed,
+                solver: self.solver_name(),
             };
         };
         let mut mem = Memory::new();
@@ -1893,6 +1928,7 @@ impl<'m> Engine<'m> {
                 seed: self.seed(),
                 budget: self.budget,
                 _seal: Sealed,
+                solver: self.solver_name(),
             };
         }
         // **The entry function's parameters are unknown, not absent.** Leaving them
@@ -2188,6 +2224,7 @@ impl<'m> Engine<'m> {
             seed: self.seed(),
             budget: self.budget,
             _seal: Sealed,
+            solver: self.solver_name(),
         }
     }
 
