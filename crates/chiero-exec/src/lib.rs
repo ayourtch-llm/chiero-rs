@@ -6782,6 +6782,33 @@ impl<'m> Engine<'m> {
             self.direct_into(a, s, id, dst, args, span);
             return;
         }
+        // **A null callee is a fault, not a gap.** C11 6.5.2.2p5 requires the operand to
+        // point to a function, and calling through a null one crashes exactly as
+        // dereferencing a null data pointer does.
+        //
+        // Reported through `report_faults` rather than as a bespoke finding, so it gets
+        // 023 §6.1's deduplication, the span, the access path and — the part that matters —
+        // the "path ends at a definite crash" rule. Without that the state would carry on
+        // into a function it never reached.
+        //
+        // Before this it fell through to the candidate list below, which for a null pointer
+        // means forking over every function in the module or, when there is nothing to fork
+        // over, degrading. A degraded run says "chiero could not follow this", and a reader
+        // scanning for findings sees a clean run — the more misleading of the two ways to be
+        // wrong about a definite fault.
+        if let Some(Value::Ptr(p)) = self.operand(a, s, op)
+            && p.base == chiero_mem::ObjectId::NULL
+        {
+            self.report_faults(
+                s,
+                &[chiero_mem::MemFault::NullDeref {
+                    off: p.off,
+                    at: span,
+                }],
+                span,
+            );
+            return;
+        }
         let all: Vec<FuncId> = self
             .module
             .funcs
