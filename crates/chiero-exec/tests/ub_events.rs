@@ -227,3 +227,241 @@ fn ub_events_appear_in_the_rendered_report() {
         render(&ok)
     );
 }
+
+/// Run `op` with a **symbolic** right operand, optionally constrained by a branch.
+///
+/// `run_op` builds both operands as constants, which is the only shape the UB check has
+/// ever been asked about. Everything a symbolic executor is for has the other shape.
+fn run_op_symbolic(op: BinOp, width: u32, force_zero: bool) -> (RunResult, TermArena) {
+    let k = |v: i128| {
+        Operand::Const(Const::Int {
+            bits: width,
+            val: v,
+        })
+    };
+    let mut insts = vec![Inst {
+        kind: InstKind::Assign {
+            dst: ValueId(0),
+            rv: RValue::Fresh {
+                ty: CTy::Int(width),
+            },
+        },
+        span: at(5),
+        generated: false,
+    }];
+    let mut blocks = Vec::new();
+    if force_zero {
+        // `if (y != 0) return 0;` — so the only path reaching the operation has `y == 0`
+        // on its path condition. Nothing is *maybe* about the division that follows.
+        insts.push(Inst {
+            kind: InstKind::Assign {
+                dst: ValueId(9),
+                rv: RValue::Cmp {
+                    op: CmpOp::Eq,
+                    ty: CTy::Int(width),
+                    a: Operand::Value(ValueId(0)),
+                    b: k(0),
+                },
+            },
+            span: at(6),
+            generated: false,
+        });
+        blocks.push(block(
+            0,
+            insts,
+            Terminator::Br {
+                cond: Operand::Value(ValueId(9)),
+                t: BlockId(1),
+                f: BlockId(2),
+            },
+        ));
+        blocks.push(block(2, vec![], Terminator::Return(Some(k(0)))));
+        insts = Vec::new();
+    }
+    let op_block = if force_zero { 1 } else { 0 };
+    insts.push(Inst {
+        kind: InstKind::Assign {
+            dst: ValueId(1),
+            rv: RValue::Bin {
+                op,
+                ty: CTy::Int(width),
+                a: k(100),
+                b: Operand::Value(ValueId(0)),
+            },
+        },
+        span: at(10),
+        generated: false,
+    });
+    blocks.push(block(
+        op_block,
+        insts,
+        Terminator::Return(Some(Operand::Value(ValueId(1)))),
+    ));
+    blocks.sort_by_key(|b| b.id.0);
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks,
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).run(&mut arena);
+    (r, arena)
+}
+
+/// **A symbolic divisor that can be zero is a division by zero.**
+///
+/// The UB check opens with
+///
+/// ```text
+///   let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else { return };
+/// ```
+///
+/// so it answers only for two constants. Every other operand shape leaves *no* event and,
+/// worse, leaves the state claiming `Fidelity::Exact` — a positive assertion that the path
+/// was modelled completely, made about a path with undefined behaviour on it. 020 §4.1 says
+/// a checker observes the event; there is nothing to observe.
+///
+/// The two cases are separated because they are different claims. When the path *forces*
+/// `y == 0` the division is definite and nothing about it is a guess. When `y` is merely
+/// unconstrained the divisor can be zero, and 023's whole vocabulary for that is a report
+/// with a witness rather than silence — the null-dereference path already works exactly
+/// this way, which is what says the machinery is present and simply not wired to arithmetic.
+#[test]
+fn a_symbolic_divisor_that_can_be_zero_is_reported() {
+    for op in [BinOp::UDiv, BinOp::SDiv, BinOp::URem, BinOp::SRem] {
+        // Forced: the only path here has `y == 0` in its path condition.
+        let (r, _) = run_op_symbolic(op, 32, true);
+        let events: Vec<_> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .filter(|u| u.kind == UbKind::DivByZero)
+            .collect();
+        assert!(
+            !events.is_empty(),
+            "{op:?}: the path condition forces the divisor to zero and no event was \
+             recorded. States: {:#?}",
+            r.states()
+                .iter()
+                .map(|s| (s.fidelity(), s.ub_events().len()))
+                .collect::<Vec<_>>()
+        );
+
+        // Unconstrained: zero is feasible, so this is a division by zero on some path.
+        let (r, _) = run_op_symbolic(op, 32, false);
+        let events: Vec<_> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .filter(|u| u.kind == UbKind::DivByZero)
+            .collect();
+        assert!(
+            !events.is_empty(),
+            "{op:?}: an unconstrained divisor can be zero and no event was recorded"
+        );
+    }
+}
+
+/// **And a divisor that cannot be zero is not reported.**
+///
+/// The companion, and the one that keeps the fix from being "report everything": a check
+/// that fires whenever the divisor is not a constant would bury every real division under a
+/// false one. `y != 0` on the path condition is exactly as decidable as `y == 0` was.
+#[test]
+fn a_symbolic_divisor_that_cannot_be_zero_is_not_reported() {
+    let k = |v: i128| Operand::Const(Const::Int { bits: 32, val: v });
+    let f = Function {
+        id: FuncId(0),
+        name: "f".into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![
+            block(
+                0,
+                vec![
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(0),
+                            rv: RValue::Fresh { ty: CTy::Int(32) },
+                        },
+                        span: at(5),
+                        generated: false,
+                    },
+                    Inst {
+                        kind: InstKind::Assign {
+                            dst: ValueId(9),
+                            rv: RValue::Cmp {
+                                op: CmpOp::Eq,
+                                ty: CTy::Int(32),
+                                a: Operand::Value(ValueId(0)),
+                                b: k(0),
+                            },
+                        },
+                        span: at(6),
+                        generated: false,
+                    },
+                ],
+                // Divide only on the branch where the divisor is *not* zero.
+                Terminator::Br {
+                    cond: Operand::Value(ValueId(9)),
+                    t: BlockId(2),
+                    f: BlockId(1),
+                },
+            ),
+            block(
+                1,
+                vec![Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(1),
+                        rv: RValue::Bin {
+                            op: BinOp::SDiv,
+                            ty: CTy::Int(32),
+                            a: k(100),
+                            b: Operand::Value(ValueId(0)),
+                        },
+                    },
+                    span: at(10),
+                    generated: false,
+                }],
+                Terminator::Return(Some(Operand::Value(ValueId(1)))),
+            ),
+            block(2, vec![], Terminator::Return(Some(k(0)))),
+        ],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: Span::DUMMY,
+    };
+    let m = Module {
+        funcs: vec![f],
+        ..Default::default()
+    };
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).run(&mut arena);
+    let events: Vec<_> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.ub_events())
+        .filter(|u| u.kind == UbKind::DivByZero)
+        .collect();
+    assert!(
+        events.is_empty(),
+        "the divisor is non-zero on every path that divides: {events:#?}"
+    );
+}
