@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 163) — 1192 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 164) — 1193 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -514,7 +514,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
 > witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
 > labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
-> said; 162 made the result say which solver decided it; 163 gave the backend a watchdog**.*
+> said; 162 made the result say which solver decided it; 163 gave the backend a watchdog;
+> 164 made every query a dumpable artifact, finishing 022 §4**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -723,11 +724,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   `$CHIERO_SMT_TIMEOUT` (0 disables). A timeout is deliberately **not** retried — the
 >   existing restart-and-replay path is for a *death*, and contract 14's correctness comes
 >   from `query` redeclaring variables on a fresh session rather than from the watchdog.
-> - **`--dump-queries <dir>` is still owed** (022 §4): the emitted SMT-LIB2 is "a
->   **first-class artifact** … which is how a solver disagreement gets reported upstream and
->   how chiero's own bugs get bisected". Nothing writes it. Cheap, and the thing you want the
->   moment tier 1 and tier 2 disagree — which `paranoid` mode can already detect and cannot
->   currently show you.
+> - ~~`--dump-queries <dir>` is still owed.~~ **Done in wave 164** as
+>   `$CHIERO_DUMP_QUERIES`, matching the two knobs beside it; the CLI flag is one line over
+>   it once `chiero-cli` exists. **022 §4 is now fully implemented** — discovery (161),
+>   provenance (162), watchdog (163), dump (164).
+> - **The dump is a *reconstruction*, not a transcript**, and that is load-bearing: the wire
+>   declares only variables the live process has not seen, so dumping the bytes yields a file
+>   that replays only after every earlier query in the session. Anyone extending the dump
+>   should keep it standalone — contract 17 is a round trip, and the failure is quiet.
+> - **`(set-option :timeout N)` is still not sent.** 022 §4 asks for it *alongside* the
+>   wall-clock watchdog wave 163 built. The watchdog covers the failure that matters (a
+>   process that never answers), but telling the solver its own budget lets it stop cleanly
+>   and answer `unknown` rather than be killed. Small, and the last thread of that section.
 > - **One mutant survives in the watchdog** (wave 163): not killing the child on timeout,
 >   because `Drop for Session` also kills it and the caller drops the session immediately.
 >   The line stays and documents the distinction (`Drop` tidies up; the watchdog *ends the
@@ -797,6 +805,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **An artifact for a third party is not the bytes you sent** (wave 164). Dumping the wire
+> traffic looks like the honest implementation of "writes every query" and produces files
+> that only replay in session order, because a long-lived process is told each declaration
+> once. What the contract wants is a *standalone* script, which has to be rebuilt. **Ask who
+> reads the artifact and what they will have**; here they have z3 and nothing else.
+> **"Matched nothing" is a verdict the sweep has to be able to give** (wave 164). Three
+> mutations aimed at Rust string literals containing `\n` failed to match through two rounds
+> of perl escaping. Because the harness compares an md5 before and after, they were reported
+> as MATCHED NOTHING rather than as survivors — which would have read as three tests that
+> do not check anything. **A sweep that cannot tell "no change" from "no effect" reports the
+> opposite of the truth.**
 > **A derived `Default` can switch a subsystem off** (wave 163). Adding a
 > `timeout: Duration` field to a struct that derives `Default` compiles, reviews clean, and
 > makes every backend query time out instantly, because `Duration::default()` is zero. The
