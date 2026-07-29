@@ -97,35 +97,42 @@ fn reading_back_the_symbolic_offset_gets_the_written_value() {
     assert!(seen > 0, "no state produced a solvable returned value");
 }
 
-/// **A concrete access after a symbolic one refuses, and says so.**
+/// **A concrete access after a symbolic one lands.**
 ///
-/// §9's promotion warning, made into a test and then answered by it. The symbolic write
-/// promotes the object to an array representation, and a promoted object refuses the
-/// *arena-free* byte and bit APIs (`promoted_fault`) that the concrete store and load still
-/// use — so `ca[1] = 3; return ca[1];` after a symbolic write produces no value.
+/// §9's promotion warning, and the wave that answered it. A symbolic write promotes the
+/// object to an array representation, and wave 197 shipped that knowing the cost: the
+/// *concrete* store and load reached for the **arena-free** byte and bit APIs, which refuse a
+/// promoted object (`promoted_fault`), so every ordinary access afterwards declined.
 ///
-/// That is a real cost, and it is **not** what this test says should happen forever — it is
-/// what happens now, pinned so the next wave can see it change. The trade wave 197 made is
-/// deliberate: before it, the symbolic store was *dropped* and `ca[0]` answered a confident
-/// `0` for a byte the write may have hit. After it, the access declines. 023 §7's rule is that
-/// a gap is a diagnostic and not a licence, and a recorded refusal is worth more than a wrong
-/// byte — but only until the concrete paths learn the array representation.
+/// Wave 197 pinned the refusal deliberately, so this test would be the thing that changes
+/// when it was fixed rather than a mystery rediscovered later. This is that change.
 ///
-/// So the assertion is on the *honesty* rather than the capability: no confident value, and a
-/// recorded reason.
+/// The store and the load are both here: a promoted object that can be written but not read,
+/// or read but not written, is half-served in a way that shows up as a wrong value rather
+/// than a refusal.
 #[test]
-fn a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing() {
+fn a_concrete_store_after_a_symbolic_one_still_lands() {
     let (vals, gaps) =
         run("char ca[64];\nint probe(int i){ ca[i & 63] = 7; ca[1] = 3; return ca[1]; }");
     assert!(
-        vals.is_empty(),
-        "no confident value may come out of a promoted object the concrete path cannot \
-         read: {vals:?}"
+        vals.contains(&3),
+        "the concrete store and the load after it must both survive promotion: \
+         {vals:?} {gaps:?}"
     );
+}
+
+/// And a concrete read of a byte the symbolic write did not touch still answers.
+///
+/// Separate, because a promoted read that returned the *written* value for every offset would
+/// satisfy the test above. Here the symbolic write is masked to the upper half and byte 0 is
+/// written concretely, so the two cannot be confused.
+#[test]
+fn a_concrete_read_after_promotion_sees_its_own_byte() {
+    let (vals, gaps) =
+        run("char ca[64];\nint probe(int i){ ca[0] = 5; ca[(i & 31) + 32] = 7; return ca[0]; }");
     assert!(
-        gaps.iter()
-            .any(|g| g.contains("could not produce the program's value")),
-        "and the refusal is recorded rather than silent: {gaps:?}"
+        vals.contains(&5),
+        "byte 0 was written concretely and the symbolic write cannot reach it: {vals:?} {gaps:?}"
     );
 }
 
