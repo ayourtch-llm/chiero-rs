@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 192) — 1258 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 193) — 1261 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,39 +688,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: a symbolic index into a function table reports nothing
+> ### 🔴 Do this first: the finding says "access" for a pointer that was only *formed*
 >
-> Wave 192 measured what waves 189–191 unlocked, and the VPP registration idiom now works
-> end to end — `tab[1]()`, `tab[i]()` with a concrete `i`, and a struct of callbacks beside a
-> string table all resolve at `fidelity Exact`. That shape was entirely unreachable four
-> waves ago, because the table read as null.
+> Wave 193 made a symbolic index answerable — `ga[i]` with an unconstrained `i` now reports,
+> `if (i<0||i>1)` and `ga[i & 1]` stay silent. The check sits in `fork_on_offset`, which runs
+> for a `PtrAdd`, and that placement is **correct rather than approximate**: C11 6.5.6p8 makes
+> *forming* a pointer more than one past the end undefined, not only dereferencing it.
 >
-> The measurement also found the next gap. With a **symbolic** index:
+> But the fault it raises is `MemFault::OutOfBoundsMaybe`, whose message is about an
+> *access*. For `p + off` with no dereference the report reads as though bytes were touched.
+> Two ways to fix, and the choice matters:
 >
-> ```text
->   int probe(int i){ return tab[i](); }
->       states=3  rets=[None, 11, 22]  fidelity=Unknown  findings=[]
-> ```
+> 1. **A distinct fault kind** — "pointer formed outside its object" — which is the honest
+>    label and gives 023 §6 a separate thing to deduplicate and rank. VPP walks pointers past
+>    the end deliberately in a few places (`vec_end`), so the two want different triage.
+> 2. **Report at the access instead**, by routing the symbolic pointer into `chiero-mem`'s
+>    checked path, which already produces `OutOfBoundsMaybe` correctly and continues on the
+>    in-bounds branch with the constraint added. That is the bigger change and would also
+>    make the *value* usable rather than `Undef`.
 >
-> Two states call the two real entries, and the third is the out-of-range index — which
-> **reports nothing** and only degrades. An out-of-bounds *read* of an ordinary array is a
-> finding (wave 177 measured 6 classes of it), so a table indexed past its end should be one
-> too. Check whether this is the same defect as wave 192's null call in a different place —
-> a definite fault reported as an absence of information — or genuinely undecidable because
-> the index is unconstrained. **`if (i < 0 || i > 1)` already discharges it correctly**
-> (`fidelity=Exact`, 4 states), so the machinery to tell those apart is present.
+> (2) is worth more — it turns a dead path into a live one — and (1) is worth doing anyway,
+> since even under (2) a bare `PtrAdd` needs the right name.
 >
-> ~~🔴 re-run the null-pointer measurement.~~ **Wave 192**, and it found a defect rather than
-> a number: calling through a null function pointer reported nothing at all, while
-> dereferencing a null data pointer has been a finding for many waves.
->
-> Mutation, with a correction to that commit's own claim. `null-callee-not-reported` and
-> `reports-every-indirect-call` both die, so the check and its narrowness are observed.
-> **`path-continues-past-the-null-call` survives**, and the commit message overstated the
-> `return`'s role: `report_faults` already terminates the state for a fatal fault, so the
-> `return` only avoids forking over every candidate function afterwards. It saves work, not
-> correctness — worth knowing before anyone "simplifies" the other direction and assumes the
-> `return` was the thing ending the path.
+> ~~🔴 a symbolic index into a function table reports nothing.~~ **Wave 193, and it was not
+> specific to function tables**: `ga[i]` on a plain data array was equally silent. The cause
+> was `fork_on_offset` enumerating offsets and giving up — 17 values found for an
+> unconstrained `int` — then yielding `Undef` so the load saw a non-pointer and abandoned the
+> access without asking the one question that was still answerable.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >

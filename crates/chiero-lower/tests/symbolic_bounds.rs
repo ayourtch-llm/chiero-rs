@@ -105,3 +105,42 @@ fn a_concrete_out_of_bounds_access_still_reports() {
         "the existing concrete check must survive"
     );
 }
+
+/// **Cases that reach the solver check**, which the guarded fixtures above do not.
+///
+/// Mutation exposed this: `if (i<0||i>1)` leaves only two feasible offsets, so
+/// `fork_on_offset` *enumerates* them successfully and the new code never runs. Every mutant
+/// on the query — reporting without asking, checking only one bound, comparing unsigned —
+/// survived, because nothing exercised it with a constrained-but-unenumerable index.
+///
+/// A 64-element array does it: `i & 63` has sixty-four feasible values, past the enumeration
+/// bound, so the offset arrives at the query already constrained to the object.
+#[test]
+fn a_constrained_but_unenumerable_index_is_not_reported() {
+    let f = findings("int ga[64];\nint probe(int i){ return ga[i & 63]; }");
+    assert!(
+        !f.iter().any(|x| x.contains("bounds")),
+        "`i & 63` cannot leave a 64-element array, however many values it has: {f:?}"
+    );
+}
+
+/// An index that can only run off the **end**, and one that can only run off the **start**.
+///
+/// Both directions, because a check testing one bound answers correctly for half the
+/// programs and silently for the other half. The lower one also pins that the comparison is
+/// *signed*: an unsigned test reads a negative index as an enormous positive one and calls
+/// it out of bounds for the wrong reason — right answer, wrong question, and wrong the
+/// moment the array is large.
+#[test]
+fn each_direction_out_of_the_object_is_reported() {
+    let above = findings("int ga[64];\nint probe(int i){ if (i < 0) return 0; return ga[i]; }");
+    assert!(
+        above.iter().any(|x| x.contains("bounds")),
+        "non-negative but unbounded above: can run off the end: {above:?}"
+    );
+    let below = findings("int ga[64];\nint probe(int i){ if (i > 63) return 0; return ga[i]; }");
+    assert!(
+        below.iter().any(|x| x.contains("bounds")),
+        "bounded above but not below: can run off the start: {below:?}"
+    );
+}
