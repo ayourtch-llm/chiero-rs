@@ -709,6 +709,54 @@ fn floating_comparisons_agree_with_gcc() {
     agree("double n = 0.0 / 0.0; return (int)(_Bool)n;");
 }
 
+/// **A mixed operand pair is float if *either* side is.**
+///
+/// C11 6.3.1.8's usual arithmetic conversions: when one operand is floating and the other
+/// is not, the other is converted to the floating type and the operation is a floating one.
+/// Lowering asks `is_float(lhs)` and `is_signed(lhs)` — the *left* operand only — so
+/// `d + 1` lowers correctly and `1 + d` picks the integer opcode and the integer type.
+///
+/// The verifier catches it, so this is a refusal rather than a wrong answer. It is still a
+/// defect: eight programs in seeds 800..1400 were discarded for it, and the shape is one a
+/// person writes constantly — `2 * d`, `1 < d`, `0 == d`.
+///
+/// **Every case is written in both orders.** That is the whole point: the failing form is
+/// the one whose *left* operand is the integer, and a fixture written only as `d OP 1`
+/// passes against code that never looks at the right operand at all.
+///
+/// The unsigned case is here because it fails differently. `u < d` picks `ULt` — an
+/// *unsigned* comparison — over two floats, so the operand type and the operator's
+/// signedness are two separate things to get from the wrong side.
+#[test]
+fn mixed_integer_and_floating_operands_agree_with_gcc() {
+    // Arithmetic, both orders.
+    agree("double d = 2.5; return (int)(d + 1);");
+    agree("double d = 2.5; return (int)(1 + d);");
+    agree("double d = 2.5; return (int)(d - 1);");
+    agree("double d = 2.5; return (int)(4 - d);");
+    agree("double d = 2.5; return (int)(d * 2);");
+    agree("double d = 2.5; return (int)(2 * d);");
+    agree("double d = 2.5; return (int)(d / 2);");
+    agree("double d = 10.0; return (int)(20 / d);");
+    // Comparisons, both orders — the operator is not symmetric, so `1 < d` and `d > 1`
+    // must both be right rather than one covering the other.
+    agree("double d = 2.5; return d > 1;");
+    agree("double d = 2.5; return 1 < d;");
+    agree("double d = 2.5; return 1 > d;");
+    agree("double d = 2.5; return d < 1;");
+    agree("double d = 2.5; return 1 == d;");
+    agree("double d = 2.5; return d == 1;");
+    agree("double d = 2.5; return 1 != d;");
+    // **An unsigned left operand**, which picks an unsigned comparison over two floats.
+    agree("unsigned u = 1; double d = 2.5; return u < d;");
+    agree("unsigned u = 3; double d = 2.5; return u > d;");
+    // Single precision on the right, so the conversion is to `float` and not `double`.
+    agree("float f = 2.5f; return (int)(1 + f);");
+    agree("float f = 2.5f; return 1 < f;");
+    // A `char` promoted to `int` and then converted to `double`, which is two conversions.
+    agree("char c = 2; double d = 2.5; return c < d;");
+}
+
 /// **A prefixed string literal keeps its element width.**
 ///
 /// sema types every string literal `char[n]` and lowering writes one byte per character,
