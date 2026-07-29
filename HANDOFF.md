@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 167) — 1206 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 168) — 1207 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -517,7 +517,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > said; 162 made the result say which solver decided it; 163 gave the backend a watchdog;
 > 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
-> half idle; 167 gave the engine concrete floating point**.*
+> half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
+> agree with gcc**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -757,7 +758,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   siblings and the six FP casts, all folded from bit patterns, with a symbolic operand
 >   staying `Fidelity::Unknown`. **Every one of the 293 refusals is a closed
 >   `int probe(void)` where every float is concrete.**
-> - **🔴 Next: remove `refuse_floating` from lowering.** The engine can now evaluate what
+> - ~~🔴 Next: remove `refuse_floating` from lowering.~~ **Done in wave 168.** Five separate
+>   omissions, not one: the literal (`Const::Int` with a catch-all zero), the opcodes
+>   (`cir_binop` mapped everything to the integer table), the instruction `ty`, all four
+>   conversion combinations in `convert_for_store`, and `FNeg` in the engine. Generated
+>   comparisons went **73 → 97** on the same seeds.
+> - **🔴 Next: float comparisons.** `refuse_float_compare` now declares the two operations
+>   still missing, and its `KNOWN_GAPS` entry is what will fail when they land:
+>   * the engine's `cmp` has **no float arms**, so `a < b` on floats produces no value;
+>   * `(_Bool)f` is *worse than missing* — C11 6.3.1.2 makes it "compares unequal to 0" and
+>     `FpToSi` truncates, so `(_Bool)0.5` would answer 0. It is refused for that reason
+>     rather than for being unimplemented.
+>   26 of 200 seeds refuse on this, so it is the next real unlock.
+> - **Still owed on the float path**: x87 80-bit arithmetic (no Rust primitive; its width
+>   works so loads and stores do), and `fptrunc-and-fpext-swapped` survives as an
+>   **equivalent** mutant — `fcast` converts via `f64` to the target width, so the two kinds
+>   carry no distinct behaviour and only the widths matter. The engine can now evaluate what
 >   those programs do; lowering still discards any function mentioning a float, so nothing
 >   reaches it. That is the wave the 293 refusals are waiting on, and §9 predicted its shape
 >   long ago: "Deleting that function is what implementing floats looks like, and the
@@ -839,6 +855,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A `None` that means "wrong kind" meets a caller that reads it as "nothing"** (wave 168).
+> `const_of` answers about *integer* constant expressions and returned `None` for
+> `double g = 2.0;`; the caller turns `None` into `GlobalInit::Zero`, so the initializer was
+> silently dropped and 37 of 200 seeds disagreed with gcc. Wave 149 recorded this exact shape
+> — "follow the `None` to its handler" — and it recurred the moment a *new kind of value*
+> existed for the old `None` to swallow. **When adding a kind, re-read every `Option` that
+> was total before.**
+> **Two channels, two halves of one feature** (wave 168). Three mutants die only in
+> `differential.rs` and three only in `generated.rs`: the hand-written channel covers the
+> shapes a person thinks to write (a literal, one operator, a cast) and the generator covers
+> `v3++` on a float and a float global. Neither would have been enough, and the split is not
+> a coverage gap — it is what having two channels is *for*.
+> **Refusing can be the correct answer to a wrong answer** (wave 168). `(_Bool)f` lowered
+> through `FpToSi` gives 0 for 0.5. That is not a missing feature, it is an incorrect one,
+> and 015 §7's refusal is the right response until the engine has float comparisons.
+> **Prefer a declared gap to a plausible number**, and say which of the two you are choosing.
 > **Two precisions are two implementations** (wave 167). `f32` and `f64` compute at
 > different widths and round differently, so a suite written entirely in `double` leaves half
 > the arithmetic unchecked — a mutation making `FAdd` subtract in the 32-bit arm survived
