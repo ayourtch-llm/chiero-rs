@@ -1896,6 +1896,11 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
         .join("chiero-sites");
     let _ = std::fs::create_dir_all(&dir);
     let (mut agree, mut miss, mut extra, mut progs) = (0u32, 0u32, 0u32, 0u32);
+    // **Per kind, not just a total.** Waves 176 and 178 both found a row that read clean
+    // because it was matching nothing, and only a table split by the thing the corpus is
+    // supposed to vary can show that. A total of "68 of 68" says nothing about whether all
+    // four kinds are in the corpus at all.
+    let mut by_kind: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
     let mut shown = 0u32;
     for seed in 0..200u64 {
         let (prelude, body) = program(seed);
@@ -1967,7 +1972,10 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
         ours.dedup();
         progs += 1;
         for (gl, gk) in &gcc_sites {
+            let e = by_kind.entry(gk).or_default();
+            e.0 += 1;
             if ours.iter().any(|(l, k)| l == gl && k == gk) {
+                e.1 += 1;
                 agree += 1;
             } else {
                 miss += 1;
@@ -1993,6 +2001,21 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
         }
     }
     println!("arithmetic sites: programs={progs} agree={agree} miss={miss} extra={extra}");
+    for (kind, (seen, caught)) in &by_kind {
+        println!("  {seen:3} / {caught:<3}  {kind}");
+    }
+    // **Every kind the engine can report must appear in the corpus.** Three, not one, for
+    // the reason wave 180 established: a row of one is a row whose next regression is a coin
+    // flip away from being invisible.
+    for kind in ["SignedOverflow", "Shift", "DivByZero", "FloatCastOverflow"] {
+        let seen = by_kind.get(kind).map(|c| c.0).unwrap_or(0);
+        assert!(
+            seen >= 3,
+            "only {seen} site(s) of kind `{kind}` in the corpus, too few to grade chiero \
+             on it. The corpus produced: {:?}",
+            by_kind.keys().collect::<Vec<_>>()
+        );
+    }
     assert!(
         progs >= 10,
         "too few programs commit arithmetic UB to grade anything: {progs}"
