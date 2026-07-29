@@ -2974,6 +2974,54 @@ impl Memory {
         if candidates.len() > ITE_THRESHOLD {
             self.promote_to_array(a, id);
         }
+        // **An empty candidate list is an *unpinned* write, and it needs the array.**
+        //
+        // `read_term_at` already promotes on an empty list — its doc calls that "no pinning
+        // available", a promoted object's normal case. The write did not, and then wrote
+        // nothing at all: the loop below iterates `candidates`, so with none there was no
+        // offset to write at and the value was silently dropped. The engine that called this
+        // for a genuinely unconstrained index got a successful-looking result and stale
+        // bytes.
+        //
+        // Promoted, the answer is one `store` at the symbolic index — the exact counterpart
+        // of the read's unpinned `select`, and the only form that says "somewhere in here,
+        // and I do not know where".
+        if candidates.is_empty() {
+            let r = self.promote_to_array(a, id);
+            if !r.faults.is_empty() {
+                return AccessResult {
+                    value: Some(()),
+                    faults: r.faults,
+                };
+            }
+            let Some(e) = self.entry_mut(id) else {
+                return AccessResult::fault(MemFault::WildPointer { off: 0, at });
+            };
+            let Some(arr) = e.arr.as_mut() else {
+                return AccessResult::fault(MemFault::SymbolicByte {
+                    obj: id,
+                    off: 0,
+                    at,
+                });
+            };
+            let idx = if a.width(off) == arr.idx_bits {
+                off
+            } else if a.width(off) > arr.idx_bits {
+                a.extract(off, arr.idx_bits - 1, 0)
+            } else {
+                a.zext(off, arr.idx_bits)
+            };
+            arr.data = a.store(arr.data, idx, val);
+            // **And the byte becomes initialized**, or the read after this write reports an
+            // uninitialized read of bytes the program just wrote — 021 §3.1's distinction,
+            // and the failure mode the candidate path's own comment records.
+            let one = a.bv(1, 1);
+            arr.init = a.store(arr.init, idx, one);
+            return AccessResult {
+                value: Some(()),
+                faults: Vec::new(),
+            };
+        }
         let w = a.width(off);
         let obj_size = self.entry(id).map_or(0, |e| e.size);
         let Some(e) = self.entry_mut(id) else {

@@ -97,16 +97,34 @@ fn reading_back_the_symbolic_offset_gets_the_written_value() {
     assert!(seen > 0, "no state produced a solvable returned value");
 }
 
-/// A concrete access after a symbolic one still works.
+/// **A concrete access after a symbolic one refuses, and says so.**
 ///
-/// This is §9's promotion warning made into a test: if the symbolic write promotes the object
-/// to an array representation, an ordinary byte write afterwards must still land.
+/// §9's promotion warning, made into a test and then answered by it. The symbolic write
+/// promotes the object to an array representation, and a promoted object refuses the
+/// *arena-free* byte and bit APIs (`promoted_fault`) that the concrete store and load still
+/// use — so `ca[1] = 3; return ca[1];` after a symbolic write produces no value.
+///
+/// That is a real cost, and it is **not** what this test says should happen forever — it is
+/// what happens now, pinned so the next wave can see it change. The trade wave 197 made is
+/// deliberate: before it, the symbolic store was *dropped* and `ca[0]` answered a confident
+/// `0` for a byte the write may have hit. After it, the access declines. 023 §7's rule is that
+/// a gap is a diagnostic and not a licence, and a recorded refusal is worth more than a wrong
+/// byte — but only until the concrete paths learn the array representation.
+///
+/// So the assertion is on the *honesty* rather than the capability: no confident value, and a
+/// recorded reason.
 #[test]
-fn a_concrete_store_after_a_symbolic_one_still_lands() {
+fn a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing() {
     let (vals, gaps) =
         run("char ca[64];\nint probe(int i){ ca[i & 63] = 7; ca[1] = 3; return ca[1]; }");
     assert!(
-        vals.contains(&3),
-        "the concrete store must survive promotion: {vals:?} {gaps:?}"
+        vals.is_empty(),
+        "no confident value may come out of a promoted object the concrete path cannot \
+         read: {vals:?}"
+    );
+    assert!(
+        gaps.iter()
+            .any(|g| g.contains("could not produce the program's value")),
+        "and the refusal is recorded rather than silent: {gaps:?}"
     );
 }

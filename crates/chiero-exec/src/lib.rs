@@ -3164,6 +3164,45 @@ impl<'m> Engine<'m> {
                 align,
                 vol,
             } => {
+                // **A symbolic offset is written, not dropped.** Before wave 197 this fell
+                // to the refusal below and the *program's* write vanished — so a later read
+                // of the same object answered a ground value for a byte the write may have
+                // hit. A refusal that silently keeps stale bytes is worse than a refusal,
+                // because the run then produces a confident wrong answer (021 §3.1).
+                //
+                // `write_at_symbolic_offset` either writes an if-then-else over candidates
+                // or promotes the object to an array; `ITE_THRESHOLD` inside `chiero-mem`
+                // decides which, and an empty candidate list is its "no pinning available"
+                // case. Passing candidates from here would duplicate that policy.
+                if let Some(Value::SymPtr { base, off }) = self.operand(a, s, addr) {
+                    if *vol == Volatility::Volatile {
+                        self.lowering_gap(s, i.span, "a volatile store at a symbolic offset");
+                        return;
+                    }
+                    let Some(v) = self.operand(a, s, val) else {
+                        self.lowering_gap(s, i.span, "a store of an untranslatable value");
+                        return;
+                    };
+                    let Some(vt) = self.address_of_value(a, s, v, i.span) else {
+                        self.lowering_gap(s, i.span, "a store of a value with no term");
+                        return;
+                    };
+                    // Byte by byte, least significant first, mirroring the load's
+                    // composition so a store and the read after it agree by construction.
+                    let size = size_of_cty(ty);
+                    for k in 0..size {
+                        let w = a.width(off);
+                        let step = a.bv(w, k as u128);
+                        let at = a.add(off, step);
+                        let lo = (k * 8) as u32;
+                        let byte = a.extract(vt, lo + 7, lo);
+                        let r = s
+                            .mem
+                            .write_at_symbolic_offset(a, base, at, &[], byte, i.span);
+                        self.report_faults(s, &r.faults, i.span);
+                    }
+                    return;
+                }
                 let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     self.lowering_gap(s, i.span, "a store through a non-pointer address");
                     return;
