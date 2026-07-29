@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 172) — 1213 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 173) — 1214 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -520,7 +520,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
 > agree with gcc; 169 finished them with comparisons and `_Bool`; 170 fixed mixed int/float
 > operands; 171 closed a hole in the generator's UB filter; 172 made a float-cast overflow a
-> finding**.*
+> finding; 173 censused the UB gap and found where it cannot be closed**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -811,7 +811,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     float-to-integer conversion is not in `UbKind` at all.
 >   So the fix is a new `UbKind` plus a concrete check in `note_ub` (the operand is a folded
 >   float there, so it needs no solver query), and the checker picks it up for free.
-> - **🔴 Nothing cross-checks the discards against chiero's own findings.** The sanitizer
+> - **The UB census, measured in wave 173** over 300 generated programs — what
+>   `-fsanitize=undefined,address,float-cast-overflow` reports against what
+>   `default_checkers` reports:
+>   ```text
+>     seen / chiero
+>       14 / 0   signed integer overflow
+>        8 / 0   left shift of negative
+>        5 / 1   left shift of N by M places cannot be represented
+>        2 / 0   shift exponent
+>       11 / 7   outside the range of representable values
+>   ```
+> - **🔴 020 decision needed: `Shl` carries no signedness.** Rows 2 and 3 above cannot be
+>   closed in the engine. C11 6.5.7p4's other two clauses apply to *signed* left shifts only,
+>   and CIR has one `Shl` — right shifts distinguish (`AShr`/`LShr`) and left shifts do not,
+>   because the operation is identical and only the UB rules differ. `1 << 31` is undefined
+>   for `int` and ordinary for `unsigned`; checking from the bits reports every unsigned
+>   shift of a large value. `a_left_shift_count_is_checked_and_the_signed_rules_are_not`
+>   pins the current behaviour, and a mutation adding the rule back **dies** on it — so that
+>   test is what will speak when `Shl` grows a signedness.
+> - **`as_const` was not the cause of row 1**, checked first because wave 170 made it the
+>   obvious suspect: literal, local and global operands all fold and all report. Row 1 is
+>   still unexplained and is the next thing to look at.
+> - **🔴 The cross-check has no legal home.** `check-deps` refused the census probe:
+>   001 §4 rule 2 forbids `chiero-lower` (Frontend) a dependency on `chiero-check`
+>   (Vertical), and rule 7 equally forbids `chiero-check` a frontend dependency. So a test
+>   that generates C *and* runs chiero's checkers cannot live in either crate. It needs a
+>   third home — a dedicated integration crate or an `xtask` — and that is a decision, not
+>   an oversight to route around. The sanitizer
 >   labels ~220 of every 600 generated programs as undefined — a free, labelled UB corpus —
 >   and the generator throws it away. Every discarded program is one chiero *should* have a
 >   finding for, and no test says so. That is a whole detection channel sitting unused, and
@@ -910,6 +937,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **When the fix is unsound, the wave's product is the reason** (wave 173). The RED asked
+> for three UB rules; two turned out to need signedness CIR does not carry, and implementing
+> them from the bits would report every `unsigned x << 31` as undefined. The wave delivered
+> the one checkable rule, a *test that pins the other two as not-checkable*, and the 020
+> decision that would unblock them. **A test asserting that something is not detected is
+> worth writing when the reason is structural** — a mutation adding the rule back dies on it,
+> so it speaks the day the structure changes.
+> **An existing test contradicting your new one is evidence, not an obstacle** (wave 173).
+> `Shl by width-1 is ordinary code` failed the moment 6.5.7p4's overflow rule went in. It was
+> right — for `unsigned` — and the conflict was the discovery. **Check who is right before
+> updating either.**
+> **An architecture gate can tell you a plan is impossible** (wave 173). `check-deps` refused
+> `chiero-lower` → `chiero-check`, and rule 7 refuses the mirror image, so the discard-pile
+> cross-check cannot live in either crate. That is not a formality to route around; it says
+> the channel needs a home neither has.
 > **A rule about a derived value must be tested on the derivation** (wave 172). C11 6.3.1.4
 > is undefined when the *integral part* does not fit, so the range test belongs on the
 > truncated value — `(int)-2147483648.5` is legal and `(unsigned)(-0.5)` is too. Three
