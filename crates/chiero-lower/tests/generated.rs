@@ -1609,3 +1609,47 @@ fn zz_soak() {
         eprintln!("  DEFECT seed={s} {v}\n{p}");
     }
 }
+
+/// **A float-to-integer overflow is undefined, and the filter must discard it.**
+///
+/// C11 6.3.1.4: converting a floating value to an integer type is undefined "if the value of
+/// the integral part cannot be represented". `(unsigned short)(-4294905087.0)` is exactly
+/// that, and gcc answers 0 while chiero answers 62209 — two implementations of undefined
+/// behaviour disagreeing, which teaches nothing.
+///
+/// The filter compiles every fixture under `-fsanitize=undefined,address` and discards what
+/// trips. **gcc's `-fsanitize=undefined` does not include `float-cast-overflow`** — it is a
+/// separate sub-sanitiser that has to be named. Measured rather than assumed:
+///
+/// ```text
+///   -fsanitize=undefined,address                      -> prints 0, exit 0
+///   -fsanitize=undefined,address,float-cast-overflow  -> runtime error, exit 1
+/// ```
+///
+/// So the hole was always there and was unreachable while lowering refused every float.
+/// Waves 167–170 made it reachable, and seed 1832 became a **false defect** — the most
+/// corrosive thing this channel can produce, because it spends the attention the channel
+/// exists to focus and is how a generative test gets muted.
+///
+/// The second case is the constraint: a fixture whose conversion is *in* range must still
+/// be compared. A filter that discarded every float-to-integer conversion would satisfy the
+/// first assertion and quietly delete the coverage waves 167–170 added.
+#[test]
+fn the_ub_filter_discards_a_float_cast_overflow() {
+    let out_of_range = "double d = -4294905087.0; return (int)(unsigned short)d;";
+    assert!(
+        matches!(judge("", out_of_range), Verdict::Discarded),
+        "converting {} to `unsigned short` is undefined, so the program teaches nothing and \
+         must not be compared: {:?}",
+        -4294905087.0f64,
+        judge("", out_of_range)
+    );
+
+    let in_range = "double d = 300.0; return (int)(unsigned short)d;";
+    assert!(
+        matches!(judge("", in_range), Verdict::Agree),
+        "300.0 is representable as `unsigned short`, so this is an ordinary comparison and \
+         discarding it would delete real coverage: {:?}",
+        judge("", in_range)
+    );
+}
