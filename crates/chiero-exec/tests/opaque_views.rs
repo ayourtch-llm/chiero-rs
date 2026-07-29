@@ -99,6 +99,7 @@ fn run(insts: Vec<Inst>, paths: Vec<(ValueId, AccessPath)>) -> (RunResult, TermA
         body: Body::Defined,
         access_paths: paths.into_iter().collect(),
         span: at(1),
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

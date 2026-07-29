@@ -124,6 +124,7 @@ fn tree(depth: u32) -> Module {
             body: Body::Defined,
             access_paths: Default::default(),
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }

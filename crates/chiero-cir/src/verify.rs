@@ -91,6 +91,7 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: Linkage::External,
     };
     // 020 §3: the tables are *indexed by* `GlobalId`/`FuncId`. That was a convention
     // rather than an invariant, and the crate's two halves disagreed about it — the

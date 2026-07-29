@@ -2177,7 +2177,19 @@ impl<'m> Engine<'m> {
         // not a limit of the model — it is a case the program has, and 023 §7's fidelity is
         // for what chiero *cannot* represent. Marking these `Approximated` would say the
         // opposite of what is true: this path is modelled exactly.
-        if self.entry_ptr_nullable && !ptr_params.is_empty() {
+        // **Only an *exported* entry gets the assumption.** For a `static` function every
+        // call site is in this module, so what its callers pass is something the analysis
+        // can reach rather than something it must guess: running the module's exported
+        // entries walks into this one carrying the real arguments. Assuming null here as
+        // well double-counts — and worse, the outer assumption is grounded in a call site
+        // while this one is not. 021 §6 says "start at each *exported* function in turn",
+        // and this is that sentence enforced.
+        //
+        // Measured: 3 of 3 null-dereference findings over `tests/corpus/c` were `static`
+        // helpers whose callers all pass `&table[i]`. Every one true, none of them chiero's
+        // to raise from that entry.
+        let exported = f.linkage == chiero_cir::Linkage::External;
+        if self.entry_ptr_nullable && exported && !ptr_params.is_empty() {
             let originals = work.clone();
             for (vid, _) in &ptr_params {
                 for st in &originals {

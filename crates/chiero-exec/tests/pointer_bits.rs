@@ -128,6 +128,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],

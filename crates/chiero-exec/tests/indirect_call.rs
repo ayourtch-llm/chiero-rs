@@ -58,6 +58,7 @@ fn twice() -> Function {
         body: Body::Defined,
         access_paths: Default::default(),
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -100,6 +101,7 @@ fn caller(indirect: bool) -> Module {
                 body: Body::Defined,
                 access_paths: Default::default(),
                 span: Span::DUMMY,
+                linkage: chiero_cir::Linkage::External,
             },
             twice(),
         ],
@@ -194,6 +196,7 @@ fn two_arguments_arrive_in_order() {
         body: Body::Defined,
         access_paths: Default::default(),
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![
@@ -226,6 +229,7 @@ fn two_arguments_arrive_in_order() {
                 body: Body::Defined,
                 access_paths: Default::default(),
                 span: Span::DUMMY,
+                linkage: chiero_cir::Linkage::External,
             },
             sub,
         ],

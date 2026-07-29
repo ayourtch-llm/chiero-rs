@@ -175,6 +175,7 @@ fn access_paths_survive_the_text_round_trip() {
         .into_iter()
         .collect(),
         span: at(1),
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -240,6 +241,7 @@ fn a_path_is_never_a_verification_error() {
         .into_iter()
         .collect(),
         span: at(1),
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -307,6 +309,7 @@ fn path_step_offsets_survive_the_round_trip() {
         .into_iter()
         .collect(),
         span: at(1),
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

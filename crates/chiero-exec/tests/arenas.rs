@@ -167,6 +167,7 @@ fn buffer_access(delta: i128) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],

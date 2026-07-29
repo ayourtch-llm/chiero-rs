@@ -61,6 +61,7 @@ fn func(blocks: Vec<Block>, ret: CTy) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }
@@ -744,6 +745,7 @@ fn defined(id: u32, name: &str, blocks: Vec<Block>, ret: CTy) -> Function {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 

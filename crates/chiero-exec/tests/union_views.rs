@@ -72,6 +72,7 @@ fn run(insts: Vec<Inst>, allocas: Vec<AllocaDecl>) -> (RunResult, TermArena) {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

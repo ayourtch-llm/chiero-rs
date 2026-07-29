@@ -79,6 +79,7 @@ fn diamond(cond: i128) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }
@@ -188,6 +189,7 @@ fn a_loop_phi_advances_with_the_latch() {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     };

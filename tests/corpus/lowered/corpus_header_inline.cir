@@ -12,7 +12,7 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 3034:3064:0
 
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 3066:3108:0
 
-func @make_pair(%11: ptr, %12: i32, %14: i32) -> ptr { ; span 18719:18849:0
+static func @make_pair(%11: ptr, %12: i32, %14: i32) -> ptr { ; span 18719:18849:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "a" ; span 18719:18849:0
   alloca %1 : i32 x 1 align 4 scope 0 lifetime scope "b" ; span 18719:18849:0
   alloca %2 : i8 x 8 align 4 scope 1 lifetime scope "p" ; span 18773:18786:0
@@ -99,7 +99,7 @@ bb6: ; span 18719:18849:0
   ret %11
 }
 
-func @span_of(%50: ptr) -> i32 { ; span 18851:18915:0
+static func @span_of(%50: ptr) -> i32 { ; span 18851:18915:0
   alloca %0 : i8 x 8 align 4 scope 0 lifetime scope "p" ; span 18851:18915:0
   path %53 root local 0 p step field hi 4
   path %55 root local 0 p step field lo 0

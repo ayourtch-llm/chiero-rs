@@ -44,6 +44,7 @@ fn func(blocks: Vec<Block>, ret: CTy) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }
@@ -77,6 +78,7 @@ fn calling(id: u32, name: &str) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let ext = Function {
         id: FuncId(id),
@@ -91,6 +93,7 @@ fn calling(id: u32, name: &str) -> Module {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![caller, ext],
@@ -353,6 +356,7 @@ fn one_degradation_before_a_fork_is_reported_once() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     f.blocks[0].span = Span::DUMMY;
     let m = Module {
@@ -505,6 +509,7 @@ fn assumptions_from_every_path_reach_the_report() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let f = Function {
         id: FuncId(0),
@@ -566,6 +571,7 @@ fn assumptions_from_every_path_reach_the_report() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, ext(1, "no_such_function"), ext(2, "another_missing_one")],

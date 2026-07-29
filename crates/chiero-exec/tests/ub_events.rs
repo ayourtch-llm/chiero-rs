@@ -96,6 +96,7 @@ fn run_op_as(
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -331,6 +332,7 @@ fn run_op_symbolic(op: BinOp, width: u32, force_zero: bool) -> (RunResult, TermA
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -468,6 +470,7 @@ fn a_symbolic_divisor_that_cannot_be_zero_is_not_reported() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

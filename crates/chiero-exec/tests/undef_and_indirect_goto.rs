@@ -56,6 +56,7 @@ fn func(blocks: Vec<Block>) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }

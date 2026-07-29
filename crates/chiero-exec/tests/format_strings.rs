@@ -46,6 +46,7 @@ fn printf_decl() -> Function {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -126,6 +127,7 @@ fn call_printf(fmt: &str, extra: Vec<Inst>, args: Vec<Operand>) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f, printf_decl()],
@@ -358,6 +360,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     // `void f(char *p) { printf("%s", p); }` — the format is a literal in a local, the
     // argument is the caller's buffer.
@@ -435,6 +438,7 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, printf],

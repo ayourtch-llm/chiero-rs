@@ -69,6 +69,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let ext = Function {
         id: FuncId(1),
@@ -83,6 +84,7 @@ fn calling(name: &str, args: Vec<Operand>) -> Module {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![caller, ext],
@@ -306,6 +308,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

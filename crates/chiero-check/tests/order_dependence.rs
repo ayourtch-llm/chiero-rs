@@ -95,6 +95,7 @@ fn mutator(id: u32, name: &str, g: u32, val: i128) -> Function {
         access_paths: Default::default(),
         body: Body::Defined,
         span: at(1),
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -147,6 +148,7 @@ fn caller(g_target: u32, h_target: u32, sequenced: bool) -> Module {
                 access_paths: Default::default(),
                 body: Body::Defined,
                 span: at(1),
+                linkage: chiero_cir::Linkage::External,
             },
             mutator(1, "g", g_target, 1),
             mutator(2, "h", h_target, 2),

@@ -59,7 +59,10 @@ fn scan_names(src: &str) -> (Vec<String>, Vec<String>) {
                 .find(|t| t.starts_with('@'))
                 .unwrap_or("");
             g.push(name.trim_start_matches('@').to_string());
-        } else if let Some(rest) = l.strip_prefix("func @") {
+        } else if let Some(rest) = l
+            .strip_prefix("func @")
+            .or_else(|| l.strip_prefix("static func @"))
+        {
             f.push(rest.split(['(', ' ']).next().unwrap_or("").to_string());
         }
     }
@@ -168,6 +171,12 @@ impl<'a> Parser<'a> {
                 }
                 "func" => {
                     let f = self.func(&t, m.funcs.len() as u32)?;
+                    m.funcs.push(f);
+                }
+                // `static func @f(...)`: the marker leads, as it does for a global.
+                "static" if t.get(1).map(String::as_str) == Some("func") => {
+                    let mut f = self.func(&t[1..], m.funcs.len() as u32)?;
+                    f.linkage = Linkage::Internal;
                     m.funcs.push(f);
                 }
                 other => return self.err(format!("unknown directive `{other}`")),
@@ -369,7 +378,18 @@ impl<'a> Parser<'a> {
     /// `func @name(%0: ty, ...) -> ty` optionally followed by ` {` and a body.
     fn func(&mut self, t: &[String], id: u32) -> Result<Function, ParseError> {
         let _ = t;
-        let joined = self.raw.clone();
+        // **The raw line, with any `static ` marker removed first.** This slices by byte
+        // offset (`joined[5..open]` is the name, past `"func "`), so a prefix in front of
+        // the keyword shifts every offset and the name comes back as `"c func @f0"`. The
+        // round-trip property caught exactly that once the generator started varying
+        // linkage — before that every generated function was external and the printer could
+        // drop `static` unobserved.
+        let joined = self
+            .raw
+            .trim_start()
+            .strip_prefix("static ")
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.raw.clone());
         let open = joined.find('(').ok_or_else(|| self.perr("func needs ("))?;
         let close = joined.rfind(')').ok_or_else(|| self.perr("func needs )"))?;
         // `joined[5..open]` panics on a reversed range for input like `func(x)`.
@@ -449,6 +469,7 @@ impl<'a> Parser<'a> {
                 Body::Declared
             },
             span: self.cur_span,
+            linkage: Linkage::External,
         };
         if has_body {
             // Names are function-scoped: `%tmp` in two functions is two values, and an
@@ -1503,7 +1524,21 @@ fn print_func(m: &Module, f: &Function, o: &mut String) {
             plist.push_str(", ...");
         }
     }
-    o.push_str(&format!("func @{}({}) -> {}", f.name, plist, ty(&f.ret)));
+    // `static` before `func`, matching how a global spells the same fact. Without it a
+    // round-trip through the text format silently promotes every internal function to
+    // external — and since wave 188 that changes what the engine assumes about callers, so
+    // it would round-trip a program with different findings.
+    o.push_str(&format!(
+        "{}func @{}({}) -> {}",
+        if f.linkage == Linkage::Internal {
+            "static "
+        } else {
+            ""
+        },
+        f.name,
+        plist,
+        ty(&f.ret)
+    ));
     let fspan = span_note(f.span);
     // Attributes, in a fixed order so printing stays canonical.
     if f.attrs.noreturn {

@@ -141,6 +141,7 @@ fn indexed_read(len: u64) -> Module {
             body: Body::Defined,
             access_paths: Default::default(),
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }
@@ -440,6 +441,7 @@ fn a_read_only_global_has_an_object() {
             body: Body::Defined,
             access_paths: Default::default(),
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         globals: vec![Global {
             id: GlobalId(0),

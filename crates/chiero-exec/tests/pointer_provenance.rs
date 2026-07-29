@@ -122,6 +122,7 @@ fn a_pointer_walked_out_of_an_object_and_back_reads_correctly() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -220,6 +221,7 @@ fn an_unconstrained_int_to_ptr_is_never_read_as_in_bounds() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -286,6 +288,7 @@ fn reading_a_lazily_materialized_parameter_is_not_an_uninitialized_read() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -382,6 +385,7 @@ fn a_store_through_a_parameter_is_read_back_on_the_same_path() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

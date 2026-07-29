@@ -114,6 +114,7 @@ fn diamond(incomings: Vec<(BlockId, Operand)>, phi_first: bool) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }

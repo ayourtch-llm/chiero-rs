@@ -40,6 +40,7 @@ fn defined(id: u32, name: &str, ret: i128) -> Function {
         body: Body::Defined,
         access_paths: Default::default(),
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -58,6 +59,7 @@ fn declared(id: u32, name: &str) -> Function {
         body: Body::Declared,
         access_paths: Default::default(),
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 

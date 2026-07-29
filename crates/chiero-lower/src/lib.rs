@@ -504,7 +504,10 @@ impl Lowerer<'_> {
             self.declare_global(id);
             return;
         }
-        let DeclKind::Func { name, ty, .. } = self.ast.decl(id).kind.clone() else {
+        let DeclKind::Func {
+            name, ty, storage, ..
+        } = self.ast.decl(id).kind.clone()
+        else {
             return;
         };
         let Some(text) = self.sym(name) else { return };
@@ -570,6 +573,16 @@ impl Lowerer<'_> {
             attrs: FnAttrs::default(),
             access_paths: Default::default(),
             body: Body::Declared,
+            // **Set here, in the declaration pass, and never revised.** C11 6.2.2p5: a
+            // function declared `static` has internal linkage for the whole translation
+            // unit, and a later definition without the keyword inherits it rather than
+            // changing it. Deriving this at the *definition* instead would read `static`
+            // off whichever spelling came second.
+            linkage: if storage.static_ {
+                chiero_cir::Linkage::Internal
+            } else {
+                chiero_cir::Linkage::External
+            },
             span,
         });
     }
@@ -1108,6 +1121,9 @@ impl Lowerer<'_> {
                 ..FnAttrs::default()
             },
             body: Body::Defined,
+            // The declaration pass already decided this; the definition must not overwrite
+            // it, or `static int f(void); int f(void) { … }` would come out external.
+            linkage: self.module.funcs[fid.0 as usize].linkage,
             span,
         };
     }

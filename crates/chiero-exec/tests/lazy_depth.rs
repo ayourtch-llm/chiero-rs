@@ -110,6 +110,7 @@ fn walk(depth: u32) -> Module {
             body: Body::Defined,
             access_paths: paths.into_iter().collect(),
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }

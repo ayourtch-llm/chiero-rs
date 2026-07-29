@@ -102,6 +102,7 @@ fn guarded_fault() -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],
@@ -202,6 +203,7 @@ fn a_path_with_no_inputs_is_witnessed_by_the_empty_assignment() {
             access_paths: Default::default(),
             body: Body::Defined,
             span: Span::DUMMY,
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     };
@@ -318,6 +320,7 @@ fn two_input_fault() -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let ext = Function {
         id: FuncId(1),
@@ -332,6 +335,7 @@ fn two_input_fault() -> Module {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f, ext],
@@ -474,6 +478,7 @@ fn an_out_of_bounds_write_is_reported_with_a_witness() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -682,6 +687,7 @@ fn findings_on_every_path_are_witnessed_and_carry_that_paths_fidelity() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let f = Function {
         id: FuncId(0),
@@ -764,6 +770,7 @@ fn findings_on_every_path_are_witnessed_and_carry_that_paths_fidelity() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, ext],
@@ -867,6 +874,7 @@ fn a_scalar_parameter_is_bound_by_the_witness() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -973,6 +981,7 @@ fn an_input_the_path_does_not_constrain_is_not_reported_as_pinned() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -1184,6 +1193,7 @@ fn two_faults_at_one_site_on_two_paths_are_two_reports() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

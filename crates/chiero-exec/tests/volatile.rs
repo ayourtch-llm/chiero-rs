@@ -65,6 +65,7 @@ fn one_local(insts: Vec<Inst>, ret: Operand) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],
@@ -270,6 +271,7 @@ fn one_volatile_store_executed_twice_is_two_effects() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

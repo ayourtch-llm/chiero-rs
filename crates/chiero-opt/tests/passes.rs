@@ -152,6 +152,7 @@ fn chain(n: u32) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     }
@@ -352,6 +353,7 @@ fn no_pass_merges_across_a_volatile_access() {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     };
@@ -712,6 +714,7 @@ fn a_self_looping_entry_is_not_merged() {
             access_paths: Default::default(),
             body: Body::Defined,
             span: at(1),
+            linkage: chiero_cir::Linkage::External,
         }],
         ..Default::default()
     };

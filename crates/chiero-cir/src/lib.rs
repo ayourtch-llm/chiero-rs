@@ -573,6 +573,19 @@ pub struct Function {
     pub entry: BlockId,
     pub attrs: FnAttrs,
     pub body: Body,
+    /// `Internal` for a `static` function, `External` otherwise.
+    ///
+    /// Carried because it changes what an analysis may *assume about the caller*. Every
+    /// call site of an internal function is in this module, so a property of its arguments
+    /// is something chiero can look up rather than guess; an external function can be
+    /// called from a translation unit chiero will never see, and there guessing is all
+    /// there is. 021 §6's "start at each exported function in turn" is the same
+    /// distinction from the other side.
+    ///
+    /// `Global` has carried this since 020 §3. A function had nowhere to put it, so the
+    /// engine could not tell the two cases apart and applied the external assumption to
+    /// both.
+    pub linkage: Linkage,
     /// Reporting-only access paths, keyed by the address `ValueId` they describe
     /// (020 §4.4). Absent for most values; a finding without one simply says less.
     pub access_paths: IndexMap<ValueId, AccessPath>,

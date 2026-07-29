@@ -12,7 +12,7 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 2811:2841:0
 
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 2843:2885:0
 
-func @twice(%9: i32) -> i32 { ; span 254:295:0
+static func @twice(%9: i32) -> i32 { ; span 254:295:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "v" ; span 254:295:0
 entry: ; span 254:295:0
   .line 7
@@ -28,7 +28,7 @@ entry: ; span 254:295:0
   ret %13
 }
 
-func @thrice(%14: i32) -> i32 { ; span 296:338:0
+static func @thrice(%14: i32) -> i32 { ; span 296:338:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "v" ; span 296:338:0
 entry: ; span 296:338:0
   .line 8

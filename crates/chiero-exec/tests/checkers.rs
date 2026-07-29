@@ -58,6 +58,7 @@ fn func(id: u32, name: &str, params: Vec<Param>, ret: CTy, blocks: Vec<Block>) -
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -1024,6 +1025,7 @@ fn a_real_run_slices_its_path_condition() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

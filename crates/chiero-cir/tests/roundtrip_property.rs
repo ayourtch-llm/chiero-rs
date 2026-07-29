@@ -398,6 +398,13 @@ fn gen_module(seed: u64) -> Module {
             access_paths: Default::default(),
             body: Body::Defined,
             span: r.span(),
+            // Varied, so the round-trip is actually exercised: a generator that only ever
+            // emits external functions cannot notice a printer that drops `static`.
+            linkage: if r.below(3) == 0 {
+                chiero_cir::Linkage::Internal
+            } else {
+                chiero_cir::Linkage::External
+            },
         });
     }
     m

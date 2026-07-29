@@ -12,7 +12,7 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 3086:3116:0
 
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 3118:3160:0
 
-func @sum_n(%8: i32, ...) -> i32 { ; span 374:564:0
+static func @sum_n(%8: i32, ...) -> i32 { ; span 374:564:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "count" ; span 374:564:0
   alloca %1 : i8 x 24 align 8 scope 1 lifetime scope "ap" ; span 411:421:0
   alloca %2 : i32 x 1 align 4 scope 1 lifetime scope "total" ; span 448:461:0

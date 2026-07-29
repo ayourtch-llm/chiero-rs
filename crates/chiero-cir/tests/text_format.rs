@@ -668,6 +668,7 @@ fn a_nonzero_entry_block_does_not_alias() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     });
 
     let again = parse(&print(&m)).expect("reparse");
@@ -767,6 +768,7 @@ fn gcov_line_order_is_preserved() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     });
     let again = parse(&print(&m)).expect("reparse");
     assert_eq!(

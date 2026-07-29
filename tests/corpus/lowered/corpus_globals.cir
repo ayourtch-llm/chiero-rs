@@ -18,7 +18,7 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 3906:3936:0
 
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 3938:3980:0
 
-func @lookup(%8: i32) -> i32 { ; span 1190:1258:0
+static func @lookup(%8: i32) -> i32 { ; span 1190:1258:0
   alloca %0 : i32 x 1 align 4 scope 0 lifetime scope "i" ; span 1190:1258:0
 entry: ; span 1190:1258:0
   .line 28

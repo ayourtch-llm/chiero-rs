@@ -14,7 +14,7 @@ func @chiero_is_symbolic(%5: i64) -> i32 ; span 3414:3444:0
 
 func @chiero_mark_fidelity(%6: ptr) -> void ; span 3446:3488:0
 
-func @weight_of(%8: ptr) -> i32 { ; span 661:735:0
+static func @weight_of(%8: ptr) -> i32 { ; span 661:735:0
   alloca %0 : ptr x 1 align 8 scope 0 lifetime scope "e" ; span 661:735:0
   path %12 root local 0 e step deref step field weight 4
 entry: ; span 661:735:0

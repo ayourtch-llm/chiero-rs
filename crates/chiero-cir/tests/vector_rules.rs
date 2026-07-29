@@ -53,6 +53,7 @@ fn module_with(insts: Vec<Inst>) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],

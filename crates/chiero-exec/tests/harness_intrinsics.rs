@@ -59,6 +59,7 @@ fn declared(id: u32, name: &str, ret: CTy) -> Function {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     }
 }
 
@@ -222,6 +223,7 @@ fn make_symbolic_then_branch(with_assume: bool, with_assert: bool) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![

@@ -115,6 +115,7 @@ fn escaping_scope(lifetime: Lifetime) -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f],
@@ -223,6 +224,7 @@ fn an_ordinary_scope_exit_reports_nothing() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -295,6 +297,7 @@ fn an_inner_scope_exit_leaves_the_outer_scopes_objects_alone() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],
@@ -341,6 +344,7 @@ fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let caller = Function {
         id: FuncId(0),
@@ -378,6 +382,7 @@ fn a_pointer_to_a_callees_local_is_dead_after_the_return() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![caller, callee],
@@ -417,6 +422,7 @@ fn a_callers_locals_survive_a_callees_return() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let caller = Function {
         id: FuncId(0),
@@ -464,6 +470,7 @@ fn a_callers_locals_survive_a_callees_return() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![caller, callee],
@@ -531,6 +538,7 @@ fn an_alloca_in_a_loop_body_is_a_new_object_each_time_the_scope_opens() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f],

@@ -55,6 +55,7 @@ fn strlen_over_symbolic_bytes() -> Module {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let f = Function {
         id: FuncId(0),
@@ -86,6 +87,7 @@ fn strlen_over_symbolic_bytes() -> Module {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     Module {
         funcs: vec![f, strlen],
@@ -241,6 +243,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let store = |off: i128, val: i128, id: u32| {
         vec![
@@ -298,6 +301,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, strlen],
@@ -358,6 +362,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let store = |off: i128, val: i128, id: u32| {
         vec![
@@ -415,6 +420,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, strlen],
@@ -484,6 +490,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let f = Function {
         id: FuncId(0),
@@ -550,6 +557,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, strlen],
@@ -625,6 +633,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
         access_paths: Default::default(),
         body: Body::Declared,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let f = Function {
         id: FuncId(0),
@@ -684,6 +693,7 @@ fn a_pointer_before_its_object_is_one_finding_not_two() {
         access_paths: Default::default(),
         body: Body::Defined,
         span: Span::DUMMY,
+        linkage: chiero_cir::Linkage::External,
     };
     let m = Module {
         funcs: vec![f, strlen],
