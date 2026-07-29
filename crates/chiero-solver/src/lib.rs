@@ -448,6 +448,20 @@ impl TermArena {
                     if si == i {
                         return v;
                     }
+                    // **The same index *term* reads back the value stored, concrete or not.**
+                    // Hash-consing makes term identity a sound test for equality — two
+                    // structurally identical expressions are one `Term` — so this needs no
+                    // solver, and without it `select(store(A, b, v), b)` stayed opaque for a
+                    // symbolic `b`. That mattered: wave 202's symbolic init check asks exactly
+                    // that question about a byte written at the same symbolic offset, and
+                    // "unknown" there is a `maybe-uninitialized-read` on memory the program
+                    // definitely wrote.
+                    //
+                    // Only *equal* indices fold. Two different symbolic indices may or may not
+                    // alias and that comparison is still the solver's.
+                    if si == i {
+                        return v;
+                    }
                     match (self.as_const(si), self.as_const(i)) {
                         (Some(x), Some(y)) if x.bits() == y.bits() => return v,
                         // Both concrete and different: this store is irrelevant, read on.

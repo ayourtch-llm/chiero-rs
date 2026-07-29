@@ -2901,6 +2901,13 @@ impl Memory {
         }
         if let Some(arr) = self.entry(id).and_then(|e| e.arr) {
             let i = fit(a, off, arr.idx_bits);
+            // **This path still does not check initialization, and wave 202 established why the
+            // obvious fix is not enough.** See §9: the check itself is easy — a conjunction of
+            // `select(arr.init, off * 8 + k)` — but proving it *true* for a byte written at the
+            // same symbolic offset needs the select to see past seven non-matching stores, and
+            // the store-chain walk must stop at the first symbolic index it cannot compare. The
+            // result is a `maybe-uninitialized-read` on memory the program definitely wrote,
+            // which is a worse answer than the silence it replaces.
             return AccessResult {
                 value: Some(a.select(arr.data, i)),
                 faults: vec![],
