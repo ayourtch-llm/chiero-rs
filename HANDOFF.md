@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 187) — 1242 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 187) — 1243 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -711,6 +711,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Until (2) exists, keep the default on. An unactionable true finding is recoverable; a
 > missing one is not, and the user's decision was explicit.
+>
+> Mutation on wave 187 found a **third** missing fixture in two waves, and again it needed a
+> different program rather than another assertion:
+>
+> ```text
+>   KILLED     note-never-appended
+>   KILLED     note-on-every-null            <- the malloc control
+>   KILLED     fork-forgets-to-annotate
+>   KILLED     note-on-every-fault-kind      <- only after a two-pointer fixture
+> ```
+>
+> The last one: a state forked to make `p` null still runs the rest of the program, so a
+> fault there on `q` is an ordinary out-of-bounds and must not claim `p`'s nullability. No
+> fixture had a non-null fault on a null-parameter state, so the over-broad match was
+> invisible.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1070,6 +1085,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A true finding and an actionable one are different things** (wave 187). All three null
+> dereferences the corpus produces are correct — the functions really do crash on null — and
+> all three are about `static` helpers whose callers all pass `&table[i]`. The fix was not to
+> report less but to make each report state its premise, so a reader can tell chiero's
+> assumption about an unseen caller from a null the program itself produced. Measure the
+> *rate* before deciding a policy is too noisy, and separate "wrong" from "unactionable"
+> before choosing what to change.
+>
+> **Mutation asks for programs, not assertions** (wave 187, third instance). Three survivors
+> across two waves — a fork that replaced rather than added, a fork that covered only the
+> first parameter, an annotation that matched every fault kind — and not one could have been
+> killed by strengthening an existing fixture. Each needed a program with a different
+> *shape*. When a mutant survives, ask what program the file does not contain.
 >
 > **When a default changes, fix the tests by naming their subject — never by relaxing an
 > assertion** (wave 186). Six tests broke on the nullable-pointer default. Every one counted
