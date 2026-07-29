@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 160) — 1185 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 161) — 1188 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -513,7 +513,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
 > witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
-> labelling a proven path undecided**.*
+> labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
+> said**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -742,20 +743,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   `chiero-exec` feature lives entirely in the crate above it. Not wrong — the checker is
 >   what makes the behaviour reachable — but it means a `chiero-exec`-only mutation run
 >   reports a clean sweep over code nothing in that crate tests.
-> - **A symbolic divisor tier 1 cannot decide is a declared miss** (wave 157).
->   `100 / (x + 1)` says `Fidelity::Unknown` with "whether the divisor of this SDiv can be
->   zero was not decided" — honest, and still a miss: `x = -1` makes it zero and the
->   candidate search cannot exhibit it. Escalating that one query to the backend would
->   settle it.
+> - ~~A symbolic divisor tier 1 cannot decide is a declared miss.~~ **STALE, and it was
+>   never a defect** — checked in wave 161. Escalation already worked; what was missing is
+>   that nothing escalated by *default*, which wave 161 fixed. `100 / (x + 1)` now reports.
 > - **`fork-drops-reported` survives in `UndefinedArithmetic`** (wave 157). Emptying the
 >   per-path `reported` at a fork changes no test. A fixture was written — fault, branch,
 >   both children return to the same site — and measurement shows both children finish
 >   holding the *same* pre-fork report, which `reports()` collapses by id, so the cloned
 >   field is never consulted. The field is right; the fixture that would observe it is not
 >   yet known.
-> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor, now
->   *reproduced* by wave 153 (`a[x & 3]` enumerates one offset of four and says so) but not
->   fixed. It is a declared gap, not a wrong answer.
+> - **023 c17 / the wave-117 `fork_on_offset` survivor — STALE as a defect**, checked in
+>   wave 161. With a backend the enumeration completes exactly: `a[x & 7]` forks eight ways,
+>   reports all four out-of-bounds accesses, and leaves the four in-bounds paths `Exact`.
+>   What waves 153–156 recorded as a gap was tier 1's inability to prove "there is no ninth
+>   offset", and wave 161 made a backend the default. **Nothing is owed here.**
 > - **`is_aggregate` excludes `Ty::Vector` — STALE, checked in wave 153.** It includes it,
 >   and matches `aggregate_size`. The entry claimed a divergence that is not there; a
 >   `vector_size` fixture is still owed to say whether the *behaviour* is right, but the
@@ -782,6 +783,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **When three owed entries all say the same thing, the entry is not the bug** (wave 161).
+> §9 carried three items — the `fork_on_offset` survivor, an undecidable divisor, 023 c17 —
+> each describing a real limitation, each written as though the limitation were the defect.
+> Probing them one at a time showed all three behaved correctly the moment a backend was
+> configured, and the question they had been hiding for eight waves was *why a backend was
+> never configured*. 022 §4 had said tier 2 is on by default since before any of them was
+> written. **A cluster of owed items with one shape is evidence about their common cause,
+> not three things to fix.**
+> **A default applied in three places is a default applied in two** (wave 161). Three
+> solver-construction sites each read `self.backend` independently; adding discovery to the
+> obvious one left the test still failing. The fix was one `backend_for_run` that all three
+> go through. **When adding a policy, find every site that implements the old one before
+> writing the new one.**
+> **An accidental default is a silent premise in every test that relied on it** (wave 161).
+> Five tests were about tier 1's incompleteness and none of them said so — they simply got
+> tier 1 because nothing else was available. Making discovery the default broke exactly
+> those five, which is the right blast radius: each now asks for `LiteOnly` and thereby
+> states its own subject. **A test that depends on a default depends on it silently.**
 > **A degradation can be *answered*, and then it should go** (wave 160). Fidelity is a
 > running worst-of and that is right for almost everything — an unmodeled call stays
 > unmodeled. But "the solver could not decide this branch" is a claim the run can later
