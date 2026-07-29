@@ -486,6 +486,74 @@ fn a_statement_expression_yielding_an_aggregate_outlives_its_scope() {
     agree("int x = ({ 1; 2; 3; }); return x;");
 }
 
+/// **A designated or bit-field initializer works at file scope too.**
+///
+/// `encode_into` returns `None` for a designator and for a bit-field member, under comments
+/// saying the initializer is "refused whole rather than silently written in positional
+/// order". The intent is right and the effect is not: the caller turns `None` into
+/// `GlobalInit::Zero`, so **`struct S g = {.b = 3};` reads as all zeros** and `g.b` is 0
+/// where C says 3. Refusing whole would have been a diagnostic; this is a fabrication with
+/// a comment claiming otherwise.
+///
+/// §9 listed these as "designated and bit-field initializers refused", which was wrong in
+/// both directions — they *work* for locals (`init_list` has handled designators since it
+/// was written, and bit-fields since wave 142), and at file scope they are not refused but
+/// silently zeroed. A stale owed entry sends the next reader to the wrong place, so this
+/// test pins what is actually true.
+#[test]
+fn a_global_initializer_handles_designators_and_bitfields() {
+    // A designator alone, and mixed with positional elements — C11 6.7.9p17 continues from
+    // the designated position, so `{1, .c = 9}` leaves `b` zero.
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct S g = {.b = 3};\n",
+        "return g.a * 100 + g.b * 10 + g.c;",
+    );
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct S g = {1, .c = 9};\n",
+        "return g.a * 100 + g.b * 10 + g.c;",
+    );
+    // Out of declaration order, which a positional walk would get wrong rather than miss.
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct S g = {.c = 9, .a = 1};\n",
+        "return g.a * 100 + g.b * 10 + g.c;",
+    );
+    // Array designators, alone and after a positional element.
+    agree_with("int ga[4] = {[2] = 7};\n", "return ga[2] * 10 + ga[0];");
+    agree_with("int ga[4] = {1, [3] = 8};\n", "return ga[0] * 10 + ga[3];");
+    // **Bit-fields at file scope**, including truncation to the field: 7 in a 3-bit signed
+    // field is -1, so a byte-wise write that ignored the width would answer 72 not -8.
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {1, 2};\n",
+        "return g.a * 10 + g.b;",
+    );
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {7, 2};\n",
+        "return g.a * 10 + g.b;",
+    );
+    // A designated bit-field, which is both features at once.
+    agree_with(
+        "struct B { int a:3; int b:5; };\nstruct B g = {.b = 3};\n",
+        "return g.a * 10 + g.b;",
+    );
+    // Nested, with designators at both levels.
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct N { struct S s; int n; };\n\
+         struct N g = {.n = 4, .s = {.b = 6}};\n",
+        "return g.s.b * 10 + g.n;",
+    );
+    // **The positional forms that already worked must keep working** — they are the ones
+    // `encode_into` does handle, and the fix must not disturb them.
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct S g = {1, 2, 3};\n",
+        "return g.a * 100 + g.b * 10 + g.c;",
+    );
+    agree_with(
+        "struct S { int a; int b; int c; };\nstruct S g = {7};\n",
+        "return g.a * 100 + g.b * 10 + g.c;",
+    );
+    agree_with("int ga[3] = {4, 5, 6};\n", "return ga[0] * 10 + ga[1];");
+}
+
 /// **A file-scope pointer initialized with an address holds that address.**
 ///
 /// `GlobalInit` has `Zero`, `Bytes` and `Extern` and no form for an *address*, so
