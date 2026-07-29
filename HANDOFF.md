@@ -703,6 +703,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > are rarer in the grammar than globals, so the interesting local case is nearly untested
 > while the global one is well covered.
 >
+> **The oracle grades by class, and that is load-bearing** — wave 178's second commit. It
+> pairs each ASan class with the wording chiero's finding must carry, so
+> `heap-use-after-free` is answered by a use-after-free finding and nothing else. The
+> earlier "did chiero say anything about memory" predicate was satisfied by the
+> `null-dereference` every allocating program carries from the malloc-failure path, and a
+> leak-only program scored as caught on the strength of it. A program flagged with a class
+> the table does not know is a **miss**, so a new ASan class surfaces as a failure rather
+> than vanishing into the total.
+>
+> **Which mutant proves which half**, since the two mechanisms landed together and it is
+> easy to credit the wrong one. `uaf-paired-with-double-free` — swapping the expected
+> wording for one class — **dies**, so the pairing itself is observable.
+> `leaks-detected-again` dies on the *unknown-class-is-a-miss* rule rather than on the
+> pairing: a leak-only program matches no class in the table, so `want_any` is false and it
+> scores as a miss. `class-pairs-ignored`, which reverts the per-class check to "any memory
+> finding" while keeping that rule, **survives** — on today's corpus every flagged program
+> does carry the right class, so the weaker predicate happens to give the same answer. The
+> pairing is a guard against a corpus that does not yet exist, and the honest reading is
+> that one of the two mechanisms is proven and the other is a margin.
+>
+> Two mutants survive on the memory oracle, recorded rather than dropped:
+> `heap-never-freed` is a *bad mutant* — deleting the ordinary-path `free` leaves the
+> double-free arm's own `free` to become the block's first, so the classes survive and the
+> mutant does not do what its name says. `malloc-path-clears-everything` widens
+> `is_malloc_failure_path` to clear any run with memory findings; `invented` is 0, so
+> nothing observes the narrowing today. It guards a false positive that has not happened
+> yet, and is untested rather than equivalent.
+>
 > ~~🔴 the memory-UB oracle only knows one fault.~~ **Wave 178: five.** Note what found it —
 > the per-class table. Wave 177's `15 / 15` read as parity and was two classes, both the
 > same fault in different storage.
