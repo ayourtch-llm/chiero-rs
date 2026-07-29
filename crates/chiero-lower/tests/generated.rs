@@ -2026,6 +2026,13 @@ struct Tally {
     /// 15 caught reads as parity while an entire class is missing from the corpus, which is
     /// exactly the state wave 177 left behind.
     classes: std::collections::BTreeMap<&'static str, (usize, usize)>,
+    /// Seeds where ASan flagged a fault and no line could be parsed from its report.
+    ///
+    /// **Tracked, because "no line" and "the lines agree" are the same silence.** Mutation
+    /// proved it: reverting the frame search to `#0` — which cannot find the program's
+    /// frame for an interceptor fault like double-free — left the suite green, since a
+    /// program with no parsed line simply skipped the comparison.
+    unparsed: Vec<u64>,
     /// Seeds where chiero found the right *class* at the wrong *line*.
     ///
     /// 023 §9's whole point: a report that names the fault but not the place is not a
@@ -2226,6 +2233,9 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
                 .lines()
                 .find(|l| l.trim_start().starts_with('#') && l.contains(" in probe "))
                 .and_then(|l| l.rsplit(':').next().and_then(|n| n.trim().parse().ok()));
+            if asan_line.is_none() {
+                t.unparsed.push(seed);
+            }
             if let Some(al) = asan_line {
                 let ours: Vec<u32> = r
                     .reports()
@@ -2320,6 +2330,13 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
             t.classes.keys().collect::<Vec<_>>()
         );
     }
+    assert!(
+        t.unparsed.is_empty(),
+        "no source line could be parsed from ASan's report on {} program(s): seeds {:?}. \
+         The location check skips those, so it would pass while grading nothing",
+        t.unparsed.len(),
+        &t.unparsed[..t.unparsed.len().min(5)]
+    );
     assert!(
         t.mislocated.is_empty(),
         "chiero found the right fault at the wrong line on {} program(s) \

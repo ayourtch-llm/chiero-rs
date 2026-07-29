@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 180) — 1230 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 181) — 1230 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,48 +673,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: the oracle grades one run, and chiero explores every path
+> ### 🔴 Do this first: a program with two faults is still graded on one
 >
-> Six classes, all balanced, all caught, nothing invented:
+> Of the three structural gaps wave 180 recorded, the location one is closed and found no
+> defect. Two remain, and the first is now the cheapest:
 >
-> ```text
->   memory-UB oracle: 58 compared, 36 flagged by ASan, 36 caught, 0 invented
->       6 / 6    attempting double-free
->       4 / 4    global-buffer-overflow
->       6 / 6    heap-buffer-overflow
->       9 / 9    heap-use-after-free
->       4 / 4    stack-buffer-overflow
->       7 / 7    stack-use-after-scope
-> ```
->
-> What remains is structural rather than a missing row. **ASan executes one path and halts
-> at the first fault; chiero explores every path and reports every fault.** Three consequences,
-> none yet handled:
->
-> 1. **A program with two faults is graded on one.** ASan names whichever comes first, and
->    the oracle asks only whether chiero found *that* class. A chiero that missed the second
->    fault entirely would score full marks.
+> 1. **ASan halts at the first fault; chiero reports every fault.** The oracle asks only
+>    whether chiero found the class ASan named, so a chiero that missed a *second* fault in
+>    the same program scores full marks. The corpus already generates such programs — a
+>    block that is both overflowed and freed twice — and nothing looks at the second one.
+>    Grading it needs the sanitizer run more than once (recompile with the first fault's
+>    statement removed, or run under a mode that continues), which is the real cost.
 > 2. **`invented` is only sound because the corpus is closed.** These programs take one
->    path, so "chiero found a fault ASan did not" is currently a real question. The moment
->    the memory grammar meets a branch on an input, a finding on the other path is correct
->    and the column would start accusing the engine.
-> 3. **Neither side's *location* is checked.** ASan prints the faulting line; chiero's
->    finding carries a span. Matching them would catch a chiero that finds the right class
->    at the wrong site — which is exactly what a witness (023 §9) is supposed to prevent.
+>    path, so "chiero found a fault ASan did not" is a real question. The moment the memory
+>    grammar meets a branch on an input, a finding on the other path is correct and the
+>    column starts accusing the engine. Nothing enforces the closedness today; it is a
+>    property of the grammar that could be lost without any test noticing.
 >
-> (3) is the cheapest and worth the most: it is the difference between "chiero said
-> use-after-free somewhere" and "chiero said use-after-free *there*".
->
-> ~~🔴 `stack-buffer-overflow` is 1 of 41.~~ **Wave 180: 4 of 36**, and every class now has a
-> floor of 3 rather than `> 0`, since `> 0` is what let the row shrink unnoticed.
->
-> Mutation on wave 180: the local-array guarantee, its *restraint* (`local-array-always`
-> dies — making the shape common starves the other classes, wave 179's lesson reproduced on
-> purpose) and `redzone=64` are all load-bearing. `class-floor-back-to-one` **survives**,
-> and that is expected rather than a gap: every row now sits at 4 or more, so relaxing the
-> floor changes no verdict today. A ratchet cannot be killed by mutating the ratchet while
-> the thing it guards is within bounds — the RED is what proved it observable, by failing at
-> `seen = 1`. Reading its survival as "the floor is untested" would be the wrong lesson.
+> ~~🔴 neither side's location is checked.~~ **Wave 181, and the predicted defect was not
+> there**: 36 of 36, every class, exact line. It landed as a ratchet rather than a fix.
+> Recorded because two things nearly made it grade *nothing* while passing — the compile
+> line had no `-g`, so ASan printed module offsets instead of lines; and frame `#0` for a
+> double-free is ASan's own `free` interceptor, so keying on it silently failed to parse
+> exactly the classes that go through an interceptor. **A location check that cannot read a
+> location looks identical to one that passes.**
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1042,6 +1024,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A check that cannot read its input looks exactly like a check that passes** (wave 181).
+> The location check was written, ran green, and was grading nothing twice over: without
+> `-g` ASan prints module offsets rather than lines, and frame `#0` of a double-free is
+> ASan's `free` interceptor rather than the program. Both produced "no line to compare",
+> which the code treated as *nothing to disagree about*. Before believing a new comparison,
+> make it print what it extracted — not just its verdict.
+>
+> **A wave whose predicted defect is absent still ends in a commit** (wave 181). §9 called
+> the location gap the cheapest of three and worth the most; chiero was right on all 36
+> programs. The assertion landed as a ratchet, proven observable by mutating the engine's
+> span rather than by a natural failure — which is what the protocol's mutation clause
+> exists for. Reporting it as a fix would have been the dishonest option; skipping the
+> commit would have thrown away the ratchet.
 >
 > **A disagreement column grades both participants, not one** (wave 180). `invented` was
 > added in wave 177 to catch chiero inventing faults. Its first hit was chiero being *more
