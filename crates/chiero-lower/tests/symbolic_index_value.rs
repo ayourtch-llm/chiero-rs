@@ -54,17 +54,27 @@ fn an_unenumerable_index_does_not_invent_an_uninitialized_read() {
     );
 }
 
-/// And the value is usable, so the path continues.
+/// The value is not a *pointer*, and that is deliberate.
 ///
-/// Asserted separately from the finding above, because suppressing the report while still
-/// handing back `Undef` would satisfy that test and leave the path dead — every access after
-/// the index would go on producing nothing.
+/// Concretizing the offset to one in-bounds value was tried in this wave and rejected:
+/// `a_symbolic_ptr_add_offset_is_a_gap` forbids handing out a fabricated address, on the
+/// ground that every later report through it is a confident claim about one arbitrary case.
+/// So the access after an unenumerable index still stops — what changed is that it stops
+/// *without* also accusing the program of an uninitialized read.
+///
+/// Making the access itself work needs a `Value` that can hold a **symbolic** offset;
+/// `Pointer::off` is a concrete `i64`. That is recorded in §9 as a milestone, not smuggled in
+/// as a concretization.
 #[test]
-fn the_path_continues_with_a_real_value() {
-    let (_, vals) = run("int ga[64] = {7};\nint probe(int i){ return ga[i]; }");
+fn the_replacement_value_is_not_a_fabricated_pointer() {
+    let (f, _) = run("int ga[64] = {7};\nint probe(int i){ return ga[i]; }");
     assert!(
-        vals.iter().any(|v| v.is_some()),
-        "some state must reach the return with a value: {vals:?}"
+        f.iter().any(|x| x.starts_with("pointer-outside-object")),
+        "the fault is still found: {f:?}"
+    );
+    assert!(
+        !f.iter().any(|x| x.starts_with("uninitialized-read")),
+        "and nothing is invented about what the program wrote: {f:?}"
     );
 }
 
@@ -93,8 +103,13 @@ fn a_constrained_index_gets_a_value_and_no_fault() {
         !f.iter().any(|x| x.starts_with("pointer-outside-object")),
         "`i & 63` cannot leave the object: {f:?}"
     );
+    // Not "and the read produces a value": it does not, for the same reason as above — the
+    // offset is unenumerable either way, so no pointer is handed out and the load stops.
+    // What the constraint buys is silence about a fault that cannot happen, which is the
+    // property worth pinning here.
     assert!(
-        vals.iter().any(|v| v.is_some()),
-        "and the read produces a value: {vals:?}"
+        !f.iter().any(|x| x.starts_with("uninitialized-read")),
+        "and nothing is invented about `ga`: {f:?}"
     );
+    let _ = vals;
 }

@@ -4287,9 +4287,29 @@ impl<'m> Engine<'m> {
                     }
                 ),
             );
-            // No fabricated address: the path continues with an unusable value rather than
-            // a plausible wrong one.
-            return Some(Value::Undef);
+            // **An unusable value, but not `Undef`** — and the distinction cost a wave to
+            // find. `Value::Undef` is doing two jobs: C's indeterminate value, where a later
+            // read really is 021 §3.1's uninitialized-read, and chiero's "I cannot represent
+            // this", where it is not. Storing one marks the destination uninitialized *on
+            // purpose* (see the `Store` handler), so `int *p = ga + i;` then reported that
+            // `p` was never written — by the statement that wrote it.
+            //
+            // A fresh symbol says the true thing: something was written here and chiero does
+            // not know what. It is still not a pointer, so an access through it stops at "a
+            // load through a non-pointer address" exactly as before — the invariant
+            // `a_symbolic_ptr_add_offset_is_a_gap` guards, that no *fabricated address* is
+            // handed out, is untouched. Concretizing to one in-bounds offset was tried and
+            // rejected for that reason: it makes every later report a confident claim about
+            // one arbitrary case.
+            self.fresh_count += 1;
+            let t = self.input(
+                a,
+                s,
+                chiero_solver::Sort::BitVec(64),
+                &format!("unenumerated_offset{}", self.fresh_count),
+                InputOrigin::Fresh { span },
+            );
+            return Some(Value::Scalar(t));
         }
 
         // Siblings for every value but the first; this state takes the first, which keeps
