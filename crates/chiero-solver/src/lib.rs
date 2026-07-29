@@ -2518,6 +2518,26 @@ fn backend_timeout() -> std::time::Duration {
     }
 }
 
+/// Serial number for dump filenames, so concurrent solvers do not collide.
+static NEXT_DUMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `$CHIERO_DUMP_QUERIES`, the directory every backend query is written to.
+///
+/// A newtype for the same reason [`BackendTimeout`] is one: `TieredSolver` derives
+/// `Default`, and the default has to be read from the environment rather than be `None`.
+#[derive(Debug, Clone)]
+struct DumpDir(Option<std::path::PathBuf>);
+
+impl Default for DumpDir {
+    fn default() -> Self {
+        DumpDir(
+            std::env::var_os("CHIERO_DUMP_QUERIES")
+                .filter(|v| !v.is_empty())
+                .map(std::path::PathBuf::from),
+        )
+    }
+}
+
 /// The watchdog's duration, as a newtype so `TieredSolver` can keep deriving `Default`.
 ///
 /// `Duration::default()` is **zero**, and a derived default would have made every backend
@@ -2541,6 +2561,8 @@ pub struct TieredSolver {
     /// protected from is not protected. `$CHIERO_SMT_TIMEOUT` (seconds) overrides it, which
     /// is how a genuinely long-running analysis asks for more without a code change.
     timeout: BackendTimeout,
+    /// Where to write every backend query (022 §4), if anywhere.
+    dump: DumpDir,
     asserted: Vec<Term>,
     scopes: Vec<usize>,
     backend: Option<SmtLib>,
@@ -3011,6 +3033,39 @@ impl TieredSolver {
         }
     }
 
+    /// Write one standalone SMT-LIB2 script for `all` (022 §4, contract 17).
+    ///
+    /// Failures are ignored on purpose. A dump is a debugging aid, and a run that cannot
+    /// write one should still answer the question it was asked — turning an unwritable
+    /// directory into a solver error would make the diagnostic worse than the thing it
+    /// diagnoses.
+    fn dump_query(&mut self, a: &TermArena, dir: &std::path::Path, all: &[Term], vars: &[VarId]) {
+        use std::io::Write;
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let mut script = String::from("(set-logic ALL)\n");
+        for v in vars {
+            let (name, sort) = &a.vars[v.0 as usize];
+            script.push_str(&format!(
+                "(declare-const {} {})\n",
+                smt_name(v, name),
+                smt_sort(*sort)
+            ));
+        }
+        for t in all {
+            script.push_str(&format!("(assert {})\n", a.to_smtlib(*t)));
+        }
+        script.push_str("(check-sat)\n");
+        // Process id and a per-process counter, so two solvers in one run and two runs in
+        // one directory do not overwrite each other's evidence.
+        let n = NEXT_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("query-{}-{n:06}.smt2", std::process::id()));
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            let _ = f.write_all(script.as_bytes());
+        }
+    }
+
     /// One query against the live session, spawning it if needed. `None` means the
     /// process is unusable and the caller should restart it.
     fn query(
@@ -3049,6 +3104,22 @@ impl TieredSolver {
             script.push_str(&format!("(assert {})\n", a.to_smtlib(*t)));
         }
         script.push_str("(check-sat)\n");
+
+        // **A dump is a reconstruction, not a transcript.** `decls` above holds only the
+        // variables *this process* has not seen, because the session is long-lived and
+        // re-declaring is an error. Writing the bytes on the wire would therefore produce
+        // a file that replays only if every earlier query in the session is replayed first
+        // and in order — and contract 17 asks for a file that works *standalone*. So the
+        // dump declares everything the query mentions, whatever the process already knows,
+        // and drops the `push`/`pop` framing that only matters to a reused process.
+        //
+        // Written before the query is sent, deliberately: the query worth having a file for
+        // is the one that never comes back.
+        if let Some(dir) = self.dump.0.clone() {
+            self.dump_query(a, &dir, all, vars);
+        }
+        let s = self.session.as_mut()?;
+
         s.send(&script)?;
 
         let verdict = s.read_answer()?;

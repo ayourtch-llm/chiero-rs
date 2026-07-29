@@ -18,6 +18,9 @@
 //! Contract 17 is a **round trip**, and that is the point: a dump that is merely written is
 //! worth nothing if z3 rejects it or answers differently. The test runs the file z3 was
 //! never given and requires the verdict chiero reported.
+//!
+//! It is one test rather than two because the knob is process-global: two tests setting it
+//! to two directories race, and the loser looks for its file in the winner's directory.
 
 use chiero_solver::*;
 
@@ -108,45 +111,16 @@ fn a_dumped_query_reproduces_chieros_answer() {
         "contract 17: re-running the dump standalone must reproduce chiero's answer. \
          chiero said {verdict}, the script said {replayed:?}"
     );
-}
 
-/// **A dump is a standalone script, not a fragment.**
-///
-/// The reason contract 17 says "re-running it *standalone*": a file holding only the
-/// assertions reproduces nothing, because the reader has to know what to declare and what
-/// to ask. The failure mode is quiet — the file looks like the query, and the person you
-/// handed it to gets an error about an unknown symbol rather than the disagreement you
-/// wanted them to see.
-#[test]
-fn a_dumped_query_declares_what_it_uses_and_asks_the_question() {
-    let Some(z3) = z3() else {
-        eprintln!("SKIP: no SMT-LIB backend on PATH");
-        return;
-    };
-    let dir = std::env::temp_dir().join(format!("chiero-dump-shape-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    unsafe {
-        std::env::set_var("CHIERO_DUMP_QUERIES", &dir);
-    }
-
-    let mut a = TermArena::new();
-    let x = a.var(Sort::BitVec(32), "x");
-    let five = a.bv(32, 5);
-    let ten = a.bv(32, 10);
-    let lo = a.ult(x, five);
-    let hi = a.ult(ten, x);
-    let sq = a.mul(x, x);
-    let nz = a.eq(sq, five);
-    let mut s = TieredSolver::with_backend(SmtLib::at(&z3));
-    let _ = s.check(&mut a, &[lo, hi, nz]);
-
-    let file = std::fs::read_dir(&dir)
-        .expect("the dump directory")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .next()
-        .expect("022 §4 asks for the query to be written");
-    let text = std::fs::read_to_string(&file).expect("readable");
+    // **And it is a script, not a fragment** — which is what *standalone* means and what
+    // the round trip above would not catch on its own: a file that happened to reproduce
+    // the answer because z3 was lenient about a missing declaration would still be useless
+    // to the person you handed it to.
+    //
+    // These live in the same test rather than beside it because the knob is an environment
+    // variable and therefore process-global: two tests setting it to two directories race,
+    // and the loser looks for its file in the winner's directory. One setter, no race.
+    let text = std::fs::read_to_string(mine).expect("readable");
     assert!(
         text.contains("declare-fun") || text.contains("declare-const"),
         "a standalone script declares its variables:\n{text}"
