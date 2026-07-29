@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 166) — 1198 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 167) — 1206 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -517,7 +517,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > said; 162 made the result say which solver decided it; 163 gave the backend a watchdog;
 > 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
-> half idle**.*
+> half idle; 167 gave the engine concrete floating point**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -751,11 +751,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   undefined, leaving **81 compared — 13%**. The channel that has found more defects than
 >   any other spends half its budget on programs chiero declines to lower. Floats are not
 >   just a missing feature; they are the largest single drag on detection.
->   **The blocker is the solver, not lowering.** `chiero_solver::Sort` is `BitVec`/`Bool`/
->   `Array` — there is no float sort, so a float value cannot be represented symbolically at
->   all. Implementing floats means either an FP theory in the solver or a bit-vector
->   encoding, which is milestone-sized and should be scoped as one rather than started
->   inside a wave.
+>   **The blocker was narrower than it looked.** A *symbolic* float still needs an FP theory
+>   or a bit-blasted encoding, and that remains milestone-sized. A *concrete* one needs
+>   nothing: wave 167 gave the engine `Const::Float`, the five arithmetic ops, FNeg's
+>   siblings and the six FP casts, all folded from bit patterns, with a symbolic operand
+>   staying `Fidelity::Unknown`. **Every one of the 293 refusals is a closed
+>   `int probe(void)` where every float is concrete.**
+> - **🔴 Next: remove `refuse_floating` from lowering.** The engine can now evaluate what
+>   those programs do; lowering still discards any function mentioning a float, so nothing
+>   reaches it. That is the wave the 293 refusals are waiting on, and §9 predicted its shape
+>   long ago: "Deleting that function is what implementing floats looks like, and the
+>   `KNOWN_GAPS` entry is what will fail when it happens." Expect the ratchet to fire, and
+>   expect lowering to need float *emission* (`Const::Float`, the F-ops) to be correct —
+>   the engine side is now tested but the lowering side has never run.
+> - **Still unimplemented on the float path**: x87 80-bit arithmetic (no Rust primitive; its
+>   width works, so loads and stores do), and the float comparisons `FOEq`/`FOLt`/… which
+>   wave 167 did not reach — `cmp` still has no float arms, so `a < b` on floats is a gap.
 > - **`zz_soak` is the open-ended mode** §9 owed since wave 139: `#[ignore]`d, range under
 >   `SOAK_LO`/`SOAK_HI`, prints a census rather than a verdict. **Frontier reached: seed 800.**
 >   The next session should start there.
@@ -828,6 +839,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Two precisions are two implementations** (wave 167). `f32` and `f64` compute at
+> different widths and round differently, so a suite written entirely in `double` leaves half
+> the arithmetic unchecked — a mutation making `FAdd` subtract in the 32-bit arm survived
+> everything until single-precision fixtures existed. **When a type comes in widths, test
+> each width**, with values that make the narrow one visibly narrow (`0.1f + 0.2f` is not
+> the double).
+> **A round trip can hide the bug it was written to catch** (wave 167). `SiToFp(-7)` read as
+> *unsigned* is 4294967289, and truncating that back through `int` gives -7 again — so
+> int→float→int passes either way. The signedness had to be asserted on the float, where the
+> two readings differ by four billion. **A conversion pair can be wrong in both directions
+> and right in composition.**
+> **The blocker is often narrower than the summary says** (wave 167). §9 recorded floats as
+> milestone-sized because the solver has no float sort — true, and true only of *symbolic*
+> floats. The generator's 293 refusals are all closed programs where every float is concrete,
+> and concrete evaluation is `from_bits`, an operator, `to_bits`. **Before deferring a
+> capability as too large, ask which part of it the blocked work actually needs.**
 > **A soak that reports only its verdict hides its census** (wave 166). Six hundred fresh
 > seeds found zero defects, and the useful output was the breakdown: 293 refused for floats,
 > 226 discarded as undefined, 81 compared. "0 defects" alone would have read as reassurance
