@@ -2197,29 +2197,49 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
         // that accepts any memory finding is satisfied before the real fault is looked for
         // — mutation found this by leaving `detect_leaks` on and still passing: a
         // leak-only program was being scored as caught on the strength of that null.
-        let mut want_any = false;
+        // **ASan's *first* fault is the one graded, and only it.**
+        //
+        // `-fsanitize-recover=address` makes ASan report every fault in the run, and the
+        // temptation is to require chiero to match them all. That would be wrong. chiero
+        // reports the first fault and stops — `report_faults`: "the path ends at a definite
+        // crash; everything after it would be about a program that does not exist" — and
+        // that is the position C takes. An execution has no defined continuation past
+        // undefined behaviour, so ASan's recover mode is *simulating* a program the
+        // language does not describe, and its second and later reports belong to that
+        // simulation rather than to the program.
+        //
+        // Recover mode still earns its place: it is what reveals the *order*. Without it
+        // ASan names one fault and a chiero that reported some unrelated later fault would
+        // be scored a plain miss, indistinguishable from finding nothing. With it, the
+        // requirement can be the sharp one — chiero's finding must be ASan's **first**,
+        // not merely one of the faults present somewhere in the program.
+        let first_class: Option<(&str, &str)> = err
+            .lines()
+            .filter(|l| l.contains("ERROR: AddressSanitizer:"))
+            .find_map(|l| {
+                ASAN_CLASSES
+                    .iter()
+                    .find(|(c, _)| l.contains(*c))
+                    .map(|(c, e)| (*c, *e))
+            });
         let mut got_all = true;
-        for (class, expect) in ASAN_CLASSES {
-            if !err.contains(class) {
-                continue;
+        match first_class {
+            Some((class, expect)) => {
+                let hit = r
+                    .findings()
+                    .iter()
+                    .any(|f| format!("{f:?}").contains(expect));
+                let e = t.classes.entry(class).or_default();
+                e.0 += 1;
+                if hit {
+                    e.1 += 1;
+                } else {
+                    got_all = false;
+                }
             }
-            want_any = true;
-            let hit = r
-                .findings()
-                .iter()
-                .any(|f| format!("{f:?}").contains(expect));
-            let e = t.classes.entry(class).or_default();
-            e.0 += 1;
-            if hit {
-                e.1 += 1;
-            } else {
-                got_all = false;
-            }
-        }
-        // ASan flagged something none of the classes name — a class this table does not
-        // know yet. Counting it as caught would hide it, so it is a miss.
-        if !want_any {
-            got_all = false;
+            // ASan flagged something none of the classes name — a class this table does not
+            // know yet. Counting it as caught would hide it, so it is a miss.
+            None => got_all = false,
         }
         if got_all {
             t.caught += 1;
