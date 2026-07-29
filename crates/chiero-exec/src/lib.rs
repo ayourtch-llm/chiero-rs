@@ -638,6 +638,31 @@ impl State {
         self.stack.last().map_or(FuncId(0), |f| f.func)
     }
 
+    /// **Every symbolic input this path created**, in creation order — the entry
+    /// parameters first, since they are minted before the first instruction runs.
+    ///
+    /// Exposed for the symbolic differential oracle, which must name the variable it is
+    /// solving for. Reading it off a one-entry `Model` would work only for a program whose
+    /// paths never mint a second symbol, and "the model happens to have one variable" is
+    /// not a property any fixture should depend on.
+    pub fn inputs(&self) -> &[(Term, InputOrigin)] {
+        &self.inputs
+    }
+
+    /// The returned value **under a model**, for a path whose return is symbolic.
+    ///
+    /// [`Self::return_value_bits`] evaluates *ground*, so it answers `None` the moment the
+    /// return depends on an input — which is every path a symbolic differential test is
+    /// about. Given the model that put the path's own condition on, this is the number the
+    /// program must produce for those inputs, and therefore the number a compiler running
+    /// the same inputs has to agree with.
+    pub fn return_value_under(&self, m: &chiero_solver::Model, a: &TermArena) -> Option<u128> {
+        match self.ret? {
+            Value::Scalar(t) => a.eval(m, t).ok().map(|c| c.bits()),
+            Value::Ptr(_) | Value::Undef => None,
+        }
+    }
+
     /// The returned value as concrete bits, when it is one.
     pub fn return_value_bits(&self, a: &mut TermArena) -> Option<u128> {
         match self.ret? {

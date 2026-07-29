@@ -280,3 +280,89 @@ fn push_and_pop_restore_the_assertion_set() {
     s.assert(lt3);
     assert!(matches!(s.check(&mut a, &[]), CheckResult::Sat(_)));
 }
+
+/// **The negation of an atom is an atom**, and until wave 153 it was not.
+///
+/// This is not a fine point of the fragment's edge — it is *half of every branch*. A
+/// conditional contributes its condition to one path and the **negation** of that condition
+/// to the other, so a solver that decides `x >s 10` and gives up on `!(x >s 10)` can answer
+/// for exactly one side of every `if` in every program. `SolverLite::check` collected atoms
+/// with `as_atom`, which matches only a bare `Node::Bin(pred, ..)`, so a `Node::Not` wrapper
+/// fell straight through to "assertion is outside the conjunction-of-atoms fragment".
+///
+/// Nothing noticed for the same reason 023 §9 keeps giving: every channel that runs programs
+/// runs *closed* ones. A program with no inputs has no symbolic branch, so no path condition
+/// ever contained a negated comparison. Wave 153's symbolic oracle put one there on its
+/// first run and three fixtures failed at once.
+///
+/// The three predicates are checked separately because each negates to a different relation
+/// — `!(a <u b)` is `a >=u b`, `!(a <s b)` is `a >=s b`, `!(a == b)` is `a != b` — and none
+/// of the three is expressible as one of the other two.
+#[test]
+fn the_negation_of_an_atom_is_still_in_the_fragment() {
+    for (name, build) in [
+        (
+            "!(x <u 10), satisfied by x = 10",
+            (|a: &mut TermArena, x| {
+                let ten = a.bv(32, 10);
+                let lt = a.ult(x, ten);
+                a.not(lt)
+            }) as fn(&mut TermArena, chiero_solver::Term) -> chiero_solver::Term,
+        ),
+        ("!(x <s 10), satisfied by x = 10", |a: &mut TermArena, x| {
+            let ten = a.bv(32, 10);
+            let lt = a.slt(x, ten);
+            a.not(lt)
+        }),
+        (
+            "!(x == 0), satisfied by any other x",
+            |a: &mut TermArena, x| {
+                let zero = a.bv(32, 0);
+                let eq = a.eq(x, zero);
+                a.not(eq)
+            },
+        ),
+    ] {
+        let mut a = TermArena::new();
+        let x = a.var(Sort::BitVec(32), "x");
+        let t = build(&mut a, x);
+        let mut s = SolverLite::default();
+        match s.check(&mut a, &[t]) {
+            CheckResult::Sat(m) => {
+                // `Sat` is self-certifying only if the model is checked (022 §3.1), and a
+                // negated atom is exactly where a propagator is most likely to invert a
+                // bound. Evaluate independently rather than trusting the verdict.
+                assert_eq!(
+                    a.eval(&m, t).map(|v| v.bits() != 0),
+                    Ok(true),
+                    "{name}: the model does not satisfy the assertion it was produced for"
+                );
+            }
+            other => panic!(
+                "{name}: {other:?}. A negated comparison is one side of every branch on an \
+                 input, so this is not an edge of the fragment — it is half of it."
+            ),
+        }
+    }
+}
+
+/// **A negated atom still refutes**, which is the half `Sat` cannot certify.
+///
+/// 022's asymmetry: a wrong `Sat` is impossible because the model is validated, but nothing
+/// validates `Unsat`, so the fragment has to be sound by construction. Admitting negated
+/// atoms widens that fragment, and this is the check that the widening did not also make it
+/// *wrong* — `x <u 10 && !(x <u 10)` has no model and must come back `Unsat`, not `Sat`.
+#[test]
+fn a_negated_atom_contradicting_its_positive_is_unsat() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let ten = a.bv(32, 10);
+    let lt = a.ult(x, ten);
+    let not_lt = a.not(lt);
+    let mut s = SolverLite::default();
+    assert!(
+        matches!(s.check(&mut a, &[lt, not_lt]), CheckResult::Unsat),
+        "a term and its negation cannot both hold; answering `Sat` here would be the one \
+         failure 022 §3.1 says the design must make impossible"
+    );
+}
