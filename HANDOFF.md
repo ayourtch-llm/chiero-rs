@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 183) — 1233 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 184) — 1234 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,34 +673,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 The memory channel is closed. Do this first: the arithmetic census, per site
+> ### 🔴 Both oracles are per-site now. Do this first: the substring matching
 >
-> Seven waves (177–183) built the memory-UB channel from nothing to six ASan classes,
-> balanced, located, ordered and guarded. It is the strongest oracle in the tree and there
-> is no cheap work left in it. The arithmetic census is now the weaker of the two, and its
-> two known softnesses are both measurement rather than engine:
+> `arithmetic_ub_agrees_with_gcc_site_for_site` runs in the suite (200 seeds, ~13s) and
+> reads **68 of 68 sites, 0 missed**. What is left of §9's old pair of softnesses is the
+> second one:
 >
-> 1. **It counts per *run*, not per *site*.** A program with two overflows where chiero
->    finds one scores as agreement. The memory oracle solved the same problem by comparing
->    ASan's *first* fault and its *line*; the census has the same information available from
->    gcc's diagnostics (`file:line:col`) and does not use it.
-> 2. **It matches on substrings.** Wave 176 already found one row double-counting another's
->    programs because `cannot be represented` appears in two different gcc messages. The
->    remaining patterns have not been audited the same way.
+> - **The census still matches gcc's diagnostics on substrings**, and wave 176 already found
+>   one row double-counting another's programs because `cannot be represented` appears in
+>   two different gcc messages. The new per-site test inherits that: its `kind` is decided
+>   by `contains("shift")`, `contains("signed integer overflow")` and so on. It has not been
+>   audited, and the failure mode is a *row that reads clean because it matches nothing*.
+> - `zz_census` (per-run, `#[ignore]`d, 300 seeds) is now the weaker of the two and mostly
+>   redundant. Decide whether it earns its keep or should be deleted in favour of the
+>   per-site test with a wider seed range.
 >
-> (1) is the same shape of work as waves 180–181 and should go faster for having been done
-> once.
->
-> ~~🔴 nothing keeps the memory corpus closed.~~ **Wave 183 made it an assertion.** Measured
-> first: worst case 3 states over 60 programs, every one explained by a `malloc` fork.
-> Mutation proved the tripwire catches the real hazard rather than an arithmetic slip —
-> giving the corpus a branch on an unmodeled extern fires it:
+> **The two oracles need opposite defaults, and this is the thing not to forget.** The memory
+> oracle treats ASan's silence as evidence (`invented` is asserted zero) because ASan checked
+> the access and found it in bounds. The arithmetic oracle cannot, because gcc's silence may
+> mean it never checked: UBSan only instruments operations that survive code generation, and
+> the front end folds arithmetic whose result is used solely as a condition. Measured, both
+> forms in one program:
 >
 > ```text
->   KILLED (multipath fired)   corpus-gains-an-unknown-value   <- the hazard itself
->   KILLED (multipath fired)   guard-ignores-malloc-forks      <- the malloc term is load-bearing
->   SURVIVED                   guard-disabled                  <- expected: a held ratchet
+>   if (x * (-65536)) { … }     // no report
+>   int y = x * (-65536);       // runtime error: 131329 * -65536 …
 > ```
+>
+> That is now the **second** oracle blind spot found by a disagreement column — wave 180's
+> was ASan's redzone. Both would have been filed against the engine by a channel that
+> assumed its oracle was right.
+>
+> Mutation on the per-site check, and the pair is worth reading together:
+>
+> ```text
+>   KILLED     engine-drops-signed-overflow    <- `miss` catches a lost detection
+>   KILLED     engine-ub-event-span-is-dummy   <- and catches a *misplaced* one
+>   SURVIVED   oracle-ignores-the-site         <- kind-only matching passes on today's corpus
+> ```
+>
+> The span mutant dies **because** the oracle compares sites: relax it to kinds alone and
+> that mutant would live. The third surviving is not a gap — it says no program in the
+> corpus currently has the right kind at the wrong line, which is the thing the site check
+> exists to catch if it ever happens.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1028,6 +1043,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Assert the direction only one side can be wrong in; report the other** (wave 184). gcc
+> reporting UB that chiero missed can only be a chiero defect — gcc ran the operation and the
+> standard calls it undefined. The reverse is not symmetric: gcc may be silent because it
+> never checked. So `miss` is an assertion and `extra` is a printed note, and the two are not
+> interchangeable even though both are "a disagreement".
+>
+> **Two oracles over the same engine can need opposite defaults** (wave 184). ASan's silence
+> means it checked and found the access in bounds; gcc's silence may mean the operation was
+> folded away before UBSan could instrument it. Copying the memory oracle's `invented`
+> assertion into the arithmetic one would have filed a correct finding as a defect. The
+> difference belongs in the code beside each, not in a reader's memory.
 >
 > **An oracle's assumptions belong in its assertions** (wave 183). `invented` had always
 > depended on ASan's one concrete run visiting every path chiero explores. That was true,
