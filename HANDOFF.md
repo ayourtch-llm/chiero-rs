@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 200) — 1282 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 200) — 1283 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1097,6 +1097,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **One observation beats two waves of argument** (wave 200). Waves 198 and 199 reasoned about
+> which of `promoted_fault`'s four callers fired, eliminated three, and were wrong — the answer
+> was the fourth, whose enclosing function neither wave had looked up. A `#[track_caller]` plus
+> one `eprintln!` named it in a single run. The cost of observing is fixed and small; the cost
+> of reasoning about code you have not read is unbounded.
+>
+> **An early return can bypass the branch you added to the same function** (wave 200). Wave 198
+> put a promoted-object branch in `write_term` and it never executed, because a
+> ground-constant fast path twelve lines above returns first. Read the function from the top
+> before adding to the middle of it.
+>
+> **Two index spaces for one array is a silent corruption** (wave 200). `arr.data` is indexed
+> per byte and `arr.init` per bit. A byte-indexed init store writes one bit of the wrong byte
+> and leaves eight unset, and the only symptom is a `maybe-uninitialized-read` on a byte the
+> program just wrote — which reads, from outside, exactly like the write not happening.
 >
 > **A handed-over diagnosis is a hypothesis, not a finding** (wave 199). Wave 198 stopped
 > responsibly and wrote down what it believed: `promoted_fault` keys on `repr`, the read keys on
