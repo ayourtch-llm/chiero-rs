@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 171) — 1210 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 172) — 1213 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -519,7 +519,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
 > agree with gcc; 169 finished them with comparisons and `_Bool`; 170 fixed mixed int/float
-> operands; 171 closed a hole in the generator's UB filter**.*
+> operands; 171 closed a hole in the generator's UB filter; 172 made a float-cast overflow a
+> finding**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -791,7 +792,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   * **`eval_ground` is not `as_const`.** `sitofp` of a `sext` of a loaded byte is ground
 >     and is not a `Const` node, so `char c = 2; c < 2.5` produced no value until all four
 >     float evaluators read ground terms. Wave 162 hit this in the solver; it recurred here.
-> - **🔴 chiero does not detect float-to-integer overflow at all.** Raised by the user during
+> - ~~🔴 chiero does not detect float-to-integer overflow at all.~~ **Fixed in wave 172.**
+>   `UbKind::FloatCastOverflow`, detected inside `fcast` because a `Cast` never reaches
+>   `note_ub` (which is driven from `RValue::Bin`), and named by `UndefinedArithmetic`. The
+>   rule is about the **integral part**, so the test is against the *truncated* value —
+>   `(int)-2147483648.5` is defined and `(unsigned)(-0.5)` is too. NaN is a separate arm
+>   because a range test alone lets it through.
+> - **Originally recorded as:** Raised by the user during
 >   wave 171 — "UB is something that should be warned about?" — and the instinct was right.
 >   Two separate things were being conflated, and only one of them was fine:
 >   * **Discarding a UB program from the *differential* channel is correct** and says nothing
@@ -903,6 +910,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A rule about a derived value must be tested on the derivation** (wave 172). C11 6.3.1.4
+> is undefined when the *integral part* does not fit, so the range test belongs on the
+> truncated value — `(int)-2147483648.5` is legal and `(unsigned)(-0.5)` is too. Three
+> mutations survived until fixtures existed whose truncation *changed the verdict*; a value
+> that is out of range both before and after truncation cannot tell the two readings apart.
+> **When a spec says "the X of Y", write a fixture where X and Y disagree.**
+> **A second variant of one operation is a second implementation** (wave 172). `FpToUi`
+> shares `fcast` with `FpToSi` and shares none of its bounds — `2^bits` not `2^(bits-1)`, and
+> a floor of zero rather than a negative. There was **no `FpToUi` fixture at all**, so two
+> mutations to the unsigned rule survived. Same shape as wave 167's `f32`/`f64` split.
+> **The endpoint past the endpoint** (wave 172). Fixtures at `INT_MAX` and `INT_MIN` do not
+> catch an inclusive/exclusive slip; `2^31` does, and it is exactly representable as a double
+> so there is no excuse for omitting it. **Test one step beyond each bound, not the bound.**
 > **A false defect costs more than a missed one** (wave 171). The generator reported a
 > mismatch that was two implementations of undefined behaviour disagreeing. Its own doc says
 > a test that fails one run in ten "gets muted within a month" — a fixed-seed one that reports
