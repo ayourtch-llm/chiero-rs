@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 193) — 1261 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 194) — 1266 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,43 +688,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: the finding says "access" for a pointer that was only *formed*
+> ### 🔴 Do this first: a symbolic index still yields `Undef`, and that invents a finding
 >
-> Wave 193 made a symbolic index answerable — `ga[i]` with an unconstrained `i` now reports,
-> `if (i<0||i>1)` and `ga[i & 1]` stay silent. The check sits in `fork_on_offset`, which runs
-> for a `PtrAdd`, and that placement is **correct rather than approximate**: C11 6.5.6p8 makes
-> *forming* a pointer more than one past the end undefined, not only dereferencing it.
+> Wave 193 reports whether a symbolic index can leave its object and wave 194 gave that its
+> own fault kind. What neither did is make the *value* usable — `fork_on_offset` still
+> returns `Value::Undef` when enumeration fails, and that has a visible cost:
 >
-> But the fault it raises is `MemFault::OutOfBoundsMaybe`, whose message is about an
-> *access*. For `p + off` with no dereference the report reads as though bytes were touched.
-> Two ways to fix, and the choice matters:
+> ```text
+>   int *p = ga + i; return p != 0;
+>       pointer-outside-object: a pointer into ga (256 bytes) can be computed at offset 256
+>       uninitialized-read: read at offset 0 of p touches bit 0, which was never written
+> ```
 >
-> 1. **A distinct fault kind** — "pointer formed outside its object" — which is the honest
->    label and gives 023 §6 a separate thing to deduplicate and rank. VPP walks pointers past
->    the end deliberately in a few places (`vec_end`), so the two want different triage.
-> 2. **Report at the access instead**, by routing the symbolic pointer into `chiero-mem`'s
->    checked path, which already produces `OutOfBoundsMaybe` correctly and continues on the
->    in-bounds branch with the constraint added. That is the bigger change and would also
->    make the *value* usable rather than `Undef`.
+> The second is **a false positive**, and it predates wave 193: `p` was written, by the very
+> statement above it. It appears because the `Undef` handed back is indistinguishable from a
+> value the program never stored. So the engine reports a fault it invented, next to one it
+> found — and 023 §9's argument applies with force, since a reader who checks the second
+> finding and discovers it is nonsense has been given a reason to distrust the first.
 >
-> (2) is worth more — it turns a dead path into a live one — and (1) is worth doing anyway,
-> since even under (2) a bare `PtrAdd` needs the right name.
+> The fix is §9's long-standing option (2): route the symbolic pointer into `chiero-mem`'s
+> checked path, which already handles a symbolic offset — it reports `OutOfBoundsMaybe`,
+> **assumes the in-bounds constraint, and continues with a real value** (see
+> `crates/chiero-mem/tests/bounds.rs`). That turns a dead path into a live one and removes
+> the `Undef`, so it fixes the false positive rather than suppressing it.
 >
-> Mutation on wave 193 took two rounds and corrected the commit's own claim. Four mutants
-> survived the first sweep because **every guarded fixture failed to reach the new code**:
-> `if (i<0||i>1)` leaves two feasible offsets, which `fork_on_offset` enumerates
-> successfully. A 64-element array indexed `i & 63` is what reaches the query with the index
-> already constrained, and it killed three of them. The fourth, `unsigned-comparison`, is
-> **equivalent**: with a lower bound of zero, `unsigned(t) > limit` is exactly
-> `t < 0 || t > limit` signed, since a negative two's-complement index is an enormous
-> unsigned one. The signed pair is kept for naming the two bounds the C rule states, not for
-> catching anything the unsigned form misses.
->
-> ~~🔴 a symbolic index into a function table reports nothing.~~ **Wave 193, and it was not
-> specific to function tables**: `ga[i]` on a plain data array was equally silent. The cause
-> was `fork_on_offset` enumerating offsets and giving up — 17 values found for an
-> unconstrained `int` — then yielding `Undef` so the load saw a non-pointer and abandoned the
-> access without asking the one question that was still answerable.
+> ~~🔴 the finding says "access" for a pointer that was only formed.~~ **Wave 194.**
+> `MemFault::PointerOutsideObject` carries no access size, which is the point: the access
+> variant demands a width, the caller had to invent `1`, and the report said "1-byte access"
+> of memory nothing touched. A variant rather than a flag, so the type cannot express the
+> report that was wrong.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1084,6 +1076,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Give the type no way to express the wrong report** (wave 194). The access fault carries a
+> width because an access has one; wave 193 raised it for a pointer *computation* and had to
+> invent `1`, so the report said "1-byte access" of memory nothing touched. A flag on the
+> existing variant would have left that field there to be filled in again. A separate variant
+> with no size field cannot be misused the same way.
+>
+> **A rule recorded two waves ago is not a rule you have absorbed** (wave 194). Wave 184
+> established that a substring is not a kind, on the arithmetic census. The tests wave 193
+> wrote nine days later matched `contains("bounds")`, and when wave 194 renamed the fault they
+> reported that a *correct* finding had vanished. Reading the rules list is not the same as
+> applying it; grep for the mistake, not for the lesson.
 >
 > **A control that passes without reaching the code controls nothing** (wave 193). Every
 > guarded fixture — `if (i<0||i>1)`, `ga[i & 1]` — stayed silent because the offset
