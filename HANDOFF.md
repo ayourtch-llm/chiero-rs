@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 175) — 1226 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 176) — 1229 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -523,7 +523,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > finding; 173 censused the UB gap and found where it cannot be closed;
 > 174 gave CIR the signedness C's UB rules turn on, closing a false report and two
 > missing ones; 175 found a widening conversion was hiding constants from the whole
-> engine, and three census rows closed at once**.*
+> engine, and three census rows closed at once; 176 gave float-to-integer conversions
+> the destination's signedness and brought every census row to parity with UBSan**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -669,44 +670,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: chiero and gcc compute a different `double` on seed 117
+> ### 🔴 Do this first: widen what the census can see
 >
-> The census gained a **false-positive column** in wave 175 — programs where chiero reports
-> UB and gcc runs clean — because the census proper counts only rows where gcc said
-> something, and is blind by construction to the expensive kind of wrong. One case in 236:
+> Every category it measures is at parity, so the instrument — not the engine — is now the
+> limit. Two directions, both concrete:
 >
-> ```text
->    1 / 0     ZZ FALSE POSITIVE (gcc silent)     <- FloatCastOverflow, seed 117
-> ```
+> 1. **The generator emits no memory UB.** `-fsanitize=address` is in the compile line and
+>    has never once fired, because the grammar produces no out-of-bounds index, no dangling
+>    pointer, no use-after-free. Those are the defects chiero exists to find in VPP, and the
+>    channel that would grade them is one grammar extension away.
+> 2. **The census matches on substrings and reports per-run, not per-site.** A program with
+>    two overflows where chiero finds one counts as agreement. Matching gcc's *line number*
+>    against the event's span would turn parity into something worth trusting.
 >
-> **It is not a checker false positive.** gcc does report `(unsigned char)1e20`, measured
-> directly:
+> Do (1) first: it can find defects, where (2) can only tighten a measurement that is
+> already saying what it should.
 >
-> ```text
->   runtime error: 1e+20 is outside the range of representable values of type 'unsigned char'
-> ```
->
-> So gcc was silent on seed 117 because *its* `v4` was in range, and chiero's was not — the
-> two disagree on a `double`, and the cast check is the messenger. Seed 117's `v4` is built
-> by `(double)h0(...)` over a struct, then `+=`, then a `?:` chain mixing `(double)(short)`
-> and a pointer-indexed divide. Reduce it before theorising.
->
-> **Why the differential channel did not catch it**: unknown, and worth answering first. If
-> the returned value agrees while an intermediate `double` does not, the oracle compares too
-> little; if seed 117 is outside the compared range, the census is reaching further than the
-> differential and that is a reason to widen the differential.
->
-> ### 🔴 Then: the two census rows still open
->
-> ```text
->    7 / 22   left shift of N by M places cannot be represented
->    8 / 12   outside the range of representable values
-> ```
->
-> Both were unmoved by wave 175, so neither is the constant-folding cause. `cannot be
-> represented` is the widest remaining gap and the pattern is loose — it may be matching gcc
-> messages other than the left-shift one, which is the first thing to check rather than the
-> last.
+> ~~🔴 the last census row, `cannot be represented` at 7/22.~~ **Was the measurement, fixed
+> in wave 176** — see the census note above. §9 predicted this ("check the measurement
+> rather than the engine") and it was right, which is the third wave running where
+> reproducing before building changed the answer.
 >
 > ### 🔴 Still owed: symbolic UB checking
 >
@@ -867,21 +850,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   So the fix is a new `UbKind` plus a concrete check in `note_ub` (the operand is a folded
 >   float there, so it needs no solver query), and the checker picks it up for free.
 > - **The UB census** — what `-fsanitize=undefined,address,float-cast-overflow` reports
->   against what chiero records, over 300 generated programs. `zz_census` in
->   `generated.rs` (`#[ignore]`d, ~35s):
+>   against what chiero records, over 300 generated programs (236 compared). `zz_census`
+>   in `generated.rs` (`#[ignore]`d, ~45s):
 >   ```text
->     w173     w174     w175
->     14 / 0   18 / 0   18 / 18   signed integer overflow
->      8 / 0   10 / 5   10 / 10   left shift of negative
->      2 / 0    2 / 0    2 / 2    shift exponent
->      5 / 1   22 / 6    7 / 22   left shift of N by M cannot be represented
->     11 / 7   12 / 8    8 / 12   outside the range of representable values
->              (w173 sampled differently; read w174 -> w175 for the deltas)
+>     w174     w175     w176
+>     18 / 0   18 / 18  18 / 18   signed integer overflow
+>     10 / 5   10 / 10  10 / 10   left shift of negative
+>      2 / 0    2 / 2    2 / 2    shift exponent
+>     12 / 8    8 / 12  12 / 12   outside the range of representable values
+>     22 / 6    7 / 22   6 / 6    left shift of N by M places cannot be represented
+>      1 / 0    1 / 0    (none)   ZZ FALSE POSITIVE (gcc silent)
 >   ```
->   Three rows at parity. The measure is deliberately loose — "gcc printed it *and* chiero
->   recorded a matching kind somewhere in the run", no span or operand matching — so it
->   over-credits. A row reading `0` is a real gap; a row reading `n / n` is not proof of
->   agreement.
+>   **Every row at parity, no false positives.** The last row's `7 / 22` was the
+>   *measurement*: it matched the substring `cannot be represented`, which also appears in
+>   gcc's signed-overflow message ("signed integer overflow: X * 31 cannot be represented in
+>   type 'long int'"), so it counted row 1's programs a second time and graded them against
+>   `Shift` — a kind they never produce. Tightened to `places cannot be represented`, the
+>   real count is 6 and chiero finds all 6.
+>   The measure is still deliberately loose in the other direction: "gcc printed it *and*
+>   chiero recorded a matching kind somewhere in the run", with no span or operand matching.
+>   Parity here is not proof of agreement, it is the absence of the gaps this can see.
 > - **The census has a false-positive column**, added in wave 175 and permanent. The table
 >   above counts only rows where gcc said something, so a chiero report on a program gcc
 >   runs clean can never appear in it — and wave 171's rule makes that the expensive kind of
@@ -1019,6 +1007,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A surviving mutant is a missing test until proven equivalent** (wave 176).
+> `store-always-signed` survived the whole suite, which meant one of the wave's three fixed
+> sites had nothing observing it — the braced-initializer path, which the deleted helper's
+> comment had explicitly reasoned would never arrive unsigned. The fix was to write the
+> fixture, not to argue the mutant equivalent. `syntactic_signed-defaults-unsigned` *is*
+> recorded as equivalent, and the difference is that its branch needs sema to fail to
+> resolve a cast's type, which is a diagnostic elsewhere.
+>
+> **Grade the instrument before believing its verdict** (wave 176). One census row sat at
+> `7 / 22` for three waves and read as a real gap in §9. It was a substring match:
+> `cannot be represented` also appears in gcc's signed-overflow message, so the row counted
+> row 1's programs again and graded them against a kind they never produce. A measurement
+> nobody has tried to falsify is not evidence.
+>
+> **A control that fails is worth more than the assertion it was guarding** (wave 176).
+> `(unsigned char)(-1.0)` went into the RED as a *control* — a case that should already
+> report, proving the fix could not be "delete the check". It failed, and it was a second
+> defect: the same dropped bit that reported `(unsigned char)200.0` falsely also *missed*
+> the negative, because -1 fits the signed range. Write controls on both sides of the
+> boundary and read their failures as findings rather than as test-authoring mistakes.
+>
+> **Agreeing on every value is not agreeing** (wave 176). Seed 117's differential verdict
+> was `Agree` — chiero and gcc returned the same `int` — and the program was still being
+> mis-judged, because the disagreement was about whether it is *undefined*, which no
+> value-comparing oracle asks. The differential channel is structurally blind to this and
+> the census is the only thing that sees it; that is what justifies keeping a second,
+> slower channel over the same corpus.
+>
+> **A helper that cannot see the answer is the wrong shape** (wave 176). `target_signed`
+> took a `&CTy`, which carries no signedness, and so had no choice but to return a constant
+> — with a comment reasoning about why the constant was usually right. Every caller already
+> had the `TyId`. When a function's parameters cannot express its question, the fix is at
+> the call site, not inside it.
 >
 > **Probe the diagnosis, not just the owed list** (wave 175). Wave 174 wrote down a cause
 > for census row 1 — symbolic operands — and it was wrong; the generated programs are

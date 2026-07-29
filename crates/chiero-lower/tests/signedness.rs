@@ -335,3 +335,52 @@ fn a_float_conversion_out_of_the_destinations_range_is_still_reported() {
         );
     }
 }
+
+/// **A braced initializer converts without a cast expression in front of it**, and that is
+/// the path the deleted `target_signed` helper got wrong.
+///
+/// Its comment argued that an unsigned destination "arrives with its own cast expression
+/// whose type sema records", so assuming signed was safe. `struct S { unsigned char c; }`
+/// initialised `{200.0}` is the counterexample: sema inserts the conversion for an
+/// assignment *expression* and not for a braced element, so nothing here spells the
+/// destination type but the member declaration.
+///
+/// Written because mutation said so. `store-always-signed` — forcing `convert_for_store`
+/// back to `FpToSi` — survived the whole suite, which meant one of this wave's three fixed
+/// sites had no test observing it at all.
+#[test]
+fn a_braced_initializer_converts_to_the_members_signedness() {
+    for (what, src, want_report, want_value) in [
+        (
+            "unsigned char member",
+            "struct S { unsigned char c; }; int probe(void){ struct S s = {200.0}; return (int)s.c; }",
+            false,
+            200,
+        ),
+        (
+            "signed char member",
+            "struct S { signed char c; }; int probe(void){ struct S s = {200.0}; return (int)s.c; }",
+            true,
+            -56,
+        ),
+        (
+            "unsigned char array element",
+            "int probe(void){ unsigned char a[2] = {200.0, 1.0}; return (int)a[0]; }",
+            false,
+            200,
+        ),
+    ] {
+        let (kinds, value) = ub_and_value(src);
+        assert_eq!(
+            kinds.contains(&UbKind::FloatCastOverflow),
+            want_report,
+            "`{what}`: gcc {} report this, chiero gave {kinds:?}",
+            if want_report { "does" } else { "does not" }
+        );
+        if !want_report {
+            // Asserted only where the program is defined — gcc's value for a conversion it
+            // has already called undefined is one implementation's answer, not the answer.
+            assert_eq!(value, Some(want_value), "and computes gcc's answer");
+        }
+    }
+}

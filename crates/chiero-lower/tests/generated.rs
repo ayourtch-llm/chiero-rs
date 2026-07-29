@@ -1665,120 +1665,6 @@ fn the_ub_filter_discards_a_float_cast_overflow() {
     );
 }
 
-/// **The scoreboard against UBSan: what gcc reports and what chiero reports, side by side.**
-///
-/// `zz_soak` and the differential channels ask whether chiero computes the same *value* as
-/// gcc. This asks a different question — whether chiero *notices the same undefined
-/// behaviour* — and it is the only channel that does. A run that agrees on every value
-/// while reporting none of the UB is a symbolic executor that has stopped doing its job,
-/// and nothing else here would say so.
-///
-/// **Where this can live is not a free choice.** 001 section 4 rule 2 forbids
-/// `chiero-lower` from depending on `chiero-check`, and rule 7 forbids the mirror, so a
-/// census phrased in terms of `default_checkers` has no legal home in either crate — which
-/// is what wave 173 recorded as an open decision. It does not need one: the UB *events*
-/// come from the engine, and `chiero-lower` may depend on `chiero-exec`. Checkers turn
-/// events into findings; this measures the events, which is the layer where the gap is.
-///
-/// Ignored, like `zz_soak`: it compiles 300 programs with the sanitizer and takes ~30s.
-///
-/// ```text
-/// cargo test -p chiero-lower --test generated zz_census -- --ignored --nocapture
-/// ```
-///
-/// Reading it, at wave 174:
-///
-/// ```text
-/// seen / chiero
-///   22 / 6     cannot be represented
-///   10 / 5     left shift of negative
-///   12 / 8     outside the range of representable values
-///    2 / 0     shift exponent
-///   18 / 0     signed integer overflow
-/// ```
-///
-/// The two left-shift rows were `0` before this wave; they are the signedness `Bin` now
-/// carries. The rest of each gap, and the whole of the `signed integer overflow` row, has
-/// one cause: `note_ub` returns early unless **both operands fold to constants**, and a
-/// generated program computes on values the engine is holding symbolically. That is why
-/// row 1 reads `0 / 18` while a hand-built `INT_MAX + 1` reports every time — checked, in
-/// both shapes, before it was written down here.
-///
-/// The measure is deliberately loose: "gcc printed this diagnostic *and* chiero recorded an
-/// event of the matching kind, somewhere in the run". It does not match on span or on
-/// operand, so it over-credits rather than under-credits. A row that reads `0` is therefore
-/// a real gap, and a row that reads `n / n` is not proof of agreement.
-/// **The scoreboard against UBSan: what gcc reports and what chiero reports, side by side.**
-///
-/// `zz_soak` and the differential channels ask whether chiero computes the same *value* as
-/// gcc. This asks a different question — whether chiero *notices the same undefined
-/// behaviour* — and it is the only channel that does. A run that agrees on every value
-/// while reporting none of the UB is a symbolic executor that has stopped doing its job,
-/// and nothing else here would say so.
-///
-/// **Where this can live is not a free choice.** 001 section 4 rule 2 forbids
-/// `chiero-lower` from depending on `chiero-check`, and rule 7 forbids the mirror, so a
-/// census phrased in terms of `default_checkers` has no legal home in either crate — which
-/// is what wave 173 recorded as an open decision. It does not need one: the UB *events*
-/// come from the engine, and `chiero-lower` may depend on `chiero-exec`. Checkers turn
-/// events into findings; this measures the events, which is the layer where the gap is.
-///
-/// Ignored, like `zz_soak`: it compiles 300 programs with the sanitizer and takes ~30s.
-///
-/// ```text
-/// cargo test -p chiero-lower --test generated zz_census -- --ignored --nocapture
-/// ```
-///
-/// Reading it, at wave 174:
-///
-/// ```text
-/// seen / chiero
-///   22 / 6     cannot be represented
-///   10 / 5     left shift of negative
-///   12 / 8     outside the range of representable values
-///    2 / 0     shift exponent
-///   18 / 0     signed integer overflow
-/// ```
-///
-/// The two left-shift rows were `0` before this wave; they are the signedness `Bin` now
-/// carries. The rest of each gap, and the whole of the `signed integer overflow` row, has
-/// one cause: `note_ub` returns early unless **both operands fold to constants**, and a
-/// generated program computes on values the engine is holding symbolically. That is why
-/// row 1 reads `0 / 18` while a hand-built `INT_MAX + 1` reports every time — checked, in
-/// both shapes, before it was written down here.
-///
-/// The measure is deliberately loose: "gcc printed this diagnostic *and* chiero recorded an
-/// event of the matching kind, somewhere in the run". It does not match on span or on
-/// operand, so it over-credits rather than under-credits. A row that reads `0` is therefore
-/// a real gap, and a row that reads `n / n` is not proof of agreement.
-#[test]
-#[ignore]
-fn zz_117() {
-    for seed in [117u64] {
-        let (prelude, body) = program(seed);
-        println!("verdict = {:?}", judge(&prelude, &body));
-        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
-        let m = harness::lower_maybe(&src).expect("lowers");
-        let mut arena = chiero_solver::TermArena::new();
-        let r = chiero_exec::Engine::new(&m)
-            .with_entry("probe")
-            .run(&mut arena);
-        println!(
-            "chiero ret = {:?}",
-            r.states()
-                .iter()
-                .find_map(|s| s.return_value_bits(&mut arena))
-                .map(|b| b as u32 as i32)
-        );
-        for s in r.states() {
-            for u in s.ub_events() {
-                println!("  ub {:?} {:?} {}", u.kind, u.span, u.detail);
-            }
-        }
-        println!("--- src ---\n{src}");
-    }
-}
-
 #[test]
 #[ignore]
 fn zz_census() {
@@ -1845,7 +1731,13 @@ fn zz_census() {
         for pat in [
             "signed integer overflow",
             "left shift of negative",
-            "cannot be represented",
+            // **`places cannot be represented`, not `cannot be represented`.** The shorter
+            // substring also matches gcc's *signed overflow* message — "signed integer
+            // overflow: X * 31 cannot be represented in type 'long int'" — so this row was
+            // counting row 1's programs a second time and grading them against `Shift`,
+            // which is not the kind they produce. It read 7/22 for three waves and the
+            // gap was the measurement.
+            "places cannot be represented",
             "shift exponent",
             "outside the range of representable values",
         ] {
