@@ -628,9 +628,12 @@ impl Lowerer<'_> {
             // `GlobalId` to name, so `global_addr_init` cannot see it and the fall-through
             // to `Zero` made the pointer compare equal to null — the same failure that
             // comment above records for data addresses, in the case it does not cover.
+            // Whether the declared object is a pointer, which decides how a string
+            // literal initializer is read.
+            let to_ptr = matches!(self.analysis.ty(sty), Ty::Ptr(_));
             match init.and_then(|e| self.func_addr_init(e)) {
                 Some(f) => chiero_cir::GlobalInit::FuncAddr(f),
-                None => match init.and_then(|e| self.global_addr_init(e)) {
+                None => match init.and_then(|e| self.global_addr_init(e, to_ptr)) {
                     Some((g, off)) => chiero_cir::GlobalInit::Addr { g, off },
                     None => match init.and_then(|e| self.encode_init(e, sty, size)) {
                         Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
@@ -5190,8 +5193,56 @@ impl Lowerer<'_> {
             .map(|f| f.id)
     }
 
-    fn global_addr_init(&mut self, e: ExprId) -> Option<(chiero_cir::GlobalId, i64)> {
+    fn global_addr_init(&mut self, e: ExprId, to_ptr: bool) -> Option<(chiero_cir::GlobalId, i64)> {
         match self.ast.expr(e).kind.clone() {
+            // **A cast changes the type, not the address.** C11 6.6p9 admits it in an
+            // address constant, and `(void *)` in front of one is everywhere. Recursing
+            // rather than matching one cast handles `(int *)(void *)&g` for free.
+            chiero_ast::ExprKind::Cast { operand, .. } => self.global_addr_init(operand, to_ptr),
+            // **`p + k` and `k + p`** on an address constant (C11 6.6p9 again). The offset
+            // is scaled by the *pointee* size, which is why this cannot be folded as plain
+            // integer arithmetic — `ga + 2` is eight bytes into an `int[4]`, not two.
+            chiero_ast::ExprKind::Binary {
+                op: op @ (chiero_ast::BinOp::Add | chiero_ast::BinOp::Sub),
+                lhs,
+                rhs,
+            } => {
+                let (base, idx) = match self.global_addr_init(lhs, to_ptr) {
+                    Some(b) => (b, rhs),
+                    // `2 + ga`, which C makes identical. Only `+` commutes: `2 - ga` is
+                    // not an address at all.
+                    None if op == chiero_ast::BinOp::Add => {
+                        (self.global_addr_init(rhs, to_ptr)?, lhs)
+                    }
+                    None => return None,
+                };
+                let k = self.const_of(idx)? as i64;
+                let esz = self.elem_size_of(lhs).or_else(|| self.elem_size_of(rhs))? as i64;
+                let step = if op == chiero_ast::BinOp::Sub { -k } else { k };
+                Some((base.0, base.1 + step * esz))
+            }
+            // **A string literal is an object with static storage duration** (C11 6.4.5p6),
+            // so its address is an address constant like any other. `char *s = "hi";` read
+            // as *null* before this — in every C program that has one.
+            //
+            // Through `intern_string`, the same interner the expression path uses, so a
+            // literal named twice is one object and `s == t` answers what the linker would.
+            // **Only when the object being initialized is a *pointer*.** `char *s = "hi"`
+            // takes the literal's address; `char s[4] = "hi"` copies its bytes into the
+            // array (C11 6.7.9p14), and those are different objects with different
+            // contents. Without this guard the array form silently became an address, which
+            // `a_string_global_initializer_is_recorded` caught immediately.
+            chiero_ast::ExprKind::Str { fragments } if to_ptr => {
+                let mut bytes = self.string_bytes(e)?;
+                let width = fragments
+                    .first()
+                    .and_then(|fr| self.names.text(fr.spelling))
+                    .map(|t| (chiero_sema::strlit::string_element(t).1 / 8) as usize)
+                    .unwrap_or(1);
+                bytes.extend(std::iter::repeat_n(0u8, width));
+                let span = self.ast.expr(e).span;
+                Some((self.intern_string(bytes, span), 0))
+            }
             // `&x` — the operand names the object directly.
             chiero_ast::ExprKind::Unary {
                 op: chiero_ast::UnOp::AddrOf,
