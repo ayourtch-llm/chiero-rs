@@ -602,6 +602,51 @@ fn a_character_constant_is_decoded_like_a_string_literal() {
     agree(r#"return '\n' * 100 + 'A';"#);
 }
 
+/// **Floating point reaches the engine and agrees with gcc.**
+///
+/// Wave 167 taught the engine to evaluate concrete floats — constants, the five arithmetic
+/// operators, the six FP casts — and nothing can reach it, because lowering discards any
+/// function that mentions a float. Wave 166 measured what that costs: **293 of 600**
+/// generated programs refused, half the budget of the channel that has found more defects
+/// than any other.
+///
+/// The refusal is not the only thing in the way, which the first attempt at removing it
+/// showed immediately. Lowering emits *nothing* float-shaped:
+///
+/// - a floating literal goes through the `Number` arm, which builds `Const::Int` and falls
+///   to a catch-all making it **0** — so `2.5f` lowers to zero at the wrong type, and the
+///   verifier rejects the store (`store value operand is Int(32), declared Float(F32)`);
+/// - `sema::ConstVal` has `Int` and `Addr` and no float variant, so there is nowhere for the
+///   value to come from;
+/// - `BinOp::FAdd` and the FP `CastKind`s appear **zero** times in the crate: float
+///   arithmetic would lower to integer arithmetic on the bits.
+///
+/// That last one is why this is a differential test rather than a lowering golden. Integer
+/// `Add` on two float bit patterns is a number — a wrong one — and a golden would have to
+/// assert the wrongness to notice it. gcc is the only oracle that says 3 here.
+///
+/// The cases are deliberately the simplest end of the language: a literal, a local, one
+/// operator, a cast back to `int`. Comparisons are left out because the engine has no float
+/// arms in `cmp` either, and a test should fail for the reason it names.
+#[test]
+fn floating_point_agrees_with_gcc() {
+    // A literal, stored and read back.
+    agree("float f = 2.5f; return (int)f;");
+    agree("double d = 2.5; return (int)d;");
+    // Arithmetic, in both precisions.
+    agree("float f = 2.5f; return (int)(f + 1.25f);");
+    agree("double d = 10.0; return (int)(d / 4.0);");
+    agree("double d = 2.5; return (int)(d * 4.0);");
+    agree("double d = 10.0; return (int)(d - 2.5);");
+    // int -> float -> int, where the intermediate is not representable as an integer.
+    agree("int n = 7; double d = n; return (int)(d / 2.0);");
+    // Truncation toward zero, C's rule and not the obvious one.
+    agree("double d = -2.7; return (int)d;");
+    agree("double d = 2.7; return (int)d;");
+    // Narrowing between the precisions, where single precision visibly is not double.
+    agree("double d = 0.1; float f = (float)d; return (int)(f * 1000.0f);");
+}
+
 /// **A prefixed string literal keeps its element width.**
 ///
 /// sema types every string literal `char[n]` and lowering writes one byte per character,
