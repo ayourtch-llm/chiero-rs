@@ -2703,12 +2703,30 @@ impl<'m> Engine<'m> {
             });
         };
         match op {
+            // **The count rule applies to every shift** (C11 6.5.7p3): a shift by at least
+            // the operand's width is undefined whichever direction it goes and whatever the
+            // operand's signedness.
             BinOp::Shl | BinOp::LShr | BinOp::AShr if yc.bits() >= w as u128 => {
                 push(
                     UbKind::Shift,
                     format!("{op:?} of a {w}-bit value by {}", yc.bits()),
                 );
             }
+            // **C11 6.5.7p4's other two clauses are not checked, and cannot be here.**
+            //
+            // A *signed* left shift is also undefined when the operand is negative or when
+            // `E1 × 2^E2` does not fit — `1 << 31` is undefined for `int` and perfectly
+            // ordinary for `unsigned`, which UBSan confirms in both directions. CIR cannot
+            // tell the two apart: right shifts carry signedness in the opcode (`AShr` vs
+            // `LShr`) and left shifts have only `Shl`, because the *operation* is identical
+            // and only the UB rules differ. `CTy::Int(w)` carries no signedness either.
+            //
+            // Implementing them from the bits alone reports every unsigned shift of a large
+            // value as undefined, which is a false positive in the most common idiom there
+            // is. A census over 300 generated programs says the gap is real — 8 negative
+            // shifts and 5 non-representable results that gcc reports and chiero does not —
+            // and closing it is a 020 decision about `Shl`, recorded in §9 rather than
+            // guessed at here.
             BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem if yc.bits() == 0 => {
                 push(UbKind::DivByZero, format!("{op:?} by zero"));
             }
