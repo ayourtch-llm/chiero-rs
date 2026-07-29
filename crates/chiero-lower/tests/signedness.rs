@@ -175,3 +175,58 @@ fn the_shift_count_rule_applies_to_both_signednesses() {
         );
     }
 }
+
+/// **The width the arithmetic happens at is not the width the source wrote**, and the
+/// check must survive the conversion that reconciles them.
+///
+/// C's usual arithmetic conversions widen the narrower operand, so `acc * 31` on a `long`
+/// `acc` lowers to a `sext` of `31` followed by a 64-bit multiply. Nothing about that
+/// changes whether the multiply overflows — `acc * 31L`, which needs no conversion at all,
+/// is the same computation — so a checker that reports one and not the other is reporting
+/// on the spelling rather than on the program.
+///
+/// This is the shape the UB census measured as `0 / 18`: every `acc = acc * 31 + x` in the
+/// generated corpus mixes an `int` literal with a `long` accumulator, which is also what
+/// C programmers write.
+#[test]
+fn overflow_is_reported_through_the_usual_arithmetic_conversions() {
+    for (what, src) in [
+        (
+            "long * int",
+            "int probe(void) { long acc = 804574689342403103L; acc = acc * 31; return (int)acc; }",
+        ),
+        (
+            "long * long",
+            "int probe(void) { long acc = 804574689342403103L; acc = acc * 31L; return (int)acc; }",
+        ),
+        (
+            "long + int",
+            "int probe(void) { long a = 9223372036854775807L; a = a + 1; return (int)a; }",
+        ),
+        (
+            "long + long",
+            "int probe(void) { long a = 9223372036854775807L; a = a + 1L; return (int)a; }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::SignedOverflow),
+            "`{what}` overflows a 64-bit signed result and must be reported, got {kinds:?}"
+        );
+    }
+}
+
+/// The conversion must not manufacture an overflow either.
+///
+/// A `sext` that folded to the wrong value — dropping the sign, say — would make
+/// `acc + (-1)` look like `acc + 4294967295` and report an overflow that is not there.
+#[test]
+fn widening_a_negative_operand_does_not_invent_an_overflow() {
+    let kinds = ub_kinds(
+        "int probe(void) { long acc = 9223372036854775807L; int step = -1; acc = acc + step; return (int)acc; }",
+    );
+    assert!(
+        !kinds.contains(&UbKind::SignedOverflow),
+        "`LONG_MAX + (-1)` is in range; a sign-dropping widening would report it: {kinds:?}"
+    );
+}
