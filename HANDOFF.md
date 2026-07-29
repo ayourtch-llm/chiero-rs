@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 188) — 1247 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 189) — 1247 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,30 +688,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: an internal function whose address escapes
+> ### 🔴 Do this first: what else did `GlobalInit` silently zero?
 >
-> Wave 188 gated the null assumption on `Linkage::External`, which is right for the ordinary
-> case and **not yet checked for one**: a `static` function whose *address is taken* can be
-> called through that pointer from another translation unit, so its callers are not all
-> visible after all. §9 flagged this as a trap when the front was written and the fix does
-> not handle it — a `static` function reached only via `AddrOfFunc` gets no null assumption
-> today, and should.
+> Wave 189 found `int (*table)(int *) = helper;` lowering to `GlobalInit::Zero` — a global
+> function pointer that **compared equal to null**, and a call through it a null call. It is
+> the exact failure `GlobalInit::Addr`'s own doc comment records for data addresses, in the
+> case that comment does not cover, and it survived because nothing tested a global function
+> pointer at all.
 >
-> The check is cheap: scan the module for `RValue::AddrOfFunc(f.id)` or a `Const::FuncAddr`
-> naming it. If found, treat the function as exported for this purpose. VPP is full of this
-> shape — a `static` node function registered by address in a `VLIB_REGISTER_NODE` — so it
-> is not a corner case there.
+> That fall-through is still there for everything `encode_init` cannot encode, and it is
+> silent by construction: `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct,
+> so the same value means two different things and only one of them is a bug. Worth an
+> audit rather than a guess — enumerate the initializer forms C allows at file scope
+> (compound literals, nested aggregates with addresses inside, `&arr[k]` past the first
+> element, string literals in a struct) and check which reach `Zero`. **A test that a
+> pointer-typed global is non-null unless the program wrote `0`** would catch the whole
+> class at once, and is cheaper than enumerating.
 >
-> ~~🔴 the rate is 3 of 3.~~ **Wave 188 took it to 0 of 3** by making the distinction real
-> rather than by reporting less: `weight_of`, `make_pair` and `span_of` are all `static`, so
-> their callers are visible and the assumption was never chiero's to make.
->
-> Mutation: control survives, and all four die — `gate-ignores-linkage`, `gate-inverted`,
-> `lowering-never-internal`, `text-drops-static`. The last one is worth noting: it is killed
-> by the round-trip property **only because that generator now varies linkage**. It emitted
-> nothing but external functions until this wave, so a printer dropping `static` was
-> unobservable — the same shape as wave 187's survivors, where the missing thing was a
-> program rather than an assertion.
+> ~~🔴 an internal function whose address escapes.~~ **Wave 189**: `address_escapes` checks
+> all three carriers — the `AddrOfFunc` instruction, a `Const::FuncAddr` operand (in a
+> `Use`, `Select`, `Store` value, call argument or indirect callee), and the new
+> `GlobalInit::FuncAddr`. A direct call is deliberately not an escape, which is what keeps
+> wave 188's suppression alive for the ordinary helper.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1071,6 +1069,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Write the RED against the route you expect to be hardest** (wave 189). The front was
+> "an escaping function address should restore the assumption", and the obvious fixture is a
+> local function pointer — which lowering already represents as `AddrOfFunc`, so the fix
+> would have been the escape scan alone. Asserting the *global* route instead surfaced a
+> second, worse defect: `int (*table)(int *) = helper;` lowered to `GlobalInit::Zero`, so a
+> global function pointer compared **equal to null**. A silent wrong answer, sitting behind
+> a missing feature.
+>
+> **A fall-through whose default is sometimes correct hides its own bugs** (wave 189).
+> `GlobalInit::Zero` is right for an uninitialized object (C11 6.7.9p10) and wrong for an
+> initializer chiero failed to encode, and the two are the same value. That is why nothing
+> noticed. Where a default doubles as an error path, the test to write is the *invariant*
+> — "a pointer-typed global is non-null unless the program wrote `0`" — not a case list.
 >
 > **An assumption is only worth making where the fact is unavailable** (wave 188). "The
 > caller is outside the analysis" is true of an exported function and false of a `static`
