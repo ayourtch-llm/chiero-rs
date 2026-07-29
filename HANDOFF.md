@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 169) — 1208 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 170) — 1209 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -518,7 +518,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
-> agree with gcc; 169 finished them with comparisons and `_Bool`**.*
+> agree with gcc; 169 finished them with comparisons and `_Bool`; 170 fixed mixed int/float
+> operands**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -778,6 +779,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   Both now degrade or widen rather than crash. **A panic reachable from verifier-clean CIR
 >   is the one outcome 023 forbids**, and it took a new kind of value to expose a shape the
 >   integer path had all along.
+> - **The float work is measured, not asserted.** Seeds 200..800 compared **81** programs
+>   before floats; seeds 800..1400 compared **320** after — four times the throughput from
+>   the same generator. **Soak frontier is now seed 1400.**
+> - ~~Mixed int/float operands.~~ **Fixed in wave 170**, found by that soak: lowering read
+>   `is_float(lhs)`/`is_signed(lhs)` — the *left* operand only — so `d + 1` worked and
+>   `1 + d` emitted `Add` with `ty: Int(32)` over two doubles. Two things to carry:
+>   * **014 already inserts the conversion.** The first fix converted the operands again and
+>     produced a chain of three casts. What was wrong was only the instruction's *opcode and
+>     declared type*, never the values.
+>   * **`eval_ground` is not `as_const`.** `sitofp` of a `sext` of a loaded byte is ground
+>     and is not a `Const` node, so `char c = 2; c < 2.5` produced no value until all four
+>     float evaluators read ground terms. Wave 162 hit this in the solver; it recurred here.
 > - **🔴 Next on floats**: x87 80-bit arithmetic and comparison (no Rust primitive — its
 >   width works, so loads and stores do), and **symbolic** floats, which still need an FP
 >   theory or a bit-blasted encoding in the solver. The concrete path is now complete. `refuse_float_compare` now declares the two operations
@@ -872,6 +885,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Ask which layer already did the work** (wave 170). Lowering emitted `Add` over an int
+> and a double, and the obvious repair — convert the operands — produced *three* chained
+> casts, because 014 inserts the conversion itself under contract 11. The values were always
+> right; only the instruction's opcode and declared type were read off one operand. **When an
+> operation looks under-converted, check whether an earlier pass converted it** before adding
+> a conversion of your own.
+> **A binary operator has two operands and most bugs live in the other one** (wave 170).
+> `is_float(lhs)`, `is_signed(lhs)`, `compare_ty(lhs)` — three separate reads of the left
+> side, all wrong for `1 + d`, `1 < d`, `0 == d`. Fixtures written as `d OP 1` pass against
+> code that never looks right. **Write asymmetric fixtures in both orders**, and for a
+> *pair* rule (the wider type wins) make the two sides genuinely different.
 > **Fixtures that agree under both readings test neither** (wave 169). Every float
 > comparison fixture used 2.5 against 1.5, where `<` and `<=` give the same answer and so do
 > `>` and `>=` — a mutation turning `FOLt` into `FOLe` survived the lot. **Equal operands are
