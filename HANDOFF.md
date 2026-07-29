@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 152) — 1145 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 153) — 1156 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -507,7 +507,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 148 paid the first debt the ledger recorded; 149 audited the owed list
 > and found three entries stale; 150 gave prefixed string literals their element width;
 > 151 replaced the second string-literal decoder with one shared one;
-> 152 deleted the third**.*
+> 152 deleted the third; **153 built the symbolic differential oracle, and it found that
+> the solver could decide only one side of every branch**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -528,11 +529,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > construct lowering cannot represent" and 015 §7 discards the function, a gap behaving
 > loudly. `InitList` was the silent one and became wave 138.
 >
-> **Do the same census for `StmtKind` against `stmt`, `Ty` against `cty`, and
-> `RValue`/`InstKind` against the engine's dispatch.** A match arm list is a cheap, exact
-> statement of what a pass claims to handle, and the catch-all is where the silent gaps
-> live. `cargo-llvm-cov` is installed now for the harder question — which arms exist but
-> never execute — but the free version of the trick is the arm census, so do that first.
+> ~~**Do the same census for `StmtKind`, `Ty`, and `RValue`/`InstKind`.**~~ **Done in wave
+> 153, and it came back clean.** All 17 `RValue`, 14 `InstKind` and 6 `Terminator` variants
+> have engine arms; `cty` covers all 9 `Ty`; `stmt` reaches its catch-all only for
+> `GotoIndirect` and `Asm`, and that catch-all is *loud* — a diagnostic, so 015 §7 discards
+> the function. `StmtKind::Error` is silently dropped, but all four sites that build one
+> push a parse diagnostic first. **The census channel is exhausted**: wave 138's `InitList`
+> was the one silent gap it had to give, and a second pass found nothing. What it cannot see
+> is the shape wave 153 then found by other means — a *right* arm that is wrong for an
+> operand shape it was never given.
 >
 > **1b. Coverage recon, the tooling version (not yet run).** `cargo install cargo-llvm-cov`, run over the
 > existing suite, read region coverage for `expr`, `assign`, `lvalue_addr`, `truth_of` and
@@ -605,10 +610,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > dimension does not vary), more corpus goldens *as detection* (six broken features left them
 > byte-identical), or promoting `-O2`/clang to the primary verdict.
 >
-> **Known limit**: like `differential.rs`, this tests closed concrete programs only. The
-> symbolic-execution defect class (the wave-117 `fork_on_offset` survivor, unions under a
-> symbolic index) needs a v2: generate `int probe(int x)`, run symbolically, and require each
-> sampled concrete `x` to match the path whose condition it satisfies.
+> ~~**Known limit**: this tests closed concrete programs only.~~ **Addressed in wave 153**
+> by `crates/chiero-lower/tests/symbolic.rs`, though as a *hand-written* channel rather than
+> a generated one. It lowers `int probe(int x)`, runs it symbolically, and for each path asks
+> the solver for a model — a concrete `x` reaching that path — then evaluates the path's
+> return under it and requires gcc's `probe(x)` to agree.
+>
+> **The witness must come from the solver.** Picking `x` from a constant pool and running
+> concretely is the existing channel in a hat: nothing ever asks the path condition a
+> question, so a condition that is too weak or too strong is invisible. Solving inverts it —
+> too weak admits an `x` the program would have sent elsewhere and gcc computes the other
+> branch's answer; too strong is unsatisfiable and the path vanishes, which a separate count
+> of compared paths catches.
+>
+> **Still owed here**: *generating* the bodies (this is 6 hand-written fixtures), and a
+> witnessed *fault* from a symbolic run — which is also the fixture that would kill wave
+> 153's one live surviving mutant. The wave-117 `fork_on_offset` survivor is now
+> **reproduced**: `a[x & 3]` reports `Fidelity::Unknown` with "a symbolic pointer offset was
+> not enumerated: 1 value(s) found and the search was cut short by the solver". That is a
+> *declared* gap, 023 §7 working as specified — and it is what finally exercises the `Gap`
+> verdict §9 had recorded as unexercised.
 >
 > **3. `chiero-cli` / `chiero-tool` — approved by the user this session** ("do as you see
 > fit"). Both are genuine stubs (5 lines and 1). It is M7 work at M1 and five of the crates
@@ -677,7 +698,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   still. Unverified; a GNU `vector_size` fixture would settle it.
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
-> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
+> - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor, now
+>   *reproduced* by wave 153 (`a[x & 3]` enumerates one offset of four and says so) but not
+>   fixed. It is a declared gap, not a wrong answer.
+> - **`is_aggregate` excludes `Ty::Vector` — STALE, checked in wave 153.** It includes it,
+>   and matches `aggregate_size`. The entry claimed a divergence that is not there; a
+>   `vector_size` fixture is still owed to say whether the *behaviour* is right, but the
+>   stated reason to write one was wrong. (Wave 149's rule, third time.)
+> - **Two mutants survived wave 153, recorded rather than hidden.** `and-split-any-width` is
+>   *equivalent* with an argument: a predicate term has width 1, so a wider `and`'s operands
+>   can never be atoms and both readings end in `Unknown`. `vars-of-immediate-only` survives
+>   because nothing observes the walk's **depth** — `witness.rs`'s hand-built CIR puts the
+>   variable one level down, and only a C-lowered program has the four-wrapper shape. The
+>   fixture that kills it is a witnessed fault from a symbolic run, which is owed above.
 > - **String literals: what wave 151 did *not* close.** `chiero_sema::strlit` now owns phase
 >   5 for string literals, but three things sit beside it and were left alone deliberately:
 >   ~~*character constants* still have their own reading~~ **done in wave 152** — and the
@@ -693,6 +726,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A channel finds what it is shaped to find, and every channel had one shape** (wave 153).
+> Four detection channels, thousands of programs, and all of them ran `int probe(void)` —
+> closed and concrete. So no path condition ever contained a negated comparison, and the
+> solver could decide exactly one side of every branch in every program for as long as
+> anyone had been looking. The defect was not subtle and not deep; it was **outside every
+> channel's shape**. When a channel stops finding things, ask what it cannot express before
+> concluding there is nothing left.
+> **A fix that widens a capability breaks the tests that depended on the limit** (wave 153).
+> Two, and neither was a stale fixture. The slicing test asserted the engine slices, which
+> only happens en route to the *backend* — a stronger in-process solver meant it never got
+> there. And `pinned` meant "the model assigned it", which was only ever equivalent to "the
+> path constrains it" because backend models are partial; a complete model made every input
+> report as pinned, including ones nothing on the path names. **After widening what a
+> component can do, re-read what its callers were inferring from what it could not.**
+> **An oracle that skips honestly can skip everything** (wave 153). The symbolic oracle's
+> first version skipped every path whose `Fidelity` was not `Exact`, correctly applying
+> 023 §7's rule that a declared limit must not be read as a defect — and compared *nothing*,
+> because the engine declares `Unknown` on any branch the solver cannot decide. "Both sides
+> explored" is a conservative over-approximation, not a wrong value: an unreachable path
+> comes back `Unsat` and an unmodelled value returns no scalar, so neither needed `Fidelity`
+> to catch it. **Check what a skip rule excludes on real input before trusting it**, and
+> prefer a rule that names the specific failure to one that keys off a summary.
 > **An interaction between two rules cannot be fixed by copying arms** (wave 152). `'\u00E9'`
 > is 50089 because a UCN in a *plain* constant becomes two UTF-8 bytes **and** two bytes make
 > a multi-character constant — two paragraphs of the standard meeting only in the byte
