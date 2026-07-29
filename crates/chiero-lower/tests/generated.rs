@@ -2233,10 +2233,15 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         "stack-use-after-scope",
     ] {
         let seen = t.classes.get(class).map(|c| c.0).unwrap_or(0);
+        // **Three, not one.** `> 0` says a class exists; it does not say the class is
+        // *graded*. `stack-buffer-overflow` sat at 1 of 41 for a wave — one program, one
+        // element type, one access spelling — while `global-buffer-overflow` had seven, and
+        // the two go through different `chiero-mem` object kinds. A row of one is a class
+        // whose next regression is a coin flip away from being invisible.
         assert!(
-            seen > 0,
-            "no generated program commits `{class}`, so nothing grades chiero on it. \
-             The corpus produced: {:?}",
+            seen >= 3,
+            "only {seen} generated program(s) commit `{class}`, too few to grade chiero \
+             on it. The corpus produced: {:?}",
             t.classes.keys().collect::<Vec<_>>()
         );
     }
