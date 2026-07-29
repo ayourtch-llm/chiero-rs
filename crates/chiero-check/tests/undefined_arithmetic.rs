@@ -17,7 +17,7 @@
 //! module is the thing under test rather than a C program that happens to lower to one.
 
 use chiero_cir::*;
-use chiero_exec::Engine;
+use chiero_exec::{Engine, Witness};
 use chiero_solver::TermArena;
 use chiero_span::{BytePos, ExpnCtx, Span};
 
@@ -313,4 +313,136 @@ fn a_site_reported_before_a_fork_is_not_reported_again_after_it() {
         1,
         "the site was reported before the fork; neither child should say it again: {f:?}"
     );
+}
+
+/// Run and return the findings with their witnesses attached.
+fn witnessed(m: &Module) -> Vec<(String, Option<Witness>)> {
+    let mut a = TermArena::new();
+    let mut e = Engine::new(m);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    e.run(&mut a)
+        .reports()
+        .into_iter()
+        .map(|f| (f.message, f.witness))
+        .collect()
+}
+
+/// **The witness beside a division by zero must name a divisor that is zero.**
+///
+/// 023 §9's whole point is that a witness is a claim someone can re-run: "a
+/// non-reproducible bug report is not a bug report". A finding that says *division by zero*
+/// and hands the reader an input under which the divisor is -42 is worse than a finding
+/// with no witness at all, because the number invites exactly the check that will fail.
+///
+/// The engine has the right answer and discards it. `symbolic_div_by_zero` asks the solver
+/// whether the divisor can be zero and gets back `Sat(model)` — a model naming `x = 42`,
+/// which is the value that makes `x - 42` zero. The witness is then built from a *different*
+/// query, over the path condition alone, and an unconstrained path yields the filler zero.
+///
+/// The divisor is `x - 42` rather than `x` on purpose. With a bare `x` the filler and the
+/// answer coincide, and every fixture written so far has had that shape — which is why this
+/// went unnoticed through waves 156 and 157.
+#[test]
+fn the_witness_for_a_division_by_zero_makes_the_divisor_zero() {
+    let m = module(vec![block(
+        0,
+        vec![
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                },
+                5,
+            ),
+            // d = x - 42, which is zero exactly at x = 42.
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Bin {
+                        op: BinOp::Sub,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(0)),
+                        b: k(42),
+                    },
+                },
+                6,
+            ),
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(2),
+                    rv: RValue::Bin {
+                        op: BinOp::SDiv,
+                        ty: CTy::Int(32),
+                        a: k(100),
+                        b: Operand::Value(ValueId(1)),
+                    },
+                },
+                10,
+            ),
+        ],
+        Terminator::Return(Some(Operand::Value(ValueId(2)))),
+    )]);
+    let f = witnessed(&m);
+    assert_eq!(f.len(), 1, "expected the division to be reported: {f:?}");
+    let (msg, w) = &f[0];
+    let w = w
+        .as_ref()
+        .unwrap_or_else(|| panic!("`{msg}` came with no witness at all"));
+    let x = w
+        .bindings
+        .first()
+        .unwrap_or_else(|| panic!("`{msg}`: the witness binds nothing"));
+    assert_eq!(
+        x.value as u32 as i32,
+        42,
+        "`{msg}`: the witness names x = {}, under which the divisor is {} and nothing \
+         faults. 023 §9 asks for an input that reproduces the finding.",
+        x.value as u32 as i32,
+        (x.value as u32 as i32).wrapping_sub(42)
+    );
+    assert!(
+        x.pinned,
+        "`{msg}`: the fault needs this exact value, so reporting it as free is a second \
+         wrong claim about the same binding: {x:?}"
+    );
+}
+
+/// **And the witness for a divisor that is plainly the input still names it.**
+///
+/// The shape every earlier fixture had. Kept so a fix aimed at the case above cannot break
+/// the case that already worked — and so the pair says the value is *derived*, not guessed.
+#[test]
+fn the_witness_for_a_bare_symbolic_divisor_is_zero() {
+    let m = module(vec![block(
+        0,
+        vec![
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                },
+                5,
+            ),
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Bin {
+                        op: BinOp::SDiv,
+                        ty: CTy::Int(32),
+                        a: k(100),
+                        b: Operand::Value(ValueId(0)),
+                    },
+                },
+                10,
+            ),
+        ],
+        Terminator::Return(Some(Operand::Value(ValueId(1)))),
+    )]);
+    let f = witnessed(&m);
+    assert_eq!(f.len(), 1, "expected the division to be reported: {f:?}");
+    let w = f[0].1.as_ref().expect("witnessed");
+    assert_eq!(w.bindings[0].value, 0, "the divisor is the input itself");
+    assert!(w.bindings[0].pinned, "and the fault needs it to be zero");
 }
