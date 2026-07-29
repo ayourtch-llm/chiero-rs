@@ -550,6 +550,58 @@ fn a_universal_character_name_is_one_character() {
     agree(r#"return (int)sizeof("AB");"#);
 }
 
+/// **A character constant is decoded by the same rules as a string literal.**
+///
+/// Wave 151 gave string literals one decoder and recorded, in the same breath, that
+/// character constants still had their own. This is that third copy: `parse_char_literal`
+/// in sema, twenty lines, with no case for `\x`, no octal past `\0`, no universal character
+/// name, no multi-character constant, and **no attention to the prefix at all**. Its
+/// catch-all keeps the escaped character, so every one of those reads as a letter:
+///
+/// ```text
+///   '\x41'          chiero 120 ('x')   gcc 65
+///   '\101'          chiero  49 ('1')   gcc 65
+///   u'\uFFFF'       chiero 117 ('u')   gcc 65535
+/// ```
+///
+/// Three rules a string literal already obeys and a character constant does not:
+///
+/// - **the prefix decides the type**, so `sizeof(u'a')` is 2 and not 4 — the only prefix
+///   whose size differs from `int`, and therefore the only one a size test can catch;
+/// - **a plain constant holds bytes, so it sign-extends**: `'\xFF'` is -1, because C11
+///   6.4.4.4p10 converts the single byte as a `char`. This is the one place the string
+///   decoder's `Raw`/`Char` distinction changes a *sign* rather than a count;
+/// - **more than one byte is a multi-character constant** (gcc's implementation-defined
+///   rule, and gcc is the oracle): the bytes accumulate big-endian, so `'ab'` is 24930 and
+///   `'\u00E9'` is 50089 — the UTF-8 pair `C3 A9` read as two characters, which is the
+///   plain literal's UTF-8 rule and the multi-char rule composing.
+///
+/// The last one is why this cannot be fixed by copying three match arms across: the UCN and
+/// the multi-character rule interact, and only a decoder that yields *units* sees it.
+#[test]
+fn a_character_constant_is_decoded_like_a_string_literal() {
+    // Hex and octal, including octal's three-digit bound spilling into a second character.
+    agree(r#"return '\x41';"#);
+    agree(r#"return '\101';"#);
+    agree(r#"return '\0101';"#);
+    // A universal character name, at each prefix.
+    agree(r#"return u'\uFFFF';"#);
+    agree(r#"return L'\u00E9';"#);
+    agree(r#"return (int)U'\U0001F600';"#);
+    // **The prefix decides the type.** `u'a'` is the only one whose size differs from `int`.
+    agree(r#"return (int)sizeof('a') * 100 + (int)sizeof(u'a') * 10 + (int)sizeof(L'a');"#);
+    // **A plain constant sign-extends**, and the cast back through `unsigned char` shows the
+    // byte it came from — so a decoder that got the value right but the type wrong fails one
+    // of these two and not the other.
+    agree(r#"return '\xFF';"#);
+    agree(r#"return (int)(unsigned char)'\xFF';"#);
+    // Multi-character constants, including the one a UCN produces in a plain constant.
+    agree(r#"return 'ab';"#);
+    agree(r#"return '\u00E9';"#);
+    // The escapes that already worked must keep working.
+    agree(r#"return '\n' * 100 + 'A';"#);
+}
+
 /// **A prefixed string literal keeps its element width.**
 ///
 /// sema types every string literal `char[n]` and lowering writes one byte per character,
