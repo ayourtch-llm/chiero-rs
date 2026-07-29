@@ -4448,11 +4448,26 @@ fn a_symbolic_ptr_add_offset_is_a_gap() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m).run(&mut a);
-    assert_eq!(
-        r.fidelity(),
-        Fidelity::Bounded,
-        "the enumeration was cut, which is a bound — not a value nobody could know"
+    // **Wave 193 gave this program an answer it did not have.** The offset is
+    // unconstrained, so `p + off` can land outside the 16-byte object — and C11 6.5.6p8
+    // makes *forming* such a pointer undefined, not only dereferencing it. The run now says
+    // so instead of only recording that it could not enumerate the offset.
+    assert!(
+        r.findings().iter().any(|f| f.contains("bounds")),
+        "the offset can leave the object, which is undefined when the pointer is formed: {:?}",
+        r.findings()
     );
+    // The enumeration bound is still recorded — both facts are true and they are about
+    // different things — but the run's worst fidelity is now `Unknown`, because a reported
+    // fault whose value cannot be produced degrades that far.
+    assert!(
+        r.states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .any(|x| x.kind == AssumptionKind::BudgetHit),
+        "the enumeration was cut, which is a bound and stays recorded"
+    );
+    assert_eq!(r.fidelity(), Fidelity::Unknown);
     assert!(
         r.states()[0]
             .assumptions()

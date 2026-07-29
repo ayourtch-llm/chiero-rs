@@ -4219,6 +4219,48 @@ impl<'m> Engine<'m> {
         }
 
         if !complete || found.is_empty() || found.len() > Self::MAX_SYMBOLIC_OFFSETS {
+            // **Before giving up, ask the one question that is still answerable.**
+            //
+            // Enumeration failed, which says nothing about whether the access is *safe* —
+            // and "can this offset leave the object" is a single feasibility query, not
+            // four billion. Wave 156 established the shape for a symbolic divisor and it
+            // is the same here: `Sat` means an out-of-range index exists on this path and
+            // is reported with the witness that proves it; `Unsat` means the path already
+            // constrains the index and there is nothing to say; `Unknown` leaves the
+            // degradation below, which is the honest answer for a question not answered.
+            //
+            // `!(0 <= off && off + size <= obj_size)`, in the offset's own width so the
+            // comparison matches the term. Unsigned `Ult` on the *byte* offset is wrong for
+            // a negative index, so both bounds are signed.
+            if let Some(obj_size) = s.mem.size_of_pub(p.base) {
+                let w = a.width(t);
+                let size = 1i128;
+                let lo = a.bv(w, 0);
+                let hi = a.bv(w, (obj_size as i128 - size).max(0) as u128);
+                let below = a.slt(t, lo);
+                let above = a.slt(hi, t);
+                let out = a.or(below, above);
+                if let CheckResult::Sat(_) = self.probe(a, s, &[out]) {
+                    self.report_faults(
+                        s,
+                        &[chiero_mem::MemFault::OutOfBoundsMaybe {
+                            obj: p.base,
+                            size: 1,
+                            obj_size,
+                            witness: obj_size as i64,
+                            at: span,
+                        }],
+                        span,
+                    );
+                    // **Reported *and* still degraded**, rather than returning here. Both
+                    // statements are true and they are about different things: the access
+                    // may leave the object, and the offset could not be enumerated. An
+                    // early return replaced the second with the first, which
+                    // `a_symbolic_ptr_add_offset_is_a_gap` caught — it asserts the
+                    // enumeration bound is recorded as `Bounded`/`BudgetHit`, and a
+                    // finding does not make that stop being so.
+                }
+            }
             s.degrade(
                 Fidelity::Bounded,
                 AssumptionKind::BudgetHit,
