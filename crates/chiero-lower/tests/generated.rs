@@ -278,6 +278,16 @@ struct Gen {
     global_arrays: Vec<(String, Ty, usize)>,
     /// A file-scope pointer and the array it is aimed at.
     global_ptrs: Vec<(String, Ty, String, usize)>,
+    /// **Allow an index to leave its array.** Off for every channel that compares *values*,
+    /// because an out-of-bounds access is undefined and `judge` discards the program rather
+    /// than grading it. On for the memory-UB oracle, whose subject is exactly the programs
+    /// the others throw away.
+    ///
+    /// A knob rather than a second grammar: the shapes worth indexing out of are the ones
+    /// already here — local arrays, file-scope arrays, a global pointer aimed at an array,
+    /// read and written through all of `access`'s spellings — and forking the grammar to
+    /// get them would mean maintaining two of everything and grading the copy.
+    oob: bool,
 }
 
 impl Gen {
@@ -295,7 +305,27 @@ impl Gen {
             globals: Vec::new(),
             global_arrays: Vec::new(),
             global_ptrs: Vec::new(),
+            oob: false,
         }
+    }
+
+    /// An index into an array of `len` elements — in range, unless [`Gen::oob`] says
+    /// otherwise.
+    ///
+    /// **Past the end rather than before the start.** A negative index is equally undefined
+    /// and `access` takes a `usize`, so spelling one would mean threading a sign through
+    /// every access form for a case ASan reports identically. Recorded as a limit rather
+    /// than left as an accident: nothing here generates a negative index, so nothing grades
+    /// chiero on one, and its own probe showed it handles them.
+    ///
+    /// One in three, not every time. A program whose every access is out of bounds dies on
+    /// the first one, so ASan reports a single site however many the program contains, and
+    /// the corpus stops covering the shapes that follow it.
+    fn index(&mut self, len: usize) -> usize {
+        if self.oob && self.rng.chance(3) {
+            return len + self.rng.below(4);
+        }
+        self.rng.below(len)
     }
 
     fn fresh(&mut self) -> String {
@@ -650,7 +680,7 @@ impl Gen {
         // `gp` as a value must give the address it holds, not its own.
         if !self.global_ptrs.is_empty() && self.rng.chance(5) {
             let (pname, _, _, len) = self.global_ptrs[0].clone();
-            let i = self.rng.below(len);
+            let i = self.index(len);
             let a = self.access(&pname, i);
             return format!("({}){a}", want.c());
         }
@@ -660,13 +690,13 @@ impl Gen {
         }
         if !self.global_arrays.is_empty() && self.rng.chance(4) {
             let (name, _, len) = self.global_arrays[0].clone();
-            let i = self.rng.below(len);
+            let i = self.index(len);
             let a = self.access(&name, i);
             return format!("({}){a}", want.c());
         }
         if !self.arrays.is_empty() && self.rng.chance(3) {
             let (name, _, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
-            let i = self.rng.below(len);
+            let i = self.index(len);
             let a = self.access(&name, i);
             return format!("({}){a}", want.c());
         }
@@ -740,7 +770,7 @@ impl Gen {
             }
             4 if !self.global_arrays.is_empty() && self.rng.chance(2) => {
                 let (name, ty, len) = self.global_arrays[0].clone();
-                let i = self.rng.below(len);
+                let i = self.index(len);
                 let lhs = self.access(&name, i);
                 let e = self.expr(ty);
                 let _ = writeln!(self.body, "  {lhs} = {e};");
@@ -749,7 +779,7 @@ impl Gen {
                 // A write **through one of the spellings**, so the store path sees them all
                 // and not only the subscript.
                 let (name, ty, len) = self.arrays[self.rng.below(self.arrays.len())].clone();
-                let i = self.rng.below(len);
+                let i = self.index(len);
                 let lhs = self.access(&name, i);
                 let e = self.expr(ty);
                 let _ = writeln!(self.body, "  {lhs} = {e};");
@@ -946,7 +976,17 @@ impl Gen {
 }
 
 fn program(seed: u64) -> (String, String) {
+    program_with(seed, false)
+}
+
+/// The same grammar with [`Gen::oob`] on, for the memory-UB oracle.
+fn program_memory_ub(seed: u64) -> (String, String) {
+    program_with(seed, true)
+}
+
+fn program_with(seed: u64, oob: bool) -> (String, String) {
     let mut g = Gen::new(seed);
+    g.oob = oob;
     let prelude = g.prelude();
     let n = 3 + g.rng.below(7);
     for _ in 0..n {
@@ -1795,6 +1835,12 @@ struct Tally {
     caught: usize,
     /// Seeds ASan flagged and chiero did not, kept for the failure message.
     missed: Vec<u64>,
+    /// Seeds chiero reported a memory finding for and ASan did not flag.
+    ///
+    /// The direction the census had to learn twice (waves 175 and 176): a channel that
+    /// counts only what the oracle flags cannot see a false report, and by wave 171's rule
+    /// that is the expensive kind of wrong.
+    invented: Vec<u64>,
     /// Programs that reached the comparison at all.
     compared: usize,
 }
@@ -1815,7 +1861,7 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
     let _ = std::fs::create_dir_all(&dir);
     let mut t = Tally::default();
     for seed in seeds {
-        let (prelude, body) = program(seed);
+        let (prelude, body) = program_memory_ub(seed);
         let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
         let csrc = format!(
             "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
@@ -1846,10 +1892,6 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
         // **`AddressSanitizer` and not the UBSan text.** The two sanitizers are both on and
         // report differently; only ASan's classes are this file's subject, and matching on
         // "runtime error" would count arithmetic the census already grades.
-        if !err.contains("AddressSanitizer") {
-            continue;
-        }
-        t.flagged += 1;
         let mut arena = chiero_solver::TermArena::new();
         let r = chiero_exec::Engine::new(&m)
             .with_entry("probe")
@@ -1858,6 +1900,17 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             .findings()
             .iter()
             .any(|f| is_memory_finding(&format!("{f:?}")));
+        if !err.contains("AddressSanitizer") {
+            // **ASan reports the first fault and stops.** A program it did not flag is one
+            // with no *reached* memory fault, so a chiero finding on it is either a false
+            // report or a fault on a path the single concrete run did not take — and these
+            // programs are closed, with one path. Either way it is worth seeing.
+            if found {
+                t.invented.push(seed);
+            }
+            continue;
+        }
+        t.flagged += 1;
         if found {
             t.caught += 1;
         } else {
@@ -1875,6 +1928,16 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
 #[test]
 fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
     let t = tally(0..60);
+    // Printed, not just asserted: a channel that reports only pass/fail hides whether it
+    // graded 40 programs or one, and wave 166's rule is that a soak reporting only its
+    // verdict hides its census.
+    println!(
+        "memory-UB oracle: {} compared, {} flagged by ASan, {} caught, {} invented",
+        t.compared,
+        t.flagged,
+        t.caught,
+        t.invented.len()
+    );
     assert!(
         t.compared > 0,
         "no generated program reached the comparison; gcc missing or the corpus is empty"
@@ -1884,6 +1947,21 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         "AddressSanitizer flagged none of {} programs, so nothing here grades chiero's \
          memory-UB detection — the grammar indexes every array in range by construction",
         t.compared
+    );
+    // **A floor, not just "more than zero".** The corpus is generated, so a change that
+    // quietly stopped emitting out-of-bounds indices would leave this green on one lucky
+    // program. Five is well under the fifteen observed and well clear of noise.
+    assert!(
+        t.flagged >= 5,
+        "only {} of {} programs commit memory UB; too thin to grade anything",
+        t.flagged,
+        t.compared
+    );
+    assert!(
+        t.invented.is_empty(),
+        "chiero reported a memory fault on {} programs ASan runs clean: seeds {:?}",
+        t.invented.len(),
+        &t.invented[..t.invented.len().min(8)]
     );
     assert!(
         t.missed.is_empty(),
