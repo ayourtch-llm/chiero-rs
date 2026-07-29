@@ -1540,6 +1540,15 @@ pub trait Solver {
 }
 
 /// Tier 1: rewriting, an interval + known-bits product domain, deliberately incomplete.
+/// How many candidate models `SolverLite` will try before answering `Unknown`.
+///
+/// Small on purpose. This is the *incomplete* solver (022 §3): its job is to answer the
+/// easy majority in-process so the backend is reserved for the rest, and a long search here
+/// is the cost it exists to avoid. Sixty-four covers the shapes that motivated it — a
+/// `switch` default needs four, a small mask a handful — and anything needing more is
+/// better escalated than ground out.
+const CANDIDATE_BUDGET: u32 = 64;
+
 #[derive(Debug, Default)]
 pub struct SolverLite {
     asserted: Vec<Term>,
@@ -1652,18 +1661,29 @@ impl Solver for SolverLite {
                 // A candidate model is only an answer once it has been evaluated
                 // against every assertion (022 §3.1). Search is allowed to be
                 // incomplete; it is not allowed to be wrong.
-                match dom.candidate(a) {
-                    Some(m)
-                        if all
-                            .iter()
-                            .all(|t| a.eval(&m, *t).map(|v| v.bits() != 0) == Ok(true)) =>
-                    {
-                        CheckResult::Sat(m)
-                    }
-                    _ => CheckResult::Unknown(UnknownReason::Incomplete(
-                        "no candidate model survived validation",
-                    )),
-                }
+                // **A bounded search, not a single guess.** One candidate answered only
+                // for sets whose models sit at the bottom of the domain; a `switch`
+                // default arm — `x&3` none of 0, 1, 2 — has its only model three steps
+                // up, and was reported `Unknown`.
+                //
+                // Trying more is safe for the same reason trying one was: every candidate
+                // is evaluated against the *original* assertions, so a guess cannot make
+                // `Sat` wrong. Exhausting the budget still yields `Unknown`, never
+                // `Unsat` — a search that gives up has proved nothing, and 022 §3.1 says
+                // only the syntactic fragment may refute.
+                (0..CANDIDATE_BUDGET)
+                    .find_map(|n| {
+                        let m = dom.candidate_n(a, u128::from(n))?;
+                        all.iter()
+                            .all(|t| a.eval(&m, *t).map(|v| v.bits() != 0) == Ok(true))
+                            .then_some(m)
+                    })
+                    .map_or(
+                        CheckResult::Unknown(UnknownReason::Incomplete(
+                            "no candidate model survived validation",
+                        )),
+                        CheckResult::Sat,
+                    )
             }
         }
     }
@@ -1720,8 +1740,61 @@ impl VarDomain {
     }
 
     /// Smallest value consistent with both components, or `None` if there is none.
-    fn least(&self) -> Option<u128> {
-        (self.lo..=self.hi).find(|&v| v & self.zeros == 0 && v & self.ones == self.ones)
+    /// The `n`th value of this domain in increasing order, **computed rather than scanned**.
+    ///
+    /// Candidate selection used to be `(lo..=hi).find(..)`, which is fine while the known
+    /// bits are low in the word and disastrous otherwise: wave 154 taught `x & FLAG != 0` to
+    /// *set* those bits, and a flag at bit 30 asked the walk to count to 2^30 — twenty-two
+    /// seconds for one assertion, and nothing had hit it only because every fixture so far
+    /// masked a low bit.
+    ///
+    /// The forced bits are not a search. Values matching a known-bits pattern are exactly
+    /// `scatter(free, i) | ones` for `i = 0, 1, 2, …`, strictly increasing — so the domain
+    /// is indexed by its *free* bits, and enumerating it is arithmetic on that index. A
+    /// domain whose forced bits sit high costs no more to walk than one whose bits sit low.
+    fn nth(&self, n: u128) -> Option<u128> {
+        self.at_index(self.start_index()?.checked_add(n)?)
+    }
+
+    /// The free-bit index of the first value at or above `lo`.
+    ///
+    /// `lo`'s own free bits give the starting guess. Clearing a forced-zero bit or setting
+    /// a forced-one bit can move the result either side of `lo`, so the index is lifted
+    /// until the value clears the floor — bounded, because this is the incomplete solver
+    /// and an unbounded lift is the search it exists not to perform. Giving up yields
+    /// `None`, which becomes `Unknown`, which is always sound.
+    fn start_index(&self) -> Option<u128> {
+        // Contradictory known bits: no value has a bit both set and clear.
+        if self.zeros & self.ones != 0 {
+            return None;
+        }
+        let free = self.free();
+        let mut i = gather(free, self.lo, self.width);
+        for _ in 0..CANDIDATE_BUDGET {
+            match self.at_index(i) {
+                // `at_index` already rejects anything outside `[lo, hi]`, so a `Some`
+                // *is* the answer — re-checking the floor here was dead, which a mutation
+                // removing it proved by surviving every channel.
+                Some(_) => return Some(i),
+                // Past `hi` already: nothing at or above `lo` is in this domain.
+                None if scatter(free, i, self.width).is_some_and(|v| v | self.ones > self.hi) => {
+                    return None;
+                }
+                _ => i = i.checked_add(1)?,
+            }
+        }
+        None
+    }
+
+    /// The value at free-bit index `i`, if it lies in `[lo, hi]`.
+    fn at_index(&self, i: u128) -> Option<u128> {
+        let v = scatter(self.free(), i, self.width)? | self.ones;
+        (v >= self.lo && v <= self.hi).then_some(v)
+    }
+
+    /// The bits this domain has not pinned.
+    fn free(&self) -> u128 {
+        !(self.zeros | self.ones) & mask(self.width)
     }
 }
 
@@ -1928,15 +2001,40 @@ impl Domains {
 
     /// A candidate assignment: the least value in each variable's domain. Variables that
     /// were never constrained get 0, so the model is **complete** (022 §2).
-    fn candidate(&self, a: &TermArena) -> Option<Model> {
+    /// The `n`th candidate model. `n == 0` is each variable's least feasible value.
+    ///
+    /// Successive candidates move **every** constrained variable together, which is the
+    /// cheap diagonal rather than a product: a full cross-product of domains is the search
+    /// this solver exists not to do, and the single-variable case — overwhelmingly the
+    /// common one for a path condition — is enumerated exactly by it.
+    fn candidate_n(&self, a: &TermArena, n: u128) -> Option<Model> {
         let mut m = Model::new();
         for (v, d) in &self.vars {
-            m.set(*v, BvConst::new(d.width, d.least()?));
+            m.set(*v, BvConst::new(d.width, d.nth(n)?));
         }
+        // **A variable no atom narrowed still varies with `n`.**
+        //
+        // The model must be *complete* (022 §2), and unconstrained variables used to be
+        // filled with zero — which was invisible while there was a single candidate and
+        // silently defeated the search once there were many: every attempt proposed the
+        // same zero. That is exactly the case the search was added for. A `switch`
+        // default's `x&3 != 0 && != 1 && != 2` narrows *nothing* (each conjunct is a
+        // multi-bit negated mask), so `x` never enters `vars` at all, and sixty-four
+        // attempts all proposed `x = 0`.
         for (i, (_, sort)) in a.vars.iter().enumerate() {
             let v = VarId(i as u32);
             if m.get(v).is_none() {
-                m.set(v, BvConst::zero(sort.width()));
+                // An array-sorted variable has no bit width to vary; it keeps the zero
+                // the completeness rule requires. `mask(0)` is not a value.
+                let w = sort.width();
+                m.set(
+                    v,
+                    if w == 0 {
+                        BvConst::zero(w)
+                    } else {
+                        BvConst::new(w, n & mask(w))
+                    },
+                );
             }
         }
         Some(m)
@@ -2946,4 +3044,37 @@ impl Solver for TieredSolver {
         self.stats.cache_entries = self.cache.len();
         decided
     }
+}
+
+/// Spread the bits of `n` across the set positions of `mask_bits`, low to high.
+///
+/// `None` when `n` needs more positions than the mask has — the index has run past the end
+/// of the domain, not an error.
+fn scatter(mask_bits: u128, mut n: u128, width: u32) -> Option<u128> {
+    let mut v = 0u128;
+    for b in 0..width {
+        if mask_bits & (1u128 << b) != 0 {
+            if n & 1 != 0 {
+                v |= 1u128 << b;
+            }
+            n >>= 1;
+        }
+    }
+    (n == 0).then_some(v)
+}
+
+/// The inverse of [`scatter`]: collect `v`'s bits at the set positions of `mask_bits` into a
+/// dense index.
+fn gather(mask_bits: u128, v: u128, width: u32) -> u128 {
+    let mut r = 0u128;
+    let mut i = 0u32;
+    for b in 0..width {
+        if mask_bits & (1u128 << b) != 0 {
+            if v & (1u128 << b) != 0 {
+                r |= 1u128 << i;
+            }
+            i += 1;
+        }
+    }
+    r
 }

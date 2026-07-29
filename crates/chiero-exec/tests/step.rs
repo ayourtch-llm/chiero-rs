@@ -212,8 +212,14 @@ fn an_undecidable_branch_is_taken_and_yields_unknown_fidelity() {
                     }),
                     inst(InstKind::Assign {
                         dst: ValueId(3),
+                        // **`== 7`, not `< 7`.** The question has to be one tier 1 cannot
+                        // answer, and wave 155 gave it a bounded candidate search that
+                        // moves every unconstrained variable together — so `x*y < 7` is
+                        // settled by trying x = y = 3. A product *equal* to 7 needs two
+                        // distinct factors, which no diagonal reaches, so the query is
+                        // undecidable for tier 1 again without being unsatisfiable.
                         rv: RValue::Cmp {
-                            op: CmpOp::ULt,
+                            op: CmpOp::Eq,
                             a: Operand::Value(ValueId(2)),
                             b: i32c(7),
                             ty: CTy::Int(32),
@@ -482,8 +488,14 @@ fn undecidable_branch_module() -> Module {
                     }),
                     inst(InstKind::Assign {
                         dst: ValueId(3),
+                        // **`== 7`, not `< 7`.** The question has to be one tier 1 cannot
+                        // answer, and wave 155 gave it a bounded candidate search that
+                        // moves every unconstrained variable together — so `x*y < 7` is
+                        // settled by trying x = y = 3. A product *equal* to 7 needs two
+                        // distinct factors, which no diagonal reaches, so the query is
+                        // undecidable for tier 1 again without being unsatisfiable.
                         rv: RValue::Cmp {
-                            op: CmpOp::ULt,
+                            op: CmpOp::Eq,
                             a: Operand::Value(ValueId(2)),
                             b: i32c(7),
                             ty: CTy::Int(32),

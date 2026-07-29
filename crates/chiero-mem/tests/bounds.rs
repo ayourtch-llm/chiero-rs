@@ -222,11 +222,20 @@ fn a_constant_offset_term_agrees_with_the_concrete_path() {
 
 /// **When tier 1 cannot decide, nothing is claimed and nothing is assumed.**
 ///
-/// `solver-lite` is deliberately incomplete (022 §3) and multiplication is outside its
-/// fragment, so the bounds question comes back `Unknown`. Adding the in-bounds constraint
-/// anyway would prune the very path escalation exists to explore — chiero would assume
-/// the access safe on the strength of an answer the solver never gave. Reporting a
-/// finding anyway would invent one. `Unknown` is its own outcome, and neither.
+/// `solver-lite` is deliberately incomplete (022 §3), so the bounds question comes back
+/// `Unknown`. Adding the in-bounds constraint anyway would prune the very path escalation
+/// exists to explore — chiero would assume the access safe on the strength of an answer the
+/// solver never gave. Reporting a finding anyway would invent one. `Unknown` is its own
+/// outcome, and neither.
+///
+/// **The offset is a quotient, not a product.** It was `i * j` until wave 155 gave tier 1 a
+/// bounded candidate search: that search moves every unconstrained variable together, and
+/// `i = j = 8` puts a product past a 64-byte object, so the question stopped being
+/// undecidable and the test started reporting a genuine `OutOfBoundsMaybe`. `i / j` is
+/// still outside the fragment and the diagonal cannot exhibit an escaping value either —
+/// every candidate it proposes has `i == j`, so the quotient is 1. The offset can still be
+/// out of bounds in truth (large `i`, `j = 1`), which is what keeps this a question tier 1
+/// *declines* rather than one it answers.
 #[test]
 fn an_undecidable_bounds_question_neither_claims_nor_assumes() {
     let mut a = TermArena::new();
@@ -236,7 +245,7 @@ fn an_undecidable_bounds_question_neither_claims_nor_assumes() {
 
     let i = a.var(Sort::BitVec(64), "i");
     let j = a.var(Sort::BitVec(64), "j");
-    let off = a.mul(i, j);
+    let off = a.urem(i, j);
 
     let mut cx = AccessCtx::new();
     let r = m.read_sym(&mut cx, &mut a, o, off, 4, sp(3));
