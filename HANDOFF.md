@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 151) — 1141 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 152) — 1145 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -506,7 +506,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 147 gave the refusal ledger teeth and declared floating point unimplemented;
 > 148 paid the first debt the ledger recorded; 149 audited the owed list
 > and found three entries stale; 150 gave prefixed string literals their element width;
-> 151 replaced the second string-literal decoder with one shared one**.*
+> 151 replaced the second string-literal decoder with one shared one;
+> 152 deleted the third**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -679,9 +680,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > - **023 c17** — a milestone, not a wave. The wave-117 `fork_on_offset` survivor.
 > - **String literals: what wave 151 did *not* close.** `chiero_sema::strlit` now owns phase
 >   5 for string literals, but three things sit beside it and were left alone deliberately:
->   *character constants* (`u'\uFFFF'`, `'\x41'`) still have their own reading and were not
->   routed through it — the same two-decoder shape, one crate over, and the next place to
->   look; `string_element` hardcodes a plain literal's `char` as **signed** rather than
+>   ~~*character constants* still have their own reading~~ **done in wave 152** — and the
+>   gap it recorded was understated: `parse_char_literal` had no `\x`, no octal past `\0`,
+>   no UCN, no multi-character constant, and no attention to the prefix, so sema typed every
+>   character constant `int`. `string_element` hardcodes a plain literal's `char` as **signed** rather than
 >   asking `target.char_signed`, which is right for the one target 014 models and wrong the
 >   moment a second one exists; and a value that is not a Unicode scalar (a lone surrogate,
 >   anything above U+10FFFF) is passed through truncated rather than diagnosed, because gcc
@@ -691,6 +693,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **An interaction between two rules cannot be fixed by copying arms** (wave 152). `'\u00E9'`
+> is 50089 because a UCN in a *plain* constant becomes two UTF-8 bytes **and** two bytes make
+> a multi-character constant — two paragraphs of the standard meeting only in the byte
+> sequence. The third decoder could have grown a `\u` arm and still have been wrong, because
+> it turned an escape straight into a value and had nowhere to hold the intermediate state.
+> **When two rules compose through a representation, share the representation, not the
+> arms.** The tell that this was one rule and not three: a single mutant
+> (`plain-takes-first-unit`) changed three fixtures at once.
+> **A "third copy" is worth looking for the moment you find the second** (wave 152). Wave
+> 151's own note said character constants still had their own reading, and probing it took
+> ten minutes and found five defects. The note is why — an owed entry written *while the
+> context is loaded* is worth more than the same discovery made cold two waves later.
 > **A mutation sweep needs a control run** (wave 151). A sweep whose restore step silently
 > failed reported all six mutants KILLED — the mirror of wave 146's false survivor, and far
 > harder to see, because all-killed is exactly what a *good* sweep reports. The restore was
