@@ -355,6 +355,24 @@ fn a_widened_operand_still_narrows_its_source() {
     agree_symbolic_with_paths("long l = x; if (l < 0) { return 1; } return 2;", 2);
 }
 
+/// **A `switch` whose default is reached only by the largest masked value.**
+///
+/// `switch (x & 3)` with cases 0, 1 and 2 gives the default arm the path condition
+/// `x&3 != 0 && x&3 != 1 && x&3 != 2`, satisfied by `x = 3` and nothing smaller. Each
+/// conjunct is a multi-bit negated mask, which cannot be pinned soundly — so the domain
+/// stays full and the only model is three steps above its least value.
+///
+/// The C-level statement of `lite.rs`'s "one candidate is not a search": every arm here is
+/// reachable, so a fourth compared path is exactly what a search that does not stop at its
+/// first guess buys.
+#[test]
+fn a_switch_over_a_mask_reaches_its_default() {
+    agree_symbolic_with_paths(
+        "switch (x & 3) { case 0: return 10; case 1: return 11; case 2: return 12;          default: return 13; }",
+        4,
+    );
+}
+
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
 /// silently compare nothing is not a channel.**
 ///

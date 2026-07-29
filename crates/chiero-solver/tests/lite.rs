@@ -736,3 +736,92 @@ fn a_bound_too_wide_for_the_source_is_not_truncated() {
          bound was truncated to 32 bits, turning `always true` into `x is negative`."
     );
 }
+
+/// **One candidate is not a search.**
+///
+/// `Domains::candidate` builds a single model — each variable's *least* feasible value — and
+/// `check` validates it. If it fails, the answer is `Unknown`, and that is the end of it. So
+/// a set whose only models lie anywhere other than the bottom of the domain is undecidable
+/// no matter how much narrowing succeeded.
+///
+/// The shape that surfaced it is a `switch` default arm. `switch (x & 3)` with cases 0, 1
+/// and 2 gives the default the path condition
+///
+/// ```text
+///   x & 3 != 0  &&  x & 3 != 1  &&  x & 3 != 2
+/// ```
+///
+/// which is satisfied by `x = 3` and by nothing smaller. Each conjunct is a *multi-bit*
+/// negated mask, which wave 154 established cannot be pinned soundly — so the domain stays
+/// full, the candidate is 0, and 0 fails the first conjunct.
+///
+/// The fix is not more narrowing. Narrowing that could express "not 0, not 1, not 2" would
+/// need a set, not an interval. What is missing is that a **failed candidate ends the
+/// search**, when trying the next feasible value would have decided it in three more steps.
+/// Validation is what makes this safe: every candidate is checked against the original
+/// assertions, so a search that guesses cannot answer wrongly — only slowly.
+#[test]
+fn a_satisfiable_set_whose_model_is_not_the_least_value_is_still_decided() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let three = a.bv(32, 3);
+    let masked = a.and(x, three);
+    let mut asserts = Vec::new();
+    for k in 0..3u128 {
+        let c = a.bv(32, k);
+        let e = a.eq(masked, c);
+        asserts.push(a.not(e));
+    }
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &asserts) {
+        CheckResult::Sat(m) => {
+            for t in &asserts {
+                assert_eq!(
+                    a.eval(&m, *t).map(|v| v.bits() != 0),
+                    Ok(true),
+                    "the model does not satisfy every assertion it was produced for"
+                );
+            }
+        }
+        other => panic!(
+            "`x & 3` is none of 0, 1, 2 — satisfied by x = 3, three steps above the \
+             domain's least value. Answering {other:?} means the search stopped at the \
+             first candidate."
+        ),
+    }
+}
+
+/// **A known-bits fact must not turn candidate selection into a linear scan.**
+///
+/// `least` walks `lo..=hi` looking for a value that matches the known bits. Wave 154 made
+/// `x & FLAG != 0` *set* those bits for a single-bit mask — so a flag high in the word now
+/// asks that walk to count to 2^30 before finding its first candidate. Nothing hit it,
+/// because every fixture written so far masked a low bit.
+///
+/// The bound is what this test is about, not the answer: taking `Unknown` is always sound,
+/// and a solver that takes minutes to say so is not.
+#[test]
+fn a_high_known_bit_does_not_make_candidate_selection_scan() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let flag = a.bv(32, 1 << 30);
+    let zero = a.bv(32, 0);
+    let masked = a.and(x, flag);
+    let clear = a.eq(masked, zero);
+    let set = a.not(clear);
+    let start = std::time::Instant::now();
+    let mut s = SolverLite::default();
+    let r = s.check(&mut a, &[set]);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "candidate selection took {elapsed:?} for a single high bit, which is a scan"
+    );
+    if let CheckResult::Sat(m) = r {
+        assert_eq!(
+            a.eval(&m, set).map(|v| v.bits() != 0),
+            Ok(true),
+            "the model does not have the bit the assertion requires"
+        );
+    }
+}
