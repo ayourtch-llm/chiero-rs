@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 147) — 1132 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 148) — 1133 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -503,7 +503,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > and it found a global pointer reading as null; 144 closed the last defect on the open
 > list; 145 made lowering refuse CIR the verifier rejects;
 > 146 gave the generator a shrinker;
-> 147 gave the refusal ledger teeth and declared floating point unimplemented**.*
+> 147 gave the refusal ledger teeth and declared floating point unimplemented;
+> 148 paid the first debt the ledger recorded**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -677,6 +678,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A branch added in front of a conversion inherits nothing** (wave 148). Wave 140 put
+> `convert_for_store` before the store in `init_list`; wave 142 added the bit-field branch
+> *above* it and the new path silently skipped it. Two correct changes, in order, produced
+> a gap. It is §9's "a guard added to one arm is not added to its sibling" with the sibling
+> added later — so **when adding an early-return branch, check what the code below it does
+> that you are now skipping**, and prefer hoisting the shared step above both.
+> **The ledger is a debt register, and entries are meant to be deleted** (wave 148). The
+> bit-field entry said "owed rather than tolerated", survived two waves, and removing it in
+> the same commit as the fix is how the ratchet records that the debt was paid. An entry
+> that never changes is either a decision or a lie; either way it should be re-read.
 > **`cargo fmt` moves anchors — and a missed anchor can fake a *green*** (waves 146, 147).
 > Wave 146's missed anchor produced a false *survivor*; wave 147's produced a false *pass*:
 > the ratchet assertion was never inserted, so the run printed "refused 101" and went green
