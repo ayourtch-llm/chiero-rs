@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 199) — 1282 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 200) — 1282 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,55 +688,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: the concrete paths cannot reach a promoted object
+> ### 🔴 Do this first: a byte written *before* promotion is lost after it
 >
-> **Wave 198 attempted this and did not land it.** The attempt is recorded here because the
-> diagnosis is most of the work and there is no reason for the next wave to repeat it.
+> Wave 200 instrumented rather than reasoned, and the single `eprintln!` in `promoted_fault`
+> named the caller in one run — `chiero-mem:1692`, which is `pub fn write`, the one candidate
+> waves 198 and 199 never identified. Two causes were then fixed:
 >
-> The symptom, after any symbolic write promotes an object:
+> 1. **`write_term`'s ground-constant fast path bypassed the promoted branch.** It delegates to
+>    the arena-free `write` at chiero-mem:2095, which refuses a promoted object, and `ca[1] = 3`
+>    is a constant — so the delegation happened *before* the array branch wave 198 added twelve
+>    lines below. The promoted check now precedes the fast path.
+> 2. **`arr.init` is indexed per *bit*, `arr.data` per byte.** `init_bit_via` selects `init` at a
+>    bit index; a byte-indexed store writes one bit of the wrong byte. The symptom was a
+>    `maybe-uninitialized-read` on a byte just stored — from outside, indistinguishable from the
+>    write not happening.
+>
+> **The third cause is open and is the front.** A concrete byte written before promotion is not
+> visible after it:
 >
 > ```text
->   ca[i & 63] = 7;  ca[1] = 3;  return ca[1];
->       findings: symbolic-byte: byte 1 of ca holds a symbolic value, which a
->                 concrete access cannot answer for
->       solved ret = 0        <- the concrete store was lost
+>   ca[0] = 5;  ca[(i & 31) + 32] = 7;  return ca[0];   ->  solves to 0, not 5
 > ```
 >
-> What is established:
+> The symbolic write is masked into the upper half, so it cannot reach byte 0.
+> `promote_to_array` **demonstrably seeds both arrays** from the frozen `Bytes` view
+> (`for b in 0..size { data = store(data, i, v) }`), so the 5 ought to survive. Instrument the
+> seeding — read what `arr.data` holds at index 0 immediately after promotion — rather than
+> reasoning about it; that is what worked this wave and what two waves of argument did not. A
+> comment in `symbolic_offset_store.rs` carries the reproduction where the deleted test was.
 >
-> - The engine's concrete paths use `write_term` (exec:3266) and `read_term` (exec:4582), both
->   of which take an arena. **`read_term` already handles promotion** — it has a
->   `Some(arr) => select(...)` branch and a comment saying the frozen `Bytes` view must not be
->   consulted again.
-> - **`write_term` does not.** It loops over bytes calling `write_sym_byte`, which is
->   *arena-free* and therefore refuses a promoted object via `promoted_fault`. That is the
->   blocker, and it is why the store is lost while the read looks fine.
-> - Adding a promoted branch to `write_term` — mirroring `read_term`'s, writing
->   `store(arr.data, off, byte)` and marking `arr.init` — **was tried and did not fix it.**
->   The `symbolic-byte` finding still appeared.
-> - **The `repr`/`arr` disagreement wave 198 suspected does not exist — checked in wave 199,
->   and this is the correction.** Four sites set `e.arr` without `e.repr`
->   (chiero-mem:2937, 3139, 3269, 3297), which is what raised the suspicion, but every one of
->   them is a *write-back of an `arr` obtained after `promote_to_array` has already run* — so
->   `repr` is `Array` at each. The two fields agree. Do not spend a wave on it.
-> - **What is still unexplained**, and the next concrete step: which of `promoted_fault`'s four
->   callers actually fires. They are `read_raw` (2532), `write_bits`, `write_sym_byte` and the
->   site at 1692. `write_sym_byte` is called only from `write_term` and from tests, and
->   `read_raw` only from the copy path — so *neither* obviously explains a finding that
->   survives a promoted branch in `write_term`. **Instrument `promoted_fault` with a
->   backtrace or a per-caller marker rather than reasoning about it**; two waves have now been
->   spent reasoning, and the call is cheap to observe directly.
-> - A second symptom to explain with it: the run also reports
->   `maybe-uninitialized-read: read at offset 1 ... written only under a guard the engine has
->   not discharged`, which suggests the read consults the **`Bytes`** init mask while taking
->   its value from the array. If so the init state is the drift, and §9's separate note about
->   the promoted read ignoring `arr.init` is the same bug seen from the other side.
-> - The value also becomes non-ground once promoted, so a test must **solve** for it
->   (`TieredSolver` + `return_value_under`) rather than use `return_value_bits` — the same trap
->   wave 196 hit.
->
-> The RED written for this was reverted rather than left failing (`13470a5` reverts `ec70860`);
-> wave 197's pinned test stands, and it is still the thing that should change.
+> **Do not attempt this as a fourth incremental fix without first asking whether the promoted
+> representation needs a design pass.** Three distinct causes in one interaction, across four
+> waves, is the signal that note was written for.
 >
 > **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
 > does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store

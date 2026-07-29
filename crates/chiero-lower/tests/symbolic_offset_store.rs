@@ -185,3 +185,25 @@ fn a_symbolic_store_marks_the_byte_initialized() {
         "the program wrote this byte one statement earlier: {f:?}"
     );
 }
+
+/// **Promotion changes the representation, not the object's extent.**
+///
+/// Mutation found no fixture writing out of bounds *through* a promoted object: deleting the
+/// bounds check from the promoted store passed everything. The concrete path checks bounds
+/// before it reaches the array, so the check in the promoted branch is the only one there is —
+/// and without it a store past the end silently lands in the SMT array at an index no object
+/// byte corresponds to, which is worse than an unreported overflow because the value can be
+/// read back.
+#[test]
+fn a_concrete_store_past_the_end_of_a_promoted_object_is_reported() {
+    let m = harness::lower(
+        "char ca[64];\nint probe(int i){ ca[i & 63] = 7; ca[100] = 3; return ca[0]; }",
+    );
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        f.iter().any(|x| x.starts_with("out-of-bounds")),
+        "byte 100 is outside a 64-byte object however the object is represented: {f:?}"
+    );
+}
