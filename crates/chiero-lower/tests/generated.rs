@@ -1470,10 +1470,18 @@ fn generated_programs_agree_with_gcc() {
         refused.len()
     );
 
+    // **A floor, not `> 0`.** `> 0` is green on a single lucky program, and mutation said
+    // so: wave 177 gave `Gen` an out-of-bounds knob, and a mutant that switched it on for
+    // *this* channel survived the whole suite. Those programs are undefined, so `judge`
+    // discards them — the channel would have gone on passing while comparing a handful.
+    //
+    // 100 against the 130 observed. The margin is for the grammar drifting, not for a
+    // change that guts the corpus: anything that halves what this compares should be a
+    // decision somebody made rather than a number nobody looked at.
     assert!(
-        compared > 0,
-        "the generator compared nothing at all — every program was discarded or refused, \
-         which means this test is green while testing nothing"
+        compared >= 100,
+        "the generator compared only {compared} of 200 programs — a channel that discards \
+         almost everything is green while testing almost nothing"
     );
 
     // **The ratchet.** Every ledger entry must be one the suite was told about; an entry

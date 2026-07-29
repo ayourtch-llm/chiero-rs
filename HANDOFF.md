@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 176) — 1229 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 177) — 1230 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -524,7 +524,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 174 gave CIR the signedness C's UB rules turn on, closing a false report and two
 > missing ones; 175 found a widening conversion was hiding constants from the whole
 > engine, and three census rows closed at once; 176 gave float-to-integer conversions
-> the destination's signedness and brought every census row to parity with UBSan**.*
+> the destination's signedness and brought every census row to parity with UBSan;
+> 177 made the generator commit memory UB and graded chiero against AddressSanitizer**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -670,26 +671,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: widen what the census can see
+> ### 🔴 Do this first: the memory-UB oracle only knows one fault
 >
-> Every category it measures is at parity, so the instrument — not the engine — is now the
-> limit. Two directions, both concrete:
+> Wave 177 built the channel and it grades clean — `47 compared, 15 flagged by ASan, 15
+> caught, 0 invented` — but the corpus commits exactly one *kind* of memory fault: a
+> subscript past the end of an array. That is the easiest one. The recorded gaps, in the
+> order they are worth closing:
 >
-> 1. **The generator emits no memory UB.** `-fsanitize=address` is in the compile line and
->    has never once fired, because the grammar produces no out-of-bounds index, no dangling
->    pointer, no use-after-free. Those are the defects chiero exists to find in VPP, and the
->    channel that would grade them is one grammar extension away.
-> 2. **The census matches on substrings and reports per-run, not per-site.** A program with
->    two overflows where chiero finds one counts as agreement. Matching gcc's *line number*
->    against the event's span would turn parity into something worth trusting.
+> 1. **Use-after-free and double-free do not exist in the grammar at all.** There is no
+>    `malloc`/`free` in it, so `chiero-mem`'s lifetime modelling is graded by nothing. This
+>    is the largest hole and the closest to what VPP needs.
+> 2. **A negative index is never generated.** `access` takes a `usize` and threading a sign
+>    through every access form was judged not worth it for a case ASan reports identically
+>    — but chiero's own probe handles it, so this is untested capability rather than a gap.
+> 3. **The pointer-walk site keeps its in-range index** (`p = &a[start]` then `++` a bounded
+>    number of times). Making it leave the array means deciding whether the fault is the
+>    walk or the dereference; C says forming a pointer more than one past the end is already
+>    undefined, which chiero does not check and ASan does not report.
+> 4. **Scope-exit lifetimes**: taking the address of a block-scoped local and reading it
+>    after the block. ASan catches it with `-fsanitize=address` only under
+>    `detect_stack_use_after_return`, which is off by default — so this one needs the
+>    oracle's compile line extended before the grammar.
 >
-> Do (1) first: it can find defects, where (2) can only tighten a measurement that is
-> already saying what it should.
+> ### 🔴 Then: the census still matches substrings and counts per-run
 >
-> ~~🔴 the last census row, `cannot be represented` at 7/22.~~ **Was the measurement, fixed
-> in wave 176** — see the census note above. §9 predicted this ("check the measurement
-> rather than the engine") and it was right, which is the third wave running where
-> reproducing before building changed the answer.
+> A program with two overflows where chiero finds one counts as agreement. Matching gcc's
+> *line number* against the event's span would turn parity into something worth trusting.
+> Cheaper than (1) above and worth less: it tightens a measurement that is already saying
+> the right thing, where (1) can find defects.
+>
+> ~~🔴 widen what the census can see.~~ **Wave 177 did half of it** — the memory half, which
+> was the half that could find defects. The per-site tightening above is the other half.
 >
 > ### 🔴 Still owed: symbolic UB checking
 >
@@ -1007,6 +1019,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A constraint that serves one channel becomes a blind spot for the next** (wave 177).
+> `Gen::arrays` kept every index in range *by construction*, with a comment explaining that
+> an out-of-bounds read would be discarded rather than compared. Correct for the
+> value-differential, and it silently decided that the census — built two waves ago, whose
+> whole subject is programs gcc calls undefined — could never see a memory fault. When a
+> second consumer appears, re-read the first one's invariants as choices rather than facts.
+>
+> **Probe the capability before building the oracle** (wave 177). The wave could have been
+> "implement out-of-bounds detection". Five minutes of probing showed chiero already
+> reports every shape — past the end, before the start, through a walked pointer, through
+> NULL — with the object, offset and size named. So the wave was a *grading* gap, and the
+> work was the corpus rather than the engine. The RED's failure message says which.
+>
+> **A generated corpus needs a floor, not a `> 0`** (wave 177). `flagged > 0` passes on one
+> lucky program, and a change that quietly stopped emitting the interesting case would
+> leave the channel green and empty. The oracle asserts `>= 5` against 15 observed, and
+> prints its census either way.
 >
 > **A surviving mutant is a missing test until proven equivalent** (wave 176).
 > `store-always-signed` survived the whole suite, which meant one of the wave's three fixed
