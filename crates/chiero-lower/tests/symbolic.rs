@@ -672,6 +672,74 @@ fn a_proven_path_keeps_the_caveats_the_proof_did_not_answer() {
     );
 }
 
+/// **022 §4: tier 2 is on by default when the binary is found at runtime.**
+///
+/// The spec is not ambiguous about it — "*on by default when the binary is found at
+/// runtime, absent otherwise* — discovery is runtime, the dependency is not a link-time
+/// one", with a stated selection order of `$CHIERO_SMT_SOLVER`, then `z3`, `cvc5`,
+/// `bitwuzla` on `PATH`.
+///
+/// `Engine::new` starts with no backend and nothing ever looks for one, so a default run
+/// is tier-1-only however many solvers are installed. `SolverTier` has exactly one variant
+/// and `probe` reads it as `let _ = self.tier;`.
+///
+/// What that costs is not subtle. `a[x & 7]` on a four-element array is four definite
+/// out-of-bounds accesses; tier 1 enumerates all eight offsets, cannot prove there is no
+/// ninth, and declares the whole thing unmodelled — so the default configuration reports
+/// **nothing**. Hand it a backend and the same run forks eight ways and reports all four.
+///
+/// The declaration is honest, and honest is not the contract. A user who installs z3 and
+/// runs chiero gets tier-1 answers with no indication that the tool they installed is not
+/// being used.
+///
+/// The second half is what keeps the fix from being "always spawn a solver": asking for
+/// `LiteOnly` must still get tier 1, because that is how every test of tier 1's own
+/// behaviour says what it is testing.
+#[test]
+fn tier_two_is_on_by_default_when_a_solver_is_installed() {
+    let Some(_) = chiero_solver::SmtLib::discover() else {
+        eprintln!("SKIP: no SMT-LIB backend on PATH, so there is nothing to discover");
+        return;
+    };
+    let src = "int probe(int x) { int a[4] = {1,2,3,4}; return a[x & 7]; }";
+    let m = harness::lower(src);
+
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    let oob = r
+        .reports()
+        .into_iter()
+        .filter(|f| f.message.contains("out-of-bounds"))
+        .count();
+    assert_eq!(
+        oob,
+        4,
+        "`a[x & 7]` reads four elements past a four-element array. A solver is installed, \
+         so 022 §4 says it is in use: {:?}",
+        r.reports()
+            .iter()
+            .map(|f| f.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // **And asking for tier 1 still gets tier 1.** Every test of `SolverLite`'s own
+    // incompleteness depends on being able to say so.
+    let mut arena = TermArena::new();
+    let lite = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .with_solver(chiero_exec::SolverTier::LiteOnly)
+        .run(&mut arena);
+    assert!(
+        lite.states().iter().any(|s| s
+            .assumptions()
+            .iter()
+            .any(|a| a.detail.contains("was not enumerated"))),
+        "tier 1 cannot enumerate this offset and must still say so when it is asked for"
+    );
+}
+
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
 /// silently compare nothing is not a channel.**
 ///
