@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 181) — 1230 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 182) — 1233 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,44 +673,46 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: a program with two faults is still graded on one
+> ### 🔴 Do this first: nothing keeps the memory corpus *closed*, and `invented` depends on it
 >
-> Of the three structural gaps wave 180 recorded, the location one is closed and found no
-> defect. Two remain, and the first is now the cheapest:
+> The oracle's false-positive column is sound only because these programs take one path.
+> "chiero found a fault ASan did not" is a real question exactly while there is no other
+> path for the fault to live on. The memory grammar has no branch on an input today — but
+> nothing enforces that, and the ordinary grammar it sits beside is full of `if` and `for`.
+> The moment one appears in a `memory_ub` program, a correct finding on the untaken path
+> becomes an accusation against the engine, and it will look like a regression in chiero
+> rather than in the corpus.
 >
-> 1. **ASan halts at the first fault; chiero reports every fault.** The oracle asks only
->    whether chiero found the class ASan named, so a chiero that missed a *second* fault in
->    the same program scores full marks. The corpus already generates such programs — a
->    block that is both overflowed and freed twice — and nothing looks at the second one.
->    Grading it needs the sanitizer run more than once (recompile with the first fault's
->    statement removed, or run under a mode that continues), which is the real cost.
-> 2. **`invented` is only sound because the corpus is closed.** These programs take one
->    path, so "chiero found a fault ASan did not" is a real question. The moment the memory
->    grammar meets a branch on an input, a finding on the other path is correct and the
->    column starts accusing the engine. Nothing enforces the closedness today; it is a
->    property of the grammar that could be lost without any test noticing.
+> Two ways out, and the choice is worth making deliberately: assert the property (count the
+> engine's states and require 1, or 2 where a `malloc` fork explains it) or drop the
+> `invented` assertion to a *report* when a program has more than one path. The first keeps
+> the column sharp and constrains the grammar; the second keeps the grammar free and blunts
+> the column.
 >
-> ~~🔴 neither side's location is checked.~~ **Wave 181, and the predicted defect was not
-> there**: 36 of 36, every class, exact line. It landed as a ratchet rather than a fix.
-> Recorded because two things nearly made it grade *nothing* while passing — the compile
-> line had no `-g`, so ASan printed module offsets instead of lines; and frame `#0` for a
-> double-free is ASan's own `free` interceptor, so keying on it silently failed to parse
-> exactly the classes that go through an interceptor. **A location check that cannot read a
-> location looks identical to one that passes.**
+> ~~🔴 a program with two faults is still graded on one.~~ **Wave 182, and the premise was
+> wrong.** chiero reports the first fault and *stops*, by decision — `report_faults`: "the
+> path ends at a definite crash; everything after it would be about a program that does not
+> exist". C gives an execution no defined continuation past UB, so ASan's recover mode is
+> simulating a program the language does not describe. §9 also predicted the cost would be
+> recompiling once per fault; `-fsanitize-recover=address` with `halt_on_error=0` does it in
+> one run.
 >
-> The check is now proven observable, and it took two sweeps to get there:
+> **`first_fault.rs` is what that wave produced**: the rule had no test, and it is exactly
+> the kind of behaviour a later reader mistakes for a limitation and "fixes".
+>
+> Mutation settled a doubt worth recording. Grading ASan's *first* fault looks equivalent to
+> the old halting default — ASan named only one fault either way — so recover mode looked
+> like ceremony. It is not:
 >
 > ```text
->   KILLED     finding-span-is-dummy            <- the engine's span really is compared
->   KILLED     oracle-parses-frame-zero-only    <- the `unparsed` guard catches the blind spot
->   SURVIVED   oracle-ignores-the-line          <- expected: a held ratchet, see wave 180
+>   KILLED   path-continues-past-a-fatal-fault      <- the pin observes the engine's rule
+>   KILLED   oracle-takes-asans-last-fault          <- "first" is load-bearing, not "any"
+>   KILLED   oracle-accepts-any-fault-not-the-first
 > ```
 >
-> The first sweep's span mutant was a **bad mutant** — it shadowed `report_faults`'s `span`
-> parameter, but a finding's span comes from `f.at()`, the fault's own location. Mutate
-> `f.at()`. And the frame-`#0` mutant surviving was a *real hole*, not a bad mutant: the
-> comparison skipped programs whose line could not be parsed, so `unparsed` is now tracked
-> and asserted empty.
+> With the whole list in hand, accepting *any* fault present in the program now fails. Under
+> the halting default that mutant would have been unkillable, because there was only ever
+> one fault to accept.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1038,6 +1040,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **When the oracle and the engine disagree, ask which one the *language* backs** (wave 182).
+> ASan in recover mode reports every fault; chiero reports the first and stops. Neither is a
+> bug — but C gives an execution no defined continuation past undefined behaviour, so the
+> reports after the first describe a simulation rather than the program. The oracle was
+> changed to grade the first fault, not the engine to report more. A disagreement is a
+> question about *whose model is right*, and the standard is the tie-breaker.
+>
+> **A rule with no test is a rule someone will "fix"** (wave 182). "The path ends at a
+> definite crash" was stated in a comment, obeyed by the code, and asserted nowhere. It
+> reads exactly like a missing feature. `first_fault.rs` pins it with fixtures chosen so the
+> pin cannot be satisfied by accident: two overflows on *different objects* (so dedup is not
+> what is observed), both fault orderings (so it is not a preference for one kind), and a
+> single-fault control (so reporting nothing fails).
 >
 > **A check that cannot read its input looks exactly like a check that passes** (wave 181).
 > The location check was written, ran green, and was grading nothing twice over: without
