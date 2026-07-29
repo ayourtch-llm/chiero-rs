@@ -11,6 +11,8 @@ use chiero_ast::{
     Ast, BinOp, DeclId, DeclKind, ExprId, ExprKind, ForInit, StmtId, StmtKind, TypeId, TypeKind,
     UnOp,
 };
+pub mod strlit;
+
 use chiero_span::{Span, Symbol};
 use indexmap::IndexMap;
 
@@ -1932,15 +1934,20 @@ impl Cx<'_> {
                 let (esign, ebits) = fragments
                     .first()
                     .and_then(|f| self.text(f.spelling))
-                    .map(string_element)
+                    .map(strlit::string_element)
                     .unwrap_or((self.target.char_signed, 8));
                 let elem = self.intern(Ty::Int {
                     signed: esign,
                     bits: ebits,
                 });
+                // **Phase 5 decides the length, not the source text.** Counting source
+                // characters made `"a\nb"` five elements and `u"\uFFFF"` five where C has
+                // four and one. The count and the contents now come from one decoder
+                // (`strlit`), so the array sema sizes is the array lowering fills.
                 let n: u64 = fragments
                     .iter()
-                    .filter_map(|f| self.text(f.spelling).map(|t| unquote(t).len() as u64))
+                    .filter_map(|f| self.text(f.spelling))
+                    .map(|t| strlit::string_elements(t, ebits).len() as u64)
                     .sum::<u64>()
                     + 1;
                 let ty = self.intern(Ty::Array {
@@ -2510,37 +2517,6 @@ fn float_rank(k: FloatKind) -> u8 {
         FloatKind::F64 => 2,
         FloatKind::X87_80 => 3,
         FloatKind::Binary128 => 4,
-    }
-}
-
-/// The content of a string literal's spelling: everything between the first and last
-/// `"`. Only the *length* is used here — for a `char[n]` array bound — and escapes are
-/// not processed, so the bound is an upper estimate for a literal containing them. That
-/// is recorded rather than hidden: phase 5's escape evaluation is where the exact length
-/// comes from, and 013 §2's amendment leaves it to this crate to do properly later.
-/// The `(signed, bits)` of a string literal's element type, from its prefix.
-///
-/// x86-64 Linux, which is the one target 014 models: `wchar_t` is a signed 32-bit `int`,
-/// `char16_t` is 16-bit unsigned and `char32_t` 32-bit unsigned. `u8` is checked before `u`
-/// because the shorter prefix would otherwise match it.
-fn string_element(spelling: &str) -> (bool, u32) {
-    if spelling.starts_with("u8") {
-        (true, 8)
-    } else if spelling.starts_with('L') {
-        (true, 32)
-    } else if spelling.starts_with('u') {
-        (false, 16)
-    } else if spelling.starts_with('U') {
-        (false, 32)
-    } else {
-        (true, 8)
-    }
-}
-
-fn unquote(spelling: &str) -> &str {
-    match (spelling.find('"'), spelling.rfind('"')) {
-        (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
-        _ => spelling,
     }
 }
 

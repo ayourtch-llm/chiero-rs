@@ -536,6 +536,15 @@ fn a_universal_character_name_is_one_character() {
     // the escape is alone.
     agree(r#"return (int)u"AéB"[0] * 1000 + (int)u"AéB"[1];"#);
     agree(r#"return (int)sizeof(u"AéB");"#);
+    // **The three counting rules**, each a case where reading one digit too many or too
+    // few changes the number of *elements* and not merely a value. Mutation found these
+    // uncovered here: the unit tests in `strlit` caught all three, gcc caught none of them,
+    // and gcc is the oracle that does not share the implementation's assumptions.
+    agree(r#"return (int)u"\x41B"[0] + (int)sizeof(u"\x41B");"#);
+    agree(r#"return (int)sizeof("\0101") * 1000 + (int)"\0101"[0] * 100 + (int)"\0101"[1];"#);
+    // A code point above the BMP is a **surrogate pair** at 16 bits — two elements, so a
+    // decoder that stored it whole would size the array wrong as well as fill it wrong.
+    agree(r#"return (int)u"\U0001F600"[0] + (int)u"\U0001F600"[1] + (int)sizeof(u"\U0001F600");"#);
     // The escapes that already worked must keep working.
     agree(r#"return (int)sizeof("a\nb") * 100 + (int)"a\nb"[1];"#);
     agree(r#"return (int)sizeof("AB");"#);

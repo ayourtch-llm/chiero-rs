@@ -1,0 +1,271 @@
+//! **Translation phase 5 for string literals: spelling in, elements out.**
+//!
+//! One decoder, in the one crate both sides can see. Sema needs the element *count* to
+//! size the array; lowering needs the element *values* to fill it. Those used to be two
+//! independent readings of the same spelling — sema counted source bytes, lowering
+//! re-scanned the escapes — and they were free to disagree. They did: sema sized
+//! `"a\nb"` at five characters while C says four.
+//!
+//! Wave 150's rule is why this is a module and not a second copy: a fix that lands in one
+//! of two copies is worse than no fix, because the suite goes green while the object and
+//! its contents still describe different arrays. Here there is nothing to keep in step —
+//! `string_elements` returns a list, sema takes its length and lowering takes its values.
+//!
+//! # What the distinction between the two units buys
+//!
+//! C draws a line that a `Vec<u8>` cannot express. `\xFF` is a *value*: one element holding
+//! 255, in a plain literal and a wide one alike. `\u00FF` is a *character*: two bytes
+//! (`C3 BF`) in a plain literal and one element holding 255 in a wide one. A decoder that
+//! yielded bytes has already lost the difference by the time the width is known, which is
+//! exactly how a byte-oriented `unescape` came to read `u"\uFFFF"` as the five letters
+//! `u F F F F`.
+//!
+//! So the decode is width-independent and yields [`StrUnit`], and the *encode* — where the
+//! width finally matters — is a second step.
+
+/// One unit of a decoded string literal, before the width has been applied.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrUnit {
+    /// A value the source named **numerically** — `\xFF`, `\101`, `\n`. C11 6.4.4.4p9
+    /// gives it the value written, in one element, whatever the literal's width. It is
+    /// never re-encoded: `u"\xFF"[0]` is 255, not the two units of UTF-8 for U+00FF.
+    Raw(u32),
+    /// A **character**: written directly in the source, or as a `\u`/`\U` universal
+    /// character name. C11 5.2.1.1 makes those two spellings the same thing by the end of
+    /// phase 5, which is why one variant covers both. How it is stored is the width's
+    /// business — UTF-8, UTF-16, or a single code point.
+    Char(u32),
+}
+
+/// The `(signed, bits)` of a string literal's element type, from its prefix.
+///
+/// x86-64 Linux, which is the one target 014 models: `wchar_t` is a signed 32-bit `int`,
+/// `char16_t` is 16-bit unsigned and `char32_t` 32-bit unsigned. `u8` is checked before `u`
+/// because the shorter prefix would otherwise match it.
+///
+/// `char16_t`'s unsignedness is observable only above 32767, so nothing could pin it until
+/// `u"\uFFFF"` existed to produce 65535 — a signed reading answers -1.
+pub fn string_element(spelling: &str) -> (bool, u32) {
+    if spelling.starts_with("u8") {
+        (true, 8)
+    } else if spelling.starts_with('L') {
+        (true, 32)
+    } else if spelling.starts_with('u') {
+        (false, 16)
+    } else if spelling.starts_with('U') {
+        (false, 32)
+    } else {
+        // The plain literal's `char` follows the target's signedness, which the caller
+        // supplies; 8 bits is the part this function knows.
+        (true, 8)
+    }
+}
+
+/// The content of a literal's spelling: everything between the first and last `"`.
+pub fn unquote(spelling: &str) -> &str {
+    match (spelling.find('"'), spelling.rfind('"')) {
+        (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
+        _ => spelling,
+    }
+}
+
+/// Decode one fragment's **content** (no quotes, no prefix) into width-independent units.
+pub fn string_units(content: &str) -> Vec<StrUnit> {
+    let mut out = Vec::with_capacity(content.len());
+    let mut it = content.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(StrUnit::Char(c as u32));
+            continue;
+        }
+        let Some(e) = it.next() else {
+            // A trailing backslash cannot occur in a well-formed literal — phase 2 has
+            // already spliced line continuations — but dropping it would shorten the
+            // object, and `sizeof` is a value the corpus compares against gcc.
+            out.push(StrUnit::Raw(u32::from(b'\\')));
+            break;
+        };
+        match e {
+            'n' => out.push(StrUnit::Raw(10)),
+            't' => out.push(StrUnit::Raw(9)),
+            'r' => out.push(StrUnit::Raw(13)),
+            'a' => out.push(StrUnit::Raw(7)),
+            'b' => out.push(StrUnit::Raw(8)),
+            'f' => out.push(StrUnit::Raw(12)),
+            'v' => out.push(StrUnit::Raw(11)),
+            'e' => out.push(StrUnit::Raw(27)), // a GNU extension gcc accepts
+            '\\' => out.push(StrUnit::Raw(92)),
+            '\'' => out.push(StrUnit::Raw(39)),
+            '"' => out.push(StrUnit::Raw(34)),
+            '?' => out.push(StrUnit::Raw(63)),
+            // **Hex is greedy** (C11 6.4.4.4p1): `\xABC` is one escape, not `\xAB` then
+            // `C`. That is why the octal case below is bounded and this one is not.
+            'x' => {
+                let mut v: u32 = 0;
+                let mut any = false;
+                while let Some(d) = it.peek().and_then(|c| c.to_digit(16)) {
+                    v = v.wrapping_mul(16).wrapping_add(d);
+                    any = true;
+                    it.next();
+                }
+                // `\x` with no digits is not a valid escape; keep the letter rather than
+                // silently deleting it, which is what the catch-all below does too.
+                out.push(if any {
+                    StrUnit::Raw(v)
+                } else {
+                    StrUnit::Char(u32::from(b'x'))
+                });
+            }
+            // **Octal takes at most three digits** (C11 6.4.4.4p1), so `\0101` is `\010`
+            // followed by the character `1`. The first digit is the one already consumed.
+            '0'..='7' => {
+                let mut v = e.to_digit(8).unwrap_or(0);
+                for _ in 0..2 {
+                    match it.peek().and_then(|c| c.to_digit(8)) {
+                        Some(d) => {
+                            v = v * 8 + d;
+                            it.next();
+                        }
+                        None => break,
+                    }
+                }
+                out.push(StrUnit::Raw(v));
+            }
+            // **Universal character names take exactly four or eight digits** (C11
+            // 6.4.3p1) — fixed-width, unlike hex. A short one is malformed; the letters are
+            // kept so the object does not silently shrink.
+            'u' | 'U' => {
+                let n = if e == 'u' { 4 } else { 8 };
+                let mut v: u32 = 0;
+                let mut got = 0;
+                while got < n {
+                    match it.peek().and_then(|c| c.to_digit(16)) {
+                        Some(d) => {
+                            v = v * 16 + d;
+                            got += 1;
+                            it.next();
+                        }
+                        None => break,
+                    }
+                }
+                if got == n {
+                    out.push(StrUnit::Char(v));
+                } else {
+                    out.push(StrUnit::Char(e as u32));
+                    // Re-emit what was consumed, so a malformed escape keeps its length.
+                    for sh in (0..got).rev() {
+                        let d = (v >> (4 * sh)) & 0xf;
+                        let ch = char::from_digit(d, 16).unwrap_or('0');
+                        out.push(StrUnit::Char(ch as u32));
+                    }
+                }
+            }
+            // An unknown escape keeps the escaped character, which is what gcc does for
+            // the ones it warns about.
+            other => out.push(StrUnit::Char(other as u32)),
+        }
+    }
+    out
+}
+
+/// Encode a fragment's **spelling** into the elements of an array of `bits`-wide elements,
+/// **excluding** the terminator.
+///
+/// This is the whole width-dependent half of phase 5:
+///
+/// - a [`StrUnit::Raw`] is one element, truncated to the width;
+/// - a [`StrUnit::Char`] is **UTF-8** at 8 bits, **UTF-16** at 16 (so a code point above
+///   the BMP becomes a surrogate *pair* — two elements), and itself at 32.
+///
+/// A value that is not a Unicode scalar — a lone surrogate, or anything above U+10FFFF —
+/// has no encoding at 8 or 16 bits. It is passed through truncated rather than dropped:
+/// the object keeps its size, and the wrong answer stays a value rather than becoming a
+/// length. gcc rejects those literals outright, so nothing well-formed reaches the arm.
+pub fn string_elements(spelling: &str, bits: u32) -> Vec<u64> {
+    let mask: u64 = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    let mut out = Vec::new();
+    for u in string_units(unquote(spelling)) {
+        match u {
+            StrUnit::Raw(v) => out.push(u64::from(v) & mask),
+            StrUnit::Char(c) => match (bits, char::from_u32(c)) {
+                (8, Some(ch)) => {
+                    let mut buf = [0u8; 4];
+                    out.extend(ch.encode_utf8(&mut buf).bytes().map(u64::from));
+                }
+                (16, Some(ch)) => {
+                    let mut buf = [0u16; 2];
+                    out.extend(ch.encode_utf16(&mut buf).iter().map(|&u| u64::from(u)));
+                }
+                _ => out.push(u64::from(c) & mask),
+            },
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unit-level distinction the whole module exists for, checked without a compiler
+    /// in the loop. `differential.rs` checks the answers against gcc; this checks that the
+    /// two spellings of one character decode to the *same units*, which is the property
+    /// that keeps them from being fixed one at a time.
+    #[test]
+    fn a_ucn_and_the_character_it_names_decode_alike() {
+        assert_eq!(string_units("\\uFFFF"), string_units("\u{FFFF}"));
+        assert_eq!(string_units("\\U0001F600"), string_units("\u{1F600}"));
+        assert_eq!(string_units("\\u00E9"), vec![StrUnit::Char(0xE9)]);
+    }
+
+    /// **`\x` is a value and `\u` is a character**, which is the difference a byte-oriented
+    /// decoder cannot represent: at 8 bits one stays a single element and the other becomes
+    /// its UTF-8 encoding.
+    #[test]
+    fn a_hex_escape_is_not_re_encoded_but_a_ucn_is() {
+        assert_eq!(string_elements("\"\\xFF\"", 8), vec![0xFF]);
+        assert_eq!(string_elements("\"\\u00FF\"", 8), vec![0xC3, 0xBF]);
+        assert_eq!(string_elements("\"\\xFF\"", 16), vec![0xFF]);
+        assert_eq!(string_elements("\"\\u00FF\"", 16), vec![0xFF]);
+    }
+
+    /// The two greedy/bounded rules that differ between hex and octal, and the fixed width
+    /// of a UCN. Each is a case where reading one digit too many or too few changes the
+    /// element *count*, not just a value.
+    #[test]
+    fn hex_is_greedy_octal_takes_three_and_a_ucn_takes_exactly_its_width() {
+        assert_eq!(string_elements("\"\\x41B\"", 16), vec![0x41B]);
+        assert_eq!(
+            string_elements("\"\\0101\"", 8),
+            vec![0o10, u64::from(b'1')]
+        );
+        assert_eq!(string_elements("\"\\101\"", 8), vec![u64::from(b'A')]);
+        // Eight digits for `\U`, four for `\u`: the trailing `00` here is text.
+        assert_eq!(
+            string_elements("\"\\u004100\"", 16),
+            vec![0x41, u64::from(b'0'), u64::from(b'0')]
+        );
+    }
+
+    /// **A code point above the BMP is a surrogate pair at 16 bits** — two elements, so a
+    /// decoder that forgot it would size the array wrong, not merely fill it wrong.
+    #[test]
+    fn an_astral_code_point_is_two_elements_at_sixteen_bits() {
+        assert_eq!(string_elements("\"\\U0001F600\"", 16), vec![0xD83D, 0xDE00]);
+        assert_eq!(string_elements("\"\\U0001F600\"", 32), vec![0x1F600]);
+        assert_eq!(string_elements("\"\\U0001F600\"", 8).len(), 4);
+    }
+
+    /// A malformed escape keeps its length. The object's size is a value gcc is compared
+    /// against, so swallowing the digits of a short `\u` would turn a diagnostic-worthy
+    /// literal into a silently shorter array.
+    #[test]
+    fn a_malformed_escape_keeps_its_characters() {
+        assert_eq!(string_elements("\"\\uAB\"", 8).len(), 3);
+        assert_eq!(string_elements("\"\\x\"", 8), vec![u64::from(b'x')]);
+    }
+}

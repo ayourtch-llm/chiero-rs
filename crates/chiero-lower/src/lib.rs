@@ -869,31 +869,33 @@ impl Lowerer<'_> {
         }
     }
 
-    /// A string literal's bytes, including its terminator.
+    /// A string literal's bytes.
     fn string_bytes(&mut self, e: ExprId) -> Option<Vec<u8>> {
         let chiero_ast::ExprKind::Str { fragments } = self.ast.expr(e).kind.clone() else {
             return None;
         };
-        // **Each character is written at the literal's element width** (C11 6.4.5p6):
-        // `L"AB"` is `wchar_t[3]`, four bytes per character, not `41 42 00`. The prefix is
-        // read from the first fragment — C11 6.4.5p2 makes concatenating literals of
-        // different prefixes either ill-formed or the wider of the two, and the parser has
-        // already joined them, so the first is the one that named the type sema used.
-        let width = fragments
+        // **Each element is written at the literal's width** (C11 6.4.5p6): `L"AB"` is
+        // `wchar_t[3]`, four bytes per element, not `41 42 00`. The prefix is read from the
+        // first fragment — C11 6.4.5p2 makes concatenating literals of different prefixes
+        // either ill-formed or the wider of the two, and the parser has already joined
+        // them, so the first is the one that named the type sema used.
+        let bits = fragments
             .first()
             .and_then(|fr| self.names.text(fr.spelling))
-            .map(string_element_bytes)
-            .unwrap_or(1);
+            .map(|t| chiero_sema::strlit::string_element(t).1)
+            .unwrap_or(8);
+        let width = (bits / 8) as usize;
         let mut bytes = Vec::new();
         for fr in &fragments {
             let text = self.names.text(fr.spelling).unwrap_or("").to_owned();
-            for b in unescape(unquote(&text)) {
-                bytes.push(b);
+            // **The same decoder sema counted with.** These bytes and the array bound are
+            // two views of one list; deriving them from separate readings of the spelling
+            // is how `sizeof` and the contents came to describe different arrays.
+            for el in chiero_sema::strlit::string_elements(&text, bits) {
                 // Little-endian, matching 020's target and `GlobalInit::Bytes`'s reader.
-                // The source bytes are ASCII here; a character above 127 in a wide literal
-                // needs the decoder `unescape` does not have yet, and would land in the
-                // low byte either way rather than silently in the wrong one.
-                bytes.extend(std::iter::repeat_n(0u8, width - 1));
+                for i in 0..width {
+                    bytes.push(((el >> (8 * i)) & 0xff) as u8);
+                }
             }
         }
         // **No explicit terminator.** The caller zero-fills the object to its full size
@@ -1860,7 +1862,7 @@ impl Lowerer<'_> {
                 let width = fragments
                     .first()
                     .and_then(|fr| self.names.text(fr.spelling))
-                    .map(string_element_bytes)
+                    .map(|t| (chiero_sema::strlit::string_element(t).1 / 8) as usize)
                     .unwrap_or(1);
                 bytes.extend(std::iter::repeat_n(0u8, width));
                 let g = self.intern_string(bytes, span);
@@ -5024,77 +5026,6 @@ fn va_builtin(name: &str) -> Option<VaBuiltin> {
         "__builtin_va_copy" => Some(VaBuiltin::Copy),
         _ => None,
     }
-}
-
-/// Strip a string literal's encoding prefix and its surrounding quotes.
-///
-/// The spelling arrives as it was written — `"hi"`, `u8"hi"`, `L"hi"` — because the lexer
-/// keeps spellings verbatim so diagnostics can point at the source. Only the byte
-/// encodings are handled here; `L`/`u`/`U` literals lose their width, which is recorded
-/// as a gap rather than guessed at.
-/// Bytes per character for a string literal, from its prefix.
-///
-/// Mirrors `chiero_sema::string_element`'s widths — the two must agree or the object sema
-/// sized and the bytes lowering wrote are different lengths. `u8` is checked before `u`
-/// because the shorter prefix would otherwise match it.
-fn string_element_bytes(spelling: &str) -> usize {
-    if spelling.starts_with("u8") {
-        1
-    } else if spelling.starts_with('L') || spelling.starts_with('U') {
-        4
-    } else if spelling.starts_with('u') {
-        2
-    } else {
-        1
-    }
-}
-
-fn unquote(s: &str) -> &str {
-    let s = s
-        .strip_prefix("u8")
-        .or_else(|| s.strip_prefix('L'))
-        .or_else(|| s.strip_prefix('u'))
-        .or_else(|| s.strip_prefix('U'))
-        .unwrap_or(s);
-    s.strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(s)
-}
-
-/// Resolve C escape sequences to the bytes they denote.
-///
-/// An unknown escape keeps the escaped character, which is what gcc does for the ones it
-/// warns about — dropping the backslash *and* the character would shorten the object, and
-/// `sizeof` of a literal is a value the corpus compares against gcc.
-fn unescape(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len());
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c != '\\' {
-            let mut buf = [0u8; 4];
-            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-            continue;
-        }
-        match it.next() {
-            Some('n') => out.push(b'\n'),
-            Some('t') => out.push(b'\t'),
-            Some('r') => out.push(b'\r'),
-            Some('0') => out.push(0),
-            Some('\\') => out.push(b'\\'),
-            Some('\'') => out.push(b'\''),
-            Some('"') => out.push(b'"'),
-            Some('a') => out.push(7),
-            Some('b') => out.push(8),
-            Some('f') => out.push(12),
-            Some('v') => out.push(11),
-            Some(other) => {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
-            }
-            None => out.push(b'\\'),
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------
