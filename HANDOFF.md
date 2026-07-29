@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 148) — 1133 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 149) — 1134 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -504,7 +504,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > list; 145 made lowering refuse CIR the verifier rejects;
 > 146 gave the generator a shrinker;
 > 147 gave the refusal ledger teeth and declared floating point unimplemented;
-> 148 paid the first debt the ledger recorded**.*
+> 148 paid the first debt the ledger recorded; 149 audited the owed list
+> and found three entries stale**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -678,6 +679,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Probe the owed list before picking from it** (wave 149). Three of its entries were
+> stale and one was wrong in both directions — it claimed designated initializers were
+> *refused* when they work for locals and were silently *zeroed* for globals. An owed list
+> is a map for the next reader, and a stale entry sends them somewhere that no longer
+> exists. Ten minutes of probing found a live wrong-answer defect that the entry's own
+> wording had been hiding.
+> **"Refused, nothing invented" is only true if something actually refuses** (wave 149).
+> `encode_into` returned `None` under a comment reading "refused whole rather than silently
+> written in positional order" — and the caller maps `None` to `GlobalInit::Zero`. The
+> comment described the intent; the code delivered the opposite. **Follow the `None` to its
+> handler** before believing a refusal is one.
 > **A branch added in front of a conversion inherits nothing** (wave 148). Wave 140 put
 > `convert_for_store` before the store in `init_list`; wave 142 added the bit-field branch
 > *above* it and the new path silently skipped it. Two correct changes, in order, produced
@@ -842,13 +854,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > class it does not know about. Running `verify` at the end of `function()` and refusing on
 > an error would turn every such defect from a silent nothing into a diagnostic.
 >
-> Owed and written down — **no open defects**, these are gaps and deferrals:  the
-> wave-117 `fork_on_offset` survivor; floats do not execute; designated and bit-field
-> initializers refused (address initializers were fixed in wave 143); a fault in a non-entry
-> frame is untested; `Bits` path steps are not emitted; `typeof` types to `Ty::Error` in
-> sema; `L`/`u`/`U` string literals lose their element width in `unquote`;
-> `tests/corpus/c/pointer_fields.c` is not written; 010's 18, 011's 12 and 012's 17 are
-> deliberately uncovered. **013 is clear** — 20/20 contracts covered, no owed items.
+> Owed and written down — **no open defects**, these are gaps and deferrals. Each was
+> re-probed in wave 149 and three were stale, so treat this list as checked-on-2026-07-29
+> rather than as accumulated folklore:
+>
+> - **floats do not execute** — now *declared*: `refuse_floating` refuses any function
+>   mentioning a floating type (wave 147), and `KNOWN_GAPS` in `generated.rs` is what fails
+>   when that is implemented.
+> - **`L`/`u`/`U` string literals lose their element width in `unquote`** — verified still
+>   true: `(const int *)L"ab"` produces no state.
+> - the wave-117 `fork_on_offset` survivor; a fault in a non-entry frame is untested;
+>   `Bits` path steps are not emitted; `tests/corpus/c/pointer_fields.c` is not written;
+>   010's 18, 011's 12 and 012's 17 are deliberately uncovered.
+> - ~~designated and bit-field initializers refused~~ — **wrong in both directions.** They
+>   work for *locals* and always have; at file scope they were not refused but silently
+>   zeroed. Fixed in wave 149.
+> - ~~`typeof` types to `Ty::Error` in sema~~ — **stale.** `typeof(x) y = x + 1;` computes
+>   the right answer today.
+>
+> **013 is clear** — 20/20 contracts covered, no owed items.
 >
 > ### Earlier (wave 128, `fb966c2`) — 1100 tests, 5 ignored, M1 165/165 by contract
 >
