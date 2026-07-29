@@ -1997,8 +1997,39 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
         progs >= 10,
         "too few programs commit arithmetic UB to grade anything: {progs}"
     );
-    assert_eq!(miss, 0, "gcc reported UB at a site chiero did not");
-    assert_eq!(extra, 0, "chiero reported UB at a site gcc did not");
+    // **Every site gcc reports, chiero must report.** This is the direction that can only
+    // be a chiero defect: gcc executed the operation and the standard calls it undefined.
+    assert_eq!(
+        miss, 0,
+        "gcc reported UB at a site chiero did not — see the lines printed above"
+    );
+    // **`extra` is reported, not asserted, and the reason is measured rather than assumed.**
+    //
+    // UBSan only checks operations that survive to code generation, and gcc's front end
+    // folds an arithmetic result used solely as a condition. Reduced from seed 161 and
+    // confirmed both ways in one program:
+    //
+    // ```text
+    //   if (x * (-65536)) { … }        // no report
+    //   int y = x * (-65536);          // runtime error: 131329 * -65536 …
+    // ```
+    //
+    // Identical multiplication, identical operands; the first is optimised into `if (x)`
+    // because a non-zero constant factor cannot change whether the product is zero, and
+    // the check disappears with it. chiero evaluates the program as written and is right.
+    //
+    // So a site chiero reports and gcc does not is **not** evidence of a false positive
+    // here — unlike the memory oracle's `invented`, where ASan's silence does mean the
+    // access was in bounds. The asymmetry is real and belongs in the code rather than in a
+    // reader's memory: one tool is silent because it checked and found nothing, the other
+    // because it never checked.
+    if extra > 0 {
+        println!(
+            "note: {extra} site(s) chiero reports and gcc does not. gcc's front end elides \
+             arithmetic whose result is used only as a condition, taking UBSan's check with \
+             it, so this is not by itself a false positive."
+        );
+    }
 }
 
 #[test]
