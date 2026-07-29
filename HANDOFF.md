@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 159) — 1183 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 160) — 1185 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -512,7 +512,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
 > replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
-> witness beside it one that actually faults; 159 gave each finding its own**.*
+> witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
+> labelling a proven path undecided**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -627,7 +628,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > branch's answer; too strong is unsatisfiable and the path vanishes, which a separate count
 > of compared paths catches.
 >
-> **Still owed here**: *generating* the bodies (this is 6 hand-written fixtures), and a
+> **Generation was prototyped in wave 160 and not committed.** Three grammars, ~1300
+> compared paths, two symbolic parameters, every arm UB-free by construction (unsigned
+> arithmetic wraps, divisors masked away from zero, shift counts masked below the width) so
+> gcc stays authoritative. **It found no value mismatches at all** — the engine agrees with
+> gcc everywhere that grammar reaches. What it did surface: with a real backend ~30% of the
+> paths the engine explores come back `Unsat`, explored because tier 1 cannot refute, and
+> asking what a *finding* on such a path looks like is what produced wave 160. A standing
+> version is still owed; the scratch harness's shape is in that wave's commit message.
+>
+> **A harness note worth keeping**: the oracle builds `TieredSolver::new()`, with **no
+> backend**. A third of its skips were tier 1 declining, not the engine. Passing
+> `SmtLib::discover()` turns most of those into `Unsat` verdicts and makes the skip counts
+> mean what they say.
+>
+> **Still owed here**: *generating* the bodies as a committed test, and a
 > witnessed *fault* from a symbolic run — which is also the fixture that would kill wave
 > 153's one live surviving mutant. The wave-117 `fork_on_offset` survivor is now
 > **reproduced**: `a[x & 3]` reports `Fidelity::Unknown` with "a symbolic pointer offset was
@@ -767,6 +782,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A degradation can be *answered*, and then it should go** (wave 160). Fidelity is a
+> running worst-of and that is right for almost everything — an unmodeled call stays
+> unmodeled. But "the solver could not decide this branch" is a claim the run can later
+> refute: a validated model of the path condition proves the path exists, and 022 §3.1 makes
+> `Sat` self-certifying, so the proof is in hand. Leaving the caveat labels a reproducible
+> fault `Unknown`, which is the label a reader uses to decide what to ignore. **Ask of each
+> caveat whether anything later in the run could settle it** — most cannot, and the one that
+> can was carrying every witnessed finding down with it.
+> **A fixture with two reasons to fail tests neither** (wave 160). The RED used a null
+> dereference, which degrades for the branch *and* for `IntToPtr ... no provenance`; it
+> could never reach `Exact` however right the fix was. Splitting it — an out-of-bounds write
+> for the discharge, the null store for "what the proof did *not* answer" — turned one
+> muddled assertion into two sharp ones, and the second killed two mutants that had survived
+> the whole suite.
+> **A channel that finds nothing has still measured something** (wave 160). ~1300 generated
+> symbolic paths produced zero mismatches. That is not a wasted wave: it is the first
+> evidence that the value semantics agree with gcc under symbolic execution, and the skip
+> *reasons* — not the failures — are what pointed at the defect this wave fixed. **When a
+> soak comes back clean, read the discards.**
 > **Two parties each hold half a fact; the join has to be explicit** (wave 159). The engine
 > proves a divisor can be zero and knows the condition; the checker decides the event is
 > worth reporting. Neither can attach one to the other, and there is no clever way around
