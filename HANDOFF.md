@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 197) — 1282 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 199) — 1282 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -713,11 +713,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   blocker, and it is why the store is lost while the read looks fine.
 > - Adding a promoted branch to `write_term` — mirroring `read_term`'s, writing
 >   `store(arr.data, off, byte)` and marking `arr.init` — **was tried and did not fix it.**
->   The `symbolic-byte` finding still appeared, so either `entry.arr` is `None` while
->   `promoted_fault`'s `repr == Repr::Array` is true (the two disagree about what "promoted"
->   means), or a second arena-free call in the chain also refuses. **Check that disagreement
->   first**: `promoted_fault` keys on `repr`, the read keys on `arr`, and if promotion sets one
->   without the other then every fix keyed on `arr` will miss.
+>   The `symbolic-byte` finding still appeared.
+> - **The `repr`/`arr` disagreement wave 198 suspected does not exist — checked in wave 199,
+>   and this is the correction.** Four sites set `e.arr` without `e.repr`
+>   (chiero-mem:2937, 3139, 3269, 3297), which is what raised the suspicion, but every one of
+>   them is a *write-back of an `arr` obtained after `promote_to_array` has already run* — so
+>   `repr` is `Array` at each. The two fields agree. Do not spend a wave on it.
+> - **What is still unexplained**, and the next concrete step: which of `promoted_fault`'s four
+>   callers actually fires. They are `read_raw` (2532), `write_bits`, `write_sym_byte` and the
+>   site at 1692. `write_sym_byte` is called only from `write_term` and from tests, and
+>   `read_raw` only from the copy path — so *neither* obviously explains a finding that
+>   survives a promoted branch in `write_term`. **Instrument `promoted_fault` with a
+>   backtrace or a per-caller marker rather than reasoning about it**; two waves have now been
+>   spent reasoning, and the call is cheap to observe directly.
+> - A second symptom to explain with it: the run also reports
+>   `maybe-uninitialized-read: read at offset 1 ... written only under a guard the engine has
+>   not discharged`, which suggests the read consults the **`Bytes`** init mask while taking
+>   its value from the array. If so the init state is the drift, and §9's separate note about
+>   the promoted read ignoring `arr.init` is the same bug seen from the other side.
 > - The value also becomes non-ground once promoted, so a test must **solve** for it
 >   (`TieredSolver` + `return_value_under`) rather than use `return_value_bits` — the same trap
 >   wave 196 hit.
@@ -1101,6 +1114,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A handed-over diagnosis is a hypothesis, not a finding** (wave 199). Wave 198 stopped
+> responsibly and wrote down what it believed: `promoted_fault` keys on `repr`, the read keys on
+> `arr`, so the two must disagree. Wave 199 checked and they do not — all four sites that set
+> `arr` without `repr` are write-backs *after* `promote_to_array` has run. The next reader would
+> have spent a wave on it. Mark handover notes as suspicion or as verified, and verify before
+> building on one — including your own from last wave.
+>
+> **After two waves of reasoning, instrument** (wave 199). Two waves have now argued about which
+> `promoted_fault` caller fires, from four candidates, when a `println!` in one function answers
+> it. Reasoning is cheap to start and unbounded; observation has a fixed cost. When the second
+> wave's argument fails the same way as the first's, stop arguing.
 >
 > **Stop and hand over the diagnosis rather than guess at a fix** (wave 198). The attempt at
 > the promoted-object plumbing reached the point of *guessing* — the object reports promoted to
