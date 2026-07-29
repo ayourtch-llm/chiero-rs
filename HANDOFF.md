@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 189) — 1247 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 190) — 1250 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,28 +688,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: what else did `GlobalInit` silently zero?
+> ### 🔴 Do this first: an address *inside* an aggregate
 >
-> Wave 189 found `int (*table)(int *) = helper;` lowering to `GlobalInit::Zero` — a global
-> function pointer that **compared equal to null**, and a call through it a null call. It is
-> the exact failure `GlobalInit::Addr`'s own doc comment records for data addresses, in the
-> case that comment does not cover, and it survived because nothing tested a global function
-> pointer at all.
+> Wave 190 closed the one-address forms. What remains is the shape `GlobalInit` cannot
+> express at all:
 >
-> That fall-through is still there for everything `encode_init` cannot encode, and it is
-> silent by construction: `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct,
-> so the same value means two different things and only one of them is a bug. Worth an
-> audit rather than a guess — enumerate the initializer forms C allows at file scope
-> (compound literals, nested aggregates with addresses inside, `&arr[k]` past the first
-> element, string literals in a struct) and check which reach `Zero`. **A test that a
-> pointer-typed global is non-null unless the program wrote `0`** would catch the whole
-> class at once, and is cheaper than enumerating.
+> ```text
+>   struct S { int *p; int n; };  struct S s = { &g, 3 };   -> ZERO
+>   int *arr[2] = { &g, &h };                               -> ZERO
+> ```
 >
-> ~~🔴 an internal function whose address escapes.~~ **Wave 189**: `address_escapes` checks
-> all three carriers — the `AddrOfFunc` instruction, a `Const::FuncAddr` operand (in a
-> `Use`, `Select`, `Store` value, call argument or indirect callee), and the new
-> `GlobalInit::FuncAddr`. A direct call is deliberately not an escape, which is what keeps
-> wave 188's suppression alive for the ordinary helper.
+> `Addr { g, off }` describes the **whole global** as one address, and `Bytes` cannot carry
+> provenance — 020 §3 says so and wave 189's comment repeats it. An aggregate mixing scalars
+> with addresses needs both in one initializer: bytes plus a list of (offset, target,
+> addend), which is exactly a relocation table and is the representation a linker uses for
+> the same reason.
+>
+> **This is the shape VPP is built out of** — a table of node function pointers, a struct of
+> callbacks — so it is worth the design change rather than another special case. Note before
+> starting: the engine's `global_object` writes an initializer into memory in one pass, and
+> a relocation list means writing bytes *then* patching addresses, so `address_term`'s
+> provenance recording has to happen per relocation rather than once.
+>
+> ~~🔴 what else did `GlobalInit` silently zero?~~ **Wave 190 surveyed it and fixed three
+> of five.** `(int *)&g`, `ga + 2` and `char *s = "hi"` are all one address and now lower to
+> one. The last is the one that mattered: a file-scope string pointer is in every C program,
+> and every one had `s == 0` answering *true*.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >

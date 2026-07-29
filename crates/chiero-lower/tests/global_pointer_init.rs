@@ -107,6 +107,13 @@ fn a_derived_pointer_global_lands_at_the_right_offset() {
         ("ga + 2", "int ga[4]; int *p = ga + 2;", 8),
         ("&ga[0] + 1", "int ga[4]; int *p = &ga[0] + 1;", 4),
         ("&ga[1] + 2", "int ga[4]; int *p = &ga[1] + 2;", 12),
+        // **Subtraction, and both directions of it.** Mutation found no fixture used `-`
+        // at all, so a version that added instead survived. `2 + ga` is the same address as
+        // `ga + 2` (C makes `+` commute); `2 - ga` is not an address and not even valid C,
+        // which is why only `+` may take its operands either way round.
+        ("&ga[3] - 1", "int ga[4]; int *p = &ga[3] - 1;", 8),
+        ("ga + 3 - 2", "int ga[4]; int *p = ga + 3 - 2;", 4),
+        ("2 + ga", "int ga[4]; int *p = 2 + ga;", 8),
     ] {
         let GlobalInit::Addr { off, .. } = init_of(src, "p") else {
             panic!("`{what}` did not lower to an address");
