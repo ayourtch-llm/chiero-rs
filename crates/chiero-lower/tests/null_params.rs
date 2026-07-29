@@ -141,3 +141,26 @@ fn the_valid_path_survives_beside_the_null_one() {
         "and the valid path dereferences and returns the loaded value: {returns:?}"
     );
 }
+
+/// **Every pointer parameter forks, not just the first.**
+///
+/// Also written because mutation said so: forking only `ptr_params[0]` passed everything
+/// above, since every fixture there takes exactly one pointer. A checked first parameter
+/// beside an unchecked second is the common shape in real code — the author guarded the one
+/// they were thinking about — and it is precisely the case a first-only fork cannot see.
+#[test]
+fn each_pointer_parameter_gets_its_own_null_state() {
+    let src = "int probe(int *p, int *q){ if (!p) return 0; return *q; }";
+    assert!(
+        nulls(src) >= 1,
+        "`q` is dereferenced unchecked even though `p` was guarded: {:?}",
+        findings(src)
+    );
+    // And the mirror, so this cannot pass by forking only the *last* one either.
+    let mirrored = "int probe(int *p, int *q){ if (!q) return 0; return *p; }";
+    assert!(
+        nulls(mirrored) >= 1,
+        "and with the roles swapped: {:?}",
+        findings(mirrored)
+    );
+}
