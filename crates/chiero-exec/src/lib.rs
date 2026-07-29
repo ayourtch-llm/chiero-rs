@@ -4307,9 +4307,28 @@ impl<'m> Engine<'m> {
                         Value::Scalar(a.sub(z, xv))
                     }
                     UnOp::Not => Value::Scalar(a.not(xv)),
-                    // 023 §7: floating point is approximated, and a negation chiero
-                    // cannot perform is a gap rather than a guess at the sign bit.
-                    UnOp::FNeg => return self.lowering_gap(s, span, "FNeg"),
+                    // **Floating negation flips the sign bit**, and for a concrete value
+                    // that is arithmetic rather than a guess. A symbolic float still has
+                    // no sort to constrain, so it stays a gap — the same line wave 167
+                    // drew for `bin`, applied to the operator it did not reach.
+                    //
+                    // Not `0.0 - x`: that is a *subtraction*, and it turns -0.0 into +0.0
+                    // and quiets a signalling NaN. Negation is defined on the sign bit
+                    // alone (IEEE-754 §5.5.1), which is what `f64::neg` does.
+                    UnOp::FNeg => match a.as_const(xv).and_then(|c| match c.width() {
+                        32 => Some((
+                            32u32,
+                            u128::from((-f32::from_bits(c.bits() as u32)).to_bits()),
+                        )),
+                        64 => Some((
+                            64u32,
+                            u128::from((-f64::from_bits(c.bits() as u64)).to_bits()),
+                        )),
+                        _ => None,
+                    }) {
+                        Some((w, bits)) => Value::Scalar(a.bv(w, bits)),
+                        None => return self.lowering_gap(s, span, "FNeg on a symbolic float"),
+                    },
                 }
             }
             // Integer casts only. A cast is in almost every C function, and getting the

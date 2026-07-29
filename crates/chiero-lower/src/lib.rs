@@ -107,65 +107,11 @@ fn lower(
     for &item in ast.items() {
         cx.item(item);
     }
-    refuse_floating(&mut cx.module, &mut cx.diagnostics);
+    refuse_float_compare(&mut cx.module, &mut cx.diagnostics);
     refuse_unverifiable(&mut cx.module, &mut cx.diagnostics);
     Lowered {
         module: cx.module,
         diagnostics: cx.diagnostics,
-    }
-}
-
-/// **015 §7 for floating point, which lowering does not implement.**
-///
-/// 023 §7 approximates floating point and 020 has `CTy::Float`, but nothing bridges them:
-/// a float literal lowers as an `Int(32)` operand, so `float f = 2.5f;` produces a store
-/// whose value and slot disagree. Most such functions are caught by `refuse_unverifiable`
-/// below — but not all. A `double` reaching a `_Bool` conversion produces CIR that
-/// *verifies* and then panics the solver with "extract out of range", and a panic is worse
-/// than any wrong answer: it takes the run and every other finding in it.
-///
-/// So a function that mentions a floating type at all is refused here, before the verifier
-/// runs and long before the engine sees it. **This is a capability statement, not a
-/// workaround**: floats do not work, they have never worked, and 015 §7's rule is that a
-/// construct lowering cannot represent is a diagnostic rather than a silent gamble. When
-/// float lowering is implemented this function is what gets deleted, and the tests that
-/// currently expect a refusal are the ones that will say so.
-fn refuse_floating(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
-    let is_float = |t: &CTy| matches!(t, CTy::Float(_));
-    let mut blamed: Vec<(chiero_cir::FuncId, Span)> = Vec::new();
-    for f in &module.funcs {
-        if !matches!(f.body, Body::Defined) {
-            continue;
-        }
-        let in_allocas = f.allocas.iter().any(|a| is_float(&a.ty));
-        let in_sig = is_float(&f.ret) || f.params.iter().any(|p| is_float(&p.ty));
-        // No type-walker on `Inst`, and writing one for a single caller would be a
-        // maintenance burden that silently misses a variant added later. The printed form
-        // names every type it carries, so matching on it cannot fall behind the enum.
-        let in_body = f.blocks.iter().flat_map(|b| b.insts.iter()).any(|i| {
-            let t = format!("{:?}", i.kind);
-            t.contains("Float(")
-        });
-        if in_allocas || in_sig || in_body {
-            blamed.push((f.id, f.span));
-        }
-    }
-    for (id, span) in blamed {
-        let Some(f) = module.funcs.iter_mut().find(|f| f.id == id) else {
-            continue;
-        };
-        let name = f.name.clone();
-        f.blocks.clear();
-        f.allocas.clear();
-        f.access_paths.clear();
-        f.body = Body::Declared;
-        diagnostics.push(LowerDiagnostic {
-            span,
-            message: format!(
-                "`{}` uses floating point, which lowering does not implement",
-                &*name
-            ),
-        });
     }
 }
 
@@ -189,6 +135,54 @@ fn refuse_floating(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerD
 ///
 /// **Errors only.** `verify` also reports warnings, and refusing a function over one would
 /// turn advice into a capability loss.
+/// **Refuse the float operations the engine still cannot perform** (015 §7).
+///
+/// Wave 168 gave lowering float literals, arithmetic, negation, the conversions and float
+/// globals — everything the engine learned in wave 167. Two things it did not:
+///
+/// - a **comparison** between floats. `cmp` in the engine has no float arms, so `a < b`
+///   would produce no value.
+/// - a conversion to **`_Bool`**. C11 6.3.1.2 makes it "compares unequal to 0", which for a
+///   float is a *comparison* and not the truncation `FpToSi` performs — `(_Bool)0.5` is
+///   `true` and truncating gives `0`. That one is worth the refusal on its own: it is a
+///   wrong answer rather than a missing one, and the generator produced it within three
+///   seeds of floats being unblocked.
+///
+/// Structured exactly like the `refuse_floating` this replaces, and for the same stated
+/// reason: matching on the printed instruction cannot fall behind a variant added later,
+/// which a hand-written type walker would.
+fn refuse_float_compare(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
+    let mut blamed: Vec<(chiero_cir::FuncId, Span)> = Vec::new();
+    for f in &module.funcs {
+        if !matches!(f.body, Body::Defined) {
+            continue;
+        }
+        let bad = f.blocks.iter().flat_map(|b| b.insts.iter()).any(|i| {
+            let t = format!("{:?}", i.kind);
+            (t.contains("Cmp") && t.contains("Float("))
+                || (t.contains("Float(") && t.contains("Int(1)"))
+        });
+        if bad {
+            blamed.push((f.id, f.span));
+        }
+    }
+    for (id, span) in blamed {
+        let Some(f) = module.funcs.iter_mut().find(|f| f.id == id) else {
+            continue;
+        };
+        let name = f.name.clone();
+        f.blocks.clear();
+        f.body = Body::Declared;
+        diagnostics.push(LowerDiagnostic {
+            span,
+            message: format!(
+                "`{name}` compares floating values or converts one to `_Bool`, which \
+                 lowering does not implement yet"
+            ),
+        });
+    }
+}
+
 fn refuse_unverifiable(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
     let mut blamed: Vec<(chiero_cir::FuncId, String, Span)> = Vec::new();
     for e in chiero_cir::verify::verify(module) {
@@ -753,6 +747,32 @@ impl Lowerer<'_> {
 
     /// Write `e`'s encoding at `at` in `out`. **The layout is the only source of offsets**
     /// (015 c7), so struct padding falls out rather than being computed a second way.
+    /// A floating constant expression's kind and value.
+    ///
+    /// Only a literal, possibly negated. That is what a static initializer is allowed to be
+    /// beyond constant folding chiero does not do, and answering `None` for anything else
+    /// keeps the caller's `Zero` fallback from turning an expression it cannot read into a
+    /// silent zero — the failure this function was added to stop.
+    fn float_const(&mut self, e: ExprId) -> Option<(chiero_cir::FloatKind, f64)> {
+        match self.ast.expr(e).kind.clone() {
+            chiero_ast::ExprKind::Number(sym) => {
+                let text = self.names.text(sym)?;
+                chiero_sema::float_literal(text).map(|(k, v)| (cir_float_kind(k), v))
+            }
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::Minus,
+                operand,
+            } => self.float_const(operand).map(|(k, v)| (k, -v)),
+            // A cast of a literal, which is how `(float)1.5` and `1.5f` both reach here.
+            chiero_ast::ExprKind::Cast { operand, .. } => {
+                let (_, v) = self.float_const(operand)?;
+                let k = self.float_kind(e)?;
+                Some((k, v))
+            }
+            _ => None,
+        }
+    }
+
     fn encode_into(&mut self, e: ExprId, ty: TyId, at: u64, out: &mut [u8]) -> Option<()> {
         match self.analysis.ty(ty).clone() {
             Ty::Array { elem, len } => {
@@ -850,6 +870,26 @@ impl Lowerer<'_> {
                         }
                         None => self.encode_into(it.value, f.ty, at + f.offset, out)?,
                     }
+                }
+                Some(())
+            }
+            // **A floating initializer is its bit pattern.** `const_of` answers about
+            // *integer* constant expressions, so `double g = 2.0;` came back `None` — and
+            // the caller reads `None` as `GlobalInit::Zero`, so the global was silently
+            // zero rather than refused. The generator caught it as a value mismatch the
+            // moment floats stopped being refused outright: 37 programs, all reading a
+            // float global as 0.
+            Ty::Float(k) => {
+                let (kind, val) = self.float_const(e)?;
+                let bits = float_bits(kind, val);
+                let sz = self.analysis.size_of(ty)?.min(8);
+                let _ = k;
+                for i in 0..sz {
+                    let o = at as usize + i as usize;
+                    if o >= out.len() {
+                        break;
+                    }
+                    out[o] = ((bits >> (8 * i)) & 0xff) as u8;
                 }
                 Some(())
             }
@@ -1897,6 +1937,17 @@ impl Lowerer<'_> {
                 let mut diags = Vec::new();
                 let v = chiero_sema::const_eval(self.ast, e, self.names, self.target(), &mut diags);
                 let bits = self.raw_width_of(e);
+                // **A floating literal is a float constant, not a zero.** The catch-all
+                // below builds `Const::Int { val: 0 }`, which for a float-typed literal is
+                // both the wrong value and the wrong type — the verifier rejects the store
+                // it feeds, which is how wave 168 found this rather than by getting 0.
+                if let Some(CTy::Float(k)) = self.type_of(e).map(|t| self.cty(t))
+                    && let chiero_ast::ExprKind::Number(sym) = self.ast.expr(e).kind
+                    && let Some(text) = self.names.text(sym)
+                    && let Some((_, val)) = chiero_sema::float_literal(text)
+                {
+                    return Operand::Const(Const::Float(k, float_bits(k, val)));
+                }
                 match v {
                     Some(chiero_sema::ConstVal::Int(n)) => {
                         Operand::Const(Const::Int { bits, val: n })
@@ -2213,14 +2264,20 @@ impl Lowerer<'_> {
                         } else {
                             b
                         };
+                        let bin_ty = self.compare_ty(*lhs);
                         self.emit(
                             InstKind::Assign {
                                 dst,
                                 rv: RValue::Bin {
-                                    op: cir_binop(*op, self.is_signed(*lhs)),
+                                    op: cir_binop(*op, self.is_signed(*lhs), self.is_float(*lhs)),
                                     a,
                                     b,
-                                    ty: CTy::Int(w),
+                                    // **The operands' type, not their width as an int.**
+                                    // `CTy::Int(w)` is right for every integer operation
+                                    // and names the wrong type for a float one — the
+                                    // verifier rejects `FAdd` whose declared type is
+                                    // `Int(32)` while its operands are `Float(F32)`.
+                                    ty: bin_ty,
                                 },
                             },
                             span,
@@ -2258,14 +2315,26 @@ impl Lowerer<'_> {
             ),
             chiero_ast::ExprKind::Unary { op, operand } => {
                 let a = self.expr(*operand);
-                let ty = CTy::Int(self.raw_width_of(e));
+                // The operand's own type: `-2.5` is `FNeg` on a `Float`, and naming it
+                // `Int(32)` gives the verifier an instruction that contradicts itself.
+                let ty = match self.float_kind(e) {
+                    Some(k) => CTy::Float(k),
+                    None => CTy::Int(self.raw_width_of(e)),
+                };
                 let dst = self.new_value();
                 // `!x` is `x == 0`, which CIR expresses as a comparison rather than a
                 // unary op — it has no logical-not, because the result is an `int` and a
                 // dedicated op would need its own width rule.
                 let rv = match op {
                     chiero_ast::UnOp::Minus => RValue::Un {
-                        op: CUnOp::Neg,
+                        // Floating negation flips the sign bit; integer negation is a
+                        // two's-complement subtraction. They are different instructions
+                        // and CIR names both.
+                        op: if matches!(ty, CTy::Float(_)) {
+                            CUnOp::FNeg
+                        } else {
+                            CUnOp::Neg
+                        },
                         a,
                         ty,
                     },
@@ -2693,8 +2762,20 @@ impl Lowerer<'_> {
     fn compare_ty(&mut self, e: ExprId) -> CTy {
         if self.is_address(e) {
             CTy::Ptr
+        } else if let Some(k) = self.float_kind(e) {
+            // A float operand's type is its own; naming it `Int(w)` gives the verifier an
+            // instruction whose declared type contradicts its operands.
+            CTy::Float(k)
         } else {
             CTy::Int(self.width_of(e))
+        }
+    }
+
+    /// `e`'s floating kind, when it has one.
+    fn float_kind(&self, e: ExprId) -> Option<chiero_cir::FloatKind> {
+        match self.type_of(e).map(|t| self.cty(t)) {
+            Some(CTy::Float(k)) => Some(k),
+            _ => None,
         }
     }
 
@@ -2894,7 +2975,7 @@ impl Lowerer<'_> {
                         InstKind::Assign {
                             dst,
                             rv: RValue::Bin {
-                                op: cir_binop(binop, signed),
+                                op: cir_binop(binop, signed, self.is_float(lhs)),
                                 a: old,
                                 b: r,
                                 ty: unit.clone(),
@@ -3074,7 +3155,7 @@ impl Lowerer<'_> {
                         InstKind::Assign {
                             dst,
                             rv: RValue::Bin {
-                                op: cir_binop(binop, self.is_signed(lhs)),
+                                op: cir_binop(binop, self.is_signed(lhs), self.is_float(lhs)),
                                 a: Operand::Value(old),
                                 b: r,
                                 ty: width.clone(),
@@ -3294,16 +3375,31 @@ impl Lowerer<'_> {
             }
         } else {
             let new = self.new_value();
+            // **`++` on a float is `+ 1.0`, not `+ 1`.** C11 6.5.2.4p1 says the operand is
+            // incremented by 1 "of the appropriate type", and for a float that is a float
+            // one — an integer literal here makes `Add` disagree with its own declared
+            // type, which the verifier catches and which the generator found on its first
+            // run over float programs.
+            let (op, one) = match &ty {
+                CTy::Float(k) => (
+                    if up { CBinOp::FAdd } else { CBinOp::FSub },
+                    Operand::Const(Const::Float(*k, float_bits(*k, 1.0))),
+                ),
+                _ => (
+                    if up { CBinOp::Add } else { CBinOp::Sub },
+                    Operand::Const(Const::Int {
+                        bits: width,
+                        val: 1,
+                    }),
+                ),
+            };
             self.emit(
                 InstKind::Assign {
                     dst: new,
                     rv: RValue::Bin {
-                        op: if up { CBinOp::Add } else { CBinOp::Sub },
+                        op,
                         a: Operand::Value(old),
-                        b: Operand::Const(Const::Int {
-                            bits: width,
-                            val: 1,
-                        }),
+                        b: one,
                         ty: ty.clone(),
                     },
                 },
@@ -3502,6 +3598,12 @@ impl Lowerer<'_> {
     /// it has no size, so a `CopyMem` of it is meaningless and the callers that ask
     /// "should this move by copy" must answer no. `is_address_only` is the predicate for
     /// "names its address", and that one includes it.
+    /// Whether `e`'s type is a floating one, which decides the opcode set.
+    fn is_float(&self, e: ExprId) -> bool {
+        self.type_of(e)
+            .is_some_and(|t| matches!(self.analysis.ty(t), Ty::Float(_)))
+    }
+
     fn is_aggregate(&self, t: TyId) -> bool {
         matches!(
             self.analysis.ty(t),
@@ -4181,8 +4283,56 @@ fn stmt_name(k: &StmtKind) -> &'static str {
 /// `SDiv` and `UDiv`; picking the wrong one is a wrong answer for exactly half the inputs
 /// and no width check notices. The typed AST is the source, since 014 already resolved
 /// the usual arithmetic conversions.
-fn cir_binop(op: chiero_ast::BinOp, signed: bool) -> CBinOp {
+/// A floating value's bits at its own width.
+///
+/// `f64` is the parser's output and the wider of the two, so narrowing to `f32` happens
+/// here and only here. The 80-bit form has no Rust primitive: its bits are the `f64`
+/// pattern, which is wrong in the last places, and every operation on it is a declared gap
+/// — recorded so the narrowing is not mistaken for support.
+/// A float kind's width in bits.
+/// sema's `FloatKind` as CIR's. The two enums are the same three cases in two crates.
+fn cir_float_kind(k: chiero_sema::FloatKind) -> chiero_cir::FloatKind {
+    match k {
+        chiero_sema::FloatKind::F32 => chiero_cir::FloatKind::F32,
+        chiero_sema::FloatKind::F64 => chiero_cir::FloatKind::F64,
+        _ => chiero_cir::FloatKind::X87_80,
+    }
+}
+
+fn float_width(k: chiero_cir::FloatKind) -> u32 {
+    match k {
+        chiero_cir::FloatKind::F32 => 32,
+        chiero_cir::FloatKind::F64 => 64,
+        chiero_cir::FloatKind::X87_80 => 80,
+    }
+}
+
+fn float_bits(k: chiero_cir::FloatKind, v: f64) -> u64 {
+    match k {
+        chiero_cir::FloatKind::F32 => u64::from((v as f32).to_bits()),
+        chiero_cir::FloatKind::F64 | chiero_cir::FloatKind::X87_80 => v.to_bits(),
+    }
+}
+
+fn cir_binop(op: chiero_ast::BinOp, signed: bool, float: bool) -> CBinOp {
     use chiero_ast::BinOp as A;
+    if float {
+        // **Floating arithmetic is its own opcode set**, not the integer one applied to the
+        // bits. `Add` on two IEEE-754 patterns is a number, and a wrong one — which a
+        // lowering golden would have to assert in order to notice, and which gcc catches
+        // in one line.
+        return match op {
+            A::Add => CBinOp::FAdd,
+            A::Sub => CBinOp::FSub,
+            A::Mul => CBinOp::FMul,
+            A::Div => CBinOp::FDiv,
+            A::Rem => CBinOp::FRem,
+            // Bitwise and shift operators do not apply to floats in C, so anything else
+            // here is a program the front end should already have rejected; falling
+            // through to the integer table keeps this total without inventing a meaning.
+            _ => cir_binop(op, signed, false),
+        };
+    }
     match op {
         A::Add => CBinOp::Add,
         A::Sub => CBinOp::Sub,
@@ -4790,7 +4940,81 @@ impl Lowerer<'_> {
     /// Only widths and signedness — the caller has already decided *what* is being stored.
     /// Conversion to `_Bool` is `!= 0` rather than a truncation (C11 6.3.1.2), the same
     /// rule waves 133 and 139 needed at the cast and read-modify-write sites.
+    /// Emit one conversion instruction and yield its result.
+    fn emit_fcast(
+        &mut self,
+        v: Operand,
+        kind: chiero_cir::CastKind,
+        from: CTy,
+        to: CTy,
+        span: Span,
+    ) -> Operand {
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Cast {
+                    kind,
+                    a: v,
+                    from,
+                    to,
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
+    /// Whether an integer `CTy` should be read as signed.
+    ///
+    /// **A `CTy::Int` carries no signedness** — 020 keeps it in the operations rather than
+    /// the type — so the destination of a float-to-integer conversion cannot say on its own
+    /// whether it wants `FpToSi` or `FpToUi`. Signed is the answer for every `int`, `long`
+    /// and `char` a program converts to, and the unsigned case arrives with its own cast
+    /// expression whose type sema records; treating the store target as signed is therefore
+    /// right for the common path and wrong only where an explicit `(unsigned)` already sits
+    /// between the two. Recorded rather than guessed at silently.
+    fn target_signed(&self, _to: &CTy) -> bool {
+        true
+    }
+
     fn convert_for_store(&mut self, v: Operand, from: ExprId, to: &CTy, span: Span) -> Operand {
+        // **The four combinations, because a conversion is decided by both types.** This
+        // read `let CTy::Int(want) = *to else { return v }`, which is right for the integer
+        // half of C and silently emits nothing for the other three — so `double d = 7;`
+        // stored an `i32` into an `f64` slot and the verifier rejected the function.
+        let have_ty = self.type_of(from).map(|t| self.cty(t));
+        if let (Some(CTy::Float(fk)), CTy::Float(tk)) = (have_ty.clone(), to.clone()) {
+            // Equal widths need no instruction at all, which is 015's rule that a no-op
+            // cast is not emitted rather than emitted and folded.
+            let kind = match float_width(fk).cmp(&float_width(tk)) {
+                std::cmp::Ordering::Greater => chiero_cir::CastKind::FpTrunc,
+                std::cmp::Ordering::Less => chiero_cir::CastKind::FpExt,
+                std::cmp::Ordering::Equal => return v,
+            };
+            return self.emit_fcast(v, kind, CTy::Float(fk), CTy::Float(tk), span);
+        }
+        if let CTy::Float(tk) = to.clone() {
+            // Integer to float. The *source's* signedness decides which conversion, since
+            // it is what says whether the top bit is a sign or a magnitude.
+            let have = self.width_of(from);
+            let kind = if self.is_signed(from) {
+                chiero_cir::CastKind::SiToFp
+            } else {
+                chiero_cir::CastKind::UiToFp
+            };
+            return self.emit_fcast(v, kind, CTy::Int(have), CTy::Float(tk), span);
+        }
+        if let (Some(CTy::Float(fk)), CTy::Int(want)) = (have_ty, to.clone()) {
+            // Float to integer. The *target's* signedness decides, and C11 6.3.1.4 makes
+            // it a truncation toward zero rather than a rounding.
+            let kind = if matches!(to, CTy::Int(_)) && self.target_signed(to) {
+                chiero_cir::CastKind::FpToSi
+            } else {
+                chiero_cir::CastKind::FpToUi
+            };
+            return self.emit_fcast(v, kind, CTy::Float(fk), CTy::Int(want), span);
+        }
         let CTy::Int(want) = *to else { return v };
         let have = self.width_of(from);
         if have == want {

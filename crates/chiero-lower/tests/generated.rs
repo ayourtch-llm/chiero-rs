@@ -1322,12 +1322,14 @@ fn same_class(a: &Verdict, b: &Verdict) -> bool {
 /// operand types that vary per program while the *reason* does not.
 const KNOWN_GAPS: &[(&str, &str)] = &[
     (
-        "uses floating point",
-        "023 §7 approximates floating point and 020 has `CTy::Float`, but nothing bridges \
-         them — a float literal lowers as an `Int(32)` operand. `refuse_floating` declares \
-         that rather than emitting CIR that sometimes verifies and then panics the solver. \
-         Deleting that function is what implementing floats looks like, and this entry is \
-         what will fail when it happens.",
+        "compares floating values or converts one to `_Bool`",
+        "**this entry replaced `uses floating point` in wave 168**, which is what the old \
+         one predicted would happen: floats now lower and run, and what is left is the two \
+         operations the engine has no arms for. A float *comparison* would produce no \
+         value, and `(_Bool)f` is worse than missing — C11 6.3.1.2 makes it \
+         \"compares unequal to 0\", so truncating with `FpToSi` answers 0 for 0.5, which is \
+         a wrong answer rather than an absent one. Refusing is 015 §7's rule; the fix is \
+         float arms in the engine's `cmp`, and this entry is what will fail when they land.",
     ),
     (
         "Unknown",

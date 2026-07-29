@@ -1768,6 +1768,41 @@ fn align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
 /// represent the value. A decimal literal without a suffix never becomes unsigned; a hex
 /// or octal one may, which is why `0xffffffff` is `unsigned int` and `4294967295` is
 /// `long`.
+/// A **floating literal**: its type from the suffix, and its value.
+///
+/// One decoder, exported, for the reason waves 151 and 152 established: sema picks the
+/// literal's type and lowering needs its bits, and two readings of one spelling are free to
+/// disagree. `FloatKind` comes from the suffix (C11 6.4.4.2 — `f`/`F` is `float`, `l`/`L`
+/// is `long double`, otherwise `double`), and the value from Rust's `f64` parser, which
+/// accepts the same decimal and hexadecimal forms C does.
+///
+/// `None` for anything that is not a floating literal, which is how the caller tells this
+/// from an integer one without parsing twice.
+pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
+    let t = text.replace('\'', ""); // C23 digit separators
+    let lower = t.to_ascii_lowercase();
+    // A hexadecimal *integer* is not a float, and `0x1p3` is. The exponent marker is `p`
+    // for hex and `e` for decimal, so the presence of a dot or the right marker decides.
+    let hex = lower.starts_with("0x");
+    let looks_float = t.contains('.')
+        || (hex && lower.contains('p'))
+        || (!hex && lower.contains('e') && !lower.starts_with("0b"));
+    let kind = if lower.ends_with('f') {
+        FloatKind::F32
+    } else if lower.ends_with('l') {
+        // x87 long double. Its *value* is parsed at f64 and the extra range is lost, which
+        // is a narrowing this records rather than hides; arithmetic on it is a gap anyway.
+        FloatKind::X87_80
+    } else {
+        FloatKind::F64
+    };
+    if !looks_float && !(lower.ends_with('f') && !hex) {
+        return None;
+    }
+    let digits = t.trim_end_matches(['f', 'F', 'l', 'L']);
+    digits.parse::<f64>().ok().map(|v| (kind, v))
+}
+
 fn parse_int_literal(text: &str, target: &TargetConfig) -> Option<IntVal> {
     let lower = text.to_ascii_lowercase();
     let unsigned_suffix = lower.contains('u');
@@ -1876,13 +1911,10 @@ impl Cx<'_> {
                         signed: v.signed,
                         bits: v.bits,
                     }),
-                    // A floating literal; 014 §2's `FloatKind` from the suffix.
+                    // A floating literal; 014 §2's `FloatKind` from the suffix, read by
+                    // the same decoder lowering uses for the value.
                     None => {
-                        let k = if text.ends_with('f') || text.ends_with('F') {
-                            FloatKind::F32
-                        } else {
-                            FloatKind::F64
-                        };
+                        let k = float_literal(&text).map_or(FloatKind::F64, |(k, _)| k);
                         self.intern(Ty::Float(k))
                     }
                 };
