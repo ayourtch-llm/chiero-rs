@@ -1761,3 +1761,136 @@ fn zz_census() {
         println!("{seen:4} / {got:<4}  {k}");
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The memory-UB oracle
+// ---------------------------------------------------------------------------------------
+//
+// **Nothing grades chiero's memory-UB detection, and memory UB is what it is for.**
+//
+// `-fsanitize=address` has been in this file's compile line since wave 139 and has never
+// once fired. Not because chiero is bad at out-of-bounds accesses — it detects them, with a
+// finding naming the object, the offset and the size — but because the grammar cannot
+// produce one. `Gen::arrays` carries each array's length precisely so every index is in
+// range by construction, and that field's own comment says why: an out-of-bounds read is
+// UB, so `judge` would discard the program rather than compare it, and a discarded program
+// teaches the value-differential nothing.
+//
+// That reasoning is right for the *differential* channel and wrong as a global policy.
+// Wave 175 built a second channel — `zz_census` — whose whole subject is programs gcc calls
+// undefined, and there a discarded program is the only interesting kind. Every UB class the
+// census can see today is arithmetic, because arithmetic is all this grammar knows how to
+// get wrong.
+//
+// The gap that leaves is not small. Out-of-bounds access and use-after-free are the defects
+// chiero exists to find in VPP; 023 §9's witness requirement, 021's pointer machinery and
+// the whole of `chiero-mem` are built for them, and none of it is graded against an oracle.
+
+/// What AddressSanitizer says about a program, and what chiero says.
+#[derive(Debug, Default)]
+struct Tally {
+    /// Programs ASan flagged.
+    flagged: usize,
+    /// Of those, ones chiero also reported a memory finding for.
+    caught: usize,
+    /// Seeds ASan flagged and chiero did not, kept for the failure message.
+    missed: Vec<u64>,
+    /// Programs that reached the comparison at all.
+    compared: usize,
+}
+
+/// Does this finding say the program touched memory it does not own?
+///
+/// Matched on the finding's rendered text rather than on a kind, because out-of-bounds is
+/// reported through the checker framework's `Finding` and not as a `UbKind` — the two
+/// mechanisms are 023 §6's report and 020 §4.1's event, and only arithmetic uses the
+/// latter.
+fn is_memory_finding(s: &str) -> bool {
+    s.contains("out-of-bounds") || s.contains("use-after") || s.contains("null-dereference")
+}
+
+fn tally(seeds: std::ops::Range<u64>) -> Tally {
+    let dir = std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()))
+        .join("chiero-memub");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut t = Tally::default();
+    for seed in seeds {
+        let (prelude, body) = program(seed);
+        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
+        let csrc = format!(
+            "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
+        );
+        let c = dir.join(format!("s{seed}.c"));
+        let x = dir.join(format!("s{seed}"));
+        if std::fs::write(&c, &csrc).is_err() {
+            continue;
+        }
+        let compiled = std::process::Command::new("gcc")
+            .args(["-O0", "-fsanitize=address,undefined", "-o"])
+            .arg(&x)
+            .arg(&c)
+            .output();
+        match compiled {
+            Ok(o) if o.status.success() => {}
+            // No gcc, or a program it will not build: not this test's subject.
+            _ => continue,
+        }
+        let Ok(run) = std::process::Command::new(&x).output() else {
+            continue;
+        };
+        let err = String::from_utf8_lossy(&run.stderr).to_string();
+        let Some(m) = harness::lower_maybe(&src) else {
+            continue;
+        };
+        t.compared += 1;
+        // **`AddressSanitizer` and not the UBSan text.** The two sanitizers are both on and
+        // report differently; only ASan's classes are this file's subject, and matching on
+        // "runtime error" would count arithmetic the census already grades.
+        if !err.contains("AddressSanitizer") {
+            continue;
+        }
+        t.flagged += 1;
+        let mut arena = chiero_solver::TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let found = r
+            .findings()
+            .iter()
+            .any(|f| is_memory_finding(&format!("{f:?}")));
+        if found {
+            t.caught += 1;
+        } else {
+            t.missed.push(seed);
+        }
+    }
+    t
+}
+
+/// The corpus must contain memory UB, and chiero must find all of it.
+///
+/// Both halves in one test on purpose. Split, the first would read as a statement about the
+/// generator and get "fixed" by lowering its threshold; together they say the only thing
+/// worth asserting, which is that a real oracle graded a real corpus and chiero passed.
+#[test]
+fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
+    let t = tally(0..60);
+    assert!(
+        t.compared > 0,
+        "no generated program reached the comparison; gcc missing or the corpus is empty"
+    );
+    assert!(
+        t.flagged > 0,
+        "AddressSanitizer flagged none of {} programs, so nothing here grades chiero's \
+         memory-UB detection — the grammar indexes every array in range by construction",
+        t.compared
+    );
+    assert!(
+        t.missed.is_empty(),
+        "ASan flagged {} of {} programs and chiero missed {} of them: seeds {:?}",
+        t.flagged,
+        t.compared,
+        t.missed.len(),
+        &t.missed[..t.missed.len().min(8)]
+    );
+}
