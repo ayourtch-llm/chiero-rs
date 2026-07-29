@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 174) — 1220 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 175) — 1226 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -522,7 +522,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > operands; 171 closed a hole in the generator's UB filter; 172 made a float-cast overflow a
 > finding; 173 censused the UB gap and found where it cannot be closed;
 > 174 gave CIR the signedness C's UB rules turn on, closing a false report and two
-> missing ones**.*
+> missing ones; 175 found a widening conversion was hiding constants from the whole
+> engine, and three census rows closed at once**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -668,27 +669,60 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: UB checking is concrete-only, and that is now the whole gap
+> ### 🔴 Do this first: chiero and gcc compute a different `double` on seed 117
 >
-> `note_ub` returns early unless **both operands fold to constants**. Every UB check the
-> engine has — signed overflow, all three shift rules — therefore never runs on a program
-> that computes on its inputs, which is every generated program and every real one. That
-> single line is what `zz_census` measures as `0 / 18` on signed integer overflow while a
-> hand-built `INT_MAX + 1` reports every time.
+> The census gained a **false-positive column** in wave 175 — programs where chiero reports
+> UB and gcc runs clean — because the census proper counts only rows where gcc said
+> something, and is blind by construction to the expensive kind of wrong. One case in 236:
 >
-> **The machinery is already written and already used for this exact shape.** Wave 156's
-> `symbolic_div_by_zero` asks the solver whether a divisor *can* be zero on this path and
-> takes the three answers as three outcomes: `Sat` records the event with the witness that
-> proves it, `Unsat` reports nothing and degrades nothing, `Unknown` degrades fidelity
-> because 020 §5 says a gap is a diagnostic and not a licence. Signed overflow is the same
-> question with a different predicate — *can this sum leave the range?* — and so is each
-> shift rule.
+> ```text
+>    1 / 0     ZZ FALSE POSITIVE (gcc silent)     <- FloatCastOverflow, seed 117
+> ```
 >
-> Do that for `Add`/`Sub`/`Mul` and for `Shl`, keeping the signedness wave 174 added as the
-> guard on which predicate to ask. Expect the census rows to close together, since they
-> share the one cause. Expect also to need 023 §9's witness on each: a report saying
-> "this multiplication can overflow" without the input that makes it is the non-reproducible
-> bug report 023 forbids.
+> **It is not a checker false positive.** gcc does report `(unsigned char)1e20`, measured
+> directly:
+>
+> ```text
+>   runtime error: 1e+20 is outside the range of representable values of type 'unsigned char'
+> ```
+>
+> So gcc was silent on seed 117 because *its* `v4` was in range, and chiero's was not — the
+> two disagree on a `double`, and the cast check is the messenger. Seed 117's `v4` is built
+> by `(double)h0(...)` over a struct, then `+=`, then a `?:` chain mixing `(double)(short)`
+> and a pointer-indexed divide. Reduce it before theorising.
+>
+> **Why the differential channel did not catch it**: unknown, and worth answering first. If
+> the returned value agrees while an intermediate `double` does not, the oracle compares too
+> little; if seed 117 is outside the compared range, the census is reaching further than the
+> differential and that is a reason to widen the differential.
+>
+> ### 🔴 Then: the two census rows still open
+>
+> ```text
+>    7 / 22   left shift of N by M places cannot be represented
+>    8 / 12   outside the range of representable values
+> ```
+>
+> Both were unmoved by wave 175, so neither is the constant-folding cause. `cannot be
+> represented` is the widest remaining gap and the pattern is loose — it may be matching gcc
+> messages other than the left-shift one, which is the first thing to check rather than the
+> last.
+>
+> ### 🔴 Still owed: symbolic UB checking
+>
+> Wave 174 planned this and wave 175 did **not** do it, deliberately. The premise was that
+> census row 1 was symbolic operands; probing first showed that was false — the generated
+> programs are closed, run at `fidelity Exact`, and every value in them is concrete — and
+> the real cause was `sext` not folding. Building the solver path would have been work done
+> on a wrong diagnosis.
+>
+> It stays owed for the case that genuinely needs it: a program with **real inputs**, where
+> `x + y` can overflow for some `x` and not others. The machinery is wave 156's
+> `symbolic_div_by_zero` — ask the solver, take `Sat`/`Unsat`/`Unknown` as three outcomes,
+> keep the term for 023 §9's witness. Note the open design question before starting: with
+> unconstrained inputs *every* `x + y` can overflow, so `Sat` alone would report on every
+> arithmetic instruction in the program. Decide what makes a report worth making — path
+> *forces* overflow, versus path *admits* it — before writing the query.
 >
 > Everything else on the open-defect list is empty. What remains besides the above is
 > tooling and one deliberate deferral:
@@ -833,20 +867,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   So the fix is a new `UbKind` plus a concrete check in `note_ub` (the operand is a folded
 >   float there, so it needs no solver query), and the checker picks it up for free.
 > - **The UB census** — what `-fsanitize=undefined,address,float-cast-overflow` reports
->   against what chiero records, over 300 generated programs. It now lives in the tree as
->   `zz_census` in `generated.rs` (`#[ignore]`d, ~30s):
+>   against what chiero records, over 300 generated programs. `zz_census` in
+>   `generated.rs` (`#[ignore]`d, ~35s):
 >   ```text
->     wave 173        wave 174     (samples differ; the shape is what matters)
->     seen / chiero   seen / chiero
->       14 / 0          18 / 0     signed integer overflow
->        8 / 0          10 / 5     left shift of negative
->        5 / 1          22 / 6     left shift of N by M cannot be represented
->        2 / 0           2 / 0     shift exponent
->       11 / 7          12 / 8     outside the range of representable values
+>     w173     w174     w175
+>     14 / 0   18 / 0   18 / 18   signed integer overflow
+>      8 / 0   10 / 5   10 / 10   left shift of negative
+>      2 / 0    2 / 0    2 / 2    shift exponent
+>      5 / 1   22 / 6    7 / 22   left shift of N by M cannot be represented
+>     11 / 7   12 / 8    8 / 12   outside the range of representable values
+>              (w173 sampled differently; read w174 -> w175 for the deltas)
 >   ```
->   The measure is deliberately loose — "gcc printed it *and* chiero recorded a matching
->   kind somewhere in the run", no span or operand matching — so it over-credits. A row
->   reading `0` is a real gap; a row reading `n / n` would not be proof of agreement.
+>   Three rows at parity. The measure is deliberately loose — "gcc printed it *and* chiero
+>   recorded a matching kind somewhere in the run", no span or operand matching — so it
+>   over-credits. A row reading `0` is a real gap; a row reading `n / n` is not proof of
+>   agreement.
+> - **The census has a false-positive column**, added in wave 175 and permanent. The table
+>   above counts only rows where gcc said something, so a chiero report on a program gcc
+>   runs clean can never appear in it — and wave 171's rule makes that the expensive kind of
+>   wrong. Measuring it was a precondition for shipping a change that makes many more checks
+>   actually run. **1 in 236**, and it is a real defect rather than a checker artifact — see
+>   "do this first" above.
 > - ~~**🔴 020 decision needed: `Shl` carries no signedness.**~~ **Decided and done in wave
 >   174**, and it was broader than `Shl`. `RValue::Bin` now carries `signed: bool` and
 >   `note_ub` reads it. The bit rides on the *instruction*, as LLVM's `nsw` does, rather
@@ -978,6 +1019,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Probe the diagnosis, not just the owed list** (wave 175). Wave 174 wrote down a cause
+> for census row 1 — symbolic operands — and it was wrong; the generated programs are
+> closed and run at `fidelity Exact` with every value concrete. Reproducing before building
+> cost one probe and replaced a milestone of solver work with a four-line fix. §9's existing
+> rule was "probe the owed list before picking from it"; this extends it to the *explanation*
+> written beside an item, which reads as settled fact one wave later and is not.
+>
+> **When a constructor family folds constants, the one that doesn't is a silent hole**
+> (wave 175). `bin`, `not` and `extract` all folded; `sext` and `zext` did not, and nothing
+> looked wrong because folding is an optimisation everywhere except where `as_const` is
+> load-bearing. It is load-bearing in `note_ub`, which asks "do I know both operands?" and
+> quietly does nothing when the answer is no. Look for the asymmetric member when a check
+> fires on one spelling of a computation and not an equivalent one.
+>
+> **A difference that is only a literal's suffix is the reduction you want** (wave 175).
+> `acc * 31L` reported and `acc * 31` did not. Two programs identical but for a suffix
+> cannot differ in their undefined behaviour, so the gap had to be in the machinery between
+> them — which is one `sext`. Reduce to the smallest *pair* that disagrees, not the smallest
+> program that fails.
 >
 > **A pin written to fail is worth more than the assertion it replaces** (wave 174). Wave
 > 173 could not implement two of C11 6.5.7p4's clauses, so it asserted they do *not* fire
