@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 191) — 1255 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 192) — 1258 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,32 +688,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 The `GlobalInit` class is closed. Do this first: re-run the null-pointer measurement
+> ### 🔴 Do this first: a symbolic index into a function table reports nothing
 >
-> Waves 189–191 fixed every form of the "address silently became `Zero`" defect: a function
-> address, a cast, pointer arithmetic, a string literal, and an address *inside* an
-> aggregate. `GlobalInit::Relocated { bytes, relocs }` holds the last, as bytes plus a
-> relocation table.
+> Wave 192 measured what waves 189–191 unlocked, and the VPP registration idiom now works
+> end to end — `tab[1]()`, `tab[i]()` with a concrete `i`, and a struct of callbacks beside a
+> string table all resolve at `fidelity Exact`. That shape was entirely unreachable four
+> waves ago, because the table read as null.
 >
-> **What nobody has re-measured is the effect on the null-dereference channel.** Wave 187
-> counted 3 of 3 pointer-taking functions in `tests/corpus/c` reporting a null dereference,
-> and wave 188 took that to 0 of 3 — both *before* these fixes. Since then a global function
-> pointer, a string pointer and a pointer inside a struct have all stopped reading as null,
-> and each of those was a place the engine previously believed it held a null. The number
-> may have moved in either direction, and the corpus is now the wrong sample anyway: it has
-> almost no global pointer tables.
+> The measurement also found the next gap. With a **symbolic** index:
 >
-> Mutation on wave 191: six die, including `engine-patches-before-bytes` — writing the
-> relocations before the bytes lets `write_bytewise` overwrite a term already placed, and the
-> pointer reads back as an integer with no object. `reloc-addend-dropped` survived until a
-> fixture existed whose pointer points *into* its target rather than at its start; two
-> entries with different addends in one table is what kills it.
+> ```text
+>   int probe(int i){ return tab[i](); }
+>       states=3  rets=[None, 11, 22]  fidelity=Unknown  findings=[]
+> ```
 >
-> Worth doing as a *widened* measurement rather than a repeat: add a corpus file shaped like
-> VPP's registration idiom — a `static` node function, a table of pointers to it, a string
-> table beside it — and check both what is reported and what is *reachable*. A table whose
-> entries now resolve means the engine can follow an indirect call it previously could not,
-> which is coverage this project has never had.
+> Two states call the two real entries, and the third is the out-of-range index — which
+> **reports nothing** and only degrades. An out-of-bounds *read* of an ordinary array is a
+> finding (wave 177 measured 6 classes of it), so a table indexed past its end should be one
+> too. Check whether this is the same defect as wave 192's null call in a different place —
+> a definite fault reported as an absence of information — or genuinely undecidable because
+> the index is unconstrained. **`if (i < 0 || i > 1)` already discharges it correctly**
+> (`fidelity=Exact`, 4 states), so the machinery to tell those apart is present.
+>
+> ~~🔴 re-run the null-pointer measurement.~~ **Wave 192**, and it found a defect rather than
+> a number: calling through a null function pointer reported nothing at all, while
+> dereferencing a null data pointer has been a finding for many waves.
+>
+> Mutation, with a correction to that commit's own claim. `null-callee-not-reported` and
+> `reports-every-indirect-call` both die, so the check and its narrowness are observed.
+> **`path-continues-past-the-null-call` survives**, and the commit message overstated the
+> `return`'s role: `report_faults` already terminates the state for a fatal fault, so the
+> `return` only avoids forking over every candidate function afterwards. It saves work, not
+> correctness — worth knowing before anyone "simplifies" the other direction and assumes the
+> `return` was the thing ending the path.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1073,6 +1080,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Fixing one class exposes the next, so measure after each** (wave 192). A null *call*
+> reported nothing for as long as chiero has existed, and it stayed hidden because the shapes
+> that reach it could not arise: a table of function pointers read as null before wave 191,
+> so `tab[i]()` never got as far as calling anything. The measurement §9 asked for was
+> supposed to produce a number and produced a defect instead.
+>
+> **A degraded run is the more misleading way to be wrong** (wave 192). "chiero could not
+> follow this" is 023 §7's honest answer for a modelling *limit*; used for a definite fault
+> at a definite place, it shows a reader scanning for findings a clean run. When adding a
+> `degrade`, ask whether the thing being degraded about is unknown or simply unreported.
 >
 > **Assert behaviour, not representation, when the representation is the thing you are
 > choosing** (wave 191). The RED ran each program and read what it computed, so
