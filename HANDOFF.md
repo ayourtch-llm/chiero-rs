@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 182) — 1233 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 183) — 1233 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,46 +673,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: nothing keeps the memory corpus *closed*, and `invented` depends on it
+> ### 🔴 The memory channel is closed. Do this first: the arithmetic census, per site
 >
-> The oracle's false-positive column is sound only because these programs take one path.
-> "chiero found a fault ASan did not" is a real question exactly while there is no other
-> path for the fault to live on. The memory grammar has no branch on an input today — but
-> nothing enforces that, and the ordinary grammar it sits beside is full of `if` and `for`.
-> The moment one appears in a `memory_ub` program, a correct finding on the untaken path
-> becomes an accusation against the engine, and it will look like a regression in chiero
-> rather than in the corpus.
+> Seven waves (177–183) built the memory-UB channel from nothing to six ASan classes,
+> balanced, located, ordered and guarded. It is the strongest oracle in the tree and there
+> is no cheap work left in it. The arithmetic census is now the weaker of the two, and its
+> two known softnesses are both measurement rather than engine:
 >
-> Two ways out, and the choice is worth making deliberately: assert the property (count the
-> engine's states and require 1, or 2 where a `malloc` fork explains it) or drop the
-> `invented` assertion to a *report* when a program has more than one path. The first keeps
-> the column sharp and constrains the grammar; the second keeps the grammar free and blunts
-> the column.
+> 1. **It counts per *run*, not per *site*.** A program with two overflows where chiero
+>    finds one scores as agreement. The memory oracle solved the same problem by comparing
+>    ASan's *first* fault and its *line*; the census has the same information available from
+>    gcc's diagnostics (`file:line:col`) and does not use it.
+> 2. **It matches on substrings.** Wave 176 already found one row double-counting another's
+>    programs because `cannot be represented` appears in two different gcc messages. The
+>    remaining patterns have not been audited the same way.
 >
-> ~~🔴 a program with two faults is still graded on one.~~ **Wave 182, and the premise was
-> wrong.** chiero reports the first fault and *stops*, by decision — `report_faults`: "the
-> path ends at a definite crash; everything after it would be about a program that does not
-> exist". C gives an execution no defined continuation past UB, so ASan's recover mode is
-> simulating a program the language does not describe. §9 also predicted the cost would be
-> recompiling once per fault; `-fsanitize-recover=address` with `halt_on_error=0` does it in
-> one run.
+> (1) is the same shape of work as waves 180–181 and should go faster for having been done
+> once.
 >
-> **`first_fault.rs` is what that wave produced**: the rule had no test, and it is exactly
-> the kind of behaviour a later reader mistakes for a limitation and "fixes".
->
-> Mutation settled a doubt worth recording. Grading ASan's *first* fault looks equivalent to
-> the old halting default — ASan named only one fault either way — so recover mode looked
-> like ceremony. It is not:
+> ~~🔴 nothing keeps the memory corpus closed.~~ **Wave 183 made it an assertion.** Measured
+> first: worst case 3 states over 60 programs, every one explained by a `malloc` fork.
+> Mutation proved the tripwire catches the real hazard rather than an arithmetic slip —
+> giving the corpus a branch on an unmodeled extern fires it:
 >
 > ```text
->   KILLED   path-continues-past-a-fatal-fault      <- the pin observes the engine's rule
->   KILLED   oracle-takes-asans-last-fault          <- "first" is load-bearing, not "any"
->   KILLED   oracle-accepts-any-fault-not-the-first
+>   KILLED (multipath fired)   corpus-gains-an-unknown-value   <- the hazard itself
+>   KILLED (multipath fired)   guard-ignores-malloc-forks      <- the malloc term is load-bearing
+>   SURVIVED                   guard-disabled                  <- expected: a held ratchet
 > ```
->
-> With the whole list in hand, accepting *any* fault present in the program now fails. Under
-> the halting default that mutant would have been unkillable, because there was only ever
-> one fault to accept.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1040,6 +1028,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An oracle's assumptions belong in its assertions** (wave 183). `invented` had always
+> depended on ASan's one concrete run visiting every path chiero explores. That was true,
+> undocumented, and unenforced — a property of the grammar that happened to hold. The cost of
+> it silently ceasing to hold is not a failing test but a *misdiagnosis*: a correct finding
+> on an untaken path, reported as a chiero false positive. When a channel's soundness rests
+> on a property of its corpus, assert the property, not just the result.
+>
+> **A failure message should name the decision, not the symptom** (wave 183). The tripwire
+> says to constrain the grammar or downgrade `invented`, and says explicitly *not* to raise
+> the bound — which is the one change that makes the problem invisible again and the one a
+> hurried reader would reach for first.
 >
 > **When the oracle and the engine disagree, ask which one the *language* backs** (wave 182).
 > ASan in recover mode reports every fault; chiero reports the first and stops. Neither is a
