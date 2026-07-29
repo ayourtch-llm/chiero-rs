@@ -127,10 +127,13 @@ fn a_constrained_but_unenumerable_index_is_not_reported() {
 /// An index that can only run off the **end**, and one that can only run off the **start**.
 ///
 /// Both directions, because a check testing one bound answers correctly for half the
-/// programs and silently for the other half. The lower one also pins that the comparison is
-/// *signed*: an unsigned test reads a negative index as an enormous positive one and calls
-/// it out of bounds for the wrong reason — right answer, wrong question, and wrong the
-/// moment the array is large.
+/// programs and silently for the other half.
+///
+/// It does **not** pin signedness, and that was worth finding out: with a lower bound of
+/// zero the two signed comparisons are *equivalent* to one unsigned one, because a negative
+/// two's-complement index is an enormous unsigned one and fails the upper test anyway.
+/// `unsigned-comparison` is therefore an equivalent mutant, not a gap — and stops being one
+/// only if a lower bound other than zero ever appears.
 #[test]
 fn each_direction_out_of_the_object_is_reported() {
     let above = findings("int ga[64];\nint probe(int i){ if (i < 0) return 0; return ga[i]; }");

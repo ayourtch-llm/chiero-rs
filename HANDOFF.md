@@ -710,6 +710,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > (2) is worth more — it turns a dead path into a live one — and (1) is worth doing anyway,
 > since even under (2) a bare `PtrAdd` needs the right name.
 >
+> Mutation on wave 193 took two rounds and corrected the commit's own claim. Four mutants
+> survived the first sweep because **every guarded fixture failed to reach the new code**:
+> `if (i<0||i>1)` leaves two feasible offsets, which `fork_on_offset` enumerates
+> successfully. A 64-element array indexed `i & 63` is what reaches the query with the index
+> already constrained, and it killed three of them. The fourth, `unsigned-comparison`, is
+> **equivalent**: with a lower bound of zero, `unsigned(t) > limit` is exactly
+> `t < 0 || t > limit` signed, since a negative two's-complement index is an enormous
+> unsigned one. The signed pair is kept for naming the two bounds the C rule states, not for
+> catching anything the unsigned form misses.
+>
 > ~~🔴 a symbolic index into a function table reports nothing.~~ **Wave 193, and it was not
 > specific to function tables**: `ga[i]` on a plain data array was equally silent. The cause
 > was `fork_on_offset` enumerating offsets and giving up — 17 values found for an
@@ -1074,6 +1084,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A control that passes without reaching the code controls nothing** (wave 193). Every
+> guarded fixture — `if (i<0||i>1)`, `ga[i & 1]` — stayed silent because the offset
+> *enumerated successfully* and the new solver query never ran. Four mutants on that query
+> survived, including one that reported without asking the solver at all. When a control
+> passes, check it fails for the reason you think: the fixture that reaches the code is the
+> one with a constrained index too large to enumerate.
+>
+> **An equivalent mutant can correct the commit that named it** (wave 193). The claim was
+> that signed comparisons were load-bearing against an unsigned one. They are not — with a
+> lower bound of zero the two are the same predicate — and the code comment now says so
+> rather than asserting a distinction that does not exist.
 >
 > **Fixing one class exposes the next, so measure after each** (wave 192). A null *call*
 > reported nothing for as long as chiero has existed, and it stayed hidden because the shapes

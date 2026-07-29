@@ -4230,8 +4230,15 @@ impl<'m> Engine<'m> {
             // degradation below, which is the honest answer for a question not answered.
             //
             // `!(0 <= off && off + size <= obj_size)`, in the offset's own width so the
-            // comparison matches the term. Unsigned `Ult` on the *byte* offset is wrong for
-            // a negative index, so both bounds are signed.
+            // comparison matches the term.
+            //
+            // **Signed, and the two comparisons are *equivalent* to one unsigned one** —
+            // recorded because it is not obvious and mutation proved it. With a lower bound
+            // of zero, `unsigned(t) > limit` is exactly `t < 0 || t > limit` in signed
+            // terms, since a negative two's-complement value is an enormous unsigned one. So
+            // `unsigned-comparison` survives as an equivalent mutant rather than a gap. The
+            // signed pair is kept because it states the two bounds the C rule names, and
+            // stops being equivalent the moment a lower bound other than zero appears.
             if let Some(obj_size) = s.mem.size_of_pub(p.base) {
                 let w = a.width(t);
                 let size = 1i128;
