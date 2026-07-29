@@ -2126,7 +2126,8 @@ impl Lowerer<'_> {
                 // typed AST rather than from the operator.
                 // A float comparison is a different opcode set *and* may need its
                 // operands the other way round, so the two are decided together.
-                let fcmp = self.is_float(*lhs).then(|| cir_fcmpop(*op)).flatten();
+                let fk = self.float_arith_ty(*lhs, *rhs);
+                let fcmp = fk.and_then(|_| cir_fcmpop(*op));
                 let (a, b) = match fcmp {
                     Some((_, true)) => (b, a),
                     _ => (a, b),
@@ -2140,7 +2141,9 @@ impl Lowerer<'_> {
                         // `p == 0` has a pointer on the left and a null constant on the
                         // right; `0 == p` is the same comparison written the other way.
                         // `compare_ty(lhs)` alone would type the second `Int(32)`.
-                        let cty = if self.is_address(*rhs) && !self.is_address(*lhs) {
+                        let cty = if let Some(k) = fk {
+                            CTy::Float(k)
+                        } else if self.is_address(*rhs) && !self.is_address(*lhs) {
                             CTy::Ptr
                         } else {
                             self.compare_ty(*lhs)
@@ -2205,12 +2208,27 @@ impl Lowerer<'_> {
                         } else {
                             b
                         };
-                        let bin_ty = self.compare_ty(*lhs);
+                        // **The pair decides, not the left operand** (C11 6.3.1.8). With
+                        // one side floating the other is converted and the operation is a
+                        // floating one — so `1 + d` is `FAdd` over two doubles, where
+                        // reading `lhs` alone made it `Add` over an int and a double.
+                        //
+                        // **Only the opcode and the type.** 014 has *already* inserted the
+                        // conversion — `1 + d` lowers the literal through `sitofp` before
+                        // reaching here — so converting again produced a chain of casts
+                        // whose declared source type was the pre-conversion one. What was
+                        // wrong was never the operands; it was reading the *instruction's*
+                        // shape off one of them.
+                        let fk = self.float_arith_ty(*lhs, *rhs);
+                        let bin_ty = match fk {
+                            Some(k) => CTy::Float(k),
+                            None => self.compare_ty(*lhs),
+                        };
                         self.emit(
                             InstKind::Assign {
                                 dst,
                                 rv: RValue::Bin {
-                                    op: cir_binop(*op, self.is_signed(*lhs), self.is_float(*lhs)),
+                                    op: cir_binop(*op, self.is_signed(*lhs), fk.is_some()),
                                     a,
                                     b,
                                     // **The operands' type, not their width as an int.**
@@ -3552,6 +3570,29 @@ impl Lowerer<'_> {
     fn is_float(&self, e: ExprId) -> bool {
         self.type_of(e)
             .is_some_and(|t| matches!(self.analysis.ty(t), Ty::Float(_)))
+    }
+
+    /// The type an arithmetic operand **pair** is computed at, when it is floating.
+    ///
+    /// C11 6.3.1.8's usual arithmetic conversions: if either operand is floating, the other
+    /// is converted to the floating type and the operation is a floating one; between two
+    /// floating types the wider wins. `None` means neither is floating and the integer
+    /// rules 014 already applied stand.
+    ///
+    /// **The pair, not the left operand.** Reading `is_float(lhs)` alone is right for
+    /// `d + 1` and wrong for `1 + d`, which is the same expression — and the second is the
+    /// order a person writes for `2 * d` and `0 == d`.
+    fn float_arith_ty(&mut self, lhs: ExprId, rhs: ExprId) -> Option<chiero_cir::FloatKind> {
+        match (self.float_kind(lhs), self.float_kind(rhs)) {
+            (Some(a), Some(b)) => Some(if float_width(a) >= float_width(b) {
+                a
+            } else {
+                b
+            }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
     }
 
     fn is_aggregate(&self, t: TyId) -> bool {

@@ -4315,7 +4315,7 @@ impl<'m> Engine<'m> {
                     // Not `0.0 - x`: that is a *subtraction*, and it turns -0.0 into +0.0
                     // and quiets a signalling NaN. Negation is defined on the sign bit
                     // alone (IEEE-754 §5.5.1), which is what `f64::neg` does.
-                    UnOp::FNeg => match a.as_const(xv).and_then(|c| match c.width() {
+                    UnOp::FNeg => match a.eval_ground(xv).ok().and_then(|c| match c.width() {
                         32 => Some((
                             32u32,
                             u128::from((-f32::from_bits(c.bits() as u32)).to_bits()),
@@ -6843,7 +6843,11 @@ fn sort_of(ty: &CTy) -> chiero_solver::Sort {
 /// the hardware's and is recorded here rather than silently relied upon — a program whose
 /// value depends on it is undefined in C, so nothing chiero reports about it is a claim.
 fn fcast(a: &mut TermArena, kind: CastKind, x: Term, fw: u32, tw: u32) -> Option<Term> {
-    let c = a.as_const(x)?;
+    // **`eval_ground`, not `as_const`.** A term can be fully determined without being a
+    // `Const` node: `sitofp` of a `sext` of a loaded byte is ground, and `as_const` sees
+    // only the folded form — so `char c = 2; c < 2.5` produced no value at all. Wave 162
+    // hit the same distinction reading a widened bound out of a query.
+    let c = a.eval_ground(x).ok()?;
     let as_f64 = |w: u32, b: u128| -> Option<f64> {
         match w {
             32 => Some(f64::from(f32::from_bits(b as u32))),
@@ -6933,7 +6937,8 @@ fn bin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
 /// well-formed CIR, and where they disagree the bits are what exist — computing at a width
 /// the value does not have is how a reinterpretation becomes a wrong number.
 fn fbin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
-    let (xc, yc) = (a.as_const(x)?, a.as_const(y)?);
+    // Ground rather than folded — see `fcast`.
+    let (xc, yc) = (a.eval_ground(x).ok()?, a.eval_ground(y).ok()?);
     let w = xc.width();
     if w != yc.width() {
         return None;
@@ -7046,7 +7051,8 @@ fn cmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
 /// C's `isnan` idiom is `x != x`, and it lowers to `FUNe` for exactly this reason: `FONe`
 /// is *false* for NaN, which is the opposite of what the idiom asks.
 fn fcmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
-    let (xc, yc) = (a.as_const(x)?, a.as_const(y)?);
+    // Ground rather than folded — see `fcast`.
+    let (xc, yc) = (a.eval_ground(x).ok()?, a.eval_ground(y).ok()?);
     if xc.width() != yc.width() {
         return None;
     }

@@ -753,6 +753,14 @@ fn mixed_integer_and_floating_operands_agree_with_gcc() {
     // Single precision on the right, so the conversion is to `float` and not `double`.
     agree("float f = 2.5f; return (int)(1 + f);");
     agree("float f = 2.5f; return 1 < f;");
+    // **Two different floating types**, where the *wider* must win. `(double)0.1f` is not
+    // `0.1` — single precision cannot hold it — so comparing at `float` says equal and
+    // comparing at `double` says not. A rule that picked either operand's type, or the
+    // narrower of the two, passes every fixture above and fails this one.
+    agree("float f = 0.1f; double d = 0.1; return f == d;");
+    agree("double d = 0.1; float f = 0.1f; return d == f;");
+    agree("float f = 0.5f; double d = 0.5; return f == d;");
+    agree("float f = 0.1f; double d = 0.1; return (int)((f + d) * 100);");
     // A `char` promoted to `int` and then converted to `double`, which is two conversions.
     agree("char c = 2; double d = 2.5; return c < d;");
 }
