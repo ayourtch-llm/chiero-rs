@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 168) — 1207 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 169) — 1208 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -518,7 +518,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
 > 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
-> agree with gcc**.*
+> agree with gcc; 169 finished them with comparisons and `_Bool`**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -763,7 +763,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   (`cir_binop` mapped everything to the integer table), the instruction `ty`, all four
 >   conversion combinations in `convert_for_store`, and `FNeg` in the engine. Generated
 >   comparisons went **73 → 97** on the same seeds.
-> - **🔴 Next: float comparisons.** `refuse_float_compare` now declares the two operations
+> - ~~🔴 Next: float comparisons.~~ **Done in wave 169.** Generated comparisons **97 → 109**;
+>   the float refusal ledger entry is gone. Three things worth carrying forward:
+>   * **CIR has no `FOGt`/`FOGe`** — `a > b` is `FOLt(b, a)`, and `cir_fcmpop` returns the
+>     opcode *and* the swap together so they cannot drift apart.
+>   * **`!=` on floats is `FUNe`**, the unordered one, because C's `isnan` idiom is `x != x`
+>     and `FONe` is false for NaN.
+>   * **`(_Bool)f` is a comparison**, and `-0.0` is the case that proves it: its bits differ
+>     from `+0.0` while C says it is false, so an integer `Ne` on the patterns is wrong.
+> - **Two defects found underneath, both pre-existing and neither float-specific.**
+>   `chiero-mem`'s byte-splitting store extracted a byte from a *one-bit* term (a `_Bool` is
+>   one byte of storage holding one bit) and **panicked** — present in wave 168's run, masked
+>   by the refusal. And `Trunc` trusted the instruction's declared width over the term's.
+>   Both now degrade or widen rather than crash. **A panic reachable from verifier-clean CIR
+>   is the one outcome 023 forbids**, and it took a new kind of value to expose a shape the
+>   integer path had all along.
+> - **🔴 Next on floats**: x87 80-bit arithmetic and comparison (no Rust primitive — its
+>   width works, so loads and stores do), and **symbolic** floats, which still need an FP
+>   theory or a bit-blasted encoding in the solver. The concrete path is now complete. `refuse_float_compare` now declares the two operations
 >   still missing, and its `KNOWN_GAPS` entry is what will fail when they land:
 >   * the engine's `cmp` has **no float arms**, so `a < b` on floats produces no value;
 >   * `(_Bool)f` is *worse than missing* — C11 6.3.1.2 makes it "compares unequal to 0" and
@@ -855,6 +872,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Fixtures that agree under both readings test neither** (wave 169). Every float
+> comparison fixture used 2.5 against 1.5, where `<` and `<=` give the same answer and so do
+> `>` and `>=` — a mutation turning `FOLt` into `FOLe` survived the lot. **Equal operands are
+> what separate a strict comparison from a non-strict one**, and the same omission covered
+> four operators at once.
+> **A new kind of value exposes shapes the old ones had all along** (wave 169). The panic in
+> `chiero-mem` was a byte-splitting store extracting from a one-bit term — a `_Bool` is one
+> byte holding one bit, and nothing about that is float-specific. The float path merely
+> reached it first, because `(_Bool)f` is a comparison. **When a new type crashes old code,
+> check whether the old types could have reached it too**; here the answer was yes and the
+> fix belongs in the shared path, not the new one.
+> **A catch-all that becomes unreachable is a hiding place** (wave 169). `cmp`'s
+> `_ => return None` was load-bearing while floats were missing and became dead the moment
+> the arms landed. Removing it makes a future `CmpOp` a compile error instead of a silent
+> `None` the caller reads as "symbolic operand". **When completing a match, delete the
+> catch-all the incompleteness needed.**
 > **A `None` that means "wrong kind" meets a caller that reads it as "nothing"** (wave 168).
 > `const_of` answers about *integer* constant expressions and returned `None` for
 > `double g = 2.0;`; the caller turns `None` into `GlobalInit::Zero`, so the initializer was
