@@ -278,7 +278,7 @@ struct Gen {
     global_arrays: Vec<(String, Ty, usize)>,
     /// A file-scope pointer and the array it is aimed at.
     global_ptrs: Vec<(String, Ty, String, usize)>,
-    /// **Allow an index to leave its array.** Off for every channel that compares *values*,
+    /// **Allow the program to commit memory UB.** Off for every channel that compares *values*,
     /// because an out-of-bounds access is undefined and `judge` discards the program rather
     /// than grading it. On for the memory-UB oracle, whose subject is exactly the programs
     /// the others throw away.
@@ -287,7 +287,12 @@ struct Gen {
     /// already here — local arrays, file-scope arrays, a global pointer aimed at an array,
     /// read and written through all of `access`'s spellings — and forking the grammar to
     /// get them would mean maintaining two of everything and grading the copy.
-    oob: bool,
+    memory_ub: bool,
+    /// Heap blocks the program has allocated, as (name, element type, length, freed).
+    ///
+    /// The `freed` flag is what makes a *use*-after-free reachable rather than accidental:
+    /// the grammar has to know a block is gone in order to deliberately touch it again.
+    heaps: Vec<(String, Ty, usize, bool)>,
 }
 
 impl Gen {
@@ -305,7 +310,8 @@ impl Gen {
             globals: Vec::new(),
             global_arrays: Vec::new(),
             global_ptrs: Vec::new(),
-            oob: false,
+            memory_ub: false,
+            heaps: Vec::new(),
         }
     }
 
@@ -322,7 +328,7 @@ impl Gen {
     /// the first one, so ASan reports a single site however many the program contains, and
     /// the corpus stops covering the shapes that follow it.
     fn index(&mut self, len: usize) -> usize {
-        if self.oob && self.rng.chance(3) {
+        if self.memory_ub && self.rng.chance(3) {
             return len + self.rng.below(4);
         }
         self.rng.below(len)
@@ -433,6 +439,12 @@ impl Gen {
 
     fn render_prelude(&mut self) -> String {
         let mut out = String::new();
+        // **Declared, not `#include <stdlib.h>`.** The fixtures preprocess with a default
+        // `Config`, which has no system include path, so an include would fail before the
+        // program ever reached lowering — measured, as one diagnostic per program.
+        if self.memory_ub {
+            out.push_str("void *malloc(unsigned long);\nvoid free(void *);\n");
+        }
         for v in &self.globals.clone() {
             let init = self.konst(v.ty);
             let _ = writeln!(out, "{} {} = {init};", v.ty.c(), v.name);
@@ -662,6 +674,86 @@ impl Gen {
     /// than by somebody remembering.
     ///
     /// `base` is an array's name and `i` an index already known to be in range.
+    /// Allocate, use, free, and — deliberately — use or free again.
+    ///
+    /// Returns whether it emitted anything, so `stmt` can fall through to the ordinary
+    /// grammar the rest of the time.
+    ///
+    /// **Every block is freed exactly once on the ordinary path.** A block that is never
+    /// freed is a *leak*, which LeakSanitizer reports at exit as an ASan failure — and a
+    /// leak is not undefined behaviour, so chiero says nothing about it and the oracle
+    /// would score every allocating program as a miss. The oracle also runs with
+    /// `detect_leaks=0` for the same reason; both are needed, because the flag stops the
+    /// report and freeing is what makes the *use*-after-free reachable.
+    fn heap_stmt(&mut self) -> bool {
+        // Allocate. `sizeof` is spelled as a literal size so the grammar needs no new
+        // expression form.
+        if self.heaps.len() < 2 && self.rng.chance(3) {
+            let ty = *self.rng.pick(&Ty::ALL);
+            let ty = if ty == Ty::Bool { Ty::Int } else { ty };
+            let len = 1 + self.rng.below(3);
+            let name = self.fresh();
+            let bytes = len * (ty.bits() as usize).div_ceil(8);
+            let _ = writeln!(
+                self.body,
+                "  {} *{name} = ({} *)malloc({bytes});",
+                ty.c(),
+                ty.c()
+            );
+            // **Written before it is read.** malloc leaves the block uninitialized, and
+            // reading it is undefined in a way ASan does not report and chiero models as
+            // `Undef` — a third verdict that would make every allocating program a
+            // disagreement about something neither tool is being asked about here.
+            for i in 0..len {
+                let v = self.konst(ty);
+                let _ = writeln!(self.body, "  {name}[{i}] = {v};");
+            }
+            self.heaps.push((name, ty, len, false));
+            return true;
+        }
+        if self.heaps.is_empty() {
+            return false;
+        }
+        let k = self.rng.below(self.heaps.len());
+        let (name, ty, len, freed) = self.heaps[k].clone();
+        if !freed {
+            // Read it, or free it.
+            if self.rng.chance(2) {
+                // `index` and not `below`: the same knob that walks off the end of an
+                // array walks off the end of a block, which is the difference between
+                // ASan's `global-buffer-overflow` and its `heap-buffer-overflow` — two
+                // classes chiero must handle through different `chiero-mem` object kinds.
+                let i = self.index(len);
+                let a = self.access(&name, i);
+                let v = self.fresh();
+                let _ = writeln!(self.body, "  {} {v} = {a};", ty.c());
+                self.vars.push(Var { name: v, ty });
+                return true;
+            }
+            let _ = writeln!(self.body, "  free({name});");
+            self.heaps[k].3 = true;
+            return true;
+        }
+        // Freed. One in three programs that get here commits the fault; the rest leave the
+        // block alone, so a corpus is not all faults and the shapes after the first one
+        // still get generated — ASan halts at the first report.
+        match self.rng.below(3) {
+            0 => {
+                let i = self.rng.below(len);
+                let a = self.access(&name, i);
+                let v = self.fresh();
+                let _ = writeln!(self.body, "  {} {v} = {a};", ty.c());
+                self.vars.push(Var { name: v, ty });
+                true
+            }
+            1 => {
+                let _ = writeln!(self.body, "  free({name});");
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn access(&mut self, base: &str, i: usize) -> String {
         match self.rng.below(6) {
             0 => format!("{base}[{i}]"),
@@ -744,6 +836,11 @@ impl Gen {
     /// One statement. **At most one side effect**, which removes unsequenced-modification
     /// UB and evaluation-order divergence between compilers by construction.
     fn stmt(&mut self) {
+        // **The heap arms come first and only under the knob**, so the value-comparing
+        // channels see a grammar byte-for-byte identical to the one they have always seen.
+        if self.memory_ub && self.heap_stmt() {
+            return;
+        }
         match self.rng.below(10) {
             0 if self.arrays.len() < 3 && self.rng.chance(2) => {
                 // An array with a braced initializer, which is also how wave 140's
@@ -986,7 +1083,7 @@ fn program_memory_ub(seed: u64) -> (String, String) {
 
 fn program_with(seed: u64, oob: bool) -> (String, String) {
     let mut g = Gen::new(seed);
-    g.oob = oob;
+    g.memory_ub = oob;
     let prelude = g.prelude();
     let n = 3 + g.rng.below(7);
     for _ in 0..n {
@@ -1865,8 +1962,27 @@ struct Tally {
 /// reported through the checker framework's `Finding` and not as a `UbKind` — the two
 /// mechanisms are 023 §6's report and 020 §4.1's event, and only arithmetic uses the
 /// latter.
+/// Is every finding here the null dereference that follows a failed `malloc`?
+///
+/// Deliberately narrow: it clears a run only when **all** its memory findings are
+/// null-dereferences. A program that genuinely faults *and* has a failure path reports both,
+/// and this must not let the genuine one through unexamined.
+fn is_malloc_failure_path(r: &chiero_exec::RunResult) -> bool {
+    let mem: Vec<String> = r
+        .findings()
+        .iter()
+        .map(|f| format!("{f:?}"))
+        .filter(|f| is_memory_finding(f))
+        .collect();
+    !mem.is_empty() && mem.iter().all(|f| f.contains("null-dereference"))
+}
+
 fn is_memory_finding(s: &str) -> bool {
-    s.contains("out-of-bounds") || s.contains("use-after") || s.contains("null-dereference")
+    s.contains("out-of-bounds")
+        || s.contains("use-after")
+        || s.contains("double-free")
+        || s.contains("bad-free")
+        || s.contains("null-dereference")
 }
 
 fn tally(seeds: std::ops::Range<u64>) -> Tally {
@@ -1895,7 +2011,15 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             // No gcc, or a program it will not build: not this test's subject.
             _ => continue,
         }
-        let Ok(run) = std::process::Command::new(&x).output() else {
+        // **`detect_leaks=0`.** LeakSanitizer ships inside ASan and reports an un-freed
+        // block at exit. A leak is not undefined behaviour — the program's every operation
+        // is defined and its result is the one C promises — so chiero says nothing about
+        // it, and left on it would score every allocating program as a miss for a fault
+        // that is not this oracle's subject.
+        let Ok(run) = std::process::Command::new(&x)
+            .env("ASAN_OPTIONS", "detect_leaks=0")
+            .output()
+        else {
             continue;
         };
         let err = String::from_utf8_lossy(&run.stderr).to_string();
@@ -1919,7 +2043,16 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             // with no *reached* memory fault, so a chiero finding on it is either a false
             // report or a fault on a path the single concrete run did not take — and these
             // programs are closed, with one path. Either way it is worth seeing.
-            if found {
+            // **The malloc-failure path is not a false report.** Every allocating program
+            // runs with two states: the engine forks on malloc succeeding and failing, and
+            // the generated code does not check the result, so the failure path really does
+            // dereference NULL. ASan's malloc succeeds, so its single run never goes there.
+            //
+            // Wave 177 wrote "these programs are closed, with one path" and it was true of
+            // that corpus; malloc is what makes it false. So a `null-dereference` here is
+            // chiero seeing further than the oracle, and counting it as invented would
+            // punish the engine for being right.
+            if found && !is_malloc_failure_path(&r) {
                 t.invented.push(seed);
             }
             continue;
