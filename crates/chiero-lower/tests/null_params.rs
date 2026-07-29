@@ -238,3 +238,48 @@ fn a_non_null_fault_on_the_null_state_does_not_claim_the_premise() {
         "this fault is about `q`'s extent, not `p`'s nullability: {oob}"
     );
 }
+
+/// **An internal function's callers are all in this translation unit, so the assumption is
+/// not chiero's to make.**
+///
+/// Wave 186's default rests on "the caller is outside the analysis". For a `static`
+/// function that is false: every call site is in the same module, and analysing the
+/// module's *exported* entry points reaches this one through them, carrying whatever the
+/// caller actually passes. Assuming null here as well double-counts an assumption the outer
+/// analysis makes properly, and 021 §6's own wording is "start at each **exported**
+/// function in turn".
+///
+/// This is what the wave-187 measurement found: 3 of 3 findings on `tests/corpus/c` were
+/// `static` helpers whose callers all pass `&table[i]`. Every one was true and none was
+/// chiero's to raise from that entry point.
+#[test]
+fn an_internal_function_does_not_get_the_null_assumption() {
+    let src = "static int helper(int *p){ return *p; }\n\
+               int use(void){ int x = 7; return helper(&x); }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("helper").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        !f.iter().any(|x| x.contains("null-dereference")),
+        "`helper` is static; its callers are visible and none passes null: {f:?}"
+    );
+}
+
+/// And an exported one still does: its callers are genuinely outside.
+///
+/// The control. A fix that suppressed the assumption for every function would pass the test
+/// above and silently retire wave 186 entirely.
+#[test]
+fn an_exported_function_still_gets_the_null_assumption() {
+    let src = "int exported(int *p){ return *p; }\n\
+               int use(void){ int x = 7; return exported(&x); }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("exported").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        f.iter().any(|x| x.contains("null-dereference")),
+        "`exported` can be called from another translation unit: {f:?}"
+    );
+}
