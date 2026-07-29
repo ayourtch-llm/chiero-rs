@@ -1664,3 +1664,111 @@ fn the_ub_filter_discards_a_float_cast_overflow() {
         judge("", in_range)
     );
 }
+
+/// Scratch census: what the sanitizer says vs what chiero says. Not committed as-is.
+#[test]
+#[ignore]
+fn zz_ub_census() {
+    let lo: u64 = std::env::var("SOAK_LO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let hi: u64 = std::env::var("SOAK_HI")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let mut tally: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+    for seed in lo..hi {
+        let (prelude, body) = program(seed);
+        let Some(msg) = sanitizer_message(&prelude, &body) else {
+            continue;
+        };
+        let class = classify(&msg);
+        let src = format!("{prelude}\nint probe(void) {{\n{body}}}");
+        let l = harness::lower_raw(&src);
+        if !l.diagnostics.is_empty() {
+            continue;
+        }
+        let mut a = chiero_solver::TermArena::new();
+        let mut e = chiero_exec::Engine::new(&l.module).with_entry("probe");
+        for c in chiero_check::default_checkers() {
+            e = e.with_checker(c);
+        }
+        let r = e.run(&mut a);
+        let found = !r.reports().is_empty();
+        let ent = tally.entry(class).or_insert((0, 0));
+        ent.0 += 1;
+        if found {
+            ent.1 += 1;
+        }
+    }
+    eprintln!("CENSUS {lo}..{hi}  (sanitizer class -> seen / chiero reported something)");
+    for (k, (n, f)) in &tally {
+        eprintln!("  {n:4} / {f:4}  {k}");
+    }
+}
+
+fn classify(msg: &str) -> String {
+    for pat in [
+        "signed integer overflow",
+        "shift exponent",
+        "division by zero",
+        "outside the range of representable values",
+        "load of null pointer",
+        "index .* out of bounds",
+        "member access within null",
+        "null pointer",
+        "heap-buffer-overflow",
+        "stack-buffer-overflow",
+        "left shift of negative",
+    ] {
+        if msg.contains(pat) {
+            return pat.to_string();
+        }
+    }
+    msg.lines()
+        .next()
+        .unwrap_or("?")
+        .chars()
+        .skip(
+            msg.lines()
+                .next()
+                .unwrap_or("")
+                .find("runtime error: ")
+                .map(|i| i + 15)
+                .unwrap_or(0),
+        )
+        .take(46)
+        .collect()
+}
+
+fn sanitizer_message(prelude: &str, body: &str) -> Option<String> {
+    let dir = std::env::temp_dir().join(format!("chiero-cen-{}-{}", std::process::id(), next()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let c = dir.join("g.c");
+    std::fs::write(&c, format!(
+        "#include <stdio.h>\n{prelude}\nint probe(void) {{\n{body}}}\nint main(void){{printf(\"%d\\n\",probe());return 0;}}\n"
+    )).ok()?;
+    let bin = dir.join("s");
+    let ok = std::process::Command::new("gcc")
+        .args([
+            "-std=gnu11",
+            "-w",
+            "-O0",
+            "-fsanitize=undefined,address,float-cast-overflow",
+            "-fno-sanitize-recover=all",
+            "-o",
+        ])
+        .arg(&bin)
+        .arg(&c)
+        .output()
+        .ok()?
+        .status
+        .success();
+    if !ok {
+        return None;
+    }
+    let r = std::process::Command::new(&bin).output().ok()?;
+    let err = String::from_utf8_lossy(&r.stderr).to_string();
+    if err.is_empty() { None } else { Some(err) }
+}

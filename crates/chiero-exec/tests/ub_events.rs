@@ -465,3 +465,108 @@ fn a_symbolic_divisor_that_cannot_be_zero_is_not_reported() {
         "the divisor is non-zero on every path that divides: {events:#?}"
     );
 }
+
+/// **C11 6.5.7p4 has three ways for a left shift to be undefined, and chiero knows one.**
+///
+/// "If `E1` has a signed type and nonnegative value, and `E1 × 2^E2` is representable in the
+/// result type, then that is the resulting value; otherwise, the behavior is undefined."
+///
+/// So a signed `<<` is defined only when *all* of these hold: the shift count is below the
+/// width, the left operand is **nonnegative**, and the mathematical result **fits**.
+/// `note_ub` checks the first and nothing else.
+///
+/// Measured, not guessed. A census over 300 generated programs, comparing what
+/// `-fsanitize=undefined,address,float-cast-overflow` reports against what chiero reports:
+///
+/// ```text
+///   14 / 0   signed integer overflow
+///    8 / 0   left shift of negative
+///    5 / 1   left shift of N by M places cannot be represented
+///    2 / 0   shift exponent
+///   11 / 7   outside the range of representable values
+/// ```
+///
+/// The two left-shift rows are this test. They are not exotic: `-1 << 1` is a thing people
+/// write, and `65535 << 21` is an ordinary-looking expression whose result leaves `int`.
+///
+/// The negative cases are the constraint, and one of them is subtle: shifting a negative
+/// value is undefined for *signed* types only, so the same bits under `LShr` — a logical
+/// shift, which is what an `unsigned` produces — must stay quiet. A check keyed on the sign
+/// bit rather than on the operation would report every unsigned shift of a large value.
+#[test]
+fn a_left_shift_is_undefined_three_ways() {
+    let shifts = |w: u32, a: i128, b: i128| {
+        let (r, _) = run_op(BinOp::Shl, w, a, b);
+        r.states()[0]
+            .ub_events()
+            .iter()
+            .filter(|u| u.kind == UbKind::Shift)
+            .count()
+    };
+
+    // 1. The count reaches the width — the rule chiero already had.
+    assert_eq!(shifts(32, 1, 32), 1, "1 << 32 at 32 bits");
+    // 2. The left operand is negative.
+    assert_eq!(shifts(32, -1, 1), 1, "-1 << 1");
+    assert_eq!(
+        shifts(32, -5, 0),
+        1,
+        "even a zero-bit shift of a negative value"
+    );
+    // 3. The result is not representable in the result type.
+    assert_eq!(shifts(32, 65535, 21), 1, "65535 << 21 leaves int");
+    assert_eq!(
+        shifts(32, 1, 31),
+        1,
+        "1 << 31 is INT_MIN, which is not 2^31"
+    );
+    assert_eq!(shifts(32, 3, 30), 1, "3 << 30 overflows");
+
+    // **Defined, and therefore silent.** These are what shifting is normally used for, and
+    // a check that reported them would bury the three above.
+    assert_eq!(shifts(32, 1, 30), 0, "1 << 30 fits");
+    assert_eq!(shifts(32, 0, 31), 0, "zero shifts to zero");
+    assert_eq!(shifts(32, 65535, 15), 0, "65535 << 15 fits");
+    assert_eq!(shifts(32, 1, 0), 0, "a zero-bit shift");
+}
+
+/// **A logical shift has none of those rules**, because `unsigned` arithmetic wraps.
+///
+/// C11 6.2.5p9: unsigned types obey modular arithmetic and cannot overflow. `LShr` is the
+/// operation an `unsigned` produces, and the same bit patterns that are undefined under
+/// `Shl` are ordinary here — so a check written against the bits rather than the operation
+/// reports every one of them.
+#[test]
+fn a_logical_shift_is_not_an_arithmetic_one() {
+    let shifts = |op: BinOp, a: i128, b: i128| {
+        let (r, _) = run_op(op, 32, a, b);
+        r.states()[0]
+            .ub_events()
+            .iter()
+            .filter(|u| u.kind == UbKind::Shift)
+            .count()
+    };
+    // The same operands that are undefined under `Shl` above.
+    assert_eq!(
+        shifts(BinOp::LShr, -1, 1),
+        0,
+        "the bits of -1, shifted right logically"
+    );
+    assert_eq!(
+        shifts(BinOp::LShr, 65535, 21),
+        0,
+        "no overflow rule for a right shift"
+    );
+    // The count rule still applies to every shift, which is what keeps this from being
+    // "logical shifts are never checked".
+    assert_eq!(
+        shifts(BinOp::LShr, 1, 32),
+        1,
+        "the count still reaches the width"
+    );
+    assert_eq!(
+        shifts(BinOp::AShr, 1, 33),
+        1,
+        "and for an arithmetic right shift too"
+    );
+}
