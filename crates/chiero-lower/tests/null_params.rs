@@ -283,3 +283,57 @@ fn an_exported_function_still_gets_the_null_assumption() {
         "`exported` can be called from another translation unit: {f:?}"
     );
 }
+
+/// **A `static` function whose address escapes is reachable from anywhere.**
+///
+/// Wave 188 suppressed the null assumption for internal linkage, on the ground that every
+/// call site is in this module. Taking the function's *address* breaks that ground: the
+/// pointer can be stored in a global, returned, or handed to a library, and the call then
+/// comes from a translation unit chiero will never see. §9 recorded this as a trap when the
+/// front was written, and it is not a corner case — a `static` node function registered by
+/// address is the ordinary shape in VPP.
+///
+/// Two ways the address escapes, because the fix must key on the *address being taken* and
+/// not on one syntax for taking it.
+#[test]
+fn an_internal_function_whose_address_escapes_gets_the_assumption() {
+    for (what, src) in [
+        (
+            "stored in a global",
+            "static int helper(int *p){ return *p; }\n\
+             int (*table)(int *) = helper;",
+        ),
+        (
+            "explicit address-of",
+            "static int helper(int *p){ return *p; }\n\
+             int (*table)(int *) = &helper;",
+        ),
+    ] {
+        let m = harness::lower(src);
+        let mut arena = TermArena::new();
+        let r = Engine::new(&m).with_entry("helper").run(&mut arena);
+        let f = r.findings();
+        assert!(
+            f.iter().any(|x| x.contains("null-dereference")),
+            "`{what}`: the pointer can reach a caller chiero cannot see: {f:?}"
+        );
+    }
+}
+
+/// And one whose address is *not* taken keeps the wave-188 suppression.
+///
+/// The control. A fix that treated every internal function as escaping would pass the test
+/// above and undo wave 188 entirely, putting the corpus back to 3 of 3.
+#[test]
+fn an_internal_function_called_only_directly_keeps_the_suppression() {
+    let src = "static int helper(int *p){ return *p; }\n\
+               int use(void){ int x = 7; return helper(&x); }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("helper").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        !f.iter().any(|x| x.contains("null-dereference")),
+        "a direct call is not an escaping address: {f:?}"
+    );
+}
