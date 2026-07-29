@@ -32,7 +32,7 @@
 //! Instead the generator avoids the UB it can avoid *by construction* — one side effect per
 //! statement, division only by nonzero constants, shift counts masked below the width,
 //! indices in range because the generator knows every array's length — and everything else
-//! is caught by compiling the fixture under `-fsanitize=undefined,address` and discarding
+//! is caught by compiling the fixture under `-fsanitize=undefined,address,float-cast-overflow` and discarding
 //! any program that trips it. gcc at `-O0` stays the verdict, exactly as `differential.rs`
 //! chose: optimisation is legal only on defined programs.
 
@@ -1166,7 +1166,18 @@ fn gcc_answer(prelude: &str, body: &str) -> Option<(i32, bool)> {
             "gcc",
             &[
                 "-O0",
-                "-fsanitize=undefined,address",
+                // **`float-cast-overflow` is named explicitly.** gcc's `undefined` group
+                // does not include it, which is measurable rather than a matter of opinion:
+                // `(unsigned short)(-4294905087.0)` runs clean and prints 0 under
+                // `undefined,address`, and reports a runtime error the moment this is
+                // added. C11 6.3.1.4 makes the conversion undefined when the integral part
+                // is not representable.
+                //
+                // The gap was unreachable while lowering refused every float, and waves
+                // 167–170 made it reachable. Seed 1832 then reported a mismatch that was
+                // two implementations of undefined behaviour disagreeing — a false defect,
+                // which costs this channel more than a missed one.
+                "-fsanitize=undefined,address,float-cast-overflow",
                 "-fno-sanitize-recover=all",
             ],
             "san",
