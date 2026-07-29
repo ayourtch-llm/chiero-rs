@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 153) — 1156 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 154) — 1165 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -508,7 +508,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > and found three entries stale; 150 gave prefixed string literals their element width;
 > 151 replaced the second string-literal decoder with one shared one;
 > 152 deleted the third; **153 built the symbolic differential oracle, and it found that
-> the solver could decide only one side of every branch**.*
+> the solver could decide only one side of every branch; 154 gave it the other half of three
+> narrowings, plus `<=` and widened operands**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -726,6 +727,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A narrowing that is too strong is invisible until it refutes something** (wave 154).
+> Four mutants survived the first sweep and all four had one shape: an over-strong domain.
+> It cannot produce a wrong `Sat` — the model validator catches that and the answer degrades
+> to `Unknown` — so **no test built from satisfiable inputs can see it**. It is fatal only
+> where nothing validates: the domain empties and a satisfiable set is *refuted*. The tests
+> that killed them are all "this set has a model, so `Unsat` is the wrong answer", which is
+> 022 §3.1's asymmetry used as a test-design rule instead of quoted. **When testing a
+> pruning step, write the case where pruning too much is the failure.**
+> **A satisfiability check cannot pin a polarity** (wave 154, and 153 before it). Both `p`
+> and `!p` have models, and a validated model is accepted either way — so a test that asks
+> "is there a model" cannot tell a relation from its complement. Twice now the discriminator
+> has been **which side of the bound the model lands on**: assert the value, not the verdict.
+> **`git checkout` restores a file, not an edit** (wave 154). Reverting a one-line debug
+> `eprintln` that way discarded the wave's uncommitted implementation work in the same file.
+> Wave 153 learned this about mutation restores; it is the same rule for debugging. **Edit a
+> debug line back out, or commit before adding one.**
+> **A fixture can be wrong in a way only a better tool reveals** (wave 154). `strategy.rs`
+> built a "binary tree of 2^depth leaves" whose nodes branched on `x <s i` — conditions that
+> *entail each other*, so the tree was never full. It looked full only because the solver
+> explored the infeasible paths. The recorded leaf order was therefore a golden of an
+> exploration that could not happen. **When a capability improves and a golden changes, ask
+> whether the golden was ever right**, rather than re-recording it.
 > **A channel finds what it is shaped to find, and every channel had one shape** (wave 153).
 > Four detection channels, thousands of programs, and all of them ran `int probe(void)` —
 > closed and concrete. So no path condition ever contained a negated comparison, and the
