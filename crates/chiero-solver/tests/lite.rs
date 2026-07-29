@@ -627,3 +627,112 @@ fn a_comparison_through_a_widening_narrows_the_narrow_variable() {
         other => panic!("`(long)x > 5` came back {other:?}"),
     }
 }
+
+/// **A multi-bit mask pinned is a wrong `Unsat`**, not merely a lost answer.
+///
+/// The single-bit widening above is guarded by `m.count_ones() == 1`, and dropping that
+/// guard survives every test that only checks satisfiable inputs: pinning `x & 6 != 0` to
+/// "both bits set" still yields a model that validates, because a validated `Sat` cannot be
+/// wrong. The damage shows only where nothing validates — an over-strong domain going empty
+/// and being reported `Unsat`.
+///
+/// `x & 6 != 0 && x == 2` is satisfied by 2 alone. Pin both bits and the domain contradicts
+/// `x == 2`, and the answer becomes a refutation of a satisfiable set.
+#[test]
+fn a_multi_bit_mask_is_not_pinned_into_a_wrong_refutation() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let six = a.bv(32, 6);
+    let zero = a.bv(32, 0);
+    let masked = a.and(x, six);
+    let is_zero = a.eq(masked, zero);
+    let some = a.not(is_zero);
+    let two = a.bv(32, 2);
+    let is_two = a.eq(x, two);
+    let mut s = SolverLite::default();
+    assert!(
+        !matches!(s.check(&mut a, &[some, is_two]), CheckResult::Unsat),
+        "`x & 6 != 0 && x == 2` is satisfied by x = 2. Answering Unsat means a multi-bit \
+         mask was pinned to all of its bits, which the constraint does not say."
+    );
+}
+
+/// **The widening must match the comparison's signedness**, and dropping that check is also
+/// a wrong `Unsat`.
+///
+/// `zext(x, 64) >=s 5` says the *unsigned* value of `x` is at least 5, which every `x` with
+/// the top bit set satisfies. Reading it as `x >=s 5` confines `x` to the non-negative half
+/// instead — an interval that excludes exactly those values. Combined with a constraint that
+/// requires one, the domain empties and a satisfiable set is refuted.
+///
+/// A wrong narrowing cannot produce a wrong `Sat` — the model validator catches that — so a
+/// test built from satisfiable inputs alone would not see this at all.
+#[test]
+fn an_unsigned_widening_is_not_narrowed_as_a_signed_one() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let wide = a.zext(x, 64);
+    let five = a.bv(64, 5);
+    let lt = a.slt(wide, five);
+    let ge = a.not(lt);
+    // x with its top bit set: unsigned-large, signed-negative.
+    let half = a.bv(32, 1u128 << 31);
+    let big = a.ult(half, x);
+    let mut s = SolverLite::default();
+    assert!(
+        !matches!(s.check(&mut a, &[ge, big]), CheckResult::Unsat),
+        "`zext(x) >=s 5 && x >u 2^31` holds for, say, x = 2^31 + 1. Answering Unsat means a \
+         zero-extension was narrowed under a signed comparison."
+    );
+}
+
+/// **`a <= b` is `!(b < a)`, and the operands must swap.**
+///
+/// Reading the non-strict form as `!(a < b)` is the same relation with the arguments the
+/// wrong way round, which is `a > b` — the complement, not the negation. Both are
+/// satisfiable, so a test that only asks "is there a model" cannot tell them apart; this
+/// asserts which side of the bound the model lands on.
+#[test]
+fn the_non_strict_form_swaps_its_operands() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let minus_one = a.bv(32, u128::from(u32::MAX));
+    // `x <= -1`, as lowering builds it: `x < -1 || x == -1`.
+    let lt = a.slt(x, minus_one);
+    let eq = a.eq(x, minus_one);
+    let le = a.or(lt, eq);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[le]) {
+        CheckResult::Sat(m) => {
+            let v = a.eval(&m, x).expect("binds x").signed() as i32;
+            assert!(v <= -1, "the model gives x = {v}, which is not <= -1");
+        }
+        other => panic!("`x <= -1` came back {other:?}"),
+    }
+}
+
+/// **A bound the source width cannot hold must not be truncated into one it can.**
+///
+/// `(long)x < 2^40` is true for every 32-bit `x` — the widening cannot reach that far. Fold
+/// the bound into the source width and it becomes `x <s 0`, which is true for *half* of
+/// them, and the half it excludes is excluded wrongly.
+///
+/// The third wrong-`Unsat` in this file, and the same lesson each time: a narrowing that is
+/// too strong is invisible wherever a model gets validated, and fatal exactly where one
+/// does not.
+#[test]
+fn a_bound_too_wide_for_the_source_is_not_truncated() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let wide = a.sext(x, 64);
+    let huge = a.bv(64, 1u128 << 40);
+    let lt = a.slt(wide, huge);
+    let zero = a.bv(32, 0);
+    let is_zero = a.eq(x, zero);
+    let mut s = SolverLite::default();
+    assert!(
+        !matches!(s.check(&mut a, &[lt, is_zero]), CheckResult::Unsat),
+        "`(long)x < 2^40 && x == 0` holds: 0 sign-extends to 0. Answering Unsat means the \
+         bound was truncated to 32 bits, turning `always true` into `x is negative`."
+    );
+}

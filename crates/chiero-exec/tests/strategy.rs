@@ -47,7 +47,16 @@ fn i32c(v: i128) -> Operand {
 /// A binary tree of `depth` symbolic branches: 2^depth leaves, each its own state.
 ///
 /// Symbolic rather than constant, because a constant condition takes one edge and there is
-/// no exploration order to observe. The parameter is unconstrained, so every branch forks.
+/// no exploration order to observe.
+///
+/// **Each node gets its own fresh input**, which is what keeps the tree full. The nodes used
+/// to branch on `x <s i` for node `i`, and those conditions are *correlated*: `x <s 0`
+/// entails `x <s 1`, so the sibling under it is infeasible. That went unnoticed while the
+/// solver could not decide a negated signed comparison — it explored the impossible paths
+/// and the tree looked full. Wave 154 taught it that comparison, it pruned three of the
+/// eight leaves correctly, and this fixture's premise turned out to have been false all
+/// along. Independent conditions are what the test actually needs: it is about exploration
+/// *order*, and a pruned branch has no order to observe.
 fn tree(depth: u32) -> Module {
     let mut blocks = Vec::new();
     // Block `i` branches to `2i+1` and `2i+2` for the internal nodes.
@@ -56,18 +65,37 @@ fn tree(depth: u32) -> Module {
         let c = ValueId(100 + i);
         blocks.push(block(
             i,
-            vec![inst(
-                InstKind::Assign {
-                    dst: c,
-                    rv: RValue::Cmp {
-                        op: CmpOp::SLt,
-                        a: Operand::Value(ValueId(0)),
-                        b: i32c(i as i128),
-                        ty: CTy::Int(32),
+            vec![
+                // Bit `depth(i)` of the parameter: distinct bits on any root-to-leaf path,
+                // so no condition constrains any other and all 2^depth leaves are
+                // genuinely reachable.
+                inst(
+                    InstKind::Assign {
+                        dst: ValueId(200 + i),
+                        rv: RValue::Bin {
+                            op: BinOp::And,
+                            a: Operand::Value(ValueId(0)),
+                            b: i32c(1i128 << (32 - (i + 1).leading_zeros() - 1)),
+                            ty: CTy::Int(32),
+                        },
                     },
-                },
-                10 + i,
-            )],
+                    10 + i,
+                ),
+                // A branch condition is `Int(1)`, which only a `Cmp` produces — the mask
+                // alone is `Int(32)` and the verifier says so.
+                inst(
+                    InstKind::Assign {
+                        dst: c,
+                        rv: RValue::Cmp {
+                            op: CmpOp::Ne,
+                            a: Operand::Value(ValueId(200 + i)),
+                            b: i32c(0),
+                            ty: CTy::Int(32),
+                        },
+                    },
+                    10 + i,
+                ),
+            ],
             Terminator::Br {
                 cond: Operand::Value(c),
                 t: BlockId(2 * i + 1),

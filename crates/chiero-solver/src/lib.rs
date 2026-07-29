@@ -1121,6 +1121,54 @@ impl TermArena {
                 rhs: *y,
                 negated,
             }),
+            // **`a <= b` is `!(b < a)`**, and that is how it becomes an atom.
+            //
+            // There is no `Sle`/`Ule` kind, so lowering builds `<=` as the disjunction
+            // `a < b || a == b` — and a disjunction is outside the fragment entirely. But
+            // *this* disjunction is not a general one: it is a total order's non-strict
+            // form, which is exactly the negation of the strict comparison with the
+            // operands swapped. Rewriting it that way needs no new kind and no new term,
+            // only a polarity flip, and it works in **both** polarities rather than the one
+            // an ad-hoc reading would have given.
+            //
+            // The operands are compared as a set because `Eq` is commutative and `bin`
+            // sorts its arguments by term id, so the equality half may have them either way
+            // round while the strict half — `Slt`/`Ult` are not commutative — never does.
+            Node::Bin(BinKind::Or, p, q) => {
+                let (lt, eq) = (self.as_ordering(*p), self.as_equality(*q));
+                let (lt, eq) = match (lt, eq) {
+                    (Some(l), Some(e)) => (Some(l), Some(e)),
+                    _ => (self.as_ordering(*q), self.as_equality(*p)),
+                };
+                let (kind, a1, b1) = lt?;
+                let (a2, b2) = eq?;
+                if (a1 == a2 && b1 == b2) || (a1 == b2 && b1 == a2) {
+                    Some(Atom {
+                        kind,
+                        lhs: b1,
+                        rhs: a1,
+                        negated: !negated,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// `a <u b` or `a <s b`, as its kind and operands.
+    fn as_ordering(&self, t: Term) -> Option<(BinKind, Term, Term)> {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(k @ (BinKind::Ult | BinKind::Slt), a, b) => Some((*k, *a, *b)),
+            _ => None,
+        }
+    }
+
+    /// `a == b`, as its operands.
+    fn as_equality(&self, t: Term) -> Option<(Term, Term)> {
+        match &self.nodes[t.0 as usize] {
+            Node::Bin(BinKind::Eq, a, b) => Some((*a, *b)),
             _ => None,
         }
     }
@@ -1712,11 +1760,95 @@ impl Domains {
         Propagation::Fixpoint
     }
 
+    /// Narrow the variable under an **exact, order-preserving widening**.
+    ///
+    /// `None` means "not this shape, carry on"; `Some(changed)` means the atom was handled.
+    ///
+    /// Two conditions make this sound, and both are refusals rather than adjustments:
+    ///
+    /// - **the widening must preserve the comparison's order.** `sext` preserves signed
+    ///   order and `zext` unsigned; the mismatched pairs (`sext` under `<u`, `zext` under
+    ///   `<s`) do not, so they are declined. Equality is preserved by both.
+    /// - **the bound must be representable in the source width.** `sext(x, 64) <s 2^40` is
+    ///   true for every 32-bit `x`, and truncating the bound would assert something else
+    ///   entirely. Out-of-range bounds are declined rather than folded — a little
+    ///   completeness given up to keep the fragment honest.
+    fn narrow_widened(
+        &mut self,
+        a: &TermArena,
+        at: &Atom,
+        wide: Term,
+        k: BvConst,
+        flipped: bool,
+    ) -> Option<bool> {
+        let Node::Extend {
+            a: inner, signed, ..
+        } = &a.nodes[wide.0 as usize]
+        else {
+            return None;
+        };
+        let v = a.var_id(*inner)?;
+        let w = a.width(*inner);
+        let order_preserved = match at.kind {
+            BinKind::Slt => *signed,
+            BinKind::Ult => !*signed,
+            BinKind::Eq => true,
+            _ => false,
+        };
+        if !order_preserved {
+            return None;
+        }
+        let bits = k.bits();
+        let fits = if *signed {
+            let trunc = bits & mask(w);
+            // `bits` must be the sign-extension of its own low `w` bits, or the bound says
+            // something about values the source width cannot hold.
+            let reextended = if trunc >= signed_min(w) {
+                trunc | (!mask(w) & mask(k.width()))
+            } else {
+                trunc
+            };
+            reextended == bits
+        } else {
+            bits & !mask(w) == 0
+        };
+        if !fits {
+            return None;
+        }
+        let d = self.dom(v, w);
+        Some(narrow(d, at.kind, bits & mask(w), flipped, at.negated))
+    }
+
     fn apply(&mut self, a: &TermArena, at: &Atom) -> Result<bool, &'static str> {
         let lc = a.as_const(at.lhs);
         let rc = a.as_const(at.rhs);
         let lv = a.var_id(at.lhs);
         let rv = a.var_id(at.rhs);
+
+        // **A widened variable is still that variable.** `(long)x > 5` is
+        // `5 <s sext(x, 64)`, and matching only a bare `Var` left it unnarrowed. Integer
+        // promotion (C11 6.3.1.1) widens every `char` and `short` before comparing it, so
+        // this is the shape most comparisons on small types have, not a `long` curiosity.
+        //
+        // Handled before the main match and returned from, because the domain is keyed by
+        // the *source* width: falling through would narrow the same variable a second time
+        // at the widened width, which `dom` treats as a different domain.
+        //
+        // The bound is read with `eval_ground`, not `as_const`: lowering widens *both*
+        // operands, so `(long)x > 5` compares `sext(x, 64)` against `sext(5, 64)` — a
+        // ground term, but not a `Const` node, and `as_const` sees nothing.
+        if lv.is_none()
+            && let Ok(c) = a.eval_ground(at.rhs)
+            && let Some(changed) = self.narrow_widened(a, at, at.lhs, c, false)
+        {
+            return Ok(changed);
+        }
+        if rv.is_none()
+            && let Ok(c) = a.eval_ground(at.lhs)
+            && let Some(changed) = self.narrow_widened(a, at, at.rhs, c, true)
+        {
+            return Ok(changed);
+        }
 
         // `v OP const` and `const OP v` are the shapes the domain understands. An atom
         // over a non-variable, non-constant expression (an addition, a mask) is not
@@ -1736,30 +1868,57 @@ impl Domains {
             }
             _ => {
                 // `masked == k` where masked is `v & m`: a known-bits fact.
-                // **Only the positive form.** `v & m != k` says one of the masked bits
-                // differs without saying which, and a known-bits fact cannot express that;
-                // pinning anything here would be unsound rather than incomplete.
+                //
+                // **Either operand order.** `Eq` and `And` are commutative and `bin` sorts
+                // their operands by term id, so which side the constant lands on is decided
+                // by interning order — not by how the caller wrote it. Reading only
+                // `at.lhs` meant the same assertion was understood or not depending on
+                // which term happened to be created first, and `x & 1 != 0` fell on the
+                // wrong side of that.
+                let masked = a
+                    .as_var_and_mask(at.lhs)
+                    .map(|vm| (vm, rc))
+                    .or_else(|| a.as_var_and_mask(at.rhs).map(|vm| (vm, lc)));
                 if at.kind == BinKind::Eq
-                    && !at.negated
-                    && let Some(k) = rc
-                    && let Some((v, m)) = a.as_var_and_mask(at.lhs)
+                    && let Some(((v, m), Some(k))) = masked
                 {
                     let w = k.width();
-                    let d = self.dom(v, w);
-                    // Bits selected by the mask are pinned; the rest stay unknown.
-                    let want_ones = k.bits() & m;
-                    let want_zeros = !k.bits() & m & mask(w);
-                    if d.ones | want_ones != d.ones || d.zeros | want_zeros != d.zeros {
-                        d.ones |= want_ones;
-                        d.zeros |= want_zeros;
-                        changed = true;
-                    }
-                    // `k` having a bit set outside the mask is an immediate
-                    // contradiction: `v & m` can never produce it.
-                    if k.bits() & !m & mask(w) != 0 {
-                        d.zeros = mask(w);
-                        d.ones = mask(w);
-                        changed = true;
+                    if at.negated {
+                        // **A negated mask pins only when the mask selects one bit.**
+                        //
+                        // `v & m != k` says one of the masked bits differs from `k`
+                        // without saying which, and a known-bits fact cannot express a
+                        // disjunction — so the general case must decline. When `m` has a
+                        // single bit there is no disjunction left: that bit is the one
+                        // that differs, and its value is the complement of `k`'s.
+                        // `if (x & FLAG)` is this case, and it is the common one.
+                        if m.count_ones() == 1 {
+                            let d = self.dom(v, w);
+                            let (want_ones, want_zeros) =
+                                if k.bits() & m == 0 { (m, 0) } else { (0, m) };
+                            if d.ones | want_ones != d.ones || d.zeros | want_zeros != d.zeros {
+                                d.ones |= want_ones;
+                                d.zeros |= want_zeros;
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        let d = self.dom(v, w);
+                        // Bits selected by the mask are pinned; the rest stay unknown.
+                        let want_ones = k.bits() & m;
+                        let want_zeros = !k.bits() & m & mask(w);
+                        if d.ones | want_ones != d.ones || d.zeros | want_zeros != d.zeros {
+                            d.ones |= want_ones;
+                            d.zeros |= want_zeros;
+                            changed = true;
+                        }
+                        // `k` having a bit set outside the mask is an immediate
+                        // contradiction: `v & m` can never produce it.
+                        if k.bits() & !m & mask(w) != 0 {
+                            d.zeros = mask(w);
+                            d.ones = mask(w);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -1868,6 +2027,23 @@ fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool, negated: boo
         (BinKind::Slt, true, false) if k < signed_min(d.width) => {
             d.lo = d.lo.max(k.saturating_add(1));
             d.hi = d.hi.min(signed_min(d.width) - 1);
+        }
+        // **The other row of the table.** With `k` *negative* the polarities swap which one
+        // is contiguous: `v <s k` becomes the run from the first negative bit pattern up to
+        // `k`, one interval, while `v >=s k` becomes `[0, 2^(w-1)-1]` plus `[k_u, 2^w-1]`
+        // and is declined. Wave 153 implemented one row of that table and the asymmetry hid
+        // it — a branch whose *other* half answers looks like it works.
+        (BinKind::Slt, false, false) if k >= signed_min(d.width) => {
+            d.lo = d.lo.max(signed_min(d.width));
+            d.hi = d.hi.min(k.saturating_sub(1));
+        }
+        // `v <s 0` is the boundary case and the one that matters most: the whole negative
+        // half, `[2^(w-1), 2^w-1]`. Every `if (x < 0)` in C lands here.
+        (BinKind::Slt, false, false) if k == 0 => d.lo = d.lo.max(signed_min(d.width)),
+        // `!(k <s v)` is `v <=s k`; contiguous for a negative `k`, at `[2^(w-1), k_u]`.
+        (BinKind::Slt, true, true) if k >= signed_min(d.width) => {
+            d.lo = d.lo.max(signed_min(d.width));
+            d.hi = d.hi.min(k);
         }
         // Everything else: no narrowing. Incompleteness, which the model validator turns
         // into `Unknown`; treating it as unsigned would be unsoundness, which nothing
