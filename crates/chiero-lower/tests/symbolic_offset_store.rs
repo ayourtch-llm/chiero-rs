@@ -48,7 +48,7 @@ fn run(src: &str) -> (Vec<u128>, Vec<String>) {
 /// The store is not refused.
 #[test]
 fn a_store_at_a_symbolic_offset_is_not_refused() {
-    let (_, gaps) = run("char ca[64];\nint probe(int i){ ca[i & 63] = 7; return ca[0]; }");
+    let (_, gaps) = run("int probe(int i){ char ca[64]; ca[i & 63] = 7; return ca[0]; }");
     assert!(
         !gaps
             .iter()
@@ -64,7 +64,7 @@ fn a_store_at_a_symbolic_offset_is_not_refused() {
 /// symbolically, or by declining. What it must not do is answer a confident 0.
 #[test]
 fn a_read_after_a_symbolic_store_does_not_claim_zero() {
-    let (vals, _) = run("char ca[64];\nint probe(int i){ ca[i & 63] = 7; return ca[0]; }");
+    let (vals, _) = run("int probe(int i){ char ca[64]; ca[i & 63] = 7; return ca[0]; }");
     assert!(
         !vals.contains(&0),
         "the write may have hit byte 0, so a ground 0 is a claim the run cannot make: {vals:?}"
@@ -79,7 +79,7 @@ fn a_read_after_a_symbolic_store_does_not_claim_zero() {
 #[test]
 fn reading_back_the_symbolic_offset_gets_the_written_value() {
     use chiero_solver::{CheckResult, Solver, TieredSolver};
-    let m = harness::lower("char ca[64];\nint probe(int i){ ca[i & 63] = 7; return ca[i & 63]; }");
+    let m = harness::lower("int probe(int i){ char ca[64]; ca[i & 63] = 7; return ca[i & 63]; }");
     let mut arena = TermArena::new();
     let r = Engine::new(&m).with_entry("probe").run(&mut arena);
     let mut seen = 0;
@@ -113,7 +113,7 @@ fn reading_back_the_symbolic_offset_gets_the_written_value() {
 #[test]
 fn a_concrete_store_after_a_symbolic_one_still_lands() {
     let (vals, gaps) =
-        run("char ca[64];\nint probe(int i){ ca[i & 63] = 7; ca[1] = 3; return ca[1]; }");
+        run("int probe(int i){ char ca[64]; ca[i & 63] = 7; ca[1] = 3; return ca[1]; }");
     assert!(
         vals.contains(&3),
         "the concrete store and the load after it must both survive promotion: \
@@ -146,7 +146,7 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
 fn a_multi_byte_store_at_a_symbolic_offset_round_trips() {
     use chiero_solver::{CheckResult, Solver, TieredSolver};
     let m = harness::lower(
-        "int ga[64];\nint probe(int i){ ga[i & 63] = 0x01020304; return ga[i & 63]; }",
+        "int probe(int i){ int ga[64]; ga[i & 63] = 0x01020304; return ga[i & 63]; }",
     );
     let mut arena = TermArena::new();
     let r = Engine::new(&m).with_entry("probe").run(&mut arena);
@@ -176,7 +176,7 @@ fn a_multi_byte_store_at_a_symbolic_offset_round_trips() {
 /// distinction, and the same false positive wave 195 spent a wave removing in another guise.
 #[test]
 fn a_symbolic_store_marks_the_byte_initialized() {
-    let m = harness::lower("char ca[64];\nint probe(int i){ ca[i & 63] = 7; return ca[i & 63]; }");
+    let m = harness::lower("int probe(int i){ char ca[64]; ca[i & 63] = 7; return ca[i & 63]; }");
     let mut arena = TermArena::new();
     let r = Engine::new(&m).with_entry("probe").run(&mut arena);
     let f = r.findings();
@@ -197,7 +197,7 @@ fn a_symbolic_store_marks_the_byte_initialized() {
 #[test]
 fn a_concrete_store_past_the_end_of_a_promoted_object_is_reported() {
     let m = harness::lower(
-        "char ca[64];\nint probe(int i){ ca[i & 63] = 7; ca[100] = 3; return ca[0]; }",
+        "int probe(int i){ char ca[64]; ca[i & 63] = 7; ca[100] = 3; return ca[0]; }",
     );
     let mut arena = TermArena::new();
     let r = Engine::new(&m).with_entry("probe").run(&mut arena);
@@ -205,5 +205,41 @@ fn a_concrete_store_past_the_end_of_a_promoted_object_is_reported() {
     assert!(
         f.iter().any(|x| x.starts_with("out-of-bounds")),
         "byte 100 is outside a 64-byte object however the object is represented: {f:?}"
+    );
+}
+
+/// **The init state a symbolic store leaves behind, asserted rather than assumed.**
+///
+/// Waves 197, 200 and 201 each wrote or fixed an `arr.init` store and none of them could be
+/// observed: every mutant on that code survived. Wave 202 blamed the fixtures — file-scope
+/// arrays are zero-initialized, so the init mask is all-`Yes` and nothing depends on it — and
+/// rewriting them as locals *still* killed nothing. **The fixtures were necessary and not
+/// sufficient; what was missing was an assertion that looks at the init finding at all.**
+/// Every existing test here asks about a value or a refusal.
+///
+/// This is that assertion, and the verdict it pins is the interesting part. After
+/// `ca[i & 63] = 7`, byte 0 was written *if and only if* the index chose it — so a concrete
+/// read of byte 0 is 021 §3.1's middle state:
+///
+/// - `maybe-uninitialized-read` is correct, and is what the init store makes possible;
+/// - `uninitialized-read` is what appears when the init store is missing or mis-indexed,
+///   because the array's init mask then stays all-`No`;
+/// - silence would be wrong in the other direction.
+///
+/// So the three outcomes distinguish the three states of the code, which is why this kills the
+/// mutants the previous three waves could not.
+#[test]
+fn a_symbolic_store_leaves_the_touched_byte_maybe_initialized() {
+    let m = harness::lower("int probe(int i){ char ca[64]; ca[i & 63] = 7; return ca[0]; }");
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        f.iter().any(|x| x.starts_with("maybe-uninitialized-read")),
+        "byte 0 was written only if the index chose it: {f:?}"
+    );
+    assert!(
+        !f.iter().any(|x| x.starts_with("uninitialized-read")),
+        "and the store did happen, so this is a maybe and not a definite: {f:?}"
     );
 }
