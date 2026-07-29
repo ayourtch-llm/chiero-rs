@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 184) — 1234 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 185) — 1234 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,59 +673,88 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Both oracles are per-site now. Do this first: the substring matching
+> ### 🔴 Both oracles are per-site and per-kind. Do this first: an intermittent failure
 >
-> `arithmetic_ub_agrees_with_gcc_site_for_site` runs in the suite (200 seeds, ~13s) and
-> reads **68 of 68 sites, 0 missed**. What is left of §9's old pair of softnesses is the
-> second one:
+> One full-suite run failed
+> `a_subset_of_a_satisfiable_set_is_satisfiable_with_no_backend_call` (wave 185). It then
+> passed **5 times in isolation and twice more under `--workspace`**, so it is not
+> reproduced and not diagnosed. Written down because a flake nobody records is a flake
+> rediscovered from scratch.
 >
-> - **The census still matches gcc's diagnostics on substrings**, and wave 176 already found
->   one row double-counting another's programs because `cannot be represented` appears in
->   two different gcc messages. The new per-site test inherits that: its `kind` is decided
->   by `contains("shift")`, `contains("signed integer overflow")` and so on. It has not been
->   audited, and the failure mode is a *row that reads clean because it matches nothing*.
-> - `zz_census` (per-run, `#[ignore]`d, 300 seeds) is now the weaker of the two and mostly
->   redundant. Decide whether it earns its keep or should be deleted in favour of the
->   per-site test with a wider seed range.
+> The hypothesis, untested: the SMT backend carries a 10-second watchdog (wave 163), wave
+> 185 added ~19s of parallel test work, and a subprocess that exceeds the watchdog answers
+> `Unknown` — which is exactly the assertion that failed. If so the fix is to give that test
+> a longer `$CHIERO_SMT_TIMEOUT` rather than to chase the solver. **Check the timeout
+> hypothesis before assuming a solver defect**, and if it is right, note that every test
+> asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> **The two oracles need opposite defaults, and this is the thing not to forget.** The memory
-> oracle treats ASan's silence as evidence (`invented` is asserted zero) because ASan checked
-> the access and found it in bounds. The arithmetic oracle cannot, because gcc's silence may
-> mean it never checked: UBSan only instruments operations that survive code generation, and
-> the front end folds arithmetic whose result is used solely as a condition. Measured, both
-> forms in one program:
+> ### 🔴 Also open, raised by the user in wave 185 and measured then: null-pointer reach
+>
+> Division by zero is fully symbolic and path-sensitive — measured, not assumed:
 >
 > ```text
->   if (x * (-65536)) { … }     // no report
->   int y = x * (-65536);       // runtime error: 131329 * -65536 …
+>   100 / x, x symbolic, unchecked          -> DivByZero reported
+>   if (x == 0) return 0; 100 / x           -> silent (solver proves x != 0 here)
+>   if (x != 0) return 0; 100 / x           -> reported (guard inverted)
 > ```
 >
-> That is now the **second** oracle blind spot found by a disagreement column — wave 180's
-> was ASan's redzone. Both would have been filed against the engine by a channel that
-> assumed its oracle was right.
+> **Null dereference is not, and the gap is a decision rather than an oversight.** For a
+> pointer whose nullability is in the model — `malloc`'s result — chiero reports the
+> unchecked dereference, which is the `null-dereference` finding every allocating program in
+> the memory corpus carries. For an **entry-function parameter** it assumes a valid object of
+> `ENTRY_PARAM_BYTES` (021 §7: "the caller is outside the analysis, so there is no right
+> answer — this is a bound chiero chose"), so `int probe(int *p){ return *p; }` is silent.
 >
-> Mutation on the per-site check, and the pair is worth reading together:
+> That bound is defensible for array *extent* and much weaker for *nullability*: a VPP node
+> function takes pointers from callers outside the analysis, and "may be null" is exactly the
+> question worth asking about them. Worth revisiting as a policy — probably an option rather
+> than a change of default, since making every entry pointer possibly-null would report every
+> unchecked dereference in a codebase that mostly cannot receive null.
+>
+> ### 🔴 And a checker nobody has written: a guard *below* a dereference
+>
+> `int v = *p; if (p) { … }` is silent today, and it is one of the most reliable bug
+> signatures there is: the later check is the author stating they believed `p` could be null,
+> which condemns the dereference above it. It is a *different question* from "can this be
+> null" — chiero's machinery answers the latter and nothing asks the former, even though the
+> path condition already carries `p == 0` as feasible on one branch.
+>
+> This needs no new engine capability, only a checker that notices the order. 023 §6's
+> framework is where it goes. Note the sharp edge before starting: the *inverse* pattern
+> (`if (p) { … } ... *p;`) is ordinary defensive code and must not fire.
+>
+> ### 🔴 Then: the arithmetic oracle's remaining softness
+>
+> `arithmetic_ub_agrees_with_gcc_site_for_site` now reads:
 >
 > ```text
->   KILLED     engine-drops-signed-overflow    <- `miss` catches a lost detection
->   KILLED     engine-ub-event-span-is-dummy   <- and catches a *misplaced* one
->   SURVIVED   oracle-ignores-the-site         <- kind-only matching passes on today's corpus
+>   programs=54 agree=85 miss=0 extra=1
+>      30 / 30   DivByZero
+>       7 / 7    FloatCastOverflow
+>      18 / 18   Shift
+>      30 / 30   SignedOverflow
 > ```
 >
-> The span mutant dies **because** the oracle compares sites: relax it to kinds alone and
-> that mutant would live. The third surviving is not a gap — it says no program in the
-> corpus currently has the right kind at the wrong line, which is the thing the site check
-> exists to catch if it ever happens.
+> - **`FloatCastOverflow` at 7 is the thin row now** — the same shape as
+>   `stack-buffer-overflow` at 1 in wave 180, and the same fix: make the shape more common
+>   in the corpus rather than lower the floor.
+> - **The substring classification is sound and that was checked, not assumed.** An
+>   unclassified gcc message becomes kind `"?"`, which chiero never emits, so it scores as a
+>   *miss* and fails loudly. §9 predicted this front would be about the substrings; they were
+>   fine and the gap was one row down.
 >
-> ### 🔴 Then: the census still matches substrings and counts per-run
+> Mutation on wave 185: `div-zero-knob-never-fires`, `engine-drops-div-by-zero` and
+> `float-divisor-also-zeroed` all die (the last confirms the float exclusion is
+> load-bearing — C99 Annex F makes float division by zero *defined*, so emitting one would
+> manufacture a site gcc never reports). **`truncation-not-detected` survives, and honestly
+> so**: the trapping-fault suppression only changes the `extra` count, and `extra` is
+> printed rather than asserted, so nothing can observe its accuracy. It is correctness for a
+> number a human reads, not for a verdict.
 >
-> A program with two overflows where chiero finds one counts as agreement. Matching gcc's
-> *line number* against the event's span would turn parity into something worth trusting.
-> Cheaper than (1) above and worth less: it tightens a measurement that is already saying
-> the right thing, where (1) can find defects.
->
-> ~~🔴 widen what the census can see.~~ **Wave 177 did half of it** — the memory half, which
-> was the half that could find defects. The per-site tightening above is the other half.
+> ~~🔴 the substring matching / `zz_census`'s fate.~~ **Wave 185: the substrings were sound,
+> and `zz_census` is deleted** — per-run where the new test is per-site, `#[ignore]`d where
+> it runs, and without a per-kind floor. Keeping a duplicate that can only give a softer
+> answer invites reading it when the sharp one fails.
 >
 > ### 🔴 Still owed: symbolic UB checking
 >
@@ -1043,6 +1072,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **"By construction" in a generator is a decision about what later channels can see**
+> (wave 185, third instance). Wave 177: `Gen::arrays` kept every index in range, so ASan
+> never fired. Wave 178: no `malloc`, so the heap classes were absent. Wave 185: divisors
+> non-zero, so `DivByZero` was graded by nothing. Each constraint was right for the
+> value-comparing channel that motivated it, and each silently bounded a channel written
+> later. When adding a corpus constraint, write down which oracle it serves — the next one
+> will need it lifted.
+>
+> **Record a flake even when it does not reproduce** (wave 185). One full-suite failure,
+> then 5 clean isolated runs and 2 clean full runs. Written into §9 with the hypothesis and
+> what would confirm it, because the alternative is that the next occurrence starts from
+> zero — and an intermittent failure that nobody has a prior on is the one that gets
+> re-run until it passes.
 >
 > **Assert the direction only one side can be wrong in; report the other** (wave 184). gcc
 > reporting UB that chiero missed can only be a chiero defect — gcc ran the operation and the
