@@ -1036,7 +1036,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **A generated corpus needs a floor, not a `> 0`** (wave 177). `flagged > 0` passes on one
 > lucky program, and a change that quietly stopped emitting the interesting case would
 > leave the channel green and empty. The oracle asserts `>= 5` against 15 observed, and
-> prints its census either way.
+> prints its census either way. **This rule was then found violated in the oldest channel
+> of all**: `generated_programs_agree_with_gcc` asserted `compared > 0`, and a mutant that
+> switched the new out-of-bounds knob on for *that* channel survived the whole suite —
+> every program would have been discarded as undefined and the test would have gone on
+> passing. Now `compared >= 100` against 130 observed.
+>
+> **Sweep mutants past the code you touched** (wave 177). The knob was added for the memory
+> oracle; mutating it found a missing floor in a five-wave-old value channel that had
+> nothing to do with this wave. A mutation whose blast radius surprises you is the useful
+> kind.
 >
 > **A surviving mutant is a missing test until proven equivalent** (wave 176).
 > `store-always-signed` survived the whole suite, which meant one of the wave's three fixed
