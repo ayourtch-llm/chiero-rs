@@ -307,6 +307,54 @@ fn a_bounded_loop_over_an_input_agrees() {
     agree_symbolic("int n = x & 3; int s = 0; for (int i = 0; i < n; i++) { s += i; } return s;");
 }
 
+/// **A comparison against a negative bound, and a test of a single bit.**
+///
+/// Wave 153 taught the domain two of the four signed narrowings, on the argument that
+/// `v >=s k` confines `v` to the non-negative half — one unsigned interval — while `v <s k`
+/// admits every negative value *plus* a low range, which is two. That argument is right for
+/// a **non-negative** `k` and backwards for a negative one:
+///
+/// ```text
+///   x <s 0     is exactly the negative half        — one interval, [2^31, 2^32-1]
+///   x <s -5    is [2^31, 0xFFFFFFFA]               — one interval
+///   x >=s -5   is [0, 2^31-1] and [0xFFFFFFFB, …]  — two, and rightly declined
+/// ```
+///
+/// So the sign of the bound decides which polarity is expressible, and wave 153 implemented
+/// exactly one half of that. `if (x < 0)` — as ordinary a line as C contains — has a false
+/// side the solver can answer and a true side it cannot.
+///
+/// The mask case is the same shape in a different domain. `x & 1 == 0` is a known-bits fact
+/// and pins the bit; `x & 1 != 0` was declined wholesale on the grounds that "one of the
+/// masked bits differs" does not say which. True for a multi-bit mask — and vacuous for a
+/// **single-bit** one, where there is only one bit it can be. `if (x & FLAG)` is the reason
+/// that matters.
+#[test]
+fn a_negative_bound_and_a_single_bit_test_are_decidable() {
+    agree_symbolic_with_paths("if (x < 0) { return 1; } return 2;", 2);
+    agree_symbolic_with_paths("if (x < -5) { return 1; } return 2;", 2);
+    agree_symbolic_with_paths("if (x <= -1) { return 1; } return 2;", 2);
+    agree_symbolic_with_paths("if (x < 0 || x > 100) { return 1; } return 2;", 3);
+    // A single-bit mask, in both the `== 0` and the truth-value spellings.
+    agree_symbolic_with_paths("if ((x & 1) == 0) { return 100; } return 200;", 2);
+    agree_symbolic_with_paths("if (x & 4) { return 1; } return 2;", 2);
+}
+
+/// **A value widened before it is compared** — `long l = x; if (l > 5)`.
+///
+/// The atom is `5 <s sext(x, 64)`, whose operand is not a variable, so no domain narrows and
+/// the candidate fails validation on one side. Widening is exact and invertible for a bound
+/// that fits the narrow width, which makes this a narrowing the domain can do and simply was
+/// never taught.
+///
+/// It matters beyond `long`: every `char` and `short` in a comparison is promoted to `int`
+/// first (C11 6.3.1.1), so the widened-operand shape is what integer promotion produces.
+#[test]
+fn a_widened_operand_still_narrows_its_source() {
+    agree_symbolic_with_paths("long l = x; if (l > 5) { return 1; } return 2;", 2);
+    agree_symbolic_with_paths("long l = x; if (l < 0) { return 1; } return 2;", 2);
+}
+
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
 /// silently compare nothing is not a channel.**
 ///

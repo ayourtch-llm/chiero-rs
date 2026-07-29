@@ -498,3 +498,132 @@ fn a_wide_bitwise_and_is_not_split_into_conjuncts() {
         CheckResult::Unknown(_) => {}
     }
 }
+
+/// **The sign of the bound decides which polarity is an interval**, and wave 153 taught
+/// only the half that holds for a non-negative bound.
+///
+/// The domain is an unsigned range. A signed constraint maps onto one exactly when it
+/// confines `v` to a contiguous run of bit patterns:
+///
+/// ```text
+///   k >= 0:  v >=s k  is [k, 2^(w-1)-1]         one interval
+///            v <s  k  is negatives + [0, k-1]   two
+///   k <  0:  v <s  k  is [2^(w-1), k_u - 1]     one interval
+///            v >=s k  is [0, 2^(w-1)-1] + [k_u, …]  two
+/// ```
+///
+/// So each polarity is expressible for exactly one sign of `k`, and wave 153 implemented one
+/// row of that table. `x <s 0` — the negative test every C program contains — fell in the
+/// unimplemented half, and its `Unknown` was invisible because the *other* side of the
+/// branch answered fine.
+#[test]
+fn a_negative_signed_bound_is_an_interval_in_the_other_polarity() {
+    for (name, k, negated, want) in [
+        ("x <s 0, satisfied only by a negative", 0i64, false, true),
+        ("x <s -5", -5, false, true),
+        ("!(x <s -5), i.e. x >=s -5", -5, true, false),
+    ] {
+        let mut a = TermArena::new();
+        let x = a.var(Sort::BitVec(32), "x");
+        let bound = a.bv(32, u128::from(k as u32));
+        let lt = a.slt(x, bound);
+        let t = if negated { a.not(lt) } else { lt };
+        let mut s = SolverLite::default();
+        match s.check(&mut a, &[t]) {
+            CheckResult::Sat(m) => {
+                assert_eq!(
+                    a.eval(&m, t).map(|v| v.bits() != 0),
+                    Ok(true),
+                    "{name}: the model does not satisfy the assertion it was produced for"
+                );
+                let v = a.eval(&m, x).expect("binds x").signed() as i32;
+                if want {
+                    assert!(v < k as i32, "{name}: the model puts x at {v}");
+                }
+            }
+            // Declining is sound. It is only *this* test's subject when the constraint is
+            // one the table above says is an interval.
+            other if want => panic!(
+                "{name}: {other:?}. A negative bound makes this polarity a single unsigned \
+                 interval, so declining it is incompleteness with nothing to justify it."
+            ),
+            _ => {}
+        }
+    }
+}
+
+/// **A single-bit mask has only one bit to differ in.**
+///
+/// `v & m == k` is a known-bits fact and pins the selected bits. The negation was declined
+/// wholesale, on the correct observation that "one of the masked bits differs" does not say
+/// which — correct for a multi-bit mask, and vacuous when the mask selects exactly one bit,
+/// where there is nothing else it could be. `if (x & FLAG)` is why that case is worth having.
+#[test]
+fn a_negated_single_bit_mask_pins_its_bit() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let one = a.bv(32, 1);
+    let zero = a.bv(32, 0);
+    let masked = a.and(x, one);
+    let is_zero = a.eq(masked, zero);
+    let odd = a.not(is_zero);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[odd]) {
+        CheckResult::Sat(m) => {
+            let v = a.eval(&m, x).expect("binds x").bits();
+            assert_eq!(v & 1, 1, "the model gives x = {v}, which is even");
+        }
+        other => panic!(
+            "`x & 1 != 0` came back {other:?}. With one bit selected there is exactly one \
+             way for the masked value to be nonzero, so this is not the multi-bit case the \
+             restriction was written for."
+        ),
+    }
+    // **The multi-bit case must still decline.** `x & 6 != 0` says bit 1 or bit 2 is set and
+    // pins neither; pinning either would be unsound, and this is the assertion that says the
+    // widening above did not overreach.
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let six = a.bv(32, 6);
+    let zero = a.bv(32, 0);
+    let masked = a.and(x, six);
+    let is_zero = a.eq(masked, zero);
+    let some = a.not(is_zero);
+    let mut s = SolverLite::default();
+    if let CheckResult::Sat(m) = s.check(&mut a, &[some]) {
+        assert_eq!(
+            a.eval(&m, some).map(|v| v.bits() != 0),
+            Ok(true),
+            "a multi-bit mask was pinned to one of its bits, which the constraint does not say"
+        );
+    }
+}
+
+/// **A widened operand still constrains its source.**
+///
+/// `(long)x > 5` is `5 <s sext(x, 64)`, whose operand is not a variable, so nothing narrows.
+/// Widening is exact and order-preserving for a bound that fits the narrow width, which
+/// makes this a narrowing the domain can do and was never taught.
+///
+/// This is not a `long` curiosity: integer promotion (C11 6.3.1.1) widens every `char` and
+/// `short` before comparing it, so the widened-operand shape is what most comparisons on
+/// small types actually produce.
+#[test]
+fn a_comparison_through_a_widening_narrows_the_narrow_variable() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let wide = a.sext(x, 64);
+    let five = a.bv(64, 5);
+    let gt = a.slt(five, wide);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[gt]) {
+        CheckResult::Sat(m) => {
+            let v = a.eval(&m, x).expect("binds x").signed() as i32;
+            assert!(
+                v > 5,
+                "the model gives x = {v}, which is not greater than 5"
+            );
+        }
+        other => panic!("`(long)x > 5` came back {other:?}"),
+    }
+}
