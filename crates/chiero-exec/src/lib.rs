@@ -2188,7 +2188,7 @@ impl<'m> Engine<'m> {
         // Measured: 3 of 3 null-dereference findings over `tests/corpus/c` were `static`
         // helpers whose callers all pass `&table[i]`. Every one true, none of them chiero's
         // to raise from that entry.
-        let exported = f.linkage == chiero_cir::Linkage::External;
+        let exported = f.linkage == chiero_cir::Linkage::External || self.address_escapes(f.id);
         if self.entry_ptr_nullable && exported && !ptr_params.is_empty() {
             let originals = work.clone();
             for (vid, _) in &ptr_params {
@@ -2719,6 +2719,55 @@ impl<'m> Engine<'m> {
                 );
             }
         }
+    }
+
+    /// Does anything in the module take this function's **address**?
+    ///
+    /// Wave 188 drops the null-caller assumption for internal linkage, on the ground that
+    /// every call site is in this module. A taken address removes that ground: the pointer
+    /// can be stored, returned or handed to a library, and the call then arrives from a
+    /// translation unit chiero will never see. A `static` node function registered by
+    /// address is the ordinary shape in VPP, so this is not a corner case.
+    ///
+    /// **All three carriers, because missing one is unsound in the quiet direction** — the
+    /// assumption stays off and the finding never appears. `AddrOfFunc` is the instruction,
+    /// `Const::FuncAddr` the operand, and `GlobalInit::FuncAddr` a file-scope initializer,
+    /// which before this wave did not exist: `int (*t)(int*) = helper;` lowered to `Zero`.
+    ///
+    /// A *direct call* is not an escape and must not count — `Terminator::Call` names the
+    /// callee by `FuncId` without going through any of these, which is what keeps wave
+    /// 188's suppression alive for the ordinary helper.
+    fn address_escapes(&self, id: chiero_cir::FuncId) -> bool {
+        let taken_in_global = self
+            .module
+            .globals
+            .iter()
+            .any(|g| matches!(g.init, chiero_cir::GlobalInit::FuncAddr(f) if f == id));
+        if taken_in_global {
+            return true;
+        }
+        let is_addr = |o: &Operand| matches!(o, Operand::Const(Const::FuncAddr(t)) if *t == id);
+        self.module.funcs.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                b.insts.iter().any(|i| match &i.kind {
+                    InstKind::Assign { rv, .. } => match rv {
+                        RValue::AddrOfFunc(t) => *t == id,
+                        RValue::Use(o) => is_addr(o),
+                        RValue::Select { cond, t, f } => is_addr(cond) || is_addr(t) || is_addr(f),
+                        _ => false,
+                    },
+                    InstKind::Store { val, .. } => is_addr(val),
+                    // An argument, which is how the address reaches a registration
+                    // function — `VLIB_REGISTER_NODE`'s shape, and the reason this matters
+                    // for VPP at all.
+                    InstKind::Call { args, callee, .. } => {
+                        args.iter().any(is_addr)
+                            || matches!(callee, Callee::Indirect(o) if is_addr(o))
+                    }
+                    _ => false,
+                })
+            })
+        })
     }
 
     /// Record 020 §4.1's UB event for a binary operation, if this one has one.
@@ -5691,6 +5740,24 @@ impl<'m> Engine<'m> {
             // `Value::Ptr` store goes through, so a pointer that starts life in a global
             // and one assigned at run time are the same value by construction — and the
             // object travels with it, which no byte pattern could carry.
+            // The same treatment as `Addr`, through the same `func_object` a `FuncAddr`
+            // operand uses — so a function pointer that starts life in a global and one
+            // assigned at run time are the same value, and an indirect call through either
+            // resolves to the same function.
+            Some(chiero_cir::GlobalInit::FuncAddr(target)) => {
+                let base = self.func_object(s, *target);
+                let p = chiero_mem::Pointer { base, off: 0 };
+                if let Some(t) = self.address_term(a, s, p, span) {
+                    let _ = s.mem.write_term(
+                        a,
+                        chiero_mem::Pointer { base: o, off: 0 },
+                        t,
+                        8,
+                        chiero_mem::Endian::Little,
+                        span,
+                    );
+                }
+            }
             Some(chiero_cir::GlobalInit::Addr { g: target, off }) => {
                 let (target, off) = (*target, *off);
                 let base = self.global_object(a, s, target);

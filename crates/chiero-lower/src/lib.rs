@@ -624,16 +624,23 @@ impl Lowerer<'_> {
             // **An address initializer is an address, not bytes.** `int *gp = &g;` has no
             // byte encoding that carries provenance, and falling through to `Zero` below
             // made `gp == 0` answer *true* for a pointer that is definitely not null.
-            match init.and_then(|e| self.global_addr_init(e)) {
-                Some((g, off)) => chiero_cir::GlobalInit::Addr { g, off },
-                None => match init.and_then(|e| self.encode_init(e, sty, size)) {
-                    Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
-                    // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
-                    // must not become bytes for the part it understood: the rest would read as
-                    // zeros the program never wrote, which is the confidently-wrong direction.
-                    // `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct; for one
-                    // chiero failed to encode it is at least not a fabrication.
-                    None => chiero_cir::GlobalInit::Zero,
+            // **A function's address is not a global's.** `int (*t)(int*) = helper;` has no
+            // `GlobalId` to name, so `global_addr_init` cannot see it and the fall-through
+            // to `Zero` made the pointer compare equal to null — the same failure that
+            // comment above records for data addresses, in the case it does not cover.
+            match init.and_then(|e| self.func_addr_init(e)) {
+                Some(f) => chiero_cir::GlobalInit::FuncAddr(f),
+                None => match init.and_then(|e| self.global_addr_init(e)) {
+                    Some((g, off)) => chiero_cir::GlobalInit::Addr { g, off },
+                    None => match init.and_then(|e| self.encode_init(e, sty, size)) {
+                        Some(bytes) => chiero_cir::GlobalInit::Bytes(bytes),
+                        // **`Zero`, not a partial encoding.** An initializer chiero cannot encode
+                        // must not become bytes for the part it understood: the rest would read as
+                        // zeros the program never wrote, which is the confidently-wrong direction.
+                        // `Zero` for an *uninitialized* object is C11 6.7.9p10 and correct; for one
+                        // chiero failed to encode it is at least not a fabrication.
+                        None => chiero_cir::GlobalInit::Zero,
+                    },
                 },
             }
         };
@@ -5153,6 +5160,36 @@ impl Lowerer<'_> {
     /// **Only a file-scope target.** The address of a *local* is not a constant expression
     /// and cannot initialize static storage, so `None` here is the right answer for it and
     /// C would have rejected the program anyway.
+    /// A file-scope initializer naming a **function**, through either spelling.
+    ///
+    /// C11 6.3.2.1p4 converts a function designator to a pointer wherever one is wanted, so
+    /// `= helper` and `= &helper` are the same initializer and must not be distinguished
+    /// here — a fix keyed on `&` would leave the commoner spelling reading as null.
+    fn func_addr_init(&mut self, e: ExprId) -> Option<chiero_cir::FuncId> {
+        let e = match self.ast.expr(e).kind.clone() {
+            chiero_ast::ExprKind::Unary {
+                op: chiero_ast::UnOp::AddrOf,
+                operand,
+            } => operand,
+            _ => e,
+        };
+        let chiero_ast::ExprKind::Ident(sym) = self.ast.expr(e).kind.clone() else {
+            return None;
+        };
+        // A global of the same name wins: `int helper;` and a function `helper` cannot
+        // coexist in one C translation unit, but the lookup order should still be the one
+        // that cannot invent a function out of a data name.
+        if self.globals.contains_key(&sym) {
+            return None;
+        }
+        let text = self.sym(sym)?;
+        self.module
+            .funcs
+            .iter()
+            .find(|f| f.name == text)
+            .map(|f| f.id)
+    }
+
     fn global_addr_init(&mut self, e: ExprId) -> Option<(chiero_cir::GlobalId, i64)> {
         match self.ast.expr(e).kind.clone() {
             // `&x` — the operand names the object directly.

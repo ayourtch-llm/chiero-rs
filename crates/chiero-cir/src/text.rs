@@ -232,6 +232,14 @@ impl<'a> Parser<'a> {
                     off,
                 }
             }
+            Some("funcaddr") => {
+                let f = self
+                    .tok(t, o + 7)?
+                    .trim_start_matches('@')
+                    .parse()
+                    .map_err(|_| self.perr("bad funcaddr target"))?;
+                GlobalInit::FuncAddr(FuncId(f))
+            }
             _ => GlobalInit::Zero,
         };
         Ok(Global {
@@ -1473,6 +1481,7 @@ pub fn print(m: &Module) -> String {
             // name because a global need not have a unique printable one, and the round
             // trip has to be exact.
             GlobalInit::Addr { g, off } => format!(" addr @{} {}", g.0, off),
+            GlobalInit::FuncAddr(f) => format!(" funcaddr @{}", f.0),
         };
         o.push_str(&format!(
             "\nglobal {}{}@{} : size {} align {}{}{}\n",

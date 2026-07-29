@@ -752,6 +752,13 @@ pub enum GlobalInit {
     /// compares equal to null. Lowering used to fall back to `Zero` here, which made
     /// `gp == 0` answer *true* for a pointer that is definitely not null.
     Addr { g: GlobalId, off: i64 },
+    /// **The address of a function**: `int (*table)(int *) = helper;`.
+    ///
+    /// Its own variant for the same reason `Addr` is one, and the failure it prevents is the
+    /// same: lowering fell through to `Zero` here, so a global function pointer compared
+    /// equal to null and a call through it was a null call. A function has no `GlobalId`, so
+    /// `Addr` cannot carry it.
+    FuncAddr(FuncId),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
