@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 177) — 1230 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 178) — 1230 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -525,7 +525,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > missing ones; 175 found a widening conversion was hiding constants from the whole
 > engine, and three census rows closed at once; 176 gave float-to-integer conversions
 > the destination's signedness and brought every census row to parity with UBSan;
-> 177 made the generator commit memory UB and graded chiero against AddressSanitizer**.*
+> 177 made the generator commit memory UB and graded chiero against AddressSanitizer;
+> 178 gave it a heap, and the oracle five fault classes instead of one**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -671,27 +672,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: the memory-UB oracle only knows one fault
+> ### 🔴 Do this first: `stack-use-after-scope`, the one class still missing
 >
-> Wave 177 built the channel and it grades clean — `47 compared, 15 flagged by ASan, 15
-> caught, 0 invented` — but the corpus commits exactly one *kind* of memory fault: a
-> subscript past the end of an array. That is the easiest one. The recorded gaps, in the
-> order they are worth closing:
+> The memory oracle now grades five of ASan's classes and all of them clean:
 >
-> 1. **Use-after-free and double-free do not exist in the grammar at all.** There is no
->    `malloc`/`free` in it, so `chiero-mem`'s lifetime modelling is graded by nothing. This
->    is the largest hole and the closest to what VPP needs.
-> 2. **A negative index is never generated.** `access` takes a `usize` and threading a sign
->    through every access form was judged not worth it for a case ASan reports identically
->    — but chiero's own probe handles it, so this is untested capability rather than a gap.
-> 3. **The pointer-walk site keeps its in-range index** (`p = &a[start]` then `++` a bounded
->    number of times). Making it leave the array means deciding whether the fault is the
->    walk or the dereference; C says forming a pointer more than one past the end is already
->    undefined, which chiero does not check and ASan does not report.
-> 4. **Scope-exit lifetimes**: taking the address of a block-scoped local and reading it
->    after the block. ASan catches it with `-fsanitize=address` only under
->    `detect_stack_use_after_return`, which is off by default — so this one needs the
->    oracle's compile line extended before the grammar.
+> ```text
+>   memory-UB oracle: 57 compared, 38 flagged by ASan, 38 caught, 0 invented
+>       7 / 7    attempting double-free
+>       7 / 7    global-buffer-overflow
+>      13 / 13   heap-buffer-overflow
+>      10 / 10   heap-use-after-free
+>       1 / 1    stack-buffer-overflow
+> ```
+>
+> The sixth, `stack-use-after-scope`, is listed in the tally and never appears. chiero
+> **does** detect it — probed in wave 178:
+>
+> ```text
+>   use-after-scope: a left scope at bytes 74..97, before this access
+> ```
+>
+> Two things are needed and the order matters: the oracle's compile line needs
+> `-fsanitize=address` with `detect_stack_use_after_return=1` **and** ASan's
+> `-fsanitize-address-use-after-scope` (on by default at `-O0` in recent gcc, worth
+> confirming rather than assuming), and only then the grammar needs a block-scoped local
+> whose address escapes. Doing the grammar first produces programs neither tool flags, which
+> looks like agreement.
+>
+> Also still absent, and cheaper: **`stack-buffer-overflow` is at 1 of 38.** Local arrays
+> are rarer in the grammar than globals, so the interesting local case is nearly untested
+> while the global one is well covered.
+>
+> ~~🔴 the memory-UB oracle only knows one fault.~~ **Wave 178: five.** Note what found it —
+> the per-class table. Wave 177's `15 / 15` read as parity and was two classes, both the
+> same fault in different storage.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1019,6 +1033,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A total hides which rows are empty** (wave 178). The memory oracle reported `15 flagged,
+> 15 caught` and read as parity; broken out by the class ASan itself named, it was two
+> classes, both buffer overflows, with the entire heap missing. Any oracle over a
+> *generated* corpus needs its score split by the thing the corpus is supposed to vary,
+> because the corpus is the part most likely to be silently wrong.
+>
+> **When the engine sees further than the oracle, that is not a false positive** (wave 178).
+> Every allocating program forks: malloc can fail, the generated code does not check, and
+> the failure path really does dereference NULL. ASan's malloc succeeds so its one run never
+> goes there. Wave 177's `invented` column assumed "closed programs, one path" — true then,
+> false the moment malloc entered the grammar. Before recording a disagreement as a defect,
+> ask whether the oracle *executed* the thing it stayed silent about.
+>
+> **Sanitizers report things that are not undefined behaviour** (wave 178). LeakSanitizer
+> ships inside ASan and flags an un-freed block at exit, but a leak is defined — every
+> operation does what C promises. Left on, it would have scored every allocating program as
+> a chiero miss. Read what the oracle is actually reporting before treating its output as a
+> UB verdict.
 >
 > **A constraint that serves one channel becomes a blind spot for the next** (wave 177).
 > `Gen::arrays` kept every index in range *by construction*, with a comment explaining that

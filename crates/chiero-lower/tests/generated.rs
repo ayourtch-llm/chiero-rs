@@ -1967,6 +1967,21 @@ struct Tally {
 /// Deliberately narrow: it clears a run only when **all** its memory findings are
 /// null-dereferences. A program that genuinely faults *and* has a failure path reports both,
 /// and this must not let the genuine one through unexamined.
+/// AddressSanitizer's fault classes, and the wording chiero's finding must carry for that
+/// class to count as caught.
+///
+/// The pairing is the whole point: `heap-use-after-free` is answered by a use-after-free
+/// finding and nothing else. Without it the oracle grades "did chiero say anything about
+/// memory", which every allocating program satisfies before the real fault is examined.
+const ASAN_CLASSES: &[(&str, &str)] = &[
+    ("heap-use-after-free", "use-after-free"),
+    ("attempting double-free", "double-free"),
+    ("stack-buffer-overflow", "out-of-bounds"),
+    ("global-buffer-overflow", "out-of-bounds"),
+    ("heap-buffer-overflow", "out-of-bounds"),
+    ("stack-use-after-scope", "use-after-scope"),
+];
+
 fn is_malloc_failure_path(r: &chiero_exec::RunResult) -> bool {
     let mem: Vec<String> = r
         .findings()
@@ -2061,23 +2076,36 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
         // **ASan names the class it found; record it.** The classes are matched on ASan's
         // own wording rather than inferred from the source, so a corpus that stops emitting
         // one of them shows up as an empty row instead of as nothing at all.
-        for class in [
-            "heap-use-after-free",
-            "attempting double-free",
-            "stack-buffer-overflow",
-            "global-buffer-overflow",
-            "heap-buffer-overflow",
-            "stack-use-after-scope",
-        ] {
-            if err.contains(class) {
-                let e = t.classes.entry(class).or_default();
-                e.0 += 1;
-                if found {
-                    e.1 += 1;
-                }
+        // **Matched by class, not by "chiero said something".** Nearly every allocating
+        // program carries a `null-dereference` from the malloc-failure path, so a predicate
+        // that accepts any memory finding is satisfied before the real fault is looked for
+        // — mutation found this by leaving `detect_leaks` on and still passing: a
+        // leak-only program was being scored as caught on the strength of that null.
+        let mut want_any = false;
+        let mut got_all = true;
+        for (class, expect) in ASAN_CLASSES {
+            if !err.contains(class) {
+                continue;
+            }
+            want_any = true;
+            let hit = r
+                .findings()
+                .iter()
+                .any(|f| format!("{f:?}").contains(expect));
+            let e = t.classes.entry(class).or_default();
+            e.0 += 1;
+            if hit {
+                e.1 += 1;
+            } else {
+                got_all = false;
             }
         }
-        if found {
+        // ASan flagged something none of the classes name — a class this table does not
+        // know yet. Counting it as caught would hide it, so it is a miss.
+        if !want_any {
+            got_all = false;
+        }
+        if got_all {
             t.caught += 1;
         } else {
             t.missed.push(seed);
@@ -2135,7 +2163,12 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
     // **Every class the grammar claims to emit must actually appear.** Wave 177's corpus
     // committed exactly one kind of fault and reported `15 / 15`, which reads as parity and
     // was really one row of a table with the rest missing.
-    for class in ["heap-use-after-free", "attempting double-free"] {
+    for class in [
+        "heap-use-after-free",
+        "attempting double-free",
+        "heap-buffer-overflow",
+        "global-buffer-overflow",
+    ] {
         let seen = t.classes.get(class).map(|c| c.0).unwrap_or(0);
         assert!(
             seen > 0,
