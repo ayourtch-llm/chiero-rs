@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 173) — 1214 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 174) — 1220 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -520,7 +520,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > half idle; 167 gave the engine concrete floating point; **168 made floats lower, run and
 > agree with gcc; 169 finished them with comparisons and `_Bool`; 170 fixed mixed int/float
 > operands; 171 closed a hole in the generator's UB filter; 172 made a float-cast overflow a
-> finding; 173 censused the UB gap and found where it cannot be closed**.*
+> finding; 173 censused the UB gap and found where it cannot be closed;
+> 174 gave CIR the signedness C's UB rules turn on, closing a false report and two
+> missing ones**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -666,11 +668,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first
+> ### 🔴 Do this first: UB checking is concrete-only, and that is now the whole gap
 >
-> **The open-defect list is empty.** Every item wave 132's implementation review left, plus
-> everything the generator has found since, is fixed. What remains is tooling and one
-> deliberate deferral:
+> `note_ub` returns early unless **both operands fold to constants**. Every UB check the
+> engine has — signed overflow, all three shift rules — therefore never runs on a program
+> that computes on its inputs, which is every generated program and every real one. That
+> single line is what `zz_census` measures as `0 / 18` on signed integer overflow while a
+> hand-built `INT_MAX + 1` reports every time.
+>
+> **The machinery is already written and already used for this exact shape.** Wave 156's
+> `symbolic_div_by_zero` asks the solver whether a divisor *can* be zero on this path and
+> takes the three answers as three outcomes: `Sat` records the event with the witness that
+> proves it, `Unsat` reports nothing and degrades nothing, `Unknown` degrades fidelity
+> because 020 §5 says a gap is a diagnostic and not a licence. Signed overflow is the same
+> question with a different predicate — *can this sum leave the range?* — and so is each
+> shift rule.
+>
+> Do that for `Add`/`Sub`/`Mul` and for `Shl`, keeping the signedness wave 174 added as the
+> guard on which predicate to ask. Expect the census rows to close together, since they
+> share the one cause. Expect also to need 023 §9's witness on each: a report saying
+> "this multiplication can overflow" without the input that makes it is the non-reproducible
+> bug report 023 forbids.
+>
+> Everything else on the open-defect list is empty. What remains besides the above is
+> tooling and one deliberate deferral:
 >
 > - ~~The verifier is not run at lowering time.~~ **Done in wave 145.** `refuse_unverifiable`
 >   runs it over the finished module and discards any function it rejects, with a diagnostic
@@ -811,38 +832,59 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     float-to-integer conversion is not in `UbKind` at all.
 >   So the fix is a new `UbKind` plus a concrete check in `note_ub` (the operand is a folded
 >   float there, so it needs no solver query), and the checker picks it up for free.
-> - **The UB census, measured in wave 173** over 300 generated programs — what
->   `-fsanitize=undefined,address,float-cast-overflow` reports against what
->   `default_checkers` reports:
+> - **The UB census** — what `-fsanitize=undefined,address,float-cast-overflow` reports
+>   against what chiero records, over 300 generated programs. It now lives in the tree as
+>   `zz_census` in `generated.rs` (`#[ignore]`d, ~30s):
 >   ```text
->     seen / chiero
->       14 / 0   signed integer overflow
->        8 / 0   left shift of negative
->        5 / 1   left shift of N by M places cannot be represented
->        2 / 0   shift exponent
->       11 / 7   outside the range of representable values
+>     wave 173        wave 174     (samples differ; the shape is what matters)
+>     seen / chiero   seen / chiero
+>       14 / 0          18 / 0     signed integer overflow
+>        8 / 0          10 / 5     left shift of negative
+>        5 / 1          22 / 6     left shift of N by M cannot be represented
+>        2 / 0           2 / 0     shift exponent
+>       11 / 7          12 / 8     outside the range of representable values
 >   ```
-> - **🔴 020 decision needed: `Shl` carries no signedness.** Rows 2 and 3 above cannot be
->   closed in the engine. C11 6.5.7p4's other two clauses apply to *signed* left shifts only,
->   and CIR has one `Shl` — right shifts distinguish (`AShr`/`LShr`) and left shifts do not,
->   because the operation is identical and only the UB rules differ. `1 << 31` is undefined
->   for `int` and ordinary for `unsigned`; checking from the bits reports every unsigned
->   shift of a large value. `a_left_shift_count_is_checked_and_the_signed_rules_are_not`
->   pins the current behaviour, and a mutation adding the rule back **dies** on it — so that
->   test is what will speak when `Shl` grows a signedness.
-> - **`as_const` was not the cause of row 1**, checked first because wave 170 made it the
->   obvious suspect: literal, local and global operands all fold and all report. Row 1 is
->   still unexplained and is the next thing to look at.
-> - **🔴 The cross-check has no legal home.** `check-deps` refused the census probe:
->   001 §4 rule 2 forbids `chiero-lower` (Frontend) a dependency on `chiero-check`
->   (Vertical), and rule 7 equally forbids `chiero-check` a frontend dependency. So a test
->   that generates C *and* runs chiero's checkers cannot live in either crate. It needs a
->   third home — a dedicated integration crate or an `xtask` — and that is a decision, not
->   an oversight to route around. The sanitizer
->   labels ~220 of every 600 generated programs as undefined — a free, labelled UB corpus —
->   and the generator throws it away. Every discarded program is one chiero *should* have a
->   finding for, and no test says so. That is a whole detection channel sitting unused, and
->   it is how the gap above would have been found without anyone asking.
+>   The measure is deliberately loose — "gcc printed it *and* chiero recorded a matching
+>   kind somewhere in the run", no span or operand matching — so it over-credits. A row
+>   reading `0` is a real gap; a row reading `n / n` would not be proof of agreement.
+> - ~~**🔴 020 decision needed: `Shl` carries no signedness.**~~ **Decided and done in wave
+>   174**, and it was broader than `Shl`. `RValue::Bin` now carries `signed: bool` and
+>   `note_ub` reads it. The bit rides on the *instruction*, as LLVM's `nsw` does, rather
+>   than on the opcode (splitting `Add` would name a distinction the hardware does not
+>   make — unlike `SDiv`/`UDiv`, where it does) or on `CTy::Int(w)` (which would have to
+>   grow a signedness everywhere to answer a question only arithmetic asks). The rejected
+>   cheap option was letting bare `Add`/`Shl` mean "signed" and adding `UAdd`/`UShl`: zero
+>   test churn, but an opcode whose name hides its signedness is the same implicit
+>   assumption that caused the defect.
+> - **The same dropped bit was also producing a *false* report**, which the census could not
+>   see because it only counts what gcc flags. `note_ub` called `.signed()` on both operands
+>   unconditionally, so `3000000000u + 3000000000u` reinterpreted as
+>   `-1294967296 + -1294967296`, left the signed range and fired — on a program gcc runs
+>   clean. Wave 171's rule makes that the more serious half of the wave.
+> - **Not every `Bin` is signed, and the generated ones are the interesting ones.** Scaling
+>   an index by an element size, subtracting two addresses and negating a byte offset are
+>   address arithmetic *chiero* emitted; marking them signed reports the engine's own
+>   pointer math as the user's overflow. They are unsigned, which is what addresses are.
+>   Only the goldens pin this — `addr-arith-marked-signed` dies on
+>   `every_corpus_c_file_matches_its_lowered_golden` and on no behavioural test, because
+>   overflowing 64-bit address arithmetic needs an astronomical index. **A golden bless
+>   would silently accept it**, so read that part of a golden diff rather than skimming it.
+> - **🔴 Row 1 is explained, and is the next wave.** Not `as_const` — checked first, since
+>   wave 170 made it the obvious suspect, and literal, local and global operands all fold
+>   and all report. The cause is in `note_ub`'s second line: it returns early unless **both
+>   operands fold to constants**, so a generated program computing on symbolic values is
+>   never checked at all. That is why row 1 reads `0 / 18` while a hand-built `INT_MAX + 1`
+>   reports every time, and why rows 2–4 close only partway. **The machinery already
+>   exists**: `symbolic_div_by_zero` asks the solver whether a divisor can be zero and is
+>   the exact shape needed — ask whether the sum can leave the range, report with a witness
+>   when it can, stay quiet when it cannot, degrade fidelity on `Unknown`. Doing this for
+>   `Add`/`Sub`/`Mul`/`Shl` is what closes the census.
+> - ~~**🔴 The cross-check has no legal home.**~~ **Wrong premise, corrected in wave 174.**
+>   It needed no new crate: the UB *events* come from `chiero-exec`, and `chiero-lower` may
+>   depend on that. Only a census phrased in terms of `default_checkers` was illegal, and
+>   checkers turn events into findings — the events are the layer where the gap is. The
+>   sanitizer still labels ~220 of every 600 generated programs undefined, a free labelled
+>   UB corpus the generator discards; `zz_census` is the first channel to read it.
 > - **🔴 Next on floats**: x87 80-bit arithmetic and comparison (no Rust primitive — its
 >   width works, so loads and stores do), and **symbolic** floats, which still need an FP
 >   theory or a bit-blasted encoding in the solver. The concrete path is now complete. `refuse_float_compare` now declares the two operations
@@ -936,6 +978,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A pin written to fail is worth more than the assertion it replaces** (wave 174). Wave
+> 173 could not implement two of C11 6.5.7p4's clauses, so it asserted they do *not* fire
+> and said in the doc comment that the test would speak if `Shl` ever grew a signedness. One
+> wave later it spoke — it was the first thing to fail, and it named its own successor. A
+> limitation recorded as a passing assertion is a tripwire; the same limitation recorded as
+> a comment is a thing the next reader re-derives.
+>
+> **Ask what the missing bit is a property *of*, before choosing where to put it** (wave
+> 174). Signedness is a property of the C operands, so the candidates were the opcode, the
+> type, and the instruction. The opcode was wrong because splitting `Add` would name a
+> distinction the hardware does not make — the test is whether the *machine* operation
+> differs, which is why `SDiv`/`UDiv` is right and `SAdd`/`UAdd` would not be. The type was
+> wrong because `CTy::Int(w)` would have to grow a signedness at every construction and
+> every match to answer a question only arithmetic asks. The instruction was right, which is
+> also where LLVM puts it. The cheap fourth option — let bare `Add` mean "signed", add
+> `UAdd` beside it, churn no tests — was the trap: an opcode whose name hides its
+> signedness is the same implicit assumption that caused the defect.
+>
+> **A census that only counts what the oracle flags cannot see false positives** (wave 174).
+> `zz_census` compares chiero against UBSan and can only ever report rows where gcc said
+> something. The worse half of this wave's defect — unsigned wraparound reported as signed
+> overflow, on a program gcc runs clean — is invisible to it by construction, and was found
+> by asking what the *code* assumed rather than by reading the table. Measure both
+> directions or the measurement flatters you.
+>
+> **When a mutant dies only on a golden, say so** (wave 174). `addr-arith-marked-signed`
+> is killed by `every_corpus_c_file_matches_its_lowered_golden` and by no behavioural test,
+> because overflowing 64-bit address arithmetic needs an astronomical index. That is an
+> honest pin, not a bad one — but it means a routine re-bless would accept the defect
+> silently, so it belongs in the notes rather than in the killed column without comment.
 >
 > **When the fix is unsound, the wave's product is the reason** (wave 173). The RED asked
 > for three UB rules; two turned out to need signedness CIR does not carry, and implementing

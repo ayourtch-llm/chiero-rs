@@ -164,3 +164,28 @@ pub fn lower_with_config(
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     lowered.module
 }
+
+/// Lower, or `None` if any stage refused. Unlike [`lower`] this does not assert: the
+/// census compares chiero against gcc over generated programs, where a refusal is a
+/// legitimate outcome to skip rather than a test failure.
+pub fn lower_maybe(src: &str) -> Option<Module> {
+    let tu = preprocess_str("t.c", src, Config::default());
+    if !tu.diagnostics.is_empty() {
+        return None;
+    }
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    if !analysis.diagnostics.is_empty() {
+        return None;
+    }
+    let lowered = chiero_lower::lower_tu(&parsed.ast, &analysis, &names);
+    if !lowered.diagnostics.is_empty() {
+        return None;
+    }
+    Some(lowered.module)
+}

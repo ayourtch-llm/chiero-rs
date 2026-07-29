@@ -1664,3 +1664,124 @@ fn the_ub_filter_discards_a_float_cast_overflow() {
         judge("", in_range)
     );
 }
+
+/// **The scoreboard against UBSan: what gcc reports and what chiero reports, side by side.**
+///
+/// `zz_soak` and the differential channels ask whether chiero computes the same *value* as
+/// gcc. This asks a different question — whether chiero *notices the same undefined
+/// behaviour* — and it is the only channel that does. A run that agrees on every value
+/// while reporting none of the UB is a symbolic executor that has stopped doing its job,
+/// and nothing else here would say so.
+///
+/// **Where this can live is not a free choice.** 001 section 4 rule 2 forbids
+/// `chiero-lower` from depending on `chiero-check`, and rule 7 forbids the mirror, so a
+/// census phrased in terms of `default_checkers` has no legal home in either crate — which
+/// is what wave 173 recorded as an open decision. It does not need one: the UB *events*
+/// come from the engine, and `chiero-lower` may depend on `chiero-exec`. Checkers turn
+/// events into findings; this measures the events, which is the layer where the gap is.
+///
+/// Ignored, like `zz_soak`: it compiles 300 programs with the sanitizer and takes ~30s.
+///
+/// ```text
+/// cargo test -p chiero-lower --test generated zz_census -- --ignored --nocapture
+/// ```
+///
+/// Reading it, at wave 174:
+///
+/// ```text
+/// seen / chiero
+///   22 / 6     cannot be represented
+///   10 / 5     left shift of negative
+///   12 / 8     outside the range of representable values
+///    2 / 0     shift exponent
+///   18 / 0     signed integer overflow
+/// ```
+///
+/// The two left-shift rows were `0` before this wave; they are the signedness `Bin` now
+/// carries. The rest of each gap, and the whole of the `signed integer overflow` row, has
+/// one cause: `note_ub` returns early unless **both operands fold to constants**, and a
+/// generated program computes on values the engine is holding symbolically. That is why
+/// row 1 reads `0 / 18` while a hand-built `INT_MAX + 1` reports every time — checked, in
+/// both shapes, before it was written down here.
+///
+/// The measure is deliberately loose: "gcc printed this diagnostic *and* chiero recorded an
+/// event of the matching kind, somewhere in the run". It does not match on span or on
+/// operand, so it over-credits rather than under-credits. A row that reads `0` is therefore
+/// a real gap, and a row that reads `n / n` is not proof of agreement.
+#[test]
+#[ignore]
+fn zz_census() {
+    use std::collections::BTreeMap;
+    let dir =
+        std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or("/tmp".into())).join("census");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut tab: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    let (mut n, mut skipped) = (0u32, 0u32);
+    for seed in 0..300u64 {
+        let (prelude, body) = program(seed);
+        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
+        let csrc = format!(
+            "{src}\n#include <stdio.h>\nint main(void){{ printf(\"%d\\n\", probe()); return 0; }}\n"
+        );
+        let c = dir.join(format!("s{seed}.c"));
+        let x = dir.join(format!("s{seed}"));
+        std::fs::write(&c, &csrc).unwrap();
+        let comp = std::process::Command::new("gcc")
+            .args([
+                "-O0",
+                "-fsanitize=undefined,address,float-cast-overflow",
+                "-o",
+            ])
+            .arg(&x)
+            .arg(&c)
+            .output()
+            .unwrap();
+        if !comp.status.success() {
+            skipped += 1;
+            continue;
+        }
+        let out = std::process::Command::new(&x).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        let m = harness::lower_maybe(&src);
+        let Some(m) = m else {
+            skipped += 1;
+            continue;
+        };
+        let mut arena = chiero_solver::TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let kinds: Vec<String> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .map(|u| format!("{:?}", u.kind))
+            .collect();
+        n += 1;
+        for pat in [
+            "signed integer overflow",
+            "left shift of negative",
+            "cannot be represented",
+            "shift exponent",
+            "outside the range of representable values",
+        ] {
+            if err.contains(pat) {
+                let want = match pat {
+                    "signed integer overflow" => "SignedOverflow",
+                    "outside the range of representable values" => "FloatCastOverflow",
+                    _ => "Shift",
+                };
+                let e = tab.entry(pat.into()).or_default();
+                e.0 += 1;
+                if kinds.iter().any(|k| k == want) {
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    println!("\n=== census over 300 seeds ({n} compared, {skipped} skipped) ===");
+    println!("seen / chiero");
+    for (k, (seen, got)) in &tab {
+        println!("{seen:4} / {got:<4}  {k}");
+    }
+}
