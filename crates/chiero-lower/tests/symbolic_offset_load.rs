@@ -125,3 +125,42 @@ fn an_unconstrained_index_is_still_reported() {
         "the index can leave the object and that is still said: {f:?}"
     );
 }
+
+/// **The bytes are the right ones, in the right order.**
+///
+/// Mutation found nothing observing this: every test above asks only whether a value came
+/// back, so reading a single byte instead of four, and composing them big-endian instead of
+/// little, both survived. Neither is visible without evaluating the value itself.
+///
+/// The value is symbolic — a `select` over the object at an unknown index — so it is solved
+/// rather than read. Every element is `0x01020304`, which makes the answer determinate for
+/// whichever offset the model picks: 4 bytes little-endian is `0x01020304`, one byte would be
+/// `0x04`, and big-endian would be `0x04030201`.
+#[test]
+fn the_composed_value_is_little_endian_and_full_width() {
+    use chiero_solver::{CheckResult, Solver, TieredSolver};
+
+    let elems = ["0x01020304"; 64].join(",");
+    let src = format!("int ga[64] = {{{elems}}};\nint probe(int i){{ return ga[i & 63]; }}");
+    let m = harness::lower(&src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+
+    let mut seen = 0;
+    for s in r.states() {
+        let mut solver = TieredSolver::new();
+        let CheckResult::Sat(model) = solver.check(&mut arena, &s.path) else {
+            continue;
+        };
+        let Some(bits) = s.return_value_under(&model, &arena) else {
+            continue;
+        };
+        seen += 1;
+        assert_eq!(
+            bits, 0x0102_0304,
+            "four bytes, least significant first; one byte would be 0x04 and \
+             big-endian 0x04030201"
+        );
+    }
+    assert!(seen > 0, "no state produced a solvable returned value");
+}

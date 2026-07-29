@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 195) — 1271 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 196) — 1275 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,45 +688,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first (milestone-sized): a `Value` that can hold a symbolic offset
+> ### 🔴 Do this first: the *store* side of a symbolic offset
 >
-> Three waves have circled the same wall. `Pointer::off` is a concrete `i64`, so a pointer
-> with a symbolic offset **cannot be represented in a `Value` at all** — and everything
-> downstream follows from that:
+> Wave 196 added `Value::SymPtr { base, off }` and taught the **load** path to read through it
+> — `ca[i & 63]` now reads, which it could not before. Storing *through* one still refuses:
 >
-> - `fork_on_offset` must enumerate offsets into concrete siblings, which fails for any
->   unconstrained `int` (17 values found, four billion needed);
-> - when it fails, the access stops at "a load through a non-pointer address", so
->   `ga[i]` produces **no value** even when the index is provably in range (`ga[i & 63]`);
-> - `chiero-mem` already implements the right thing for a symbolic offset — report
->   `OutOfBoundsMaybe`, assume the in-bounds constraint, continue with a real symbolic value
->   (`crates/chiero-mem/tests/bounds.rs`) — and the engine cannot call it, because it has no
->   value type to pass or to receive.
+> ```text
+>   ca[i & 63] = 7;   ->  a store through a non-pointer address
+> ```
 >
-> So the fix is a `Value` variant carrying `(ObjectId, Term)`. That is a milestone: every
-> `Value::Ptr` match arm has to decide what it means for a symbolic offset, and the ones that
-> cannot answer must refuse rather than guess. **Two shortcuts were tried in wave 195 and both
-> are wrong** — recorded so they are not tried again:
+> `chiero-mem` already has the counterpart, `write_at_symbolic_offset`, and it is the harder
+> direction for a reason worth knowing before starting: a symbolic write must either promote
+> the object to an array representation or write an if-then-else over candidates, and 021 §3's
+> `ITE_THRESHOLD` governs which. A promoted object then refuses byte-level writes elsewhere —
+> that exact interaction cost a wave once already (the comment on the entry-parameter
+> initialization records it), so check what promotion breaks *before* wiring the write.
 >
-> 1. *Concretize to one in-bounds offset.* Forbidden by
->    `a_symbolic_ptr_add_offset_is_a_gap`: a fabricated address makes every later report a
->    confident claim about one arbitrary case.
-> 2. *Stop marking a stored `Undef` uninitialized.* That is the `Store` handler's stated
->    intent and correct for `int x; int y = x;` — it would trade a false positive for a
->    missed true one.
+> **What `SymPtr` does not do yet, listed so it is not rediscovered:** `PtrAdd` on a `SymPtr`
+> (a second symbolic step), `PtrDiff`, passing one as a call argument, and `memcpy`-family
+> models. Each is a `Value::Ptr` site that currently refuses, which is the honest answer, and
+> each becomes a small increment now that the representation exists.
 >
-> Mutation on wave 195: `back-to-undef` and `hands-out-a-pointer` both die, so the fix and the
-> fabricated-address invariant are each observed. `same-symbol-every-time` survived until a
-> fixture with *two* unenumerable offsets existed — naming them alike made them one term, so
-> two pointers from unrelated indices compared **equal**, proving `p == q` from an artefact of
-> naming rather than from the path.
->
-> ~~🔴 a symbolic index still yields `Undef`, and that invents a finding.~~ **Wave 195**, and
-> the cause was that **`Value::Undef` does two jobs**: C's indeterminate value, where a later
-> read really is an uninitialized read, and chiero's "I cannot represent this", where the
-> program did write something. A fresh symbol says the second honestly. Worth remembering as a
-> class — a single sentinel standing for both "the program left this unknown" and "the
-> analyser gave up" will always report one as the other.
+> ~~🔴 a `Value` that can hold a symbolic offset.~~ **Wave 196.** A *variant*, not a wider
+> `Pointer`: widening would have made all 59 `Value::Ptr` sites silently claim to handle an
+> unknown offset, where a separate variant leaves them refusing and let the compiler name the
+> five exhaustive matches that had to decide. That is the whole reason this landed in one wave.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
