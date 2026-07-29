@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 201) — 1283 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 202) — 1283 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,12 +722,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> **The promoted *read* does not consult `arr.init`, and it now blocks two fixes.** Wave 197
-> found it; wave 201 confirmed it is why *no* init write on a promoted object can be observed —
-> `init-not-marked`, `back-to-byte-index` and `only-first-bit` all pass the whole suite against
-> the wave-201 fix. So both init writes (in `write_term` and in `write_at_symbolic_offset`) are
-> correctness by argument rather than by test. **Fix the read first**: it is what makes the
-> other two testable, and doing it in the other order leaves three untestable changes stacked.
+> ~~**The promoted read does not consult `arr.init`.**~~ **Wrong — corrected in wave 202.**
+> `init_bit_via` selects from `arr.init` and handles the tri-state correctly. What made four
+> waves of init fixes untestable was **the fixtures**: every array in
+> `symbolic_offset_store.rs` is declared at *file scope*, and C zero-initializes those
+> (6.7.9p10), so the init mask is all-`Yes` and nothing observable can depend on it. Declare the
+> array **inside `probe`** and the init state becomes visible — `int probe(void){ char ca[64];
+> return ca[0]; }` reports `uninitialized-read` today, and
+> `ca[i & 63] = 7; return ca[0];` reports `maybe-uninitialized-read`, which is exactly right.
+> **Rewrite those fixtures as locals before touching init code again**; two waves were spent on
+> a hypothesis about the code because nobody checked the fixture.
+>
+> **The symbolic read genuinely does not check init**, and wave 202 established that the obvious
+> fix is not sufficient. Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
+> missing report appear — but it also reports `maybe-uninitialized-read` for a byte written at
+> the *same* symbolic offset, because the write leaves eight stores on the chain and a read of
+> bit `k` must walk past seven whose symbolic indices it cannot compare. The walk has to stop
+> there, so only the outermost store folds. Wave 202 added the necessary piece — `select` over a
+> store at the *same term* index now folds regardless of concreteness — and it is not enough on
+> its own. **The likely shape of the fix is to make the write leave one store per byte rather
+> than eight**, i.e. give `init` a byte-granular companion, or to have the read ask a single
+> question about the byte. Both are representation changes; decide which before coding.
 >
 > **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
 > does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store
@@ -1105,6 +1120,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **When a test cannot observe a change, suspect the fixture before the code** (wave 202). Four
+> waves treated "no mutant dies on the init marking" as evidence about the engine, and two of
+> them wrote a hypothesis about `arr.init` into §9. The cause was that every fixture used a
+> *file-scope* array, which C zero-initializes — so the init mask was all-`Yes` and no init code
+> could matter. One `char ca[64]` moved inside the function makes the whole area testable.
+>
+> **A fix that turns silence into a false positive is worse than the silence** (wave 202). The
+> symbolic read's missing init check was added, made its target test pass, and reported
+> `maybe-uninitialized-read` on memory the program had definitely written. Reverted with its
+> control, because 023 §9's argument is that a report a reader must dismiss costs more than one
+> that never came.
 >
 > **Eliminating explanations is progress worth committing** (wave 201). The open case behaves
 > exactly as it did, and the wave still moved: instrumentation showed promotion seeds correctly,
