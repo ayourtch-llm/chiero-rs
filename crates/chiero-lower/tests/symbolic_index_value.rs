@@ -113,3 +113,21 @@ fn a_constrained_index_gets_a_value_and_no_fault() {
     );
     let _ = vals;
 }
+
+/// **Two unenumerable offsets are two symbols.**
+///
+/// Mutation found no fixture with more than one: naming them all the same made every
+/// unenumerated offset the *same* term, so two pointers derived from unrelated indices
+/// compared equal. That is unsound in the direction that matters — it would let the engine
+/// prove `p == q` for pointers the program never showed to be equal, and 023 §4's whole
+/// argument is that a claim must follow from the path rather than from an artefact of how the
+/// analyser named things.
+#[test]
+fn two_unenumerable_offsets_are_not_forced_equal() {
+    let (_, vals) = run("int ga[64];\n\
+         int probe(int i, int j){ int *p = ga + i; int *q = ga + j; return p == q; }");
+    assert!(
+        vals.contains(&Some(0)),
+        "`i` and `j` are unrelated, so some path must have `p != q`: {vals:?}"
+    );
+}

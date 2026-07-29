@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 194) — 1266 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 195) — 1270 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,35 +688,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: a symbolic index still yields `Undef`, and that invents a finding
+> ### 🔴 Do this first (milestone-sized): a `Value` that can hold a symbolic offset
 >
-> Wave 193 reports whether a symbolic index can leave its object and wave 194 gave that its
-> own fault kind. What neither did is make the *value* usable — `fork_on_offset` still
-> returns `Value::Undef` when enumeration fails, and that has a visible cost:
+> Three waves have circled the same wall. `Pointer::off` is a concrete `i64`, so a pointer
+> with a symbolic offset **cannot be represented in a `Value` at all** — and everything
+> downstream follows from that:
 >
-> ```text
->   int *p = ga + i; return p != 0;
->       pointer-outside-object: a pointer into ga (256 bytes) can be computed at offset 256
->       uninitialized-read: read at offset 0 of p touches bit 0, which was never written
-> ```
+> - `fork_on_offset` must enumerate offsets into concrete siblings, which fails for any
+>   unconstrained `int` (17 values found, four billion needed);
+> - when it fails, the access stops at "a load through a non-pointer address", so
+>   `ga[i]` produces **no value** even when the index is provably in range (`ga[i & 63]`);
+> - `chiero-mem` already implements the right thing for a symbolic offset — report
+>   `OutOfBoundsMaybe`, assume the in-bounds constraint, continue with a real symbolic value
+>   (`crates/chiero-mem/tests/bounds.rs`) — and the engine cannot call it, because it has no
+>   value type to pass or to receive.
 >
-> The second is **a false positive**, and it predates wave 193: `p` was written, by the very
-> statement above it. It appears because the `Undef` handed back is indistinguishable from a
-> value the program never stored. So the engine reports a fault it invented, next to one it
-> found — and 023 §9's argument applies with force, since a reader who checks the second
-> finding and discovers it is nonsense has been given a reason to distrust the first.
+> So the fix is a `Value` variant carrying `(ObjectId, Term)`. That is a milestone: every
+> `Value::Ptr` match arm has to decide what it means for a symbolic offset, and the ones that
+> cannot answer must refuse rather than guess. **Two shortcuts were tried in wave 195 and both
+> are wrong** — recorded so they are not tried again:
 >
-> The fix is §9's long-standing option (2): route the symbolic pointer into `chiero-mem`'s
-> checked path, which already handles a symbolic offset — it reports `OutOfBoundsMaybe`,
-> **assumes the in-bounds constraint, and continues with a real value** (see
-> `crates/chiero-mem/tests/bounds.rs`). That turns a dead path into a live one and removes
-> the `Undef`, so it fixes the false positive rather than suppressing it.
+> 1. *Concretize to one in-bounds offset.* Forbidden by
+>    `a_symbolic_ptr_add_offset_is_a_gap`: a fabricated address makes every later report a
+>    confident claim about one arbitrary case.
+> 2. *Stop marking a stored `Undef` uninitialized.* That is the `Store` handler's stated
+>    intent and correct for `int x; int y = x;` — it would trade a false positive for a
+>    missed true one.
 >
-> ~~🔴 the finding says "access" for a pointer that was only formed.~~ **Wave 194.**
-> `MemFault::PointerOutsideObject` carries no access size, which is the point: the access
-> variant demands a width, the caller had to invent `1`, and the report said "1-byte access"
-> of memory nothing touched. A variant rather than a flag, so the type cannot express the
-> report that was wrong.
+> ~~🔴 a symbolic index still yields `Undef`, and that invents a finding.~~ **Wave 195**, and
+> the cause was that **`Value::Undef` does two jobs**: C's indeterminate value, where a later
+> read really is an uninitialized read, and chiero's "I cannot represent this", where the
+> program did write something. A fresh symbol says the second honestly. Worth remembering as a
+> class — a single sentinel standing for both "the program left this unknown" and "the
+> analyser gave up" will always report one as the other.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
