@@ -499,6 +499,16 @@ pub struct State {
     /// same `Term` by construction. That path uses `Frame::ptr_vals`, which follows
     /// dataflow instead.
     ptr_ints: IndexMap<Term, Pointer>,
+    /// The pointer parameter this state was forked to make null, if it was.
+    ///
+    /// Carried so a null-dereference report can name its own premise. A null chiero
+    /// *assumed* (the caller might pass one) and a null the program *produced* (a failed
+    /// `malloc`) read identically otherwise, and they want opposite responses from whoever
+    /// reads them — 023 §9's "a report a person cannot act on is not a report".
+    ///
+    /// A plain `Option<String>`: a state is forked for at most one parameter, since wave
+    /// 186 chose one null state per parameter rather than every combination.
+    entry_null_param: Option<String>,
 }
 
 impl State {
@@ -576,6 +586,7 @@ impl State {
             witness: None,
             unwitnessed: None,
             ptr_ints: IndexMap::new(),
+            entry_null_param: None,
         }
     }
 
@@ -1934,6 +1945,7 @@ impl<'m> Engine<'m> {
                 witness: None,
                 unwitnessed: None,
                 ptr_ints: IndexMap::new(),
+                entry_null_param: None,
             };
             bad.degrade(
                 Fidelity::Unknown,
@@ -2095,6 +2107,7 @@ impl<'m> Engine<'m> {
             witness: None,
             unwitnessed: None,
             ptr_ints: IndexMap::new(),
+            entry_null_param: None,
         };
         // Depth-first with the true branch first, so fork order is deterministic (§3) and
         // 001 §5's determinism requirement is met by construction rather than by luck.
@@ -2177,6 +2190,7 @@ impl<'m> Engine<'m> {
                             off: 0,
                         }),
                     );
+                    nul.entry_null_param = Some(format!("%{}", vid.0));
                     work.push(nul);
                 }
             }
@@ -5871,6 +5885,18 @@ impl<'m> Engine<'m> {
                     message.replace(&format!("{:?}", f.object().expect("just matched")), &name)
                 }
                 None => message,
+            };
+            // **A null dereference names the assumption it rests on, when it rests on one.**
+            //
+            // Only on this state's own null parameter, and only for a null fault: a null the
+            // *program* produced — a failed `malloc`, a lookup that missed — must not claim
+            // it, because the two want opposite responses. One says "your caller can do
+            // this"; the other says "your code does this".
+            let message = match (&s.entry_null_param, f.kind()) {
+                (Some(p), "null-dereference") => format!(
+                    "{message}, where {p} is a pointer parameter assumed to be possibly null"
+                ),
+                _ => message,
             };
             s.findings.push(StateFinding {
                 id: self.finding_seq,
