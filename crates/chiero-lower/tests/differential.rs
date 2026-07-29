@@ -647,6 +647,60 @@ fn floating_point_agrees_with_gcc() {
     agree("double d = 0.1; float f = (float)d; return (int)(f * 1000.0f);");
 }
 
+/// **Floating comparisons, and the conversion to `_Bool` that is one.**
+///
+/// Wave 168 made floats lower and run, and refused these two: the engine's `cmp` has no
+/// float arms, so `a < b` produces no value, and `(_Bool)f` lowered through `FpToSi` is
+/// *wrong* rather than missing — C11 6.3.1.2 makes it "compares unequal to 0", and
+/// truncating gives 0 for 0.5. 26 of the generator's 200 seeds refuse on this.
+///
+/// # Two things make this more than adding six arms
+///
+/// **CIR has no `FOGt` or `FOGe`.** The ordered set is `FOEq`/`FONe`/`FOLt`/`FOLe`, so
+/// `a > b` has to lower as `FOLt` with the operands *swapped*. Swapping is not a detail
+/// that comes out in the wash: get it backwards and every `>` in every program silently
+/// answers `<`, which is why both directions are here with operands that disagree.
+///
+/// **NaN is not "unordered" as a curiosity.** C's `isnan` idiom is `x != x`, and CIR's own
+/// comment says why the unordered set exists: `FONe` is *false* for NaN, the opposite of
+/// what the idiom means. A float that is never NaN cannot tell `FONe` from `FUNe`, so the
+/// last cases build one.
+#[test]
+fn floating_comparisons_agree_with_gcc() {
+    // Every relational operator, with operands that make the answer differ from its
+    // mirror — `2.5 < 1.5` and `2.5 > 1.5` must not both be 0.
+    agree("double a = 2.5, b = 1.5; return a < b;");
+    agree("double a = 2.5, b = 1.5; return a > b;");
+    agree("double a = 2.5, b = 1.5; return a <= b;");
+    agree("double a = 2.5, b = 1.5; return a >= b;");
+    agree("double a = 2.5, b = 2.5; return a <= b;");
+    agree("double a = 2.5, b = 2.5; return a >= b;");
+    agree("double a = 2.5, b = 1.5; return a == b;");
+    agree("double a = 2.5, b = 1.5; return a != b;");
+    agree("double a = 2.5, b = 2.5; return a == b;");
+    // Single precision goes through the same path at its own width.
+    agree("float a = 2.5f, b = 1.5f; return a > b;");
+    agree("float a = 1.5f, b = 2.5f; return a > b;");
+
+    // **The conversion to `_Bool`**, which is a comparison against zero and not a
+    // truncation. `0.5` is the case that separates the two: true in C, and 0 if truncated.
+    agree("double d = 0.5; return (int)(_Bool)d;");
+    agree("double d = 0.0; return (int)(_Bool)d;");
+    agree("double d = 2.5; if (d) { return 7; } return 9;");
+    agree("double d = 0.0; if (d) { return 7; } return 9;");
+    // -0.0 compares equal to zero, so it is false — a sign bit is not a value.
+    agree("double d = -0.0; return (int)(_Bool)d;");
+
+    // **NaN.** `x != x` is C's `isnan`, and it is an *unordered* not-equal: true for NaN
+    // where `FONe` would say false. Every ordered comparison with a NaN operand is false,
+    // including `>=`, which is what makes it different from `!(a < b)`.
+    agree("double n = 0.0 / 0.0; return n != n;");
+    agree("double n = 0.0 / 0.0; return n == n;");
+    agree("double n = 0.0 / 0.0; double b = 1.0; return n < b;");
+    agree("double n = 0.0 / 0.0; double b = 1.0; return n >= b;");
+    agree("double n = 0.0 / 0.0; return (int)(_Bool)n;");
+}
+
 /// **A prefixed string literal keeps its element width.**
 ///
 /// sema types every string literal `char[n]` and lowering writes one byte per character,
