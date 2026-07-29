@@ -413,6 +413,19 @@ pub struct State {
     /// witness is an assignment to exactly these, so a symbol minted without landing here
     /// is a value the replay harness would leave to chance.
     inputs: Vec<(Term, InputOrigin)>,
+    /// Conditions a **finding on this path depends on**, which the path condition does not
+    /// already imply.
+    ///
+    /// A division by zero is the motivating case. `100 / (x - 42)` faults only at
+    /// `x == 42`, and nothing in the path condition says so — the division is on the only
+    /// path there is. Building the witness from the path alone therefore produced the
+    /// filler zero, and the finding named an input under which the divisor is -42.
+    ///
+    /// **Not `path`.** Putting it there would make the branch feasibility queries treat
+    /// `x == 42` as given and prune every execution where the divisor is non-zero, which
+    /// is most of the program. This is a constraint on the *witness*, not on the run: it
+    /// narrows which model is reported, not which paths exist.
+    witness_requires: Vec<Term>,
     /// How many of a replay's bindings this path has consumed. **Per state**, because a
     /// replay can fork and a run-wide cursor lets one path eat another's bindings.
     replay_used: usize,
@@ -499,6 +512,7 @@ impl State {
             steps: 0,
             findings: Vec::new(),
             inputs: Vec::new(),
+            witness_requires: Vec::new(),
             ub: Vec::new(),
             effects: Vec::new(),
             replay_used: 0,
@@ -1722,6 +1736,7 @@ impl<'m> Engine<'m> {
                 steps: 0,
                 findings: Vec::new(),
                 inputs: Vec::new(),
+                witness_requires: Vec::new(),
                 ub: Vec::new(),
                 effects: Vec::new(),
                 replay_used: 0,
@@ -1881,6 +1896,7 @@ impl<'m> Engine<'m> {
             steps: 0,
             findings: Vec::new(),
             inputs: entry_inputs,
+            witness_requires: Vec::new(),
             ub: Vec::new(),
             effects: Vec::new(),
             replay_used: entry_replay_used,
@@ -2211,7 +2227,24 @@ impl<'m> Engine<'m> {
             s.witness = Some(Witness::empty());
             return;
         }
-        let model = match self.probe(a, s, &[]) {
+        // **Solve the path *and* what the findings need**, falling back to the path alone.
+        //
+        // A witness is a claim someone can re-run (023 §9), so it has to satisfy the
+        // conditions the findings on this path depend on — otherwise the number beside a
+        // division by zero is an input under which nothing divides by zero.
+        //
+        // The fallback is not decoration. Two findings on one path can need contradictory
+        // inputs (`100/(x-1)` and `100/(x-2)`), and their conjunction is then unsatisfiable
+        // — at which point the honest answer is the witness the path alone supports, which
+        // is exactly what was reported before. Recorded in §9: the complete answer is a
+        // witness *per finding*, and this is one per state.
+        let requires = s.witness_requires.clone();
+        let attempt = match self.probe(a, s, &requires) {
+            sat @ CheckResult::Sat(_) => sat,
+            weaker if requires.is_empty() => weaker,
+            _ => self.probe(a, s, &[]),
+        };
+        let model = match attempt {
             CheckResult::Sat(m) => m,
             CheckResult::Unsat => {
                 s.unwitnessed = Some(
@@ -2256,6 +2289,13 @@ impl<'m> Engine<'m> {
         // overstates nothing a reader acts on, since the value shown does reach the fault.
         let mut mentioned: indexmap::IndexSet<chiero_solver::VarId> = Default::default();
         for t in &s.path {
+            vars_of(a, *t, &mut mentioned);
+        }
+        // **What a finding depends on constrains its witness too.** `100 / (x - 42)` has
+        // an empty path condition and still needs `x == 42`; reporting that binding as
+        // *free* would say the fault happens for any input, which is the same wrong claim
+        // as naming the wrong value — one about the number and one about what it means.
+        for t in &s.witness_requires {
             vars_of(a, *t, &mut mentioned);
         }
         let mut bindings = Vec::new();
@@ -2385,6 +2425,11 @@ impl<'m> Engine<'m> {
                     span,
                     detail: format!("{op:?} by a divisor the path allows to be zero"),
                 });
+                // **The condition that makes this a fault, kept for the witness.** The
+                // model that just proved it is not enough on its own: it answers for the
+                // path *as it is now*, and the state runs on. Keeping the term lets the
+                // witness be solved once, at termination, against the finished path.
+                s.witness_requires.push(is_zero);
             }
             CheckResult::Unsat => {}
             CheckResult::Unknown(_) => {

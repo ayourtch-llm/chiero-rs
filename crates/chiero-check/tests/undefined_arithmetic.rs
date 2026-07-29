@@ -446,3 +446,121 @@ fn the_witness_for_a_bare_symbolic_divisor_is_zero() {
     assert_eq!(w.bindings[0].value, 0, "the divisor is the input itself");
     assert!(w.bindings[0].pinned, "and the fault needs it to be zero");
 }
+
+/// A `Fresh` input, then `100 / (x - d)`, for each `d` given — every division on one path.
+fn divisions_at(offsets: &[i128], tail: Terminator, extra: Vec<Inst>) -> Module {
+    let mut insts = vec![inst(
+        InstKind::Assign {
+            dst: ValueId(0),
+            rv: RValue::Fresh { ty: CTy::Int(32) },
+        },
+        5,
+    )];
+    for (i, d) in offsets.iter().enumerate() {
+        let n = 10 + i as u32;
+        insts.push(inst(
+            InstKind::Assign {
+                dst: ValueId(100 + n),
+                rv: RValue::Bin {
+                    op: BinOp::Sub,
+                    ty: CTy::Int(32),
+                    a: Operand::Value(ValueId(0)),
+                    b: k(*d),
+                },
+            },
+            n,
+        ));
+        insts.push(inst(
+            InstKind::Assign {
+                dst: ValueId(200 + n),
+                rv: RValue::Bin {
+                    op: BinOp::SDiv,
+                    ty: CTy::Int(32),
+                    a: k(100),
+                    b: Operand::Value(ValueId(100 + n)),
+                },
+            },
+            // Distinct spans, so 023 §6.1's key does not merge the two divisions.
+            n,
+        ));
+    }
+    insts.extend(extra);
+    module(vec![
+        block(0, insts, tail),
+        block(1, vec![], Terminator::Return(Some(k(1)))),
+        block(2, vec![], Terminator::Return(Some(k(2)))),
+    ])
+}
+
+/// **Two findings that need different inputs still leave a witness behind.**
+///
+/// `100/(x-1)` and `100/(x-2)` on one path each require a different `x`, so the conjunction
+/// of what the findings need is unsatisfiable. The witness is one per *state*, so there is
+/// no assignment that reproduces both — and the honest answer is the one the path alone
+/// supports, not `unwitnessed`.
+///
+/// Dropping the fallback turns a solvable question into a refusal: the run would report two
+/// real divisions by zero and say it could not name an input for either, which is a worse
+/// answer than the imperfect one. (The complete fix is a witness *per finding*; §9 carries
+/// it.)
+#[test]
+fn contradictory_requirements_fall_back_rather_than_refuse() {
+    let m = divisions_at(&[1, 2], Terminator::Return(Some(k(0))), Vec::new());
+    let f = witnessed(&m);
+    assert_eq!(f.len(), 2, "both divisions are reported: {f:?}");
+    for (msg, w) in &f {
+        assert!(
+            w.is_some(),
+            "`{msg}`: the two findings need different inputs, which is a reason to report \
+             the weaker witness and not a reason to report none"
+        );
+    }
+}
+
+/// **What a witness needs is not a constraint on the run.**
+///
+/// The condition is recorded for the *witness*, not pushed onto the path condition. Pushing
+/// it would make every later feasibility query treat `x == 42` as given — so a branch on
+/// `x == 0` after the division would be refuted, and the run would explore one path where
+/// the program has two. A checker's finding would have deleted half the program.
+///
+/// 023 contract 19 draws the same line for a checker's `Assume`, which *does* join the path
+/// and degrades fidelity for it. This is the other side: a narrowing that changes only what
+/// is reported changes no path and degrades nothing.
+#[test]
+fn a_witness_requirement_does_not_prune_the_run() {
+    let branch = vec![inst(
+        InstKind::Assign {
+            dst: ValueId(9),
+            rv: RValue::Cmp {
+                op: CmpOp::Eq,
+                ty: CTy::Int(32),
+                a: Operand::Value(ValueId(0)),
+                b: k(0),
+            },
+        },
+        50,
+    )];
+    let m = divisions_at(
+        &[42],
+        Terminator::Br {
+            cond: Operand::Value(ValueId(9)),
+            t: BlockId(1),
+            f: BlockId(2),
+        },
+        branch,
+    );
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let r = e.run(&mut a);
+    assert_eq!(
+        r.states().len(),
+        2,
+        "`x == 0` is feasible: the division's witness requirement must not have been \
+         asserted onto the path. Fidelity: {:?}",
+        r.states().iter().map(|s| s.fidelity()).collect::<Vec<_>>()
+    );
+}
