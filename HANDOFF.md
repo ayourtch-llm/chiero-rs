@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 161) — 1188 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 162) — 1190 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -514,7 +514,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
 > witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
 > labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
-> said**.*
+> said; 162 made the result say which solver decided it**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -718,6 +718,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   still. Unverified; a GNU `vector_size` fixture would settle it.
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
+> - **022 §4's remaining unimplemented clauses**, found while auditing the section in waves
+>   161–162 and left deliberately: the **watchdog** ("on watchdog fire the process is killed,
+>   restarted, the assertion stack is *replayed*, and the query returns `Unknown(Timeout)`.
+>   Replay correctness is contract 14") and **`--dump-queries <dir>`**, the "first-class
+>   artifact" that is how a solver disagreement gets reported upstream. Both are real
+>   contracts with no code behind them. The dump is the cheaper of the two and the one that
+>   pays off the moment a backend disagrees with tier 1.
 > - **Shift and signed-overflow UB are still concrete-only** (wave 156). `note_ub` answers
 >   for two constants; wave 156 added a solver query for *division* only, because a division
 >   is rare and its question is one narrow feasibility check. Overflow is a question about
@@ -783,6 +790,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Read the rest of the sentence** (wave 162). 022 §4 says "Backend selection order:
+> `$CHIERO_SMT_SOLVER`, then `z3`, `cvc5`, `bitwuzla` on `PATH`. **Recorded in the result so
+> a finding says which solver decided it.**" The first half was implemented and the second
+> greps to nothing. Wave 161 found the same shape one clause earlier in the same section.
+> **A spec sentence with two clauses is two contracts**, and the implemented half is what
+> makes the missing half hard to notice — the code looks like it is about that sentence.
+> **A test that compares two derived values proves only that they derive alike** (wave 162).
+> `assert_eq!(result.solver(), b.name())` passes whatever `name()` returns, because both
+> sides move together; a mutation making it the full path survived. The fix is to assert the
+> *property* — that a name has no path separator — not just the agreement. Same lesson as
+> waves 154 and 159 in a third guise: **a self-consistent assertion is not a check.**
+> **A missing interface reds as a compile error, and that is allowed** (wave 162). This
+> project's harness rules say a mutant that does not compile is inconclusive — because there
+> the compiler is refusing a hypothesis about code that exists. A test naming an interface
+> the spec requires and the code lacks is the ordinary first red of TDD. **Distinguish "the
+> compiler rejected my experiment" from "the compiler stated the absence".**
 > **When three owed entries all say the same thing, the entry is not the bug** (wave 161).
 > §9 carried three items — the `fork_on_offset` survivor, an undecidable divisor, 023 c17 —
 > each describing a real limitation, each written as though the limitation were the defect.
