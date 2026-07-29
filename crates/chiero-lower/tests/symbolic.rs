@@ -515,8 +515,12 @@ fn an_undecidable_divisor_is_a_declared_gap_not_a_silent_one() {
     let src = "int probe(int x) { int d = x * x - 7; return 100 / d; }";
     let m = harness::lower(src);
     let mut arena = TermArena::new();
+    // **Tier 1 explicitly.** The subject is what chiero says when the solver cannot
+    // decide, and wave 161 made discovery the default — a backend settles `x*x == 7` and
+    // there is no undecided divisor left to declare.
     let r = chiero_exec::Engine::new(&m)
         .with_entry("probe")
+        .with_solver(chiero_exec::SolverTier::LiteOnly)
         .run(&mut arena);
     let degraded = r.states().iter().any(|s| {
         s.fidelity() != chiero_exec::Fidelity::Exact
@@ -580,8 +584,13 @@ fn a_witnessed_fault_is_not_reported_as_undecided() {
         let src = format!("int probe(int x) {{ {body} }}");
         let m = harness::lower(&src);
         let mut arena = TermArena::new();
+        // **Tier 1 explicitly.** The degradation being discharged only exists when the
+        // solver could not decide the branch; wave 161 made discovery the default, and a
+        // backend decides both branches so there is nothing to discharge — and *refutes*
+        // the unreachable one outright, which the second half below is about.
         let r = chiero_exec::Engine::new(&m)
             .with_entry("probe")
+            .with_solver(chiero_exec::SolverTier::LiteOnly)
             .run(&mut arena);
         let f = r
             .reports()
@@ -737,6 +746,93 @@ fn tier_two_is_on_by_default_when_a_solver_is_installed() {
             .iter()
             .any(|a| a.detail.contains("was not enumerated"))),
         "tier 1 cannot enumerate this offset and must still say so when it is asked for"
+    );
+}
+
+/// **Tier 2 does not discharge the impossible path — it never explores it.**
+///
+/// The companion to `a_witnessed_fault_is_not_reported_as_undecided`, which is about tier
+/// 1: there, an unreachable fault is explored, reported, and left `Unknown` with no witness
+/// because nothing could prove or refute the path. That is the honest answer available
+/// without a solver.
+///
+/// With one, the branch is *refuted* and the path is never walked, so the impossible fault
+/// is not reported at all. Discharging a caveat is the second-best outcome; not having the
+/// finding is the first, and 022 §4's default is what makes it the one a user gets.
+#[test]
+fn tier_two_refutes_an_impossible_fault_rather_than_qualifying_it() {
+    let Some(_) = chiero_solver::SmtLib::discover() else {
+        eprintln!("SKIP: no SMT-LIB backend on PATH");
+        return;
+    };
+    let src = "int probe(int x) { int a[4] = {0,0,0,0}; if (x > 10) { if (x < 5) { a[7] = 1; } } return 0; }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    assert!(
+        !r.reports()
+            .iter()
+            .any(|f| f.message.contains("out-of-bounds")),
+        "`x > 10 && x < 5` holds for no input, so there is no out-of-bounds write to \
+         report: {:?}",
+        r.reports()
+            .iter()
+            .map(|f| f.message.clone())
+            .collect::<Vec<_>>()
+    );
+    // And the reachable twin is still found, so this is refutation and not silence.
+    let src = "int probe(int x) { int a[4] = {0,0,0,0}; if (x > 10) { if (x > 3) { a[7] = 1; } } return 0; }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    let f = r
+        .reports()
+        .into_iter()
+        .find(|f| f.message.contains("out-of-bounds"))
+        .expect("reachable at x = 11");
+    assert_eq!(
+        f.fidelity,
+        chiero_exec::Fidelity::Exact,
+        "both branches were decided, so nothing degraded"
+    );
+}
+
+/// **A named backend wins over the tier**, including over `LiteOnly`.
+///
+/// The three ways to configure a solver form a priority, not a set: naming one with
+/// `with_backend` is more specific than asking for discovery, and more specific than asking
+/// for tier 1. A caller who has handed the engine a solver has not asked for it to be
+/// ignored — that reading would make `with_backend(b).with_solver(LiteOnly)` silently
+/// discard `b`, which is the sort of thing a builder API gets wrong quietly.
+#[test]
+fn a_named_backend_outranks_the_tier() {
+    let Some(b) = chiero_solver::SmtLib::discover() else {
+        eprintln!("SKIP: no SMT-LIB backend on PATH");
+        return;
+    };
+    let src = "int probe(int x) { int a[4] = {1,2,3,4}; return a[x & 7]; }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .with_solver(chiero_exec::SolverTier::LiteOnly)
+        .with_backend(b)
+        .run(&mut arena);
+    assert_eq!(
+        r.reports()
+            .iter()
+            .filter(|f| f.message.contains("out-of-bounds"))
+            .count(),
+        4,
+        "the backend was named explicitly and must be used: {:?}",
+        r.reports()
+            .iter()
+            .map(|f| f.message.clone())
+            .collect::<Vec<_>>()
     );
 }
 

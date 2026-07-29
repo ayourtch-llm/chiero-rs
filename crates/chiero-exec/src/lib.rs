@@ -323,7 +323,20 @@ impl Default for Budget {
 /// `Unknown` path deterministically without depending on whether z3 is installed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum SolverTier {
+    /// **022 §4's default**: use a backend when one is found on `PATH` at *run* time, and
+    /// tier 1 alone when none is.
+    ///
+    /// Discovery is deliberately not a link-time dependency (010 §1's build rule), so this
+    /// is a `Command` lookup and not a feature flag. A machine with no solver behaves
+    /// exactly as `LiteOnly` — which is why this can be the default without making the
+    /// build depend on anything.
     #[default]
+    Discover,
+    /// Tier 1 only, whatever is installed.
+    ///
+    /// Not a performance switch: this is how a test of `SolverLite`'s own incompleteness
+    /// says what it is testing. Without it, installing z3 would silently rewrite the
+    /// meaning of every such test.
     LiteOnly,
 }
 
@@ -1455,7 +1468,7 @@ impl<'m> Engine<'m> {
             arenas: Vec::new(),
             arena_bases: Vec::new(),
             module,
-            tier: SolverTier::LiteOnly,
+            tier: SolverTier::default(),
             next_state: 0,
             solver_calls: 0,
             fresh_count: 0,
@@ -1584,7 +1597,7 @@ impl<'m> Engine<'m> {
         // to exist before the borrow below hands it out.
         if self.solver.is_none() {
             self.solver_inits += 1;
-            self.solver = Some(match self.backend.clone() {
+            self.solver = Some(match self.backend_for_run() {
                 Some(b) => TieredSolver::with_backend(b),
                 None => TieredSolver::new(),
             });
@@ -1705,6 +1718,22 @@ impl<'m> Engine<'m> {
     pub fn with_string_policy(mut self, p: StringPolicy) -> Self {
         self.string_policy = p;
         self
+    }
+
+    /// Which backend this run should use, if any — 022 §4's discovery, in one place.
+    ///
+    /// Three solvers get built during a run (the query path, the checker path, and the
+    /// offset enumeration), and each used to decide independently by reading
+    /// `self.backend`. A default that has to be applied identically in three places is a
+    /// default that will be applied in two.
+    fn backend_for_run(&self) -> Option<SmtLib> {
+        match (self.backend.clone(), self.tier) {
+            // A caller naming a solver has said something more specific than "find one".
+            (Some(b), _) => Some(b),
+            // `LiteOnly` refuses to look, which is the whole point of it.
+            (None, SolverTier::LiteOnly) => None,
+            (None, SolverTier::Discover) => SmtLib::discover(),
+        }
     }
 
     pub fn with_solver(mut self, t: SolverTier) -> Self {
@@ -4035,7 +4064,6 @@ impl<'m> Engine<'m> {
 
     fn probe(&mut self, a: &mut TermArena, s: &State, extra: &[Term]) -> CheckResult {
         self.solver_calls += 1;
-        let _ = self.tier;
         // A fresh solver per query is wasteful and will be replaced by a per-state
         // incremental stack; correctness first, and the backend process itself is
         // long-lived (022 §4) so the cost is the assertion replay, not a spawn.
@@ -4044,7 +4072,7 @@ impl<'m> Engine<'m> {
             // a freshly built solver reports one spawn for its own first query, which is
             // the same number the correct implementation reports for the whole run.
             self.solver_inits += 1;
-            self.solver = Some(match self.backend.clone() {
+            self.solver = Some(match self.backend_for_run() {
                 Some(b) => TieredSolver::with_backend(b),
                 None => TieredSolver::new(),
             });

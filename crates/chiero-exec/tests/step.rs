@@ -455,11 +455,18 @@ fn a_branch_tier_one_cannot_decide_is_escalated_and_stays_exact() {
 /// The same program without a backend is `Unknown` — which is the honest answer, and the
 /// contrast is what shows escalation is doing something rather than the query having been
 /// easy all along.
+///
+/// **`LiteOnly` is now said out loud.** Wave 161 made discovery the default (022 §4), so
+/// "without a backend" is a configuration a test has to ask for rather than the one it
+/// gets by accident — and a test whose whole subject is tier 1's incompleteness must not
+/// change meaning when someone installs z3.
 #[test]
 fn the_same_branch_without_a_backend_is_unknown() {
     let mut a = TermArena::new();
     let m = undecidable_branch_module();
-    let r = Engine::new(&m).run(&mut a);
+    let r = Engine::new(&m)
+        .with_solver(SolverTier::LiteOnly)
+        .run(&mut a);
     assert!(r.states().iter().all(|s| s.fidelity() == Fidelity::Unknown));
 }
 
@@ -9987,7 +9994,11 @@ fn an_undecided_pointer_blames_the_solver_not_the_program() {
         ..Default::default()
     };
     let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    // Tier 1 explicitly: the subject is what chiero says when the solver *does not*
+    // decide, which stops being reachable the moment a backend is discovered.
+    let r = Engine::new(&m)
+        .with_solver(SolverTier::LiteOnly)
+        .run(&mut a);
     assert!(
         r.findings()
             .iter()

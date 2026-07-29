@@ -229,7 +229,12 @@ fn every_in_bounds_index_reads_its_own_element() {
 fn a_symbolic_index_is_bounded_not_invented() {
     let m = indexed_read(4);
     let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    // Tier 1 explicitly (wave 161 made discovery the default): the bound this test is
+    // about is the one tier 1 hits, and a discovered backend enumerates the offsets
+    // exactly and never reaches it.
+    let r = Engine::new(&m)
+        .with_solver(SolverTier::LiteOnly)
+        .run(&mut a);
     let notes: Vec<String> = r
         .states()
         .iter()
