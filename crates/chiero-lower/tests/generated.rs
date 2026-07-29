@@ -2168,12 +2168,19 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         "attempting double-free",
         "heap-buffer-overflow",
         "global-buffer-overflow",
+        // **The compile line was checked before the grammar**, which is the order section 9
+        // recorded — a grammar extension alone would produce programs neither tool flags,
+        // and that reads as agreement. It needed no change: gcc 13 catches
+        // `stack-use-after-scope` under a plain `-fsanitize=address`, with
+        // `-fsanitize-address-use-after-scope` on by default. Measured, not assumed.
+        "stack-use-after-scope",
     ] {
         let seen = t.classes.get(class).map(|c| c.0).unwrap_or(0);
         assert!(
             seen > 0,
-            "no generated program commits `{class}`, so nothing grades chiero's heap \
-             lifetime modelling — the grammar has no malloc or free in it at all"
+            "no generated program commits `{class}`, so nothing grades chiero on it. \
+             The corpus produced: {:?}",
+            t.classes.keys().collect::<Vec<_>>()
         );
     }
     assert!(
