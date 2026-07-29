@@ -1520,6 +1520,10 @@ pub enum UnknownReason {
     /// Outside the fragment `solver-lite` may answer `Unsat` over (022 §3.2).
     Incomplete(&'static str),
     ResourceLimit,
+    /// **022 §4**: the wall-clock watchdog fired. A fact about the clock, not the formula
+    /// — the distinction a caller needs to tell "ask again with more time" from
+    /// `Incomplete`'s "this fragment is out of reach".
+    Timeout,
     BackendError(String),
 }
 
@@ -2226,10 +2230,24 @@ struct Session {
     child: std::process::Child,
     /// Variables already declared to this process, so a restart knows what to redeclare.
     declared: Vec<VarId>,
+    /// Framed answers, produced by a reader thread.
+    ///
+    /// **A thread, because the read has to be abandonable.** `read_form` framed the reply
+    /// by reading the pipe a byte at a time, which is correct and unbounded — a process
+    /// that accepts a query and says nothing parks the caller in that loop for as long as
+    /// it lives. There is no portable way to put a deadline on a blocking pipe read, so
+    /// the blocking happens somewhere abandonable and the owner waits on a channel.
+    rx: std::sync::mpsc::Receiver<String>,
+    /// How long to wait for one answer before declaring the process lost.
+    timeout: std::time::Duration,
+    /// Set when the watchdog fired, so the caller can tell a timeout from a death. Retrying
+    /// a *death* is right — it is usually a crash on one query. Retrying a timeout just
+    /// spends the budget twice to learn the same thing.
+    timed_out: bool,
 }
 
 impl Session {
-    fn spawn(path: &std::path::Path) -> Option<Session> {
+    fn spawn(path: &std::path::Path, timeout: std::time::Duration) -> Option<Session> {
         let child = std::process::Command::new(path)
             .args(["-in", "-smt2"])
             .stdin(std::process::Stdio::piped())
@@ -2237,9 +2255,16 @@ impl Session {
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()?;
+        let mut child = child;
+        let out = child.stdout.take()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || read_forms(out, &tx));
         let mut s = Session {
             child,
             declared: Vec::new(),
+            rx,
+            timeout,
+            timed_out: false,
         };
         // **`ALL`.** The logic has to admit every term the arena can build, and each
         // narrower choice has excluded something in turn: `QF_BV` rejected arrays
@@ -2286,35 +2311,76 @@ impl Session {
         Some(form)
     }
 
+    /// Wait for one framed answer, or give up.
+    ///
+    /// `None` covers both "the process died" and "the process said nothing in time"; the
+    /// caller separates them with [`Self::timed_out`], because only one of the two is worth
+    /// retrying.
     fn read_form(&mut self) -> Option<String> {
-        use std::io::Read;
-        let out = self.child.stdout.as_mut()?;
-        let mut buf = Vec::new();
-        let mut depth = 0i32;
-        let mut started = false;
-        let mut byte = [0u8; 1];
-        loop {
-            if out.read(&mut byte).ok()? == 0 {
-                return None; // the process died
+        match self.rx.recv_timeout(self.timeout) {
+            Ok(form) => Some(form),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // **Kill it here**, though `Drop for Session` would too — the caller
+                // drops the session immediately after a timeout, so a mutation removing
+                // this line survives, and that is worth writing down rather than
+                // discovering twice. It stays because the two are different claims: `Drop`
+                // tidies up whenever a session goes away, and this says the watchdog's job
+                // is to *end the query*, which is 022 §4's "the process is killed". A
+                // future caller that timed out and kept the session would otherwise leave
+                // a process holding an unanswered query and a pipe nobody is reading.
+                //
+                // Restarting is the caller's half: `query` redeclares every variable on a
+                // fresh session, which is where contract 14's replay correctness lives.
+                self.timed_out = true;
+                let _ = self.child.kill();
+                None
             }
-            let c = byte[0];
-            buf.push(c);
-            match c {
-                b'(' => {
-                    depth += 1;
-                    started = true;
-                }
-                b')' => {
-                    depth -= 1;
-                    if started && depth == 0 {
-                        return Some(String::from_utf8_lossy(&buf).into_owned());
-                    }
-                }
-                b'\n' if !started && !buf.iter().all(|b| b.is_ascii_whitespace()) => {
-                    return Some(String::from_utf8_lossy(&buf).trim().to_string());
-                }
-                _ => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        }
+    }
+}
+
+/// Frame the backend's output into balanced S-expressions and bare tokens.
+///
+/// A long-lived process means output must be framed rather than read to EOF, and
+/// parenthesis balance is the framing SMT-LIB2 gives us. Runs on its own thread and stops
+/// when the pipe closes — which is what killing the child does, so the watchdog needs no
+/// other way to end it.
+fn read_forms(mut out: std::process::ChildStdout, tx: &std::sync::mpsc::Sender<String>) {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut depth = 0i32;
+    let mut started = false;
+    let mut byte = [0u8; 1];
+    loop {
+        match out.read(&mut byte) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let c = byte[0];
+        buf.push(c);
+        let form = match c {
+            b'(' => {
+                depth += 1;
+                started = true;
+                None
             }
+            b')' => {
+                depth -= 1;
+                (started && depth == 0).then(|| String::from_utf8_lossy(&buf).into_owned())
+            }
+            b'\n' if !started && !buf.iter().all(|b| b.is_ascii_whitespace()) => {
+                Some(String::from_utf8_lossy(&buf).trim().to_string())
+            }
+            _ => None,
+        };
+        if let Some(f) = form {
+            if tx.send(f).is_err() {
+                return;
+            }
+            buf.clear();
+            depth = 0;
+            started = false;
         }
     }
 }
@@ -2405,6 +2471,13 @@ pub struct SolverStats {
     /// `Unknown`, every consumer degrades honestly, and a run that decided *nothing*
     /// looks like a run over a hard program.
     pub backend_errors: u64,
+    /// How many queries the wall-clock watchdog cut short (022 §4).
+    ///
+    /// Separate from `backend_errors` because it is a different thing to act on: errors
+    /// say the solver is misbehaving, timeouts say the budget is too small or the query
+    /// too hard, and a run reporting many of these should be given more time rather than a
+    /// different solver.
+    pub backend_timeouts: u64,
     /// How many assertions independence slicing kept out of a backend query (022 §6.2).
     ///
     /// Contract 9 needs this: "verifying only that the dumped query got smaller tests
@@ -2421,8 +2494,53 @@ struct CacheSlot {
 }
 
 /// Tier 1, escalating to tier 2 on `Unknown`, with the caches of 022 §6.
+/// How long one backend query may take before the watchdog fires, unless told otherwise.
+///
+/// Long enough that no query in this workspace approaches it, short enough that a wedged
+/// solver is a pause rather than a hang. 022 §4 asks for the mechanism and names no number;
+/// this is the number, in one place, so that changing it is one edit and not a search.
+const DEFAULT_BACKEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `$CHIERO_SMT_TIMEOUT`, in seconds.
+///
+/// **Zero means no watchdog**, which is the escape hatch for someone bisecting a genuinely
+/// slow query who would rather wait than get `Unknown(Timeout)`. Anything unparseable is
+/// the default rather than an error: a mistyped environment variable must not decide that a
+/// run cannot use its solver.
+fn backend_timeout() -> std::time::Duration {
+    match std::env::var("CHIERO_SMT_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(0) => std::time::Duration::MAX,
+        Some(n) => std::time::Duration::from_secs(n),
+        None => DEFAULT_BACKEND_TIMEOUT,
+    }
+}
+
+/// The watchdog's duration, as a newtype so `TieredSolver` can keep deriving `Default`.
+///
+/// `Duration::default()` is **zero**, and a derived default would have made every backend
+/// query time out instantly — a change that compiles, passes review, and turns the solver
+/// off. The newtype puts the real default next to the constant it comes from.
+#[derive(Debug, Clone, Copy)]
+struct BackendTimeout(std::time::Duration);
+
+impl Default for BackendTimeout {
+    fn default() -> Self {
+        BackendTimeout(backend_timeout())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TieredSolver {
+    /// How long one backend query may take before the watchdog fires (022 §4).
+    ///
+    /// A default rather than a required argument: a solver that hangs is a failure mode
+    /// every caller has, and one that only the callers who remembered to configure it are
+    /// protected from is not protected. `$CHIERO_SMT_TIMEOUT` (seconds) overrides it, which
+    /// is how a genuinely long-running analysis asks for more without a code change.
+    timeout: BackendTimeout,
     asserted: Vec<Term>,
     scopes: Vec<usize>,
     backend: Option<SmtLib>,
@@ -2846,9 +2964,20 @@ impl TieredSolver {
 
         let mut r = self.query(a, &path, all, &vars);
         if r.is_none() {
+            // **A timeout is not retried.** The watchdog has already killed the process;
+            // restarting and asking the same question spends the budget twice to learn the
+            // same thing, and turns one slow query into two. The session is still dropped,
+            // so the *next* query gets a fresh process with every variable redeclared —
+            // which is 022 §4's restart-and-replay, and contract 14's correctness comes
+            // from `query` rebuilding the declarations rather than from anything here.
+            let watchdog_fired = self.session.as_ref().is_some_and(|s| s.timed_out);
+            self.session = None;
+            if watchdog_fired {
+                self.stats.backend_timeouts += 1;
+                return Some(CheckResult::Unknown(UnknownReason::Timeout));
+            }
             // The process died. Restart and replay, then try once more; a second
             // failure is a real backend error rather than a transient one.
-            self.session = None;
             r = self.query(a, &path, all, &vars);
         }
         self.stats.backend_calls += 1;
@@ -2892,7 +3021,7 @@ impl TieredSolver {
         vars: &[VarId],
     ) -> Option<(bool, Model)> {
         if self.session.is_none() {
-            self.session = Session::spawn(path);
+            self.session = Session::spawn(path, self.timeout.0);
             self.stats.backend_spawns += 1;
         }
         let s = self.session.as_mut()?;
