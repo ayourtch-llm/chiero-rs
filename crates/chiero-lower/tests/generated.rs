@@ -1843,6 +1843,12 @@ struct Tally {
     caught: usize,
     /// Seeds ASan flagged and chiero did not, kept for the failure message.
     missed: Vec<u64>,
+    /// ASan's fault classes, as (seen, caught by chiero).
+    ///
+    /// A total is not enough once the corpus can commit more than one kind of fault: 15 of
+    /// 15 caught reads as parity while an entire class is missing from the corpus, which is
+    /// exactly the state wave 177 left behind.
+    classes: std::collections::BTreeMap<&'static str, (usize, usize)>,
     /// Seeds chiero reported a memory finding for and ASan did not flag.
     ///
     /// The direction the census had to learn twice (waves 175 and 176): a channel that
@@ -1919,6 +1925,25 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             continue;
         }
         t.flagged += 1;
+        // **ASan names the class it found; record it.** The classes are matched on ASan's
+        // own wording rather than inferred from the source, so a corpus that stops emitting
+        // one of them shows up as an empty row instead of as nothing at all.
+        for class in [
+            "heap-use-after-free",
+            "attempting double-free",
+            "stack-buffer-overflow",
+            "global-buffer-overflow",
+            "heap-buffer-overflow",
+            "stack-use-after-scope",
+        ] {
+            if err.contains(class) {
+                let e = t.classes.entry(class).or_default();
+                e.0 += 1;
+                if found {
+                    e.1 += 1;
+                }
+            }
+        }
         if found {
             t.caught += 1;
         } else {
@@ -1946,6 +1971,9 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         t.caught,
         t.invented.len()
     );
+    for (class, (seen, caught)) in &t.classes {
+        println!("  {seen:3} / {caught:<3}  {class}");
+    }
     assert!(
         t.compared > 0,
         "no generated program reached the comparison; gcc missing or the corpus is empty"
@@ -1971,6 +1999,17 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         t.invented.len(),
         &t.invented[..t.invented.len().min(8)]
     );
+    // **Every class the grammar claims to emit must actually appear.** Wave 177's corpus
+    // committed exactly one kind of fault and reported `15 / 15`, which reads as parity and
+    // was really one row of a table with the rest missing.
+    for class in ["heap-use-after-free", "attempting double-free"] {
+        let seen = t.classes.get(class).map(|c| c.0).unwrap_or(0);
+        assert!(
+            seen > 0,
+            "no generated program commits `{class}`, so nothing grades chiero's heap \
+             lifetime modelling — the grammar has no malloc or free in it at all"
+        );
+    }
     assert!(
         t.missed.is_empty(),
         "ASan flagged {} of {} programs and chiero missed {} of them: seeds {:?}",
