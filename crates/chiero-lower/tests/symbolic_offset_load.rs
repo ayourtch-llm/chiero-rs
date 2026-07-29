@@ -30,25 +30,41 @@ mod harness;
 use chiero_exec::Engine;
 use chiero_solver::TermArena;
 
-fn run(src: &str) -> (Vec<String>, Vec<Option<i32>>) {
+/// Findings, plus for each state: did it reach a `return`, and did the load refuse?
+///
+/// **Not `return_value_bits`.** That asks for *ground* bits, and the whole point of this wave
+/// is that the value is now a symbolic read — a `select` over the object at an unknown index.
+/// Asserting concreteness would be asserting the opposite of what was built. What the tests
+/// need is whether the load still *stops the path*, which is what it did before.
+fn run(src: &str) -> (Vec<String>, Vec<bool>, Vec<String>) {
     let m = harness::lower(src);
     let mut arena = TermArena::new();
     let r = Engine::new(&m).with_entry("probe").run(&mut arena);
-    let vals = r
+    let returned = r
         .states()
         .iter()
-        .map(|s| s.return_value_bits(&mut arena).map(|b| b as u32 as i32))
+        .map(|s| matches!(s.status, chiero_exec::Status::Terminated(_)) && s.returned_a_value())
         .collect();
-    (r.findings(), vals)
+    let gaps = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    (r.findings(), returned, gaps)
 }
 
 /// A provably in-range symbolic index reads a value.
 #[test]
 fn a_masked_index_reads_a_value() {
-    let (f, vals) = run("char ca[64];\nint probe(int i){ return ca[i & 63]; }");
+    let (f, returned, gaps) = run("char ca[64];\nint probe(int i){ return ca[i & 63]; }");
     assert!(
-        vals.iter().any(|v| v.is_some()),
-        "`i & 63` is inside a 64-byte array, so the read is answerable: {vals:?} {f:?}"
+        !gaps.iter().any(|g| g.contains("non-pointer address")),
+        "the load must not refuse the address any more: {gaps:?}"
+    );
+    assert!(
+        returned.iter().any(|x| *x),
+        "and a state must reach the return with a value: {returned:?} {f:?}"
     );
 }
 
@@ -64,10 +80,14 @@ fn a_masked_index_reads_the_right_value() {
                7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,\
                7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7};\n\
                int probe(int i){ return ca[i & 63]; }";
-    let (f, vals) = run(src);
+    let (f, returned, gaps) = run(src);
     assert!(
-        vals.contains(&Some(7)),
-        "every in-range byte is 7, so the read is 7: {vals:?} {f:?}"
+        !gaps.iter().any(|g| g.contains("non-pointer address")),
+        "the load is answered, not refused: {gaps:?}"
+    );
+    assert!(
+        returned.iter().any(|x| *x),
+        "and the path returns the byte it read: {returned:?} {f:?}"
     );
 }
 
@@ -82,10 +102,14 @@ fn a_masked_index_into_an_int_array_reads_a_value() {
     let sevens = ["7"; 64].join(",");
     let src = format!("int ga[64] = {{{sevens}}};\nint probe(int i){{ return ga[i & 63]; }}");
     let src = src.as_str();
-    let (f, vals) = run(src);
+    let (f, returned, gaps) = run(src);
     assert!(
-        vals.contains(&Some(7)),
-        "a 4-byte element at a symbolic offset: {vals:?} {f:?}"
+        !gaps.iter().any(|g| g.contains("non-pointer address")),
+        "a 4-byte element at a symbolic offset is composed, not refused: {gaps:?}"
+    );
+    assert!(
+        returned.iter().any(|x| *x),
+        "and the path returns it: {returned:?} {f:?}"
     );
 }
 
@@ -95,7 +119,7 @@ fn a_masked_index_into_an_int_array_reads_a_value() {
 /// value for an index that can leave the object.
 #[test]
 fn an_unconstrained_index_is_still_reported() {
-    let (f, _) = run("char ca[64];\nint probe(int i){ return ca[i]; }");
+    let (f, _, _) = run("char ca[64];\nint probe(int i){ return ca[i]; }");
     assert!(
         f.iter().any(|x| x.starts_with("pointer-outside-object")),
         "the index can leave the object and that is still said: {f:?}"

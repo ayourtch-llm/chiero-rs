@@ -270,6 +270,22 @@ pub enum Value {
     /// `undef * 0`, which is 0 for every value of the operand and undefined for a
     /// non-value.
     Undef,
+    /// **A pointer whose offset is symbolic** — an object, and a term for where in it.
+    ///
+    /// `Pointer::off` is a concrete `i64`, which is why this needs its own variant rather
+    /// than a wider `Pointer`: an address the program computed from an unknown index has no
+    /// one offset to put there, and inventing one is what
+    /// `a_symbolic_ptr_add_offset_is_a_gap` forbids.
+    ///
+    /// **Sites that do not name it refuse, and that is the design.** A new variant acquires
+    /// pointer semantics only where written; the 59 places matching `Value::Ptr` keep
+    /// today's behaviour, which for them is the honest one — they cannot answer for an
+    /// unknown offset. 021 §3 is what makes the *load* answerable, because `chiero-mem` has
+    /// carried symbolic offsets since then.
+    SymPtr {
+        base: ObjectId,
+        off: Term,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -741,8 +757,18 @@ impl State {
     pub fn return_value_under(&self, m: &chiero_solver::Model, a: &TermArena) -> Option<u128> {
         match self.ret? {
             Value::Scalar(t) => a.eval(m, t).ok().map(|c| c.bits()),
-            Value::Ptr(_) | Value::Undef => None,
+            Value::Ptr(_) | Value::Undef | Value::SymPtr { .. } => None,
         }
+    }
+
+    /// Did this path reach a `return` **with a value**, whether or not that value is ground?
+    ///
+    /// Distinct from `return_value_bits`, which asks for concrete bits and answers `None` for
+    /// a symbolic read — a `select` over an object at an unknown index is a value the path
+    /// computed, and "the path produced nothing" is a different claim from "the value is not
+    /// a constant". Wave 196 needed the first and only the second was available.
+    pub fn returned_a_value(&self) -> bool {
+        matches!(self.ret, Some(Value::Scalar(_)) | Some(Value::Ptr(_)))
     }
 
     /// The returned value as concrete bits, when it is one.
@@ -751,7 +777,7 @@ impl State {
             Value::Scalar(t) => a.eval_ground(t).ok().map(|c| c.bits()),
             // Neither has concrete bits, and `Undef` most emphatically does not: the
             // whole point is that no value was chosen.
-            Value::Ptr(_) | Value::Undef => None,
+            Value::Ptr(_) | Value::Undef | Value::SymPtr { .. } => None,
         }
     }
 
@@ -3169,6 +3195,17 @@ impl<'m> Engine<'m> {
                         };
                         t
                     }
+                    // **A symbolic pointer stores its address**, like a concrete one. The
+                    // draft that refused here re-introduced wave 195's invented
+                    // `uninitialized-read`: the destination went unwritten, so reading it
+                    // back accused the program of never storing what it had just stored.
+                    Some(v @ Value::SymPtr { .. }) => {
+                        let Some(t) = self.address_of_value(a, s, v, i.span) else {
+                            self.lowering_gap(s, i.span, "a store of a symbolic pointer value");
+                            return;
+                        };
+                        t
+                    }
                     None => {
                         self.lowering_gap(s, i.span, "a store of an untranslatable value");
                         return;
@@ -4287,29 +4324,17 @@ impl<'m> Engine<'m> {
                     }
                 ),
             );
-            // **An unusable value, but not `Undef`** — and the distinction cost a wave to
-            // find. `Value::Undef` is doing two jobs: C's indeterminate value, where a later
-            // read really is 021 §3.1's uninitialized-read, and chiero's "I cannot represent
-            // this", where it is not. Storing one marks the destination uninitialized *on
-            // purpose* (see the `Store` handler), so `int *p = ga + i;` then reported that
-            // `p` was never written — by the statement that wrote it.
+            // **A pointer with the symbolic offset**, which is what the program computed.
+            // The bounds question above has already been asked and answered; what is handed
+            // back now carries the object and the term, so a load can go to `chiero-mem`'s
+            // symbolic path instead of stopping.
             //
-            // A fresh symbol says the true thing: something was written here and chiero does
-            // not know what. It is still not a pointer, so an access through it stops at "a
-            // load through a non-pointer address" exactly as before — the invariant
-            // `a_symbolic_ptr_add_offset_is_a_gap` guards, that no *fabricated address* is
-            // handed out, is untouched. Concretizing to one in-bounds offset was tried and
-            // rejected for that reason: it makes every later report a confident claim about
-            // one arbitrary case.
-            self.fresh_count += 1;
-            let t = self.input(
-                a,
-                s,
-                chiero_solver::Sort::BitVec(64),
-                &format!("unenumerated_offset{}", self.fresh_count),
-                InputOrigin::Fresh { span },
-            );
-            return Some(Value::Scalar(t));
+            // Sites that do not recognise `SymPtr` refuse exactly as they refused the fresh
+            // symbol below, so nothing gains pointer semantics it was not given.
+            return Some(Value::SymPtr {
+                base: p.base,
+                off: t,
+            });
         }
 
         // Siblings for every value but the first; this state takes the first, which keeps
@@ -4444,6 +4469,50 @@ impl<'m> Engine<'m> {
             // common way a symbolic executor produces confidently wrong results, and the
             // backing store really does read as zero, so this is where it happens.
             RValue::Load { addr, ty, vol, .. } => {
+                // **A symbolic offset is answerable, and `chiero-mem` is what answers it.**
+                // 021 §3 has carried symbolic offsets since it was written: `read_term_at`
+                // reads a byte at one, as an if-then-else chain below `ITE_THRESHOLD` and a
+                // promoted `select` above. Before wave 196 the engine had no value type to
+                // pass it, so `ca[i & 63]` produced nothing at all — an index that provably
+                // cannot leave a 64-byte array.
+                //
+                // **Composed byte by byte, little-endian**, because `read_term_at` answers
+                // for one byte. That is not a shortcut: it is the same decomposition the
+                // concrete path uses, and it keeps the `ITE_THRESHOLD` decision per byte
+                // where `chiero-mem` makes it, rather than duplicating that policy here.
+                if let Some(Value::SymPtr { base, off }) = self.operand(a, s, addr) {
+                    if *vol == Volatility::Volatile {
+                        return self.lowering_gap(s, span, "a volatile load at a symbolic offset");
+                    }
+                    let size = size_of_cty(ty);
+                    let mut byte_terms: Vec<Term> = Vec::new();
+                    for k in 0..size {
+                        let w = a.width(off);
+                        let step = a.bv(w, k as u128);
+                        let at = a.add(off, step);
+                        let r = s.mem.read_term_at(a, base, at, &[], span);
+                        self.report_faults(s, &r.faults, span);
+                        // `None` is `chiero-mem` declining the byte — a fault it has already
+                        // reported. Refusing the whole load then is right: half a value is
+                        // not a value, and composing the rest would answer with bytes the
+                        // read never obtained.
+                        let Some(v) = r.value else {
+                            return self.lowering_gap(
+                                s,
+                                span,
+                                "a byte at a symbolic offset could not be read",
+                            );
+                        };
+                        byte_terms.push(v);
+                    }
+                    // Little-endian: byte 0 is least significant, matching `GlobalInit::Bytes`
+                    // and every other reader in the tree.
+                    let mut acc = byte_terms[0];
+                    for t in byte_terms.iter().skip(1).copied() {
+                        acc = a.concat(t, acc);
+                    }
+                    return Some(Value::Scalar(acc));
+                }
                 let Some(Value::Ptr(p)) = self.operand(a, s, addr) else {
                     return self.lowering_gap(s, span, "a load through a non-pointer address");
                 };
@@ -5738,6 +5807,29 @@ impl<'m> Engine<'m> {
     /// object it was once that object is freed. Shared by `PtrToInt` and by storing a
     /// pointer, so a pointer that goes through memory recovers exactly like one that goes
     /// through a `uintptr_t`.
+    /// The address a `Value` denotes, for a use that is not a dereference.
+    ///
+    /// Split out because two callers need it — `cmp_operand` and the `Store` handler — and
+    /// the first draft implemented it in one and refused in the other, which regressed two of
+    /// wave 195's properties at once. One implementation, so they cannot disagree.
+    fn address_of_value(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        v: Value,
+        span: Span,
+    ) -> Option<Term> {
+        match v {
+            Value::Ptr(p) => self.address_term(a, s, p, span),
+            Value::SymPtr { base, off } => {
+                let b = self.address_term(a, s, Pointer { base, off: 0 }, span)?;
+                Some(a.add(b, off))
+            }
+            Value::Scalar(t) => Some(t),
+            Value::Undef => None,
+        }
+    }
+
     fn address_term(
         &mut self,
         a: &mut TermArena,
@@ -7070,6 +7162,21 @@ impl<'m> Engine<'m> {
         match self.operand(a, s, o)? {
             Value::Scalar(t) => Some(t),
             Value::Ptr(p) => self.address_term(a, s, p, span),
+            // **A symbolic offset does have an address: the base's, plus the offset.**
+            //
+            // The first draft returned `None` here, and two of wave 195's properties
+            // regressed at once — a stored `SymPtr` left the destination uninitialized, so
+            // the invented `uninitialized-read` came back, and `p == q` on two of them
+            // answered nothing instead of "they can differ". Both are the same omission:
+            // every use that is not a *dereference* only needs the address as a number, and
+            // that number is expressible.
+            //
+            // Provenance still comes from `address_term` on the base, so the sum carries the
+            // object exactly as a concrete pointer's address does.
+            Value::SymPtr { base, off } => {
+                let b = self.address_term(a, s, Pointer { base, off: 0 }, span)?;
+                Some(a.add(b, off))
+            }
             Value::Undef => None,
         }
     }
@@ -7081,7 +7188,7 @@ impl<'m> Engine<'m> {
             // a value the solver may pin, which is exactly what `Undef` says does not
             // exist. Callers that can propagate it check for it before asking (020
             // contract 43); the rest treat `None` as the gap it is.
-            Value::Ptr(_) | Value::Undef => None,
+            Value::Ptr(_) | Value::Undef | Value::SymPtr { .. } => None,
         }
     }
 }
