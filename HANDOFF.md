@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 158) — 1182 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 159) — 1183 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -512,7 +512,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
 > replaced a linear scan with an index; 156 made a symbolic divisor's zero-ness a question
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
-> witness beside it one that actually faults**.*
+> witness beside it one that actually faults; 159 gave each finding its own**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -717,14 +717,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   the model, because a model answers for the path as it was at that instruction and the
 >   state runs on. The witness is solved against the path **and** those, and `pinned` counts
 >   them, so `100 / (x - 42)` now names x = 42 and says the fault needs it.
-> - **A witness is still one per *state*, and the complete answer is one per *finding*.**
->   Two findings on one path can need contradictory inputs (`100/(x-1)` and `100/(x-2)`);
->   their conjunction is unsatisfiable, and wave 158 falls back to the witness the path alone
->   supports rather than refusing — which reports two real faults with one imperfect number
->   instead of two real faults and no number. `contradictory_requirements_fall_back_rather_
->   than_refuse` pins the fallback; what it does *not* pin is that either witness reproduces
->   its own finding, because neither can. `StateFinding` would need its own `requires` and
->   its own solve.
+> - ~~A witness is one per *state*.~~ **Done in wave 159.** `UbEvent` carries the condition
+>   that makes it a fault, the checker passes it through `Action::ReportRequiring`, and
+>   `StateFinding` gets its own `requires` and its own solve. The state's witness still tries
+>   to satisfy everything at once, so a reader looking at the *state* is not shown a number
+>   that reproduces nothing when one exists that reproduces everything.
+> - **Every wave-159 mutant dies only in `chiero-check`.** The mechanism is in `chiero-exec`
+>   and no fixture there has two findings needing different inputs, so the evidence for a
+>   `chiero-exec` feature lives entirely in the crate above it. Not wrong — the checker is
+>   what makes the behaviour reachable — but it means a `chiero-exec`-only mutation run
+>   reports a clean sweep over code nothing in that crate tests.
 > - **A symbolic divisor tier 1 cannot decide is a declared miss** (wave 157).
 >   `100 / (x + 1)` says `Fidelity::Unknown` with "whether the divisor of this SDiv can be
 >   zero was not decided" — honest, and still a miss: `x = -1` makes it zero and the
@@ -765,6 +767,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Two parties each hold half a fact; the join has to be explicit** (wave 159). The engine
+> proves a divisor can be zero and knows the condition; the checker decides the event is
+> worth reporting. Neither can attach one to the other, and there is no clever way around
+> that — the condition has to *travel*, on the event and then on the report. The temptation
+> is to have the engine guess which report belongs to which event by timing, which works
+> until two checkers report on one instruction. **When the knowledge is split, move the
+> data, not the inference.**
+> **A new variant beats a new field when most callers have nothing to say** (wave 159).
+> `Action::ReportRequiring` is separate from `Report` because a null dereference needs
+> nothing beyond the path, and folding them would make every existing checker declare an
+> empty requirement. The additive variant left `UnionPun` and `OrderDependence` untouched.
 > **Narrowing what is *reported* is not narrowing what is *run*** (wave 158). The witness
 > for `100 / (x - 42)` needs `x == 42`, and the one-line way to get it is to push that onto
 > the path condition — which then refutes every later branch the value contradicts, so a
