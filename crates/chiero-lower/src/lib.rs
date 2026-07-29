@@ -107,79 +107,10 @@ fn lower(
     for &item in ast.items() {
         cx.item(item);
     }
-    refuse_float_compare(&mut cx.module, &mut cx.diagnostics);
     refuse_unverifiable(&mut cx.module, &mut cx.diagnostics);
     Lowered {
         module: cx.module,
         diagnostics: cx.diagnostics,
-    }
-}
-
-/// **015 §7 for the errors lowering did not know it made.**
-///
-/// The refusal in `function` fires when lowering *detected* something it could not
-/// represent. Wave 141 found the other class: `*(&a[1] + 0)` emitted `zext i32 %v to i64`
-/// on a `Ptr` — which the verifier rejects — and nothing complained, so the module was
-/// handed to the engine, which stopped on an instruction it could not interpret and
-/// reported a program that produced nothing. The caller had no way to tell that from a
-/// program that legitimately produces nothing.
-///
-/// So the verifier runs here and a function it rejects is discarded exactly as a detected
-/// gap is: body back to `Declared`, one diagnostic naming it. 020 §5's rule, applied to the
-/// case lowering cannot self-diagnose.
-///
-/// **Whole-module rather than per-function**, because `verify` quantifies over a `Module` —
-/// a call's arity is checked against the callee's declaration, and a single function lifted
-/// into a module of its own would lose that. `VerifyError` carries the `FuncId`, so the
-/// blame is per-function even though the check is not.
-///
-/// **Errors only.** `verify` also reports warnings, and refusing a function over one would
-/// turn advice into a capability loss.
-/// **Refuse the float operations the engine still cannot perform** (015 §7).
-///
-/// Wave 168 gave lowering float literals, arithmetic, negation, the conversions and float
-/// globals — everything the engine learned in wave 167. Two things it did not:
-///
-/// - a **comparison** between floats. `cmp` in the engine has no float arms, so `a < b`
-///   would produce no value.
-/// - a conversion to **`_Bool`**. C11 6.3.1.2 makes it "compares unequal to 0", which for a
-///   float is a *comparison* and not the truncation `FpToSi` performs — `(_Bool)0.5` is
-///   `true` and truncating gives `0`. That one is worth the refusal on its own: it is a
-///   wrong answer rather than a missing one, and the generator produced it within three
-///   seeds of floats being unblocked.
-///
-/// Structured exactly like the `refuse_floating` this replaces, and for the same stated
-/// reason: matching on the printed instruction cannot fall behind a variant added later,
-/// which a hand-written type walker would.
-fn refuse_float_compare(module: &mut chiero_cir::Module, diagnostics: &mut Vec<LowerDiagnostic>) {
-    let mut blamed: Vec<(chiero_cir::FuncId, Span)> = Vec::new();
-    for f in &module.funcs {
-        if !matches!(f.body, Body::Defined) {
-            continue;
-        }
-        let bad = f.blocks.iter().flat_map(|b| b.insts.iter()).any(|i| {
-            let t = format!("{:?}", i.kind);
-            (t.contains("Cmp") && t.contains("Float("))
-                || (t.contains("Float(") && t.contains("Int(1)"))
-        });
-        if bad {
-            blamed.push((f.id, f.span));
-        }
-    }
-    for (id, span) in blamed {
-        let Some(f) = module.funcs.iter_mut().find(|f| f.id == id) else {
-            continue;
-        };
-        let name = f.name.clone();
-        f.blocks.clear();
-        f.body = Body::Declared;
-        diagnostics.push(LowerDiagnostic {
-            span,
-            message: format!(
-                "`{name}` compares floating values or converts one to `_Bool`, which \
-                 lowering does not implement yet"
-            ),
-        });
     }
 }
 
@@ -2193,7 +2124,17 @@ impl Lowerer<'_> {
                 // CIR keeps comparisons in their own `RValue` (020), and signedness is a
                 // property of the **operands**, not of the result — so it comes from the
                 // typed AST rather than from the operator.
-                match cir_cmpop(*op, self.is_signed(*lhs)) {
+                // A float comparison is a different opcode set *and* may need its
+                // operands the other way round, so the two are decided together.
+                let fcmp = self.is_float(*lhs).then(|| cir_fcmpop(*op)).flatten();
+                let (a, b) = match fcmp {
+                    Some((_, true)) => (b, a),
+                    _ => (a, b),
+                };
+                match fcmp
+                    .map(|(c, _)| c)
+                    .or_else(|| cir_cmpop(*op, self.is_signed(*lhs)))
+                {
                     Some(cop) => {
                         // **Either side being an address makes it a pointer comparison.**
                         // `p == 0` has a pointer on the left and a null constant on the
@@ -2810,11 +2751,20 @@ impl Lowerer<'_> {
     fn truth_of(&mut self, v: Operand, ty: CTy, span: Span) -> Operand {
         let zero = self.zero_at(&ty);
         let dst = self.new_value();
+        // **A float's truth is a comparison, not a bit test.** Integer `Ne` on two float
+        // patterns is right for almost every value and wrong for `-0.0`, whose bits differ
+        // from `+0.0` while C says it is false. `FUNe` is also what makes `(_Bool)NaN` true,
+        // which the ordered form would not.
+        let op = if matches!(ty, CTy::Float(_)) {
+            chiero_cir::CmpOp::FUNe
+        } else {
+            chiero_cir::CmpOp::Ne
+        };
         self.emit(
             InstKind::Assign {
                 dst,
                 rv: RValue::Cmp {
-                    op: chiero_cir::CmpOp::Ne,
+                    op,
                     a: v,
                     b: zero,
                     ty,
@@ -4368,6 +4318,31 @@ fn cir_binop(op: chiero_ast::BinOp, signed: bool, float: bool) -> CBinOp {
     }
 }
 
+/// The comparison for a **floating** operand pair, and whether the operands must be
+/// swapped to express it.
+///
+/// **CIR has no `FOGt` or `FOGe`.** The ordered set is `FOEq`/`FONe`/`FOLt`/`FOLe`, so
+/// `a > b` is `FOLt(b, a)` — the swap is how the operator is expressed, not an
+/// optimisation, and getting it backwards makes every `>` answer `<`.
+///
+/// `!=` is **unordered** (`FUNe`). C's `isnan` idiom is `x != x`, and `FONe` is false for
+/// NaN, which is the opposite of what the idiom means; CIR's own comment on the variant
+/// says so. Every other operator here is the ordered form, because C's relational operators
+/// are false when either operand is NaN.
+fn cir_fcmpop(op: chiero_ast::BinOp) -> Option<(chiero_cir::CmpOp, bool)> {
+    use chiero_ast::BinOp as A;
+    use chiero_cir::CmpOp as C;
+    Some(match op {
+        A::Eq => (C::FOEq, false),
+        A::Ne => (C::FUNe, false),
+        A::Lt => (C::FOLt, false),
+        A::Le => (C::FOLe, false),
+        A::Gt => (C::FOLt, true),
+        A::Ge => (C::FOLe, true),
+        _ => return None,
+    })
+}
+
 fn cir_cmpop(op: chiero_ast::BinOp, signed: bool) -> Option<chiero_cir::CmpOp> {
     use chiero_ast::BinOp as A;
     use chiero_cir::CmpOp as C;
@@ -5006,6 +4981,11 @@ impl Lowerer<'_> {
             return self.emit_fcast(v, kind, CTy::Int(have), CTy::Float(tk), span);
         }
         if let (Some(CTy::Float(fk)), CTy::Int(want)) = (have_ty, to.clone()) {
+            // **No special case for `_Bool` here.** C11 6.3.1.2 makes a conversion to
+            // `_Bool` a comparison against zero rather than the truncation `FpToSi`
+            // performs — but sema inserts that conversion as its own cast, which reaches
+            // `truth_of` directly, so a branch for it here is never taken. Mutation proved
+            // it: deleting the branch changed no test. `truth_of` is where the rule lives.
             // Float to integer. The *target's* signedness decides, and C11 6.3.1.4 makes
             // it a truncation toward zero rather than a rounding.
             let kind = if matches!(to, CTy::Int(_)) && self.target_signed(to) {

@@ -670,6 +670,10 @@ fn floating_comparisons_agree_with_gcc() {
     // Every relational operator, with operands that make the answer differ from its
     // mirror — `2.5 < 1.5` and `2.5 > 1.5` must not both be 0.
     agree("double a = 2.5, b = 1.5; return a < b;");
+    // Equal operands separate `<` from `<=` and `>` from `>=`. Without them a swapped or
+    // widened comparison passes: 2.5 and 1.5 give the same answer under either.
+    agree("double a = 2.5, b = 2.5; return a < b;");
+    agree("double a = 2.5, b = 2.5; return a > b;");
     agree("double a = 2.5, b = 1.5; return a > b;");
     agree("double a = 2.5, b = 1.5; return a <= b;");
     agree("double a = 2.5, b = 1.5; return a >= b;");
@@ -685,6 +689,10 @@ fn floating_comparisons_agree_with_gcc() {
     // **The conversion to `_Bool`**, which is a comparison against zero and not a
     // truncation. `0.5` is the case that separates the two: true in C, and 0 if truncated.
     agree("double d = 0.5; return (int)(_Bool)d;");
+    // The *implicit* conversion as well as the cast: `_Bool b = d;` goes through the store
+    // path rather than the cast path, and only one of the two was covered.
+    agree("double d = 0.5; _Bool b = d; return (int)b;");
+    agree("double d = 0.0; _Bool b = d; return (int)b;");
     agree("double d = 0.0; return (int)(_Bool)d;");
     agree("double d = 2.5; if (d) { return 7; } return 9;");
     agree("double d = 0.0; if (d) { return 7; } return 9;");

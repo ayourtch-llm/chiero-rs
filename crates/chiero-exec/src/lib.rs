@@ -4389,7 +4389,26 @@ impl<'m> Engine<'m> {
                     );
                 };
                 match kind {
-                    CastKind::Trunc if tw <= fw => Value::Scalar(a.extract(xv, tw - 1, 0)),
+                    // **The term's width, not the instruction's.** `fw`/`tw` are what the
+                    // CIR *declares*; `xv` is what the engine actually holds, and the two
+                    // can disagree without the verifier objecting — a `_Bool` that reached
+                    // here as a one-bit `Cmp` result under a `Trunc` declared `Int(32) ->
+                    // Int(1)` made `extract(xv, 31, 0)` panic on a one-bit term.
+                    //
+                    // 023's rule is that the engine never crashes on input it was handed;
+                    // a declaration it cannot honour is a gap it reports. Widening here
+                    // would be worse than the panic — it would invent bits.
+                    CastKind::Trunc if tw <= fw => {
+                        let have = a.width(xv);
+                        if tw > have {
+                            return self.lowering_gap(
+                                s,
+                                span,
+                                &format!("Trunc to {tw} bits of a {have}-bit value"),
+                            );
+                        }
+                        Value::Scalar(a.extract(xv, tw - 1, 0))
+                    }
                     CastKind::ZExt if tw >= fw => Value::Scalar(a.zext(xv, tw)),
                     CastKind::SExt if tw >= fw => Value::Scalar(a.sext(xv, tw)),
                     // A `Bitcast` between equal widths is the identity on bits, which is
@@ -6996,8 +7015,85 @@ fn cmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
             let e = a.eq(x, y);
             a.or(gt, e)
         }
-        _ => return None,
+        // **The floating comparisons, concretely.** Symbolic floats have no sort to
+        // constrain, so `fcmp` declines and the caller records a gap — the same line
+        // waves 167 and 168 drew for arithmetic and negation.
+        CmpOp::FOEq
+        | CmpOp::FONe
+        | CmpOp::FOLt
+        | CmpOp::FOLe
+        | CmpOp::FUEq
+        | CmpOp::FUNe
+        | CmpOp::FULt
+        | CmpOp::FULe
+        | CmpOp::FOrd
+        | CmpOp::FUno => return fcmp(a, op, x, y),
+        // **No catch-all**, and that is the point: with the float arms added this match is
+        // exhaustive, so a `CmpOp` added later is a compile error here rather than a silent
+        // `None` the caller reads as "symbolic operand". The `_` that used to sit here was
+        // load-bearing while floats were missing and is a hiding place now.
     })
+}
+
+/// One concrete floating comparison, as a one-bit term.
+///
+/// **Ordered and unordered are not each other's negation.** An *ordered* comparison is
+/// false whenever either operand is NaN; an *unordered* one is true whenever either is.
+/// So `FOLt` and `FUGe` are complements but `FOLt` and `FOGe` are not — with a NaN both are
+/// false. Rust's `<` on floats is the ordered form and `is_nan` supplies the rest, which is
+/// why each arm is written out rather than derived from two others.
+///
+/// C's `isnan` idiom is `x != x`, and it lowers to `FUNe` for exactly this reason: `FONe`
+/// is *false* for NaN, which is the opposite of what the idiom asks.
+fn fcmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
+    let (xc, yc) = (a.as_const(x)?, a.as_const(y)?);
+    if xc.width() != yc.width() {
+        return None;
+    }
+    let (p, q) = match xc.width() {
+        32 => (
+            f64::from(f32::from_bits(xc.bits() as u32)),
+            f64::from(f32::from_bits(yc.bits() as u32)),
+        ),
+        64 => (
+            f64::from_bits(xc.bits() as u64),
+            f64::from_bits(yc.bits() as u64),
+        ),
+        // x87's 80-bit form has no Rust primitive; comparing it would need a second float
+        // implementation nobody tests.
+        _ => return None,
+    };
+    // Widening `f32` to `f64` is exact, so comparing at the wider type gives the same
+    // answers — including for NaN, which stays NaN.
+    let unordered = p.is_nan() || q.is_nan();
+    let r = match op {
+        CmpOp::FOEq => p == q,
+        CmpOp::FONe => !unordered && p != q,
+        CmpOp::FOLt => p < q,
+        CmpOp::FOLe => p <= q,
+        CmpOp::FUEq => unordered || p == q,
+        // `p != q` is already true when either is NaN, which is what makes this the
+        // idiom's operator.
+        CmpOp::FUNe => p != q,
+        CmpOp::FULt => unordered || p < q,
+        CmpOp::FULe => unordered || p <= q,
+        CmpOp::FOrd => !unordered,
+        CmpOp::FUno => unordered,
+        // Every integer comparison, which `cmp` handles above and never routes here. Not a
+        // catch-all: naming them means a new `CmpOp` is a compile error in this function
+        // rather than a silent `None` that reads as "symbolic operand".
+        CmpOp::Eq
+        | CmpOp::Ne
+        | CmpOp::ULt
+        | CmpOp::ULe
+        | CmpOp::UGt
+        | CmpOp::UGe
+        | CmpOp::SLt
+        | CmpOp::SLe
+        | CmpOp::SGt
+        | CmpOp::SGe => return None,
+    };
+    Some(a.bv(1, u128::from(r)))
 }
 
 /// Every variable occurring anywhere in `t`, transitively.

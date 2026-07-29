@@ -2070,6 +2070,24 @@ impl Memory {
             return probe;
         }
         let mut faults = probe.faults;
+        // **Widen a term narrower than the store**, rather than extracting past its end.
+        //
+        // A `_Bool` is one *byte* of storage holding a one-*bit* value: `Cmp` yields a
+        // 1-bit term and the object is 8 bits wide, so splitting the value into bytes ran
+        // `extract(t, 7, 0)` over a one-bit term and panicked. 023 says the engine does not
+        // crash on input it was handed, and zero-extension is the only widening that can be
+        // right here — the value's own width says what it is, and the bits above it are not
+        // part of it.
+        //
+        // Found by wave 169: the float path reached this first because `(_Bool)f` is a
+        // comparison, but nothing about it is float-specific and the integer `_Bool` store
+        // had the same shape waiting.
+        let want_bits = (size * 8) as u32;
+        let t = if a.width(t) < want_bits {
+            a.zext(t, want_bits)
+        } else {
+            t
+        };
         for i in 0..size {
             let idx = if e == Endian::Big { size - 1 - i } else { i };
             let lo = (idx * 8) as u32;
