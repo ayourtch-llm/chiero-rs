@@ -392,3 +392,68 @@ fn the_two_precisions_convert_both_ways() {
         "0.1 narrowed to single and widened back is single's 0.1, not double's"
     );
 }
+
+/// **A float-to-integer conversion whose value does not fit is undefined** (C11 6.3.1.4).
+///
+/// "If the value of the integral part cannot be represented by the integer type, the
+/// behavior is undefined." Every other UB the engine records is a *binary operation*, so
+/// `note_ub` is reached from `RValue::Bin` and a conversion never passes through it —
+/// `UbKind` has `SignedOverflow`, `Shift` and `DivByZero` and nothing for a cast.
+///
+/// Raised by a reader asking whether UB should be warned about rather than merely discarded
+/// from the differential channel. The answer is yes, and it turned out chiero already warns
+/// about the other three: `7 / z`, `1 << 33` and `INT_MAX + 1` all produce findings, and
+/// this produces silence.
+///
+/// **Silence is the wrong answer twice over here.** The value chiero computes is Rust's
+/// saturating `as`, which is a *defensible* number and nothing like the one the hardware
+/// gives — so the run continues with a plausible wrong value and says nothing about why.
+/// That is the failure the whole `UbEvent` mechanism exists to prevent.
+///
+/// The negative half is the constraint: an in-range conversion is ordinary C that programs
+/// do constantly, and a check that fired on every float-to-integer cast would bury the real
+/// ones.
+#[test]
+fn a_float_to_integer_conversion_out_of_range_is_undefined() {
+    let case = |v: f64, to: CTy| {
+        let (r, _) = run(
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Cast {
+                        kind: CastKind::FpToSi,
+                        to: to.clone(),
+                        from: CTy::Float(FloatKind::F64),
+                        a: f64c(v),
+                    },
+                },
+                10,
+            )],
+            Operand::Value(ValueId(0)),
+            to,
+        );
+        // Counted rather than matched on a kind: the fixture contains one instruction and
+        // no other undefined operation, so any event here is this one — and asserting the
+        // *behaviour* keeps this test red for the right reason rather than for a name that
+        // does not exist yet.
+        r.states()[0].ub_events().len()
+    };
+
+    // Out of range for the destination.
+    assert_eq!(
+        case(-4_294_905_087.0, CTy::Int(16)),
+        1,
+        "-4.29e9 into 16 bits"
+    );
+    assert_eq!(case(1e30, CTy::Int(32)), 1, "1e30 into 32 bits");
+    assert_eq!(case(-1e30, CTy::Int(32)), 1, "-1e30 into 32 bits");
+    // NaN has no integral part at all, which C11 6.3.1.4 also leaves undefined.
+    assert_eq!(case(f64::NAN, CTy::Int(32)), 1, "NaN into any integer");
+
+    // **In range, and therefore ordinary.** A check that fired on every conversion would
+    // report these too, and they are what C programs are made of.
+    assert_eq!(case(2.7, CTy::Int(32)), 0, "2.7 truncates to 2");
+    assert_eq!(case(-2.7, CTy::Int(32)), 0, "-2.7 truncates to -2");
+    assert_eq!(case(2_147_483_647.0, CTy::Int(32)), 0, "INT_MAX exactly");
+    assert_eq!(case(-2_147_483_648.0, CTy::Int(32)), 0, "INT_MIN exactly");
+}

@@ -99,7 +99,6 @@ name = "chiero-lower"
 version = "0.1.0"
 dependencies = [
  "chiero-ast",
- "chiero-check",
  "chiero-cir",
  "chiero-exec",
  "chiero-parse",
