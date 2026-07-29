@@ -215,3 +215,26 @@ fn a_null_the_program_produced_does_not_claim_the_assumption() {
         "this null is the program's, not an assumption chiero made: {null}"
     );
 }
+
+/// **Only a *null* fault claims the premise, even on a state that has one.**
+///
+/// The state forked to make `p` null still executes the rest of the program, and a fault
+/// there on a *different* pointer is an ordinary out-of-bounds. Attaching "`%0` is assumed
+/// possibly null" to it would point the reader at a parameter that had nothing to do with
+/// the fault.
+///
+/// Mutation found this: appending the clause on every fault kind rather than only
+/// `null-dereference` passed every other test, because no fixture had a non-null fault on a
+/// null-parameter state.
+#[test]
+fn a_non_null_fault_on_the_null_state_does_not_claim_the_premise() {
+    let f = findings("int probe(int *p, int *q){ if (!p) return q[100000]; return *p; }");
+    let oob = f
+        .iter()
+        .find(|x| x.contains("out-of-bounds"))
+        .unwrap_or_else(|| panic!("the guarded branch over-indexes `q`: {f:?}"));
+    assert!(
+        !oob.contains("assumed to be possibly null"),
+        "this fault is about `q`'s extent, not `p`'s nullability: {oob}"
+    );
+}

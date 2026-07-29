@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 186) — 1240 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 187) — 1242 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,41 +688,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: nullable pointers are on, and nothing has measured the noise
+> ### 🔴 Do this first: the rate is 3 of 3, and the answer is caller knowledge
 >
-> Wave 186 made an entry pointer parameter possibly null by default, per the user's
-> decision. `null_params.rs` pins the four discharge rules and the check-after-deref case.
-> Offsets from null were checked rather than assumed: `p[4]` reports at offset 16,
-> `*(p+1000)` at 4000, `s->b` at "offset 4 of NULL through s->b", and `p[-1]` reports *both*
-> an out-of-bounds on the valid state and a null dereference on the null one.
+> Measured in wave 187 over `tests/corpus/c`: **22 defined functions, 3 take a pointer, 3
+> report a null dereference.** Every finding is *true* — `static unsigned weight_of(const
+> struct entry *e) { return e->weight; }` really does crash on null. Every finding is also
+> about a `static` helper whose callers in the same file all pass `&table[i]`.
 >
-> **What is not known is the false-positive rate on real code**, and that is the thing to
-> establish before this reaches VPP. Six existing tests needed `with_entry_ptr_nullable(false)`
-> — all of them because they were about something else, none by relaxing an assertion — but
-> that is a sample of chiero's own fixtures, not of C in the wild. The corpus channels cannot
-> answer it either: their `probe` takes no parameters, so the null fork never fires there.
+> So the noise is not wrong answers, it is **missing caller knowledge**. Two things follow,
+> and the second is the one worth building:
 >
-> The measurement worth making: run the entry-nullable policy over `tests/corpus/c/` and over
-> a VPP node or two, and count how many findings are genuine "this callee should check" versus
-> noise from a caller that provably never passes null. If the rate is bad, the answer is not
-> to turn the default off — it is 023 §6's dedup plus a way to record "this parameter is
-> non-null by contract", which is what an `assert(p)` already does for free.
+> 1. **Done in wave 187**: the report now says which premise it rests on —
+>    `…, where %0 is a pointer parameter assumed to be possibly null`. That does not reduce
+>    the count; it makes one line enough to triage instead of re-deriving.
+> 2. **Not done, and the real fix**: a function with *internal linkage* whose call sites are
+>    all in the translation unit does not need the assumption — chiero can see every caller.
+>    `weight_of` is `static` and called only as `weight_of(&table[i])`. Using that would drop
+>    all three findings without weakening anything, because it replaces an assumption with a
+>    fact. Note the trap: a `static` function whose address is taken can be called from
+>    anywhere, so "all call sites visible" is a property to *check*, not to assume from the
+>    keyword.
 >
-> Mutation on wave 186 found **two missing fixtures and no wrong code**, which is worth
-> knowing before adding to this file:
->
-> ```text
->   KILLED     nullable-default-off
->   KILLED     fork-uses-the-real-object-not-null
->   KILLED     null-state-replaces-valid-one     <- only after adding a shape assertion
->   KILLED     only-the-first-pointer-forks      <- only after adding a two-pointer fixture
-> ```
->
-> Both survivors were invisible to the *reports*. Replacing the valid state with the null one
-> reports exactly the same findings while silently analysing none of the program after a
-> successful check; forking only the first parameter is unobservable while every fixture has
-> one parameter. Neither could have been caught by adding assertions to the existing
-> programs — they needed **different programs**.
+> Until (2) exists, keep the default on. An unactionable true finding is recoverable; a
+> missing one is not, and the user's decision was explicit.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
