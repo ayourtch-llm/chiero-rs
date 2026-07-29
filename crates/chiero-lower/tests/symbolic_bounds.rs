@@ -42,8 +42,16 @@ fn findings(src: &str) -> Vec<String> {
     r.findings()
 }
 
+/// Does the run say the index can leave its object, by either name?
+///
+/// **Matched on the fault *slug*, not a loose substring.** Wave 194 split the pointer case
+/// out as `pointer-outside-object`, whose message contains no "bounds" at all — and a
+/// `contains("bounds")` test then reported that a correct fault had disappeared. Wave 184
+/// recorded the same lesson on the arithmetic census: a substring is not a kind.
 fn reports_oob(src: &str) -> bool {
-    findings(src).iter().any(|f| f.contains("bounds"))
+    findings(src)
+        .iter()
+        .any(|f| f.starts_with("pointer-outside-object") || f.starts_with("out-of-bounds"))
 }
 
 /// An unconstrained index can leave the object, and that is worth saying.
@@ -117,9 +125,10 @@ fn a_concrete_out_of_bounds_access_still_reports() {
 /// bound, so the offset arrives at the query already constrained to the object.
 #[test]
 fn a_constrained_but_unenumerable_index_is_not_reported() {
-    let f = findings("int ga[64];\nint probe(int i){ return ga[i & 63]; }");
+    let src = "int ga[64];\nint probe(int i){ return ga[i & 63]; }";
+    let f = findings(src);
     assert!(
-        !f.iter().any(|x| x.contains("bounds")),
+        !reports_oob(src),
         "`i & 63` cannot leave a 64-element array, however many values it has: {f:?}"
     );
 }
@@ -138,12 +147,16 @@ fn a_constrained_but_unenumerable_index_is_not_reported() {
 fn each_direction_out_of_the_object_is_reported() {
     let above = findings("int ga[64];\nint probe(int i){ if (i < 0) return 0; return ga[i]; }");
     assert!(
-        above.iter().any(|x| x.contains("bounds")),
+        above
+            .iter()
+            .any(|x| x.starts_with("pointer-outside-object")),
         "non-negative but unbounded above: can run off the end: {above:?}"
     );
     let below = findings("int ga[64];\nint probe(int i){ if (i > 63) return 0; return ga[i]; }");
     assert!(
-        below.iter().any(|x| x.contains("bounds")),
+        below
+            .iter()
+            .any(|x| x.starts_with("pointer-outside-object")),
         "bounded above but not below: can run off the start: {below:?}"
     );
 }

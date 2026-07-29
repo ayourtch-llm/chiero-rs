@@ -1018,6 +1018,23 @@ pub enum MemFault {
     /// 021 §5 step 2: the access **may** be out of bounds. Distinct from `OutOfBounds`,
     /// which is definite — this one continues on the in-bounds branch, and a reader
     /// needs to know the difference between "this is wrong" and "this can be wrong".
+    /// **A pointer computed outside the object it derives from**, before any access.
+    ///
+    /// C11 6.5.6p8 makes the *computation* undefined once it goes more than one past the
+    /// end, so this is a fault in its own right and not a weaker form of
+    /// [`MemFault::OutOfBoundsMaybe`]. It carries no access size because there is no
+    /// access — which is the concrete reason it needs its own variant rather than a flag:
+    /// the caller of the access fault has to invent a width, and did.
+    ///
+    /// Ranked apart from an out-of-bounds access on purpose (023 §6): forming a pointer
+    /// past the end is deliberate in a few real idioms, and touching bytes there is not.
+    PointerOutsideObject {
+        obj: ObjectId,
+        obj_size: u64,
+        /// An offset the path allows, which is past the object.
+        witness: i64,
+        at: Span,
+    },
     OutOfBoundsMaybe {
         obj: ObjectId,
         size: u64,
@@ -1063,6 +1080,7 @@ impl MemFault {
             MemFault::WildPointer { .. } => "wild-pointer",
             MemFault::SymbolicByte { .. } => "symbolic-byte",
             MemFault::OutOfBoundsMaybe { .. } => "may-be-out-of-bounds",
+            MemFault::PointerOutsideObject { .. } => "pointer-outside-object",
             MemFault::OverlappingCopy { .. } => "overlapping-copy",
             MemFault::BadFree { .. } => "bad-free",
         }
@@ -1107,6 +1125,7 @@ impl MemFault {
                 | MemFault::MaybeUninitialized { .. }
                 | MemFault::SymbolicByte { .. }
                 | MemFault::OutOfBoundsMaybe { .. }
+                | MemFault::PointerOutsideObject { .. }
                 | MemFault::BadRange { .. }
                 | MemFault::WildPointer { .. }
                 | MemFault::AllocationTooLarge { .. }
@@ -1130,6 +1149,7 @@ impl MemFault {
             | MemFault::WildPointer { at, .. }
             | MemFault::SymbolicByte { at, .. }
             | MemFault::OutOfBoundsMaybe { at, .. }
+            | MemFault::PointerOutsideObject { at, .. }
             | MemFault::OverlappingCopy { at, .. }
             | MemFault::BadFree { at, .. } => *at,
         }
@@ -1150,6 +1170,7 @@ impl MemFault {
             | MemFault::AllocationTooLarge { obj, .. }
             | MemFault::SymbolicByte { obj, .. }
             | MemFault::OutOfBoundsMaybe { obj, .. }
+            | MemFault::PointerOutsideObject { obj, .. }
             | MemFault::OverlappingCopy { obj, .. }
             | MemFault::BadFree { obj, .. } => Some(*obj),
             MemFault::BadRange { .. }
@@ -1235,6 +1256,16 @@ impl std::fmt::Display for MemFault {
             MemFault::SymbolicByte { obj, off, .. } => write!(
                 f,
                 "byte {off} of {obj:?} holds a symbolic value, which a concrete access                  cannot answer for"
+            ),
+            MemFault::PointerOutsideObject {
+                obj,
+                obj_size,
+                witness,
+                ..
+            } => write!(
+                f,
+                "a pointer into {obj:?} ({obj_size} bytes) can be computed at offset \
+                 {witness}, which is outside it"
             ),
             MemFault::OutOfBoundsMaybe {
                 obj,

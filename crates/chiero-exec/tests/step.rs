@@ -4453,7 +4453,9 @@ fn a_symbolic_ptr_add_offset_is_a_gap() {
     // makes *forming* such a pointer undefined, not only dereferencing it. The run now says
     // so instead of only recording that it could not enumerate the offset.
     assert!(
-        r.findings().iter().any(|f| f.contains("bounds")),
+        r.findings()
+            .iter()
+            .any(|f| f.starts_with("pointer-outside-object")),
         "the offset can leave the object, which is undefined when the pointer is formed: {:?}",
         r.findings()
     );

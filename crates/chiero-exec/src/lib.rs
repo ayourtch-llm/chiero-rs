@@ -4250,9 +4250,13 @@ impl<'m> Engine<'m> {
                 if let CheckResult::Sat(_) = self.probe(a, s, &[out]) {
                     self.report_faults(
                         s,
-                        &[chiero_mem::MemFault::OutOfBoundsMaybe {
+                        // **The pointer fault, not the access one.** Nothing has been
+                        // touched here — this runs for a `PtrAdd` — and the access variant
+                        // has a size field there is no honest value for. Wave 193 passed
+                        // `1` and the report read "1-byte access of ga", which was untrue
+                        // twice over.
+                        &[chiero_mem::MemFault::PointerOutsideObject {
                             obj: p.base,
-                            size: 1,
                             obj_size,
                             witness: obj_size as i64,
                             at: span,
