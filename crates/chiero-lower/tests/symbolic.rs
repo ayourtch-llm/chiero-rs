@@ -539,6 +539,82 @@ fn an_undecidable_divisor_is_a_declared_gap_not_a_silent_one() {
     );
 }
 
+/// **A fault with a witness is not an undecided path.**
+///
+/// When tier 1 cannot decide a branch the engine explores *both* sides and degrades the
+/// state to `Fidelity::Unknown`, recording `solver could not decide a branch; both sides
+/// explored`. That is the right call at the branch: the path may not be real, and saying so
+/// beats guessing.
+///
+/// It is the wrong call at the end. `attach_witness` then solves the path condition and
+/// gets back a **validated model** — 022 §3.1's `Sat` is self-certifying, so a model that
+/// satisfies the path condition is a *proof that the path is reachable*. The reason for the
+/// degradation has been discharged, and nothing discharges it.
+///
+/// So a real, reproducible null dereference at `x = 11` is presented as a run that could not
+/// decide anything, which is exactly the label a reader uses to decide what to ignore. The
+/// mirror of wave 158: there the finding was right and the number beside it wrong; here the
+/// finding and the number are both right and the *confidence* beside them is wrong.
+///
+/// The pair is the whole test. The first body's inner block is unreachable (`x > 10` and
+/// `x < 5`), and that finding **must** stay `Unknown` with no witness — it is the case the
+/// degradation exists for. A fix that simply stopped degrading would satisfy the second
+/// assertion and break the first.
+#[test]
+fn a_witnessed_fault_is_not_reported_as_undecided() {
+    for (body, reachable) in [
+        (
+            "if (x > 10) { if (x > 3) { int *p = 0; *p = 1; } } return 0;",
+            true,
+        ),
+        (
+            "if (x > 10) { if (x < 5) { int *p = 0; *p = 1; } } return 0;",
+            false,
+        ),
+    ] {
+        let src = format!("int probe(int x) {{ {body} }}");
+        let m = harness::lower(&src);
+        let mut arena = TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let f = r
+            .reports()
+            .into_iter()
+            .find(|f| f.message.contains("null"))
+            .unwrap_or_else(|| panic!("`{body}`: the null store was not reported"));
+
+        if reachable {
+            let w = f
+                .witness
+                .as_ref()
+                .unwrap_or_else(|| panic!("`{body}`: reachable at x = 11 and unwitnessed"));
+            assert_eq!(
+                w.bindings[0].value as u32 as i32, 11,
+                "`{body}`: the witness should name a value that reaches the store"
+            );
+            assert_eq!(
+                f.fidelity,
+                chiero_exec::Fidelity::Exact,
+                "`{body}`: the witness is a validated model of this path's condition, which \
+                 proves the path reachable — so `solver could not decide a branch` has been \
+                 answered and must not still be the finding's confidence"
+            );
+        } else {
+            // The unreachable twin. Nothing proved this path, so it keeps its caveat.
+            assert!(
+                f.witness.is_none(),
+                "`{body}`: the inner block needs x > 10 and x < 5 at once"
+            );
+            assert_eq!(
+                f.fidelity,
+                chiero_exec::Fidelity::Unknown,
+                "`{body}`: nothing discharged the branch the solver could not decide"
+            );
+        }
+    }
+}
+
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
 /// silently compare nothing is not a channel.**
 ///
