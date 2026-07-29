@@ -564,3 +564,44 @@ fn a_witness_requirement_does_not_prune_the_run() {
         r.states().iter().map(|s| s.fidelity()).collect::<Vec<_>>()
     );
 }
+
+/// **Each finding gets a witness that reproduces *it*.**
+///
+/// `100/(x-1)` and `100/(x-2)` on one path are two real divisions by zero needing two
+/// different inputs. Wave 158 gave the *state* one witness solved against everything its
+/// findings need; here that conjunction is unsatisfiable, so it falls back to the path
+/// alone and both findings are handed the same number — which reproduces neither.
+///
+/// 023 §9 is about the finding, not the path: "a non-reproducible bug report is not a bug
+/// report" is a claim about each report a reader is shown. Two reports sharing one witness
+/// is one report's worth of evidence presented twice.
+///
+/// The fallback wave 158 added is still right for what it does — reporting the weaker
+/// witness beats refusing — but it is a *consequence* of one witness per state, not a
+/// design. This is the design: the condition that motivated a report travels with the
+/// report, and each is solved on its own.
+#[test]
+fn contradictory_requirements_get_a_witness_each() {
+    let m = divisions_at(&[1, 2], Terminator::Return(Some(k(0))), Vec::new());
+    let f = witnessed(&m);
+    assert_eq!(f.len(), 2, "both divisions are reported: {f:?}");
+
+    // The findings are in report order, which is instruction order: `x - 1` then `x - 2`.
+    for (want, (msg, w)) in [1i32, 2].into_iter().zip(f.iter()) {
+        let w = w
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{msg}` came with no witness"));
+        let x = w.bindings[0].value as u32 as i32;
+        assert_eq!(
+            x,
+            want,
+            "`{msg}`: the witness names x = {x}, under which this divisor is {} — the \
+             other finding's requirement, or neither's",
+            x - want
+        );
+        assert!(
+            w.bindings[0].pinned,
+            "`{msg}`: this finding needs exactly x = {want}"
+        );
+    }
+}
