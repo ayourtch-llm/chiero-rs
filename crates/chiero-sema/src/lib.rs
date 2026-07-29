@@ -1921,10 +1921,22 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Str { fragments } => {
-                // A string literal is `char[n]`, and it decays like any other array.
+                // A string literal is an array of its **element type**, and it decays like
+                // any other array. C11 6.4.5p6: `L"…"` has element `wchar_t`, `u"…"`
+                // `char16_t`, `U"…"` `char32_t`; plain and `u8"…"` are `char`.
+                //
+                // Every literal used to be `char[n]` whatever prefix it carried, so
+                // `sizeof(L"AB")` answered 3 instead of 12 — a silent wrong answer, and one
+                // §9 attributed to `unquote`, which strips the prefix perfectly well and
+                // never had the type to lose.
+                let (esign, ebits) = fragments
+                    .first()
+                    .and_then(|f| self.text(f.spelling))
+                    .map(string_element)
+                    .unwrap_or((self.target.char_signed, 8));
                 let elem = self.intern(Ty::Int {
-                    signed: self.target.char_signed,
-                    bits: 8,
+                    signed: esign,
+                    bits: ebits,
                 });
                 let n: u64 = fragments
                     .iter()
@@ -2506,6 +2518,25 @@ fn float_rank(k: FloatKind) -> u8 {
 /// not processed, so the bound is an upper estimate for a literal containing them. That
 /// is recorded rather than hidden: phase 5's escape evaluation is where the exact length
 /// comes from, and 013 §2's amendment leaves it to this crate to do properly later.
+/// The `(signed, bits)` of a string literal's element type, from its prefix.
+///
+/// x86-64 Linux, which is the one target 014 models: `wchar_t` is a signed 32-bit `int`,
+/// `char16_t` is 16-bit unsigned and `char32_t` 32-bit unsigned. `u8` is checked before `u`
+/// because the shorter prefix would otherwise match it.
+fn string_element(spelling: &str) -> (bool, u32) {
+    if spelling.starts_with("u8") {
+        (true, 8)
+    } else if spelling.starts_with('L') {
+        (true, 32)
+    } else if spelling.starts_with('u') {
+        (false, 16)
+    } else if spelling.starts_with('U') {
+        (false, 32)
+    } else {
+        (true, 8)
+    }
+}
+
 fn unquote(spelling: &str) -> &str {
     match (spelling.find('"'), spelling.rfind('"')) {
         (Some(a), Some(b)) if b > a => &spelling[a + 1..b],

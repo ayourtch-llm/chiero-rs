@@ -874,10 +874,27 @@ impl Lowerer<'_> {
         let chiero_ast::ExprKind::Str { fragments } = self.ast.expr(e).kind.clone() else {
             return None;
         };
+        // **Each character is written at the literal's element width** (C11 6.4.5p6):
+        // `L"AB"` is `wchar_t[3]`, four bytes per character, not `41 42 00`. The prefix is
+        // read from the first fragment — C11 6.4.5p2 makes concatenating literals of
+        // different prefixes either ill-formed or the wider of the two, and the parser has
+        // already joined them, so the first is the one that named the type sema used.
+        let width = fragments
+            .first()
+            .and_then(|fr| self.names.text(fr.spelling))
+            .map(string_element_bytes)
+            .unwrap_or(1);
         let mut bytes = Vec::new();
         for fr in &fragments {
             let text = self.names.text(fr.spelling).unwrap_or("").to_owned();
-            bytes.extend_from_slice(&unescape(unquote(&text)));
+            for b in unescape(unquote(&text)) {
+                bytes.push(b);
+                // Little-endian, matching 020's target and `GlobalInit::Bytes`'s reader.
+                // The source bytes are ASCII here; a character above 127 in a wide literal
+                // needs the decoder `unescape` does not have yet, and would land in the
+                // low byte either way rather than silently in the wrong one.
+                bytes.extend(std::iter::repeat_n(0u8, width - 1));
+            }
         }
         // **No explicit terminator.** The caller zero-fills the object to its full size
         // before writing, so appending one is invisible in every case — `char s[4] = "hi"`
@@ -1832,12 +1849,20 @@ impl Lowerer<'_> {
             // Adjacent fragments are concatenated first (C11 6.4.5p5) — `"a" "b"` is one
             // literal, and pooling on the joined bytes is what makes it equal to `"ab"`.
             chiero_ast::ExprKind::Str { fragments } => {
-                let mut bytes = Vec::new();
-                for fr in fragments {
-                    let text = self.names.text(fr.spelling).unwrap_or("").to_owned();
-                    bytes.extend_from_slice(&unescape(unquote(&text)));
-                }
-                bytes.push(0);
+                // **Through `string_bytes`, not a second copy of it.** This arm used to
+                // build the bytes itself, and when `string_bytes` learned about element
+                // widths this one did not — `sizeof(L"AB")` became 12 while the object
+                // behind it stayed `41 42 00`. Two places computing the same thing is two
+                // places to remember, and the one nobody remembers is the bug.
+                let mut bytes = self.string_bytes(e).unwrap_or_default();
+                // The terminator is one *element*, not one byte: `L"AB"` ends in four zero
+                // bytes, which is what makes its object 12 rather than 9.
+                let width = fragments
+                    .first()
+                    .and_then(|fr| self.names.text(fr.spelling))
+                    .map(string_element_bytes)
+                    .unwrap_or(1);
+                bytes.extend(std::iter::repeat_n(0u8, width));
                 let g = self.intern_string(bytes, span);
                 Operand::Const(Const::GlobalAddr { g, off: 0 })
             }
@@ -5007,6 +5032,23 @@ fn va_builtin(name: &str) -> Option<VaBuiltin> {
 /// keeps spellings verbatim so diagnostics can point at the source. Only the byte
 /// encodings are handled here; `L`/`u`/`U` literals lose their width, which is recorded
 /// as a gap rather than guessed at.
+/// Bytes per character for a string literal, from its prefix.
+///
+/// Mirrors `chiero_sema::string_element`'s widths — the two must agree or the object sema
+/// sized and the bytes lowering wrote are different lengths. `u8` is checked before `u`
+/// because the shorter prefix would otherwise match it.
+fn string_element_bytes(spelling: &str) -> usize {
+    if spelling.starts_with("u8") {
+        1
+    } else if spelling.starts_with('L') || spelling.starts_with('U') {
+        4
+    } else if spelling.starts_with('u') {
+        2
+    } else {
+        1
+    }
+}
+
 fn unquote(s: &str) -> &str {
     let s = s
         .strip_prefix("u8")
