@@ -2685,6 +2685,7 @@ impl<'m> Engine<'m> {
         s: &mut State,
         op: BinOp,
         ty: &CTy,
+        signed: bool,
         x: Term,
         y: Term,
         span: Span,
@@ -2712,28 +2713,52 @@ impl<'m> Engine<'m> {
                     format!("{op:?} of a {w}-bit value by {}", yc.bits()),
                 );
             }
-            // **C11 6.5.7p4's other two clauses are not checked, and cannot be here.**
+            // **C11 6.5.7p4's other two clauses, which apply to signed shifts only.**
             //
-            // A *signed* left shift is also undefined when the operand is negative or when
-            // `E1 × 2^E2` does not fit — `1 << 31` is undefined for `int` and perfectly
-            // ordinary for `unsigned`, which UBSan confirms in both directions. CIR cannot
-            // tell the two apart: right shifts carry signedness in the opcode (`AShr` vs
-            // `LShr`) and left shifts have only `Shl`, because the *operation* is identical
-            // and only the UB rules differ. `CTy::Int(w)` carries no signedness either.
+            // `E1 << E2` is undefined when `E1` is negative, and when `E1 × 2^E2` is not
+            // representable in the result type. Both are conditioned on `signed`, and that
+            // condition is the whole difficulty: `1 << 31` is undefined for `int` and
+            // perfectly ordinary for `unsigned`, which UBSan confirms in both directions.
+            // Checking them from the bits alone — which is all CIR carried until `Bin`
+            // grew `signed` — reports every `unsigned x << 31` as undefined, a false
+            // positive in the most common idiom in C.
             //
-            // Implementing them from the bits alone reports every unsigned shift of a large
-            // value as undefined, which is a false positive in the most common idiom there
-            // is. A census over 300 generated programs says the gap is real — 8 negative
-            // shifts and 5 non-representable results that gcc reports and chiero does not —
-            // and closing it is a 020 decision about `Shl`, recorded in §9 rather than
-            // guessed at here.
+            // The product is computed at full width for the same reason the overflow arm
+            // below does: recomputing it in the operand's width is exactly the wrap being
+            // tested for.
+            BinOp::Shl if signed && xc.signed() < 0 => {
+                push(
+                    UbKind::Shift,
+                    format!("left shift of the negative value {}", xc.signed()),
+                );
+            }
+            BinOp::Shl
+                if signed
+                    && xc
+                        .signed()
+                        .checked_shl(yc.bits() as u32)
+                        .is_none_or(|v| v > (1i128 << (w - 1)) - 1) =>
+            {
+                push(
+                    UbKind::Shift,
+                    format!(
+                        "left shift of {} by {} places cannot be represented in {w} signed bits",
+                        xc.signed(),
+                        yc.bits()
+                    ),
+                );
+            }
             BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem if yc.bits() == 0 => {
                 push(UbKind::DivByZero, format!("{op:?} by zero"));
             }
             // Signed overflow is a statement about the *mathematical* result, so it is
             // computed at full width and compared against the range — recomputing it in
             // the operand's width is exactly the wrap being tested for.
-            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+            // **Unsigned arithmetic wraps and is defined** (C11 6.2.5p9), so the range
+            // test belongs behind `signed`. Without it `3000000000u + 3000000000u`
+            // reinterprets as `-1294967296 + -1294967296`, lands outside the signed range
+            // and fires — a false report on a program gcc runs clean.
+            BinOp::Add | BinOp::Sub | BinOp::Mul if signed => {
                 let (xs, ys) = (xc.signed(), yc.signed());
                 let exact: Option<i128> = match op {
                     BinOp::Add => xs.checked_add(ys),
@@ -4169,7 +4194,13 @@ impl<'m> Engine<'m> {
                 // addresses — are §7's `Approximated` and `Unknown` causes, not nothing.
                 None => return self.lowering_gap(s, span, &format!("{o:?}")),
             },
-            RValue::Bin { op, a: x, b: y, ty } => {
+            RValue::Bin {
+                op,
+                a: x,
+                b: y,
+                ty,
+                signed,
+            } => {
                 // **`Undef` in, `Undef` out** (020 contract 43) — including `undef * 0`,
                 // which is 0 for every *value* of the operand and undefined for a
                 // non-value. Checked before `scalar`, which has no term to hand back.
@@ -4181,7 +4212,7 @@ impl<'m> Engine<'m> {
                 };
                 // **The event, before the value** — the value is always produced, so an
                 // early return added later cannot silently drop the event.
-                self.note_ub(a, s, *op, ty, xv, yv, span);
+                self.note_ub(a, s, *op, ty, *signed, xv, yv, span);
                 match bin(a, *op, xv, yv) {
                     Some(t) => Value::Scalar(t),
                     None => return self.lowering_gap(s, span, &format!("{op:?}")),

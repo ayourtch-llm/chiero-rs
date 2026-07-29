@@ -42,6 +42,7 @@ fn valid_module() -> Module {
             a: i32c(2),
             b: i32c(3),
             ty: CTy::Int(32),
+            signed: true,
         },
     });
     let f = Function {
@@ -450,6 +451,7 @@ fn mismatched_operand_widths_are_rejected() {
             a: Operand::Const(Const::Int { bits: 8, val: 1 }),
             b: Operand::Const(Const::Int { bits: 64, val: 1 }),
             ty: CTy::Int(32),
+            signed: true,
         },
     });
     m.funcs[0].blocks[0].term = Terminator::Return(None);
@@ -1135,6 +1137,7 @@ fn rule_one_applies_at_every_operand_position() {
                     a: i32c(2),
                     b: far_op.clone(),
                     ty: CTy::Int(32),
+                    signed: true,
                 },
             })],
             Terminator::Goto(BlockId(1)),
@@ -1231,6 +1234,7 @@ fn rule_one_applies_at_every_operand_position() {
                     a: i32c(1),
                     b: i32c(1),
                     ty: CTy::Int(32),
+                    signed: true,
                 },
             })],
             Terminator::Return(None),

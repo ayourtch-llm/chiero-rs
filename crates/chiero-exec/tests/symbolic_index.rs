@@ -78,6 +78,7 @@ fn indexed_read(len: u64) -> Module {
                 val: len as i128 - 1,
             }),
             ty: CTy::Int(64),
+            signed: true,
         },
     }));
     insts.push(i(InstKind::Assign {
@@ -87,6 +88,7 @@ fn indexed_read(len: u64) -> Module {
             a: Operand::Value(ValueId(5)),
             b: Operand::Const(Const::Int { bits: 64, val: 4 }),
             ty: CTy::Int(64),
+            signed: true,
         },
     }));
     // %3 = &buf[k]

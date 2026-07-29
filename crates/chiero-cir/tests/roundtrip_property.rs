@@ -158,6 +158,7 @@ fn gen_inst(r: &mut Rng, next_val: &mut u32, pool: &mut Vec<ValueId>) -> Inst {
                     a,
                     b,
                     ty,
+                    signed: true,
                 },
             }
         }

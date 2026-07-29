@@ -228,6 +228,23 @@ pub enum RValue {
         a: Operand,
         b: Operand,
         ty: CTy,
+        /// Whether the C operands were **signed**, which is what C's arithmetic UB rules
+        /// turn on and what nothing else here records.
+        ///
+        /// `SDiv`/`UDiv`, `SRem`/`URem` and `AShr`/`LShr` are separate opcodes because the
+        /// *machine* operation differs. For `Add`, `Sub`, `Mul` and `Shl` it does not —
+        /// the same instruction computes both — so splitting the opcode would name a
+        /// distinction the hardware does not make. The distinction C makes is in the
+        /// undefinedness, not the result: signed overflow and a signed left shift past the
+        /// sign bit are undefined, and the unsigned forms are defined to wrap.
+        ///
+        /// So the bit rides on the instruction, as LLVM's `nsw` does, rather than on the
+        /// opcode or on `CTy::Int(w)` — which carries a width and no signedness, and would
+        /// have to grow one everywhere to answer a question only arithmetic asks.
+        ///
+        /// Ignored by the float opcodes: IEEE overflow is defined (it yields an infinity),
+        /// so there is no rule for this bit to select.
+        signed: bool,
     },
     Un {
         op: UnOp,

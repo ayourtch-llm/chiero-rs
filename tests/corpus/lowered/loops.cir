@@ -32,7 +32,7 @@ bb2: ; span 0:77:0
   %13 = load i32, %12 align 1 ; span 56:62:0
   %14 = addrlocal %2 ; span 61:62:0
   %15 = load i32, %14 align 1 ; span 61:62:0
-  %16 = add i32 %13, %15 ; span 56:62:0
+  %16 = add i32 %13, %15 signed ; span 56:62:0
   store i32 %16 -> %12 align 1 ; span 56:62:0
   .seqpoint ; span 56:63:0
   .scope exit 3 ; span 54:65:0
@@ -40,7 +40,7 @@ bb2: ; span 0:77:0
 bb3: ; span 0:77:0
   %17 = addrlocal %2 ; span 49:52:0
   %18 = load i32, %17 align 1 ; span 49:52:0
-  %19 = add i32 %18, 1i32 ; span 49:52:0
+  %19 = add i32 %18, 1i32 signed ; span 49:52:0
   store i32 %19 -> %17 align 1 ; span 49:52:0
   .seqpoint ; span 26:65:0
   goto bb1

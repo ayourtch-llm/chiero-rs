@@ -22,7 +22,7 @@ entry: ; span 254:295:0
   .scope enter 1 ; span 278:295:0
   %11 = addrlocal %0 ; span 287:288:0
   %12 = load i32, %11 align 1 ; span 287:288:0
-  %13 = mul i32 %12, 2i32 ; span 287:292:0
+  %13 = mul i32 %12, 2i32 signed ; span 287:292:0
   .scope exit 1 ; span 280:293:0
   .scope exit 0 ; span 280:293:0
   ret %13
@@ -38,7 +38,7 @@ entry: ; span 296:338:0
   .scope enter 1 ; span 321:338:0
   %16 = addrlocal %0 ; span 330:331:0
   %17 = load i32, %16 align 1 ; span 330:331:0
-  %18 = mul i32 %17, 3i32 ; span 330:335:0
+  %18 = mul i32 %17, 3i32 signed ; span 330:335:0
   .scope exit 1 ; span 323:336:0
   .scope exit 0 ; span 323:336:0
   ret %18
@@ -96,7 +96,7 @@ bb3: ; span 340:802:0
   .seqpoint ; span 470:483:0
   %36 = addrlocal %3 ; span 750:751:0
   %37 = load i32, %36 align 1 ; span 750:751:0
-  %38 = srem i32 %37, 7i32 ; span 750:755:0
+  %38 = srem i32 %37, 7i32 signed ; span 750:755:0
   %39 = cmp eq i32 %38, 0i32 ; span 750:760:0
   %40 = zext i1 %39 to i32 ; span 750:760:0
   %41 = call @chiero_assert(%40) ; span 736:761:0

@@ -55,7 +55,7 @@ bb2: ; span 374:564:0
   %22 = addrlocal %1 ; span 19936:19957:11
   %23 = vaarg %22, i32 ; span 19936:19957:11
   %24 = bitcast i32 %23 to i32 ; span 19936:19957:11
-  %25 = add i32 %21, %24 ; span 503:508:0
+  %25 = add i32 %21, %24 signed ; span 503:508:0
   store i32 %25 -> %20 align 1 ; span 503:508:0
   .seqpoint ; span 503:528:0
   .scope exit 3 ; span 497:532:0
@@ -64,7 +64,7 @@ bb3: ; span 374:564:0
   .line 13
   %26 = addrlocal %3 ; span 492:495:0
   %27 = load i32, %26 align 1 ; span 492:495:0
-  %28 = add i32 %27, 1i32 ; span 492:495:0
+  %28 = add i32 %27, 1i32 signed ; span 492:495:0
   store i32 %28 -> %26 align 1 ; span 492:495:0
   .seqpoint ; span 465:532:0
   goto bb1

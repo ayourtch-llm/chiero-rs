@@ -30,7 +30,7 @@ bb3: ; span 0:106:0
   .scope enter 2 ; span 54:69:0
   %7 = addrlocal %1 ; span 62:68:0
   %8 = load i32, %7 align 1 ; span 62:68:0
-  %9 = add i32 %8, 2i32 ; span 62:68:0
+  %9 = add i32 %8, 2i32 signed ; span 62:68:0
   store i32 %9 -> %7 align 1 ; span 62:68:0
   .seqpoint ; span 62:69:0
   .scope exit 2 ; span 70:76:0

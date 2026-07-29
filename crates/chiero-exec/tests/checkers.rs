@@ -960,6 +960,7 @@ fn a_real_run_slices_its_path_condition() {
                             ty: CTy::Int(32),
                             a: Operand::Value(ValueId(i)),
                             b: Operand::Value(ValueId(i)),
+                            signed: true,
                         },
                     },
                     span: Span::DUMMY,

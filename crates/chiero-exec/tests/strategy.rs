@@ -77,6 +77,7 @@ fn tree(depth: u32) -> Module {
                             a: Operand::Value(ValueId(0)),
                             b: i32c(1i128 << (32 - (i + 1).leading_zeros() - 1)),
                             ty: CTy::Int(32),
+                            signed: true,
                         },
                     },
                     10 + i,

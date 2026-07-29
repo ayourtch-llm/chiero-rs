@@ -34,6 +34,21 @@ fn block(id: u32, insts: Vec<Inst>, term: Terminator) -> Block {
 /// `%0 = <op> a, b; %1 = %0` — the second instruction only so the path visibly continues
 /// past the UB. Returns the run.
 fn run_op(op: BinOp, width: u32, a_val: i128, b_val: i128) -> (RunResult, TermArena) {
+    run_op_as(op, width, a_val, b_val, true)
+}
+
+/// The same, with the operands' signedness spelled out.
+///
+/// C's arithmetic UB rules turn on that bit and nothing else in the instruction records
+/// it, so a helper that fixed it at `true` could only ever test half the language — and
+/// would report every `unsigned x << 31` as undefined while looking green.
+fn run_op_as(
+    op: BinOp,
+    width: u32,
+    a_val: i128,
+    b_val: i128,
+    signed: bool,
+) -> (RunResult, TermArena) {
     let k = |v: i128| {
         Operand::Const(Const::Int {
             bits: width,
@@ -58,6 +73,7 @@ fn run_op(op: BinOp, width: u32, a_val: i128, b_val: i128) -> (RunResult, TermAr
                             ty: CTy::Int(width),
                             a: k(a_val),
                             b: k(b_val),
+                            signed,
                         },
                     },
                     span: at(10),
@@ -137,7 +153,10 @@ fn every_shift_operator_reports_and_an_in_range_shift_does_not() {
             1,
             "{op:?} by the width is UB"
         );
-        let (ok, _) = run_op(op, 32, 1, 31);
+        // Width-1 is an ordinary count, but `1 << 31` does not fit in a *signed* 32-bit
+        // result, so only the unsigned form is silent for `Shl`. The right shifts are
+        // silent either way.
+        let (ok, _) = run_op_as(op, 32, 1, 31, op != BinOp::Shl);
         assert!(
             ok.ub_events().is_empty(),
             "{op:?} by width-1 is ordinary code: {:?}",
@@ -287,6 +306,7 @@ fn run_op_symbolic(op: BinOp, width: u32, force_zero: bool) -> (RunResult, TermA
                 ty: CTy::Int(width),
                 a: k(100),
                 b: Operand::Value(ValueId(0)),
+                signed: true,
             },
         },
         span: at(10),
@@ -433,6 +453,7 @@ fn a_symbolic_divisor_that_cannot_be_zero_is_not_reported() {
                             ty: CTy::Int(32),
                             a: k(100),
                             b: Operand::Value(ValueId(0)),
+                            signed: true,
                         },
                     },
                     span: at(10),
@@ -466,39 +487,35 @@ fn a_symbolic_divisor_that_cannot_be_zero_is_not_reported() {
     );
 }
 
-/// **C11 6.5.7p4 has three ways for a left shift to be undefined, and chiero can check one.**
+/// **C11 6.5.7p4 has three ways for a left shift to be undefined, and each one is
+/// conditioned on the operand's signedness.**
 ///
-/// "If `E1` has a signed type and nonnegative value, and `E1 × 2^E2` is representable in the
+/// "If `E1` has a signed type and nonnegative value, and `E1 x 2^E2` is representable in the
 /// result type, then that is the resulting value; otherwise, the behavior is undefined."
 ///
 /// So a signed `<<` is defined only when the count is below the width, the operand is
-/// **nonnegative**, and the result **fits**. The engine checks the first. The other two are
-/// **not implementable here**, and this test is where that is written down so the next
-/// reader does not re-derive it:
+/// **nonnegative**, and the result **fits** — while the identical unsigned shift is defined
+/// in all three cases but the first. Measured, both directions:
 ///
-/// - CIR has one `Shl`. Right shifts carry signedness in the opcode (`AShr` vs `LShr`);
-///   left shifts do not, because the *operation* is identical and only the UB rules differ.
-///   `CTy::Int(w)` carries no signedness either.
-/// - So the same instruction serves `int` and `unsigned`, and `1 << 31` is undefined for the
-///   first and ordinary for the second. Measured, both directions:
+/// ```text
+///   int a=1,b=31;      a<<b   -> runtime error: left shift of 1 by 31 places
+///                                cannot be represented in type 'int'
+///   unsigned a=1; b=31; a<<b  -> 2147483648, exit 0
+/// ```
 ///
-///   ```text
-///     int a=1,b=31;      a<<b   -> runtime error: left shift of 1 by 31 places
-///                                  cannot be represented in type 'int'
-///     unsigned a=1; b=31; a<<b  -> 2147483648, exit 0
-///   ```
+/// Wave 173 could assert only the count rule and pinned the other two at zero, because CIR
+/// had one `Shl` and `CTy::Int(w)` carried no signedness — checking from the bits alone
+/// reports every unsigned shift of a large value, a false positive in one of the most common
+/// idioms in C. That pin was written to fail the moment `Shl` grew a signedness, and it did.
 ///
-/// Checking from the bits alone therefore reports every unsigned shift of a large value —
-/// a false positive in one of the most common idioms in C, and wave 171's rule says a false
-/// finding costs more than a missing one.
-///
-/// A census over 300 generated programs says the gap is real: 8 negative shifts and 5
-/// non-representable results that gcc reports and chiero does not. Closing it is a 020
-/// decision about `Shl`, recorded in §9.
+/// This is its successor, and it asserts the thing the pin could not: the two signed-only
+/// rules fire **for signed operands and only for them**. Both halves are load-bearing — a
+/// fix that reported the signed cases by reporting every case would pass the first three
+/// assertions and fail the next three.
 #[test]
-fn a_left_shift_count_is_checked_and_the_signed_rules_are_not() {
-    let shifts = |op: BinOp, a: i128, b: i128| {
-        let (r, _) = run_op(op, 32, a, b);
+fn the_signed_left_shift_rules_fire_for_signed_operands_and_only_those() {
+    let shifts = |op: BinOp, a: i128, b: i128, signed: bool| {
+        let (r, _) = run_op_as(op, 32, a, b, signed);
         r.states()[0]
             .ub_events()
             .iter()
@@ -506,35 +523,29 @@ fn a_left_shift_count_is_checked_and_the_signed_rules_are_not() {
             .count()
     };
 
-    // **The count rule, which applies to every shift** (6.5.7p3) whatever its signedness.
-    assert_eq!(shifts(BinOp::Shl, 1, 32), 1, "1 << 32 at 32 bits");
-    assert_eq!(
-        shifts(BinOp::LShr, 1, 32),
-        1,
-        "and for a logical right shift"
-    );
-    assert_eq!(shifts(BinOp::AShr, 1, 33), 1, "and an arithmetic one");
+    // **The count rule applies to every shift** (6.5.7p3) whatever its signedness.
+    for signed in [true, false] {
+        assert_eq!(shifts(BinOp::Shl, 1, 32, signed), 1, "1 << 32 at 32 bits");
+        assert_eq!(
+            shifts(BinOp::LShr, 1, 32, signed),
+            1,
+            "and for a logical right shift"
+        );
+        assert_eq!(
+            shifts(BinOp::AShr, 1, 33, signed),
+            1,
+            "and an arithmetic one"
+        );
+    }
 
-    // **The two signed-only rules are not reported**, because the instruction cannot say
-    // whether it is signed. Asserted rather than left implicit: if `Shl` ever grows a
-    // signedness, these become `1` and this test is what will say so.
-    assert_eq!(
-        shifts(BinOp::Shl, -1, 1),
-        0,
-        "negative operand: not checkable today"
-    );
-    assert_eq!(
-        shifts(BinOp::Shl, 1, 31),
-        0,
-        "1 << 31: undefined signed, fine unsigned"
-    );
-    assert_eq!(
-        shifts(BinOp::Shl, 65535, 21),
-        0,
-        "result leaves int, fine as unsigned"
-    );
+    // **The two signed-only rules, on a signed operand.**
+    assert_eq!(shifts(BinOp::Shl, -1, 1, true), 1, "negative operand");
+    assert_eq!(shifts(BinOp::Shl, 1, 31, true), 1, "1 << 31 leaves int");
+    assert_eq!(shifts(BinOp::Shl, 65535, 21, true), 1, "result leaves int");
 
-    // Ordinary shifts stay silent, which is the property the count rule must not overreach.
-    assert_eq!(shifts(BinOp::Shl, 1, 30), 0, "1 << 30 fits");
-    assert_eq!(shifts(BinOp::Shl, 1, 0), 0, "a zero-bit shift");
+    // **The same three shifts on an unsigned operand are ordinary code.** `-1` as an
+    // unsigned 32-bit operand is `0xFFFFFFFF`, and shifting it left simply drops bits.
+    assert_eq!(shifts(BinOp::Shl, -1, 1, false), 0, "0xFFFFFFFF << 1 wraps");
+    assert_eq!(shifts(BinOp::Shl, 1, 31, false), 0, "1u << 31 is 2^31");
+    assert_eq!(shifts(BinOp::Shl, 65535, 21, false), 0, "and truncates");
 }

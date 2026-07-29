@@ -153,6 +153,7 @@ fn a_loop_phi_advances_with_the_latch() {
                                     a: Operand::Value(ValueId(1)),
                                     b: i32c(1),
                                     ty: CTy::Int(32),
+                                    signed: true,
                                 },
                             },
                             21,

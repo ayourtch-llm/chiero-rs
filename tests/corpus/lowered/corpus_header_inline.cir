@@ -114,7 +114,7 @@ entry: ; span 18851:18915:0
   %54 = load i32, %53 align 1 ; span 18901:18905:0
   %55 = addrlocal %0 ; span 18908:18912:0
   %56 = load i32, %55 align 1 ; span 18908:18912:0
-  %57 = sub i32 %54, %56 ; span 18901:18912:0
+  %57 = sub i32 %54, %56 signed ; span 18901:18912:0
   .scope exit 1 ; span 18894:18913:0
   .scope exit 0 ; span 18894:18913:0
   ret %57

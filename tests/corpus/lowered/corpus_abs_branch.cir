@@ -69,7 +69,7 @@ entry: ; span 340:668:0
   %27 = addrlocal %0 ; span 600:601:0
   %28 = load i32, %27 align 1 ; span 600:601:0
   %29 = neg i32 2147483647i32 ; span 604:615:0
-  %30 = sub i32 %29, 1i32 ; span 604:619:0
+  %30 = sub i32 %29, 1i32 signed ; span 604:619:0
   %31 = cmp sgt i32 %28, %30 ; span 600:619:0
   %32 = zext i1 %31 to i32 ; span 600:619:0
   %33 = call @chiero_assume(%32) ; span 586:620:0

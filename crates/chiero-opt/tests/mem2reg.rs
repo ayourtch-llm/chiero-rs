@@ -452,6 +452,7 @@ fn a_loop_header_gets_a_phi_with_the_latch_value() {
                                 a: Operand::Value(ValueId(2)),
                                 b: i32c(1),
                                 ty: CTy::Int(32),
+                                signed: true,
                             },
                         },
                         21,

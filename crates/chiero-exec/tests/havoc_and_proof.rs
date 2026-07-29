@@ -271,6 +271,7 @@ fn a_cached_feasibility_answer_degrades_a_state_the_same_way_a_fresh_one_does() 
                                 ty: CTy::Int(32),
                                 a: Operand::Value(ValueId(0)),
                                 b: Operand::Value(ValueId(1)),
+                                signed: true,
                             },
                         },
                         span: Span::DUMMY,

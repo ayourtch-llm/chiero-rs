@@ -130,6 +130,7 @@ fn chain(n: u32) -> Module {
                         }),
                         b: Operand::Const(Const::Int { bits: 32, val: 1 }),
                         ty: CTy::Int(32),
+                        signed: true,
                     },
                 },
                 20 + i,
@@ -559,6 +560,7 @@ fn const_fold_folds_a_constant_expression() {
             a: Operand::Const(Const::Int { bits: 32, val: 8 }),
             b: Operand::Const(Const::Int { bits: 32, val: 0 }),
             ty: CTy::Int(32),
+            signed: true,
         },
     };
     chiero_opt::const_fold(&mut m);
@@ -607,6 +609,7 @@ fn const_fold_wraps_to_the_declared_width() {
             }),
             b: Operand::Const(Const::Int { bits: 32, val: 1 }),
             ty: CTy::Int(32),
+            signed: true,
         },
     };
     chiero_opt::const_fold(&mut m);
@@ -639,6 +642,7 @@ fn const_fold_wraps_to_the_declared_width() {
                 val: 65538,
             }),
             ty: CTy::Int(32),
+            signed: true,
         },
     };
     chiero_opt::const_fold(&mut m);

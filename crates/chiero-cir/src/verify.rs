@@ -1128,7 +1128,13 @@ fn check_rvalue_types(
         // Rule 5: operand widths match the operation's declared `ty`. This was entirely
         // absent — `Bin`, `Un`, `Cmp` and `Select` were never checked, so `add i32` over
         // an i8 and an i64 verified clean.
-        RValue::Bin { op, a, b, ty: t } => {
+        RValue::Bin {
+            op,
+            a,
+            b,
+            ty: t,
+            signed: _,
+        } => {
             let name = format!("{op:?}");
             require_ty(f, a, t, types, &name, span, out);
             require_ty(f, b, t, types, &name, span, out);

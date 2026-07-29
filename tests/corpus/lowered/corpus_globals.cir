@@ -31,7 +31,7 @@ entry: ; span 1190:1258:0
   %10 = addrglobal @calls ; span 1219:1236:0
   %11 = addrglobal @calls ; span 1227:1232:0
   %12 = load i32, %11 align 4 ; span 1227:1232:0
-  %13 = add i32 %12, 1i32 ; span 1227:1236:0
+  %13 = add i32 %12, 1i32 signed ; span 1227:1236:0
   store i32 %13 -> %10 align 1 ; span 1219:1236:0
   .seqpoint ; span 1219:1237:0
   %14 = addrglobal @table ; span 1247:1255:0
@@ -86,7 +86,7 @@ entry: ; span 1260:1897:0
   .seqpoint ; span 1520:1537:0
   %38 = addrlocal %1 ; span 1808:1809:0
   %39 = load i32, %38 align 1 ; span 1808:1809:0
-  %40 = srem i32 %39, 10i32 ; span 1808:1814:0
+  %40 = srem i32 %39, 10i32 signed ; span 1808:1814:0
   %41 = cmp eq i32 %40, 0i32 ; span 1808:1819:0
   %42 = zext i1 %41 to i32 ; span 1808:1819:0
   %43 = call @chiero_assert(%42) ; span 1794:1820:0

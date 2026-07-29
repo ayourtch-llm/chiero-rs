@@ -1284,6 +1284,9 @@ impl<'a> Parser<'a> {
                 ty: CTy::Ptr,
                 a: self.operand(g(2))?,
                 b: self.operand(g(3))?,
+                // `ptrdiff_t` is a signed type; the difference of two pointers has no
+                // unsigned form to distinguish it from.
+                signed: true,
             },
             "undef" => RValue::Use(Operand::Const(Const::Undef(self.ty(g(1))?))),
             "globaladdr" => RValue::Use(Operand::Const(Const::GlobalAddr {
@@ -1353,11 +1356,19 @@ impl<'a> Parser<'a> {
             }
             k if BIN_OPS.iter().any(|(n, _)| *n == k) => {
                 let op = BIN_OPS.iter().find(|(n, _)| *n == k).unwrap().1;
+                // Scanned across the whole operand list, as `loadbits` does for its own
+                // `signed` flag, so the trailing marker is read rather than left as junk
+                // for the arity check to reject.
+                let signed = t.iter().any(|x| x == "signed");
+                if signed {
+                    hi.set(t.len());
+                }
                 RValue::Bin {
                     op,
                     ty: self.ty(g(1))?,
                     a: self.operand(g(2))?,
                     b: self.operand(g(3))?,
+                    signed,
                 }
             }
             // A bare operand is a `Use`.
@@ -1877,13 +1888,24 @@ fn print_rvalue(m: &Module, rv: &RValue, o: &mut String) {
             a,
             b: rhs,
             ty: t,
+            signed,
         } => {
             // `elem_size` is part of the operator, not decoration: dropping it loses
             // the scale the difference is measured in.
             if let BinOp::PtrDiff { elem_size } = b {
                 o.push_str(&format!("ptrdiff {elem_size} {}, {}", op(a), op(rhs)));
             } else {
-                o.push_str(&format!("{} {} {}, {}", binop(*b), ty(t), op(a), op(rhs)));
+                // The signedness is likewise part of the operation and not decoration:
+                // it is what says whether overflow here is undefined or wraps, so a
+                // round-trip that dropped it would round-trip a different program.
+                o.push_str(&format!(
+                    "{} {} {}, {}{}",
+                    binop(*b),
+                    ty(t),
+                    op(a),
+                    op(rhs),
+                    if *signed { " signed" } else { "" }
+                ));
             }
         }
         RValue::Un { op: u, a, ty: t } => o.push_str(&format!(

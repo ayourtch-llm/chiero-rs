@@ -191,7 +191,16 @@ pub fn const_fold(m: &mut Module) {
                 let InstKind::Assign { dst, rv } = &i.kind else {
                     continue;
                 };
-                let RValue::Bin { op, a, b: rhs, ty } = rv else {
+                // Folding is value-level and the two signednesses compute the same bits
+                // for every foldable opcode, so the field selects no behaviour here.
+                let RValue::Bin {
+                    op,
+                    a,
+                    b: rhs,
+                    ty,
+                    signed: _,
+                } = rv
+                else {
                     continue;
                 };
                 let CTy::Int(bits) = ty else { continue };

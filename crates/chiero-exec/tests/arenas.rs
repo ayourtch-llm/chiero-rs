@@ -113,6 +113,7 @@ fn buffer_access(delta: i128) -> Module {
                         ty: CTy::Int(64),
                         a: Operand::Value(ValueId(1)),
                         b: Operand::Const(Const::Int { bits: 64, val: 6 }),
+                        signed: true,
                     },
                 ),
                 // %3 = base + %2
@@ -123,6 +124,7 @@ fn buffer_access(delta: i128) -> Module {
                         ty: CTy::Int(64),
                         a: Operand::Value(ValueId(0)),
                         b: Operand::Value(ValueId(2)),
+                        signed: true,
                     },
                 ),
                 // %4 = (char *) %3

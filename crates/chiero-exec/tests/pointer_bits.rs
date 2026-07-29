@@ -94,6 +94,7 @@ fn alignment_test(mask: i128, align: u64) -> Module {
                                     bits: 64,
                                     val: mask,
                                 }),
+                                signed: true,
                             },
                         },
                         span: Span::DUMMY,

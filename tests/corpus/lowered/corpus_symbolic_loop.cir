@@ -72,7 +72,7 @@ bb2: ; span 344:1150:0
   %30 = load i32, %29 align 1 ; span 521:531:0
   %31 = addrlocal %2 ; span 530:531:0
   %32 = load i32, %31 align 1 ; span 530:531:0
-  %33 = add i32 %30, %32 ; span 521:531:0
+  %33 = add i32 %30, %32 signed ; span 521:531:0
   store i32 %33 -> %29 align 1 ; span 521:531:0
   .seqpoint ; span 521:532:0
   .scope exit 3 ; span 515:536:0
@@ -81,7 +81,7 @@ bb3: ; span 344:1150:0
   .line 15
   %34 = addrlocal %2 ; span 510:513:0
   %35 = load i32, %34 align 1 ; span 510:513:0
-  %36 = add i32 %35, 1i32 ; span 510:513:0
+  %36 = add i32 %35, 1i32 signed ; span 510:513:0
   store i32 %36 -> %34 align 1 ; span 510:513:0
   .seqpoint ; span 487:536:0
   goto bb1
@@ -131,7 +131,7 @@ bb7: ; span 344:1150:0
   .line 27
   %74 = addrlocal %4 ; span 967:970:0
   %75 = load i32, %74 align 1 ; span 967:970:0
-  %76 = add i32 %75, 1i32 ; span 967:970:0
+  %76 = add i32 %75, 1i32 signed ; span 967:970:0
   store i32 %76 -> %74 align 1 ; span 967:970:0
   .seqpoint ; span 944:1087:0
   goto bb5
@@ -153,7 +153,7 @@ bb10: ; span 344:1150:0
   %61 = load i32, %60 align 1 ; span 1018:1019:0
   %62 = addrlocal %5 ; span 1022:1023:0
   %63 = load i32, %62 align 1 ; span 1022:1023:0
-  %64 = add i32 %61, %63 ; span 1018:1023:0
+  %64 = add i32 %61, %63 signed ; span 1018:1023:0
   %65 = addrlocal %0 ; span 1027:1028:0
   %66 = load i32, %65 align 1 ; span 1027:1028:0
   %67 = cmp eq i32 %64, %66 ; span 1018:1028:0
@@ -165,7 +165,7 @@ bb11: ; span 344:1150:0
   .line 28
   %71 = addrlocal %5 ; span 1001:1004:0
   %72 = load i32, %71 align 1 ; span 1001:1004:0
-  %73 = add i32 %72, 1i32 ; span 1001:1004:0
+  %73 = add i32 %72, 1i32 signed ; span 1001:1004:0
   store i32 %73 -> %71 align 1 ; span 1001:1004:0
   .seqpoint ; span 978:1083:0
   goto bb9
