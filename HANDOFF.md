@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 202) — 1283 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 203) — 1285 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -721,6 +721,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a wrong index space), and the third has narrowed to a single term-identity question. That is
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
+>
+> ### 🔴 Nothing discharges a `MaybeUninitialized` guard, and that bounds this whole area
+>
+> Wave 203 closed the observability question and the answer names one missing capability.
+>
+> `init-not-marked` — deleting the init store from the unpinned symbolic write — is now
+> **killed**, so three waves of init work are finally tested at all. Two mutants remain and
+> they are **equivalent given the engine as it stands**, not gaps:
+> `back-to-byte-index` and `only-first-bit` change *which* init bits a symbolic write marks, and
+> a symbolic write's marking is conditional per byte however it is indexed — so the verdict is
+> `maybe-uninitialized-read` either way. The guard differs; the report does not.
+>
+> 023 says the guard is "the engine's to discharge against the path condition, not the memory
+> model's to guess", and **the engine does not discharge it**. Until it does, no test can
+> distinguish a correct symbolic init marking from a wrong one, because every answer is a maybe.
+>
+> So the next capability is guard discharge: take the `Cond(t)` a `MaybeUninitialized` carries,
+> ask the solver whether `t` is implied by the path condition (→ initialized, no report) or
+> unsatisfiable under it (→ definite `uninitialized-read`), and only report `maybe` when it is
+> genuinely undecided. That turns a class of unfalsifiable code into testable code, and it is
+> the same three-outcome shape as wave 156's divisor query. Note the field: `MemFault::
+> MaybeUninitialized` carries no guard term today, so it has to grow one — which is exactly the
+> "give the type no way to express the wrong report" rule pointing the other way.
 >
 > ~~**The promoted read does not consult `arr.init`.**~~ **Wrong — corrected in wave 202.**
 > `init_bit_via` selects from `arr.init` and handles the tri-state correctly. What made four
@@ -1120,6 +1143,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Re-run the sweep instead of trusting the diagnosis** (wave 203). Wave 202 concluded the
+> fixtures were why no init mutant died, and it was half right: rewriting them as locals killed
+> *nothing*. What was also missing was an assertion that looks at the init finding at all — every
+> test in the file asked about a value or a refusal. Two waves of hypotheses, and the check that
+> settled it was re-running the mutants after each change rather than after the last one.
+>
+> **A mutant can be equivalent because the engine cannot yet tell the difference** (wave 203).
+> `back-to-byte-index` and `only-first-bit` alter which init bits a symbolic write marks, and the
+> verdict is `maybe` either way because nothing discharges the guard. That is not a missing test —
+> it is a missing *capability*, and the honest record says which one rather than leaving two
+> survivors unexplained for a fourth wave.
 >
 > **When a test cannot observe a change, suspect the fixture before the code** (wave 202). Four
 > waves treated "no mutant dies on the init marking" as evidence about the engine, and two of
