@@ -3012,9 +3012,15 @@ impl Memory {
                 a.zext(off, arr.idx_bits)
             };
             arr.data = a.store(arr.data, idx, val);
-            // **And the byte becomes initialized**, or the read after this write reports an
-            // uninitialized read of bytes the program just wrote — 021 §3.1's distinction,
-            // and the failure mode the candidate path's own comment records.
+            // **And the byte becomes initialized**, which 021 §3.1 requires of any write —
+            // a write that does not record having happened is indistinguishable from no
+            // write, and the candidate path's own comment records that failure.
+            //
+            // **Unobserved today, and recorded as such rather than claimed.** Deleting these
+            // two lines passes the whole suite: the promoted *read* path does not consult
+            // the `init` array, so nothing downstream can tell. That is a gap on the read
+            // side, not a reason to leave the write wrong — but it means this pair is
+            // correctness by construction and not by test. §9 carries it.
             let one = a.bv(1, 1);
             arr.init = a.store(arr.init, idx, one);
             return AccessResult {

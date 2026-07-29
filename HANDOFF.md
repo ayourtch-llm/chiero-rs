@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 197) — 1280 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 197) — 1282 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -707,6 +707,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `read_term_at` and `write_at_symbolic_offset` already serve a *concrete* offset, so this is
 > plumbing rather than new capability. `a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing`
 > is pinned to the current behaviour precisely so the next wave sees it change.
+>
+> **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
+> does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store
+> from `chiero-mem`'s unpinned write — survives the whole suite, because nothing downstream can
+> tell an initialized promoted byte from an uninitialized one. The write is correct by
+> construction and not by test, and the fix belongs with the read-side plumbing above: both are
+> "the promoted representation is not fully served".
 >
 > **Still refusing, and each now a small increment:** `PtrAdd` on a `SymPtr` (a second
 > symbolic step), `PtrDiff`, passing one as a call argument, and the `memcpy`-family models.
@@ -1077,6 +1084,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A write that does not record having happened is indistinguishable from no write** (wave
+> 197). `write_at_symbolic_offset` iterated its candidate list and wrote an if-then-else at
+> each, so an *empty* list wrote nothing and **returned success** — the caller got a clean
+> result and stale bytes. The sibling read had promoted on an empty list all along and called
+> it "no pinning available". When two APIs are counterparts, diff their edge cases: the one
+> nobody exercised is the one that lies.
+>
+> **Turn a warning into a test before acting on it** (wave 197). §9 said a promoted object
+> refuses the arena-free byte APIs. Writing that as a fixture *first* meant the cost showed up
+> as a named failing test rather than as a mystery three waves later — and the test now pins
+> the current, worse-than-ideal behaviour so the next wave sees it change.
 >
 > **A new variant is safer than a wider field** (wave 196). `Pointer::off` could have grown a
 > symbolic form; that would have made all 59 `Value::Ptr` sites silently claim to handle an
