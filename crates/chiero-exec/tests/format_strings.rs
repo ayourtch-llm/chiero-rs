@@ -441,7 +441,16 @@ fn a_symbolic_string_argument_is_a_bound_not_a_finding() {
         ..Default::default()
     };
     let mut a = TermArena::new();
-    let r = Engine::new(&m).with_entry_param_bytes(8).run(&mut a);
+    // **Nullability off: this test is about the *format string*.** Wave 186 made an entry
+    // pointer parameter nullable by default, and `printf("%s", p)` with `p == NULL` really
+    // is undefined — glibc's "(null)" is an extension, not the standard. So that finding is
+    // correct and is covered by `null_params.rs`; asserting `findings().is_empty()` here
+    // with it on would make this test about two policies and fail for the right reason on
+    // the wrong subject.
+    let r = Engine::new(&m)
+        .with_entry_param_bytes(8)
+        .with_entry_ptr_nullable(false)
+        .run(&mut a);
     assert!(
         r.findings().is_empty(),
         "the caller's string is unknown, not wrong: {:#?}",

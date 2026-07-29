@@ -200,7 +200,13 @@ fn raising_the_bound_materializes_more_links() {
 fn a_cut_walk_still_finishes_the_function() {
     let mut a = TermArena::new();
     let m = walk(3);
+    // **Nullability off: this test is about the *depth cut*.** Wave 186 made an entry
+    // pointer parameter nullable by default, which adds a state per pointer parameter — a
+    // correct state, tested in `null_params.rs`, and one that never reaches the walk because
+    // it faults at the first link. Counting it here would make a test about materialization
+    // depth fail for a reason that has nothing to do with depth.
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_lazy_policy(LazyPolicy {
             max_depth: 2,
             ..LazyPolicy::default()

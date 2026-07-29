@@ -388,7 +388,10 @@ fn a_store_through_a_parameter_is_read_back_on_the_same_path() {
         ..Default::default()
     };
     let mut a = TermArena::new();
-    let r = Engine::new(&m).run(&mut a);
+    // Nullability off: this file is about *provenance*. Wave 186 made an entry pointer
+    // parameter nullable by default, adding a state that faults at the first access and
+    // never reaches the property under test.
+    let r = Engine::new(&m).with_entry_ptr_nullable(false).run(&mut a);
     assert_eq!(
         r.states().len(),
         1,

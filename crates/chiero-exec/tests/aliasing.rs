@@ -100,7 +100,15 @@ fn two_pointer_params() -> Module {
 fn two_pointer_parameters_are_distinct_and_the_run_records_the_assumption() {
     let m = two_pointer_params();
     let mut a = TermArena::new();
-    let r = Engine::new(&m).with_entry_param_bytes(4).run(&mut a);
+    // **Nullability off: this file is about the *aliasing* policy.** Wave 186 made an entry
+    // pointer parameter nullable by default, which adds one state per pointer parameter and
+    // so changes every state count here. Those states are correct and are tested in
+    // `null_params.rs`; counting them here would make this test about two policies at once.
+    // Nullability off for the same reason as above: this is a test about aliasing.
+    let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
+        .with_entry_param_bytes(4)
+        .run(&mut a);
     assert_eq!(r.states().len(), 1, "no fork by default");
 
     let s = &r.states()[0];
@@ -154,6 +162,7 @@ fn fork_on_alias_explores_the_case_the_default_assumes_away() {
     let m = two_pointer_params();
     let mut a = TermArena::new();
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_entry_param_bytes(4)
         .with_fork_on_alias(true)
         .run(&mut a);
@@ -181,7 +190,10 @@ fn fork_on_alias_explores_the_case_the_default_assumes_away() {
     // And the *claims* differ: the distinctness assumption is not made where the alias
     // case was explored instead.
     let mut a2 = TermArena::new();
-    let default_run = Engine::new(&m).with_entry_param_bytes(4).run(&mut a2);
+    let default_run = Engine::new(&m)
+        .with_entry_param_bytes(4)
+        .with_entry_ptr_nullable(false)
+        .run(&mut a2);
     let default_says: Vec<String> = default_run
         .states()
         .iter()

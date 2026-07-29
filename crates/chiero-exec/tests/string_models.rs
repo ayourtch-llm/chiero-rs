@@ -108,6 +108,7 @@ fn strlen_over_symbolic_bytes_forks_per_length_and_reports_the_unterminated_case
     let m = strlen_over_symbolic_bytes();
     let mut a = TermArena::new();
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_backend(backend)
         .with_entry_param_bytes(4)
         .run(&mut a);
@@ -168,6 +169,7 @@ fn the_scan_cap_does_not_manufacture_a_terminator() {
     // A cap *below* the object size: the scan stops early, and nothing is claimed about
     // the bytes past it — no unterminated finding, because chiero did not look.
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_backend(backend)
         .with_entry_param_bytes(8)
         .with_string_policy(StringPolicy { max_scan: 2 })
@@ -303,6 +305,7 @@ fn a_concrete_nul_ends_the_string_and_reports_no_overrun() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_backend(backend)
         .with_entry_param_bytes(4)
         .run(&mut a);
@@ -419,6 +422,7 @@ fn a_concrete_prefix_still_forks_at_the_first_symbolic_byte() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_backend(backend)
         .with_entry_param_bytes(4)
         .run(&mut a);
@@ -553,6 +557,7 @@ fn each_length_state_agrees_with_a_later_branch_on_the_bytes() {
     };
     let mut a = TermArena::new();
     let r = Engine::new(&m)
+        .with_entry_ptr_nullable(false)
         .with_backend(backend)
         .with_entry_param_bytes(4)
         .run(&mut a);

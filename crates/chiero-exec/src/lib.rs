@@ -1458,6 +1458,15 @@ pub struct Engine<'m> {
     entry_param_bytes: u64,
     /// 021 §6's `--fork-on-alias`. Off by default, because it multiplies states.
     fork_on_alias: bool,
+    /// Whether an entry function's pointer parameter may be **null**.
+    ///
+    /// Default **on**, by decision: a pointer arriving from outside the analysis is assumed
+    /// nullable unless the program proves otherwise, and a guard — `if (!p)`, `p == 0`, an
+    /// `assert(p)` lowering to a conditional abort — is what proves it. 021 §6's
+    /// `entry_param_bytes` bounds the object's *extent* and is a bound chiero chose; this is
+    /// the opposite default about a different question, because "may be null" is exactly
+    /// what a caller outside the analysis can do and what its callee is expected to handle.
+    entry_ptr_nullable: bool,
     /// 023 §4. `Dfs` unless a caller says otherwise.
     strategy: Strategy,
     /// 021 §6.
@@ -1510,6 +1519,7 @@ impl<'m> Engine<'m> {
             string_policy: StringPolicy::default(),
             entry_param_bytes: ENTRY_PARAM_BYTES,
             fork_on_alias: false,
+            entry_ptr_nullable: true,
             backend: None,
             solver: None,
             solver_inits: 0,
@@ -1550,6 +1560,16 @@ impl<'m> Engine<'m> {
     /// saying that it made the assumption, which it does.
     pub fn with_fork_on_alias(mut self, on: bool) -> Self {
         self.fork_on_alias = on;
+        self
+    }
+
+    /// Turn off the assumption that an entry pointer parameter may be null.
+    ///
+    /// For a caller that is known to check — an internal helper reached only through a
+    /// guarded path — the null state is a path the program does not have, and every
+    /// dereference in it is a finding nobody can act on.
+    pub fn with_entry_ptr_nullable(mut self, on: bool) -> Self {
+        self.entry_ptr_nullable = on;
         self
     }
 
@@ -2130,6 +2150,35 @@ impl<'m> Engine<'m> {
                         names.join(", ")
                     ),
                 );
+            }
+        }
+        // **One extra state per pointer parameter, each with that one null.**
+        //
+        // Not `2^n`, for the reason the aliasing fork above gives for preferring pairwise:
+        // the question a checker asks is "is *this* pointer dereferenced without a check",
+        // and one null per parameter answers it. The combinations where two are null at once
+        // add states without adding answers, since a dereference of either is already
+        // covered.
+        //
+        // **No fidelity degradation**, matching `malloc`'s failure fork. A null caller is
+        // not a limit of the model — it is a case the program has, and 023 §7's fidelity is
+        // for what chiero *cannot* represent. Marking these `Approximated` would say the
+        // opposite of what is true: this path is modelled exactly.
+        if self.entry_ptr_nullable && !ptr_params.is_empty() {
+            let originals = work.clone();
+            for (vid, _) in &ptr_params {
+                for st in &originals {
+                    let mut nul = st.clone();
+                    nul.id = self.new_id();
+                    nul.set_local(
+                        *vid,
+                        Value::Ptr(Pointer {
+                            base: chiero_mem::ObjectId::NULL,
+                            off: 0,
+                        }),
+                    );
+                    work.push(nul);
+                }
             }
         }
         let mut done = Vec::new();
