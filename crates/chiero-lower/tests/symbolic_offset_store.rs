@@ -243,3 +243,27 @@ fn a_symbolic_store_leaves_the_touched_byte_maybe_initialized() {
         "and the store did happen, so this is a maybe and not a definite: {f:?}"
     );
 }
+
+/// **A concretely written byte of a promoted object is *definitely* initialized.**
+///
+/// The assertion above pins the middle state and cannot see *which* bits an init store
+/// marked — mutation showed that: indexing init by byte, or marking only the first bit of
+/// eight, both leave the guard a `Cond` and so both still produce `maybe`. Only a byte that
+/// must come out **definite** distinguishes them.
+///
+/// `ca[1] = 3` after promotion is that byte: written unconditionally, at a concrete offset, so
+/// all eight of its init bits are set and a read of it is clean. With init indexed by byte only
+/// one bit is marked and the other seven read as never-written; with only the first bit marked,
+/// likewise. Either way the read reports, and this test fails.
+#[test]
+fn a_concretely_written_byte_of_a_promoted_object_is_definitely_initialized() {
+    let m =
+        harness::lower("int probe(int i){ char ca[64]; ca[i & 63] = 7; ca[1] = 3; return ca[1]; }");
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        !f.iter().any(|x| x.contains("uninitialized")),
+        "byte 1 was written unconditionally at a concrete offset: {f:?}"
+    );
+}
