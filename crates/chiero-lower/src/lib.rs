@@ -1790,7 +1790,7 @@ impl Lowerer<'_> {
                 if matches!(to, CTy::Int(1)) && !matches!(from, CTy::Int(1)) {
                     return self.truth_of(inner, from, span);
                 }
-                let kind = cast_kind(&from, &to, from_signed);
+                let kind = cast_kind(&from, &to, from_signed, self.ty_signed(ty));
                 let dst = self.new_value();
                 self.emit(
                     InstKind::Assign {
@@ -2455,7 +2455,12 @@ impl Lowerer<'_> {
                     return self.truth_of(a, from, span);
                 }
                 let dst = self.new_value();
-                let kind = cast_kind(&from, &to, self.is_signed(*operand));
+                let kind = cast_kind(
+                    &from,
+                    &to,
+                    self.is_signed(*operand),
+                    self.syntactic_signed(*ty),
+                );
                 self.emit(
                     InstKind::Assign {
                         dst,
@@ -4200,6 +4205,26 @@ impl Lowerer<'_> {
         matches!(self.analysis.ty(ty), Ty::Int { signed: true, .. })
     }
 
+    /// Whether a resolved type is a signed integer.
+    ///
+    /// The counterpart to [`Self::is_signed`], which answers for an *expression*. A
+    /// conversion needs both: the source's signedness says how to read the incoming bits,
+    /// and the destination's says which range the result must fit.
+    fn ty_signed(&self, ty: TyId) -> bool {
+        matches!(self.analysis.ty(ty), Ty::Int { signed: true, .. })
+    }
+
+    /// The same for a type written in the source, as an explicit cast's is.
+    ///
+    /// Defaults to signed when sema resolved nothing, matching `cty_of_syntactic`'s
+    /// `Int(32)` fallback: an unresolved type is already a diagnostic elsewhere, and
+    /// guessing unsigned here would silence a real report rather than a false one.
+    fn syntactic_signed(&self, ty: chiero_ast::TypeId) -> bool {
+        self.analysis
+            .ty_of_syntactic(ty)
+            .is_none_or(|t| self.ty_signed(t))
+    }
+
     /// The width an expression's value has **before** any conversion is applied to it.
     ///
     /// [`Self::width_of`] answers the other question — the width *after* — and confusing
@@ -4245,7 +4270,7 @@ impl Lowerer<'_> {
 /// Sign-extension is the case that has to be right: widening a `signed char` holding -1
 /// with `ZExt` produces 255, which is a legal value of the wider type and so passes every
 /// check the verifier and the solver make.
-fn cast_kind(from: &CTy, to: &CTy, from_signed: bool) -> chiero_cir::CastKind {
+fn cast_kind(from: &CTy, to: &CTy, from_signed: bool, to_signed: bool) -> chiero_cir::CastKind {
     use chiero_cir::CastKind as K;
     match (from, to) {
         (CTy::Int(a), CTy::Int(b)) => {
@@ -4266,7 +4291,21 @@ fn cast_kind(from: &CTy, to: &CTy, from_signed: bool) -> chiero_cir::CastKind {
                 K::UiToFp
             }
         }
-        (CTy::Float(_), CTy::Int(_)) => K::FpToSi,
+        // **The *destination's* signedness, not the source's.** C11 6.3.1.4 makes the
+        // conversion undefined when the truncated value is not representable in the
+        // destination type, and `unsigned char` and `signed char` hold different sets of
+        // values. This arm was `K::FpToSi` unconditionally, so `(unsigned char)200.0` was
+        // checked against `[-128, 127]` and reported, while `(unsigned char)(-1.0)` was
+        // checked against the same range and *not* reported -- one dropped bit, wrong in
+        // both directions. The engine already distinguishes the two kinds correctly; only
+        // this choice between them was wrong.
+        (CTy::Float(_), CTy::Int(_)) => {
+            if to_signed {
+                K::FpToSi
+            } else {
+                K::FpToUi
+            }
+        }
         (CTy::Float(a), CTy::Float(b)) => {
             if b.bits() > a.bits() {
                 K::FpExt
@@ -5006,20 +5045,21 @@ impl Lowerer<'_> {
         Operand::Value(dst)
     }
 
-    /// Whether an integer `CTy` should be read as signed.
+    /// `to_signed` is the destination type's signedness, which `to` cannot carry.
     ///
-    /// **A `CTy::Int` carries no signedness** — 020 keeps it in the operations rather than
-    /// the type — so the destination of a float-to-integer conversion cannot say on its own
-    /// whether it wants `FpToSi` or `FpToUi`. Signed is the answer for every `int`, `long`
-    /// and `char` a program converts to, and the unsigned case arrives with its own cast
-    /// expression whose type sema records; treating the store target as signed is therefore
-    /// right for the common path and wrong only where an explicit `(unsigned)` already sits
-    /// between the two. Recorded rather than guessed at silently.
-    fn target_signed(&self, _to: &CTy) -> bool {
-        true
-    }
-
-    fn convert_for_store(&mut self, v: Operand, from: ExprId, to: &CTy, span: Span) -> Operand {
+    /// This was a `target_signed(&CTy)` helper returning `true` unconditionally, with a
+    /// comment reasoning that the unsigned case "arrives with its own cast expression whose
+    /// type sema records". It does not: a braced initializer for an `unsigned char` member
+    /// reaches here with no cast in front of it, and the conversion was checked against the
+    /// signed range. The caller knows the member's `TyId` and can simply say.
+    fn convert_for_store(
+        &mut self,
+        v: Operand,
+        from: ExprId,
+        to: &CTy,
+        to_signed: bool,
+        span: Span,
+    ) -> Operand {
         // **The four combinations, because a conversion is decided by both types.** This
         // read `let CTy::Int(want) = *to else { return v }`, which is right for the integer
         // half of C and silently emits nothing for the other three — so `double d = 7;`
@@ -5054,7 +5094,7 @@ impl Lowerer<'_> {
             // it: deleting the branch changed no test. `truth_of` is where the rule lives.
             // Float to integer. The *target's* signedness decides, and C11 6.3.1.4 makes
             // it a truncation toward zero rather than a rounding.
-            let kind = if matches!(to, CTy::Int(_)) && self.target_signed(to) {
+            let kind = if to_signed {
                 chiero_cir::CastKind::FpToSi
             } else {
                 chiero_cir::CastKind::FpToUi
@@ -5240,7 +5280,7 @@ impl Lowerer<'_> {
             // caught that two waves later. One conversion for both stores is one thing to
             // get right, and `cty` is already the correct target for each: the member's type
             // for a plain store, the field's storage unit for a bit-field.
-            let v = self.convert_for_store(v, item.value, &cty, span);
+            let v = self.convert_for_store(v, item.value, &cty, self.ty_signed(fty), span);
             // **A bit-field member is `StoreBits`**, not a narrower `Store` (015 contract
             // 7, whose `BitRange` came from `RecordLayout` above). A full-width store here
             // wrote over every neighbour sharing the unit, so `{1, 2}` into
