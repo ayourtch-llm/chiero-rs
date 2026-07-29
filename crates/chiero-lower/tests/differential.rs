@@ -486,6 +486,42 @@ fn a_statement_expression_yielding_an_aggregate_outlives_its_scope() {
     agree("int x = ({ 1; 2; 3; }); return x;");
 }
 
+/// **A prefixed string literal keeps its element width.**
+///
+/// sema types every string literal `char[n]` and lowering writes one byte per character,
+/// whatever prefix the literal carried. So `sizeof(L"AB")` is 3 where C says 12, and the
+/// bytes behind `L"AB"` are `41 42 00` rather than four bytes per character. Both are
+/// **silent wrong answers**: the literal encodes, the program runs, and every value that
+/// depends on the width is off.
+///
+/// §9 recorded this as "`L`/`u`/`U` string literals lose their element width in `unquote`".
+/// `unquote` is not the culprit — both copies of it strip the prefix correctly and hand back
+/// the right *text*. What is lost is the **type**: C11 6.4.5p6 gives `L"…"` element type
+/// `wchar_t`, `u"…"` `char16_t` and `U"…"` `char32_t`, and nothing downstream ever asks.
+///
+/// `u8"…"` stays `char`, which is why it is here as the case that must *not* change.
+#[test]
+fn a_prefixed_string_literal_keeps_its_element_width() {
+    // `sizeof`, which is the shortest statement of the whole defect.
+    agree(r#"return (int)sizeof("AB");"#);
+    agree(r#"return (int)sizeof(u8"AB");"#);
+    agree(r#"return (int)sizeof(u"AB");"#);
+    agree(r#"return (int)sizeof(U"AB");"#);
+    agree(r#"return (int)sizeof(L"AB");"#);
+    // The empty and longer forms, so the answer is not a constant that happens to fit.
+    agree(r#"return (int)sizeof(L"");"#);
+    agree(r#"return (int)sizeof(L"ABC");"#);
+    // **The bytes, not just the size.** A width that only `sizeof` knows about would pass
+    // every case above and still store `41 42 00`.
+    agree(r#"const int *w = (const int *)L"AB"; return w[0];"#);
+    agree(r#"const int *w = (const int *)L"AB"; return w[1];"#);
+    agree(r#"const int *w = (const int *)L"AB"; return w[2];"#);
+    agree(r#"const unsigned short *u = (const unsigned short *)u"AB"; return u[0] * 100 + u[1];"#);
+    // Plain literals must keep working — they are the ones that already do.
+    agree(r#"const char *s = "AB"; return s[0] * 100 + s[1];"#);
+    agree(r#"return (int)sizeof("hello");"#);
+}
+
 /// **A designated or bit-field initializer works at file scope too.**
 ///
 /// `encode_into` returns `None` for a designator and for a bit-field member, under comments
