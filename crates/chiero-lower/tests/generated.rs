@@ -1535,3 +1535,75 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
     );
     assert_eq!(p2, prelude);
 }
+
+/// **Open-ended search**, which CI's fixed batch deliberately is not.
+///
+/// `generated_programs_agree_with_gcc` runs seeds 0..200 every time, because a test that
+/// picks new seeds each run fails one time in ten and gets muted within a month. That makes
+/// it a regression test: it re-checks what has already been looked at.
+///
+/// Finding *new* defects needs new seeds, and that is this — `#[ignore]`d so it never runs
+/// in CI, with the range under `SOAK_LO`/`SOAK_HI` so a session can push the frontier and
+/// record where it got to:
+///
+/// ```text
+/// SOAK_LO=200 SOAK_HI=800 cargo test -p chiero-lower --test generated zz_soak -- --ignored --nocapture
+/// ```
+///
+/// **It prints a census, not just a verdict.** Seeds 200..800 came back with no defects at
+/// all — and the interesting number was not the zero. Of 600 programs, 81 were compared,
+/// 226 were discarded as undefined, and **293 were refused for floating point**: the
+/// channel spends half its budget generating programs chiero declines to lower, and
+/// two-thirds of the rest on programs that teach nothing because gcc's answer for UB is not
+/// an oracle. A soak that only reported "0 defects" would have hidden the one fact worth
+/// acting on.
+#[test]
+#[ignore = "open-ended search; CI runs the fixed batch instead"]
+fn zz_soak() {
+    let lo: u64 = std::env::var("SOAK_LO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let hi: u64 = std::env::var("SOAK_HI")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(800);
+    let (mut compared, mut discarded) = (0usize, 0usize);
+    let mut refused: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut defects: Vec<(u64, String, String)> = Vec::new();
+    for seed in lo..hi {
+        let (prelude, body) = program(seed);
+        match judge(&prelude, &body) {
+            Verdict::Agree => compared += 1,
+            Verdict::Discarded => discarded += 1,
+            Verdict::Refused { stage, message } => {
+                *refused
+                    .entry(format!(
+                        "{stage}: {}",
+                        message.chars().take(60).collect::<String>()
+                    ))
+                    .or_insert(0) += 1;
+            }
+            Verdict::Gap { fidelity } => {
+                *refused.entry(format!("gap: {fidelity}")).or_insert(0) += 1;
+            }
+            v => {
+                defects.push((
+                    seed,
+                    format!("{prelude}\nint probe(void) {{\n{body}}}"),
+                    format!("{v:?}"),
+                ));
+            }
+        }
+    }
+    eprintln!(
+        "SOAK {lo}..{hi}: compared={compared} discarded={discarded} defects={}",
+        defects.len()
+    );
+    for (k, n) in &refused {
+        eprintln!("  refused {n:4}  {k}");
+    }
+    for (s, p, v) in defects.iter().take(3) {
+        eprintln!("  DEFECT seed={s} {v}\n{p}");
+    }
+}
