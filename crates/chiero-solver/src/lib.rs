@@ -2271,7 +2271,19 @@ impl Session {
         // outright, and `QF_ABV` accepts `Array` but still rejects `as const` — which is
         // the *base* of every promoted object, so all of array theory was unusable.
         // Naming a narrow logic buys nothing here and has now cost two rounds.
-        s.send("(set-logic ALL)\n(set-option :produce-models true)\n")?;
+        // **The solver's own budget, in the preamble** (022 §4). Session state, sent once:
+        // re-sending it before every `(check-sat)` would spend a round trip on the hot path
+        // restating what the process already knows, and keeping the process alive is worth
+        // doing precisely because those round trips dominate short queries.
+        //
+        // **Strictly under the watchdog.** At or above it the watchdog always fires first
+        // and the option is decoration — chiero would still be killing processes it had
+        // asked politely to stop. `smt_timeout_ms` is where that relationship lives, so the
+        // two cannot drift apart.
+        s.send(&format!(
+            "(set-logic ALL)\n(set-option :produce-models true)\n(set-option :timeout {})\n",
+            smt_timeout_ms(timeout)
+        ))?;
         Some(s)
     }
 
@@ -2516,6 +2528,23 @@ fn backend_timeout() -> std::time::Duration {
         Some(n) => std::time::Duration::from_secs(n),
         None => DEFAULT_BACKEND_TIMEOUT,
     }
+}
+
+/// The `:timeout` to hand the solver, in milliseconds, given the watchdog's duration.
+///
+/// **Nine tenths, and never zero.** The solver has to run out of time *before* the watchdog
+/// does, or the process is killed while it still had time to answer and the option buys
+/// nothing. A fraction rather than a fixed margin because the watchdog is configurable:
+/// subtracting a constant second is wrong at 500ms and pointless at an hour.
+///
+/// An unbounded watchdog (`$CHIERO_SMT_TIMEOUT=0`, the bisecting escape hatch) means the
+/// solver should not stop either, so it is given z3's own "no limit".
+fn smt_timeout_ms(watchdog: std::time::Duration) -> u64 {
+    if watchdog == std::time::Duration::MAX {
+        return 0; // z3 reads 0 as unlimited
+    }
+    let ms = watchdog.as_millis().min(u128::from(u64::MAX)) as u64;
+    (ms / 10 * 9).max(1)
 }
 
 /// Serial number for dump filenames, so concurrent solvers do not collide.
@@ -3289,4 +3318,47 @@ fn gather(mask_bits: u128, v: u128, width: u32) -> u128 {
         }
     }
     r
+}
+
+#[cfg(test)]
+mod smt_timeout_tests {
+    use super::smt_timeout_ms;
+    use std::time::Duration;
+
+    /// The relationship the option exists for: the solver must run out of time **before**
+    /// the watchdog kills it, at every scale.
+    ///
+    /// A fraction rather than a fixed margin, so this holds at 500ms and at an hour —
+    /// subtracting a constant second would be wrong at the first and pointless at the
+    /// second.
+    #[test]
+    fn the_solver_budget_expires_before_the_watchdog() {
+        for secs in [1u64, 5, 10, 60, 3600] {
+            let w = Duration::from_secs(secs);
+            let ms = smt_timeout_ms(w);
+            assert!(ms > 0, "a zero budget refuses every query at {secs}s");
+            assert!(
+                u128::from(ms) < w.as_millis(),
+                "at {secs}s the solver would still be working when the watchdog fired"
+            );
+        }
+    }
+
+    /// **An unbounded watchdog means an unbounded solver.**
+    ///
+    /// `$CHIERO_SMT_TIMEOUT=0` is the escape hatch for someone bisecting a genuinely slow
+    /// query who would rather wait than be told `Unknown(Timeout)`. Handing the solver a
+    /// tiny budget there would defeat exactly that: chiero would wait forever for a process
+    /// that had already given up. z3 reads `:timeout 0` as no limit.
+    #[test]
+    fn an_unbounded_watchdog_gives_the_solver_no_limit() {
+        assert_eq!(smt_timeout_ms(Duration::MAX), 0);
+    }
+
+    /// A watchdog so short that nine tenths rounds to nothing still has to leave the solver
+    /// a millisecond, or the option refuses every query outright.
+    #[test]
+    fn a_tiny_watchdog_still_leaves_a_positive_budget() {
+        assert!(smt_timeout_ms(Duration::from_millis(1)) >= 1);
+    }
 }
