@@ -614,8 +614,22 @@ impl TermArena {
         self.intern(Node::Not(a))
     }
 
+    /// **Folded when the operand is constant**, like every other constructor here.
+    ///
+    /// `as_const` is how the rest of the system asks "do I know this value?", so a
+    /// `Node::Extend` wrapping a constant is not a missed simplification — it is an answer
+    /// of *no* to a question whose answer is yes. C's usual arithmetic conversions put a
+    /// widening in front of the narrower operand of every mixed-width expression, so
+    /// without this `acc * 31` is opaque while `acc * 31L` is not, and the engine's
+    /// concrete-operand paths — `note_ub` above all — silently skip the first.
+    ///
+    /// `BvConst::new` truncates to the target width, and `signed()` sign-extends to 128
+    /// bits first, so the sign lands in the new bits without a separate mask.
     pub fn sext(&mut self, a: Term, to: u32) -> Term {
         assert!(to >= self.width(a), "sext must widen");
+        if let Some(c) = self.as_const(a) {
+            return self.intern(Node::Const(BvConst::new(to, c.signed() as u128)));
+        }
         self.intern(Node::Extend {
             a,
             to,
@@ -623,8 +637,14 @@ impl TermArena {
         })
     }
 
+    /// Folded as [`sext`](Self::sext) is, and taking `bits()` rather than `signed()` —
+    /// which is the whole difference between the two, and shows only on an operand whose
+    /// top bit is set.
     pub fn zext(&mut self, a: Term, to: u32) -> Term {
         assert!(to >= self.width(a), "zext must widen");
+        if let Some(c) = self.as_const(a) {
+            return self.intern(Node::Const(BvConst::new(to, c.bits())));
+        }
         self.intern(Node::Extend {
             a,
             to,

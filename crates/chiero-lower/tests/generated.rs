@@ -1717,6 +1717,7 @@ fn zz_census() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut tab: BTreeMap<String, (u32, u32)> = BTreeMap::new();
     let (mut n, mut skipped) = (0u32, 0u32);
+    let mut false_examples = 0u32;
     for seed in 0..300u64 {
         let (prelude, body) = program(seed);
         let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
@@ -1758,6 +1759,18 @@ fn zz_census() {
             .map(|u| format!("{:?}", u.kind))
             .collect();
         n += 1;
+        // **The reverse direction, which the table below cannot see.** It counts only rows
+        // where gcc said something, so a chiero report on a program gcc runs clean is
+        // invisible to it — and by wave 171's rule that is the expensive kind of wrong.
+        if err.is_empty() && !kinds.is_empty() {
+            tab.entry("ZZ FALSE POSITIVE (gcc silent)".into())
+                .or_default()
+                .0 += 1;
+            if false_examples < 3 {
+                false_examples += 1;
+                println!("\n--- chiero reports {kinds:?}, gcc silent, seed {seed} ---\n{src}");
+            }
+        }
         for pat in [
             "signed integer overflow",
             "left shift of negative",
