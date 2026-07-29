@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 196) — 1275 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 196) — 1276 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -708,6 +708,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > (a second symbolic step), `PtrDiff`, passing one as a call argument, and `memcpy`-family
 > models. Each is a `Value::Ptr` site that currently refuses, which is the honest answer, and
 > each becomes a small increment now that the representation exists.
+>
+> Mutation on wave 196: all five die, and two only after a fixture that **evaluates the
+> value** existed. Reading one byte instead of four, and composing big-endian instead of
+> little, are invisible to any test that asks only whether a value came back — which every
+> earlier fixture did, because they were written when there was no value to look at. The
+> value is symbolic, so the fixture solves the path with `TieredSolver` and reads it through
+> `return_value_under`; every element `0x01020304` makes the answer determinate whichever
+> offset the model picks.
 >
 > ~~🔴 a `Value` that can hold a symbolic offset.~~ **Wave 196.** A *variant*, not a wider
 > `Pointer`: widening would have made all 59 `Value::Ptr` sites silently claim to handle an
@@ -1072,6 +1080,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A new variant is safer than a wider field** (wave 196). `Pointer::off` could have grown a
+> symbolic form; that would have made all 59 `Value::Ptr` sites silently claim to handle an
+> unknown offset. A separate `Value::SymPtr` leaves them refusing — which for them is the
+> honest answer — and the compiler named the five *exhaustive* matches that genuinely had to
+> decide. That is the difference between a one-wave change and a 59-site sweep.
+>
+> **When a value's shape changes, the old assertions may be asking the wrong question**
+> (wave 196). The RED used `return_value_bits`, which wants *ground* bits — and this wave's
+> whole product is a value that is symbolic. Asserting concreteness would have asserted the
+> opposite of what was built. `State::returned_a_value` was added for the property actually
+> wanted, and a separate fixture *solves* for the bytes where they matter.
+>
+> **One implementation for one question** (wave 196). The first draft answered "what address
+> does this value denote" in `cmp_operand` and refused it in the `Store` handler, which
+> regressed two of wave 195's properties at once. `address_of_value` is now the single answer
+> both share.
 >
 > **One sentinel for two meanings will report each as the other** (wave 195). `Value::Undef`
 > stood for both C's indeterminate value — where a later read *is* an uninitialized read — and
