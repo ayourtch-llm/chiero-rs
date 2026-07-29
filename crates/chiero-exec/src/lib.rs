@@ -138,6 +138,16 @@ enum BranchNote {
 /// apart from the mistakes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UbEvent {
+    /// The condition under which this is a fault, when the path does not already imply it.
+    ///
+    /// Empty for a UB the interpreter read off two constants — `100 / 0` faults for every
+    /// input, so there is nothing to require. Non-empty when the engine had to *ask*: the
+    /// divisor of `100 / (x - 42)` is zero only at `x == 42`, and a witness that does not
+    /// say so names an input under which nothing faults.
+    ///
+    /// It travels with the event because the checker that reports it is the only thing
+    /// that knows which event a given report is about.
+    pub requires: Vec<Term>,
     pub kind: UbKind,
     pub span: Span,
     /// What the operation was, for a report a reader can act on.
@@ -178,6 +188,10 @@ struct StateFinding {
     key: Option<FindingKey>,
     message: String,
     span: Span,
+    /// What a witness must satisfy to reproduce *this* report, beyond the path.
+    requires: Vec<Term>,
+    /// Solved from `requires`; `None` falls back to the state's witness.
+    witness: Option<Witness>,
 }
 
 /// A report the engine produced, with everything a reader needs to act on it —
@@ -859,7 +873,12 @@ impl RunResult {
                 id: f.id,
                 message: f.message.clone(),
                 span: f.span,
-                witness: st.witness.clone(),
+                // **This finding's own witness when it has one.** A report that recorded
+                // a condition was solved separately, because the state's single witness
+                // cannot satisfy two findings that need different inputs. Falling back to
+                // the state's is the wave-158 behaviour and still names a real input for
+                // the path.
+                witness: f.witness.clone().or_else(|| st.witness.clone()),
                 unwitnessed: st.unwitnessed.clone().or_else(|| {
                     // A state that never finished has no witness because nothing tried,
                     // and contract 15 wants that said rather than left blank.
@@ -982,6 +1001,16 @@ pub enum Event<'a> {
 #[allow(missing_debug_implementations)]
 pub enum Action {
     Report(String),
+    /// A report **with the condition it depends on** (023 §9).
+    ///
+    /// Separate from `Report` rather than a field on it: most findings need nothing beyond
+    /// the path — a null dereference happens because the path reached it — and every
+    /// existing checker would otherwise have to say so. A checker reaches for this only
+    /// when the event it is reporting carried a condition of its own.
+    ReportRequiring {
+        message: String,
+        requires: Vec<Term>,
+    },
     /// Constrain the state and continue. Contract 19: subsequent branch feasibility
     /// reflects it, which means it joins the path condition rather than a side list.
     Assume(Term),
@@ -992,6 +1021,14 @@ impl Action {
     /// The common case, spelled so a checker does not have to build a `String` inline.
     pub fn report(msg: impl Into<String>) -> Action {
         Action::Report(msg.into())
+    }
+
+    /// A report whose witness must satisfy `requires` to reproduce it.
+    pub fn report_requiring(msg: impl Into<String>, requires: Vec<Term>) -> Action {
+        Action::ReportRequiring {
+            message: msg.into(),
+            requires,
+        }
     }
 }
 
@@ -1557,6 +1594,24 @@ impl<'m> Engine<'m> {
                         key: None,
                         message,
                         span,
+                        requires: Vec::new(),
+                        witness: None,
+                    });
+                }
+                Action::ReportRequiring { message, requires } => {
+                    self.finding_seq += 1;
+                    // **Also onto the state's list**, so the state's own witness still
+                    // tries to satisfy everything. A reader who looks at the state rather
+                    // than at one finding should not see a number that reproduces nothing
+                    // when one exists that reproduces everything.
+                    s.witness_requires.extend(requires.iter().copied());
+                    s.findings.push(StateFinding {
+                        id: self.finding_seq,
+                        key: None,
+                        message,
+                        span,
+                        requires,
+                        witness: None,
                     });
                 }
                 // **Onto the path condition, not a side list** (contract 19). A
@@ -2118,6 +2173,8 @@ impl<'m> Engine<'m> {
                 key: None,
                 message: why.clone(),
                 span,
+                requires: Vec::new(),
+                witness: None,
             });
             s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
             return None;
@@ -2141,6 +2198,8 @@ impl<'m> Engine<'m> {
                 key: None,
                 message: why.clone(),
                 span,
+                requires: Vec::new(),
+                witness: None,
             });
             s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
             return None;
@@ -2177,6 +2236,8 @@ impl<'m> Engine<'m> {
                 key: None,
                 message: msg.clone(),
                 span: Span::DUMMY,
+                requires: Vec::new(),
+                witness: None,
             });
             s.degrade(
                 Fidelity::Unknown,
@@ -2298,27 +2359,42 @@ impl<'m> Engine<'m> {
         for t in &s.witness_requires {
             vars_of(a, *t, &mut mentioned);
         }
-        let mut bindings = Vec::new();
-        for (t, origin) in s.inputs.clone().into_iter().chain(extra) {
-            let width = a.width(t);
-            // **`pinned` is the honest part.** A model need not assign a variable the
-            // path never mentions; binding it to zero and presenting that as the
-            // solver's answer would tell a reader the bug needs a value it does not.
-            let mut mine = indexmap::IndexSet::new();
-            vars_of(a, t, &mut mine);
-            let constrained = mine.iter().any(|v| mentioned.contains(v));
-            let (value, pinned) = match a.eval(&model, t) {
-                Ok(c) => (c.bits(), constrained),
-                Err(_) => (0, false),
+        s.witness = Some(Witness {
+            bindings: bindings_under(a, s, &model, &extra, &mentioned),
+        });
+
+        // **And one witness per finding that needs its own.**
+        //
+        // The state's witness above satisfies as much as it can at once. Two findings can
+        // need contradictory inputs — `100/(x-1)` and `100/(x-2)` — and then it satisfies
+        // neither, because there is no single assignment that does. 023 §9 is a claim about
+        // each *report* a reader is shown, so each is solved on its own.
+        //
+        // Only findings that recorded a condition get one; everything else is reproduced by
+        // the path, which the state's witness already satisfies. A finding whose own solve
+        // fails keeps `None` and falls back to the state's, which is the wave-158 answer
+        // and still better than no number.
+        let needs: Vec<(usize, Vec<Term>)> = s
+            .findings
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.requires.is_empty())
+            .map(|(i, f)| (i, f.requires.clone()))
+            .collect();
+        for (i, requires) in needs {
+            let CheckResult::Sat(m) = self.probe(a, s, &requires) else {
+                continue;
             };
-            bindings.push(Binding {
-                origin,
-                width,
-                value,
-                pinned,
-            });
+            let mut mine: indexmap::IndexSet<chiero_solver::VarId> = Default::default();
+            for t in &s.path {
+                vars_of(a, *t, &mut mine);
+            }
+            for t in &requires {
+                vars_of(a, *t, &mut mine);
+            }
+            let bindings = bindings_under(a, s, &m, &extra, &mine);
+            s.findings[i].witness = Some(Witness { bindings });
         }
-        s.witness = Some(Witness { bindings });
     }
 
     /// Give this activation a **fresh** object for each `Lifetime::Scope` alloca of
@@ -2424,6 +2500,7 @@ impl<'m> Engine<'m> {
                     kind: UbKind::DivByZero,
                     span,
                     detail: format!("{op:?} by a divisor the path allows to be zero"),
+                    requires: vec![is_zero],
                 });
                 // **The condition that makes this a fault, kept for the witness.** The
                 // model that just proved it is not enough on its own: it answers for the
@@ -2495,7 +2572,12 @@ impl<'m> Engine<'m> {
             return;
         };
         let mut push = |kind: UbKind, detail: String| {
-            s.ub.push(UbEvent { kind, span, detail });
+            s.ub.push(UbEvent {
+                kind,
+                span,
+                detail,
+                requires: Vec::new(),
+            });
         };
         match op {
             BinOp::Shl | BinOp::LShr | BinOp::AShr if yc.bits() >= w as u128 => {
@@ -4510,6 +4592,8 @@ impl<'m> Engine<'m> {
                       refer to any object or to none"
                 .to_string(),
             span,
+            requires: Vec::new(),
+            witness: None,
         });
         s.degrade(
             Fidelity::Unknown,
@@ -4611,6 +4695,8 @@ impl<'m> Engine<'m> {
                         shape.pitch
                     ),
                     span,
+                    requires: Vec::new(),
+                    witness: None,
                 });
                 gap.status = Status::Terminated(TermReason::Crashed);
                 self.pending.push(gap);
@@ -4632,6 +4718,8 @@ impl<'m> Engine<'m> {
                         shape.count
                     ),
                     span,
+                    requires: Vec::new(),
+                    witness: None,
                 });
                 over.status = Status::Terminated(TermReason::Crashed);
                 self.pending.push(over);
@@ -4949,6 +5037,8 @@ impl<'m> Engine<'m> {
                           decide which objects its value can fall in"
                     .to_string(),
                 span,
+                requires: Vec::new(),
+                witness: None,
             });
             s.degrade(
                 Fidelity::Unknown,
@@ -5491,6 +5581,8 @@ impl<'m> Engine<'m> {
                 key: Some(key),
                 message,
                 span: f.at(),
+                requires: Vec::new(),
+                witness: None,
             });
         }
         // **A finding is not automatically a degradation.** A null dereference or a bad
@@ -5876,6 +5968,8 @@ impl<'m> Engine<'m> {
                 key: Some(key),
                 message: msg,
                 span,
+                requires: Vec::new(),
+                witness: None,
             });
         }
         for (fault, text) in keyed {
@@ -5892,6 +5986,8 @@ impl<'m> Engine<'m> {
                 key,
                 message: text,
                 span: at,
+                requires: Vec::new(),
+                witness: None,
             });
         }
         if let (Some(d), Some(v)) = (dst, result) {
@@ -5969,6 +6065,8 @@ impl<'m> Engine<'m> {
                         key: None,
                         message: msg,
                         span,
+                        requires: Vec::new(),
+                        witness: None,
                     });
                     if dst.is_some() {
                         sib.status = Status::Terminated(TermReason::Crashed);
@@ -6006,6 +6104,8 @@ impl<'m> Engine<'m> {
                 key: None,
                 message: msg,
                 span,
+                requires: Vec::new(),
+                witness: None,
             });
         }
         if let Some(spec) = havoc {
@@ -6195,6 +6295,8 @@ impl<'m> Engine<'m> {
                     key: None,
                     message: f,
                     span,
+                    requires: Vec::new(),
+                    witness: None,
                 });
             }
             IntrinsicOutcome::Degrade(why) => {
@@ -6615,4 +6717,39 @@ fn vars_of(a: &TermArena, t: Term, out: &mut indexmap::IndexSet<chiero_solver::V
         }
         stack.extend(a.subterms(cur));
     }
+}
+
+/// One witness's bindings, read off `model`.
+///
+/// `mentioned` decides `pinned`: a variable nothing in scope constrains gets a value from
+/// the model — a complete assignment must give it one — but saying the fault *needs* it
+/// would tell a reader to reproduce something that reproduces without it.
+fn bindings_under(
+    a: &TermArena,
+    s: &State,
+    model: &chiero_solver::Model,
+    extra: &[(Term, InputOrigin)],
+    mentioned: &indexmap::IndexSet<chiero_solver::VarId>,
+) -> Vec<Binding> {
+    let mut bindings = Vec::new();
+    for (t, origin) in s.inputs.iter().cloned().chain(extra.iter().cloned()) {
+        let width = a.width(t);
+        // **`pinned` is the honest part.** A model need not assign a variable the path
+        // never mentions; binding it to zero and presenting that as the solver's answer
+        // would tell a reader the bug needs a value it does not.
+        let mut mine = indexmap::IndexSet::new();
+        vars_of(a, t, &mut mine);
+        let constrained = mine.iter().any(|v| mentioned.contains(v));
+        let (value, pinned) = match a.eval(model, t) {
+            Ok(c) => (c.bits(), constrained),
+            Err(_) => (0, false),
+        };
+        bindings.push(Binding {
+            origin,
+            width,
+            value,
+            pinned,
+        });
+    }
+    bindings
 }

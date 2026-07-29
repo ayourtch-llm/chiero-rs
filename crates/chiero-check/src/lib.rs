@@ -394,7 +394,8 @@ impl Checker for UndefinedArithmetic {
         };
         // Read the log before touching the checker's own state: `cx.state_mut` borrows the
         // context, and the events belong to the engine's state.
-        let fresh: Vec<(UbKind, chiero_span::Span, String)> = {
+        #[allow(clippy::type_complexity)]
+        let fresh: Vec<(UbKind, chiero_span::Span, String, Vec<chiero_solver::Term>)> = {
             let seen = cx.state_mut::<UbState>().cursor;
             let all = st.ub_events();
             if all.len() <= seen {
@@ -402,19 +403,28 @@ impl Checker for UndefinedArithmetic {
             }
             all[seen..]
                 .iter()
-                .map(|u| (u.kind, u.span, u.detail.clone()))
+                .map(|u| (u.kind, u.span, u.detail.clone(), u.requires.clone()))
                 .collect()
         };
         let total = st.ub_events().len();
         let mem = cx.state_mut::<UbState>();
         mem.cursor = total;
         let mut out = Vec::new();
-        for (kind, span, detail) in fresh {
+        for (kind, span, detail, requires) in fresh {
             if mem.reported.contains(&(kind, span)) {
                 continue;
             }
             mem.reported.push((kind, span));
-            out.push(Action::report(format!("{}: {detail}", ub_phrase(kind))));
+            let message = format!("{}: {detail}", ub_phrase(kind));
+            // **Pass the event's condition through.** The checker is the only thing that
+            // knows which event a given report is about, so it is the only place the two
+            // can be joined — and without the join the witness is solved against the path
+            // alone and names an input under which nothing faults (023 §9).
+            out.push(if requires.is_empty() {
+                Action::report(message)
+            } else {
+                Action::report_requiring(message, requires)
+            });
         }
         out
     }
