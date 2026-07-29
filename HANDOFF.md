@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 186) — 1238 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 186) — 1240 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -707,6 +707,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > noise from a caller that provably never passes null. If the rate is bad, the answer is not
 > to turn the default off — it is 023 §6's dedup plus a way to record "this parameter is
 > non-null by contract", which is what an `assert(p)` already does for free.
+>
+> Mutation on wave 186 found **two missing fixtures and no wrong code**, which is worth
+> knowing before adding to this file:
+>
+> ```text
+>   KILLED     nullable-default-off
+>   KILLED     fork-uses-the-real-object-not-null
+>   KILLED     null-state-replaces-valid-one     <- only after adding a shape assertion
+>   KILLED     only-the-first-pointer-forks      <- only after adding a two-pointer fixture
+> ```
+>
+> Both survivors were invisible to the *reports*. Replacing the valid state with the null one
+> reports exactly the same findings while silently analysing none of the program after a
+> successful check; forking only the first parameter is unobservable while every fixture has
+> one parameter. Neither could have been caught by adding assertions to the existing
+> programs — they needed **different programs**.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
