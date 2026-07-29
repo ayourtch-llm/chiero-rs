@@ -682,6 +682,45 @@ impl Gen {
     /// than by somebody remembering.
     ///
     /// `base` is an array's name and `i` an index already known to be in range.
+    /// A local array with a braced initializer, which is also how wave 140's
+    /// element-conversion path gets exercised for every element type.
+    fn push_local_array(&mut self) {
+        let ty = *self.rng.pick(&Ty::ALL);
+        let ty = if ty == Ty::Bool { Ty::Int } else { ty };
+        let len = 2 + self.rng.below(3);
+        let name = self.fresh();
+        let vals: Vec<String> = (0..len).map(|_| self.konst(ty)).collect();
+        let _ = writeln!(
+            self.body,
+            "  {} {name}[{len}] = {{{}}};",
+            ty.c(),
+            vals.join(", ")
+        );
+        self.arrays.push((name, ty, len));
+    }
+
+    /// Make sure the program has a **local** array to walk off the end of.
+    ///
+    /// Every program gets file-scope arrays from `prelude`, and a local one only from the
+    /// ordinary dispatch — `below(10) == 0` and then a coin, so about one statement in
+    /// twenty. Most programs therefore had no local array at all, which is why
+    /// `stack-buffer-overflow` sat at 1 of 41 while `global-buffer-overflow` had seven,
+    /// even though the same index knob feeds both. The two reach chiero through different
+    /// `chiero-mem` object kinds, so the starved row was the one testing the *less* covered
+    /// path.
+    ///
+    /// **Only when there is none yet.** Emitting these freely would repeat wave 179's
+    /// mistake in the other direction: ASan halts at the first fault, so a shape that
+    /// becomes common starves every other class. One array per program makes the local case
+    /// reachable without making it dominant.
+    fn local_array_stmt(&mut self) -> bool {
+        if self.arrays.is_empty() && self.rng.chance(2) {
+            self.push_local_array();
+            return true;
+        }
+        false
+    }
+
     /// Let a block-scoped local's address escape the block, and read it afterwards.
     ///
     /// **The read is a separate statement, not part of the block.** Emitting both together
@@ -888,6 +927,9 @@ impl Gen {
     fn stmt(&mut self) {
         // **The heap arms come first and only under the knob**, so the value-comparing
         // channels see a grammar byte-for-byte identical to the one they have always seen.
+        if self.memory_ub && self.local_array_stmt() {
+            return;
+        }
         if self.memory_ub && self.scope_stmt() {
             return;
         }
@@ -895,22 +937,7 @@ impl Gen {
             return;
         }
         match self.rng.below(10) {
-            0 if self.arrays.len() < 3 && self.rng.chance(2) => {
-                // An array with a braced initializer, which is also how wave 140's
-                // element-conversion path gets exercised for every element type.
-                let ty = *self.rng.pick(&Ty::ALL);
-                let ty = if ty == Ty::Bool { Ty::Int } else { ty };
-                let len = 2 + self.rng.below(3);
-                let name = self.fresh();
-                let vals: Vec<String> = (0..len).map(|_| self.konst(ty)).collect();
-                let _ = writeln!(
-                    self.body,
-                    "  {} {name}[{len}] = {{{}}};",
-                    ty.c(),
-                    vals.join(", ")
-                );
-                self.arrays.push((name, ty, len));
-            }
+            0 if self.arrays.len() < 3 && self.rng.chance(2) => self.push_local_array(),
             3 if !self.globals.is_empty() && self.rng.chance(2) => {
                 // Writing a global, which is `AddrOfGlobal` plus a store rather than the
                 // local path — the two disagreed for six waves.
@@ -2079,13 +2106,30 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             // No gcc, or a program it will not build: not this test's subject.
             _ => continue,
         }
+        // **`redzone=64`, and this one is not tuning.** ASan detects an overflow by putting
+        // a poisoned band after each allocation; an access that jumps *past* that band into
+        // another live object is indistinguishable from a valid access to that object, and
+        // it stays silent. Measured directly — two `malloc(24)` blocks land 48 bytes apart,
+        // so `a[6]` reads `b[0]` and ASan says nothing:
+        //
+        // ```text
+        //   default:      a=0x503000000040 b=0x503000000070 delta=48   a[6]=2
+        //   redzone=64:   ERROR: AddressSanitizer: heap-buffer-overflow
+        // ```
+        //
+        // The generator indexes up to three elements past the end, so at eight bytes an
+        // element it can reach 32 bytes beyond — past the default band. Without this the
+        // oracle scores chiero's *correct* finding as an invention, which is how wave 180
+        // found it: the `invented` column exists to catch chiero being wrong and caught the
+        // oracle being blind instead.
+        //
         // **`detect_leaks=0`.** LeakSanitizer ships inside ASan and reports an un-freed
         // block at exit. A leak is not undefined behaviour — the program's every operation
         // is defined and its result is the one C promises — so chiero says nothing about
         // it, and left on it would score every allocating program as a miss for a fault
         // that is not this oracle's subject.
         let Ok(run) = std::process::Command::new(&x)
-            .env("ASAN_OPTIONS", "detect_leaks=0")
+            .env("ASAN_OPTIONS", "detect_leaks=0:redzone=64")
             .output()
         else {
             continue;
