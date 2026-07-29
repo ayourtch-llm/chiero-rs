@@ -722,6 +722,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
+> **The promoted *read* does not consult `arr.init`, and it now blocks two fixes.** Wave 197
+> found it; wave 201 confirmed it is why *no* init write on a promoted object can be observed —
+> `init-not-marked`, `back-to-byte-index` and `only-first-bit` all pass the whole suite against
+> the wave-201 fix. So both init writes (in `write_term` and in `write_at_symbolic_offset`) are
+> correctness by argument rather than by test. **Fix the read first**: it is what makes the
+> other two testable, and doing it in the other order leaves three untestable changes stacked.
+>
 > **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
 > does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store
 > from `chiero-mem`'s unpinned write — survives the whole suite, because nothing downstream can
@@ -1098,6 +1105,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Eliminating explanations is progress worth committing** (wave 201). The open case behaves
+> exactly as it did, and the wave still moved: instrumentation showed promotion seeds correctly,
+> the read does use the array, and `eval` does walk store chains — which leaves one claim
+> standing instead of four. A wave that removes three candidates has done real work even with no
+> behavioural change to show.
+>
+> **When a fix lands in one of two functions sharing a structure, grep the other** (wave 201).
+> Wave 200 fixed the byte-versus-bit index in `write_term`; the identical line sat in
+> `write_at_symbolic_offset` for a wave. Same array, same mistake, one function apart.
+>
+> **An unobservable fix must say so in its own commit** (wave 201). Mutation killed nothing on
+> the init-index change — deleting it entirely passes the suite — because the promoted read
+> ignores `arr.init`. The commit message and the code comment both record that it is correctness
+> by argument, and §9 now orders the read fix *first* so the next two become testable.
 >
 > **One observation beats two waves of argument** (wave 200). Waves 198 and 199 reasoned about
 > which of `promoted_fault`'s four callers fired, eliminated three, and were wrong — the answer
