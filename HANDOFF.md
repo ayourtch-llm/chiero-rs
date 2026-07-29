@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 164) — 1193 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 165) — 1198 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -515,7 +515,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
 > labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
 > said; 162 made the result say which solver decided it; 163 gave the backend a watchdog;
-> 164 made every query a dumpable artifact, finishing 022 §4**.*
+> 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
+> 022 §4 entirely**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -732,10 +733,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   declares only variables the live process has not seen, so dumping the bytes yields a file
 >   that replays only after every earlier query in the session. Anyone extending the dump
 >   should keep it standalone — contract 17 is a round trip, and the failure is quiet.
-> - **`(set-option :timeout N)` is still not sent.** 022 §4 asks for it *alongside* the
->   wall-clock watchdog wave 163 built. The watchdog covers the failure that matters (a
->   process that never answers), but telling the solver its own budget lets it stop cleanly
->   and answer `unknown` rather than be killed. Small, and the last thread of that section.
+> - ~~`(set-option :timeout N)` is still not sent.~~ **Done in wave 165**, at nine tenths of
+>   the watchdog so the solver gives up first and the process survives. **022 §4 has no
+>   unimplemented clauses left** — discovery (161), provenance (162), watchdog (163), dump
+>   (164), solver-side timeout (165).
+> - **Where to audit next.** Five waves came out of one section by reading sentences against
+>   the code. 022 is now done; the same method has not been applied to **021 (memory model)**
+>   or **023 (execution engine)**, which are larger and where the engine's own contracts
+>   live. 023 §7's `Fidelity` and §9's `Finding` have been exercised repeatedly by waves
+>   156–160 and look sound; 021 §5's arenas and §6's lazy materialization have not been read
+>   against the code at all.
 > - **One mutant survives in the watchdog** (wave 163): not killing the child on timeout,
 >   because `Drop for Session` also kills it and the caller drops the session immediately.
 >   The line stays and documents the distinction (`Drop` tidies up; the watchdog *ends the
@@ -805,6 +812,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **Do not build a test on the machine being slow** (wave 165). The obvious test for
+> `:timeout` is to hand z3 something hard and watch it give up — and it measures the box and
+> the z3 build, not chiero. (The 64-bit semiprime factorisation it would have used answers in
+> 241ms here.) Such a test passes today and fails on faster hardware for a reason nobody can
+> act on. What was actually contracted is that chiero *tells the solver its budget*, and a
+> fake that records its input observes that on any machine in milliseconds. **A recording
+> stub beats a timing assertion whenever the contract is about what was said.**
+> **A relationship between two numbers belongs in a unit test** (wave 165). "The solver's
+> budget expires before the watchdog" is arithmetic, and the integration fixture could only
+> observe it at the one configuration the environment happened to have — the mutation that
+> broke the *other* edge (an unbounded watchdog) survived, because no fixture could set
+> `$CHIERO_SMT_TIMEOUT=0` without racing every other test on a process-global variable.
+> **When a rule is arithmetic, test the arithmetic**, at both edges and several scales.
+> **The test *count* catches what the failure list misses** (wave 165). A full-suite run
+> straight after a mutation sweep reported 1196 passing and 2 failing with no failure output
+> captured; three runs since report 1198 and 0. 1198 is the arithmetic of what the wave added,
+> so the count is what identified the run as reading a binary the sweep had just invalidated —
+> waves 135 and 141's hazard again. **Know what the number should be.**
 > **An artifact for a third party is not the bytes you sent** (wave 164). Dumping the wire
 > traffic looks like the honest implementation of "writes every query" and produces files
 > that only replay in session order, because a long-lived process is told each declaration
