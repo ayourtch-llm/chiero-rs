@@ -2026,6 +2026,23 @@ struct Tally {
     /// 15 caught reads as parity while an entire class is missing from the corpus, which is
     /// exactly the state wave 177 left behind.
     classes: std::collections::BTreeMap<&'static str, (usize, usize)>,
+    /// Seeds with more execution paths than the program's `malloc` calls explain.
+    ///
+    /// **This is what makes `invented` mean anything.** ASan executes one path; chiero
+    /// explores all of them. "chiero found a fault ASan did not" is evidence of a false
+    /// report only while there is no *other path* for the fault to legitimately live on.
+    ///
+    /// The memory grammar branches nowhere on an unknown value today — every condition it
+    /// emits is concrete, so the engine follows one path — and the only forks are
+    /// `malloc` succeeding or failing, which the engine models because C says the call can
+    /// fail. Measured before it was asserted: worst case 3 states, and every one accounted
+    /// for by a `malloc`.
+    ///
+    /// Nothing *enforces* that, which is why this exists. The ordinary grammar beside it is
+    /// full of `if` and `for`, and the moment a `memory_ub` program gains a genuinely
+    /// unknown value, a correct finding on an untaken path becomes an accusation against
+    /// the engine — and it would read as a chiero regression rather than a corpus one.
+    multipath: Vec<(u64, usize, usize)>,
     /// Seeds where ASan flagged a fault and no line could be parsed from its report.
     ///
     /// **Tracked, because "no line" and "the lines agree" are the same silence.** Mutation
@@ -2165,6 +2182,13 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
         let r = chiero_exec::Engine::new(&m)
             .with_entry("probe")
             .run(&mut arena);
+        // **How many paths, and are they all explained?** Counted from the *source* rather
+        // than from the engine, so the two sides of the comparison are independent; the
+        // `- 1` drops the prototype the prelude declares.
+        let mallocs = src.matches("malloc(").count().saturating_sub(1);
+        if r.states().len() > 1 + mallocs {
+            t.multipath.push((seed, r.states().len(), mallocs));
+        }
         let found = r
             .findings()
             .iter()
@@ -2356,6 +2380,19 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
             t.classes.keys().collect::<Vec<_>>()
         );
     }
+    // **Checked before `invented`, because `invented` is only meaningful if this holds.**
+    assert!(
+        t.multipath.is_empty(),
+        "{} program(s) have more paths than their `malloc` calls explain \
+         (seed, states, mallocs): {:?}.\n\
+         The `invented` column below assumes ASan's single concrete run visits every path \
+         chiero does. It no longer does, so a *correct* finding on an untaken path will be \
+         reported as a chiero false positive. Decide which before continuing: constrain the \
+         grammar back to one path, or downgrade `invented` to a report for multi-path \
+         programs. Do not just raise this bound.",
+        t.multipath.len(),
+        &t.multipath[..t.multipath.len().min(5)]
+    );
     assert!(
         t.unparsed.is_empty(),
         "no source line could be parsed from ASan's report on {} program(s): seeds {:?}. \
