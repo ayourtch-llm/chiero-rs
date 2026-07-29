@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 187) — 1243 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 188) — 1247 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,44 +688,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: the rate is 3 of 3, and the answer is caller knowledge
+> ### 🔴 Do this first: an internal function whose address escapes
 >
-> Measured in wave 187 over `tests/corpus/c`: **22 defined functions, 3 take a pointer, 3
-> report a null dereference.** Every finding is *true* — `static unsigned weight_of(const
-> struct entry *e) { return e->weight; }` really does crash on null. Every finding is also
-> about a `static` helper whose callers in the same file all pass `&table[i]`.
+> Wave 188 gated the null assumption on `Linkage::External`, which is right for the ordinary
+> case and **not yet checked for one**: a `static` function whose *address is taken* can be
+> called through that pointer from another translation unit, so its callers are not all
+> visible after all. §9 flagged this as a trap when the front was written and the fix does
+> not handle it — a `static` function reached only via `AddrOfFunc` gets no null assumption
+> today, and should.
 >
-> So the noise is not wrong answers, it is **missing caller knowledge**. Two things follow,
-> and the second is the one worth building:
+> The check is cheap: scan the module for `RValue::AddrOfFunc(f.id)` or a `Const::FuncAddr`
+> naming it. If found, treat the function as exported for this purpose. VPP is full of this
+> shape — a `static` node function registered by address in a `VLIB_REGISTER_NODE` — so it
+> is not a corner case there.
 >
-> 1. **Done in wave 187**: the report now says which premise it rests on —
->    `…, where %0 is a pointer parameter assumed to be possibly null`. That does not reduce
->    the count; it makes one line enough to triage instead of re-deriving.
-> 2. **Not done, and the real fix**: a function with *internal linkage* whose call sites are
->    all in the translation unit does not need the assumption — chiero can see every caller.
->    `weight_of` is `static` and called only as `weight_of(&table[i])`. Using that would drop
->    all three findings without weakening anything, because it replaces an assumption with a
->    fact. Note the trap: a `static` function whose address is taken can be called from
->    anywhere, so "all call sites visible" is a property to *check*, not to assume from the
->    keyword.
+> ~~🔴 the rate is 3 of 3.~~ **Wave 188 took it to 0 of 3** by making the distinction real
+> rather than by reporting less: `weight_of`, `make_pair` and `span_of` are all `static`, so
+> their callers are visible and the assumption was never chiero's to make.
 >
-> Until (2) exists, keep the default on. An unactionable true finding is recoverable; a
-> missing one is not, and the user's decision was explicit.
->
-> Mutation on wave 187 found a **third** missing fixture in two waves, and again it needed a
-> different program rather than another assertion:
->
-> ```text
->   KILLED     note-never-appended
->   KILLED     note-on-every-null            <- the malloc control
->   KILLED     fork-forgets-to-annotate
->   KILLED     note-on-every-fault-kind      <- only after a two-pointer fixture
-> ```
->
-> The last one: a state forked to make `p` null still runs the rest of the program, so a
-> fault there on `q` is an ordinary out-of-bounds and must not claim `p`'s nullability. No
-> fixture had a non-null fault on a null-parameter state, so the over-broad match was
-> invisible.
+> Mutation: control survives, and all four die — `gate-ignores-linkage`, `gate-inverted`,
+> `lowering-never-internal`, `text-drops-static`. The last one is worth noting: it is killed
+> by the round-trip property **only because that generator now varies linkage**. It emitted
+> nothing but external functions until this wave, so a printer dropping `static` was
+> unobservable — the same shape as wave 187's survivors, where the missing thing was a
+> program rather than an assertion.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1085,6 +1071,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An assumption is only worth making where the fact is unavailable** (wave 188). "The
+> caller is outside the analysis" is true of an exported function and false of a `static`
+> one, and the fix was to make the engine tell them apart rather than to report less. The
+> corpus went from 3 findings to 0 with nothing weakened — the assumption simply stopped
+> being applied where the answer is knowable.
+>
+> **A field the engine reads must survive the text format** (wave 188, second instance after
+> wave 174's `signed`). CIR's printer is not a debug aid: a `.cir` file that loses `static`
+> round-trips a program whose *findings differ*. Whenever a new field changes behaviour,
+> print it, parse it, and make the round-trip generator vary it — the last part is what
+> makes the first two testable, and without it the printer can drop the field unobserved.
 >
 > **A true finding and an actionable one are different things** (wave 187). All three null
 > dereferences the corpus produces are correct — the functions really do crash on null — and
