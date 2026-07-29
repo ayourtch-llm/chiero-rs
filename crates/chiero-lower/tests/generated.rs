@@ -288,6 +288,13 @@ struct Gen {
     /// read and written through all of `access`'s spellings — and forking the grammar to
     /// get them would mean maintaining two of everything and grading the copy.
     memory_ub: bool,
+    /// Pointers holding the address of a local that has left its scope, as (name, type).
+    ///
+    /// Populated only under [`Gen::memory_ub`]. Kept separate from `vars` because the
+    /// pointer is in scope and perfectly usable — it is the *object* that is gone, which is
+    /// the whole distinction `use-after-scope` is about and the one a
+    /// pointer-typed variable list would lose.
+    escaped: Vec<(String, Ty)>,
     /// Heap blocks the program has allocated, as (name, element type, length, freed).
     ///
     /// The `freed` flag is what makes a *use*-after-free reachable rather than accidental:
@@ -312,6 +319,7 @@ impl Gen {
             global_ptrs: Vec::new(),
             memory_ub: false,
             heaps: Vec::new(),
+            escaped: Vec::new(),
         }
     }
 
@@ -674,6 +682,48 @@ impl Gen {
     /// than by somebody remembering.
     ///
     /// `base` is an array's name and `i` an index already known to be in range.
+    /// Let a block-scoped local's address escape the block, and read it afterwards.
+    ///
+    /// **The read is a separate statement, not part of the block.** Emitting both together
+    /// would put the read inside the braces, where the object is still alive and the
+    /// program is defined — the fault is entirely in the *ordering*, so the two halves have
+    /// to be separate `stmt` calls with the closing brace between them.
+    ///
+    /// The pointer is declared before the block rather than inside it, or it would leave
+    /// scope alongside the object it points at and the read would not compile.
+    fn scope_stmt(&mut self) -> bool {
+        // Read through a pointer whose object is gone. Guarded on the pointer existing, so
+        // this can only run after a previous statement opened and closed the block.
+        if !self.escaped.is_empty() && self.rng.chance(3) {
+            let k = self.rng.below(self.escaped.len());
+            let (name, ty) = self.escaped[k].clone();
+            let v = self.fresh();
+            let _ = writeln!(self.body, "  {} {v} = *{name};", ty.c());
+            self.vars.push(Var { name: v, ty });
+            // Removed once used: ASan halts at the first fault, so a second read of the
+            // same dead object is a statement the program never reaches, and leaving it
+            // available would crowd out the other shapes.
+            self.escaped.remove(k);
+            return true;
+        }
+        // **One in twelve, and the rate is load-bearing.** ASan halts at the first fault,
+        // so whichever class fires earliest is the only one a program ever reports. At one
+        // in four this shape took 26 of 39 programs and drove `stack-buffer-overflow` out
+        // of the corpus entirely — the table showed it, the total did not.
+        if self.escaped.len() < 2 && self.rng.chance(12) {
+            let ty = *self.rng.pick(&Ty::ALL);
+            let ty = if ty == Ty::Bool { Ty::Int } else { ty };
+            let p = self.fresh();
+            let a = self.fresh();
+            let init = self.konst(ty);
+            let _ = writeln!(self.body, "  {} *{p};", ty.c());
+            let _ = writeln!(self.body, "  {{ {} {a} = {init}; {p} = &{a}; }}", ty.c());
+            self.escaped.push((p, ty));
+            return true;
+        }
+        false
+    }
+
     /// Allocate, use, free, and — deliberately — use or free again.
     ///
     /// Returns whether it emitted anything, so `stmt` can fall through to the ordinary
@@ -838,6 +888,9 @@ impl Gen {
     fn stmt(&mut self) {
         // **The heap arms come first and only under the knob**, so the value-comparing
         // channels see a grammar byte-for-byte identical to the one they have always seen.
+        if self.memory_ub && self.scope_stmt() {
+            return;
+        }
         if self.memory_ub && self.heap_stmt() {
             return;
         }
@@ -2168,6 +2221,10 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         "attempting double-free",
         "heap-buffer-overflow",
         "global-buffer-overflow",
+        // Asserted too, after wave 179 watched it vanish silently: adding the scope shape
+        // at one in four starved every other class, and this one dropped to zero while the
+        // test stayed green because nothing named it.
+        "stack-buffer-overflow",
         // **The compile line was checked before the grammar**, which is the order section 9
         // recorded — a grammar extension alone would produce programs neither tool flags,
         // and that reads as agreement. It needed no change: gcc 13 catches
