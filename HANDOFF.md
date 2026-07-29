@@ -710,6 +710,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a relocation list means writing bytes *then* patching addresses, so `address_term`'s
 > provenance recording has to happen per relocation rather than once.
 >
+> Mutation on wave 190: five die, including `str-arm-ignores-target-type` — the guard that
+> keeps `char s[4] = "hi"` copying bytes while `char *s = "hi"` takes an address. One
+> survives and is **equivalent**: `reversed-operands-accepted-for-sub` lets the operands
+> commute for `-` as well as `+`, and `2 - ga` is not valid C (gcc: "invalid operands to
+> binary -"), so no fixture can reach the guard. It states the asymmetry rather than
+> catching anything.
+>
 > ~~🔴 what else did `GlobalInit` silently zero?~~ **Wave 190 surveyed it and fixed three
 > of five.** `(int *)&g`, `ga + 2` and `char *s = "hi"` are all one address and now lower to
 > one. The last is the one that mattered: a file-scope string pointer is in every C program,
@@ -1073,6 +1080,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Ask the invariant, not the cases** (wave 190). §9 called for "a pointer-typed global is
+> non-null unless the program wrote `0`" instead of a list of initializer forms, and the
+> survey it produced found *five* broken forms where enumerating would have found the one
+> already suspected. The commonest — `char *s = "hi"` — was not on anybody's list, and it is
+> in every C program there is.
+>
+> **A fix that widens a rule must be told where the rule stops** (wave 190). Teaching
+> `global_addr_init` about string literals immediately broke `char s[4] = "hi"`, which
+> *copies* the bytes rather than taking the address (C11 6.7.9p14). The distinction is the
+> declared type and nothing in the initializer, so the flag had to be threaded from the
+> declaration. An old test caught it in one run — the value of having asserted the ordinary
+> case years of waves ago.
 >
 > **Write the RED against the route you expect to be hardest** (wave 189). The front was
 > "an escaping function address should restore the assumption", and the obvious fixture is a
