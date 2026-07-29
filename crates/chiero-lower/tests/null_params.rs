@@ -164,3 +164,54 @@ fn each_pointer_parameter_gets_its_own_null_state() {
         findings(mirrored)
     );
 }
+
+/// **A finding must say what it rests on.**
+///
+/// Measured on `tests/corpus/c` in wave 187: **3 of 3** functions taking a pointer report a
+/// null dereference, and all three are *true* — `static unsigned weight_of(const struct
+/// entry *e) { return e->weight; }` really does crash on null. All three are also
+/// **unactionable as written**, because every caller in the file passes `&table[i]` and the
+/// report says nothing about where the null came from:
+///
+/// ```text
+///   null-dereference: access at offset 4 of NULL through e->weight
+/// ```
+///
+/// A reader cannot tell that from a null the *program* produced — a failed `malloc`, a
+/// lookup that missed — which is the difference between "fix this" and "chiero assumed your
+/// caller might do this". 023 §9's whole argument is that a report a person cannot act on
+/// is not a report, and the assumption is the missing half.
+///
+/// Not a fidelity degradation: wave 186 settled that a null caller is a case the program
+/// has, not a limit of the model. This is the report explaining its own premise.
+#[test]
+fn a_null_from_the_parameter_assumption_says_so() {
+    let f = findings("int probe(int *p){ return *p; }");
+    let null = f
+        .iter()
+        .find(|x| x.contains("null-dereference"))
+        .expect("the unchecked dereference is reported");
+    assert!(
+        null.contains("parameter"),
+        "the report must name the assumption it rests on: {null}"
+    );
+}
+
+/// And a null the *program* produced must not claim the parameter assumption.
+///
+/// The control: `malloc` can fail, and that null is the program's own. A fix that appended
+/// the note to every null dereference would pass the test above and fail here.
+#[test]
+fn a_null_the_program_produced_does_not_claim_the_assumption() {
+    let f = findings(
+        "void *malloc(unsigned long);\nint probe(void){ int *p = (int*)malloc(4); return *p; }",
+    );
+    let null = f
+        .iter()
+        .find(|x| x.contains("null-dereference"))
+        .expect("an unchecked malloc result is reported");
+    assert!(
+        !null.contains("parameter"),
+        "this null is the program's, not an assumption chiero made: {null}"
+    );
+}
