@@ -4890,6 +4890,20 @@ impl Lowerer<'_> {
             }
             let v = self.expr(item.value);
             let cty = self.cty(fty);
+            // **The initializer is converted first, whichever store follows** (C11 6.7.9p11:
+            // as if by assignment). sema inserts that conversion for an assignment
+            // *expression* and not for a braced element, so without this a `{3, 5}` into
+            // `struct S { signed char a; int b; }` stored a 32-bit `3` into a slot declared
+            // `i8`, and a `long` initializer for an `int:3` gave `StoreBits` a 64-bit value
+            // where its unit is 32.
+            //
+            // **Hoisted above the bit-field branch deliberately.** Wave 140 added it for the
+            // ordinary store and wave 142 added the bit-field branch *in front of it*, so
+            // the new path silently skipped a conversion the old one needed — the ledger
+            // caught that two waves later. One conversion for both stores is one thing to
+            // get right, and `cty` is already the correct target for each: the member's type
+            // for a plain store, the field's storage unit for a bit-field.
+            let v = self.convert_for_store(v, item.value, &cty, span);
             // **A bit-field member is `StoreBits`**, not a narrower `Store` (015 contract
             // 7, whose `BitRange` came from `RecordLayout` above). A full-width store here
             // wrote over every neighbour sharing the unit, so `{1, 2}` into
@@ -4913,13 +4927,6 @@ impl Lowerer<'_> {
                 );
                 continue;
             }
-            // **The initializer is converted to the member's type** (C11 6.7.9p11). sema
-            // inserts that conversion for an assignment and not for a braced element — it
-            // is not typing an assignment expression — so `struct S { signed char a; int b; }
-            // s = {3, 5};` stored a 32-bit `3` into a slot declared `i8` and the engine
-            // ended the path on the width mismatch. Every struct with a member narrower
-            // than `int` was affected, which is most of them.
-            let v = self.convert_for_store(v, item.value, &cty, span);
             let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
             self.emit(
                 InstKind::Store {

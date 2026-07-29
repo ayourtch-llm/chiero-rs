@@ -1330,11 +1330,6 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
          what will fail when it happens.",
     ),
     (
-        "bitfield store value operand is Int(64)",
-        "wave 142's `StoreBits` does not narrow a value wider than the field's unit — a \
-         `long` into an `int:3`. Narrow, real, and owed rather than tolerated.",
-    ),
-    (
         "Unknown",
         "the engine reached a modelling limit and degraded, which 023 §7 requires it to \
          announce. A degraded run is chiero saying it could not model something, which is \
