@@ -953,6 +953,17 @@ pub enum MemFault {
         obj: ObjectId,
         off: i64,
         bit: u64,
+        /// **The guard the engine must discharge**, which the comment above says is its job
+        /// and which this variant did not carry until wave 204. Without it every conditional
+        /// write ended as a `maybe`, decidable or not — and a `maybe` on memory the path
+        /// proves untouched understates a real bug.
+        ///
+        /// `None` where the fault came from the arena-free `Bytes` path: those APIs have no
+        /// `TermArena` to build a term with, so there is no guard to hand over. The engine
+        /// then leaves the verdict alone, which is the same answer it gave before — an
+        /// undischargeable `maybe` is still honest, and inventing a `true` here would claim
+        /// a proof nobody has.
+        guard: Option<Term>,
         at: Span,
     },
     /// Recorded on every misaligned access; a *finding* only in `ub-strict` mode, since
@@ -1626,6 +1637,8 @@ impl Memory {
                     obj: p.base,
                     off,
                     bit,
+                    // No arena on this path, so no guard to hand over.
+                    guard: None,
                     at,
                 });
                 // No memoization here: the guard is still live, and marking the byte
@@ -1779,6 +1792,8 @@ impl Memory {
                     obj: p.base,
                     off,
                     bit,
+                    // No arena on this path, so no guard to hand over.
+                    guard: None,
                     at,
                 });
                 AccessResult {
@@ -2801,11 +2816,13 @@ impl Memory {
         }
         let range = p.off as u64 * 8..p.off as u64 * 8 + size * 8;
         let mut first_no = None;
-        let mut first_cond = None;
+        let mut first_cond: Option<(u64, Term)> = None;
         for bit in range {
             match self.init_bit_via(a, p.base, bit) {
                 InitBit::No if first_no.is_none() => first_no = Some(bit),
-                InitBit::Cond(_) if first_cond.is_none() => first_cond = Some(bit),
+                // The guard travels with the bit. Reporting the *first* conditional bit is
+                // unchanged; what is new is that its condition comes too.
+                InitBit::Cond(t) if first_cond.is_none() => first_cond = Some((bit, t)),
                 _ => {}
             }
         }
@@ -2828,11 +2845,12 @@ impl Memory {
                 self.materialize_fresh(a, p.base, p.off, size);
                 self.memoize_via(a, p.base, p.off as u64 * 8, size * 8);
             }
-        } else if let Some(bit) = first_cond {
+        } else if let Some((bit, guard)) = first_cond {
             faults.push(MemFault::MaybeUninitialized {
                 obj: p.base,
                 off: p.off,
                 bit,
+                guard: Some(guard),
                 at,
             });
         }
@@ -3600,9 +3618,13 @@ fn lift(e: AccessError, obj: ObjectId, at: Span) -> MemFault {
             at,
         },
         AccessError::Uninitialized { off, bit } => MemFault::Uninitialized { obj, off, bit, at },
-        AccessError::MaybeUninitialized { off, bit } => {
-            MemFault::MaybeUninitialized { obj, off, bit, at }
-        }
+        AccessError::MaybeUninitialized { off, bit } => MemFault::MaybeUninitialized {
+            obj,
+            off,
+            bit,
+            guard: None,
+            at,
+        },
         AccessError::BadRange {
             want_bits,
             max_bits,

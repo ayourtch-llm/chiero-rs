@@ -3136,7 +3136,7 @@ impl<'m> Engine<'m> {
                     let r = s
                         .mem
                         .havoc_range_reporting(a, p, n, HavocFill::Symbolic, i.span);
-                    self.report_faults(s, &r.faults, i.span);
+                    self.report_faults(a, s, &r.faults, i.span);
                     if r.value != Some(n) {
                         self.lowering_gap(
                             s,
@@ -3199,7 +3199,7 @@ impl<'m> Engine<'m> {
                         let r = s
                             .mem
                             .write_at_symbolic_offset(a, base, at, &[], byte, i.span);
-                        self.report_faults(s, &r.faults, i.span);
+                        self.report_faults(a, s, &r.faults, i.span);
                     }
                     return;
                 }
@@ -3225,7 +3225,7 @@ impl<'m> Engine<'m> {
                             chiero_mem::HavocFill::Uninitialized,
                             i.span,
                         );
-                        self.report_faults(s, &r.faults, i.span);
+                        self.report_faults(a, s, &r.faults, i.span);
                         return;
                     }
                     Some(Value::Ptr(q)) => {
@@ -3264,7 +3264,7 @@ impl<'m> Engine<'m> {
                     });
                 }
                 let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             // `CopyMem` is `memcpy`, deliberately: 021 contract 22's overlap rule must
             // not depend on whether the frontend spelled a struct assignment as an
@@ -3285,7 +3285,7 @@ impl<'m> Engine<'m> {
                     return;
                 };
                 let r = s.mem.copy(d, sp, n, chiero_mem::Overlap::Forbidden, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             InstKind::SetMem { dst, byte, size } => {
                 let (Some(Value::Ptr(d)), Some(b), Some(n)) = (
@@ -3297,7 +3297,7 @@ impl<'m> Engine<'m> {
                     return;
                 };
                 let r = s.mem.set(d, b as u8, n, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             // 021 §3.1's bit-granular init exists for exactly this pair. A byte-rounded
             // implementation would initialize the neighbouring bitfields too, and every
@@ -3326,7 +3326,7 @@ impl<'m> Engine<'m> {
                 let r = s
                     .mem
                     .write_bits(p, bits.off as u64, bits.width as u64, v.bits(), i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             // 020 §3: a runtime extent arrives **here**, at a real program point, and not
             // in `Function::allocas` — a function-level table would reference a value
@@ -3370,7 +3370,7 @@ impl<'m> Engine<'m> {
                 };
                 let zero = a.bv(64, 0);
                 let r = s.mem.write_term(a, p, zero, 8, Endian::Little, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
                 // **Which frame owns the arguments**, in the object's second word. 020
                 // §4.4.1's ABI layout has room for it, and without it `va_arg` asked the
                 // *current* frame — which is the callee's, and empty, whenever a
@@ -3382,7 +3382,7 @@ impl<'m> Engine<'m> {
                     off: p.off + 8,
                 };
                 let r = s.mem.write_term(a, at8, owner, 8, Endian::Little, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             InstKind::VaArg { dst, list, ty } => {
                 let Some(Value::Ptr(p)) = self.operand(a, s, list) else {
@@ -3390,7 +3390,7 @@ impl<'m> Engine<'m> {
                     return;
                 };
                 let cur = s.mem.read_term(a, p, 8, Endian::Little, i.span);
-                self.report_faults(s, &cur.faults, i.span);
+                self.report_faults(a, s, &cur.faults, i.span);
                 let Some(n) = cur
                     .value
                     .filter(|_| !unusable(&cur.faults))
@@ -3406,7 +3406,7 @@ impl<'m> Engine<'m> {
                     off: p.off + 8,
                 };
                 let own = s.mem.read_term(a, at8, 8, Endian::Little, i.span);
-                self.report_faults(s, &own.faults, i.span);
+                self.report_faults(a, s, &own.faults, i.span);
                 let Some(owner) = own
                     .value
                     .filter(|_| !unusable(&own.faults))
@@ -3438,7 +3438,7 @@ impl<'m> Engine<'m> {
                 s.set_local(*dst, v);
                 let next = a.bv(64, n as u128 + 1);
                 let r = s.mem.write_term(a, p, next, 8, Endian::Little, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             // A copy duplicates the *iteration state*, so the two lists advance
             // independently from a shared position — which is what `va_copy` is for.
@@ -3453,7 +3453,7 @@ impl<'m> Engine<'m> {
                 let r = s
                     .mem
                     .copy(d, sp, 16, chiero_mem::Overlap::Forbidden, i.span);
-                self.report_faults(s, &r.faults, i.span);
+                self.report_faults(a, s, &r.faults, i.span);
             }
             // `va_end` has no effect chiero can observe: the object's lifetime is the
             // frame's. Recording it as a gap would degrade every correct variadic
@@ -4325,6 +4325,7 @@ impl<'m> Engine<'m> {
                 let out = a.or(below, above);
                 if let CheckResult::Sat(_) = self.probe(a, s, &[out]) {
                     self.report_faults(
+                        a,
                         s,
                         // **The pointer fault, not the access one.** Nothing has been
                         // touched here — this runs for a `PtrAdd` — and the access variant
@@ -4530,7 +4531,7 @@ impl<'m> Engine<'m> {
                         let step = a.bv(w, k as u128);
                         let at = a.add(off, step);
                         let r = s.mem.read_term_at(a, base, at, &[], span);
-                        self.report_faults(s, &r.faults, span);
+                        self.report_faults(a, s, &r.faults, span);
                         // `None` is `chiero-mem` declining the byte — a fault it has already
                         // reported. Refusing the whole load then is right: half a value is
                         // not a value, and composing the rest would answer with bytes the
@@ -4580,7 +4581,7 @@ impl<'m> Engine<'m> {
                     return self.lowering_gap(s, span, &format!("a load of {ty:?}"));
                 }
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
-                self.report_faults(s, &r.faults, span);
+                self.report_faults(a, s, &r.faults, span);
                 match r.value.filter(|_| !unusable(&r.faults)) {
                     // A pointer-typed load comes back as a **pointer**. The recorded
                     // provenance first — the bits alone cannot say which object they name
@@ -4846,7 +4847,7 @@ impl<'m> Engine<'m> {
                     return self.lowering_gap(s, span, "a bitfield load through a non-pointer");
                 };
                 let r = s.mem.read_bits(p, bits.off as u64, bits.width as u64, span);
-                self.report_faults(s, &r.faults, span);
+                self.report_faults(a, s, &r.faults, span);
                 let w = bits_of_cty(unit).unwrap_or(bits.width);
                 // **A value that arrived with a fault is not the program's.** 021 §5
                 // hands back faults *alongside* a value, and for an uninitialized read
@@ -6152,7 +6153,13 @@ impl<'m> Engine<'m> {
         f.access_paths.get(v).map(|p| p.render())
     }
 
-    fn report_faults(&mut self, s: &mut State, faults: &[chiero_mem::MemFault], span: Span) {
+    fn report_faults(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        faults: &[chiero_mem::MemFault],
+        span: Span,
+    ) {
         // 021 §5 step 3: misalignment is **recorded** on every access and is a *finding*
         // only in `ub-strict` mode, because x86-64 tolerates it and VPP relies on that.
         // Reporting it unconditionally fired on every `CLIB_PACKED` packet header — and
@@ -6167,6 +6174,50 @@ impl<'m> Engine<'m> {
             // literal — both sides of the coupling break together.
             .filter(|f| !matches!(f, chiero_mem::MemFault::Misaligned { .. }))
             .cloned()
+            .collect();
+        // **021 §3.1's guard is discharged here, which is what the variant's comment always
+        // said was the engine's job.** Before wave 204 nothing did it, so every conditional
+        // write ended as `maybe` whether or not the path decided it — and a `maybe` on memory
+        // the path proves untouched understates a real bug, while one the path proves written
+        // is a false report a reader has to dismiss.
+        //
+        // Wave 156's three outcomes, for the fourth time in this engine: the guard `t` under
+        // path condition `P`.
+        //
+        // - `P ∧ ¬t` unsatisfiable — `t` holds on every model of the path, so the byte *was*
+        //   written. Drop the fault.
+        // - `P ∧ t` unsatisfiable — `t` cannot hold here, so the byte was certainly not
+        //   written. Promote to the definite `Uninitialized`.
+        // - anything else, including `Unknown` — genuinely undecided, and the `maybe` stands.
+        //   Treating `Unknown` as either certainty is the collapse the third state exists to
+        //   prevent.
+        let faults: Vec<chiero_mem::MemFault> = faults
+            .into_iter()
+            .filter_map(|f| match f {
+                chiero_mem::MemFault::MaybeUninitialized {
+                    obj,
+                    off,
+                    bit,
+                    guard: Some(t),
+                    at,
+                } => {
+                    let neg = a.not(t);
+                    if matches!(self.probe(a, s, &[neg]), CheckResult::Unsat) {
+                        None
+                    } else if matches!(self.probe(a, s, &[t]), CheckResult::Unsat) {
+                        Some(chiero_mem::MemFault::Uninitialized { obj, off, bit, at })
+                    } else {
+                        Some(chiero_mem::MemFault::MaybeUninitialized {
+                            obj,
+                            off,
+                            bit,
+                            guard: Some(t),
+                            at,
+                        })
+                    }
+                }
+                other => Some(other),
+            })
             .collect();
         let faults = &faults[..];
         for f in faults {
@@ -6849,7 +6900,7 @@ impl<'m> Engine<'m> {
                 let r = s
                     .mem
                     .write_term(a, at, t, 1, chiero_mem::Endian::Little, span);
-                self.report_faults(s, &r.faults, span);
+                self.report_faults(a, s, &r.faults, span);
             }
             return;
         }
@@ -7004,6 +7055,7 @@ impl<'m> Engine<'m> {
             && p.base == chiero_mem::ObjectId::NULL
         {
             self.report_faults(
+                a,
                 s,
                 &[chiero_mem::MemFault::NullDeref {
                     off: p.off,
