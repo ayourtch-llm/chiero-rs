@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 195) — 1270 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 195) — 1271 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -714,6 +714,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 2. *Stop marking a stored `Undef` uninitialized.* That is the `Store` handler's stated
 >    intent and correct for `int x; int y = x;` — it would trade a false positive for a
 >    missed true one.
+>
+> Mutation on wave 195: `back-to-undef` and `hands-out-a-pointer` both die, so the fix and the
+> fabricated-address invariant are each observed. `same-symbol-every-time` survived until a
+> fixture with *two* unenumerable offsets existed — naming them alike made them one term, so
+> two pointers from unrelated indices compared **equal**, proving `p == q` from an artefact of
+> naming rather than from the path.
 >
 > ~~🔴 a symbolic index still yields `Undef`, and that invents a finding.~~ **Wave 195**, and
 > the cause was that **`Value::Undef` does two jobs**: C's indeterminate value, where a later
@@ -1080,6 +1086,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **One sentinel for two meanings will report each as the other** (wave 195). `Value::Undef`
+> stood for both C's indeterminate value — where a later read *is* an uninitialized read — and
+> chiero's "I cannot represent this", where the program did write something. `fork_on_offset`
+> returned it for the second and got the first's behaviour, so `int *p = ga + i;` accused the
+> statement above it of never writing `p`. Look for this shape wherever one value means "the
+> program left this unknown" and "the analyser gave up".
+>
+> **When a fix collides with a deliberate invariant, the invariant is usually right** (wave
+> 195). Two fixes were tried before the one that landed: concretizing the offset (forbidden by
+> `a_symbolic_ptr_add_offset_is_a_gap`, because a fabricated address makes every later report a
+> confident claim about one arbitrary case) and letting a stored `Undef` keep the destination
+> initialized (the `Store` handler's stated intent, correct for `int x; int y = x;`). Both were
+> worse than the bug. Read the comment on the thing you are about to change.
+>
+> **Narrow an over-reaching RED rather than forcing it** (wave 195). Two of its assertions —
+> "the path continues with a real value" — were false and had to be, because `Pointer::off` is
+> a concrete `i64`. Making them pass would have meant the concretization already rejected. The
+> honest move is to narrow the claim and record the milestone.
 >
 > **Give the type no way to express the wrong report** (wave 194). The access fault carries a
 > width because an access has one; wave 193 raised it for a pointer *computation* and had to
