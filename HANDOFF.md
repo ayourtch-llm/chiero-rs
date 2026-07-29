@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 191) — 1254 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 191) — 1255 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -702,6 +702,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > and each of those was a place the engine previously believed it held a null. The number
 > may have moved in either direction, and the corpus is now the wrong sample anyway: it has
 > almost no global pointer tables.
+>
+> Mutation on wave 191: six die, including `engine-patches-before-bytes` — writing the
+> relocations before the bytes lets `write_bytewise` overwrite a term already placed, and the
+> pointer reads back as an integer with no object. `reloc-addend-dropped` survived until a
+> fixture existed whose pointer points *into* its target rather than at its start; two
+> entries with different addends in one table is what kills it.
 >
 > Worth doing as a *widened* measurement rather than a repeat: add a corpus file shaped like
 > VPP's registration idiom — a `static` node function, a table of pointers to it, a string
@@ -1067,6 +1073,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Assert behaviour, not representation, when the representation is the thing you are
+> choosing** (wave 191). The RED ran each program and read what it computed, so
+> `GlobalInit::Relocated` was free to be a relocation list, bytes with provenance, or
+> anything else. A test pinning the variant would have made the design harder to change and
+> proved nothing extra — 020's contracts are about what the engine *does*.
+>
+> **Reserve the slot before computing what goes in it** (wave 191). A global's `GlobalId` was
+> taken from `globals.len()` and the entry pushed afterwards, which is correct until
+> computing the initializer *pushes more globals* — `char *tab[2] = { "ab", "cd" }` interns a
+> literal per element. The verifier caught it as `IdNotIndex`, the rule it exists for. Any
+> "allocate an index, build the value, then push" shape has this bug latent in it the moment
+> building the value can allocate.
 >
 > **Ask the invariant, not the cases** (wave 190). §9 called for "a pointer-typed global is
 > non-null unless the program wrote `0`" instead of a list of initializer forms, and the
