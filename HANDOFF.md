@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 196) — 1276 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 197) — 1280 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,39 +688,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: the *store* side of a symbolic offset
+> ### 🔴 Do this first: the concrete paths cannot read a promoted object
 >
-> Wave 196 added `Value::SymPtr { base, off }` and taught the **load** path to read through it
-> — `ca[i & 63]` now reads, which it could not before. Storing *through* one still refuses:
+> Wave 197 made the symbolic store write, and promotion is the price:
 >
 > ```text
->   ca[i & 63] = 7;   ->  a store through a non-pointer address
+>   ca[i & 63] = 7;  ca[1] = 3;  return ca[1];   ->  no value, gap recorded
 > ```
 >
-> `chiero-mem` already has the counterpart, `write_at_symbolic_offset`, and it is the harder
-> direction for a reason worth knowing before starting: a symbolic write must either promote
-> the object to an array representation or write an if-then-else over candidates, and 021 §3's
-> `ITE_THRESHOLD` governs which. A promoted object then refuses byte-level writes elsewhere —
-> that exact interaction cost a wave once already (the comment on the entry-parameter
-> initialization records it), so check what promotion breaks *before* wiring the write.
+> A symbolic write promotes the object to an array representation, and a promoted object
+> refuses the **arena-free** byte and bit APIs (`promoted_fault`) that the *concrete* store and
+> load still use. So every ordinary access to that object afterwards declines.
 >
-> **What `SymPtr` does not do yet, listed so it is not rediscovered:** `PtrAdd` on a `SymPtr`
-> (a second symbolic step), `PtrDiff`, passing one as a call argument, and `memcpy`-family
-> models. Each is a `Value::Ptr` site that currently refuses, which is the honest answer, and
-> each becomes a small increment now that the representation exists.
+> That was a deliberate trade — before wave 197 the store was silently *dropped* and `ca[0]`
+> answered a confident `0` for a byte the write may have hit, wrong one time in sixty-four.
+> 023 §7 prefers a recorded refusal to a wrong byte. But it is a refusal, and the fix is to
+> give the concrete `Load`/`Store` paths an arena-carrying route for a promoted object —
+> `read_term_at` and `write_at_symbolic_offset` already serve a *concrete* offset, so this is
+> plumbing rather than new capability. `a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing`
+> is pinned to the current behaviour precisely so the next wave sees it change.
 >
-> Mutation on wave 196: all five die, and two only after a fixture that **evaluates the
-> value** existed. Reading one byte instead of four, and composing big-endian instead of
-> little, are invisible to any test that asks only whether a value came back — which every
-> earlier fixture did, because they were written when there was no value to look at. The
-> value is symbolic, so the fixture solves the path with `TieredSolver` and reads it through
-> `return_value_under`; every element `0x01020304` makes the answer determinate whichever
-> offset the model picks.
+> **Still refusing, and each now a small increment:** `PtrAdd` on a `SymPtr` (a second
+> symbolic step), `PtrDiff`, passing one as a call argument, and the `memcpy`-family models.
 >
-> ~~🔴 a `Value` that can hold a symbolic offset.~~ **Wave 196.** A *variant*, not a wider
-> `Pointer`: widening would have made all 59 `Value::Ptr` sites silently claim to handle an
-> unknown offset, where a separate variant leaves them refusing and let the compiler name the
-> five exhaustive matches that had to decide. That is the whole reason this landed in one wave.
+> ~~🔴 the *store* side of a symbolic offset.~~ **Wave 197**, and the gap was in `chiero-mem`
+> rather than the engine: `write_at_symbolic_offset` iterated `candidates` and wrote an
+> if-then-else at each, so an *empty* list — the only case that reaches it — wrote nothing and
+> **returned success**. `read_term_at` had promoted on an empty list all along and called it
+> "no pinning available"; the write did not. It now promotes and does one `store` at the
+> symbolic index, and marks the byte initialized, without which the read after the write
+> accuses the program of never storing what it just stored.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >

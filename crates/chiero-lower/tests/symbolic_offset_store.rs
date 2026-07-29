@@ -128,3 +128,54 @@ fn a_concrete_store_after_a_symbolic_one_refuses_rather_than_guessing() {
         "and the refusal is recorded rather than silent: {gaps:?}"
     );
 }
+
+/// **A multi-byte element, stored and read back at the same symbolic offset.**
+///
+/// Mutation found no fixture needed more than one byte: every store fixture above used a
+/// `char` array, so writing a single byte and ignoring the element size passed them all. An
+/// `int` element makes the composition observable — one byte written would read back as
+/// `0x00000007` only if the other three happened to be zero, and `0x01020304` cannot be
+/// mistaken for any single byte of itself.
+#[test]
+fn a_multi_byte_store_at_a_symbolic_offset_round_trips() {
+    use chiero_solver::{CheckResult, Solver, TieredSolver};
+    let m = harness::lower(
+        "int ga[64];\nint probe(int i){ ga[i & 63] = 0x01020304; return ga[i & 63]; }",
+    );
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let mut seen = 0;
+    for s in r.states() {
+        let mut solver = TieredSolver::new();
+        let CheckResult::Sat(model) = solver.check(&mut arena, &s.path) else {
+            continue;
+        };
+        let Some(bits) = s.return_value_under(&model, &arena) else {
+            continue;
+        };
+        seen += 1;
+        assert_eq!(
+            bits, 0x0102_0304,
+            "all four bytes were written, so all four read back"
+        );
+    }
+    assert!(seen > 0, "no state produced a solvable returned value");
+}
+
+/// **The written byte is marked initialized.**
+///
+/// Mutation again: dropping the `init` store in `chiero-mem`'s unpinned write passed every
+/// test, because none of them looked for the *finding*. Without it the read immediately after
+/// the write reports an uninitialized read of the byte the program just stored — 021 §3.1's
+/// distinction, and the same false positive wave 195 spent a wave removing in another guise.
+#[test]
+fn a_symbolic_store_marks_the_byte_initialized() {
+    let m = harness::lower("char ca[64];\nint probe(int i){ ca[i & 63] = 7; return ca[i & 63]; }");
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        !f.iter().any(|x| x.starts_with("uninitialized-read")),
+        "the program wrote this byte one statement earlier: {f:?}"
+    );
+}
