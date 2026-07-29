@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 178) — 1230 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 179) — 1230 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -526,7 +526,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > engine, and three census rows closed at once; 176 gave float-to-integer conversions
 > the destination's signedness and brought every census row to parity with UBSan;
 > 177 made the generator commit memory UB and graded chiero against AddressSanitizer;
-> 178 gave it a heap, and the oracle five fault classes instead of one**.*
+> 178 gave it a heap, and the oracle five fault classes instead of one; 179 completed
+> ASan's six and found one class starving the rest**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -672,68 +673,52 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: `stack-use-after-scope`, the one class still missing
+> ### 🔴 Do this first: `stack-buffer-overflow` is 1 of 41, and class balance is now the risk
 >
-> The memory oracle now grades five of ASan's classes and all of them clean:
+> All six of ASan's classes are in the corpus and all are caught:
 >
 > ```text
->   memory-UB oracle: 57 compared, 38 flagged by ASan, 38 caught, 0 invented
->       7 / 7    attempting double-free
+>   memory-UB oracle: 50 compared, 41 flagged by ASan, 41 caught, 0 invented
+>       4 / 4    attempting double-free
 >       7 / 7    global-buffer-overflow
->      13 / 13   heap-buffer-overflow
+>       9 / 9    heap-buffer-overflow
 >      10 / 10   heap-use-after-free
 >       1 / 1    stack-buffer-overflow
+>      10 / 10   stack-use-after-scope
 > ```
 >
-> The sixth, `stack-use-after-scope`, is listed in the tally and never appears. chiero
-> **does** detect it — probed in wave 178:
+> One row is a single program. Local arrays are rarer in the grammar than global ones, so
+> the *stack* overflow — the case with a different `chiero-mem` object kind behind it — is
+> graded by one sample while the global one has seven.
 >
-> ```text
->   use-after-scope: a left scope at bytes 74..97, before this access
-> ```
+> **Class balance is now the standing hazard, and it is not obvious.** ASan halts at the
+> first fault, so a shape that fires early is the only fault its program ever reports.
+> Wave 179 added the scope shape at one in four and it took 26 of 39 programs, driving
+> `stack-buffer-overflow` to *zero* — while the total still read `39 / 39` and the test
+> still passed. Adding any new shape means re-reading the whole table, not the total, and
+> every class the corpus can emit is now in the asserted list so a disappearance fails.
 >
-> Two things are needed and the order matters: the oracle's compile line needs
-> `-fsanitize=address` with `detect_stack_use_after_return=1` **and** ASan's
-> `-fsanitize-address-use-after-scope` (on by default at `-O0` in recent gcc, worth
-> confirming rather than assuming), and only then the grammar needs a block-scoped local
-> whose address escapes. Doing the grammar first produces programs neither tool flags, which
-> looks like agreement.
+> The fix for this row is to make local arrays more common under `memory_ub`, not to tune
+> the scope rate further — that trades one starved row for another.
 >
-> Also still absent, and cheaper: **`stack-buffer-overflow` is at 1 of 38.** Local arrays
-> are rarer in the grammar than globals, so the interesting local case is nearly untested
-> while the global one is well covered.
+> **Wave 178's open question is half-answered.** That wave recorded the class *pairing* as a
+> margin rather than a proven mechanism, because `class-pairs-ignored` survived. Wave 179's
+> `scope-class-unpaired` — expecting `out-of-bounds` for `stack-use-after-scope` — **dies**,
+> so the pairing is observable for at least the class whose chiero wording differs most from
+> its neighbours'. It is still a margin for the three overflow classes, which all map to the
+> same `out-of-bounds` finding and so cannot distinguish a mispairing among themselves.
 >
-> **The oracle grades by class, and that is load-bearing** — wave 178's second commit. It
-> pairs each ASan class with the wording chiero's finding must carry, so
-> `heap-use-after-free` is answered by a use-after-free finding and nothing else. The
-> earlier "did chiero say anything about memory" predicate was satisfied by the
-> `null-dereference` every allocating program carries from the malloc-failure path, and a
-> leak-only program scored as caught on the strength of it. A program flagged with a class
-> the table does not know is a **miss**, so a new ASan class surfaces as a failure rather
-> than vanishing into the total.
+> Two mutants survive on the scope grammar and neither is a missing test.
+> `escape-not-consumed` removes the `escaped.remove(k)` after a dead-object read; ASan halts
+> at the first fault, so the second read of the same object never executes and nothing can
+> observe it — the line is corpus hygiene, not behaviour. `read-inside-the-block` is a **bad
+> mutant**: it appends a self-assignment inside the braces rather than moving the read
+> there, so its name describes something it does not do.
 >
-> **Which mutant proves which half**, since the two mechanisms landed together and it is
-> easy to credit the wrong one. `uaf-paired-with-double-free` — swapping the expected
-> wording for one class — **dies**, so the pairing itself is observable.
-> `leaks-detected-again` dies on the *unknown-class-is-a-miss* rule rather than on the
-> pairing: a leak-only program matches no class in the table, so `want_any` is false and it
-> scores as a miss. `class-pairs-ignored`, which reverts the per-class check to "any memory
-> finding" while keeping that rule, **survives** — on today's corpus every flagged program
-> does carry the right class, so the weaker predicate happens to give the same answer. The
-> pairing is a guard against a corpus that does not yet exist, and the honest reading is
-> that one of the two mechanisms is proven and the other is a margin.
->
-> Two mutants survive on the memory oracle, recorded rather than dropped:
-> `heap-never-freed` is a *bad mutant* — deleting the ordinary-path `free` leaves the
-> double-free arm's own `free` to become the block's first, so the classes survive and the
-> mutant does not do what its name says. `malloc-path-clears-everything` widens
-> `is_malloc_failure_path` to clear any run with memory findings; `invented` is 0, so
-> nothing observes the narrowing today. It guards a false positive that has not happened
-> yet, and is untested rather than equivalent.
->
-> ~~🔴 the memory-UB oracle only knows one fault.~~ **Wave 178: five.** Note what found it —
-> the per-class table. Wave 177's `15 / 15` read as parity and was two classes, both the
-> same fault in different storage.
+> ~~🔴 `stack-use-after-scope`, the one class still missing.~~ **Wave 179.** Section 9
+> predicted the oracle's compile line would need extending first; **it did not** — gcc 13
+> reports the class under a plain `-fsanitize=address`. The check was still the right order
+> to work in, and the prediction being wrong is recorded so nobody repeats it.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1061,6 +1046,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An oracle that stops at the first fault makes its classes compete** (wave 179). ASan
+> halts on the first report, so a generated shape that fires early is the only fault its
+> program ever shows. Adding the scope shape at one in four silently drove
+> `stack-buffer-overflow` out of the corpus — the total was unchanged and the test passed.
+> Emission rates in a corpus graded by a halting oracle are not tuning constants; they
+> decide which classes get graded at all.
+>
+> **Record a prediction that turns out wrong** (wave 179). §9 said the oracle's compile line
+> would need extending before the grammar could reach `stack-use-after-scope`. It did not —
+> gcc 13 reports it under a plain `-fsanitize=address`. Checking first was still the right
+> order, and writing down that the blocker was not there costs a line and saves the next
+> reader the same detour.
+>
+> **A hardcoded failure message outlives the case it was written for** (wave 179). The
+> missing-class assertion told every future class that "the grammar has no malloc or free in
+> it at all", which was true when written and false for the next one. A diagnostic that
+> misnames the cause is worse than none; it now prints what the corpus actually produced.
 >
 > **A total hides which rows are empty** (wave 178). The memory oracle reported `15 flagged,
 > 15 caught` and read as parity; broken out by the class ASan itself named, it was two
