@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 165) — 1198 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 166) — 1198 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -516,7 +516,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
 > said; 162 made the result say which solver decided it; 163 gave the backend a watchdog;
 > 164 made every query a dumpable artifact; 165 told the solver its own budget, closing
-> 022 §4 entirely**.*
+> 022 §4 entirely; 166 audited 021 and found nothing, and measured why the generator is
+> half idle**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -737,12 +738,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   the watchdog so the solver gives up first and the process survives. **022 §4 has no
 >   unimplemented clauses left** — discovery (161), provenance (162), watchdog (163), dump
 >   (164), solver-side timeout (165).
-> - **Where to audit next.** Five waves came out of one section by reading sentences against
->   the code. 022 is now done; the same method has not been applied to **021 (memory model)**
->   or **023 (execution engine)**, which are larger and where the engine's own contracts
->   live. 023 §7's `Fidelity` and §9's `Finding` have been exercised repeatedly by waves
->   156–160 and look sound; 021 §5's arenas and §6's lazy materialization have not been read
->   against the code at all.
+> - ~~Where to audit next: 021 §5/§6.~~ **Audited in wave 166 and clean.** Contract 13b
+>   (an `IntToPtr` of a wholly unconstrained symbol → `Fidelity::Unknown` + an unresolvable
+>   -pointer finding) is implemented and says the right thing; §5's access order, `ub-strict`
+>   alignment recording and contract 26's memoization are all present; §5.1's interval tree
+>   is **not built and the code says so**, with the semantics preserved by an arithmetic
+>   filter ahead of a capped solver sweep. A pointer *loaded from* lazy memory correctly does
+>   **not** take step 4 — §6's chained materialization gives it an object, which is what
+>   `lazy_depth`/`max_depth` are for. It looks like the same case and is not.
+> - **🔴 Floats are now the top capability item, and the soak says why.** Seeds 200..800: of
+>   600 generated programs, **293 were refused for floating point** and 226 discarded as
+>   undefined, leaving **81 compared — 13%**. The channel that has found more defects than
+>   any other spends half its budget on programs chiero declines to lower. Floats are not
+>   just a missing feature; they are the largest single drag on detection.
+>   **The blocker is the solver, not lowering.** `chiero_solver::Sort` is `BitVec`/`Bool`/
+>   `Array` — there is no float sort, so a float value cannot be represented symbolically at
+>   all. Implementing floats means either an FP theory in the solver or a bit-vector
+>   encoding, which is milestone-sized and should be scoped as one rather than started
+>   inside a wave.
+> - **`zz_soak` is the open-ended mode** §9 owed since wave 139: `#[ignore]`d, range under
+>   `SOAK_LO`/`SOAK_HI`, prints a census rather than a verdict. **Frontier reached: seed 800.**
+>   The next session should start there.
 > - **One mutant survives in the watchdog** (wave 163): not killing the child on timeout,
 >   because `Drop for Session` also kills it and the caller drops the session immediately.
 >   The line stays and documents the distinction (`Drop` tidies up; the watchdog *ends the
@@ -812,6 +828,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A soak that reports only its verdict hides its census** (wave 166). Six hundred fresh
+> seeds found zero defects, and the useful output was the breakdown: 293 refused for floats,
+> 226 discarded as undefined, 81 compared. "0 defects" alone would have read as reassurance
+> about a channel running at 13% duty. **When a search comes back empty, report what it
+> searched** — the shape of the discards is the finding.
+> **An audit that finds nothing is a result, and says so** (wave 166). 021 §5/§6 were read
+> claim by claim against the code and came back clean, including the one the spec calls its
+> highest-value failure mode. That is worth committing and recording: the next reader should
+> not spend the wave re-deriving it, and "no defect found" is the honest report when it is
+> the true one. **Do not manufacture a red to keep a streak.**
 > **Do not build a test on the machine being slow** (wave 165). The obvious test for
 > `:timeout` is to hand z3 something hard and watch it give up — and it measures the box and
 > the z3 build, not chiero. (The 64-bit semiprime factorisation it would have used answers in
