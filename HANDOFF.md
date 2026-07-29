@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 162) — 1190 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 163) — 1192 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -514,7 +514,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the engine asks; 157 shipped the checker that turns a UB event into a finding; 158 made the
 > witness beside it one that actually faults; 159 gave each finding its own; 160 stopped
 > labelling a proven path undecided; 161 turned tier 2 on by default, as 022 §4 always
-> said; 162 made the result say which solver decided it**.*
+> said; 162 made the result say which solver decided it; 163 gave the backend a watchdog**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -718,13 +718,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   still. Unverified; a GNU `vector_size` fixture would settle it.
 > - Designated, bit-field and address initializers refused; a fault in a non-entry frame is
 >   untested; `Bits` path steps are not emitted.
-> - **022 §4's remaining unimplemented clauses**, found while auditing the section in waves
->   161–162 and left deliberately: the **watchdog** ("on watchdog fire the process is killed,
->   restarted, the assertion stack is *replayed*, and the query returns `Unknown(Timeout)`.
->   Replay correctness is contract 14") and **`--dump-queries <dir>`**, the "first-class
->   artifact" that is how a solver disagreement gets reported upstream. Both are real
->   contracts with no code behind them. The dump is the cheaper of the two and the one that
->   pays off the moment a backend disagrees with tier 1.
+> - ~~022 §4's watchdog.~~ **Done in wave 163.** `UnknownReason::Timeout`, a reader thread
+>   per session so the pipe read is abandonable, and a 10s default overridable by
+>   `$CHIERO_SMT_TIMEOUT` (0 disables). A timeout is deliberately **not** retried — the
+>   existing restart-and-replay path is for a *death*, and contract 14's correctness comes
+>   from `query` redeclaring variables on a fresh session rather than from the watchdog.
+> - **`--dump-queries <dir>` is still owed** (022 §4): the emitted SMT-LIB2 is "a
+>   **first-class artifact** … which is how a solver disagreement gets reported upstream and
+>   how chiero's own bugs get bisected". Nothing writes it. Cheap, and the thing you want the
+>   moment tier 1 and tier 2 disagree — which `paranoid` mode can already detect and cannot
+>   currently show you.
+> - **One mutant survives in the watchdog** (wave 163): not killing the child on timeout,
+>   because `Drop for Session` also kills it and the caller drops the session immediately.
+>   The line stays and documents the distinction (`Drop` tidies up; the watchdog *ends the
+>   query*), but no fixture can tell them apart today.
 > - **Shift and signed-overflow UB are still concrete-only** (wave 156). `note_ub` answers
 >   for two constants; wave 156 added a solver query for *division* only, because a division
 >   is rare and its question is one narrow feasibility check. Overflow is a question about
@@ -790,6 +797,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A derived `Default` can switch a subsystem off** (wave 163). Adding a
+> `timeout: Duration` field to a struct that derives `Default` compiles, reviews clean, and
+> makes every backend query time out instantly, because `Duration::default()` is zero. The
+> fix is a newtype whose `Default` is the real constant. **When adding a field to a derived
+> `Default`, ask what the zero value *means* in that position** — for a duration, a
+> capacity, or a limit, zero is usually "off".
+> **Put the blocking somewhere you can abandon** (wave 163). There is no portable deadline
+> on a blocking pipe read, so no amount of care in the reader adds one. Moving the read to a
+> thread and waiting on a channel turns an unbounded wait into a bounded one without the
+> reader knowing anything about time. **A deadline is a property of the waiter, not of the
+> read.**
+> **Retry the failure that is transient, not the one that is expensive** (wave 163). The
+> backend path already restarted and re-asked on a dead process, which is right for a crash.
+> Applying it to a timeout would spend the budget twice for the same answer. **Before reusing
+> a recovery path, ask what it assumes about the failure.**
 > **Read the rest of the sentence** (wave 162). 022 §4 says "Backend selection order:
 > `$CHIERO_SMT_SOLVER`, then `z3`, `cvc5`, `bitwuzla` on `PATH`. **Recorded in the result so
 > a finding says which solver decided it.**" The first half was implemented and the second
