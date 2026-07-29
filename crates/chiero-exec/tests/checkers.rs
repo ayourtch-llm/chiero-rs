@@ -939,19 +939,46 @@ fn a_real_run_slices_its_path_condition() {
     for i in 0..n {
         blocks.push(block(
             i,
-            vec![Inst {
-                kind: InstKind::Assign {
-                    dst: ValueId(100 + i),
-                    rv: RValue::Cmp {
-                        op: CmpOp::ULt,
-                        ty: CTy::Int(32),
-                        a: Operand::Value(ValueId(i)),
-                        b: i32c(1000),
+            vec![
+                // **`v*v == 49`, not `v < 1000`.** Slicing only happens on the way to the
+                // *backend*, so the fixture must ask something `SolverLite` cannot answer.
+                // It used to be a plain comparison, and wave 153 — which taught the lite
+                // solver negated atoms and the boolean-materialization idiom — made that
+                // decidable in-process. The run then never escalated and never sliced, so
+                // this test failed for the reason its subject had become unreachable.
+                //
+                // A nonlinear equality is out of reach in a way that does not depend on
+                // the fragment growing again: the atom is collected, but its left side is
+                // not a variable so no domain narrows, and the candidate model (each
+                // domain's least value, so 0) fails validation. Each cluster still touches
+                // exactly one parameter, which is the property the test is about.
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(300 + i),
+                        rv: RValue::Bin {
+                            op: BinOp::Mul,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(i)),
+                            b: Operand::Value(ValueId(i)),
+                        },
                     },
+                    span: Span::DUMMY,
+                    generated: false,
                 },
-                span: Span::DUMMY,
-                generated: false,
-            }],
+                Inst {
+                    kind: InstKind::Assign {
+                        dst: ValueId(100 + i),
+                        rv: RValue::Cmp {
+                            op: CmpOp::Eq,
+                            ty: CTy::Int(32),
+                            a: Operand::Value(ValueId(300 + i)),
+                            b: i32c(49),
+                        },
+                    },
+                    span: Span::DUMMY,
+                    generated: false,
+                },
+            ],
             Terminator::Br {
                 cond: Operand::Value(ValueId(100 + i)),
                 t: BlockId(i + 1),

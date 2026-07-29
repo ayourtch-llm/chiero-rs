@@ -366,3 +366,135 @@ fn a_negated_atom_contradicting_its_positive_is_unsat() {
          failure 022 §3.1 says the design must make impossible"
     );
 }
+
+/// **The shape a lowered C comparison actually has**, and the polarity through it.
+///
+/// The bare-atom tests above cannot pin the polarity of the `ite` peel: both `p` and `!p`
+/// are satisfiable, so reading one as the other still produces *a* model, and the model
+/// validator accepts it. What distinguishes them is **which side of the branch the model
+/// lands on** — so this asserts the value, not just the verdict.
+///
+/// The term is the one the engine builds for `if (x > 10)`:
+///
+/// ```text
+///   (not (= ((_ zero_extend 31) (ite (bvslt (_ bv10 32) x) #b1 #b0)) (_ bv0 32)))
+/// ```
+///
+/// Three polarity flips compose in it — `not`, `= 0`, and the `ite` — and getting any one
+/// of them backwards yields the *other* branch. A mutation swapping the `ite` arms survived
+/// the whole symbolic differential channel; this is what kills it.
+#[test]
+fn a_materialized_comparison_puts_the_model_on_the_right_side() {
+    // The true side: x must come out greater than 10.
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let ten = a.bv(32, 10);
+    let gt = a.slt(ten, x);
+    let one = a.bv(1, 1);
+    let zero1 = a.bv(1, 0);
+    let materialized = a.ite(gt, one, zero1);
+    let widened = a.zext(materialized, 32);
+    let zero32 = a.bv(32, 0);
+    let is_zero = a.eq(widened, zero32);
+    let taken = a.not(is_zero);
+
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[taken]) {
+        CheckResult::Sat(m) => {
+            let v = a.eval(&m, x).expect("the model binds x").signed();
+            assert!(
+                v > 10,
+                "the model puts x at {v}, which is the *other* branch: the polarity of one \
+                 of the three flips in a materialized comparison is inverted"
+            );
+        }
+        other => panic!("the shape every lowered `if` produces came back {other:?}"),
+    }
+
+    // The false side: the same term negated, and x must come out at most 10.
+    let not_taken = a.not(taken);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[not_taken]) {
+        CheckResult::Sat(m) => {
+            let v = a.eval(&m, x).expect("the model binds x").signed();
+            assert!(
+                v <= 10,
+                "the model puts x at {v}, which is the *other* branch"
+            );
+        }
+        other => panic!("the false side of every lowered `if` came back {other:?}"),
+    }
+}
+
+/// **A signed bound below zero is not an unsigned interval**, and pretending otherwise
+/// produces a wrong `Unsat`.
+///
+/// `v >=s -1` holds for -1 and for every non-negative value — as unsigned bit patterns,
+/// `0xFFFFFFFF` and `[0, 0x7FFFFFFF]`. That is two ranges, so no single interval implies
+/// it, and the narrowing must decline. Reading `-1` as the unsigned `4294967295` and
+/// setting `lo` to it instead excludes every value the constraint actually permits, and the
+/// domain then goes empty against any upper bound — reported as `Unsat`, which is the one
+/// verdict 022 §3.1 says nothing downstream validates.
+#[test]
+fn a_negative_signed_bound_does_not_narrow_unsoundly() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    let minus_one = a.bv(32, u128::from(u32::MAX));
+    // !(x <s -1), i.e. x >=s -1 — satisfied by x = 0 among many others.
+    let lt = a.slt(x, minus_one);
+    let ge = a.not(lt);
+    let five = a.bv(32, 5);
+    let small = a.ult(x, five);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[ge, small]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(
+                a.eval(&m, ge).map(|v| v.bits() != 0),
+                Ok(true),
+                "the model does not satisfy the signed bound it was produced for"
+            );
+        }
+        CheckResult::Unsat => panic!(
+            "`x >=s -1 && x <u 5` is satisfied by x = 0; answering Unsat means a negative \
+             signed bound was narrowed as though it were unsigned"
+        ),
+        // Declining is allowed — incompleteness is the sanctioned failure here.
+        CheckResult::Unknown(_) => {}
+    }
+}
+
+/// **`and` is bitwise, and only at one bit is it a conjunction.**
+///
+/// A `switch` default arrives as one term joining its negated cases with `and`, and
+/// splitting that into separate assertions is what brings it into the fragment. The split
+/// is sound only at width 1. For a wider term, `x & y != 0` says *some* bit is set in both
+/// — not that each operand is nonzero in the sense the atom collector would then assert.
+/// Splitting regardless asserts something strictly stronger, and a stronger set can reach
+/// an empty domain, which is reported as `Unsat`.
+#[test]
+fn a_wide_bitwise_and_is_not_split_into_conjuncts() {
+    let mut a = TermArena::new();
+    let x = a.var(Sort::BitVec(32), "x");
+    // (x & 1) is nonzero exactly when x is odd; asserting it alongside `x <u 4` is
+    // satisfied by 1 and 3. Split as conjuncts, `x` and `1` would each be asserted
+    // separately and the constant conjunct is not an atom at all.
+    let one = a.bv(32, 1);
+    let masked = a.and(x, one);
+    let four = a.bv(32, 4);
+    let small = a.ult(x, four);
+    let mut s = SolverLite::default();
+    match s.check(&mut a, &[masked, small]) {
+        CheckResult::Sat(m) => {
+            assert_eq!(
+                a.eval(&m, masked).map(|v| v.bits() != 0),
+                Ok(true),
+                "the model does not satisfy `x & 1`"
+            );
+        }
+        CheckResult::Unsat => panic!(
+            "`x & 1` with `x <u 4` is satisfied by x = 1; answering Unsat means a wide \
+             bitwise `and` was split as though it were a conjunction"
+        ),
+        CheckResult::Unknown(_) => {}
+    }
+}

@@ -2239,14 +2239,36 @@ impl<'m> Engine<'m> {
                 return;
             }
         };
+        // **Which inputs the path actually mentions.**
+        //
+        // `pinned` used to be "the model assigned it", which worked only while every model
+        // came from the external backend — those assign the variables they were asked
+        // about and no others. `SolverLite` builds a **complete** assignment by
+        // construction (022 §2: unconstrained variables get 0), so the moment wave 153
+        // made it able to answer these queries in-process, every input started reporting
+        // as pinned, including ones no term on the path so much as names. That is exactly
+        // the claim `witness.rs`'s module doc says a witness must never make.
+        //
+        // Occurrence in the path condition is the property that was meant. It is a *sound*
+        // reading of "free": a variable the path never mentions cannot be constrained by
+        // it, so any value does. It is deliberately not the converse — a mentioned
+        // variable is reported as pinned even if the path leaves it several values, which
+        // overstates nothing a reader acts on, since the value shown does reach the fault.
+        let mut mentioned: indexmap::IndexSet<chiero_solver::VarId> = Default::default();
+        for t in &s.path {
+            vars_of(a, *t, &mut mentioned);
+        }
         let mut bindings = Vec::new();
         for (t, origin) in s.inputs.clone().into_iter().chain(extra) {
             let width = a.width(t);
             // **`pinned` is the honest part.** A model need not assign a variable the
             // path never mentions; binding it to zero and presenting that as the
             // solver's answer would tell a reader the bug needs a value it does not.
+            let mut mine = indexmap::IndexSet::new();
+            vars_of(a, t, &mut mine);
+            let constrained = mine.iter().any(|v| mentioned.contains(v));
             let (value, pinned) = match a.eval(&model, t) {
-                Ok(c) => (c.bits(), true),
+                Ok(c) => (c.bits(), constrained),
                 Err(_) => (0, false),
             };
             bindings.push(Binding {
@@ -6448,4 +6470,25 @@ fn cmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
         }
         _ => return None,
     })
+}
+
+/// Every variable occurring anywhere in `t`, transitively.
+///
+/// `TermArena::subterms` yields **immediate** children only, which is the whole reason the
+/// first attempt at this reported a *constrained* input as free: the variable in a lowered
+/// comparison sits four wrappers down, under `not`, `=`, `zext` and `ite`.
+fn vars_of(a: &TermArena, t: Term, out: &mut indexmap::IndexSet<chiero_solver::VarId>) {
+    let mut stack = vec![t];
+    let mut seen: indexmap::IndexSet<Term> = Default::default();
+    while let Some(cur) = stack.pop() {
+        // A term arena is a DAG with sharing, so revisiting is normal — and unbounded work
+        // without this.
+        if !seen.insert(cur) {
+            continue;
+        }
+        if let Some(v) = a.var_id(cur) {
+            out.insert(v);
+        }
+        stack.extend(a.subterms(cur));
+    }
 }

@@ -1042,12 +1042,84 @@ impl TermArena {
         }
     }
 
+    /// Recognize an atom, **including a negated one and the shape CIR actually emits**.
+    ///
+    /// A conditional contributes its condition to one path and the negation of that
+    /// condition to the other, so a reader that matched only a bare predicate could decide
+    /// exactly one side of every branch. But peeling `Not` alone is not enough, because
+    /// nothing in a lowered C program asserts a bare predicate. C has no boolean type at
+    /// the machine level: a comparison is **materialized into an integer** and the branch
+    /// tests that integer against zero, so `if (x > 10)` reaches the solver as
+    ///
+    /// ```text
+    ///   (not (= ((_ zero_extend 31) (ite (bvslt 10 x) #b1 #b0)) (_ bv0 32)))
+    /// ```
+    ///
+    /// The atom is in there, under three wrappers that each mean "the same truth value".
+    /// This peels all of them, tracking polarity:
+    ///
+    /// - `not p` flips it;
+    /// - `zext p` / `sext p` change no bit's zero-ness, so a truth test passes straight
+    ///   through;
+    /// - `ite p 1 0` **is** `p`, and `ite p 0 1` is its negation;
+    /// - `p == 0` in a truth position is `!p`, in either operand order.
+    ///
+    /// The `== 0` case is tried and **falls back**: `x == 0` on a variable is a perfectly
+    /// good atom, and peeling it would yield `x`, which is not a predicate. So the peel is
+    /// attempted, and if it does not reach an atom the equality is returned as itself.
     pub fn as_atom(&self, t: Term) -> Option<Atom> {
+        self.atom_at(t, false, 0)
+    }
+
+    /// `as_atom`'s worker: `t` in a **truth position**, asserted to be nonzero unless
+    /// `negated`.
+    ///
+    /// The depth bound is a guard against a pathological term, not an expected case; eight
+    /// is well past the four wrappers a lowered comparison carries.
+    fn atom_at(&self, t: Term, negated: bool, depth: u32) -> Option<Atom> {
+        if depth > 8 {
+            return None;
+        }
         match &self.nodes[t.0 as usize] {
-            Node::Bin(k, a, b) if k.is_predicate() => Some(Atom {
+            Node::Not(a) => self.atom_at(*a, !negated, depth + 1),
+            // Widening cannot turn a zero into a nonzero or back, so a truth test is
+            // unchanged by it. (This is sound only in a truth position — `zext(x) == 5` is
+            // *not* `x == 5` in general — which is exactly the position this function is
+            // about.)
+            Node::Extend { a, .. } => self.atom_at(*a, negated, depth + 1),
+            Node::Ite { c, t: tt, f } => match (
+                self.as_const(*tt).map(|k| k.bits()),
+                self.as_const(*f).map(|k| k.bits()),
+            ) {
+                (Some(1), Some(0)) => self.atom_at(*c, negated, depth + 1),
+                (Some(0), Some(1)) => self.atom_at(*c, !negated, depth + 1),
+                _ => None,
+            },
+            Node::Bin(BinKind::Eq, x, y) => {
+                // `b == 0` asserts `b` is false, so the polarity flips. Tried in both
+                // operand orders: the engine writes the constant on either side.
+                if self.as_const(*y).is_some_and(|k| k.bits() == 0)
+                    && let Some(at) = self.atom_at(*x, !negated, depth + 1)
+                {
+                    return Some(at);
+                }
+                if self.as_const(*x).is_some_and(|k| k.bits() == 0)
+                    && let Some(at) = self.atom_at(*y, !negated, depth + 1)
+                {
+                    return Some(at);
+                }
+                Some(Atom {
+                    kind: BinKind::Eq,
+                    lhs: *x,
+                    rhs: *y,
+                    negated,
+                })
+            }
+            Node::Bin(k, x, y) if k.is_predicate() => Some(Atom {
                 kind: *k,
-                lhs: *a,
-                rhs: *b,
+                lhs: *x,
+                rhs: *y,
+                negated,
             }),
             _ => None,
         }
@@ -1492,9 +1564,29 @@ impl Solver for SolverLite {
             }
         }
 
+        // **A one-bit `and` is a conjunction, and a conjunction of assertions is just more
+        // assertions.** A `switch` builds its default arm as "not case 1 and not case 2",
+        // which arrives as a single term; without this the whole default path falls out of
+        // the fragment for being one `and` deep.
+        //
+        // The width guard is not decoration. `And` is *bitwise*: for a wider term,
+        // `x & y != 0` does not imply `x != 0` and `y != 0`, so splitting would assert
+        // something stronger than was given — and a stronger assertion set can reach an
+        // empty domain, which is reported as `Unsat`, the one verdict nothing validates.
+        //
+        // `all` itself is left alone: it is what the candidate model is checked against,
+        // and that check must be against what the caller actually asserted.
         let mut atoms = Vec::new();
-        for t in &all {
-            match a.as_atom(*t) {
+        let mut work: Vec<Term> = all.clone();
+        while let Some(t) = work.pop() {
+            if a.width(t) == 1
+                && let Some((BinKind::And, x, y)) = a.as_bin(t)
+            {
+                work.push(x);
+                work.push(y);
+                continue;
+            }
+            match a.as_atom(t) {
                 Some(at) => atoms.push(at),
                 None => {
                     return CheckResult::Unknown(UnknownReason::Incomplete(
@@ -1536,6 +1628,14 @@ pub struct Atom {
     pub kind: BinKind,
     pub lhs: Term,
     pub rhs: Term,
+    /// Whether the assertion is the **negation** of `lhs kind rhs`.
+    ///
+    /// Carried rather than rewritten into another predicate because there are only three
+    /// predicate kinds and none of the negations is one of them: `!(a <u b)` is `a >=u b`,
+    /// `!(a <s b)` is `a >=s b`, `!(a == b)` is `a != b`. Rewriting `!(a <u b)` as
+    /// `b <u a || a == b` would leave the conjunction-of-atoms fragment entirely, which is
+    /// the fragment the soundness of `Unsat` rests on.
+    pub negated: bool,
 }
 
 enum Propagation {
@@ -1627,16 +1727,20 @@ impl Domains {
             (Some(v), Some(k), _, _) => {
                 let w = k.width();
                 let d = self.dom(v, w);
-                changed |= narrow(d, at.kind, k.bits(), false);
+                changed |= narrow(d, at.kind, k.bits(), false, at.negated);
             }
             (_, _, Some(k), Some(v)) => {
                 let w = k.width();
                 let d = self.dom(v, w);
-                changed |= narrow(d, at.kind, k.bits(), true);
+                changed |= narrow(d, at.kind, k.bits(), true, at.negated);
             }
             _ => {
                 // `masked == k` where masked is `v & m`: a known-bits fact.
+                // **Only the positive form.** `v & m != k` says one of the masked bits
+                // differs without saying which, and a known-bits fact cannot express that;
+                // pinning anything here would be unsound rather than incomplete.
                 if at.kind == BinKind::Eq
+                    && !at.negated
                     && let Some(k) = rc
                     && let Some((v, m)) = a.as_var_and_mask(at.lhs)
                 {
@@ -1681,25 +1785,94 @@ impl Domains {
 }
 
 /// Narrow one variable's domain by `v OP k` (or `k OP v` when `flipped`).
-fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool) -> bool {
+/// The least value whose top bit is set — `2^(w-1)`, the first *negative* number at width
+/// `w` read as unsigned, and therefore one past the largest signed value.
+fn signed_min(w: u32) -> u128 {
+    1u128 << (w - 1)
+}
+
+/// Narrow `d` by one atom, in whichever direction the atom's polarity implies.
+///
+/// **Every arm must be an implication, not an equivalence.** `Unsat` is produced when a
+/// domain goes empty and nothing validates it afterwards (022 §3.1's asymmetry), so a
+/// narrowing that removes a value the assertion actually permits turns an unsound answer
+/// into the one verdict the design cannot catch. Where a relation cannot be expressed as
+/// an interval the arm does nothing, which costs completeness and keeps soundness.
+fn narrow(d: &mut VarDomain, kind: BinKind, k: u128, flipped: bool, negated: bool) -> bool {
     let (lo0, hi0, z0, o0) = (d.lo, d.hi, d.zeros, d.ones);
-    match (kind, flipped) {
-        (BinKind::Ult, false) => d.hi = d.hi.min(k.saturating_sub(1)),
-        (BinKind::Ult, true) => d.lo = d.lo.max(k.saturating_add(1)),
-        (BinKind::Eq, _) => {
+    match (kind, flipped, negated) {
+        // v <u k  =>  v <= k-1
+        (BinKind::Ult, false, false) => {
+            d.hi = d.hi.min(k.saturating_sub(1));
+            if k == 0 {
+                // `v <u 0` holds for no `v`.
+                d.lo = 1;
+                d.hi = 0;
+            }
+        }
+        // k <u v  =>  v >= k+1
+        (BinKind::Ult, true, false) => d.lo = d.lo.max(k.saturating_add(1)),
+        // !(v <u k)  =>  v >=u k. The false side of `if (v < k)`, and the reason this
+        // function has a polarity at all.
+        (BinKind::Ult, false, true) => d.lo = d.lo.max(k),
+        // !(k <u v)  =>  v <=u k
+        (BinKind::Ult, true, true) => d.hi = d.hi.min(k),
+        (BinKind::Eq, _, false) => {
             d.lo = d.lo.max(k);
             d.hi = d.hi.min(k);
             d.ones |= k;
             d.zeros |= !k & mask(d.width);
         }
-        // Signed comparison is not modeled by an unsigned interval; leaving it alone is
-        // incompleteness, whereas treating it as unsigned would be unsound.
+        // **`v != k` is a hole, and an interval has no holes.** It narrows only when the
+        // excluded value sits *at* a bound, which is where it matters: the candidate model
+        // is the domain's least value, so `!(v == 0)` over a full domain would otherwise
+        // propose 0, fail validation, and report `Unknown` for a trivially satisfiable
+        // assertion. Away from a bound the domain is left alone — incompleteness, and the
+        // model validator is what still keeps the answer honest.
+        (BinKind::Eq, _, true) => {
+            if d.lo == k {
+                d.lo = d.lo.saturating_add(1);
+            }
+            if d.hi == k {
+                d.hi = d.hi.saturating_sub(1);
+                if k == 0 {
+                    // Nothing is below 0, so the domain is empty rather than wrapped.
+                    d.lo = 1;
+                    d.hi = 0;
+                }
+            }
+        }
+        // **Two of the four signed cases are an unsigned interval; the other two are not.**
+        //
+        // The domain is an unsigned range, and a signed constraint maps onto one only when
+        // it confines `v` to the non-negative half. With `k` non-negative:
+        //
+        // - `v >=s k` is exactly `k <=u v <=u 2^(w-1)-1` — one interval;
+        // - `v >s k` is the same shifted by one;
+        // - `v <s k` admits every negative value, which is the *upper* unsigned half, plus
+        //   `[0, k-1]` — two intervals, and no single range is an implication of it;
+        // - `v <=s k` likewise.
+        //
+        // So the first two narrow and the last two do not. A negative `k` puts all four in
+        // the second category, hence the guard.
+        //
+        // This is not incidental to wave 153: `x > 0` on an `int` is a *signed* comparison,
+        // which is to say almost every comparison C programs write. Before this, positive
+        // signed atoms appeared to work only because the candidate model is the domain's
+        // least value and 0 happens to satisfy `0 <s k`; the negation had no such luck and
+        // failed validation, reporting `Unknown` for a trivially satisfiable assertion.
+        (BinKind::Slt, false, true) if k < signed_min(d.width) => {
+            d.lo = d.lo.max(k);
+            d.hi = d.hi.min(signed_min(d.width) - 1);
+        }
+        (BinKind::Slt, true, false) if k < signed_min(d.width) => {
+            d.lo = d.lo.max(k.saturating_add(1));
+            d.hi = d.hi.min(signed_min(d.width) - 1);
+        }
+        // Everything else: no narrowing. Incompleteness, which the model validator turns
+        // into `Unknown`; treating it as unsigned would be unsoundness, which nothing
+        // downstream would catch.
         _ => {}
-    }
-    if kind == BinKind::Ult && k == 0 && !flipped {
-        // `v <u 0` is unsatisfiable.
-        d.lo = 1;
-        d.hi = 0;
     }
     (d.lo, d.hi, d.zeros, d.ones) != (lo0, hi0, z0, o0)
 }
