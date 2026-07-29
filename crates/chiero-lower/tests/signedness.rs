@@ -1,0 +1,177 @@
+//! **Signedness is a property of the C operands, and CIR has been dropping it.**
+//!
+//! C's arithmetic UB rules are asymmetric in exactly one bit. `a + a` is undefined on
+//! overflow when `a` is `int` and defined — wraps modulo 2^N — when `a` is `unsigned`.
+//! `a << 31` is undefined for a signed `a` (C11 6.5.7p4: negative operand, or a result
+//! `E1 x 2^E2` that does not fit) and ordinary for an unsigned one. Same machine
+//! instruction, opposite verdicts.
+//!
+//! CIR keeps that bit for *some* operations and not others. `SDiv`/`UDiv`, `SRem`/`URem`
+//! and `AShr`/`LShr` are split because the machine operation genuinely differs. `Add`,
+//! `Sub`, `Mul` and `Shl` are single opcodes because the machine operation does *not*
+//! differ — which was the right call for execution and the wrong one for checking, since
+//! `CTy::Int(w)` carries a width and no signedness either.
+//!
+//! The cost is a false report and a missed one, and this file pins both:
+//!
+//! - **False**: unsigned wraparound is reported as `SignedOverflow`. `note_ub` calls
+//!   `.signed()` on both operands unconditionally, so `3000000000u + 3000000000u`
+//!   reinterprets as `-1294967296 + -1294967296`, lands outside the signed range, and
+//!   fires. gcc compiles the same program under `-fsanitize=undefined` and runs it clean.
+//!   Wave 171's rule is that a false finding costs more than a missing one.
+//! - **Missed**: neither signed-left-shift rule is checked, because checking them from
+//!   the bits alone would report every `unsigned x << 31` — the commonest idiom in C.
+//!   Wave 173 measured 8 negative shifts and 5 non-representable results that gcc reports
+//!   and chiero does not.
+//!
+//! Every fixture here is written at C source level rather than by building CIR by hand,
+//! and that is the point: the bit under test is one *lowering* has and discards, so a test
+//! that hands CIR a signedness it chose itself would pass while the real path stayed
+//! broken.
+
+mod harness;
+
+use chiero_exec::{Engine, UbKind};
+use chiero_solver::TermArena;
+
+/// Every UB kind the engine records for a closed program, in order.
+fn ub_kinds(src: &str) -> Vec<UbKind> {
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).run(&mut arena);
+    r.states()
+        .iter()
+        .flat_map(|s| s.ub_events())
+        .map(|u| u.kind)
+        .collect()
+}
+
+/// Unsigned arithmetic wraps. It is defined, and reporting it is a false positive.
+///
+/// The values are chosen so the wrap is unmistakable *and* so the bit pattern read as
+/// signed falls outside the signed range — `4000000000u + 4000000000u` happens to land
+/// back inside it once reinterpreted, and would pass this test without the defect being
+/// fixed.
+#[test]
+fn unsigned_wraparound_is_defined_and_is_not_reported() {
+    for (what, src) in [
+        (
+            "add",
+            "int probe(void) { unsigned a = 3000000000u; unsigned b = a + a; return (int)(b >> 28); }",
+        ),
+        (
+            "mul",
+            "int probe(void) { unsigned a = 3000000000u; unsigned b = a * 2u; return (int)(b >> 28); }",
+        ),
+        (
+            "sub",
+            "int probe(void) { unsigned a = 1u; unsigned b = a - 2u; return (int)(b >> 28); }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            !kinds.contains(&UbKind::SignedOverflow),
+            "unsigned {what} wraps and is defined in C, but chiero reported {kinds:?}"
+        );
+    }
+}
+
+/// Signed overflow is still undefined, and must still be reported.
+///
+/// The control for the test above: a fix that silences unsigned wrap by silencing the
+/// whole check would pass it and fail here.
+#[test]
+fn signed_overflow_is_still_reported() {
+    for (what, src) in [
+        (
+            "add",
+            "int probe(void) { int a = 2147483647; int b = a + 1; return b; }",
+        ),
+        (
+            "mul",
+            "int probe(void) { int a = 2000000000; int b = a * 2; return b; }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::SignedOverflow),
+            "signed {what} overflow is undefined and must be reported, got {kinds:?}"
+        );
+    }
+}
+
+/// C11 6.5.7p4, first clause: a *signed* left shift of a negative value is undefined.
+#[test]
+fn a_signed_left_shift_of_a_negative_value_is_reported() {
+    let kinds = ub_kinds("int probe(void) { int a = -1; int b = a << 1; return b; }");
+    assert!(
+        kinds.contains(&UbKind::Shift),
+        "`-1 << 1` is undefined (C11 6.5.7p4) and must be reported, got {kinds:?}"
+    );
+}
+
+/// C11 6.5.7p4, second clause: a signed left shift whose result `E1 x 2^E2` is not
+/// representable in the promoted type is undefined.
+///
+/// Measured both ways before being asserted, because the shift count is legal here and
+/// only the signedness decides the verdict:
+///
+/// ```text
+/// int a = 1;      a << 31  ->  runtime error: left shift of 1 by 31 places cannot
+///                              be represented in type 'int'
+/// unsigned a = 1; a << 31  ->  2147483648, exit 0
+/// ```
+#[test]
+fn a_signed_left_shift_out_of_range_is_reported() {
+    let kinds = ub_kinds("int probe(void) { int a = 1; int b = a << 31; return b; }");
+    assert!(
+        kinds.contains(&UbKind::Shift),
+        "signed `1 << 31` does not fit in `int` and must be reported, got {kinds:?}"
+    );
+}
+
+/// The other half of the same clause, and the reason it cannot be checked from the bits:
+/// the identical shift on an unsigned operand is ordinary code.
+///
+/// This is the assertion that a naive fix breaks. It is not a comment — wave 173 recorded
+/// it as a pin, and it is what forces the signedness to be carried rather than guessed.
+#[test]
+fn an_unsigned_left_shift_out_of_signed_range_is_ordinary_code() {
+    for (what, src) in [
+        (
+            "1u << 31",
+            "int probe(void) { unsigned a = 1u; unsigned b = a << 31; return (int)(b >> 28); }",
+        ),
+        (
+            "high bit set",
+            "int probe(void) { unsigned a = 3000000000u; unsigned b = a << 1; return (int)(b >> 28); }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            !kinds.contains(&UbKind::Shift),
+            "unsigned `{what}` is defined in C, but chiero reported {kinds:?}"
+        );
+    }
+}
+
+/// The count rule (C11 6.5.7p3) is signedness-independent and must stay that way.
+#[test]
+fn the_shift_count_rule_applies_to_both_signednesses() {
+    for (what, src) in [
+        (
+            "signed",
+            "int probe(void) { int a = 1; int b = a << 32; return b; }",
+        ),
+        (
+            "unsigned",
+            "int probe(void) { unsigned a = 1u; unsigned b = a << 32; return (int)b; }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::Shift),
+            "a {what} shift by the operand width is undefined whatever the signedness, got {kinds:?}"
+        );
+    }
+}
