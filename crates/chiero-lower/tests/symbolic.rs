@@ -373,6 +373,172 @@ fn a_switch_over_a_mask_reaches_its_default() {
     );
 }
 
+/// **A fault found symbolically comes with a witness, and the witness reproduces it.**
+///
+/// 023 contract 21 says a finding replays "with all inputs concretized". Every test of that
+/// until now built its module by hand; this drives it from C, which is the only way the
+/// *whole* chain is exercised — lowering, the entry parameter becoming a symbol, the branch
+/// forking, the solver choosing a value, the witness recording it, and a second run pinned
+/// to that value arriving at the same fault.
+///
+/// The replay assertion is the load-bearing one. A witness is a claim about the program,
+/// and a claim nobody re-runs is a number in a report. Requiring the replay to collapse to a
+/// **single state** is what says the inputs really were concretized rather than merely
+/// recorded: a replay that still forks has not pinned what it claimed to.
+///
+/// This is also the fixture §9 has owed since wave 153, where a mutation reducing the
+/// witness's variable walk to immediate children survived every channel — the hand-built
+/// CIR in `witness.rs` puts its variable one level down, and only a C-lowered comparison has
+/// the four-wrapper shape that walk exists for.
+#[test]
+fn a_symbolic_fault_carries_a_witness_that_reproduces_it() {
+    for (body, want) in [
+        ("int *p = 0; if (x == 7) { *p = 1; } return 0;", 7i128),
+        ("int *p = 0; if (x > 100) { *p = 1; } return 0;", 101),
+        ("int *p = 0; if ((x & 3) == 2) { *p = 1; } return 0;", 2),
+    ] {
+        let src = format!("int probe(int x) {{ {body} }}");
+        let m = harness::lower(&src);
+        let mut arena = TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+
+        let f = r
+            .reports()
+            .into_iter()
+            .find(|f| f.message.contains("null"))
+            .unwrap_or_else(|| panic!("`{body}`: the guarded null store was not reported at all"));
+        let w = f
+            .witness
+            .clone()
+            .unwrap_or_else(|| panic!("`{body}`: reported without a witness"));
+
+        // **The entry parameter is pinned, and to the value the guard demands.** An
+        // unpinned binding would say the fault needs no particular input, which is exactly
+        // what the guard contradicts.
+        let p = w
+            .bindings
+            .first()
+            .unwrap_or_else(|| panic!("`{body}`: the witness binds nothing"));
+        assert!(
+            p.pinned,
+            "`{body}`: the parameter the guard tests is reported as free: {p:?}"
+        );
+        assert_eq!(
+            p.value as i128, want,
+            "`{body}`: the witness names a value the guard does not admit"
+        );
+
+        // **And replaying it reproduces the fault, on one path.**
+        let mut replay_arena = TermArena::new();
+        let r2 = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .replaying(w)
+            .run(&mut replay_arena);
+        assert_eq!(
+            r2.states().len(),
+            1,
+            "`{body}`: a replay with every input concretized still forked, so something \
+             the witness claimed to pin was re-invented"
+        );
+        assert!(
+            r2.reports().iter().any(|f| f.message.contains("null")),
+            "`{body}`: the witness did not reproduce the fault it was produced for: {:?}",
+            r2.reports()
+                .iter()
+                .map(|f| f.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// **A symbolic divisor that can be zero is a division by zero** — from C, where the
+/// operand shape that broke it actually occurs.
+///
+/// `crates/chiero-exec/tests/ub_events.rs` states this against hand-built CIR. This is the
+/// end-to-end half: `100 / x` is the shape a person writes, and until wave 156 it produced
+/// no event and left the run claiming `Fidelity::Exact`.
+#[test]
+fn a_division_by_a_symbolic_zero_is_an_event() {
+    for (body, want) in [
+        ("return 100 / x;", true),
+        ("return 100 % x;", true),
+        ("if (x == 0) { return 100 / x; } return 1;", true),
+        // **A literal zero divisor with a symbolic numerator.** The concrete check needs
+        // *both* operands constant, so this shape reached neither path and was the most
+        // obvious division by zero there is.
+        ("int z = 0; return x / z;", true),
+        ("int z = 0; return x % z;", true),
+        // The divisor cannot be zero on the path that divides.
+        ("if (x == 0) { return 1; } return 100 / x;", false),
+        ("int z = 5; return x / z;", false),
+        // **Not a division.** Both operands symbolic, so a check that asked its question
+        // of every binary operation would fire here — `x + x` is zero when `x` is.
+        ("return x + x;", false),
+        ("return x * x;", false),
+        ("return x + 1;", false),
+    ] {
+        let src = format!("int probe(int x) {{ {body} }}");
+        let m = harness::lower(&src);
+        let mut arena = TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let saw = r
+            .states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .any(|u| u.kind == chiero_exec::UbKind::DivByZero);
+        assert_eq!(
+            saw,
+            want,
+            "`{body}`: expected a DivByZero event to be {}",
+            if want { "recorded" } else { "absent" }
+        );
+    }
+}
+
+/// **A divisor whose zero-ness the solver cannot decide degrades the run.**
+///
+/// The third answer, and the one with no natural fixture: `y == 0` for a plain variable is
+/// always decidable, so every division written so far comes back `Sat` or `Unsat`. It takes
+/// a divisor outside the solver's fragment to reach the middle case — `x * x - 7` is zero
+/// exactly when `x * x == 7`, which is nonlinear and which tier 1's diagonal candidate
+/// search cannot exhibit.
+///
+/// Silence here would be the original defect in miniature: an unanswered question reported
+/// as a modelled path. 020 §5 — a gap is a diagnostic, not a licence — so the run says
+/// `Fidelity::Unknown` and names what it could not decide.
+#[test]
+fn an_undecidable_divisor_is_a_declared_gap_not_a_silent_one() {
+    let src = "int probe(int x) { int d = x * x - 7; return 100 / d; }";
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    let degraded = r.states().iter().any(|s| {
+        s.fidelity() != chiero_exec::Fidelity::Exact
+            && s.assumptions().iter().any(|a| a.detail.contains("divisor"))
+    });
+    assert!(
+        degraded,
+        "the solver cannot decide whether `x*x - 7` is zero, and the run neither reported \
+         a division by zero nor said it could not tell. States: {:?}",
+        r.states()
+            .iter()
+            .map(|s| (
+                s.fidelity(),
+                s.assumptions()
+                    .iter()
+                    .map(|a| a.detail.clone())
+                    .collect::<Vec<_>>()
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// The companion to `differential.rs`'s `zz_the_oracle_actually_ran`: **a channel that can
 /// silently compare nothing is not a channel.**
 ///

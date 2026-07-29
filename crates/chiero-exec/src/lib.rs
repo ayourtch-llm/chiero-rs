@@ -2348,17 +2348,95 @@ impl<'m> Engine<'m> {
         }
     }
 
+    /// Ask whether a **symbolic divisor can be zero on this path**, and record what the
+    /// answer was — including that there wasn't one.
+    ///
+    /// Only division and remainder reach here. A constant divisor is settled by the caller
+    /// without a query, so the query count is one per *symbolic* division rather than one
+    /// per arithmetic instruction.
+    fn symbolic_div_by_zero(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        op: BinOp,
+        w: u32,
+        y: Term,
+        span: Span,
+    ) {
+        if !matches!(op, BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem) {
+            return;
+        }
+        // **No early return for a constant divisor**, and that was a real miss. The
+        // caller's concrete path requires *both* operands to be constants, so
+        // `x / 0` with a symbolic numerator arrives here with `y` a literal zero — and
+        // returning on "y is constant" dropped the most obvious division by zero there is.
+        // Found by mutation: removing this check changed nothing any test could see, which
+        // is what said the check was not earning its place.
+        //
+        // Letting the query handle it is uniform and costs nothing: `eq(0, 0)` folds to
+        // true and `eq(5, 0)` to false, so a constant divisor is decided by the arena
+        // before the solver is asked anything.
+        let zero = a.bv(w, 0);
+        let is_zero = a.eq(y, zero);
+        match self.probe(a, s, &[is_zero]) {
+            CheckResult::Sat(_) => {
+                s.ub.push(UbEvent {
+                    kind: UbKind::DivByZero,
+                    span,
+                    detail: format!("{op:?} by a divisor the path allows to be zero"),
+                });
+            }
+            CheckResult::Unsat => {}
+            CheckResult::Unknown(_) => {
+                s.degrade(
+                    Fidelity::Unknown,
+                    AssumptionKind::NoInformation,
+                    span,
+                    &format!(
+                        "whether the divisor of this {op:?} can be zero was not decided, \
+                         so neither a division by zero nor its absence is claimed"
+                    ),
+                );
+            }
+        }
+    }
+
     /// Record 020 §4.1's UB event for a binary operation, if this one has one.
     ///
-    /// **Only when the operands are concrete.** A symbolic divisor *may* be zero, and
-    /// deciding that costs a solver query per arithmetic instruction — which is 040's
-    /// business, with the path condition and a budget, not the interpreter's. What the
-    /// engine owes is the event for what it can see, and §4.1 asks for exactly that: the
-    /// IR semantics are defined, and a checker turns the event into a finding.
+    /// **Concrete operands are answered by arithmetic; a symbolic divisor is asked.**
+    ///
+    /// This used to answer only for two constants, on the reasoning that deciding a
+    /// symbolic case "costs a solver query per arithmetic instruction — which is 040's
+    /// business". That reasoning is right for `Add`/`Sub`/`Mul` and for shifts: overflow
+    /// is a question about every arithmetic instruction in the program, and asking it
+    /// everywhere is the cost the argument was about.
+    ///
+    /// It is not right for division. Divisions are rare, the question is a single
+    /// feasibility check — *can this divisor be zero on this path?* — and the machinery to
+    /// ask it is already here and already used for exactly this shape: the
+    /// null-dereference checker asks whether an address can be null, reports with a witness
+    /// when it can, and stays quiet when it cannot. A symbolic executor that misses
+    /// `100 / x` is missing the case it exists for.
+    ///
+    /// The three answers are three different outcomes, and collapsing any two is the bug
+    /// this replaced:
+    ///
+    /// - **`Sat`** — zero is reachable here, so the event is recorded. Whether the path
+    ///   *forces* zero or merely admits it is not a distinction the event makes; 023's
+    ///   witness is what tells a reader which, and it carries the value.
+    /// - **`Unsat`** — the divisor cannot be zero, so there is nothing to report and
+    ///   nothing to degrade. Without this the check would fire on every division with a
+    ///   non-constant divisor and bury the real ones.
+    /// - **`Unknown`** — the solver could not tell, which is 020 §5's "a gap is a
+    ///   diagnostic, not a licence". Staying silent *and* `Exact` would be a positive
+    ///   claim that the path was modelled, made about a question that was not answered.
+    ///
+    /// Shifts and signed overflow keep the concrete-only treatment, and the reason is the
+    /// cost argument above rather than an oversight — recorded in §9 as owed.
     #[allow(clippy::too_many_arguments)]
     fn note_ub(
         &mut self,
-        a: &TermArena,
+        a: &mut TermArena,
         s: &mut State,
         op: BinOp,
         ty: &CTy,
@@ -2366,10 +2444,11 @@ impl<'m> Engine<'m> {
         y: Term,
         span: Span,
     ) {
+        let w = bits_of_cty(ty).unwrap_or_else(|| a.width(x));
         let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else {
+            self.symbolic_div_by_zero(a, s, op, w, y, span);
             return;
         };
-        let w = bits_of_cty(ty).unwrap_or_else(|| a.width(x));
         let mut push = |kind: UbKind, detail: String| {
             s.ub.push(UbEvent { kind, span, detail });
         };
