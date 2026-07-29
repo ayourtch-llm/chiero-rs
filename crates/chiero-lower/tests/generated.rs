@@ -2026,6 +2026,12 @@ struct Tally {
     /// 15 caught reads as parity while an entire class is missing from the corpus, which is
     /// exactly the state wave 177 left behind.
     classes: std::collections::BTreeMap<&'static str, (usize, usize)>,
+    /// Seeds where chiero found the right *class* at the wrong *line*.
+    ///
+    /// 023 §9's whole point: a report that names the fault but not the place is not a
+    /// report a person can act on. Nothing checked this until wave 181, so "use-after-free
+    /// somewhere in the program" and "use-after-free on line 33" scored the same.
+    mislocated: Vec<(u64, u32, Vec<u32>)>,
     /// Seeds chiero reported a memory finding for and ASan did not flag.
     ///
     /// The direction the census had to learn twice (waves 175 and 176): a channel that
@@ -2097,7 +2103,7 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             continue;
         }
         let compiled = std::process::Command::new("gcc")
-            .args(["-O0", "-fsanitize=address,undefined", "-o"])
+            .args(["-O0", "-g", "-fsanitize=address,undefined", "-o"])
             .arg(&x)
             .arg(&c)
             .output();
@@ -2135,7 +2141,7 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             continue;
         };
         let err = String::from_utf8_lossy(&run.stderr).to_string();
-        let Some(m) = harness::lower_maybe(&src) else {
+        let Some((m, map)) = harness::lower_maybe_with_map(&src) else {
             continue;
         };
         t.compared += 1;
@@ -2206,6 +2212,31 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             t.caught += 1;
         } else {
             t.missed.push(seed);
+        }
+        // **And at the right line.** ASan prints the faulting frame; chiero's finding
+        // carries a span, and the `SourceMap` turns it into a line. Only checked when the
+        // class matched, since a wrong class at any line is already a miss.
+        //
+        // **The first frame *inside `probe`*, not frame `#0`.** For a double-free the
+        // topmost frame is ASan's own `free` interceptor and the program's frame is `#1`,
+        // so keying on `#0` silently failed to parse exactly the classes that go through an
+        // interceptor — which is how this was nearly written to grade nothing.
+        if got_all {
+            let asan_line: Option<u32> = err
+                .lines()
+                .find(|l| l.trim_start().starts_with('#') && l.contains(" in probe "))
+                .and_then(|l| l.rsplit(':').next().and_then(|n| n.trim().parse().ok()));
+            if let Some(al) = asan_line {
+                let ours: Vec<u32> = r
+                    .reports()
+                    .iter()
+                    .filter(|f| is_memory_finding(&f.message))
+                    .filter_map(|f| map.lookup_loc(f.span.lo).map(|l| l.line))
+                    .collect();
+                if !ours.contains(&al) {
+                    t.mislocated.push((seed, al, ours));
+                }
+            }
         }
     }
     t
@@ -2289,6 +2320,13 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
             t.classes.keys().collect::<Vec<_>>()
         );
     }
+    assert!(
+        t.mislocated.is_empty(),
+        "chiero found the right fault at the wrong line on {} program(s) \
+         (seed, ASan line, chiero lines): {:?}",
+        t.mislocated.len(),
+        &t.mislocated[..t.mislocated.len().min(5)]
+    );
     assert!(
         t.missed.is_empty(),
         "ASan flagged {} of {} programs and chiero missed {} of them: seeds {:?}",

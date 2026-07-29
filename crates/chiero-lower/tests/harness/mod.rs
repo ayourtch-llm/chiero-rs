@@ -189,3 +189,30 @@ pub fn lower_maybe(src: &str) -> Option<Module> {
     }
     Some(lowered.module)
 }
+
+/// Lower, keeping the `SourceMap`, or `None` if any stage refused.
+///
+/// The map is what turns a finding's `Span` into a line number, which is the only way to
+/// ask whether chiero found the fault *where* the sanitizer did rather than merely finding
+/// one of the right kind somewhere in the program.
+pub fn lower_maybe_with_map(src: &str) -> Option<(Module, chiero_span::SourceMap)> {
+    let tu = preprocess_str("t.c", src, Config::default());
+    if !tu.diagnostics.is_empty() {
+        return None;
+    }
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    if !analysis.diagnostics.is_empty() {
+        return None;
+    }
+    let lowered = chiero_lower::lower_tu_with_map(&parsed.ast, &analysis, &names, &tu.source_map);
+    if !lowered.diagnostics.is_empty() {
+        return None;
+    }
+    Some((lowered.module, tu.source_map))
+}
