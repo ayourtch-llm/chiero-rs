@@ -230,3 +230,108 @@ fn widening_a_negative_operand_does_not_invent_an_overflow() {
         "`LONG_MAX + (-1)` is in range; a sign-dropping widening would report it: {kinds:?}"
     );
 }
+
+/// Every UB kind, plus what the program returned — for the cases where the *value* is
+/// defined and gcc's answer is the one to match.
+fn ub_and_value(src: &str) -> (Vec<UbKind>, Option<i32>) {
+    let m = harness::lower(src);
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let v = r
+        .states()
+        .iter()
+        .find_map(|s| s.return_value_bits(&mut arena))
+        .map(|b| b as u32 as i32);
+    (
+        r.states()
+            .iter()
+            .flat_map(|s| s.ub_events())
+            .map(|u| u.kind)
+            .collect(),
+        v,
+    )
+}
+
+/// **A float-to-integer conversion is checked against the destination's range, and the
+/// destination has a signedness.**
+///
+/// C11 6.3.1.4 makes the conversion undefined when the truncated value is not representable
+/// in the destination type. `200.0` is representable in `unsigned char` and not in
+/// `signed char`; `3e9` is representable in `unsigned` and not in `int`. Lowering emits
+/// `FpToSi` for every float-to-integer cast — `cast_kind` has one arm for
+/// `(Float, Int)` and `target_signed` returns `true` unconditionally — so the range checked
+/// is always the signed one and every unsigned destination is reported.
+///
+/// Measured against gcc, which is silent on all three:
+///
+/// ```text
+///   (unsigned char)200.0    -> 200,   exit 0
+///   (unsigned)3000000000.0  -> 3000000000
+///   (unsigned short)60000.0 -> 60000
+/// ```
+///
+/// This is what the census's false-positive column found on seed 117, and it is the same
+/// class of defect as this file's other half in a different place: `CTy::Int(w)` carries no
+/// signedness, so a conversion *to* it cannot say which range it means. CIR is not at fault
+/// — `FpToSi` and `FpToUi` are distinct kinds and the engine checks each correctly. Only
+/// lowering's choice between them is wrong.
+#[test]
+fn a_float_conversion_to_an_unsigned_destination_is_not_reported() {
+    for (what, src, want) in [
+        (
+            "unsigned char",
+            "int probe(void){ double d=200.0; unsigned char c=(unsigned char)d; return (int)c; }",
+            200,
+        ),
+        (
+            "unsigned short",
+            "int probe(void){ double d=60000.0; unsigned short s=(unsigned short)d; return (int)s; }",
+            60000,
+        ),
+        (
+            "unsigned int",
+            "int probe(void){ double d=3000000000.0; unsigned u=(unsigned)d; return (int)(u>>16); }",
+            45776,
+        ),
+    ] {
+        let (kinds, value) = ub_and_value(src);
+        assert!(
+            !kinds.contains(&UbKind::FloatCastOverflow),
+            "`{what}` holds this value and gcc runs it clean, but chiero reported {kinds:?}"
+        );
+        assert_eq!(value, Some(want), "and computes gcc's answer for `{what}`");
+    }
+}
+
+/// The controls: a destination that genuinely cannot hold the value still reports.
+///
+/// Both signednesses are here on purpose. A fix that silenced the false reports by
+/// switching every conversion to `FpToUi` would pass the test above and fail on
+/// `signed char`; one that silenced them by dropping the check would fail on both.
+#[test]
+fn a_float_conversion_out_of_the_destinations_range_is_still_reported() {
+    for (what, src) in [
+        (
+            "signed char, 200",
+            "int probe(void){ double d=200.0; signed char c=(signed char)d; return (int)c; }",
+        ),
+        (
+            "unsigned char, 300",
+            "int probe(void){ double d=300.0; unsigned char c=(unsigned char)d; return (int)c; }",
+        ),
+        (
+            "unsigned char, negative",
+            "int probe(void){ double d=-1.0; unsigned char c=(unsigned char)d; return (int)c; }",
+        ),
+        (
+            "int, 1e20",
+            "int probe(void){ double d=1e20; int i=(int)d; return i; }",
+        ),
+    ] {
+        let (kinds, _) = ub_and_value(src);
+        assert!(
+            kinds.contains(&UbKind::FloatCastOverflow),
+            "`{what}` is undefined under C11 6.3.1.4 and must be reported, got {kinds:?}"
+        );
+    }
+}

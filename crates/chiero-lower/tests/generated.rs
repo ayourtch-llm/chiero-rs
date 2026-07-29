@@ -1710,6 +1710,34 @@ fn the_ub_filter_discards_a_float_cast_overflow() {
 /// a real gap, and a row that reads `n / n` is not proof of agreement.
 #[test]
 #[ignore]
+fn zz_117() {
+    for seed in [117u64] {
+        let (prelude, body) = program(seed);
+        println!("verdict = {:?}", judge(&prelude, &body));
+        let src = format!("{prelude}\nint probe(void) {{\n{body}}}\n");
+        let m = harness::lower_maybe(&src).expect("lowers");
+        let mut arena = chiero_solver::TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        println!(
+            "chiero ret = {:?}",
+            r.states()
+                .iter()
+                .find_map(|s| s.return_value_bits(&mut arena))
+                .map(|b| b as u32 as i32)
+        );
+        for s in r.states() {
+            for u in s.ub_events() {
+                println!("  ub {:?} {:?} {}", u.kind, u.span, u.detail);
+            }
+        }
+        println!("--- src ---\n{src}");
+    }
+}
+
+#[test]
+#[ignore]
 fn zz_census() {
     use std::collections::BTreeMap;
     let dir =
