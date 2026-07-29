@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 185) — 1234 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 186) — 1238 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,52 +688,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Also open, raised by the user in wave 185 and measured then: null-pointer reach
+> ### 🔴 Do this first: nullable pointers are on, and nothing has measured the noise
 >
-> Division by zero is fully symbolic and path-sensitive — measured, not assumed:
+> Wave 186 made an entry pointer parameter possibly null by default, per the user's
+> decision. `null_params.rs` pins the four discharge rules and the check-after-deref case.
+> Offsets from null were checked rather than assumed: `p[4]` reports at offset 16,
+> `*(p+1000)` at 4000, `s->b` at "offset 4 of NULL through s->b", and `p[-1]` reports *both*
+> an out-of-bounds on the valid state and a null dereference on the null one.
 >
-> ```text
->   100 / x, x symbolic, unchecked          -> DivByZero reported
->   if (x == 0) return 0; 100 / x           -> silent (solver proves x != 0 here)
->   if (x != 0) return 0; 100 / x           -> reported (guard inverted)
-> ```
+> **What is not known is the false-positive rate on real code**, and that is the thing to
+> establish before this reaches VPP. Six existing tests needed `with_entry_ptr_nullable(false)`
+> — all of them because they were about something else, none by relaxing an assertion — but
+> that is a sample of chiero's own fixtures, not of C in the wild. The corpus channels cannot
+> answer it either: their `probe` takes no parameters, so the null fork never fires there.
 >
-> **Null dereference is not, and the gap is a decision rather than an oversight.** For a
-> pointer whose nullability is in the model — `malloc`'s result — chiero reports the
-> unchecked dereference, which is the `null-dereference` finding every allocating program in
-> the memory corpus carries. For an **entry-function parameter** it assumes a valid object of
-> `ENTRY_PARAM_BYTES` (021 §7: "the caller is outside the analysis, so there is no right
-> answer — this is a bound chiero chose"), so `int probe(int *p){ return *p; }` is silent.
+> The measurement worth making: run the entry-nullable policy over `tests/corpus/c/` and over
+> a VPP node or two, and count how many findings are genuine "this callee should check" versus
+> noise from a caller that provably never passes null. If the rate is bad, the answer is not
+> to turn the default off — it is 023 §6's dedup plus a way to record "this parameter is
+> non-null by contract", which is what an `assert(p)` already does for free.
 >
-> **DECIDED BY THE USER (wave 185), do not re-litigate:** *"you can also assume all pointers
-> to be nullable unless there is an assert(p) or thereabout."*
+> ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
-> So the default changes: an entry-function pointer parameter is **possibly null**, and a
-> guard discharges it. `ENTRY_PARAM_BYTES` keeps its job — it bounds the *extent* of the
-> object when there is one — and nullability becomes a separate question with the opposite
-> default. Note what this does *not* require: the discharging machinery already exists and is
-> already path-sensitive, which the division probe showed in both directions
-> (`if (x == 0) return` silences, the inverted guard does not). An `assert(p)` lowers to a
-> conditional abort, so the surviving path carries `p != 0` for free.
->
-> Expect the reported volume to rise sharply — every unchecked dereference of a parameter
-> becomes a finding. That is the intended consequence, not a regression: 023 §9's witness
-> makes each one replayable, and a codebase that genuinely cannot receive null says so with a
-> check. The thing to watch is the *ordering* rule below, which shares the machinery.
->
-> This is the next wave.
->
-> ### 🔴 And a checker nobody has written: a guard *below* a dereference
->
-> `int v = *p; if (p) { … }` is silent today, and it is one of the most reliable bug
-> signatures there is: the later check is the author stating they believed `p` could be null,
-> which condemns the dereference above it. It is a *different question* from "can this be
-> null" — chiero's machinery answers the latter and nothing asks the former, even though the
-> path condition already carries `p == 0` as feasible on one branch.
->
-> This needs no new engine capability, only a checker that notices the order. 023 §6's
-> framework is where it goes. Note the sharp edge before starting: the *inverse* pattern
-> (`if (p) { … } ... *p;`) is ordinary defensive code and must not fire.
+> Wave 185 recorded this as an unwritten checker. It is not needed: with the pointer nullable
+> from the start, `int v = *p; if (p) …` reports because the null state simply reaches the
+> dereference before the guard can prune it. `a_check_after_the_dereference_does_not_save_it`
+> pins it. What remains is *presentation* — the finding says "null dereference", not "you
+> checked this below, so you knew it could be null", and the second is far more convincing to
+> the person who has to fix it. 023 §6's message is where that would go.
 >
 > ### 🔴 Then: the arithmetic oracle's remaining softness
 >
@@ -1084,6 +1066,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **When a default changes, fix the tests by naming their subject — never by relaxing an
+> assertion** (wave 186). Six tests broke on the nullable-pointer default. Every one counted
+> states or asserted "no findings" while being about aliasing, materialization depth,
+> provenance, format strings or string models, and every one was fixed by turning the *new*
+> policy off with a note saying why. Loosening `states().len() == 1` to `>= 1` would have
+> silently retired the property each test existed to hold.
+>
+> **A finding that breaks a test can be the correct answer** (wave 186). `printf("%s", p)`
+> started reporting a null dereference, and it is right — passing null there is undefined and
+> glibc's `(null)` is an extension. The test was failing for a real reason on the wrong
+> subject. Ask whether the new finding is *true* before deciding the change is at fault.
 >
 > **"By construction" in a generator is a decision about what later channels can see**
 > (wave 185, third instance). Wave 177: `Gen::arrays` kept every index in range, so ASan

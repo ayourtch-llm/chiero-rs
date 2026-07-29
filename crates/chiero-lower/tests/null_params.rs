@@ -108,3 +108,36 @@ fn a_pointer_that_is_never_dereferenced_is_not_reported() {
         "holding a null pointer is defined; only dereferencing it is not: {f:?}"
     );
 }
+
+/// **The null state is added, not substituted.**
+///
+/// Written because mutation said so: replacing the valid initial state with the null one
+/// instead of forking passed every test above. Each of them asks only what is *reported*,
+/// and a run that explores nothing but null paths reports the same things — while silently
+/// analysing none of the program that follows a successful check.
+#[test]
+fn the_valid_path_survives_beside_the_null_one() {
+    let m = harness::lower("int probe(int *p){ if (!p) return 7; return *p; }");
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    assert_eq!(
+        r.states().len(),
+        2,
+        "one pointer parameter gives one null state beside the valid one"
+    );
+    // The valid path must reach the dereference and come back with a value; the null path
+    // returns 7. Both being present is what says the fork added rather than replaced.
+    let returns: Vec<Option<u128>> = r
+        .states()
+        .iter()
+        .map(|s| s.return_value_bits(&mut arena))
+        .collect();
+    assert!(
+        returns.contains(&Some(7)),
+        "the null path takes the guard and returns 7: {returns:?}"
+    );
+    assert!(
+        returns.iter().any(|v| *v != Some(7)),
+        "and the valid path dereferences and returns the loaded value: {returns:?}"
+    );
+}
