@@ -1455,13 +1455,18 @@ impl Cx<'_> {
                 let text = self.text(sym)?.to_owned();
                 parse_int_literal(&text, &self.target)
             }
-            // A character constant has type `int` in C, not `char`.
+            // A character constant has type `int` in C, not `char` — unless it carries a
+            // prefix, which `strlit::char_element` is what knows. Its value comes from the
+            // decoder string literals use, because the two share every escape rule and one
+            // of them (a UCN becoming multiple UTF-8 bytes in a plain constant) is only
+            // visible to a decoder that yields units.
             ExprKind::Char { spelling } => {
                 let text = self.text(spelling)?.to_owned();
+                let (signed, bits) = strlit::char_element(&text);
                 Some(IntVal {
-                    v: parse_char_literal(&text)?,
-                    bits: int_bits,
-                    signed: true,
+                    v: strlit::char_value(&text)?,
+                    bits,
+                    signed,
                 })
             }
             ExprKind::Ident(sym) => self.enumerators.get(&sym).copied().map(|v| IntVal {
@@ -1821,30 +1826,6 @@ fn fits(v: i128, bits: u32, signed: bool) -> bool {
     }
 }
 
-fn parse_char_literal(text: &str) -> Option<i128> {
-    let inner = text.split_once('\'')?.1;
-    let inner = inner.rsplit_once('\'')?.0;
-    let mut it = inner.chars();
-    let c = it.next()?;
-    if c != '\\' {
-        return Some(c as i128);
-    }
-    Some(match it.next()? {
-        'n' => 10,
-        't' => 9,
-        'r' => 13,
-        '0' => 0,
-        '\\' => 92,
-        '\'' => 39,
-        '"' => 34,
-        'a' => 7,
-        'b' => 8,
-        'f' => 12,
-        'v' => 11,
-        other => other as i128,
-    })
-}
-
 // ---------------------------------------------------------------------------------
 // 014 §5 — expression typing, with every conversion made explicit
 // ---------------------------------------------------------------------------------
@@ -1911,11 +1892,14 @@ impl Cx<'_> {
                     operands: Vec::new(),
                 })
             }
-            ExprKind::Char { .. } => {
-                let ty = self.intern(Ty::Int {
-                    signed: true,
-                    bits: int_bits,
-                });
+            ExprKind::Char { spelling } => {
+                // The prefix decides the type: `u'a'` is `char16_t`, whose size of 2 is the
+                // only one `sizeof` can tell from `int`'s. Every constant used to be `int`.
+                let (signed, bits) = self
+                    .text(*spelling)
+                    .map(strlit::char_element)
+                    .unwrap_or((true, int_bits));
+                let ty = self.intern(Ty::Int { signed, bits });
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty,

@@ -207,6 +207,90 @@ pub fn string_elements(spelling: &str, bits: u32) -> Vec<u64> {
     out
 }
 
+// ---------------------------------------------------------------------------------------
+// Character constants: the same units, a different assembly rule
+// ---------------------------------------------------------------------------------------
+
+/// The `(signed, bits)` of a **character constant**, from its prefix.
+///
+/// The one place a character constant and a string literal disagree about the prefix: a
+/// *plain* constant has type `int` (C11 6.4.4.4p10), not `char`, so it is 32 bits where a
+/// plain string literal's element is 8. Every prefixed form matches the string rule --
+/// `u'a'` is `char16_t`, and its size of 2 is the only one a `sizeof` test can tell from
+/// `int`'s.
+pub fn char_element(spelling: &str) -> (bool, u32) {
+    if spelling.starts_with("u8") {
+        // C23's `u8'a'` is `unsigned char`; C11 has no such constant and gcc rejects it
+        // under `-std=c11`, so nothing well-formed for the one standard 013 targets
+        // reaches here.
+        (false, 8)
+    } else if spelling.starts_with('L') || spelling.starts_with('U') || spelling.starts_with('u') {
+        string_element(spelling)
+    } else {
+        (true, 32)
+    }
+}
+
+/// The content of a character constant's spelling: everything between the quotes.
+fn unquote_char(spelling: &str) -> &str {
+    match (spelling.find('\''), spelling.rfind('\'')) {
+        (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
+        _ => spelling,
+    }
+}
+
+/// The **value** of a character constant.
+///
+/// Shares [`string_units`] with string literals, which is the whole point: `'é'` is
+/// 50089 only because the UCN becomes the two UTF-8 bytes `C3 A9` *and* two bytes make a
+/// multi-character constant. Those two rules are in different paragraphs of the standard
+/// and interact only through the byte sequence, so a decoder that produced a value directly
+/// could not see it.
+///
+/// Assembly differs from a string literal's in two ways:
+///
+/// - a **prefixed** constant is one element and takes the first unit. C11 6.4.4.4p2 makes
+///   a multi-character prefixed constant ill-formed, and gcc rejects it, so nothing
+///   well-formed depends on what the rest would have done.
+/// - a **plain** constant is a sequence of *bytes*, and C11 6.4.4.4p10 leaves more than one
+///   implementation-defined. gcc accumulates them big-endian into an `int`, and gcc is the
+///   oracle the corpus is compared against. A *single* byte is converted as a `char`, which
+///   on this target is signed -- so `'\xFF'` is -1 and not 255. That sign is the only place
+///   the `Raw`/`Char` distinction changes a sign rather than a count.
+pub fn char_value(spelling: &str) -> Option<i128> {
+    let units = string_units(unquote_char(spelling));
+    let (signed, bits) = char_element(spelling);
+    if !spelling.starts_with('\'') {
+        // Prefixed: one element, at the element type's width and signedness.
+        let v = i128::from(match units.first()? {
+            StrUnit::Raw(v) | StrUnit::Char(v) => *v,
+        });
+        let masked = v & ((1i128 << bits) - 1);
+        return Some(if signed && masked >> (bits - 1) != 0 {
+            masked - (1i128 << bits)
+        } else {
+            masked
+        });
+    }
+    // Plain: bytes, exactly as the same characters would be stored in a plain string.
+    let bytes: Vec<u64> = string_elements(&format!("\"{}\"", unquote_char(spelling)), 8);
+    match bytes.len() {
+        0 => None,
+        // One byte, converted as `char` -- signed on x86-64, the one target 014 models.
+        1 => Some(i128::from(bytes[0] as u8 as i8)),
+        // Multi-character: big-endian into an `int`, keeping only the low four bytes and
+        // reading the result as signed, which is what makes a four-byte constant able to
+        // come out negative.
+        _ => {
+            let mut v: u32 = 0;
+            for b in bytes {
+                v = (v << 8) | (b as u32 & 0xff);
+            }
+            Some(i128::from(v as i32))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +351,37 @@ mod tests {
     fn a_malformed_escape_keeps_its_characters() {
         assert_eq!(string_elements("\"\\uAB\"", 8).len(), 3);
         assert_eq!(string_elements("\"\\x\"", 8), vec![u64::from(b'x')]);
+    }
+
+    /// The interaction that says why a character constant shares the string decoder rather
+    /// than copying its arms: a UCN in a *plain* constant becomes UTF-8 bytes, and more than
+    /// one byte is a multi-character constant. Two rules, from two paragraphs, meeting only
+    /// in the byte sequence.
+    #[test]
+    fn a_ucn_in_a_plain_character_constant_is_a_multi_character_constant() {
+        assert_eq!(char_value("'\\u00E9'"), Some(50089)); // C3 A9
+        assert_eq!(char_value("'ab'"), Some(24930));
+        assert_eq!(char_value("'\\0101'"), Some(2097)); // \010 then '1'
+    }
+
+    /// A single byte is converted as `char`, which is signed here -- the one place the
+    /// `Raw`/`Char` distinction decides a *sign*.
+    #[test]
+    fn a_single_byte_character_constant_sign_extends() {
+        assert_eq!(char_value("'\\xFF'"), Some(-1));
+        assert_eq!(char_value("'a'"), Some(97));
+        // The same byte in a wide constant is not a `char` and does not sign-extend.
+        assert_eq!(char_value("u'\\xFF'"), Some(255));
+    }
+
+    /// The prefix decides the type, and `u` is the only one whose size differs from `int`'s.
+    #[test]
+    fn the_prefix_decides_a_character_constants_type() {
+        assert_eq!(char_element("'a'"), (true, 32));
+        assert_eq!(char_element("u'a'"), (false, 16));
+        assert_eq!(char_element("U'a'"), (false, 32));
+        assert_eq!(char_element("L'a'"), (true, 32));
+        assert_eq!(char_value("u'\\uFFFF'"), Some(65535));
+        assert_eq!(char_value("U'\\U0001F600'"), Some(128512));
     }
 }
