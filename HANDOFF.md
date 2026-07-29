@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 200) — 1283 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 201) — 1283 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,38 +688,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: a byte written *before* promotion is lost after it
+> ### 🔴 Do this first: `arr.data` at read time lacks its seeding stores
 >
-> Wave 200 instrumented rather than reasoned, and the single `eprintln!` in `promoted_fault`
-> named the caller in one run — `chiero-mem:1692`, which is `pub fn write`, the one candidate
-> waves 198 and 199 never identified. Two causes were then fixed:
->
-> 1. **`write_term`'s ground-constant fast path bypassed the promoted branch.** It delegates to
->    the arena-free `write` at chiero-mem:2095, which refuses a promoted object, and `ca[1] = 3`
->    is a constant — so the delegation happened *before* the array branch wave 198 added twelve
->    lines below. The promoted check now precedes the fast path.
-> 2. **`arr.init` is indexed per *bit*, `arr.data` per byte.** `init_bit_via` selects `init` at a
->    bit index; a byte-indexed store writes one bit of the wrong byte. The symptom was a
->    `maybe-uninitialized-read` on a byte just stored — from outside, indistinguishable from the
->    write not happening.
->
-> **The third cause is open and is the front.** A concrete byte written before promotion is not
-> visible after it:
+> The open case is unchanged in behaviour and much narrower in cause. Wave 201 instrumented
+> instead of reasoning and **eliminated three explanations**:
 >
 > ```text
 >   ca[0] = 5;  ca[(i & 31) + 32] = 7;  return ca[0];   ->  solves to 0, not 5
+>
+>   SEED obj=ObjectId(3) size=64 byte0=5 sym0=false init0=Yes   <- seeding is correct
+>   READ obj=ObjectId(3) off=0 size=1 arr=true repr=Array       <- the read uses the array
 > ```
 >
-> The symbolic write is masked into the upper half, so it cannot reach byte 0.
-> `promote_to_array` **demonstrably seeds both arrays** from the frozen `Bytes` view
-> (`for b in 0..size { data = store(data, i, v) }`), so the 5 ought to survive. Instrument the
-> seeding — read what `arr.data` holds at index 0 immediately after promotion — rather than
-> reasoning about it; that is what worked this wave and what two waves of argument did not. A
-> comment in `symbolic_offset_store.rs` carries the reproduction where the deleted test was.
+> - **Promotion seeds correctly.** `byte0=5`, `init0=Yes`, observed at the seeding loop.
+> - **The read goes to the array**, on the right object, with `repr == Array`.
+> - **`eval` does walk store chains for `Select`** (chiero-solver:1290ff) — it follows
+>   `Store`/`ArrayConst` and compares index models, so a seeded store at index 0 would be found.
 >
-> **Do not attempt this as a fourth incremental fix without first asking whether the promoted
-> representation needs a design pass.** Three distinct causes in one interaction, across four
-> waves, is the signal that note was written for.
+> Those three together leave exactly one claim: **the `arr.data` the read sees does not contain
+> the seeding stores** — its chain bottoms out at a fresh `array_const(_, 8, 0)`. So something
+> between promotion and the read replaces `arr.data` with a store over a *fresh* array rather
+> than over the seeded one.
+>
+> **Check it directly**: print the `Term` id of `arr.data` immediately after
+> `promote_to_array` returns, and again at the read. If they differ, find the writer in
+> between; the candidates are the four `e.arr = Some(arr)` write-backs, one of which may be
+> writing back an `arr` captured *before* promotion. That is one `eprintln!`, and it is the
+> fourth explanation rather than a fourth guess.
+>
+> **The design-pass question is now answered: not yet.** It was asked because three causes in
+> one interaction suggested a structural problem. Two were ordinary bugs (a bypassing fast path,
+> a wrong index space), and the third has narrowed to a single term-identity question. That is
+> a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
+> turn out to match.
 >
 > **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
 > does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store

@@ -3081,8 +3081,28 @@ impl Memory {
             // the `init` array, so nothing downstream can tell. That is a gap on the read
             // side, not a reason to leave the write wrong — but it means this pair is
             // correctness by construction and not by test. §9 carries it.
+            // **Bit-indexed, like every other writer of `arr.init`.** Wave 200 fixed exactly
+            // this in `write_term` and left it here — the sibling function, same array, same
+            // mistake. `init_bit_via` selects at a *bit* index, so a byte-indexed store sets
+            // one bit of the wrong byte and leaves the other eight unset.
+            //
+            // Eight `store`s at `idx * 8 + k`, which for a symbolic `idx` is a symbolic bit
+            // index — the multiply is in the term, not in Rust.
+            //
+            // **Unobserved by the suite, and that is a symptom rather than an excuse.**
+            // Mutation says so plainly: deleting these lines, indexing by byte again, or
+            // writing only the first bit all pass every test. The reason is §9's separate
+            // finding — the promoted *read* does not consult `arr.init` — so no init write on
+            // a promoted object can be seen from outside yet. Fixing the read is what makes
+            // this testable, and until then this is correctness by argument.
             let one = a.bv(1, 1);
-            arr.init = a.store(arr.init, idx, one);
+            let eight = a.bv(arr.idx_bits, 8);
+            let base_bit = a.mul(idx, eight);
+            for k in 0..8u128 {
+                let off_k = a.bv(arr.idx_bits, k);
+                let bi = a.add(base_bit, off_k);
+                arr.init = a.store(arr.init, bi, one);
+            }
             return AccessResult {
                 value: Some(()),
                 faults: Vec::new(),
