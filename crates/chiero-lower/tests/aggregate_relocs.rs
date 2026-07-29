@@ -117,3 +117,37 @@ fn a_null_in_an_aggregate_initializer_stays_null() {
         "the program wrote a null and must get one"
     );
 }
+
+/// **A relocation carries an addend**, so a slot may point *into* its target.
+///
+/// Mutation found no fixture needed one: every pointer above names the start of an object,
+/// so dropping the addend and pointing at offset 0 passed the whole file. `&ga[2]` inside a
+/// table is the ordinary case in real code — a pointer to a header field, an entry pointing
+/// mid-buffer — and it is the same distinction wave 190 drew for a whole-global initializer,
+/// in the shape `Addr` could not express.
+#[test]
+fn a_relocation_into_the_middle_of_its_target_keeps_the_offset() {
+    let decl = "int ga[4] = {10, 20, 30, 40};\n";
+    assert_eq!(
+        run(&format!(
+            "{decl}int *arr[2] = {{ &ga[1], &ga[3] }};\nint probe(void){{ return *arr[0]; }}"
+        )),
+        (Some(20), 0),
+        "the first entry points four bytes into `ga`"
+    );
+    assert_eq!(
+        run(&format!(
+            "{decl}int *arr[2] = {{ &ga[1], &ga[3] }};\nint probe(void){{ return *arr[1]; }}"
+        )),
+        (Some(40), 0),
+        "and the second twelve bytes in — a different addend in the same table"
+    );
+    assert_eq!(
+        run(&format!(
+            "{decl}struct S {{ int *p; int n; }}; struct S s = {{ ga + 2, 5 }};\n\
+             int probe(void){{ return *s.p + s.n; }}"
+        )),
+        (Some(35), 0),
+        "and pointer arithmetic in a struct field: 30 + 5"
+    );
+}

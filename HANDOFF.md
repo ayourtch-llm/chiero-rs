@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 190) — 1250 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 191) — 1254 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -688,39 +688,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > hypothesis before assuming a solver defect**, and if it is right, note that every test
 > asserting `Sat`/`Unsat` under load has the same exposure.
 >
-> ### 🔴 Do this first: an address *inside* an aggregate
+> ### 🔴 The `GlobalInit` class is closed. Do this first: re-run the null-pointer measurement
 >
-> Wave 190 closed the one-address forms. What remains is the shape `GlobalInit` cannot
-> express at all:
+> Waves 189–191 fixed every form of the "address silently became `Zero`" defect: a function
+> address, a cast, pointer arithmetic, a string literal, and an address *inside* an
+> aggregate. `GlobalInit::Relocated { bytes, relocs }` holds the last, as bytes plus a
+> relocation table.
 >
-> ```text
->   struct S { int *p; int n; };  struct S s = { &g, 3 };   -> ZERO
->   int *arr[2] = { &g, &h };                               -> ZERO
-> ```
+> **What nobody has re-measured is the effect on the null-dereference channel.** Wave 187
+> counted 3 of 3 pointer-taking functions in `tests/corpus/c` reporting a null dereference,
+> and wave 188 took that to 0 of 3 — both *before* these fixes. Since then a global function
+> pointer, a string pointer and a pointer inside a struct have all stopped reading as null,
+> and each of those was a place the engine previously believed it held a null. The number
+> may have moved in either direction, and the corpus is now the wrong sample anyway: it has
+> almost no global pointer tables.
 >
-> `Addr { g, off }` describes the **whole global** as one address, and `Bytes` cannot carry
-> provenance — 020 §3 says so and wave 189's comment repeats it. An aggregate mixing scalars
-> with addresses needs both in one initializer: bytes plus a list of (offset, target,
-> addend), which is exactly a relocation table and is the representation a linker uses for
-> the same reason.
->
-> **This is the shape VPP is built out of** — a table of node function pointers, a struct of
-> callbacks — so it is worth the design change rather than another special case. Note before
-> starting: the engine's `global_object` writes an initializer into memory in one pass, and
-> a relocation list means writing bytes *then* patching addresses, so `address_term`'s
-> provenance recording has to happen per relocation rather than once.
->
-> Mutation on wave 190: five die, including `str-arm-ignores-target-type` — the guard that
-> keeps `char s[4] = "hi"` copying bytes while `char *s = "hi"` takes an address. One
-> survives and is **equivalent**: `reversed-operands-accepted-for-sub` lets the operands
-> commute for `-` as well as `+`, and `2 - ga` is not valid C (gcc: "invalid operands to
-> binary -"), so no fixture can reach the guard. It states the asymmetry rather than
-> catching anything.
->
-> ~~🔴 what else did `GlobalInit` silently zero?~~ **Wave 190 surveyed it and fixed three
-> of five.** `(int *)&g`, `ga + 2` and `char *s = "hi"` are all one address and now lower to
-> one. The last is the one that mattered: a file-scope string pointer is in every C program,
-> and every one had `s == 0` answering *true*.
+> Worth doing as a *widened* measurement rather than a repeat: add a corpus file shaped like
+> VPP's registration idiom — a `static` node function, a table of pointers to it, a string
+> table beside it — and check both what is reported and what is *reachable*. A table whose
+> entries now resolve means the engine can follow an indirect call it previously could not,
+> which is coverage this project has never had.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
