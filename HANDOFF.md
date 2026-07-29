@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 179) — 1230 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 180) — 1230 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,52 +673,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Do this first: `stack-buffer-overflow` is 1 of 41, and class balance is now the risk
+> ### 🔴 Do this first: the oracle grades one run, and chiero explores every path
 >
-> All six of ASan's classes are in the corpus and all are caught:
+> Six classes, all balanced, all caught, nothing invented:
 >
 > ```text
->   memory-UB oracle: 50 compared, 41 flagged by ASan, 41 caught, 0 invented
->       4 / 4    attempting double-free
->       7 / 7    global-buffer-overflow
->       9 / 9    heap-buffer-overflow
->      10 / 10   heap-use-after-free
->       1 / 1    stack-buffer-overflow
->      10 / 10   stack-use-after-scope
+>   memory-UB oracle: 58 compared, 36 flagged by ASan, 36 caught, 0 invented
+>       6 / 6    attempting double-free
+>       4 / 4    global-buffer-overflow
+>       6 / 6    heap-buffer-overflow
+>       9 / 9    heap-use-after-free
+>       4 / 4    stack-buffer-overflow
+>       7 / 7    stack-use-after-scope
 > ```
 >
-> One row is a single program. Local arrays are rarer in the grammar than global ones, so
-> the *stack* overflow — the case with a different `chiero-mem` object kind behind it — is
-> graded by one sample while the global one has seven.
+> What remains is structural rather than a missing row. **ASan executes one path and halts
+> at the first fault; chiero explores every path and reports every fault.** Three consequences,
+> none yet handled:
 >
-> **Class balance is now the standing hazard, and it is not obvious.** ASan halts at the
-> first fault, so a shape that fires early is the only fault its program ever reports.
-> Wave 179 added the scope shape at one in four and it took 26 of 39 programs, driving
-> `stack-buffer-overflow` to *zero* — while the total still read `39 / 39` and the test
-> still passed. Adding any new shape means re-reading the whole table, not the total, and
-> every class the corpus can emit is now in the asserted list so a disappearance fails.
+> 1. **A program with two faults is graded on one.** ASan names whichever comes first, and
+>    the oracle asks only whether chiero found *that* class. A chiero that missed the second
+>    fault entirely would score full marks.
+> 2. **`invented` is only sound because the corpus is closed.** These programs take one
+>    path, so "chiero found a fault ASan did not" is currently a real question. The moment
+>    the memory grammar meets a branch on an input, a finding on the other path is correct
+>    and the column would start accusing the engine.
+> 3. **Neither side's *location* is checked.** ASan prints the faulting line; chiero's
+>    finding carries a span. Matching them would catch a chiero that finds the right class
+>    at the wrong site — which is exactly what a witness (023 §9) is supposed to prevent.
 >
-> The fix for this row is to make local arrays more common under `memory_ub`, not to tune
-> the scope rate further — that trades one starved row for another.
+> (3) is the cheapest and worth the most: it is the difference between "chiero said
+> use-after-free somewhere" and "chiero said use-after-free *there*".
 >
-> **Wave 178's open question is half-answered.** That wave recorded the class *pairing* as a
-> margin rather than a proven mechanism, because `class-pairs-ignored` survived. Wave 179's
-> `scope-class-unpaired` — expecting `out-of-bounds` for `stack-use-after-scope` — **dies**,
-> so the pairing is observable for at least the class whose chiero wording differs most from
-> its neighbours'. It is still a margin for the three overflow classes, which all map to the
-> same `out-of-bounds` finding and so cannot distinguish a mispairing among themselves.
+> ~~🔴 `stack-buffer-overflow` is 1 of 41.~~ **Wave 180: 4 of 36**, and every class now has a
+> floor of 3 rather than `> 0`, since `> 0` is what let the row shrink unnoticed.
 >
-> Two mutants survive on the scope grammar and neither is a missing test.
-> `escape-not-consumed` removes the `escaped.remove(k)` after a dead-object read; ASan halts
-> at the first fault, so the second read of the same object never executes and nothing can
-> observe it — the line is corpus hygiene, not behaviour. `read-inside-the-block` is a **bad
-> mutant**: it appends a self-assignment inside the braces rather than moving the read
-> there, so its name describes something it does not do.
->
-> ~~🔴 `stack-use-after-scope`, the one class still missing.~~ **Wave 179.** Section 9
-> predicted the oracle's compile line would need extending first; **it did not** — gcc 13
-> reports the class under a plain `-fsanitize=address`. The check was still the right order
-> to work in, and the prediction being wrong is recorded so nobody repeats it.
+> Mutation on wave 180: the local-array guarantee, its *restraint* (`local-array-always`
+> dies — making the shape common starves the other classes, wave 179's lesson reproduced on
+> purpose) and `redzone=64` are all load-bearing. `class-floor-back-to-one` **survives**,
+> and that is expected rather than a gap: every row now sits at 4 or more, so relaxing the
+> floor changes no verdict today. A ratchet cannot be killed by mutating the ratchet while
+> the thing it guards is within bounds — the RED is what proved it observable, by failing at
+> `seen = 1`. Reading its survival as "the floor is untested" would be the wrong lesson.
 >
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
@@ -1046,6 +1042,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A disagreement column grades both participants, not one** (wave 180). `invented` was
+> added in wave 177 to catch chiero inventing faults. Its first hit was chiero being *more
+> precise than the oracle*: seed 1's `a[6]` on a `malloc(24)` block reads `b[0]` of the next
+> allocation, 48 bytes away, and ASan cannot distinguish that from a valid access to `b`.
+> Widening the redzone made ASan report it too, and the flagged count rose. A channel that
+> assumes the oracle is right would have recorded a correct finding as a defect.
+>
+> **Measure the tool's limits, not just its output** (wave 180). ASan's detection is a
+> poisoned band of *bounded width* after each allocation; overflow far enough and it is
+> silent. That is a property of the instrument, invisible in its output, and the generator
+> was reaching past it — indexing three elements beyond an eight-byte-element array is 32
+> bytes, past the default band. `redzone=64` is a correctness setting for this corpus, not
+> a preference.
+>
+> **`> 0` is not a floor** (wave 180). Third time this session: wave 177 on the oracle's
+> total, wave 177 again on the value differential's compared count, and now per class. A
+> count that can drift needs a number that fails when it drifts; `> 0` only fails when the
+> thing disappears entirely, by which point it has been useless for a while.
 >
 > **An oracle that stops at the first fault makes its classes compete** (wave 179). ASan
 > halts on the first report, so a generated shape that fires early is the only fault its
