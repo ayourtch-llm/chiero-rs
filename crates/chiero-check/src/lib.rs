@@ -374,6 +374,11 @@ fn ub_phrase(kind: UbKind) -> &'static str {
         UbKind::DivByZero => "division by zero",
         UbKind::Shift => "shift past the operand width",
         UbKind::SignedOverflow => "signed overflow",
+        // **The compiler asked for this.** Wave 169 removed the catch-all from the engine's
+        // `cmp` on the argument that a new variant should be a compile error rather than a
+        // silent fallthrough; the same holds here, and adding `FloatCastOverflow` in the
+        // engine failed this match rather than producing a finding with no name.
+        UbKind::FloatCastOverflow => "float-to-integer conversion out of range",
     }
 }
 

@@ -456,4 +456,72 @@ fn a_float_to_integer_conversion_out_of_range_is_undefined() {
     assert_eq!(case(-2.7, CTy::Int(32)), 0, "-2.7 truncates to -2");
     assert_eq!(case(2_147_483_647.0, CTy::Int(32)), 0, "INT_MAX exactly");
     assert_eq!(case(-2_147_483_648.0, CTy::Int(32)), 0, "INT_MIN exactly");
+
+    // **The first value past each end**, which is where an inclusive/exclusive slip lives.
+    // `2^31` is one above `INT_MAX` and is *exactly* representable as a double, so it is
+    // the value a `>` instead of a `>=` lets through.
+    assert_eq!(case(2_147_483_648.0, CTy::Int(32)), 1, "one past INT_MAX");
+    assert_eq!(case(-2_147_483_649.0, CTy::Int(32)), 1, "one past INT_MIN");
+
+    // **The rule is about the *integral part***, so a fraction beyond the bound is still in
+    // range: `(int)-2147483648.5` truncates *toward zero* to `INT_MIN`, which fits. Testing
+    // the raw value instead of the truncated one reports this as undefined, and C says it
+    // is not.
+    assert_eq!(
+        case(-2_147_483_648.5, CTy::Int(32)),
+        0,
+        "truncates to INT_MIN"
+    );
+    assert_eq!(
+        case(2_147_483_647.9, CTy::Int(32)),
+        0,
+        "truncates to INT_MAX"
+    );
+}
+
+/// **The unsigned conversion has its own range, and its own way of being wrong.**
+///
+/// `FpToUi` shares `fcast` with `FpToSi` and nothing else: the bound is `2^bits` rather than
+/// `2^(bits-1)`, and the lower end is **zero** rather than a negative. A check written only
+/// against the signed rule accepts `(unsigned)(-1.0)`, which C11 6.3.1.4 leaves undefined —
+/// and which Rust's saturating `as` turns into a confident `0`.
+///
+/// `-0.5` is the discriminator for the truncation rule on this side: its integral part is
+/// `0`, which is perfectly representable, so it is *defined* despite being negative.
+#[test]
+fn an_unsigned_float_conversion_has_its_own_range() {
+    let case = |v: f64, to: CTy| {
+        let (r, _) = run(
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Cast {
+                        kind: CastKind::FpToUi,
+                        to: to.clone(),
+                        from: CTy::Float(FloatKind::F64),
+                        a: Operand::Const(Const::Float(FloatKind::F64, v.to_bits())),
+                    },
+                },
+                10,
+            )],
+            Operand::Value(ValueId(0)),
+            to,
+        );
+        r.states()[0].ub_events().len()
+    };
+
+    // Negative is out of range for every unsigned type, however small.
+    assert_eq!(case(-1.0, CTy::Int(32)), 1, "-1.0 into unsigned");
+    assert_eq!(case(-4_294_905_087.0, CTy::Int(16)), 1, "very negative");
+    // Past the top: `2^32` is one above `UINT_MAX`.
+    assert_eq!(case(4_294_967_296.0, CTy::Int(32)), 1, "one past UINT_MAX");
+    assert_eq!(case(f64::NAN, CTy::Int(32)), 1, "NaN into unsigned");
+
+    // In range, including the value a signed bound would wrongly reject: `2^31` fits an
+    // unsigned 32-bit type and does not fit a signed one.
+    assert_eq!(case(0.0, CTy::Int(32)), 0, "zero");
+    assert_eq!(case(2_147_483_648.0, CTy::Int(32)), 0, "2^31 fits unsigned");
+    assert_eq!(case(4_294_967_295.0, CTy::Int(32)), 0, "UINT_MAX exactly");
+    // **Truncation toward zero happens first**: -0.5 has integral part 0.
+    assert_eq!(case(-0.5, CTy::Int(32)), 0, "-0.5 truncates to 0");
 }

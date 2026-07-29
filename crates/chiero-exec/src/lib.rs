@@ -162,6 +162,13 @@ pub enum UbKind {
     Shift,
     /// `UDiv`/`SDiv`/`URem`/`SRem` by zero.
     DivByZero,
+    /// A float-to-integer conversion whose value the destination cannot represent, NaN
+    /// included (C11 6.3.1.4).
+    ///
+    /// The odd one out: every other kind here is a *binary operation* and reaches `note_ub`
+    /// from `RValue::Bin`. A conversion is a `Cast`, so this is detected where the
+    /// conversion is performed — which is also the only place that knows the value.
+    FloatCastOverflow,
 }
 
 /// 023 §6.1's deduplication key, minus the `checker` component the checker framework will
@@ -4422,16 +4429,36 @@ impl<'m> Engine<'m> {
                     | CastKind::FpToSi
                     | CastKind::FpToUi
                     | CastKind::FpTrunc
-                    | CastKind::FpExt => match fcast(a, *kind, xv, fw, tw) {
-                        Some(t) => Value::Scalar(t),
-                        None => {
-                            return self.lowering_gap(
-                                s,
-                                span,
-                                &format!("{kind:?} {fw} -> {tw} on a symbolic operand"),
-                            );
+                    | CastKind::FpExt => {
+                        let mut overflowed = false;
+                        match fcast(a, *kind, xv, fw, tw, &mut overflowed) {
+                            Some(t) => {
+                                // **C11 6.3.1.4's conversion, recorded where it happens.** A
+                                // `Cast` never reaches `note_ub` — that is driven from
+                                // `RValue::Bin` — and this is the only place that has both the
+                                // value and the destination width.
+                                if overflowed {
+                                    s.ub.push(UbEvent {
+                                        kind: UbKind::FloatCastOverflow,
+                                        span,
+                                        detail: format!(
+                                            "{kind:?} of a value the {tw}-bit destination \
+                                         cannot represent"
+                                        ),
+                                        requires: Vec::new(),
+                                    });
+                                }
+                                Value::Scalar(t)
+                            }
+                            None => {
+                                return self.lowering_gap(
+                                    s,
+                                    span,
+                                    &format!("{kind:?} {fw} -> {tw} on a symbolic operand"),
+                                );
+                            }
                         }
-                    },
+                    }
                     other => {
                         return self.lowering_gap(s, span, &format!("{other:?} {fw} -> {tw}"));
                     }
@@ -6842,7 +6869,37 @@ fn sort_of(ty: &CTy) -> chiero_solver::Sort {
 /// also saturates instead of being undefined at the edges, which is a better answer than
 /// the hardware's and is recorded here rather than silently relied upon — a program whose
 /// value depends on it is undefined in C, so nothing chiero reports about it is a claim.
-fn fcast(a: &mut TermArena, kind: CastKind, x: Term, fw: u32, tw: u32) -> Option<Term> {
+/// Whether converting `v` to a `bits`-wide integer is undefined (C11 6.3.1.4).
+///
+/// The rule is about the **integral part**, so the bound is the destination's range and the
+/// comparison is against the truncated value: `2147483647.5` converts to `INT_MAX` and is
+/// defined, while `2147483648.0` is not. NaN has no integral part at all and is undefined
+/// for every width.
+///
+/// Compared as `f64` rather than by casting the bound to an integer: `2^31` is exactly
+/// representable and the endpoints have to be *inclusive* on one side and *exclusive* on the
+/// other, which is the off-by-one this function exists to get right once.
+fn out_of_range(v: f64, bits: u32, signed: bool) -> bool {
+    if v.is_nan() {
+        return true;
+    }
+    let t = v.trunc();
+    if signed {
+        let hi = (bits - 1) as f64;
+        t >= hi.exp2() || t < -hi.exp2()
+    } else {
+        t >= (bits as f64).exp2() || t < 0.0
+    }
+}
+
+fn fcast(
+    a: &mut TermArena,
+    kind: CastKind,
+    x: Term,
+    fw: u32,
+    tw: u32,
+    overflowed: &mut bool,
+) -> Option<Term> {
     // **`eval_ground`, not `as_const`.** A term can be fully determined without being a
     // `Const` node: `sitofp` of a `sext` of a loaded byte is ground, and `as_const` sees
     // only the folded form — so `char c = 2; c < 2.5` produced no value at all. Wave 162
@@ -6871,13 +6928,17 @@ fn fcast(a: &mut TermArena, kind: CastKind, x: Term, fw: u32, tw: u32) -> Option
         }
         CastKind::FpToSi => {
             let v = as_f64(fw, c.bits())?;
-            // Truncate toward zero, then keep the low `tw` bits — a narrowing conversion
-            // that does not fit is undefined in C, so any bit pattern is a legal answer and
-            // this one at least does not panic.
+            // Truncate toward zero, then keep the low `tw` bits. A conversion that does not
+            // fit is undefined in C, so any bit pattern is a legal answer — but it is also
+            // an *event*, which `out_of_range` reports to the caller. Rust's saturating
+            // `as` is what makes silence dangerous here: it produces a defensible number
+            // nothing like the hardware's, so the run continues plausibly wrong.
+            *overflowed = out_of_range(v, tw, true);
             ((v as i128) as u128) & mask_bits(tw)
         }
         CastKind::FpToUi => {
             let v = as_f64(fw, c.bits())?;
+            *overflowed = out_of_range(v, tw, false);
             (v as u128) & mask_bits(tw)
         }
         CastKind::FpTrunc | CastKind::FpExt => {

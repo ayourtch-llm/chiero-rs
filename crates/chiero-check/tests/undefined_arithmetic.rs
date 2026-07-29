@@ -605,3 +605,64 @@ fn contradictory_requirements_get_a_witness_each() {
         );
     }
 }
+
+/// **A float-to-integer overflow reaches a finding, like the other three kinds.**
+///
+/// The engine records the event where the conversion happens (a `Cast` never passes through
+/// `note_ub`, which is driven from `RValue::Bin`). This is the other half: the checker names
+/// it, so a caller of `default_checkers` is told.
+///
+/// It is the case a reader asked about — whether undefined behaviour should be *warned*
+/// about rather than only discarded from the differential channel — and the one kind of the
+/// four for which the answer was no.
+#[test]
+fn a_float_cast_overflow_is_reported() {
+    let m = module(vec![block(
+        0,
+        vec![inst(
+            InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Cast {
+                    kind: CastKind::FpToSi,
+                    to: CTy::Int(16),
+                    from: CTy::Float(FloatKind::F64),
+                    a: Operand::Const(Const::Float(
+                        FloatKind::F64,
+                        (-4_294_905_087.0f64).to_bits(),
+                    )),
+                },
+            },
+            10,
+        )],
+        Terminator::Return(Some(k(0))),
+    )]);
+    let f = findings(&m);
+    assert_eq!(f.len(), 1, "one conversion, one finding: {f:?}");
+    assert!(
+        f[0].contains("float-to-integer conversion out of range"),
+        "the finding should name what went wrong: {f:?}"
+    );
+
+    // And an in-range conversion is ordinary C, reported by nobody.
+    let ok = module(vec![block(
+        0,
+        vec![inst(
+            InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Cast {
+                    kind: CastKind::FpToSi,
+                    to: CTy::Int(32),
+                    from: CTy::Float(FloatKind::F64),
+                    a: Operand::Const(Const::Float(FloatKind::F64, 2.7f64.to_bits())),
+                },
+            },
+            10,
+        )],
+        Terminator::Return(Some(k(0))),
+    )]);
+    assert!(
+        findings(&ok).is_empty(),
+        "2.7 fits in an int: {:?}",
+        findings(&ok)
+    );
+}
