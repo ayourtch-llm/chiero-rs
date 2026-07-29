@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 149) — 1134 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 150) — 1135 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -505,7 +505,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 146 gave the generator a shrinker;
 > 147 gave the refusal ledger teeth and declared floating point unimplemented;
 > 148 paid the first debt the ledger recorded; 149 audited the owed list
-> and found three entries stale**.*
+> and found three entries stale; 150 gave prefixed string literals their element width**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -679,6 +679,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A fix that lands in one of two copies is worse than no fix** (wave 150). `string_bytes`
+> and `raw_expr`'s `Str` arm both built a literal's bytes; teaching one about element widths
+> made `sizeof(L"AB")` 12 while the object behind it stayed 3 bytes — the size and the
+> storage now *disagreeing*, which is worse than both being wrong together. **Grep for the
+> second copy before changing the first**, and prefer routing one through the other to
+> leaving them parallel.
 > **Probe the owed list before picking from it** (wave 149). Three of its entries were
 > stale and one was wrong in both directions — it claimed designated initializers were
 > *refused* when they work for locals and were silently *zeroed* for globals. An owed list
@@ -861,8 +867,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > - **floats do not execute** — now *declared*: `refuse_floating` refuses any function
 >   mentioning a floating type (wave 147), and `KNOWN_GAPS` in `generated.rs` is what fails
 >   when that is implemented.
-> - **`L`/`u`/`U` string literals lose their element width in `unquote`** — verified still
->   true: `(const int *)L"ab"` produces no state.
+> - ~~`L`/`u`/`U` string literals lose their element width in `unquote`~~ — **fixed in wave
+>   150**, and `unquote` was never the culprit: it strips the prefix correctly and the
+>   *type* was what nothing asked for. Third owed entry in two waves whose wording pointed
+>   away from the defect.
+> - **Universal character names are not implemented.** `u"\uFFFF"` is read as the five
+>   literal characters `u F F F F`, so the array has 5 elements where C has 1 and the first
+>   reads 117 instead of 65535 — a *silent wrong answer*, found while mutation-testing wave
+>   150. `unescape` returns `Vec<u8>` and would need to return characters for this. Fixing
+>   it also buys the one mutation wave 150 could not kill: `char16_t`'s **signedness** is
+>   unpinned because no fixture can reach a value above 32767 without it.
 > - the wave-117 `fork_on_offset` survivor; a fault in a non-entry frame is untested;
 >   `Bits` path steps are not emitted; `tests/corpus/c/pointer_fields.c` is not written;
 >   010's 18, 011's 12 and 012's 17 are deliberately uncovered.
