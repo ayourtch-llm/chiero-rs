@@ -698,6 +698,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > exactly the classes that go through an interceptor. **A location check that cannot read a
 > location looks identical to one that passes.**
 >
+> The check is now proven observable, and it took two sweeps to get there:
+>
+> ```text
+>   KILLED     finding-span-is-dummy            <- the engine's span really is compared
+>   KILLED     oracle-parses-frame-zero-only    <- the `unparsed` guard catches the blind spot
+>   SURVIVED   oracle-ignores-the-line          <- expected: a held ratchet, see wave 180
+> ```
+>
+> The first sweep's span mutant was a **bad mutant** — it shadowed `report_faults`'s `span`
+> parameter, but a finding's span comes from `f.at()`, the fault's own location. Mutate
+> `f.at()`. And the frame-`#0` mutant surviving was a *real hole*, not a bad mutant: the
+> comparison skipped programs whose line could not be parsed, so `unparsed` is now tracked
+> and asserted empty.
+>
 > ### 🔴 Then: the census still matches substrings and counts per-run
 >
 > A program with two overflows where chiero finds one counts as agreement. Matching gcc's
