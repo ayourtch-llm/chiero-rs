@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 154) — 1165 tests, 3 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 155) — 1168 tests, 3 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -509,7 +509,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > 151 replaced the second string-literal decoder with one shared one;
 > 152 deleted the third; **153 built the symbolic differential oracle, and it found that
 > the solver could decide only one side of every branch; 154 gave it the other half of three
-> narrowings, plus `<=` and widened operands**.*
+> narrowings, plus `<=` and widened operands; 155 gave it a bounded candidate search and
+> replaced a linear scan with an index**.*
 >
 > ### 🧭 Decided this session — do these before more one-defect waves
 >
@@ -727,6 +728,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A capability that widens breaks the tests that depended on the limit — expect it, and
+> ask what the fixture was really asserting** (waves 153, 154, 155). Eight instances across
+> three waves now: a slicing test that needed the backend, a `pinned` flag that meant "the
+> model assigned it", a "full binary tree" built from conditions that entail each other, and
+> four fixtures whose subject is *an undecidable query* and which had all chosen a product to
+> get one. The repair is never to re-record the golden. It is to ask what property the
+> fixture existed to state and rebuild the input so it states it again — `x*y < 7` became
+> `x*y == 7`, which no diagonal reaches; `i*j` as an offset became `i%j`, which no diagonal
+> can push out of bounds. **When a fix makes a test fail, the first question is whether the
+> test's premise was ever true.**
+> **A default that is invisible with one attempt can be fatal with many** (wave 155). Model
+> completeness (022 §2) filled unnarrowed variables with zero. Harmless while there was a
+> single candidate; with sixty-four it meant sixty-four attempts all proposing the same zero
+> — and that was exactly the case the search was built for, since a `switch` default narrows
+> nothing at all. **When turning a single step into a loop, check every constant the single
+> step was allowed to have.**
+> **A new capability can make an old inefficiency reachable** (wave 155). `least` had always
+> been a linear scan over `lo..=hi`; wave 154's single-bit mask pinning made a *high* bit
+> reachable and turned it into twenty-two seconds. The scan was not new, was not wrong, and
+> had never mattered. **After adding a way to produce a value, ask what already consumes it.**
 > **A narrowing that is too strong is invisible until it refutes something** (wave 154).
 > Four mutants survived the first sweep and all four had one shape: an over-strong domain.
 > It cannot produce a wrong `Sat` — the model validator catches that and the answer degrades
