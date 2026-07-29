@@ -2110,7 +2110,13 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
             continue;
         }
         let compiled = std::process::Command::new("gcc")
-            .args(["-O0", "-g", "-fsanitize=address,undefined", "-o"])
+            .args([
+                "-O0",
+                "-g",
+                "-fsanitize=address,undefined",
+                "-fsanitize-recover=address",
+                "-o",
+            ])
             .arg(&x)
             .arg(&c)
             .output();
@@ -2142,7 +2148,7 @@ fn tally(seeds: std::ops::Range<u64>) -> Tally {
         // it, and left on it would score every allocating program as a miss for a fault
         // that is not this oracle's subject.
         let Ok(run) = std::process::Command::new(&x)
-            .env("ASAN_OPTIONS", "detect_leaks=0:redzone=64")
+            .env("ASAN_OPTIONS", "detect_leaks=0:redzone=64:halt_on_error=0")
             .output()
         else {
             continue;
