@@ -1958,6 +1958,41 @@ fn control_flow_programs_agree_with_gcc() {
         with_switch >= 20 && with_do >= 20,
         "the grammar must emit both forms often enough to grade: {with_switch} switch, {with_do} do-while"
     );
+    // **And the shapes *within* a `switch`**, because "emits a switch" is not the claim. A
+    // `switch` whose every arm breaks is a chain of `if`s with different syntax; the fallthrough
+    // is the only thing here that no other construct in this grammar can express. Mutation found
+    // the empty-case arm removable with nothing noticing, which is a channel quietly exploring
+    // less than it says it does.
+    let with_fallthrough = (0..200u64)
+        .filter(|s| {
+            program_control_flow(*s)
+                .1
+                .lines()
+                .any(|l| l.trim_end().ends_with("case 1:"))
+        })
+        .count();
+    assert!(
+        with_fallthrough >= 20,
+        "an empty case falling into the next one is the shape a `switch` is here for: \
+         {with_fallthrough}"
+    );
+    // A `default` that is **not last**, which C allows and a lowering that assumes otherwise
+    // would still pass every fixture that puts it at the end. Also mutation-motivated: swapping
+    // `default` for another `case` label changed nothing any test could see.
+    let with_early_default = (0..200u64)
+        .filter(|s| {
+            let body = program_control_flow(*s).1;
+            let Some(d) = body.find("  default:") else {
+                return false;
+            };
+            body[d..].contains("  case ")
+        })
+        .count();
+    assert!(
+        with_early_default >= 20,
+        "a `default` before the last case is ordinary C and easy to lower wrongly: \
+         {with_early_default}"
+    );
     assert!(
         compared >= 50,
         "too few comparisons to mean anything: {compared}"
