@@ -2184,8 +2184,17 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
         // The defect wave 237 found and wave 238 fixed: an unmodelled operation used to leave the
         // destination holding the stale value, so this answered with a *number* that was wrong
-        // rather than declaring a gap. `FDiv` is still unmodelled, so it still exercises that path.
+        // rather than declaring a gap.
         "long double x = 2.0L; x = x / 3.0L; return (int)x;",
+        // **The body that still takes the second branch, and as of wave 242 it is the only one.**
+        // All four operations are modelled now, so every other fixture here produces a value and
+        // this test had quietly become "agrees with gcc" — a disjunction whose second half nothing
+        // reached. What is left unmodelled is the *subnormal*: `1e-4940` is below x87's smallest
+        // normal, `fp` declines to shift denormals, and 023 §7 gets a declared limit rather than
+        // the zero that would be a confident claim about a number that is merely very small.
+        // gcc computes it, so the fixture is a real disagreement in outcome — and the contract
+        // this test exists for says a gap is an acceptable outcome where a wrong number is not.
+        "long double x = 1e-4900L; x = x * 1e-40L; return (int)(x < 1e-4900L);",
         // **Hexadecimal, and wave 239 is why.** This was `1e300L * 1e10L > 1e309L`, and the moment
         // multiplication started working it returned a wrong *number*: `1e309L` is a decimal
         // literal, decimal literals are still parsed at `f64` precision, and 1e309 overflows `f64`
