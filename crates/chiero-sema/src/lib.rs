@@ -1832,8 +1832,17 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
     let kind = if lower.ends_with('f') {
         FloatKind::F32
     } else if lower.ends_with('l') {
-        // x87 long double. Its *value* is parsed at f64 and the extra range is lost, which
-        // is a narrowing this records rather than hides; arithmetic on it is a gap anyway.
+        // x87 long double. **The value this function returns is still an `f64`, and for an
+        // `f80` literal that is not the value.** The comment here used to call that "a
+        // narrowing this records rather than hides", which was false in both halves: nothing
+        // recorded it, and the excuse attached — "arithmetic on it is a gap anyway" — stopped
+        // being true the day wave 239 shipped multiplication, at which point the rounding
+        // started producing wrong answers instead of imprecise ones.
+        //
+        // Callers that need the value take the digits instead, through
+        // `decimal_float_parts` or `hex_float_parts`, and convert in `chiero_cir::fp` where
+        // sixty-four significand bits and x87's exponent range both fit. What is left here is
+        // the *kind*, which is what this function is for.
         FloatKind::X87_80
     } else {
         FloatKind::F64
@@ -1872,6 +1881,47 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
 ///
 /// **Not an encoding**, for the reason wave 233 established: `chiero-sema` runs before CIR exists, so
 /// what the bits look like belongs beside `FloatKind` and what the literal *says* belongs here.
+/// A decimal floating literal's significant digits and its power of ten, with nothing rounded.
+///
+/// **The decimal counterpart of [`hex_float_parts`], and it exists for the same reason.** A hex
+/// literal's digits are already binary, so `hex_parts` can hand back a `u64` mantissa and a binary
+/// scale that reconstruct the value exactly. A decimal literal cannot: `0.1` has no finite binary
+/// expansion, and the rounding to sixty-four bits depends on digits a fixed-width mantissa has
+/// already thrown away. So this returns the *digits themselves* and lets `chiero_cir::fp::from_decimal`
+/// do the conversion, where the big-integer arithmetic it needs is allowed to live (001 §4 keeps
+/// `chiero-sema` below `chiero-cir`, so the conversion cannot come the other way).
+///
+/// `1.25e-3` comes back as `("125", -5)`: the fraction digits join the integer ones and each one
+/// costs a power of ten, which is the same accounting `hex_parts` does four bits at a time.
+///
+/// Returns `None` for a hex literal — those have their own function — and for anything whose
+/// mantissa is not digits and a dot.
+pub fn decimal_float_parts(text: &str) -> Option<(String, i32)> {
+    let t = text.replace('\'', ""); // C23 digit separators
+    let lower = t.to_ascii_lowercase();
+    if lower.starts_with("0x") {
+        return None;
+    }
+    let body = lower.trim_end_matches(['f', 'l']);
+    let (mant, exp) = match body.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().ok()?),
+        None => (body, 0),
+    };
+    let (int_part, frac_part) = mant.split_once('.').unwrap_or((mant, ""));
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    // Every fraction digit is one decimal place below the point, exactly as every hex fraction
+    // digit is four binary places below it.
+    let e = exp.checked_sub(i32::try_from(frac_part.len()).ok()?)?;
+    Some((format!("{int_part}{frac_part}"), e))
+}
+
 pub fn hex_float_parts(text: &str) -> Option<(u64, i32)> {
     let t = text.replace('\'', "");
     let lower = t.to_ascii_lowercase();

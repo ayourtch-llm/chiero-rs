@@ -321,3 +321,300 @@ pub fn mul(x: u128, y: u128) -> Option<u128> {
 pub fn is_inf(bits: u128) -> bool {
     (bits >> 64) & INF_EXP == INF_EXP && (bits & u128::from(u64::MAX)) == 1u128 << 63
 }
+
+/// A minimal unsigned big integer, base 2^32, little-endian — only what decimal conversion needs.
+///
+/// **Not a general facility, and deliberately so.** `from_decimal` needs exactly five things: build
+/// from digits, scale by a power of ten, shift, compare, subtract. Everything else a big-integer type
+/// usually grows is absent, because the alternative to writing this was rounding decimal literals
+/// through `f64` and there is no third option: a correctly-rounded decimal-to-binary conversion at
+/// sixty-four significand bits cannot be done in fixed-width arithmetic, since the exact value of
+/// `1e4000` is four thousand digits long and the rounding decision depends on all of them.
+#[derive(Clone, PartialEq, Eq)]
+struct Big(Vec<u32>);
+
+impl Big {
+    fn zero() -> Self {
+        Big(Vec::new())
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0.iter().all(|&w| w == 0)
+    }
+
+    fn trim(&mut self) {
+        while self.0.last() == Some(&0) {
+            self.0.pop();
+        }
+    }
+
+    /// The position one past the highest set bit, or zero.
+    fn bit_len(&self) -> usize {
+        for (i, &w) in self.0.iter().enumerate().rev() {
+            if w != 0 {
+                return i * 32 + (32 - w.leading_zeros() as usize);
+            }
+        }
+        0
+    }
+
+    fn bit(&self, i: usize) -> u32 {
+        self.0.get(i / 32).map_or(0, |w| (w >> (i % 32)) & 1)
+    }
+
+    /// `self = self * m + a`, the primitive that builds a value from digits and scales it by ten.
+    fn mul_add_small(&mut self, m: u32, a: u32) {
+        let mut carry = u64::from(a);
+        for w in &mut self.0 {
+            let v = u64::from(*w) * u64::from(m) + carry;
+            *w = v as u32;
+            carry = v >> 32;
+        }
+        while carry != 0 {
+            self.0.push(carry as u32);
+            carry >>= 32;
+        }
+    }
+
+    fn shl(&self, n: usize) -> Self {
+        let (words, bits) = (n / 32, n % 32);
+        let mut out = vec![0u32; words];
+        let mut carry = 0u32;
+        for &w in &self.0 {
+            out.push((w << bits) | carry);
+            // A shift of 32 is undefined in Rust as well as in C, and `bits` is zero often enough
+            // that this branch is the common case rather than the corner.
+            carry = if bits == 0 { 0 } else { w >> (32 - bits) };
+        }
+        if carry != 0 {
+            out.push(carry);
+        }
+        let mut b = Big(out);
+        b.trim();
+        b
+    }
+
+    fn shr(&self, n: usize) -> Self {
+        let (words, bits) = (n / 32, n % 32);
+        if words >= self.0.len() {
+            return Big::zero();
+        }
+        let mut out = Vec::with_capacity(self.0.len() - words);
+        for i in words..self.0.len() {
+            let lo = self.0[i] >> bits;
+            let hi = if bits == 0 {
+                0
+            } else {
+                self.0.get(i + 1).map_or(0, |&w| w << (32 - bits))
+            };
+            out.push(lo | hi);
+        }
+        let mut b = Big(out);
+        b.trim();
+        b
+    }
+
+    fn cmp(&self, o: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+        let n = self.0.len().max(o.0.len());
+        for i in (0..n).rev() {
+            let (a, b) = (
+                self.0.get(i).copied().unwrap_or(0),
+                o.0.get(i).copied().unwrap_or(0),
+            );
+            if a != b {
+                return if a > b {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+            }
+        }
+        Ordering::Equal
+    }
+
+    /// `self -= o`, which every caller has already established is not negative.
+    fn sub_assign(&mut self, o: &Self) {
+        let mut borrow = 0i64;
+        for i in 0..self.0.len() {
+            let v = i64::from(self.0[i]) - i64::from(o.0.get(i).copied().unwrap_or(0)) - borrow;
+            if v < 0 {
+                self.0[i] = (v + (1i64 << 32)) as u32;
+                borrow = 1;
+            } else {
+                self.0[i] = v as u32;
+                borrow = 0;
+            }
+        }
+        self.trim();
+    }
+
+    /// `self = self * 2 + b`, the division loop's inner step.
+    fn shl1_add(&mut self, b: u32) {
+        let mut carry = b;
+        for w in &mut self.0 {
+            let v = (u64::from(*w) << 1) | u64::from(carry);
+            *w = v as u32;
+            carry = (v >> 32) as u32;
+        }
+        if carry != 0 {
+            self.0.push(carry);
+        }
+    }
+
+    fn from_digits(digits: &str) -> Option<Self> {
+        let mut b = Big::zero();
+        // Nine digits at a time, because 10^9 is the largest power of ten a `u32` multiplier holds.
+        for chunk in digits.as_bytes().chunks(9) {
+            let mut m = 1u32;
+            let mut a = 0u32;
+            for &c in chunk {
+                if !c.is_ascii_digit() {
+                    return None;
+                }
+                m *= 10;
+                a = a * 10 + u32::from(c - b'0');
+            }
+            b.mul_add_small(m, a);
+        }
+        b.trim();
+        Some(b)
+    }
+
+    fn pow10(k: u32) -> Self {
+        let mut b = Big(vec![1]);
+        let mut left = k;
+        while left > 0 {
+            let step = left.min(9);
+            b.mul_add_small(10u32.pow(step), 0);
+            left -= step;
+        }
+        b
+    }
+}
+
+/// The widest decimal magnitude worth computing: x87 reaches about `1.19e4932` at the top and
+/// `3.36e-4932` at the bottom, so anything an order of magnitude past either end is settled without
+/// building a five-thousand-digit integer to confirm it.
+const DECIMAL_LIMIT: i64 = 4940;
+
+/// **`digits × 10^exp10`, correctly rounded to x87's sixty-four bits.**
+///
+/// The conversion `str::parse::<f64>` cannot do, because it answers in fifty-three bits and `f80` has
+/// sixty-four — so `0.1L` parsed that way lands *above* the true tenth rather than at the nearest
+/// `f80` to it, and every value past `f64`'s range becomes an infinity.
+///
+/// **Exact, then rounded once**, which is the same shape as [`mul`]. The value is a ratio of two
+/// integers — `digits × 10^exp10 / 1` when the exponent is positive and `digits / 10^-exp10` when it
+/// is negative — and both are computed with nothing lost. The quotient's top sixty-five bits and a
+/// sticky flag for everything below them are all the rounding decision needs, and the division stops
+/// as soon as it has them.
+///
+/// `None` where an answer would be a guess: a subnormal result, for the reason [`mul`] gives.
+/// Overflow is an infinity, for the reason [`mul`] gives.
+pub fn from_decimal(digits: &str, exp10: i32, negative: bool) -> Option<u128> {
+    let sign = u128::from(negative) << 79;
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return Some(sign);
+    }
+    // The decimal magnitude, near enough to settle the two extremes without arithmetic. Every digit
+    // is at most one order of magnitude, so `len + exp10` brackets the exponent within one.
+    let mag = i64::from(exp10) + i64::try_from(trimmed.len()).ok()?;
+    if mag > DECIMAL_LIMIT {
+        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
+    }
+    if mag < -DECIMAL_LIMIT {
+        return None;
+    }
+    let n = Big::from_digits(trimmed)?;
+    let (num, den) = if exp10 >= 0 {
+        let mut num = n;
+        let p = Big::pow10(u32::try_from(exp10).ok()?);
+        num = mul_big(&num, &p);
+        (num, Big(vec![1]))
+    } else {
+        (n, Big::pow10(u32::try_from(-i64::from(exp10)).ok()?))
+    };
+    let (ln, ld) = (num.bit_len(), den.bit_len());
+    // Line the operands up so the quotient is sixty-five or sixty-six bits — sixty-four of
+    // significand and one to round on — rather than the thousands it would otherwise have.
+    let shift = 65i64 - (i64::try_from(ln).ok()? - i64::try_from(ld).ok()?);
+    let (a, b) = if shift >= 0 {
+        (num.shl(usize::try_from(shift).ok()?), den)
+    } else {
+        (num, den.shl(usize::try_from(-shift).ok()?))
+    };
+    let (la, lb) = (a.bit_len(), b.bit_len());
+    if la < lb {
+        return None;
+    }
+    // **Binary long division, started at the first bit that can produce a quotient digit.** The
+    // leading `lb - 1` steps of a schoolbook division are known to produce zeros — a remainder of
+    // fewer bits than the divisor cannot exceed it — so the loop skips straight past them and runs
+    // sixty-six times instead of thousands.
+    let skip = lb.checked_sub(1)?;
+    let mut rem = a.shr(la - skip);
+    let mut q: u128 = 0;
+    for i in (0..la - skip).rev() {
+        rem.shl1_add(a.bit(i));
+        q <<= 1;
+        if rem.cmp(&b) != core::cmp::Ordering::Less {
+            rem.sub_assign(&b);
+            q |= 1;
+        }
+    }
+    if q == 0 {
+        return None;
+    }
+    let sticky_rem = !rem.is_zero();
+    // Cut the quotient down to sixty-four bits, keeping the bit below them to round on and folding
+    // everything under that — including the division's own remainder — into one sticky flag.
+    let drop = (128 - q.leading_zeros()).checked_sub(64)?;
+    let mut sig = (q >> drop) as u64;
+    let guard = drop > 0 && (q >> (drop - 1)) & 1 == 1;
+    let sticky = sticky_rem || (drop > 1 && q & ((1u128 << (drop - 1)) - 1) != 0);
+    // `value = sig × 2^drop × 2^-shift`, and an f80 significand carries its integer bit at 63.
+    let mut exp = 63i64 + i64::from(drop) - shift;
+    if guard && (sticky || sig & 1 == 1) {
+        let (next, carried) = sig.overflowing_add(1);
+        // The same second normalization `mul` needs: all ones plus one is a new power of two.
+        sig = if carried {
+            exp += 1;
+            1u64 << 63
+        } else {
+            next
+        };
+    }
+    let biased = exp + i64::from(BIAS);
+    if biased >= i64::from(INF_EXP as u32) {
+        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
+    }
+    if biased <= 0 {
+        return None;
+    }
+    Some(sign | (u128::try_from(biased).ok()? << 64) | u128::from(sig))
+}
+
+/// Schoolbook multiplication, used once — to apply a positive power of ten to the digits.
+fn mul_big(x: &Big, y: &Big) -> Big {
+    let mut out = vec![0u32; x.0.len() + y.0.len() + 1];
+    for (i, &a) in x.0.iter().enumerate() {
+        let mut carry = 0u64;
+        for (j, &b) in y.0.iter().enumerate() {
+            let v = u64::from(a) * u64::from(b) + u64::from(out[i + j]) + carry;
+            out[i + j] = v as u32;
+            carry = v >> 32;
+        }
+        let mut k = i + y.0.len();
+        while carry != 0 {
+            let v = u64::from(out[k]) + carry;
+            out[k] = v as u32;
+            carry = v >> 32;
+            k += 1;
+        }
+    }
+    let mut b = Big(out);
+    b.trim();
+    b
+}

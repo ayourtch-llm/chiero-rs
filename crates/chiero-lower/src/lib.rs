@@ -1980,6 +1980,17 @@ impl Lowerer<'_> {
                     {
                         return Operand::Const(Const::Float(k, bits));
                     }
+                    // A *decimal* literal is exact too, as of wave 240 — `from_decimal` converts
+                    // the digits themselves rather than accepting `f64`'s fifty-three bits and
+                    // `f64`'s range. This subsumes the integral path below, which stays as the
+                    // fallback for the one case `from_decimal` declines: a value so small its
+                    // nearest `f80` is subnormal.
+                    if k == chiero_cir::FloatKind::X87_80
+                        && let Some((digits, e)) = chiero_sema::decimal_float_parts(text)
+                        && let Some(bits) = chiero_cir::fp::from_decimal(&digits, e, false)
+                    {
+                        return Operand::Const(Const::Float(k, bits));
+                    }
                     if k == chiero_cir::FloatKind::X87_80
                         && let Some(n) = chiero_sema::integral_float_literal(text)
                     {
