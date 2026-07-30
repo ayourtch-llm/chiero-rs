@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 229) — 1361 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 230) — 1364 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,50 +778,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 An `f80` constant carries `f64` bits — start the x87 milestone here
+> ### 🔴 x87: the literal is right; a value still cannot survive a store and a load
 >
-> Wave 228 measured what `long double` does today, and the answer reframes the milestone.
+> ~~An `f80` constant carries `f64` bits.~~ **Fixed in wave 229.** `1.0L` is now
+> `0x3fff8000000000000000` — gcc's pattern, read out of object bytes rather than derived, because
+> deriving it is what produced the bug. `Const::Float`'s payload widened from `u64` to `u128`
+> (**correcting my own §9 note**, which claimed it was already wide enough — it is a representation
+> change, ten sites across four crates), and `x87_bits` handles zero, infinity/NaN and normals
+> separately, since rebiasing a zero would make a denormal with the integer bit set, which x87 calls
+> invalid. `f32` and `f64` print identically, so no golden moved.
 >
-> **What works:** `sizeof` is 16, `_Alignof` is 16, a struct containing one lays out correctly, and
-> lowering emits real `f80` CIR — `alloca %0 : f80`, `store f80 …`, `load f80`, `fptosi f80 %2 to
-> i32`. So the type reaches CIR intact.
+> **Where the milestone actually continues.** Wave 228 established that the gap is enforced upstream
+> of arithmetic: the value is `Undef` before `fbin` or `fcast` ever runs, so mutants implementing
+> 80-bit as `f64` in either or both survived every test. The order of work is therefore:
 >
-> **What is honest:** arithmetic degrades to `Fidelity::Unknown` with the operation named
-> (`"`FDiv` is not modeled"`, `"`FpExt 64 -> 80 on a symbolic operand` is not modeled"`).
-> `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled` in `differential.rs` now pins the
-> disjunction 023 §7 promises, and `long_double_layout_is_exact` pins the parts that work.
+>   1. **A value that survives a store and a load as a scalar term.** Today
+>      `long double x = 1.0L;` reports `"a store of an untranslatable value" is not modeled`, so the
+>      literal is correct and immediately discarded. This is the step that unblocks everything else,
+>      and it is where a partial implementation would first be able to lie — so do it against
+>      `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled`, which holds the disjunction
+>      023 §7 promises.
+>   2. **Conversions** (`FpExt 64 -> 80`, `FpTrunc`, `SiToFp`, `FpToSi`) — exact, and testable
+>      against gcc one at a time.
+>   3. **Arithmetic**, which needs a soft-float with a 64-bit significand. `fbin`'s comment is right
+>      that emulating it for one operation is not worth it; emulating it for all of them is the
+>      milestone.
 >
-> **What is wrong, and it is the place to start:**
->
-> ```text
->   long double x = 1.0L;
->   store f80 fconst:f80:0x3ff0000000000000 -> %0
-> ```
->
-> `0x3FF0000000000000` is the **`f64`** encoding of 1.0. An 80-bit 1.0 is `0x3FFF8000000000000000` —
-> a 15-bit exponent and an *explicit* integer bit, which `f64` does not have. So an `f80` constant
-> carries an `f64` payload. It is invisible today because the engine refuses `f80` arithmetic, and it
-> is the first thing that would bite when the milestone lands: arithmetic on those bits computes on
-> garbage that *looks* like a number.
->
-> **Fix the literal before implementing arithmetic**, and note that `Const::Float`'s `u128` payload
-> is already wide enough for 80 bits, so this is an encoding change in lowering rather than a
-> representation change in CIR.
->
-> **Why the gap is robust, which is worth knowing before touching it.** I mutated `fbin` to treat
-> 80-bit as `f64`, then `fbin` *and* `fcast` together — the plausible shape of a bad milestone — and
-> both survived every test. The gap is not enforced in the float code: the value is `Undef` long
-> before arithmetic, so `scalar()` returns `None` and each consumer declares its own gap (020
-> contract 43 — `Undef` is a value, not a gap, so the poison flows). **Implementing x87 means making
-> an 80-bit value survive a store and a load as a scalar term first**; arithmetic is the second step,
-> not the first.
+> **Not to be deleted on a surviving mutant:** `x87_bits`'s sign term. C has no negative literals —
+> `-1.0L` is `fneg` of a positive constant — so nothing reaches the encoder negative today, and
+> `a_negative_x87_literal_is_a_negation_of_a_positive_constant` records that with the reason the term
+> stays: a constant fold of `-1.0L` passes one through the moment arithmetic lands.
 >
 > ### What else is left
 >
 >   1. **Symbolic floats** — the other milestone. Needs an FP theory in the solver or a bit-blasted
->      encoding; §9's earlier note stands.
->   2. **UBSan's slugs** — a preference with a compatibility cost, yours, and its motivating argument
->      retracted in wave 227 (the census compares by the `UbKind` enum's `Debug`, not by `ub_phrase`).
+>      encoding.
+>   2. **UBSan's slugs** — a preference with a compatibility cost, yours; its motivating argument was
+>      retracted in wave 227.
 >   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. Known-cost,
 >      low-yield.
 >
@@ -1280,6 +1273,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **`cargo test | grep FAILED` reports nothing when the build is broken** (wave 229). Widening
+> `Const::Float` broke five test files, and my sweep for `^test .* FAILED` came back clean because
+> nothing ran. **A build failure is indistinguishable from zero failures to that grep** — run
+> `--no-run` first, or count `^error`, before believing a green sweep. Third instance of trusting a
+> grep's silence, after wave 222's `grep -c` counting compiler output.
+>
+> **Read the reference, do not derive it** (wave 229). The expected `f80` patterns came out of gcc's
+> object bytes via `memcpy` and a hex dump. Deriving them from the format description is exactly the
+> step that produced the bug being fixed, so re-deriving them for the test would have risked
+> agreeing with the defect.
+>
+> **A surviving mutant on a general function may mean the callers are narrow** (wave 229). Dropping
+> `x87_bits`'s sign term changed nothing, because C has no negative literals. Unlike wave 223's
+> duplicated bound check — a second copy of a decision made elsewhere, which became an assertion —
+> this is the only place that would get it right, so it stays with a test recording *why* it looks
+> dead. **Distinguish "unreachable and redundant" from "unreachable and sole".**
 >
 > **Read the CIR, not only the verdict** (wave 228). `long double` degrades honestly and names the
 > operation, which is the right *behaviour* — and printing the module showed
