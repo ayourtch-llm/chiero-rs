@@ -355,3 +355,67 @@ fn lowering_produces_a_non_empty_module() {
     );
     let _ = lower_tu;
 }
+
+/// **An `f80` constant carries the 80-bit encoding, not the `f64` one.**
+///
+/// x87's extended format is a 15-bit exponent (bias 16383) and a 64-bit significand with an
+/// **explicit** integer bit — where `f64` has an 11-bit exponent (bias 1023) and an implicit one.
+/// They are not the same number of bits and not the same layout:
+///
+/// ```text
+///   1.0L   0x3fff8000000000000000     (gcc, and what x87 loads)
+///   1.0    0x3ff0000000000000         (what lowering emitted for `long double`)
+/// ```
+///
+/// Lowering reached CIR with the right *type* — `alloca %0 : f80`, `store f80`, `load f80` — and
+/// the wrong *payload*, because `float_bits` mapped `X87_80` to `f64::to_bits` and returned `u64`,
+/// which cannot hold eighty bits.
+///
+/// Invisible today: the engine models no `f80` arithmetic, so the bits are never interpreted. It is
+/// the first thing that bites when they are, and arithmetic on those bits computes on garbage that
+/// *looks* like a number — which is worse than the declared gap it replaces.
+///
+/// The expected patterns are gcc's, read out of the object bytes rather than derived, because
+/// deriving them is exactly the step that produced the bug.
+#[test]
+fn an_x87_literal_is_encoded_in_eighty_bits() {
+    for (lit, want) in [
+        ("1.0L", "0x3fff8000000000000000"),
+        ("2.0L", "0x40008000000000000000"),
+        ("0.5L", "0x3ffe8000000000000000"),
+        // Three halves of a significand set, so a fix that only widened the exponent shows here.
+        ("3.0L", "0x4000c000000000000000"),
+        // Zero is all-zero in both formats, and is the control: a fix that shifted every payload
+        // unconditionally would still get this one right, and that is the point of including it.
+        ("0.0L", "0x0"),
+    ] {
+        let t = print(&lower(&format!(
+            "int probe(void){{ long double x = {lit}; return (int)x; }}"
+        )));
+        assert!(
+            t.contains(&format!("fconst:f80:{want}")),
+            "`{lit}` must be the 80-bit pattern gcc stores, not an f64 one: {}",
+            t.lines()
+                .find(|l| l.contains("fconst"))
+                .unwrap_or("no fconst emitted")
+        );
+    }
+}
+
+/// And `f32`/`f64` literals are unchanged. **The control.**
+///
+/// Widening the payload must not move the formats that already worked. Their printed form is the
+/// same hex whether the field is `u64` or `u128`, and nineteen goldens depend on that.
+#[test]
+fn f32_and_f64_literals_keep_their_encodings() {
+    let t = print(&lower("int probe(void){ float f = 1.0f; return (int)f; }"));
+    assert!(
+        t.contains("fconst:f32:0x3f800000"),
+        "1.0f is 0x3f800000: {t}"
+    );
+    let t = print(&lower("int probe(void){ double d = 1.0; return (int)d; }"));
+    assert!(
+        t.contains("fconst:f64:0x3ff0000000000000"),
+        "1.0 is 0x3ff0000000000000: {t}"
+    );
+}
