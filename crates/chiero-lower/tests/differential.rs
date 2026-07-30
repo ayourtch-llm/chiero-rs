@@ -2182,26 +2182,11 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         "long double x = 1.0L; x = x / 3.0L; return (int)(x * 300000);",
         "long double a = 1.0L, b = 3.0L; return (int)(a / b > 0.333);",
         "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
-        // **Removed, because it found a real defect this test cannot express.**
-        // `long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);` returns a *wrong*
-        // value rather than a gap: an unmodelled `FMul` leaves the destination holding the stale
-        // pre-multiplication value, so `x = x * 3.0L` on 2.0 answers 2. The run degrades to
-        // `Unknown`, so it declares *something* — but the value is confidently wrong, which is the
-        // one outcome 023 §7 forbids and the one this disjunction was written to catch.
-        //
-        // It is pre-existing, not caused by comparison: `x = x * 3.0L; return (int)x;` has been
-        // wrong since wave 230 made `(int)x` work, with no comparison involved. Fixing it means an
-        // unmodelled `RValue` writing `Undef` to its destination, which changes behaviour wherever
-        // a gap is declared — too broad to fold into this wave. §9 carries it as the front with the
-        // evidence, and this comment stays until it is fixed.
-        // **Narrowing back out of x87**, which is the next unimplemented step and the one this
-        // disjunction is now actively guarding. Mutation found the hole: teaching `as_f64` to
-        // accept width 80 makes `FpTrunc` "work" by reading an `f80` pattern as `f64` bits, which
-        // is garbage — and nothing narrowed from `long double` anywhere, so nothing objected.
-        // Either this is a declared gap or it equals gcc; a plausible number is the one outcome
-        // 023 §7 forbids.
-        "long double x = 2.5L; double d = x; return (int)d;",
-        "long double x = 2.5L; float f = x; return (int)f;",
+        // The defect wave 237 found and wave 238 fixed: an unmodelled `FMul` used to leave the
+        // destination holding the stale pre-multiplication value, so this answered with a *number*
+        // that was wrong rather than declaring a gap.
+        "long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);",
+        "long double x = 2.0L; x = x * 3.0L; return (int)x;",
     ] {
         let expected = match gcc_answer("", body) {
             Ok(v) => v,
