@@ -778,7 +778,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔖 Handoff point — waves 239–244 were one arc, and it is finished
+> ### 🔖 Handoff point — waves 239–245
+>
+> **Waves 239–244 were one arc: `long double`.** From "literals only, and some of those wrong" to a
+> complete finite model of x87's 80-bit format, verified against the hardware rather than a manual —
+> 239 multiply, 240 exact decimal literals, 241 add and subtract, 242 divide (the milestone), 243
+> NaNs, 244 subnormals. `crates/chiero-cir/src/fp.rs` holds all of it, with `pack` the single
+> rounding site and `unpack` the single decode.
+>
+> **Wave 245 did the audit that arc asked for**, and its result is a number: of twenty-nine
+> `size_of`/`align_of` fall-throughs in lowering, twenty-eight never fire. It found and fixed two
+> wrong-number defects in the conditional operator on the way (6.3.2.1's decay, then 6.5.15p6's
+> null-pointer-constant rule), and left two things recorded above rather than chased.
+>
+> **What the next context should know.** The float verification harness is worth reusing before any
+> more float work: `scratchpad/soak.c` generates random 80-bit operand pairs, runs them through
+> gcc's own x87 by `memcpy`, and `scratchpad/chk` compares that against `fp`. Nearly two million
+> cases, no disagreement. Two lessons about it are in the rules list and both cost real time: a
+> random soak cannot reach a rounding boundary (`2^-62` events, use shrink-and-enumerate instead),
+> and a generator that makes one operand special at a time never reaches the interactions.
+>
+> **The one float gap left is narrowing `long double` to `float`.** Everything else on floats is
+> either done or needs a solver theory.
+
+> ### 🔖 Earlier handoff — waves 239–244 were one arc, and it is finished
 >
 > Six waves, one subject: **`long double` went from "literals only, and some of those wrong" to a
 > complete finite model of x87's 80-bit format**, verified against the hardware rather than against a
@@ -806,9 +829,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > **Two things wave 245 saw and deliberately did not chase**, either of which is a fine next wave:
 >
->   - **A conditional slot's `store` prints `align 4` while its `alloca` now prints `align 8`.** Two
->     places compute the same alignment and disagree. Visible in
->     `tests/corpus/lowered/corpus_indirect_call.cir`. Not what either RED observed, so it was left.
+>   - **`store_slot` hardcodes `align: 4`** — a literal, not derived from the type — so a conditional
+>     slot's `store` prints `align 4` while its `alloca` now prints `align 8`, and a `long double`
+>     slot would claim 4 where the type wants 16. Visible in
+>     `tests/corpus/lowered/corpus_indirect_call.cir`.
+>
+>     **It is not observable today, and the reason is worth knowing before anyone "fixes" it.** The
+>     only consumer of a `Store`'s `align` is the `Misaligned` fault, and `report_faults` filters
+>     every one of those out: 021 §5 makes misalignment a finding only in `ub-strict` mode, which
+>     does not exist yet, because reporting it unconditionally fired on every `CLIB_PACKED` packet
+>     header. So this is a latent wrong value waiting for that mode rather than a live defect —
+>     which means the honest order is **`ub-strict` first, then this**, since otherwise the fix has
+>     no test that can observe it and the sweep will say so.
 >   - **The `f64` fall-through in the *float literal* path is now nearly unreachable** — every
 >     `chiero_cir::fp` conversion returns a value where it used to refuse — but it is still written,
 >     and a path that cannot fire is a path nobody checks. Worth deleting or proving reachable.
