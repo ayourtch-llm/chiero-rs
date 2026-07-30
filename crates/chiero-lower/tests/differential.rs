@@ -2237,3 +2237,36 @@ fn long_double_layout_is_exact() {
     agree("return (int)_Alignof(long double);");
     agree("struct S { char c; long double d; }; return (int)sizeof(struct S);");
 }
+
+/// **`(int)` of a `long double` agrees with gcc.**
+///
+/// The x87 milestone's first observable step, and section 9's step 2. Wave 229's encoding fix
+/// already made a value survive a store and a load — `long double y = x;` is `Exact` — but every
+/// int-returning fixture then dies at `FpToSi 80 -> 32`, so nothing about an `f80` value could be
+/// *seen*. This is the conversion that makes it visible.
+///
+/// **Truncation toward zero, exactly, without going through `f64`.** The obvious implementation
+/// decodes the 80-bit pattern into an `f64` and truncates that, which is what `as_f64` already does
+/// for 32 and 64 — and it is wrong for a 64-bit target: `f64` carries 53 bits of significand where
+/// x87 carries 64, so `(long long)` of a large `long double` would come back off by a little. That
+/// is precisely the "wrong answer where a gap was declared" that 023 §7 forbids and wave 228 pinned
+/// against. The integer comes out of the significand directly.
+///
+/// Both signs and both sides of 1.0, because truncation toward zero is not flooring: `-2.5L` is
+/// `-2`, not `-3`, and a fix using `floor` passes the positives.
+#[test]
+fn long_double_to_int_agrees_with_gcc() {
+    agree("long double x = 1.0L; return (int)x;");
+    agree("long double x = 2.5L; return (int)x;");
+    agree("long double x = -2.5L; return (int)x;");
+    agree("long double x = 0.0L; return (int)x;");
+    agree("long double x = -0.5L; return (int)x;");
+    // Larger than 2^53, where an `f64` round trip stops being exact for a 64-bit target. The
+    // `int` here still fits, so this pins that the path is exact rather than merely plausible.
+    agree("long double x = 123456789.0L; return (int)x;");
+    // An unsigned target, which takes the other arm.
+    agree("long double x = 42.5L; return (int)(unsigned)x;");
+    // A 64-bit target, which is where an `f64` detour would show: 2^62 + 1 is representable in
+    // x87's 64-bit significand and not in `f64`'s 53.
+    agree("long double x = 4611686018427387905.0L; return (int)(long long)x;");
+}
