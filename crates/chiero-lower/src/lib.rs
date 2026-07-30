@@ -2008,12 +2008,13 @@ impl Lowerer<'_> {
             // A member **read**: `LoadBits` for a bit-field, an ordinary `Load` at the
             // member's address otherwise. Both take their offset from `RecordLayout`.
             chiero_ast::ExprKind::Member { .. } => {
-                if let Some((unit, bits)) = self.bitfield_of(e) {
+                if let Some((unit, bits, field_signed)) = self.bitfield_of(e) {
                     let Some(addr) = self.lvalue_addr(e, span) else {
                         return Operand::Const(Const::Undef(unit));
                     };
                     let dst = self.new_value();
-                    let signed = self.is_signed(e);
+                    // The *field's* signedness, not the expression's — see `bitfield_of`.
+                    let signed = field_signed;
                     self.emit(
                         InstKind::Assign {
                             dst,
@@ -3044,7 +3045,7 @@ impl Lowerer<'_> {
         // **A bit-field is a different instruction, not a narrower store.** Its range
         // comes from `RecordLayout` (015 contract 7), and the check has to come before
         // the ordinary path or a 3-bit field becomes a 4-byte store over its neighbours.
-        if let Some((unit, bits)) = self.bitfield_of(lhs) {
+        if let Some((unit, bits, _)) = self.bitfield_of(lhs) {
             let addr = match self.lvalue_addr(lhs, span) {
                 Some(a) => a,
                 None => return Operand::Const(Const::Undef(unit)),
@@ -3310,11 +3311,14 @@ impl Lowerer<'_> {
         // check at all — it loaded and stored the declared `int`, so incrementing a 3-bit
         // field overwrote its neighbours and never wrapped. 015 contract 7 owns the range,
         // and `assign` above already obeys it.
-        if let Some((unit, bits)) = self.bitfield_of(operand) {
+        if let Some((unit, bits, field_signed)) = self.bitfield_of(operand) {
             let Some(addr) = self.lvalue_addr(operand, span) else {
                 return Operand::Const(Const::Undef(unit));
             };
-            let signed = self.is_signed(operand);
+            // The field's signedness, for the same reason the plain read uses it: a read-modify-
+            // write reads first, and reading an `unsigned` field sign-extended corrupts the value
+            // before the arithmetic ever sees it.
+            let signed = field_signed;
             let width = match &unit {
                 CTy::Int(w) => *w,
                 _ => 32,
@@ -3536,7 +3540,14 @@ impl Lowerer<'_> {
     }
 
     /// If `e` names a bit-field, its storage unit and the `BitRange` **from the layout**.
-    fn bitfield_of(&mut self, e: ExprId) -> Option<(CTy, chiero_cir::BitRange)> {
+    /// Also **the field's declared signedness**, which is not the expression's (wave 249).
+    ///
+    /// `is_signed(e)` answers about the *promoted* expression, and C11 6.3.1.1 promotes a narrow
+    /// `unsigned` bit-field to `int` — so it said "signed" for every field narrower than an `int`,
+    /// and `LoadBits` sign-extended stored bits that must zero-extend. `unsigned a : 3` holding 5
+    /// (`0b101`) read back as -3. The width was always right; only the extension was wrong, which
+    /// is why it hid: the two agree for every value whose top bit is clear.
+    fn bitfield_of(&mut self, e: ExprId) -> Option<(CTy, chiero_cir::BitRange, bool)> {
         let chiero_ast::ExprKind::Member { base, field, arrow } = self.ast.expr(e).kind.clone()
         else {
             return None;
@@ -3552,6 +3563,7 @@ impl Lowerer<'_> {
                 off: (b.bit_offset - f.offset * 8) as u32,
                 width: b.width as u32,
             },
+            self.ty_signed(f.ty),
         ))
     }
 
