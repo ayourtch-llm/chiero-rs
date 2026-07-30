@@ -85,3 +85,74 @@ fn the_report_names_the_object_and_the_offset() {
     assert!(m.contains("ga"), "the object it left: {m}");
     assert!(m.contains("256"), "and its size in bytes: {m}");
 }
+
+/// **The offset the report names must be one the path allows.**
+///
+/// `MemFault::PointerOutsideObject::witness` says so in its own doc — "An offset the path allows,
+/// which is past the object" — and the caller fills it with `obj_size`, a constant. One past the end
+/// is always *outside*, so the sentence is never absurd; it is often simply not true of this path:
+///
+/// ```text
+///   int pool[8];                                  /* 32 bytes */
+///   int *q = pool + ((i & 31) + 64);              /* byte offsets 256..380 */
+///   pointer-outside-object: ... can be computed at offset 32, which is outside it
+/// ```
+///
+/// Offset 32 is not reachable there. The path forces the offset past 256, and a reader who goes
+/// looking for the input that produces 32 will not find one — which is worse than a vague report,
+/// because it is a specific claim that is false.
+///
+/// The model is right there: the bounds probe already gets `Sat(m)` and discards it with `Sat(_)`.
+/// Waves 205 and 208 both take the witness out of exactly that model.
+#[test]
+fn the_offset_named_is_one_the_path_allows() {
+    // Elements 64..95 of a 4-byte type: byte offsets 256..380, so 32 is not among them.
+    let f = findings(
+        "int pool[8];\nint probe(int i){ int *q = pool + ((i & 31) + 64); return q != 0; }",
+    );
+    let m = f
+        .iter()
+        .find(|x| x.starts_with("pointer-outside-object"))
+        .unwrap_or_else(|| panic!("the fixture must form a pointer out of range: {f:?}"));
+    // The witness is the number after "offset ". Parsed rather than substring-matched, because
+    // `contains("256")` would pass on the object's size or on any other number in the sentence.
+    let after = m.split("at offset ").nth(1).unwrap_or_default();
+    let named: i64 = after
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("no offset in `{m}`"));
+    assert!(
+        named >= 256,
+        "this path can only reach byte offsets 256..380, so `offset {named}` names an input \
+         that does not exist: {m}"
+    );
+}
+
+/// And where the object's size *is* reachable, naming it is right. **The control.**
+///
+/// `ga + i` with `i` unconstrained allows every offset, 256 among them, so the old constant was a
+/// true witness here — which is why the defect hid. A fix must keep this case reporting a reachable
+/// offset rather than trading one wrong constant for another.
+#[test]
+fn an_unconstrained_offset_still_names_something_reachable() {
+    let f = findings("int ga[64];\nint probe(int i){ int *p = ga + i; return p != 0; }");
+    let m = f
+        .iter()
+        .find(|x| x.starts_with("pointer-outside-object"))
+        .expect("reported");
+    let after = m.split("at offset ").nth(1).unwrap_or_default();
+    let named: i64 = after
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("no offset in `{m}`"));
+    assert!(
+        !(0..256).contains(&named),
+        "`ga` is 256 bytes, so a witness must be outside it: {m}"
+    );
+}
