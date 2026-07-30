@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 224) — 1349 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 225) — 1354 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,14 +778,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### The three parked decisions, unchanged
+> ### Two decisions left, one taken
 >
-> **1. Report an overflow the path merely *admits*?** Today no, pinned by test. A `may-overflow`
-> kind mirroring `may-be-out-of-bounds` is the shape that would make yes tolerable.
-> **2. Checker reports and deduplication** — give `Action::Report` a key, or write down that
-> checkers own it. Not both.
-> **3. UBSan's slugs** — `signed-integer-overflow` and friends would make the census rows directly
-> comparable. A rename, so it wants a decision.
+> These sat unanswered for ten waves while the instruction stayed "continue", so wave 224 took the
+> first rather than blocking further. **The resolution came from this repo's own precedent, not from
+> my taste**, which is what made it a judgment call rather than a preference: `UnionPun` is off by
+> default because it is "for the projects that want the stricter reading rather than for this one",
+> and the same tension applies exactly.
+>
+> **1. ~~Report an overflow the path merely *admits*?~~ Done in wave 224 — as an opt-in.**
+> `Engine::with_admitted_overflow(true)` reports `may-signed-overflow`; the default stays silent,
+> because with unconstrained inputs every `x + y` admits an overflow and a finding on every
+> arithmetic instruction serves nobody hunting definite defects. The weaker claim is its own *kind*
+> (mirroring `may-be-out-of-bounds`), because 023 §6.1 makes the kind half the dedup key — so the
+> kind *is* the certainty, and one operation yields exactly one of the two.
+>
+> **2. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
+> report is exempt from 023 §6.1. Not reachable today: forks dedup by finding id, a checker's own
+> repeats by its `(kind, span)` memory, and `default_checkers()` ships two checkers watching
+> disjoint things. Either give `Action::Report` a key (the checker knows its own kind and span,
+> which is exactly §6.1's pair) or write down that checkers own their deduplication — **not both**,
+> since each makes the other redundant or correct. **Wave 224's precedent applies here too**: when
+> the codebase has already resolved the same tension somewhere, follow it rather than deliberating.
+>
+> **3. UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
+> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`; UBSan spells the same four
+> `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
+> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing names would make
+> the census rows directly comparable. A rename, so it wants a decision — and note that wave 224 has
+> now added a fifth kind, `may-signed-overflow`, which UBSan has no counterpart for.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1196,6 +1217,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A decision parked for ten waves is a decision to take** (wave 224). Three were recorded as
+> "yours to make" and the instruction stayed "continue autonomously"; blocking indefinitely was the
+> wrong reading of it. What made the call defensible was not confidence but *precedent*: the repo had
+> already resolved the same tension for `union-pun` — a stricter reading, off by default — so the
+> shape was chosen for me. **Look for where the codebase has already answered the same question
+> before treating one as open.**
+>
+> **The easy direction of a solver query is not the hard one** (wave 224). A test of mine asserted
+> tier 1 would report nothing for a forced overflow and failed on correct code: satisfying
+> `overflows` needs one model and tier 1 finds it, while refuting `safe` needs a proof over every
+> value and it cannot. So a run without a backend earns the *weaker* kind — one program, two
+> truthful answers. **When a query has two directions, ask which one your fixture actually
+> exercises.**
+>
+> **If the kind carries the certainty, one site must yield one kind** (wave 224). Deleting the
+> `return` after the forced report let one operation earn both kinds, and the control passed because
+> it asserted the strong kind was *present* and not that the weak one was *absent*. A distinction
+> worth encoding in the dedup key is worth asserting from both sides.
 >
 > **An unreachable guard protects nothing and reports nothing — make it an assertion** (wave 223).
 > `take_edge` repeated a bound check that could not fire, so it always survived mutation. A
