@@ -8008,9 +8008,11 @@ fn fbin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
         // **x87 multiplication, which needs no `f64` and no loop.** The comment here used to say
         // emulating the format "to get one operation right would be a second float implementation
         // nobody tests" — a correct judgement about one operation before `chiero_cir::fp` existed,
-        // and the wrong one now that the format lives in one place and is tested. The other three
-        // operations still fall through and still declare themselves.
+        // and the wrong one now that the format lives in one place and is tested. Division still
+        // falls through and still declares itself.
         80 if op == BinOp::FMul => chiero_cir::fp::mul(xc.bits(), yc.bits())?,
+        80 if op == BinOp::FAdd => chiero_cir::fp::add(xc.bits(), yc.bits())?,
+        80 if op == BinOp::FSub => chiero_cir::fp::sub(xc.bits(), yc.bits())?,
         _ => return None,
     };
     Some(a.bv(w, bits))

@@ -322,6 +322,146 @@ pub fn is_inf(bits: u128) -> bool {
     (bits >> 64) & INF_EXP == INF_EXP && (bits & u128::from(u64::MAX)) == 1u128 << 63
 }
 
+/// The sum of two patterns, rounded to nearest with ties to even.
+///
+/// **Where [`mul`] was exact and then rounded once, this is exact only after the operands are made
+/// comparable** — and making them comparable is the whole difficulty. Three things follow from that
+/// and none of them arise in multiplication:
+///
+///   - **Alignment.** The smaller operand shifts right by the exponent difference, which for `f80`
+///     can be thirty-two thousand places. The bits it shifts out are gone from the arithmetic but not
+///     from the *rounding*, so they are folded into a sticky flag.
+///   - **Cancellation.** Near-equal operands of opposite sign leave a result with leading zeros, and
+///     renormalizing means shifting left by up to sixty-three places rather than the one bit a
+///     product ever needs.
+///   - **Sign.** Which operand is subtracted from which depends on magnitude, not argument order, and
+///     the result's sign is the larger operand's.
+///
+/// # Why the sticky flag survives the left shift
+///
+/// The two hard parts interact exactly once, and the interaction is provably harmless. Alignment
+/// loses no bits at all while the exponent difference is sixty-three or less, because the operand is
+/// staged with sixty-three zeros beneath it — so **a sticky flag requires a difference of at least
+/// sixty-four**. At that difference the subtracted operand is under `2^63` while the larger is at
+/// least `2^126`, so the result cannot fall more than one bit short of normalized, and a one-bit left
+/// shift moves the residue into the sticky region rather than into the rounding bit. Large
+/// cancellation and a nonzero sticky flag cannot happen together.
+///
+/// `None` where an answer would be a guess: a NaN or denormal operand, `∞ + -∞` (IEEE-754 §7.2's
+/// invalid operation), and a subnormal result — the same three [`mul`] declines and for the same
+/// reasons.
+pub fn add(x: u128, y: u128) -> Option<u128> {
+    if is_nan(x) || is_nan(y) {
+        return None;
+    }
+    let (nx, ny) = (x >> 79 & 1 == 1, y >> 79 & 1 == 1);
+    let (ix, iy) = (is_inf(x), is_inf(y));
+    if ix && iy {
+        // Same sign is that infinity; opposite signs are §7.2's invalid operation, whose result is
+        // a NaN this does not mint.
+        return if nx == ny { Some(x) } else { None };
+    }
+    if ix {
+        return Some(x);
+    }
+    if iy {
+        return Some(y);
+    }
+    if is_zero(x) && is_zero(y) {
+        // §6.3: under round-to-nearest the sum of two zeros is `-0` only when both are, because
+        // `+0 + -0` is defined to be `+0` rather than left to the operands.
+        return Some(if nx && ny { 1u128 << 79 } else { 0 });
+    }
+    if is_zero(x) {
+        return Some(y);
+    }
+    if is_zero(y) {
+        return Some(x);
+    }
+    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
+    if ex == 0 || ey == 0 {
+        return None;
+    }
+    let sx = (x & u128::from(u64::MAX)) as u64;
+    let sy = (y & u128::from(u64::MAX)) as u64;
+    // The larger magnitude leads, and it decides the result's sign. Comparing the exponent before
+    // the significand is the whole comparison, because both significands are normalized.
+    let ((ea, sa, na), (eb, sb, nb)) = if (ex, sx) >= (ey, sy) {
+        ((ex, sx, nx), (ey, sy, ny))
+    } else {
+        ((ey, sy, ny), (ex, sx, nx))
+    };
+    // Staged sixty-three bits up, which buys room for a carry above and for the alignment shift to
+    // stay lossless below.
+    let a_al = u128::from(sa) << 63;
+    let b_full = u128::from(sb) << 63;
+    let diff = ea - eb;
+    let (b_al, mut sticky) = if diff >= 128 {
+        (0u128, true)
+    } else {
+        let d = u32::try_from(diff).ok()?;
+        (b_full >> d, d > 0 && b_full & ((1u128 << d) - 1) != 0)
+    };
+    let mut exp = ea;
+    let mut r = if na == nb {
+        a_al + b_al
+    } else {
+        let d = a_al - b_al;
+        if d == 0 && !sticky {
+            // §6.3 again: `x - x` is `+0` under round-to-nearest whatever the operands' signs were.
+            return Some(0);
+        }
+        // The discarded bits make the subtrahend larger than what was aligned, so the difference is
+        // one unit lower and the residue that remains is still nonzero.
+        if sticky { d - 1 } else { d }
+    };
+    if r == 0 {
+        return Some(0);
+    }
+    // Renormalize so the significand's integer bit lands at 126, which is where `>> 63` finds it.
+    let hb = 127 - i64::from(r.leading_zeros());
+    if hb > 126 {
+        sticky |= r & 1 != 0;
+        r >>= 1;
+        exp += 1;
+    } else if hb < 126 {
+        let k = 126 - hb;
+        r <<= u32::try_from(k).ok()?;
+        exp -= k;
+    }
+    let mut sig = (r >> 63) as u64;
+    let guard = (r >> 62) & 1 == 1;
+    let sticky = sticky || r & ((1u128 << 62) - 1) != 0;
+    if guard && (sticky || sig & 1 == 1) {
+        let (next, carried) = sig.overflowing_add(1);
+        sig = if carried {
+            exp += 1;
+            1u64 << 63
+        } else {
+            next
+        };
+    }
+    let sign = u128::from(na) << 79;
+    if exp >= i64::from(INF_EXP as u32) {
+        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
+    }
+    if exp <= 0 {
+        return None;
+    }
+    Some(sign | (u128::try_from(exp).ok()? << 64) | u128::from(sig))
+}
+
+/// The difference of two patterns: [`add`] with the subtrahend's sign flipped.
+///
+/// **Not a shortcut — it is the definition.** IEEE-754 specifies subtraction as addition of the
+/// negation, and every case that makes subtraction interesting (cancellation, the sign of an exact
+/// zero, `∞ - ∞`) is already a case `add` has to get right for mixed-sign operands. Writing a second
+/// routine would duplicate the alignment and normalization to no purpose and give the two operations
+/// separate bugs.
+pub fn sub(x: u128, y: u128) -> Option<u128> {
+    add(x, y ^ (1u128 << 79))
+}
+
 /// A minimal unsigned big integer, base 2^32, little-endian — only what decimal conversion needs.
 ///
 /// **Not a general facility, and deliberately so.** `from_decimal` needs exactly five things: build
