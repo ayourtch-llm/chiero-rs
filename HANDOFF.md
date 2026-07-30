@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 214) — 1328 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 215) — 1332 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,43 +722,46 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 A checker report has no dedup key, and nothing today makes that visible
+> ### 🔴 Two decisions to make, and no defect behind either
 >
-> ~~The two channels spell a `kind` differently.~~ **Done in wave 213.** Four slugs —
-> `division-by-zero`, `shift-past-operand-width`, `signed-overflow`,
-> `float-to-integer-conversion-out-of-range` — so `signed-overflow: …` now reads like
-> `use-after-free: …` and a consumer splitting on the first `:` gets one convention. Hyphenated
-> rather than renamed, and mutation pins each arm separately.
+> **The symbolic-init area is finished.** Wave 214 closed the last correctness gap in it: past
+> `EXPAND_LIMIT`, `init_guard` returned `None` and `read_term_at` reported nothing, so
+> `struct P pa[4]` reported its padding and `pa[5]` did not — wave 205's `ITE_THRESHOLD` defect one
+> layer in. The bound stays; the refusal is gone. Past the limit the guard is the opaque `select`,
+> the solver may answer `Unknown`, and wave 204's discharge turns that into a `maybe`. Measured for
+> cost: 1m18 before, 1m16 after, same 36 binaries.
 >
-> **An open naming question, deliberately not answered unasked:** UBSan's own slugs are
-> `signed-integer-overflow`, `shift-exponent-too-large`, `float-cast-overflow`,
-> `integer-divide-by-zero`. chiero is graded against UBSan site for site, so sharing its names
-> would make the census rows directly comparable and would help anyone reading both tools' output.
-> It is a rename rather than a spelling fix, so it wants a decision rather than a wave.
+> **All three mutants §9 has been tracking since wave 205 are resolved, two of them without a
+> test:**
 >
-> **The remaining item, and the honest status is "not reachable today":** both checker push sites
-> pass `key: None`, so a checker report is exempt from 023 §6.1's deduplication. I checked what
-> that costs before proposing work on it:
+>   - **`expand-unbounded` — now killed.** Pinned in `chiero-solver`'s own suite, where the bound
+>     is decided, because its only effect is formula size and no symptom reaches four crates out.
+>   - **`always-base-zero` — now equivalent by construction.** It was "the one survivor that can
+>     lose a finding"; the fallback means the base choice changes the *form* of the question and no
+>     longer whether it is asked. The bug class is gone rather than covered.
+>   - **`always-opaque` and `expand-forgets-shadowing` survive and are performance or robustness,
+>     not correctness.** The expansion is what lets a tier-1 bitvector solver answer without array
+>     theory; shadowing needs two stores that may alias with different values, which init writes
+>     (all `1`s over a constant base) cannot produce.
 >
->   - **A fork's copies are already handled** — `reports()` dedups by finding id, which is shared
->     by every state descended from the one that reported.
->   - **One checker reporting a site twice is handled by the checker** — `UbState.reported` keys on
->     `(kind, span)`, which is what `one_faulting_site_in_a_loop_is_one_finding` pins.
->   - **Two checkers reporting the same event is the gap, and `default_checkers()` is
->     `OrderDependence` and `UndefinedArithmetic`**, which observe disjoint things. So no
->     duplicate is reachable with the checkers that exist.
+> ### The two decisions
 >
-> That makes it a latent hazard rather than a defect: the *third* checker to watch arithmetic gets
-> duplicates the run cannot merge, and `union-pun` is already off-by-default and overlapping in
-> spirit. Either give `Action::Report` a key (the checker knows its own kind and span, which is
-> exactly 023 §6.1's pair) or write down that checkers own their own deduplication. **Do not build
-> the machinery before deciding which** — the first option makes `reported` redundant, the second
-> makes the missing key correct, and doing both would leave two mechanisms for one job.
+> **1. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
+> report is exempt from 023 §6.1. Not reachable today — forks dedup by finding id, one checker's
+> repeats by its own `(kind, span)` memory, and `default_checkers()` ships two checkers that watch
+> disjoint things. Either give `Action::Report` a key (the checker knows its own kind and span,
+> which is exactly §6.1's pair) or write down that checkers own their deduplication. **Do not build
+> both** — the first makes `UbState.reported` redundant, the second makes the missing key correct.
 >
-> **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the model
-> route the call span and the fault's access span coincide for every model that exists) and
-> `map-mandatory` from wave 208 (reaching the `None` branch needs a span outside every file in the
-> map; 010 §6.2 makes `FileId` per-TU, so a map from another TU is the natural fixture).
+> **2. UBSan's slugs.** chiero now spells kinds `signed-overflow`, `division-by-zero`,
+> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`. UBSan spells the same
+> four `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
+> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing its names would
+> make the census rows directly comparable — and it is a rename, so it wants a decision.
+>
+> **With those parked, the next *defects* are the longer-standing capability items below**: symbolic
+> UB checking for programs with real inputs, x87 80-bit floats, symbolic floats, the soak frontier
+> at seed 2000, and `tests/corpus/c/pointer_fields.c`.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1169,6 +1172,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A bound may change how hard chiero tries, never what it finds** (wave 214). `EXPAND_LIMIT`
+> silently switched the initialization check off at a size, so one more array element made a real
+> finding vanish. The fix was not a bigger limit — any limit has a cliff — but downgrading the
+> *form* of the question past it: an opaque `select` the solver may fail to decide, which wave 204's
+> discharge already reports as a `maybe`. **When a bound is reached, degrade the answer, do not
+> withdraw the question.**
+>
+> **A fix can retire a mutant** (wave 214). `always-base-zero` was tracked for nine waves as the one
+> survivor that could lose a finding, and it is now equivalent by construction — the fallback means
+> the seeding choice cannot change a verdict. That is a better outcome than a test for it, and it is
+> worth saying which of the two happened rather than just striking it off the list.
+>
+> **Pin a bound where it is decided, not through a symptom** (wave 214). `expand-unbounded` survived
+> two sweeps because an unbounded expansion is still *correct* — only bigger. The API is public, so
+> the test is four lines in the solver's own suite: 300 stores refused at 256, the same chain
+> accepted at 512. Both directions, or a mutant that always refuses passes.
+>
+> **Measure the cost you claimed was a risk** (wave 214). Sending array-theory questions to the
+> solver was the obvious hazard of this fix, so it got timed both ways — and the first attempt was
+> invalid, because the pre-fix run aborted early on the failing test and ran 14 binaries against 36.
+> `--no-fail-fast` on both sides, then compare.
 >
 > **A filename match is not a dependency** (wave 213). The RED commit predicted the differential
 > oracle would need updating because `generated.rs` contained the string "division by zero". It did
