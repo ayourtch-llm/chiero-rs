@@ -844,7 +844,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔖 Handoff point — waves 239–246: floats are finished
+> ### 🔖 Handoff point — waves 239–248
+>
+> **239–246 were floats, and they are finished.** From "literals only, and some of those wrong" to a
+> complete model of x87's 80-bit format and both narrowings — multiply, exact decimal literals, add
+> and subtract, divide, NaNs, subnormals, narrowing to `float`. About 2.4 million cases against gcc's
+> own arithmetic, no disagreement. `crates/chiero-cir/src/fp.rs` holds it: `unpack` the single decode,
+> `round_to` the single rounding core, `pack` and `to_f32` its two callers. Only *symbolic* floats
+> remain, and those need a solver theory.
+>
+> **245 audited the fall-through hazard** those waves named: of twenty-nine `size_of`/`align_of`
+> fall-throughs in lowering, twenty-eight never fire. It fixed two wrong-number defects in the
+> conditional operator on the way.
+>
+> **247–248 turned §9's oldest open item inside out.** The reproduction carried since wave 200 —
+> `ca[0] = 5; … return ca[0]` solving to 0 — came with a hypothesis and the check that would settle
+> it. Running the check disproved the hypothesis: the array is right at every link, and the 0 is a
+> *fresh unconstrained symbol* the engine invents after discarding a correct value. 248 read the code
+> around it and left two facts and one explicitly-unverified inference.
+>
+> ### What the next context should know
+>
+> **Start at the 🔴 section on `unusable`** — it now carries a verified causal chain, three ranked
+> directions, and the one check still to run. Do the check first; the previous hypothesis in that slot
+> survived forty-six waves because six readers took its conclusion and skipped its check.
+>
+> **The float soak harness is in `scratchpad/`** (`soak.c`, `nsoak.c`, `chk`) and must be built in
+> **debug** — the release build hid a shift-overflow panic for 960,000 cases.
+>
+> **The verification lessons in the rules list are not domain-specific** and each cost real time: a
+> random soak cannot reach a rounding boundary (shrink and enumerate instead), a generator that makes
+> one operand special at a time never reaches the interactions, three hand-picked probes cannot
+> distinguish two rules, `x != x` is no test of *which* NaN, a wrong value and an invented value look
+> identical from outside, and instrumentation's silence is two facts until a control line separates
+> them.
+
+> ### 🔖 Earlier handoff — waves 239–246: floats are finished
 >
 > **Waves 239–244 built `long double`.** From "literals only, and some of those wrong" to a complete
 > finite model of x87's 80-bit format — 239 multiply, 240 exact decimal literals, 241 add and
