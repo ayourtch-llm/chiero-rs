@@ -408,6 +408,46 @@ fn an_x87_literal_is_encoded_in_eighty_bits() {
     }
 }
 
+/// **A hex float literal reaches the bits, past `f64`'s fifty-three.**
+///
+/// Wave 231 made hex literals parse, and wave 235 found the parse still goes through an `f64` — so a
+/// literal needing more than fifty-three significant bits is rounded before the encoder sees it, and
+/// the tie fixtures for `FpTrunc` were measuring that rounding rather than the conversion.
+///
+/// ```text
+///   0x1.00000000000008p0L      chiero 0x3fff8000000000000000   gcc 0x3fff8000000000000400
+/// ```
+///
+/// A hex literal's digits are already binary, so there is nothing to round: a mantissa and a binary
+/// scale describe the value exactly, and x87 has room for sixty-four bits of it. This is the same
+/// seam wave 233 found for the integral decimal path — the front end answering in `f64` when it holds
+/// something wider — and the patterns are gcc's, read out of object bytes.
+#[test]
+fn a_hex_literal_reaches_all_sixty_four_bits() {
+    for (lit, want) in [
+        // 1 + 2^-53 and 1 + 3·2^-53: the two ties `FpTrunc`'s fixtures need intact.
+        ("0x1.00000000000008p0L", "0x3fff8000000000000400"),
+        ("0x1.00000000000018p0L", "0x3fff8000000000000c00"),
+        // Every bit of the significand set, which is the widest a hex literal can be.
+        ("0x1.fffffffffffffffep0L", "0x3fffffffffffffffffff"),
+        // An exponent far outside `f64`'s range, where going through `f64` underflows to zero.
+        ("0x1p-16000L", "0x017f8000000000000000"),
+        // An ordinary one, so the common case is pinned beside the extremes.
+        ("0x1.8p3L", "0x4002c000000000000000"),
+    ] {
+        let t = print(&lower(&format!(
+            "int probe(void){{ long double x = {lit}; return (int)x; }}"
+        )));
+        assert!(
+            t.contains(&format!("fconst:f80:{want}")),
+            "`{lit}` is exact in binary and must arrive whole: {}",
+            t.lines()
+                .find(|l| l.contains("fconst"))
+                .unwrap_or("no fconst emitted")
+        );
+    }
+}
+
 /// **A negative literal is a negation of a positive constant**, so no constant carries a sign.
 ///
 /// Mutation found `x87_bits`'s sign term droppable with nothing noticing, and the reason is this:
