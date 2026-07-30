@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 215) — 1332 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 216) — 1338 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,46 +722,56 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Two decisions to make, and no defect behind either
+> ### 🔴 Three decisions parked, and the next defects are capability items
 >
-> **The symbolic-init area is finished.** Wave 214 closed the last correctness gap in it: past
-> `EXPAND_LIMIT`, `init_guard` returned `None` and `read_term_at` reported nothing, so
-> `struct P pa[4]` reported its padding and `pa[5]` did not — wave 205's `ITE_THRESHOLD` defect one
-> layer in. The bound stays; the refusal is gone. Past the limit the guard is the opaque `select`,
-> the solver may answer `Unknown`, and wave 204's discharge turns that into a `maybe`. Measured for
-> cost: 1m18 before, 1m16 after, same 36 binaries.
+> **Symbolic arithmetic UB is no longer owed.** Wave 215 closed what wave 174 planned and wave 175
+> deliberately skipped: `note_ub` needed both operands concrete, so a program with real inputs
+> produced no arithmetic UB event at all and the run called itself `Exact`.
 >
-> **All three mutants §9 has been tracking since wave 205 are resolved, two of them without a
-> test:**
+> `forced_signed_overflow` asks whether `P ∧ ¬overflow` is **unsatisfiable** — every model of the
+> path overflows — for `Add`, `Sub` and `Mul`. The condition is computed one bit wider (`2w` for
+> `Mul`) and compared against the narrow range, which is C11 6.5p5's definition. `Sat` and
+> `Unknown` stay silent, so the change is monotone: it adds findings and removes none.
 >
->   - **`expand-unbounded` — now killed.** Pinned in `chiero-solver`'s own suite, where the bound
->     is decided, because its only effect is formula size and no symptom reaches four crates out.
->   - **`always-base-zero` — now equivalent by construction.** It was "the one survivor that can
->     lose a finding"; the fallback means the base choice changes the *form* of the question and no
->     longer whether it is asked. The bug class is gone rather than covered.
->   - **`always-opaque` and `expand-forgets-shadowing` survive and are performance or robustness,
->     not correctness.** The expansion is what lets a tier-1 bitvector solver answer without array
->     theory; shadowing needs two stores that may alias with different values, which init writes
->     (all `1`s over a constant base) cannot produce.
+> **The decision §9 asked for, and its answer.** Wave 156's divisor query reports on `Sat`, and that
+> does not transfer: with an unconstrained `x`, `x + 1` is satisfiably overflowing and correct for
+> four billion values, so `Sat` would put a finding on every arithmetic instruction in every program
+> that takes an input. Division by zero needs one specific divisor; overflow needs only a large
+> operand.
 >
-> ### The two decisions
+> ### The three decisions, none of them defects
 >
-> **1. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
-> report is exempt from 023 §6.1. Not reachable today — forks dedup by finding id, one checker's
-> repeats by its own `(kind, span)` memory, and `default_checkers()` ships two checkers that watch
-> disjoint things. Either give `Action::Report` a key (the checker knows its own kind and span,
-> which is exactly §6.1's pair) or write down that checkers own their deduplication. **Do not build
-> both** — the first makes `UbState.reported` redundant, the second makes the missing key correct.
+> **1. Report an overflow the path merely *admits*?** Today: no, and
+> `an_overflow_the_path_merely_admits_is_not_reported` pins that so changing it is a choice rather
+> than a side effect. The argument for yes is wave 156's precedent plus a witness naming the input;
+> the argument against is a finding on every addition in every program with an input. **A
+> `may-overflow` kind, mirroring `may-be-out-of-bounds` and `maybe-uninitialized-read`, is the shape
+> that would make yes tolerable** — the memory channel already has that split and this channel does
+> not.
 >
-> **2. UBSan's slugs.** chiero now spells kinds `signed-overflow`, `division-by-zero`,
-> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`. UBSan spells the same
-> four `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
-> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing its names would
-> make the census rows directly comparable — and it is a rename, so it wants a decision.
+> **2. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
+> report is exempt from 023 §6.1. Not reachable today: forks dedup by finding id, a checker's own
+> repeats by its `(kind, span)` memory, and `default_checkers()` ships two checkers watching
+> disjoint things. Either give `Action::Report` a key or write down that checkers own their
+> deduplication — **not both**, since each makes the other redundant or correct.
 >
-> **With those parked, the next *defects* are the longer-standing capability items below**: symbolic
-> UB checking for programs with real inputs, x87 80-bit floats, symbolic floats, the soak frontier
-> at seed 2000, and `tests/corpus/c/pointer_fields.c`.
+> **3. UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
+> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`; UBSan spells the same four
+> `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
+> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing names would make
+> the census rows directly comparable. It is a rename, so it wants a decision.
+>
+> **The next defects are the capability items below**: x87 80-bit floats, symbolic floats, the soak
+> frontier at seed 2000, and `tests/corpus/c/pointer_fields.c`.
+>
+> **Surviving mutants across the reporting and UB work, recorded rather than filed as tested:**
+> `unknown-reports` and the guard-discharge `Unknown` pair (nothing makes the solver give up, so the
+> tri-state's third outcome is exercised nowhere — a seam to inject an `Unknown` would close several
+> of these at once); `unsigned-too` (dropping the `signed` guard reports nothing anyway, because the
+> query's own `sext` sends large unsigned values back inside the signed range — the guard is defence
+> in depth, which is worth knowing before someone deletes it); `always-opaque` and
+> `expand-forgets-shadowing` (performance and robustness); `stamp-uses-call-span` and
+> `map-mandatory`.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1172,6 +1182,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **When a precedent does not transfer, say why in the code** (wave 215). Wave 156 reports a
+> symbolic divisor on `Sat`; this query asks for `Unsat` of the negation instead, and the difference
+> is one arm of one `match`. Division by zero needs the divisor to be one specific value where
+> overflow needs only a large operand, so the same rule would turn every addition into a finding.
+> A reader who finds the two queries side by side deserves that sentence next to the arm.
+>
+> **A monotone change is easier to justify than a better one** (wave 215). `Sat` and `Unknown` both
+> stay silent, so the query adds findings and removes none, and no existing behaviour had to be
+> re-argued. When a design fork is genuinely open, implementing the half that cannot be wrong keeps
+> the other half a decision instead of a default.
+>
+> **Assert both ends of an asymmetric range** (wave 215). `INT_MAX + 1` must report and `INT_MIN`
+> must not, because the representable extremes are `2^(w-1) - 1` and `-2^(w-1)`. Two mutants
+> survived every fixture in the file for the same reason: they were all off by more than one, and
+> only the exact boundary can see a bound that is off by one.
+>
+> **A surviving mutant sometimes means the guard is defence in depth** (wave 215). Dropping the
+> `signed` check reported nothing anyway, because the query's own `sext` sends large unsigned values
+> back inside the signed range. Recording *why* it survives is what stops the next reader deleting a
+> correct guard on the evidence that nothing failed.
 >
 > **A bound may change how hard chiero tries, never what it finds** (wave 214). `EXPAND_LIMIT`
 > silently switched the initialization check off at a size, so one more array element made a real
