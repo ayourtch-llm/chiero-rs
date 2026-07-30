@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 243) — 1387 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 244) — 1389 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -823,14 +823,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### What is left on floats, in order
 >
->   1. **NaN production and propagation.** Now reachable: `0.0L / 0.0L` is how C makes one, and `div`
->      declines it. Every `fp` unit test currently works around this, and `partial_cmp`/`is_nan`
->      already handle NaNs correctly — what is missing is *minting* one. The question the next wave
->      has to answer is whether a canonical quiet NaN is honest when the payload IEEE-754 §6.2 would
->      propagate is not tracked. It probably is, and the alternative is that every program producing
->      a NaN is a gap; but it is a decision, not an implementation.
->   2. **Subnormals**, at both ends of all four operations. This is the one gap the disjunction test
->      now exercises, and the honest limit as long as it is declared.
+>   1. ~~**NaN production and propagation.**~~ **Done in wave 243, and exactly rather than
+>      approximately.** The open question — whether a canonical quiet NaN is honest when §6.2 wants
+>      the operand's payload — dissolved once the hardware was asked: x87's rule is an invalid
+>      operation giving the "real indefinite" (sign 1, significand `0xC000000000000000`), a single
+>      NaN operand propagating with the quiet bit set and nothing else touched, and two NaN operands
+>      resolving to the larger significand with its own sign. `fp::propagate_nan` and
+>      `fp::INDEFINITE` do that, so there is no approximation and nothing for 023 §7 to declare.
+>      **`sub` tests for a NaN before flipping the sign**, which is the whole of its correctness:
+>      `1 - -NaN` is `-NaN`, and flipping first would differ from x87 in exactly the bit a program
+>      inspecting a NaN can see.
+>   2. **Subnormals**, at both ends of all four operations — now the *only* float gap, and the one
+>      the disjunction test exercises. Honest as long as it is declared, and it is. The work is
+>      denormal shifting on the way out (a result below the smallest normal keeps its bits at a fixed
+>      exponent instead of normalizing) and accepting a denormal operand on the way in, where all
+>      four operations currently return `None` for `exp == 0`.
 >   3. **Symbolic floats** — still needs an FP theory in the solver or a bit-blasted encoding.
 >
 > **The verification pattern, which all four operations used and the next float work should:** exact
@@ -1327,6 +1334,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A test that names a constant instead of a value is testing the name** (wave 243). Every unit test
+> about an invalid operation asserted `Some(fp::INDEFINITE)`, which compares the implementation
+> against itself — flipping the constant's sign bit changed both sides of every assertion at once and
+> the suite passed. The C fixtures were no help either, because `n != n` is true of every NaN whatever
+> its sign: a good test of NaN-*ness* and no test of *which* NaN. **Spell the expected bits out, at
+> least once, somewhere.**
+>
+> **Ask the hardware before deciding an approximation is necessary** (wave 243). §9 had carried an
+> open design question — is a canonical quiet NaN honest when §6.2 wants the operand's payload? — and
+> the answer was that the question does not arise. Nine `printf`s against `volatile` operands showed
+> x87's rule is three lines long and exactly implementable, so there is no approximation and nothing
+> for 023 §7 to declare. **The decision looked like a trade-off and was actually a missing
+> measurement.**
+>
+> **A generator that makes one thing special at a time never reaches the interactions** (wave 243).
+> The soak drew one operand per case as a NaN, infinity or zero — so `∞ - ∞`, `0 × ∞`, `0/0` and
+> `∞/∞`, every invalid operation there is, were reached zero times in 360,000 cases. The tell was wave
+> 222's: three operations reporting *identical* NaN counts, which is impossible if the invalid
+> operations contribute anything. Drawing each operand's class independently fixed it. **Check that a
+> generator's special cases can co-occur, and use a count that must differ to prove it.**
 >
 > **Enumeration can prove a case does not exist, and that is a design input** (wave 242). Division
 > needs neither a tie branch nor a carry branch — enumerating every normalized operand pair at
