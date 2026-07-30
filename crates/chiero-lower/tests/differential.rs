@@ -2698,6 +2698,19 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=1; return (int)sizeof(c ? a : b);");
     agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=1; return (c ? a : b)[1];");
     agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=0; return (c ? a : b)[1];");
+    // **The condition decays as well**, which is a separate sentence of 6.3.2.1 and needs its own
+    // fixture: mutation kept the condition's decay alive through every arm-shaped test above,
+    // because nothing here had ever put an array or a function *in the condition*. An array there
+    // is tested as the pointer it decays to, so it is always true.
+    agree("int a[4]={1,2,3,4}; return a ? 7 : 9;");
+    agree_with("int f(int x){return x+1;}\n", "return f ? 7 : 9;");
+    // **And the else arm on its own.** Every fixture above is symmetric — both arms are arrays, or
+    // both are functions — so the *then* arm's decay alone produced the right common type and the
+    // else arm's could be deleted unnoticed. Here the then arm is an `int` null pointer constant,
+    // so only the else arm can supply the pointer.
+    agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? (int*)0 : a);");
+    // The GNU elvis form, where there is no then arm at all and the type is the else arm's alone.
+    agree("int a[4]={1,2,3,4}; return (int)sizeof(a ?: a);");
     // Through a variable, which is the spelling that already works and the control for it.
     agree_with(
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
