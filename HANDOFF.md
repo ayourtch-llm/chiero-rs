@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 240) — 1379 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 241) — 1381 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -801,6 +801,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > mint. Twelve mutants, all killed; the six that survived the first sweep were all missing fixtures
 > and are recorded in the rules list.
 >
+> **Wave 240 made every decimal literal exact**, so a `long double` now arrives whole no matter how
+> it was spelled — decimal, hexadecimal or integral — and multiplication is the only operation that
+> can compute with it.
+>
 > **Still owed: add, subtract, divide.** Both are harder than multiply in a specific way. Addition
 > needs the operands aligned to a common exponent first, and the bits the alignment shifts out have to
 > be remembered in a sticky bit or the rounding is wrong; it also needs cancellation handled, where
@@ -818,17 +822,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### What else is left
 >
->   1. **The fractional decimal `long double` literal** rounds through `f64`, and `float_literal`'s
->      comment still calls that "a narrowing this records rather than hides" while nothing records it.
->      **Wave 239 moved this to the front of the list, because multiplication changed what it costs.**
->      It was harmless while arithmetic was a gap; now `1e300L * 1e10L > 1e309L` returns a *wrong
->      number*, since `1e309` overflows `f64` to infinity and the comparison asks whether 1e310 exceeds
->      it. One `differential.rs` fixture was rewritten with exact hex literals to keep testing what it
->      says it tests, and the comment there records why. **This is now a wrong-answer defect, not a
->      precision preference** — every decimal literal past `f64`'s range or precision is one. The fix
->      needs decimal-to-binary conversion at sixty-four significand bits, which means a big-integer
->      scaling loop rather than `str::parse::<f64>`; `hex_float_parts` is the shape, without the
->      convenience that a hex literal's exponent is already binary.
+>   1. ~~**The fractional decimal `long double` literal** rounds through `f64`.~~ **Fixed in wave
+>      240.** `chiero_cir::fp::from_decimal` converts the digits themselves with one correct rounding,
+>      and `chiero_sema::decimal_float_parts` hands them over — the same seam `hex_float_parts` uses,
+>      forced by 001 §4 keeping sema below cir and right anyway. It needs a big integer, because a
+>      correctly-rounded conversion at sixty-four significand bits cannot be done in fixed-width
+>      arithmetic: `1e4000`'s exact value is four thousand digits and the rounding depends on all of
+>      them. `fp::Big` is the minimum that admits — digits, scale by ten, shift, compare, subtract.
+>      The division is bounded twice over, to sixty-six quotient bits and starting sixty-six bits from
+>      the end, which is what keeps a 13,000-bit division to sixty-six iterations.
+>
+>      **What is still `f64`-rounded:** `float_literal`'s return value, which is now used for
+>      `X87_80` only when `from_decimal` declines — a value whose nearest `f80` is subnormal. Its
+>      comment no longer claims to record a narrowing it does not. `F32` and `F64` literals go through
+>      `str::parse`, which is correctly rounded for those widths, so they were never affected.
 >   2. **Symbolic floats** — needs an FP theory in the solver or a bit-blasted encoding.
 >   3. **UBSan's slugs** — a preference with a compatibility cost, yours.
 >   4. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600.
@@ -1288,6 +1295,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A fixture that proves the old behaviour wrong is not a fixture that proves the new behaviour
+> right** (wave 240). Nine of thirteen mutants survived the first sweep, and the reason was uniform:
+> every RED fixture was written to fail *before* the fix, so each one asserted a direction rather than
+> a value. `0.1L < 0.1` is satisfied by any conversion landing below the `f64` value — truncation
+> included. `1e309L < 0x1p1030L` is satisfied by anything within two orders of magnitude. **The gap
+> between "not the old wrong answer" and "the right answer" is exactly where a rounding defect lives**,
+> and closing it means naming the exact expected result, which for a float means writing it in hex.
+>
+> **Two waves running, the first mutation sweep found only missing fixtures** (waves 239, 240). Six of
+> twelve, then nine of thirteen — no defects, all fixture gaps. That is now the expected outcome of a
+> RED written to observe a failure, and the sweep is what converts it into a test of the fix. Budget
+> for it: the sweep is not a formality after the GREEN, it is the second half of the GREEN.
+>
+> **A conversion has more than one sticky source, and a fixture usually reaches only one** (wave 240).
+> `from_decimal` discards bits in two places — the quotient's low end when it comes out sixty-six bits
+> wide, and the division's remainder — and a mutant that forgets either one survives everything that
+> only exercises the other. `0.1L` carries sticky in the remainder and `36893488147419103235.0L`
+> carries it in the quotient, with no remainder at all. **When rounding depends on "was anything
+> discarded", enumerate the places something can be discarded.**
 >
 > **A fixture whose reasoning you trusted is a fixture you have not tested** (wave 239). The RED's
 > rounding case squared `1 + 2^-63`; the exact product does not fit in sixty-four bits, so I recorded
