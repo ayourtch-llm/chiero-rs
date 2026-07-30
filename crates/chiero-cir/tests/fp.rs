@@ -512,3 +512,50 @@ fn the_indefinite_is_the_exact_pattern_x87_produces() {
     );
     assert!(fp::is_nan(fp::INDEFINITE) && !fp::is_inf(fp::INDEFINITE));
 }
+
+/// **What a NaN looks like after narrowing to `float`, in bits.**
+///
+/// Every C fixture for this asks `f != f`, which is true of *any* NaN — so all three mutants against
+/// the payload survived a suite that looked thorough. This is the wave 243 lesson again, one format
+/// down: a good test of NaN-ness is no test of which NaN.
+///
+/// The rule was established by soak rather than by inspection, and the first attempt had it
+/// backwards. Three hand-picked NaNs said the payload disappears; all three carried their bits below
+/// the twenty-three that survive, so truncation and a canonical answer looked identical. 480,000
+/// cases against the target disagreed on one in ten.
+#[test]
+fn a_nan_narrowed_to_float_keeps_what_fits_and_is_quieted() {
+    // The twenty-three bits under the integer bit become the fraction.
+    let wide = (0x7fffu128 << 64) | 0xff8c_9f37_9151_afbb;
+    assert_eq!(
+        fp::to_f32(wide),
+        0x7fff_8c9f,
+        "the payload is kept, not replaced with a canonical NaN"
+    );
+    assert_eq!(
+        fp::to_f32(wide | (1 << 79)),
+        0xffff_8c9f,
+        "and the sign comes with it"
+    );
+    // **Quieting is load-bearing, not cosmetic.** A payload living entirely below bit 40 truncates
+    // to nothing, and a `float` with an all-ones exponent and a zero fraction is an *infinity*. So
+    // the quiet bit is forced, and these two would become infinities without it.
+    let low = (0x7fffu128 << 64) | 0x8000_0000_0000_0001;
+    assert_eq!(
+        fp::to_f32(low),
+        0x7fc0_0000,
+        "a NaN must not narrow into an infinity"
+    );
+    assert_ne!(fp::to_f32(low), 0x7f80_0000);
+    let below = (0x7fffu128 << 64) | 0x8000_0000_0100_0000;
+    assert_eq!(fp::to_f32(below), 0x7fc0_0000);
+    // A signalling NaN comes out quiet, with the bits that survive intact.
+    let sig_nan = (0x7fffu128 << 64) | 0x8000_0100_0000_0000;
+    assert_eq!(fp::to_f32(sig_nan), 0x7fc0_0001);
+    // The control: an infinity narrows to an infinity, and is not quietly turned into a NaN.
+    assert_eq!(fp::to_f32((0x7fffu128 << 64) | (1 << 63)), 0x7f80_0000);
+    assert_eq!(
+        fp::to_f32((1u128 << 79) | (0x7fffu128 << 64) | (1 << 63)),
+        0xff80_0000
+    );
+}

@@ -2861,6 +2861,17 @@ fn narrowing_a_long_double_to_float_agrees_with_gcc() {
     // A NaN and an infinity survive the narrowing as themselves.
     agree("long double n = 0.0L/0.0L; float f = (float)n; return (int)(f != f);");
     agree("long double i = 1.0L/0.0L; float f = (float)i; return (int)(f > 0x1p120f);");
+    // **Both signs of infinity**, because the sign is a separate `|` from the exponent and a fix
+    // that dropped it would still answer "very large" for the positive case.
+    agree("long double i = -1.0L/0.0L; float f = (float)i; return (int)(f < -0x1p120f);");
+    // **A rounding that carries out of twenty-four bits.** `0x1.ffffff` is above the midpoint
+    // between the largest `float` under two and two itself, so it rounds up and the significand
+    // overflows into a new power of two — the same carry `f80` needs at sixty-four bits, which is
+    // why `round_to` tests for it two ways. Nothing else here reaches the narrow one.
+    agree("return (int)((float)0x1.ffffffp0L == 2.0f);");
+    agree("return (int)((float)0x1.ffffff0000000000p0L == 2.0f);");
+    // And the value just under it, which must *not* round up. The control for the pair.
+    agree("return (int)((float)0x1.fffffep0L == 0x1.fffffep0f);");
 }
 
 /// **A NaN produced by arithmetic agrees with gcc.**
