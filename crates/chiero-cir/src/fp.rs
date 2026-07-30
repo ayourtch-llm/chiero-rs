@@ -396,7 +396,7 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
     let a_al = u128::from(sa) << 63;
     let b_full = u128::from(sb) << 63;
     let diff = ea - eb;
-    let (b_al, mut sticky) = if diff >= 128 {
+    let (b_al, sticky) = if diff >= 128 {
         (0u128, true)
     } else {
         let d = u32::try_from(diff).ok()?;
@@ -421,7 +421,13 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
     // Renormalize so the significand's integer bit lands at 126, which is where `>> 63` finds it.
     let hb = 127 - i64::from(r.leading_zeros());
     if hb > 126 {
-        sticky |= r & 1 != 0;
+        // **No sticky is collected here, and mutation is why the line that collected one is gone.**
+        // Dropping it changed no answer, so the case was enumerated exhaustively at narrower
+        // significand widths — every significand pair, every exponent difference, both sign
+        // combinations — and it changes nothing there either. The reason: a sum reaches bit 127 only
+        // when the exponents differ by sixty-three or less, and at those differences the aligned
+        // operand still has a zero in bit 0, so there is never a one to shift out. A line that cannot
+        // fire tells the next reader this sticky source matters here, and it does not.
         r >>= 1;
         exp += 1;
     } else if hb < 126 {

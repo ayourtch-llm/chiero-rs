@@ -196,3 +196,67 @@ fn a_decimal_past_the_format_s_range_overflows_or_refuses() {
     assert_eq!(fp::from_decimal("0", 9000, false), Some(0));
     assert_eq!(fp::from_decimal("000", -9000, true), Some(1 << 79));
 }
+
+/// **A zero out of addition has a sign the operands do not decide.**
+///
+/// Two rules from IEEE-754 §6.3, both specific to round-to-nearest, and both invisible to a C fixture
+/// because `-0 == 0` — the only way to see the sign is to look at the bits, which is what this does.
+///
+/// A sum of two zeros is negative *only when both are*: `+0 + -0` is defined to be `+0` rather than
+/// left to the operands. And `x - x` is `+0` for every finite `x`, its own sign included — so the one
+/// case where the result is exactly zero is the one case where the larger operand's sign, which
+/// decides every other result, does not decide this one.
+#[test]
+fn an_exact_zero_from_addition_is_positive_unless_both_operands_were_negative() {
+    let (pz, nz) = (0u128, 1u128 << 79);
+    let neg_one = ONE | (1 << 79);
+    assert_eq!(fp::add(pz, nz), Some(pz), "§6.3: `+0 + -0` is `+0`");
+    assert_eq!(fp::add(nz, pz), Some(pz), "in either order");
+    assert_eq!(fp::add(nz, nz), Some(nz), "and only two negatives make one");
+    assert_eq!(fp::add(pz, pz), Some(pz));
+    // `x - x` is `+0` whatever `x` was, which is the rule that overrides the sign of the larger
+    // operand — and the negative case is the one that shows it, since the positive case would be
+    // satisfied by taking the sign from the operands.
+    assert_eq!(fp::sub(ONE, ONE), Some(pz));
+    assert_eq!(
+        fp::sub(neg_one, neg_one),
+        Some(pz),
+        "`-1 - -1` is `+0`, not `-0`"
+    );
+    assert_eq!(fp::add(ONE, neg_one), Some(pz));
+    assert_eq!(fp::add(neg_one, ONE), Some(pz));
+    // The control: a nonzero result still takes the larger operand's sign.
+    assert_eq!(fp::add(neg_one, 0), Some(neg_one));
+    assert!(
+        fp::sub(ONE, neg_one).is_some_and(|v| v >> 79 == 0),
+        "1 - -1 is +2"
+    );
+}
+
+/// **`∞ - ∞` is a gap; every other infinity in a sum is an answer.**
+///
+/// IEEE-754 §7.2's invalid operation, whose result is a NaN `fp` does not mint — the same refusal
+/// `mul` makes for `0 × ∞`, reached through the other operation. Unreachable from a C fixture without
+/// division, and the plausible wrong answer is a *value*: with the sign test dropped, `∞ - ∞` returns
+/// an infinity that then compares ordered against everything.
+#[test]
+fn adding_opposite_infinities_is_a_gap() {
+    let ninf = INF | (1 << 79);
+    assert_eq!(fp::add(INF, ninf), None, "§7.2's invalid operation");
+    assert_eq!(fp::add(ninf, INF), None, "in either order");
+    assert_eq!(
+        fp::sub(INF, INF),
+        None,
+        "which is the same question spelled as a subtraction"
+    );
+    // The control. Same-sign infinities, and an infinity beside anything finite, are answers.
+    assert_eq!(fp::add(INF, INF), Some(INF));
+    assert_eq!(fp::add(ninf, ninf), Some(ninf));
+    assert_eq!(fp::add(INF, ONE), Some(INF));
+    assert_eq!(fp::add(ONE, ninf), Some(ninf));
+    assert_eq!(fp::sub(ninf, INF), Some(ninf));
+    assert_eq!(fp::add(INF, 0), Some(INF), "and beside a zero");
+    // A NaN anywhere is still a gap, which is checked before the infinities are.
+    assert_eq!(fp::add(NAN, INF), None);
+    assert_eq!(fp::sub(ONE, NAN), None);
+}

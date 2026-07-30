@@ -2635,6 +2635,19 @@ fn adding_long_doubles_agrees_with_gcc() {
     agree("long double a = 1e4000L, b = 1e4000L; return (int)(a + b > 1e4000L);");
     // Carrying out of the significand: `2^64 - 1` plus one is a new power of two.
     agree("long double a = 0x1.fffffffffffffffep0L, b = 0x1p-63L; return (int)(a + b == 0x1p1L);");
+    // **The pair that pins what alignment throws away.** Both subtract something just past the
+    // last bit of `1.0`, and they differ only in whether anything survives below it:
+    //
+    //   `1 - 2^-65`            exactly half an ulp down — a tie, and `1.0` is the even side
+    //   `1 - 2^-65 - 2^-128`   a hair below that tie, so it goes to the *lower* neighbour
+    //
+    // The second is what makes the discarded bits load-bearing: they are gone from the arithmetic,
+    // and forgetting them turns a value below the tie back into the tie itself. The witness came
+    // from enumerating the algorithm exhaustively at a narrower significand width, because a random
+    // search never lands on a tie — two random sixty-four-bit significands hit one with probability
+    // about 2^-62, and a 240,000-case soak against the hardware found nothing here at all.
+    agree("return (int)(1.0L - 0x1p-65L == 1.0L);");
+    agree("return (int)(1.0L - 0x1.0000000000000002p-65L == 0x1.fffffffffffffffep-1L);");
 }
 
 /// **Multiplying two `long double`s agrees with gcc.**
