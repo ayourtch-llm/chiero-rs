@@ -2477,3 +2477,36 @@ fn narrowing_long_double_to_double_agrees_with_gcc() {
     // held by `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled`, which already
     // carries the fixture and accepts either a right answer or a stated limitation.
 }
+
+/// **Comparing two `long double`s agrees with gcc.**
+///
+/// The last x87 step before arithmetic, and the cheapest: an ordered comparison is decidable on the
+/// patterns themselves. Same sign, compare the exponent and then the significand; different signs,
+/// the negative one is smaller. No significand arithmetic and no soft-float.
+///
+/// **The fixture that matters is the one whose operands differ past `f64`.** `0x1.00000000000008p0L`
+/// is `1 + 2^-53`, which rounds to `1.0` — so an implementation that compares by narrowing to `f64`
+/// first calls it *equal* to `1.0L` and gets `>` wrong. Wave 236 is what makes that fixture possible:
+/// before it, the literal was already rounded and no test could tell the two approaches apart.
+///
+/// NaN is the other half. IEEE-754 §5.11 makes every ordered comparison with a NaN false, including
+/// `x == x`, and `!=` true — so `unordered` is not just "some answer" but a specific one for each
+/// operator.
+#[test]
+fn comparing_long_doubles_agrees_with_gcc() {
+    agree("long double a = 1.0L, b = 2.0L; return (int)(a < b);");
+    agree("long double a = 1.0L, b = 2.0L; return (int)(a > b);");
+    agree("long double a = 2.0L, b = 2.0L; return (int)(a == b);");
+    agree("long double a = 2.0L, b = 2.0L; return (int)(a <= b);");
+    // Signs, where the pattern comparison has to reverse.
+    agree("long double a = -1.0L, b = 1.0L; return (int)(a < b);");
+    agree("long double a = -2.0L, b = -1.0L; return (int)(a < b);");
+    // Both zeros, which are equal despite differing in the sign bit.
+    agree("long double a = 0.0L, b = -0.0L; return (int)(a == b);");
+    // **Differing only past `f64`'s fifty-three bits**, so narrowing to compare gets it wrong.
+    agree("long double a = 0x1.00000000000008p0L, b = 1.0L; return (int)(a > b);");
+    agree("long double a = 0x1.00000000000008p0L, b = 1.0L; return (int)(a == b);");
+    // A NaN: every ordered comparison is false and `!=` is true, `x == x` included.
+    agree("long double a = 0.0L / 0.0L; return (int)(a == a);");
+    agree("long double a = 0.0L / 0.0L; return (int)(a != a);");
+}
