@@ -242,6 +242,41 @@ pub fn is_zero(bits: u128) -> bool {
     (bits >> 64) & INF_EXP == 0 && bits & u128::from(u64::MAX) == 0
 }
 
+/// **x87's "real indefinite"**, the NaN every invalid operation produces: negative, with the quiet bit
+/// set and nothing else.
+///
+/// IEEE-754 §6.2 leaves the payload of a newly created NaN to the implementation, so this is x87's
+/// choice rather than the format's requirement — read off a running program, not a manual.
+pub const INDEFINITE: u128 = (1u128 << 79) | (INF_EXP << 64) | 0xC000_0000_0000_0000;
+
+/// The NaN an operation returns when at least one operand is one, or `None` when neither is.
+///
+/// **Exact, which is why no operation here mints a canonical NaN.** §6.2 says the result should carry
+/// the payload of one of the NaN operands, and x87 makes that concrete in a way small enough to
+/// reproduce: the surviving NaN is the one with the larger significand, it keeps its own sign, and
+/// the quiet bit is set on the way out — so a *signalling* NaN becomes the quiet NaN with the same
+/// payload rather than passing through untouched.
+fn propagate_nan(x: u128, y: u128) -> Option<u128> {
+    let (nx, ny) = (is_nan(x), is_nan(y));
+    if !nx && !ny {
+        return None;
+    }
+    // With two, the larger significand wins — sign and all. With one, it is the only candidate.
+    let pick = if nx && ny {
+        if (x & u128::from(u64::MAX)) >= (y & u128::from(u64::MAX)) {
+            x
+        } else {
+            y
+        }
+    } else if nx {
+        x
+    } else {
+        y
+    };
+    // Quieting is bit 62 of the significand, which is what makes a signalling NaN stop signalling.
+    Some(pick | (1u128 << 62))
+}
+
 /// The product of two patterns, rounded to nearest with ties to even.
 ///
 /// **Exact before it rounds, which is what makes multiplication the operation to do first.** Two
@@ -260,14 +295,14 @@ pub fn is_zero(bits: u128) -> bool {
 pub fn mul(x: u128, y: u128) -> Option<u128> {
     let neg = (x >> 79 & 1) ^ (y >> 79 & 1) == 1;
     let sign = u128::from(neg) << 79;
-    if is_nan(x) || is_nan(y) {
-        return None;
+    if let Some(n) = propagate_nan(x, y) {
+        return Some(n);
     }
     let (inf_x, inf_y) = (is_inf(x), is_inf(y));
     let (zero_x, zero_y) = (is_zero(x), is_zero(y));
     if (inf_x && zero_y) || (inf_y && zero_x) {
-        // 0 × ∞ is the invalid operation, and its result is a NaN this does not mint.
-        return None;
+        // §7.2's invalid operation, and as of wave 243 its result is the NaN the hardware gives.
+        return Some(INDEFINITE);
     }
     if inf_x || inf_y {
         return Some(sign | (INF_EXP << 64) | (1u128 << 63));
@@ -351,15 +386,14 @@ pub fn is_inf(bits: u128) -> bool {
 /// invalid operation), and a subnormal result — the same three [`mul`] declines and for the same
 /// reasons.
 pub fn add(x: u128, y: u128) -> Option<u128> {
-    if is_nan(x) || is_nan(y) {
-        return None;
+    if let Some(n) = propagate_nan(x, y) {
+        return Some(n);
     }
     let (nx, ny) = (x >> 79 & 1 == 1, y >> 79 & 1 == 1);
     let (ix, iy) = (is_inf(x), is_inf(y));
     if ix && iy {
-        // Same sign is that infinity; opposite signs are §7.2's invalid operation, whose result is
-        // a NaN this does not mint.
-        return if nx == ny { Some(x) } else { None };
+        // Same sign is that infinity; opposite signs are §7.2's invalid operation.
+        return Some(if nx == ny { x } else { INDEFINITE });
     }
     if ix {
         return Some(x);
@@ -487,16 +521,15 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
 /// §7.3 makes it a defined operation whose result is an infinity, which is a value chiero must
 /// produce rather than a fault it should report.
 pub fn div(x: u128, y: u128) -> Option<u128> {
-    if is_nan(x) || is_nan(y) {
-        return None;
+    if let Some(n) = propagate_nan(x, y) {
+        return Some(n);
     }
     let neg = (x >> 79 & 1) ^ (y >> 79 & 1) == 1;
     let sign = u128::from(neg) << 79;
     let inf = sign | (INF_EXP << 64) | (1u128 << 63);
     let (ix, iy) = (is_inf(x), is_inf(y));
     if ix && iy {
-        // §7.2's invalid operation, whose result is a NaN this does not mint.
-        return None;
+        return Some(INDEFINITE);
     }
     if ix {
         return Some(inf);
@@ -507,7 +540,8 @@ pub fn div(x: u128, y: u128) -> Option<u128> {
     }
     let (zx, zy) = (is_zero(x), is_zero(y));
     if zx && zy {
-        return None;
+        // §7.2 again: `0/0` is invalid where `x/0` is merely division by zero.
+        return Some(INDEFINITE);
     }
     if zy {
         // §7.3's divideByZero: a defined operation returning an infinity, not a fault.
@@ -580,6 +614,14 @@ pub fn div(x: u128, y: u128) -> Option<u128> {
 /// routine would duplicate the alignment and normalization to no purpose and give the two operations
 /// separate bugs.
 pub fn sub(x: u128, y: u128) -> Option<u128> {
+    // **The NaN check comes before the flip, and the hardware is why.** `1 - NaN` returns that NaN
+    // with the sign it arrived with; flipping first would hand `propagate_nan` an operand whose sign
+    // had already been changed, and the result would differ from x87 in exactly the bit a program
+    // that inspects a NaN can see. Every other operand is unaffected, since negating a number twice
+    // is a no-op and this only negates once.
+    if let Some(n) = propagate_nan(x, y) {
+        return Some(n);
+    }
     add(x, y ^ (1u128 << 79))
 }
 

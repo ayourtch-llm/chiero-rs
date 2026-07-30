@@ -116,19 +116,34 @@ fn a_product_overflows_to_infinity_and_underflows_to_a_gap() {
     assert!(fp::mul(f80(9_000, 1 << 63, false), f80(9_000, 1 << 63, false)).is_some());
 }
 
-/// **Zero times infinity is a gap, and it is the only zero that is.**
+/// **Zero times infinity is the indefinite, and it is the only zero product that is not a zero.**
 ///
-/// IEEE-754 §7.2 makes it an invalid operation whose result is a NaN. Nothing in `fp` mints NaNs, so
-/// the honest answer is that there is not one — and the two plausible wrong answers are both *values*
-/// a reader would believe: the zero the first operand suggests and the infinity the second does.
+/// IEEE-754 §7.2's invalid operation. Wave 243 turned this from a declared gap into x87's own answer:
+/// the "real indefinite", which is negative and carries the quiet bit and nothing else. The two
+/// plausible wrong answers are still both *values* a reader would believe — the zero the first
+/// operand suggests and the infinity the second does — so the assertion is on the exact pattern
+/// rather than merely on "it is a NaN".
 ///
-/// The control matters as much: an ordinary zero product must still be a zero, or a fix that refused
-/// every zero would satisfy the assertion above and take multiplication by zero out of the engine.
+/// The control matters as much: an ordinary zero product must still be a zero, or a fix that made
+/// every zero indefinite would satisfy the assertion above and take multiplication by zero out of
+/// the engine.
 #[test]
-fn zero_times_infinity_is_a_gap_but_zero_times_a_number_is_not() {
-    assert_eq!(fp::mul(0, INF), None, "IEEE-754 §7.2's invalid operation");
-    assert_eq!(fp::mul(INF, 0), None, "in either order");
-    assert_eq!(fp::mul(1 << 79, INF), None, "and for the negative zero too");
+fn zero_times_infinity_is_the_indefinite_but_zero_times_a_number_is_not() {
+    assert_eq!(
+        fp::mul(0, INF),
+        Some(fp::INDEFINITE),
+        "§7.2's invalid operation"
+    );
+    assert_eq!(fp::mul(INF, 0), Some(fp::INDEFINITE), "in either order");
+    assert_eq!(
+        fp::mul(1 << 79, INF),
+        Some(fp::INDEFINITE),
+        "and for the negative zero too"
+    );
+    assert!(
+        fp::is_nan(fp::INDEFINITE),
+        "which is a NaN, whatever else it is"
+    );
     // The control. An ordinary zero product is a zero, signed by the operands.
     assert_eq!(fp::mul(0, ONE), Some(0));
     assert_eq!(fp::mul(0, ONE | (1 << 79)), Some(1 << 79), "0 × -1 is -0");
@@ -139,19 +154,48 @@ fn zero_times_infinity_is_a_gap_but_zero_times_a_number_is_not() {
     assert_eq!(fp::mul(INF, ONE | (1 << 79)), Some(INF | (1 << 79)));
 }
 
-/// **A NaN operand is a gap, because `mul` has no NaN to return.**
+/// **A NaN operand comes back out, and it is the same NaN.**
 ///
-/// §6.2 says a product with a NaN operand is that NaN, payload and all. `fp` does not propagate
-/// payloads, so producing *some* NaN would be inventing one — and the alternative a mutant reaches
-/// for is worse: with the check removed, a NaN's all-ones exponent falls through to the infinity arm
-/// and `NaN × 2` becomes an infinity, which compares ordered against everything.
+/// This test used to assert `None` — "a gap, because `mul` has no NaN to return" — and it was right
+/// when it was written, before division made a NaN reachable from C at all. Wave 243 gave `fp` the
+/// hardware's own rule, so what was a declared gap is now an exact value, and the assertion had to
+/// change with it. That is the same thing wave 237 found in the other direction: **a new capability
+/// makes existing assertions wrong, and the honest ones fail loudly rather than quietly passing.**
+///
+/// Three claims, each of which a canonical NaN would break: the payload survives, the sign survives,
+/// and a signalling NaN comes out quiet.
 #[test]
-fn a_nan_operand_is_a_gap_rather_than_an_infinity() {
-    assert_eq!(fp::mul(NAN, ONE), None);
-    assert_eq!(fp::mul(ONE, NAN), None);
-    assert_eq!(fp::mul(NAN, NAN), None);
-    assert_eq!(fp::mul(NAN, INF), None, "not the infinity either");
-    assert_eq!(fp::mul(NAN, 0), None, "and not the zero");
+fn a_nan_operand_comes_back_with_its_payload() {
+    let payload = (0x7fffu128 << 64) | 0xC000_0000_0000_0123;
+    assert_eq!(
+        fp::mul(payload, ONE),
+        Some(payload),
+        "the payload is not a detail to round off"
+    );
+    assert_eq!(fp::mul(ONE, payload), Some(payload), "in either order");
+    assert_eq!(
+        fp::mul(payload | (1 << 79), ONE),
+        Some(payload | (1 << 79)),
+        "and the NaN's own sign, not the product's — `-NaN × 1` is `-NaN`, not `-NaN` by accident"
+    );
+    // A signalling NaN — quiet bit clear — comes out with it set and nothing else touched.
+    let signalling = (0x7fffu128 << 64) | 0x8000_0000_0000_0123;
+    assert_eq!(
+        fp::mul(signalling, ONE),
+        Some(payload),
+        "quieted, and only quieted"
+    );
+    // With two, the larger significand wins.
+    let bigger = (0x7fffu128 << 64) | 0xC000_0000_000A_BCDE;
+    assert_eq!(fp::mul(payload, bigger), Some(bigger));
+    assert_eq!(
+        fp::mul(bigger, payload),
+        Some(bigger),
+        "which makes the choice order-independent"
+    );
+    // A NaN beside anything at all is still that NaN.
+    assert_eq!(fp::mul(payload, INF), Some(payload), "not the infinity");
+    assert_eq!(fp::mul(payload, 0), Some(payload), "and not the zero");
 }
 
 /// **A decimal literal past x87's range is an infinity at the top and a gap at the bottom.**
@@ -233,20 +277,23 @@ fn an_exact_zero_from_addition_is_positive_unless_both_operands_were_negative() 
     );
 }
 
-/// **`∞ - ∞` is a gap; every other infinity in a sum is an answer.**
+/// **`∞ - ∞` is the indefinite; every other infinity in a sum is an answer.**
 ///
-/// IEEE-754 §7.2's invalid operation, whose result is a NaN `fp` does not mint — the same refusal
-/// `mul` makes for `0 × ∞`, reached through the other operation. Unreachable from a C fixture without
-/// division, and the plausible wrong answer is a *value*: with the sign test dropped, `∞ - ∞` returns
-/// an infinity that then compares ordered against everything.
+/// IEEE-754 §7.2's invalid operation — the same one `mul` reaches through `0 × ∞`, arrived at by the
+/// other operation and giving the same pattern. The plausible wrong answer is a *value*: with the
+/// sign test dropped, `∞ - ∞` returns an infinity that then compares ordered against everything.
 #[test]
-fn adding_opposite_infinities_is_a_gap() {
+fn adding_opposite_infinities_is_the_indefinite() {
     let ninf = INF | (1 << 79);
-    assert_eq!(fp::add(INF, ninf), None, "§7.2's invalid operation");
-    assert_eq!(fp::add(ninf, INF), None, "in either order");
+    assert_eq!(
+        fp::add(INF, ninf),
+        Some(fp::INDEFINITE),
+        "§7.2's invalid operation"
+    );
+    assert_eq!(fp::add(ninf, INF), Some(fp::INDEFINITE), "in either order");
     assert_eq!(
         fp::sub(INF, INF),
-        None,
+        Some(fp::INDEFINITE),
         "which is the same question spelled as a subtraction"
     );
     // The control. Same-sign infinities, and an infinity beside anything finite, are answers.
@@ -256,28 +303,56 @@ fn adding_opposite_infinities_is_a_gap() {
     assert_eq!(fp::add(ONE, ninf), Some(ninf));
     assert_eq!(fp::sub(ninf, INF), Some(ninf));
     assert_eq!(fp::add(INF, 0), Some(INF), "and beside a zero");
-    // A NaN anywhere is still a gap, which is checked before the infinities are.
-    assert_eq!(fp::add(NAN, INF), None);
-    assert_eq!(fp::sub(ONE, NAN), None);
+    // A NaN anywhere is that NaN, which is decided before the infinities are.
+    assert_eq!(fp::add(NAN, INF), Some(NAN | (1 << 62)));
+    assert_eq!(fp::sub(ONE, NAN), Some(NAN | (1 << 62)));
+    // **`sub` propagates the NaN it was given, not the one it would have negated.** `1 - -NaN` is
+    // `-NaN`: the sign the operand arrived with, which is what x87 does and what flipping before the
+    // NaN test would get wrong in exactly the bit a program inspecting a NaN can see.
+    let nneg = NAN | (1 << 79);
+    assert_eq!(
+        fp::sub(ONE, nneg),
+        Some(nneg | (1 << 62)),
+        "the sign is not flipped on the way"
+    );
+    assert_eq!(
+        fp::sub(ONE, NAN),
+        Some(NAN | (1 << 62)),
+        "and a positive one stays positive"
+    );
 }
 
-/// **The three ways a division has no answer, and the one that looks like a fourth but is not.**
+/// **The invalid operations, the subnormal gap, and the one that looks like both and is neither.**
 ///
-/// `0/0` and `∞/∞` are IEEE-754 §7.2's invalid operations, whose results are NaNs `fp` does not mint.
+/// `0/0` and `∞/∞` are IEEE-754 §7.2's invalid operations, whose result is x87's indefinite.
 /// A quotient below the format's floor is a subnormal, the gap every operation here declines. And
 /// **division by zero is not one of them**: §7.3 makes it a defined operation returning an infinity,
 /// so a fix that lumped it in with `0/0` would turn a value into a refusal.
 ///
-/// None of the four is reachable from a C fixture. `agree` compares values, so a declared gap fails
-/// it on principle, and gcc folds an out-of-range constant quotient before chiero sees the program.
+/// The subnormal quotient is not reachable from a C fixture — `agree` compares values and a declared
+/// gap is not one — and gcc folds an out-of-range constant quotient before chiero sees the program.
+/// The NaN cases became reachable in wave 243 and are covered from C as well; they are here too
+/// because only the bits show *which* NaN came back.
 #[test]
-fn division_declines_the_invalid_operations_but_not_division_by_zero() {
+fn division_answers_the_invalid_operations_with_the_indefinite_and_zero_with_an_infinity() {
     let (pz, nz) = (0u128, 1u128 << 79);
     let ninf = INF | (1 << 79);
-    assert_eq!(fp::div(pz, pz), None, "§7.2: `0/0` is invalid");
-    assert_eq!(fp::div(nz, pz), None, "whatever the zeros' signs");
-    assert_eq!(fp::div(INF, INF), None, "§7.2: `∞/∞` is invalid");
-    assert_eq!(fp::div(INF, ninf), None);
+    assert_eq!(
+        fp::div(pz, pz),
+        Some(fp::INDEFINITE),
+        "§7.2: `0/0` is invalid"
+    );
+    assert_eq!(
+        fp::div(nz, pz),
+        Some(fp::INDEFINITE),
+        "whatever the zeros' signs"
+    );
+    assert_eq!(
+        fp::div(INF, INF),
+        Some(fp::INDEFINITE),
+        "§7.2: `∞/∞` is invalid"
+    );
+    assert_eq!(fp::div(INF, ninf), Some(fp::INDEFINITE));
     // §7.3: dividing a *nonzero* by zero is an infinity, signed by both operands.
     assert_eq!(
         fp::div(ONE, pz),
@@ -299,13 +374,13 @@ fn division_declines_the_invalid_operations_but_not_division_by_zero() {
     // Infinite over finite is that infinity.
     assert_eq!(fp::div(INF, ONE), Some(INF));
     assert_eq!(fp::div(ninf, ONE), Some(ninf));
-    // A NaN anywhere is a gap, and it is decided before any of the above.
-    assert_eq!(fp::div(NAN, ONE), None);
-    assert_eq!(fp::div(ONE, NAN), None);
+    // A NaN anywhere is that NaN, and it is decided before any of the above.
+    assert_eq!(fp::div(NAN, ONE), Some(NAN | (1 << 62)));
+    assert_eq!(fp::div(ONE, NAN), Some(NAN | (1 << 62)));
     assert_eq!(
         fp::div(NAN, pz),
-        None,
-        "even where `0` would otherwise give an infinity"
+        Some(NAN | (1 << 62)),
+        "even where a `0` divisor would otherwise give an infinity"
     );
 }
 
