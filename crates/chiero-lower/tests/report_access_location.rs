@@ -149,8 +149,11 @@ fn without_a_source_map_nothing_is_stamped() {
         .with_entry("probe")
         .run(&mut arena)
         .findings();
+    // **The marker, not the path.** Asserting the absence of `t.c:` let a mutant through that
+    // stamped `(at ?:85:1)` when it had no map — an invented location that happens not to name
+    // this fixture's file. What must be absent is the stamp itself.
     assert!(
-        f.iter().all(|m| !m.contains("t.c:")),
+        f.iter().all(|m| !m.contains("(at ")),
         "a run with no map must not invent a location: {f:?}"
     );
 }
