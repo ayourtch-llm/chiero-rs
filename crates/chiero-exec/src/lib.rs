@@ -1160,6 +1160,19 @@ pub enum Action {
 
 impl Action {
     /// The common case, spelled so a checker does not have to build a `String` inline.
+    ///
+    /// **Deduplication is the checker's, not the engine's** (023 §6.1, settled in wave 225). A
+    /// report made here carries no §6.1 key, so the engine merges only a *fork's* copies of one
+    /// report — by id, because those are one report that a branch duplicated. Two reports from one
+    /// checker are two findings however alike they look.
+    ///
+    /// That is deliberate rather than unfinished. A checker may have two distinct things to say
+    /// about one instruction at one span, and the engine cannot tell that from the same thing said
+    /// twice; the checker can, because it knows what it was looking for. The mechanism is
+    /// `CheckerState`: keep what you have already reported and return nothing the second time.
+    /// `chiero_check::UndefinedArithmetic` does this with a `(kind, span)` list, and
+    /// `chiero-check/tests/report_dedup.rs` pins both halves — the engine inventing no key, and a
+    /// checker with memory reporting once.
     pub fn report(msg: impl Into<String>) -> Action {
         Action::Report(msg.into())
     }
