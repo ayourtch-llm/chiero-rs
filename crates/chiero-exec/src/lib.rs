@@ -2833,6 +2833,26 @@ impl<'m> Engine<'m> {
                 // the difference between an input and *the* input.
                 requires: vec![overflows],
             });
+            return;
+        }
+        // **The weaker claim, only when the caller asked for it** (`with_admitted_overflow`).
+        //
+        // Reached only when the path does *not* force the overflow, because the branch above
+        // returns — so one operation yields at most one event and the two kinds can never both
+        // describe the same site. That is what makes 023 §6.1's dedup key meaningful here: a
+        // reader grouping by kind is grouping by certainty.
+        //
+        // `Sat` and not "anything other than `Unsat`": an `Unknown` is a question nobody settled,
+        // and the weaker *kind* is still a claim that some input overflows. Wave 216's rule — the
+        // third outcome is not the second one.
+        if self.admitted_overflow && matches!(self.probe(a, s, &[overflows]), CheckResult::Sat(..))
+        {
+            s.ub.push(UbEvent {
+                kind: UbKind::MaybeSignedOverflow,
+                span,
+                detail: format!("{op:?} overflows for some value this path allows"),
+                requires: vec![overflows],
+            });
         }
     }
 
