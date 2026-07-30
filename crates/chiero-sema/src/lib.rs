@@ -1822,6 +1822,11 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
 /// two, which is exact for any mantissa `f64` can hold. A literal needing more than 53 significant
 /// bits rounds here, which is the same narrowing decimal literals have and not a new one.
 fn hex_float(lower: &str) -> Option<f64> {
+    // `0x` first, then the suffix. The order is not load-bearing — for any *valid* hex float the
+    // mandatory `p` exponent puts a decimal digit between the mantissa and the suffix, so trimming
+    // `f`/`l` can never eat a hex digit — and mutation says so: swapping the two changes nothing.
+    // It reads better this way and the comment is here so the next reader does not go looking for
+    // the trap I thought I had avoided.
     let body = lower.strip_prefix("0x")?.trim_end_matches(['f', 'l']);
     // The exponent is mandatory in C for a hex float; without it the literal is not one, which
     // `looks_float` has already decided.
@@ -1834,9 +1839,10 @@ fn hex_float(lower: &str) -> Option<f64> {
     for c in int_part.chars().chain(frac_part.chars()) {
         m = m.checked_mul(16)?.checked_add(u64::from(c.to_digit(16)?))?;
     }
-    // A `+` is allowed and means nothing; a `-` is not, and `i32::from_str_radix` rejects both
-    // silently if they arrive as part of the digits.
-    let e: i32 = exp.strip_prefix('+').unwrap_or(exp).parse().ok()?;
+    // C allows a sign on the exponent and `i32::from_str` accepts both, `+3` included — so there
+    // is nothing to strip. I wrote a `strip_prefix('+')` here on the assumption that it did not,
+    // and mutation showed the line was dead: removing it changed nothing, including for `0x1p+3`.
+    let e: i32 = exp.parse().ok()?;
     // Every fraction digit is four binary places below the point.
     let scale = e.checked_sub(4i32.checked_mul(i32::try_from(frac_part.len()).ok()?)?)?;
     Some(m as f64 * 2f64.powi(scale))

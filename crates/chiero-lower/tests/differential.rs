@@ -2313,4 +2313,8 @@ fn a_hex_float_literal_agrees_with_gcc() {
     agree("return (int)(0x1p10 + 1);");
     // Upper-case `P` and `X`, which C admits and a parser keyed on the lower-case spelling misses.
     agree("return (int)0X1P3;");
+    // An explicitly positive exponent. C allows the sign and it means nothing, so a parser that
+    // hands `+3` to an integer parse without stripping the sign fails on a literal that looks
+    // ordinary — mutation found this one missing.
+    agree("return (int)0x1p+3;");
 }
