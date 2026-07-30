@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 247) — 1393 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 248) — 1393 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -673,7 +673,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > important in the crate. TDD against 050 contracts 1, 2 and 4b. **Ranked after 1 and 2**:
 > the user's stated pain is defects slowing progress, and the CLI does not address it.
 >
-> ### 🔴 Both oracles are per-site and per-kind. Do this first: an intermittent failure
+> ### ✅ The intermittent solver failure — diagnosed and fixed in wave 246
 >
 > One full-suite run failed
 > `a_subset_of_a_satisfiable_set_is_satisfiable_with_no_backend_call` (wave 185). It then
@@ -681,14 +681,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > reproduced and not diagnosed. Written down because a flake nobody records is a flake
 > rediscovered from scratch.
 >
-> The hypothesis, untested: the SMT backend carries a 10-second watchdog (wave 163), wave
-> 185 added ~19s of parallel test work, and a subprocess that exceeds the watchdog answers
-> `Unknown` — which is exactly the assertion that failed. If so the fix is to give that test
-> a longer `$CHIERO_SMT_TIMEOUT` rather than to chase the solver. **Check the timeout
-> hypothesis before assuming a solver defect**, and if it is right, note that every test
-> asserting `Sat`/`Unsat` under load has the same exposure.
+> **The hypothesis was right.** Wave 246 reproduced it deterministically — twelve spinners on a
+> twelve-core box make exactly two tests fail every run — and both assert `Sat` on a cold query as
+> *setup*, so 022 §4's watchdog fires and the assertion about caching never gets its chance. An
+> undecided setup now **skips**, as a missing backend already did in that file. The exposure the note
+> predicted is real and general: **any test asserting `Sat`/`Unsat` on a cold query is a wall-clock
+> dependency**, and the `cold_sat` helper in `crates/chiero-solver/tests/cache.rs` is the shape to
+> reuse.
 >
-> ### 🔴 Do this first: `arr.data` at read time lacks its seeding stores
+> ### 🔴 Do this first: a `maybe` about definedness discards a value about contents
+>
+> **Wave 247 ran the check this section asked for and the answer was no.** What follows the rule is
+> the corrected chain; the old hypothesis is kept below it because the *method* that disproved it is
+> the reusable part.
+>
+> Every link is now instrumented rather than argued:
+>
+> ```text
+>   PROMOTE-SET obj=ObjectId(4) data=Term(192) select0_ground=Some(5)   <- the seed holds 5
+>   WRITE-3287  before=Term(192) after=Term(204)   <- the symbolic store, over that array
+>   READ        obj=ObjectId(4) data=Term(204)     <- the read sees that chain
+>   READ-BYTE   obj=ObjectId(4) b=0 data=Term(204) <- and builds select(Term(204), 0)
+>   DISCARDED   faults=["MaybeUninitialized"]      <- and the engine throws the value away
+> ```
+>
+> The load gets a **value and a fault**. `r.value.filter(|_| !unusable(&r.faults))` discards the
+> value because `yields_unknown_value` lists `MaybeUninitialized`, and the engine then mints a fresh
+> unconstrained symbol and degrades to `Unknown`. "Solves to 0, not 5" was never a stale array — it
+> was a *free variable* being reported as a value, and the solver picking 0.
+>
+> **The design question, stated so the next wave does not rediscover it.** A `maybe` about
+> *definedness* and a value about *contents* are different claims. The model knows byte 0 holds 5 and
+> is separately unsure whether reading it is defined, because the init chain after a symbolic store is
+> 512 nodes and `init_guard` gives up past `EXPAND_LIMIT`. Reporting the `maybe` is right; replacing
+> the value is what turns a program that has an answer into one that reports another.
+>
+> **Why it was not fixed in 247:** `unusable` gates every `maybe`-uninitialized read in the engine, so
+> changing its meaning needs its own fixtures — including ones that catch it going the *other* way,
+> since wave 195's invented `uninitialized-read` is what this conservatism was built against. The
+> reproduction is `a_concrete_byte_written_before_promotion_survives_it` in
+> `crates/chiero-lower/tests/symbolic_offset_store.rs`, `#[ignore]`d with the chain in its doc comment.
+>
+> ### ~~🔴 `arr.data` at read time lacks its seeding stores~~ — DISPROVED in wave 247
 >
 > The open case is unchanged in behaviour and much narrower in cause. Wave 201 instrumented
 > instead of reasoning and **eliminated three explanations**:
