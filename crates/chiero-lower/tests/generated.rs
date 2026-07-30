@@ -297,6 +297,12 @@ struct Gen {
     /// the old streams, and a second flag would double the combinations without covering a shape
     /// the union does not.
     extended: bool,
+    /// How deep inside a loop or `switch` body the generator currently is.
+    ///
+    /// The `if` arm has recursed through `nested` since it was written, and bounding *loop* bodies
+    /// matters more: three nested loops of four iterations each is sixty-four passes, and a
+    /// comparison that takes a second is a comparison nobody runs.
+    nest: u32,
     /// **Allow a zero divisor.** Off for every channel that compares *values*, for the same
     /// reason `memory_ub` is: `x / 0` is undefined, so `judge` discards the program and the
     /// value differential learns nothing from it.
@@ -337,6 +343,7 @@ impl Gen {
             global_ptrs: Vec::new(),
             memory_ub: false,
             extended: false,
+            nest: 0,
             div_zero: false,
             heaps: Vec::new(),
             escaped: Vec::new(),
@@ -1142,7 +1149,24 @@ impl Gen {
                     // grammar had never emitted. It is the one place a loop's *increment* still
                     // runs while the rest of the body does not — distinct from `break`, and
                     // distinct again in a `do`-`while`, where `continue` jumps to the condition.
-                    if self.extended && self.rng.chance(2) {
+                    // **An arbitrary body, which is what makes the arms compose.** Waves 218-220
+                    // added `switch`, `do`-`while`, `goto`, `continue` and the wider expression
+                    // leaves, and every one of them agreed with gcc on its own; the single defect
+                    // those three waves found came from an *interaction* — a `_Bool` accumulator
+                    // inside a `do`-`while`. A loop whose body was one compound assignment could
+                    // not produce another one, so "a `goto` out of a `switch` inside a loop" was
+                    // unreachable by construction rather than by chance.
+                    //
+                    // The accumulate stays alongside the nested statements, so the loop still
+                    // contributes to the checksum whatever the body does.
+                    if self.extended && self.nest < 2 && self.rng.chance(2) {
+                        let _ = writeln!(self.body, "  for (int {i} = 0; {i} < {n}; {i}++) {{");
+                        self.nest += 1;
+                        self.nested();
+                        self.nest -= 1;
+                        let _ = writeln!(self.body, "  {} += {e};", v.name);
+                        let _ = writeln!(self.body, "  }}");
+                    } else if self.extended && self.rng.chance(2) {
                         let k = self.rng.below(n.max(1));
                         let _ = writeln!(
                             self.body,
@@ -1199,6 +1223,16 @@ impl Gen {
             // `switch` different from a chain of `if`s.
             if c == 1 {
                 let _ = writeln!(self.body, "  case {c}:");
+            } else if self.extended && self.nest < 2 && self.rng.chance(3) {
+                // **A `switch` arm with a block in it.** `break` inside a nested `switch` binds to
+                // the inner one and a `continue` inside a loop-inside-a-case binds to the loop —
+                // the bindings C11 6.8.6.2 and 6.8.6.3 specify, and nothing generated could reach
+                // them while every arm was a single assignment.
+                let _ = writeln!(self.body, "  case {c}: {{");
+                self.nest += 1;
+                self.nested();
+                self.nest -= 1;
+                let _ = writeln!(self.body, "  {} += {e}; }} break;", target.name);
             } else if self.rng.chance(2) {
                 let _ = writeln!(self.body, "  case {c}: {} += {e};", target.name);
             } else {
@@ -2261,6 +2295,60 @@ fn control_flow_programs_agree_with_gcc() {
             }
         }
     }
+    // **The compositions themselves.** Wave 221's change is not a new construct but the removal of
+    // a structural bound: a loop body and a `switch` arm can now hold arbitrary statements, so a
+    // `goto` out of a `switch` inside a loop is reachable. Counting the *constructs* cannot see
+    // that — every count above was already satisfied before the arms could nest — so the shapes
+    // are counted directly.
+    let (mut loop_holds_stmts, mut case_holds_block) = (0usize, 0usize);
+    for seed in 0..SHAPE_SEEDS {
+        let body = program_control_flow(seed).1;
+        // A composing loop is emitted as `for (...) {` with the body on later lines; the old form
+        // puts the whole body on one line.
+        if body
+            .lines()
+            .any(|l| l.contains("for (") && l.trim_end().ends_with('{'))
+        {
+            loop_holds_stmts += 1;
+        }
+        if body.contains(": {") {
+            case_holds_block += 1;
+        }
+    }
+    assert!(
+        loop_holds_stmts >= 10 && case_holds_block >= 10,
+        "the arms have to actually nest, or this is the old grammar with more words: \
+         {loop_holds_stmts} composing loops, {case_holds_block} case blocks"
+    );
+    // **And the nesting stays bounded**, which is a property of the corpus rather than of the
+    // language: three nested loops of four iterations each is sixty-four passes, and a comparison
+    // that takes a second is a comparison nobody runs. Mutation raised the `nest` cap from two to
+    // nine and nothing noticed, because the programs still terminate and still agree — the cost is
+    // in time, which no assertion was watching.
+    let deepest = (0..SHAPE_SEEDS)
+        .map(|seed| {
+            let body = program_control_flow(seed).1;
+            let mut depth = 0i32;
+            let mut max = 0i32;
+            for c in body.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        max = max.max(depth);
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            max
+        })
+        .max()
+        .unwrap_or(0);
+    assert!(
+        deepest <= 6,
+        "a generated program's blocks must stay shallow enough to compare quickly: depth \
+         {deepest}"
+    );
     assert!(
         leaves.iter().all(|c| *c >= 10),
         "every expression form the census found unemitted has to be emitted now: \
