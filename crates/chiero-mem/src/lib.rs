@@ -1167,6 +1167,25 @@ impl MemFault {
         )
     }
 
+    /// The **other** place this fault names, where it names one.
+    ///
+    /// A memory fault is often about two events: the access, and whatever made the memory
+    /// invalid. `at` is the first; this is the second. Three faults have one — where the object
+    /// was freed, twice, and where its scope ended — and the rest are about a single moment.
+    ///
+    /// Separate from `at` rather than a second field on it, because a caller that renders
+    /// locations has to know which is which: reporting the free at the access's line is worse
+    /// than reporting no line at all.
+    pub fn secondary(&self) -> Option<Span> {
+        match self {
+            MemFault::UseAfterFree { freed_at, .. } | MemFault::DoubleFree { freed_at, .. } => {
+                Some(*freed_at)
+            }
+            MemFault::UseAfterScope { scope_ended_at, .. } => Some(*scope_ended_at),
+            _ => None,
+        }
+    }
+
     /// Where the access was. The second component of 023 §6.1's dedup key.
     pub fn at(&self) -> Span {
         match self {

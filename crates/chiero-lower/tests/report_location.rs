@@ -23,6 +23,14 @@
 //! That is the asymmetry this file is about. A location good enough to grade chiero against ASan
 //! is good enough to put in the product, and 023 §9 asks for a report a person can act on.
 //!
+//! # The rendering is `path:line:col`
+//!
+//! These tests were first written asserting the words "line 5". The wording was mine and the
+//! requirement is that a reader can find the place, so what ships is the form every compiler and
+//! editor already understands — `t.c:5:1` — and the assertions match it. Every control keeps its
+//! force: the access line is checked for as `t.c:6` rather than "line 6", and the no-map case
+//! for the absence of `t.c:` rather than of "line ".
+//!
 //! # Why the second location and not the first
 //!
 //! `Finding::span` already carries where the *access* was, structurally, for a caller to render.
@@ -68,7 +76,7 @@ fn a_use_after_free_names_the_line_where_the_memory_was_freed() {
     let f = findings_with_map(UAF);
     let uaf = find(&f, "use-after-free");
     assert!(
-        uaf.contains("line 5"),
+        uaf.contains("t.c:5:"),
         "the `free` is on line 5 and the reader has to be told so: {uaf:?}"
     );
     assert!(
@@ -94,7 +102,7 @@ fn a_double_free_names_the_line_of_the_first_free() {
     let f = findings_with_map(src);
     let df = find(&f, "double-free");
     assert!(
-        df.contains("line 5"),
+        df.contains("t.c:5:"),
         "the first `free` is on line 5: {df:?}"
     );
 }
@@ -109,7 +117,7 @@ fn the_line_named_is_the_free_and_not_the_access() {
     let f = findings_with_map(UAF);
     let uaf = find(&f, "use-after-free");
     assert!(
-        !uaf.contains("line 6"),
+        !uaf.contains("t.c:6"),
         "line 6 is where the access is, and `Finding::span` already carries that: {uaf:?}"
     );
 }
@@ -127,8 +135,8 @@ fn without_a_source_map_the_report_still_names_the_fault() {
     let f = r.findings();
     let uaf = find(&f, "use-after-free");
     assert!(
-        !uaf.contains("line "),
-        "with no map there is no line to name, and inventing one is worse than omitting it: \
-         {uaf:?}"
+        !uaf.contains("t.c:"),
+        "with no map there is no location to name, and inventing one is worse than omitting \
+         it: {uaf:?}"
     );
 }

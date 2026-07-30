@@ -6119,6 +6119,30 @@ impl<'m> Engine<'m> {
     /// did not report.
     /// What a reader calls the object `o`: a local's declared name, a global's, or `None`
     /// when chiero invented the object and there is nothing to call it.
+    /// Rewrite a fault's second location from a `BytePos` into somewhere a reader can open.
+    ///
+    /// `chiero-mem` renders that span as `(source offset 85)` because it has no `SourceMap` and
+    /// cannot do better. The engine may have one, and when it does this replaces the offset with
+    /// **`path:line:col`** — the form every compiler and editor already understands, which is
+    /// what 023 §9's "a report a person can act on" means in practice.
+    ///
+    /// The substring replaced is reconstructed from the fault's own `secondary()` span, so the
+    /// token rewritten is the one that span produced and nothing else that happens to look like
+    /// it.
+    fn locate(&self, f: &chiero_mem::MemFault, message: String) -> String {
+        let (Some(map), Some(sp)) = (self.source_map, f.secondary()) else {
+            return message;
+        };
+        let Some(loc) = map.lookup_loc(sp.lo) else {
+            return message;
+        };
+        let file = map.file(loc.file).path().display();
+        message.replace(
+            &format!("source offset {}", sp.lo.0),
+            &format!("{file}:{}:{}", loc.line, loc.col),
+        )
+    }
+
     /// How to refer to an object in a report: its name if it has one, a description if not.
     ///
     /// 023 §9 asks for a report a person can act on, and every fault message names the object it
@@ -6362,6 +6386,7 @@ impl<'m> Engine<'m> {
                 Some(o) => message.replace(&format!("{o:?}"), &self.object_desc(s, o)),
                 None => message,
             };
+            let message = self.locate(f, message);
             // **A null dereference names the assumption it rests on, when it rests on one.**
             //
             // Only on this state's own null parameter, and only for a null fault: a null the
@@ -6779,6 +6804,10 @@ impl<'m> Engine<'m> {
             // not — so the same defect had two homes and one fix.
             let text = match fault.as_ref().and_then(chiero_mem::MemFault::object) {
                 Some(o) => text.replace(&format!("{o:?}"), &self.object_desc(s, o)),
+                None => text,
+            };
+            let text = match fault.as_ref() {
+                Some(f) => self.locate(f, text),
                 None => text,
             };
             let key = fault.as_ref().map(|f| FindingKey {
