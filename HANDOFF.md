@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 241) — 1381 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 242) — 1384 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -802,16 +802,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > and are recorded in the rules list.
 >
 > **Wave 240 made every decimal literal exact**, so a `long double` now arrives whole no matter how
-> it was spelled — decimal, hexadecimal or integral — and multiplication is the only operation that
-> can compute with it.
+> it was spelled — decimal, hexadecimal or integral.
 >
-> **Still owed: add, subtract, divide.** Both are harder than multiply in a specific way. Addition
-> needs the operands aligned to a common exponent first, and the bits the alignment shifts out have to
-> be remembered in a sticky bit or the rounding is wrong; it also needs cancellation handled, where
-> subtracting near-equal values leaves a significand that must be renormalized by many bits rather
-> than one. Division needs a quotient loop and its own sticky remainder. Subtraction is addition with
-> a flipped sign, so it comes free with the alignment work. `fp::mul`'s structure — special cases
-> first, exact arithmetic, one rounding site, an explicit carry check — is the shape to repeat.
+> **Wave 241 added addition and subtraction.** `fp::add`, with `fp::sub` as `add` with the
+> subtrahend's sign flipped — IEEE-754's own definition, and every case that makes subtraction
+> interesting is a mixed-sign case `add` must handle anyway. The three difficulties multiplication did
+> not have: alignment (the smaller operand shifts right, and what it shifts out becomes a sticky
+> flag), cancellation (near-equal operands leave leading zeros needing a variable-length left shift),
+> and sign (magnitude decides which operand is subtracted, and §6.3 overrides the sign entirely when
+> the result is exactly zero). **The load-bearing argument is that the two hard parts cannot
+> interact**: alignment loses nothing until the exponent difference passes sixty-three, and past that
+> the result cannot fall more than one bit short of normalized, so a sticky flag never survives a
+> long left shift.
+>
+> **Still owed: divide.** The only operation left, and the one that needs a loop — a quotient bit at a
+> time with its own sticky remainder, which is the shape `from_decimal`'s binary long division already
+> has in wave 240. Note that a working divide also unlocks the NaN fixtures every `fp` unit test
+> currently works around: `0.0L / 0.0L` is how C produces one.
+>
+> **The verification pattern for all three, worth repeating for divide:** exact fixtures for the
+> rounding boundaries, a mutation sweep, a randomized soak against gcc's own x87 through `memcpy` of
+> raw 80-bit patterns (`scratchpad/soak.c` + `scratchpad/chk`), and — when a mutant survives both — an
+> exhaustive enumeration of the algorithm at a narrow significand width to decide whether a witness
+> exists at all.
 >
 > **Surviving mutant, recorded:** `width-guard-dropped`. `chiero-solver` caps a term at 128 bits and
 > panics past it, so the fresh value is minted only where a term can hold it; without the guard a
@@ -1295,6 +1308,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A random soak and a constructed fixture cover disjoint things, and neither substitutes for the
+> other** (wave 241). 520,000 random operand pairs against gcc's own x87 found zero disagreements in
+> add, subtract and multiply — and then mutation killed a sticky-bit mutant that the soak had passed
+> 240,000 times. Two random sixty-four-bit significands land on an exact rounding tie with probability
+> about `2^-62`, so **a random search never reaches the boundaries and a fixture never reaches the
+> bulk**. Run both, and expect each to find what the other cannot.
+>
+> **When a witness cannot be found by search, shrink the problem until it can be enumerated** (wave
+> 241). The `d - 1` that accounts for discarded bits needed an operand pair no soak would produce, and
+> deriving one by hand had already failed once. Re-implementing the algorithm at six-, seven- and
+> eight-bit significands made the input space small enough to enumerate *exhaustively* — every
+> significand pair, every exponent difference, both signs — which produced the minimal witness in
+> seconds and scaled straight back up to sixty-four bits. **The structure of a float algorithm is
+> width-independent**, which is what makes the trick work here; look for the same property elsewhere.
+>
+> **The same enumeration proves a mutant equivalent, which is a result and not a failure** (wave 241).
+> `renorm-right-no-sticky` differs in zero cases at every width, because a sum reaches bit 127 only
+> when the exponents differ by sixty-three or less, and at those differences the aligned operand still
+> has a zero in bit 0. The line was removed, as wave 231 removed a dead `strip_prefix('+')` for the
+> same reason. **"Survived" has three causes — a missing fixture, a real defect, or a line that cannot
+> fire — and only enumeration or proof tells them apart.**
+>
+> **Some behaviour is unreachable from the language and belongs in a unit test** (wave 241, and 237
+> before it). The sign of an exact zero cannot be observed in C without division, because `-0 == 0`.
+> `∞ - ∞` cannot be reached without producing an infinity first. Both are one-line assertions on the
+> pure function. **Ask what the fixture language can express before assuming a gap in coverage is a
+> gap in the code.**
 >
 > **A fixture that proves the old behaviour wrong is not a fixture that proves the new behaviour
 > right** (wave 240). Nine of thirteen mutants survived the first sweep, and the reason was uniform:
