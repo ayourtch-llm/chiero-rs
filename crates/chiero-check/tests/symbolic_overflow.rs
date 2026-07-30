@@ -405,6 +405,14 @@ fn the_knob_does_not_weaken_a_forced_overflow() {
         f.iter().any(|s| s.starts_with("signed-overflow")),
         "every value this path allows overflows, which is the definite kind: {f:?}"
     );
+    // **And only one kind for one site.** Mutation found the `return` after the forced report
+    // removable with nothing noticing: the same operation then earns both kinds, and a reader
+    // grouping by kind — which 023 §6.1 invites — would count one overflow as two findings of
+    // different certainties. The claim this wave makes is that the kind *is* the certainty.
+    assert!(
+        f.iter().all(|s| !s.starts_with("may-signed-overflow")),
+        "one operation, one verdict: a forced overflow is not also a possible one: {f:?}"
+    );
 }
 
 /// An overflow the path **forbids** is silent even with the knob on. **The control.**
@@ -423,5 +431,60 @@ fn the_knob_does_not_invent_an_impossible_overflow() {
     assert!(
         f.iter().all(|s| !s.contains("overflow")),
         "nothing on this path can overflow, whatever the caller asked for: {f:?}"
+    );
+}
+
+/// **Without a backend the same overflow earns the weaker kind, not the stronger one.**
+///
+/// This test began as an assertion that tier 1 reports *nothing* here, and it failed on correct
+/// code — which is the more interesting outcome. 022 §3 lets `solver-lite` be incomplete and never
+/// wrong, and the two directions are not equally hard: satisfying `overflows` needs one model
+/// (`x = 2147483647`) and tier 1 finds it, while refuting `safe` needs a proof over every value and
+/// tier 1 cannot.
+///
+/// So a run without a backend knows that *some* input overflows and not that every one does, and
+/// `may-signed-overflow` says exactly that. One program, two truthful answers, sharpening when a
+/// solver is available — the same shape wave 216 found for the initialization guard.
+#[test]
+fn without_a_backend_a_forced_overflow_degrades_to_the_weaker_kind() {
+    let m = guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10);
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m)
+        .with_admitted_overflow(true)
+        .with_solver(chiero_exec::SolverTier::LiteOnly);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let f = e.run(&mut a).findings();
+    assert!(
+        f.iter().any(|s| s.starts_with("may-signed-overflow")),
+        "tier 1 can name an input that overflows, which is the weaker claim: {f:?}"
+    );
+    assert!(
+        f.iter().all(|s| !s.starts_with("signed-overflow")),
+        "and cannot prove every input does, so the stronger kind would be unearned: {f:?}"
+    );
+}
+
+/// **An overflow the path forbids stays silent without a backend too.**
+///
+/// Where `Unknown` must not become a report: tier 1 cannot always refute the overflow condition,
+/// and "I could not tell" is not "some input overflows". Mutation is why this is separate —
+/// relaxing the condition to "anything but `Unsat`" passed every other test in the file, because
+/// every other fixture reaches a decisive `Sat`.
+#[test]
+fn an_impossible_overflow_stays_silent_without_a_backend() {
+    let m = guarded(BinOp::Add, CmpOp::SLt, 1000, 10);
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m)
+        .with_admitted_overflow(true)
+        .with_solver(chiero_exec::SolverTier::LiteOnly);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let f = e.run(&mut a).findings();
+    assert!(
+        f.iter().all(|s| !s.contains("overflow")),
+        "nothing here can overflow, and an undecided query is not a finding: {f:?}"
     );
 }
