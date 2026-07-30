@@ -2584,6 +2584,59 @@ fn a_decimal_long_double_literal_keeps_all_its_bits() {
     agree("return (int)(1e10L == 0x1.2a05f2p33L);");
 }
 
+/// **Adding and subtracting `long double`s agrees with gcc.**
+///
+/// Harder than multiplication in three specific ways, which is why it went second.
+///
+/// **Alignment.** Two significands can only be added once they mean the same thing, so the smaller
+/// operand shifts right by the exponent difference — and the bits it shifts *out* still matter, because
+/// they decide whether the result rounds up. Multiplication had no such shift: the product was exact
+/// in a `u128` and rounded once, at the end.
+///
+/// **Cancellation.** Subtracting near-equal values leaves a significand with leading zeros, and
+/// renormalizing it means shifting left by however many there are — up to sixty-three places, where
+/// multiplication's normalization was one bit decided by one test. `(1 + 2^-63) - 1` is the shape: two
+/// operands agreeing in every bit but the last, and a result sixty-three binary orders below them.
+///
+/// **Sign.** `a + b` with opposite signs is a subtraction, `a - b` with opposite signs is an addition,
+/// and which operand is subtracted from which depends on their *magnitudes* rather than their order.
+/// The zero this produces has a sign rule of its own: IEEE-754 §6.3 makes `x - x` a positive zero
+/// under round-to-nearest, so the one case where the answer is exactly zero is the one case where the
+/// operands' signs do not determine the result's.
+#[test]
+fn adding_long_doubles_agrees_with_gcc() {
+    agree("long double a = 2.0L, b = 3.0L; return (int)(a + b);");
+    agree("long double a = 2.0L, b = 3.0L; return (int)(a - b);");
+    agree("long double a = -2.0L, b = 3.0L; return (int)(a + b);");
+    agree("long double a = -2.0L, b = -3.0L; return (int)(a + b);");
+    agree("long double a = 2.0L, b = -3.0L; return (int)(a - b);");
+    // Zero, on both sides and as a result.
+    agree("long double a = 3.0L, b = 0.0L; return (int)(a + b == 3.0L);");
+    agree("long double a = 3.0L; return (int)(a - a == 0.0L);");
+    // **Exact, at the far end of the significand.** `1 + 2^-63` needs all sixty-four bits, so an
+    // implementation that aligned into fifty-three would lose the smaller operand entirely.
+    agree("long double a = 1.0L, b = 0x1p-63L; return (int)(a + b == 0x1.0000000000000002p0L);");
+    // **Cancellation**: sixty-three leading zeros to renormalize past.
+    agree("long double a = 0x1.0000000000000002p0L; return (int)(a - 1.0L == 0x1p-63L);");
+    // **Alignment throws bits away, and they still decide the rounding.** `2^-64` is one place
+    // below the last bit of `1.0`, so the sum is an exact tie — and the tie goes to the even
+    // candidate, which is `1.0` itself.
+    agree("long double a = 1.0L, b = 0x1p-64L; return (int)(a + b == 1.0L);");
+    // The same tie one bit up in the significand, where the even candidate is the *other* one.
+    agree(
+        "long double a = 0x1.0000000000000002p0L, b = 0x1p-64L; \
+         return (int)(a + b == 0x1.0000000000000004p0L);",
+    );
+    // A smaller operand shifted out entirely, which must not disturb the larger.
+    agree("long double a = 1.0L, b = 0x1p-200L; return (int)(a + b == 1.0L);");
+    agree("long double a = 1.0L, b = 0x1p-200L; return (int)(a + b > 1.0L);");
+    // Past `f64`'s range at both ends, which is what this format is for.
+    agree("long double a = 0x1p1000L, b = 0x1p1000L; return (int)(a + b == 0x1p1001L);");
+    agree("long double a = 1e4000L, b = 1e4000L; return (int)(a + b > 1e4000L);");
+    // Carrying out of the significand: `2^64 - 1` plus one is a new power of two.
+    agree("long double a = 0x1.fffffffffffffffep0L, b = 0x1p-63L; return (int)(a + b == 0x1p1L);");
+}
+
 /// **Multiplying two `long double`s agrees with gcc.**
 ///
 /// The first arithmetic operation, and the one that needs no iteration: two sixty-four-bit
