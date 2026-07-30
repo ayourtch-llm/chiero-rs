@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 211) — 1319 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 212) — 1322 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,43 +722,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Do the `MemFault::describe` refactor before adding a fifth thing to a message
+> ### 🔴 The reporting thread is closed. Next: a checker report has no fixture for any of it
 >
-> **The location work is finished.** Both places a memory fault names render as text (waves
-> 208–209) and both are available as data: `Finding::span` for the access, `Finding::related` —
-> a `chiero_mem::SecondEvent { at, what }` — for the `free` or the scope's end. The label travels
-> with the span because a position alone does not say which of two places is the bug and which is
-> the cause. Wave 210 also found and fixed a real defect doing it: a use-after-scope pointed at
-> the line the scope *began* on, because a scope's span covers the whole block and everything
-> rendered `lo`. The rule is the span's **last byte**, not `hi` — `hi` is one past the closing
-> brace in real code and one past a single-byte marker in a synthetic span, and the last byte is
-> the closing token under both.
+> ~~Do the `MemFault::describe` refactor.~~ **Done in wave 211, and every sentence is
+> byte-identical.** Zero `.replace()` calls remain in the message pipeline. `MemFault::describe`
+> takes the two things `chiero-mem` cannot know — how to name an object, how to render a span —
+> and the arms interpolate them; `Display` delegates with the raw defaults and
+> `display_is_describe_with_the_defaults` pins that for all eighteen variants so there is one
+> sentence per fault rather than two kept in step by hand. The model route re-describes from the
+> fault it already carries instead of patching the string it was handed. `stamp` survived, and the
+> distinction is the point: appending a clause was never the fragile kind, rewriting one was.
 >
-> **This is now the front, and it is a refactor rather than a defect.** A finding's message is
-> assembled by four layers of `.replace()`/`format!`: the object description, the fault's own
-> location, the null-parameter clause, and the access stamp. Every one is sound — each
-> reconstructs its token from the fault it came from — and that is the whole reason the fifth will
-> not be. The shape to move to, which the engine's own comment has wanted since wave 207:
+> Five waves of reporting work are finished: an object is named or described (207), both locations
+> render (208–209), both are available as data (210), and the sentence is composed rather than
+> patched (211). The tests written in 207–210 are what made 211 cheap — they pinned the output
+> before the refactor touched it.
 >
-> ```rust
-> MemFault::describe(&self, obj: impl Fn(ObjectId) -> String, loc: impl Fn(Span) -> String) -> String
-> ```
->
-> `Display` delegates to it with the raw defaults (`{obj:?}`, `source offset {n}`), the arms
-> compose their sentence from what the caller supplies, and both textual substitutions disappear.
-> `messages.rs` and `report_readability.rs` already pin the output, so this is a refactor with its
-> tests in place — the rare cheap one. **Do it before adding anything else to a message.**
->
-> **Then: a checker report has no direct fixture for any of the report work.** Arithmetic UB
-> reports nothing through an `Engine` built the way `chiero-lower`'s tests build one — the
-> checkers are not registered — so checker findings are covered only by sharing the model route.
-> Wiring them into a `chiero-lower` fixture would make the arithmetic channel's reports gradeable
-> for readability the way the memory channel's now are.
+> **Next, and it is the last loose thread in this area:** a **checker** report has no direct
+> fixture for any of the above. Arithmetic UB reports nothing through an `Engine` built the way
+> `chiero-lower`'s tests build one, because the checkers are not registered there — so every
+> claim about checker findings is transitive, resting on their sharing the model route. Wiring
+> `chiero-check`'s defaults into a `chiero-lower` fixture would make the arithmetic channel's
+> reports gradeable for readability the way the memory channel's now are, and it is the one place
+> where "covered" currently means "covered by argument".
 >
 > **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the
 > model route the call span and the fault's access span coincide for every model that exists) and
-> `map-mandatory` from wave 208 (reaching `lookup_loc`'s `None` needs a span outside every file in
-> the map; 010 §6.2 makes `FileId` per-TU, so a map from another TU is the natural fixture).
+> `map-mandatory` from wave 208 (reaching the `None` branch needs a span outside every file in the
+> map; 010 §6.2 makes `FileId` per-TU, so a map from another TU is the natural fixture).
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1169,6 +1160,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Tests written for the defects are what make the refactor cheap** (wave 211). Four waves of
+> report fixtures pinned every sentence before `describe` rewrote how they are built, so "1322
+> passing" *is* the proof that nothing changed. A refactor with no characterization tests is a
+> rewrite; with them it is a mechanical edit. **Notice when the tests you already have make a
+> deferred change safe, and take that moment.**
+>
+> **Resolve shared values before the match, not in each arm** (wave 211). Nineteen arms could each
+> have called `name_of(*obj)` and bound `obj`; instead `object()` and `secondary()` are consulted
+> once and the arms interpolate. Fewer bindings, no per-arm blocks, and — the real gain — a new
+> variant cannot render an object that `object()` does not report, which is exactly the drift
+> mutation found in `secondary()` one wave earlier.
+>
+> **Scripted refactors of a large `match`: transform head, tail and the irregular arms by exact
+> text first, then sweep the regular ones** (wave 211). My first attempt rewrote the whole impl in
+> one pass and produced unbalanced braces; the pattern that worked was three verified replacements
+> followed by a mechanical sweep over what was left. Assert a count of 1 on every anchor.
+>
+> **A dead layer left behind is worse than the layer** (wave 211). The re-describe on the model
+> route made the object substitution above it unreachable, and it compiled and passed. Grep for
+> the thing you set out to remove and confirm the only matches are comments about its removal.
 >
 > **Assert the line *and* the column** (wave 210). The off-by-one this wave existed to fix
 > survived its own test: a scope's closing brace has `hi` and `hi - 1` on the same line, one
