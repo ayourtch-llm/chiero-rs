@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 232) — 1366 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 233) — 1367 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,37 +778,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: a *decimal* `long double` literal is still rounded through `f64`
+> ### 🔴 x87: `SiToFp` to width 80, and the normalization wants a shared home
 >
-> Wave 231 went after the literal and found a bigger, unrelated defect on the way: **a hexadecimal
-> float literal made lowering refuse the function.** `float_literal` recognised the syntax and then
-> handed the text to Rust's `f64` parser, which rejects hex float syntax, so lowering took the integer
-> path and emitted `Const::Int` where a float was declared. Every program containing a `0x1p3`
-> anywhere lost that function. Fixed exactly — a hex literal's digits are already binary, so the value
-> is `mantissa × 2^(exp - 4 × fraction_digits)` with no rounding to get wrong, which is what C99
-> 6.4.4.2 has the syntax for.
->
-> **That matters for x87 specifically**: a hex literal is now the only way to write an exact
-> `long double` in source, and it works. So the milestone has a way to specify test values exactly
-> even though decimal literals do not yet round correctly.
->
-> **What remains on the literal.** A *decimal* `long double` literal is parsed at `f64` precision and
-> then re-encoded, so it loses the bottom eleven bits of significand:
+> Wave 232 made an **integral** decimal `long double` literal exact. `x87_integral_literal` parses
+> the digits into a `u64` and normalizes — x87 keeps the integer bit explicitly, so the significand is
+> the value shifted until bit 63 is set and the unbiased exponent is how far it moved. No rounding
+> decision arises, which is why the path is restricted to integers and returns `None` for everything
+> else rather than approximating.
 >
 > ```text
 >   4611686018427387905.0L   (2^62 + 1)
->   chiero  fconst:f80:0x403d8000000000000000
->   gcc                     0x403d8000000000000001
+>   before  fconst:f80:0x403d8000000000000000   -> (long long) lost the + 1
+>   after                   0x403d8000000000000001
 > ```
 >
-> `float_literal`'s comment calls this "a narrowing this records rather than hides" — and **nothing
-> records it**: no diagnostic, no assumption, nothing in the output. That is the honest thing to fix
-> first, and it is cheaper than correct decimal-to-`f80` rounding (which needs an arbitrary-precision
-> decimal parser, since Rust has no `f80`). Either declare the narrowing per literal, or do the
-> rounding properly; **do not leave a comment claiming a record that does not exist.**
+> **The next step, with its design note.** `long double x = 9007199254740993;` — an *integer* literal
+> converted to `long double` — takes `SiToFp` to width 80, which is still a declared gap. It is the
+> same normalization `x87_integral_literal` already does. `chiero-exec` cannot depend on
+> `chiero-sema` (001 §4), so **do not write it a second time**: give the encode/decode pair a home
+> both can reach. `chiero-cir` is the only crate below both, and the pair is arguably part of what
+> `FloatKind` means. `x87_bits` in `chiero-lower` and `x87_trunc_to_int` in `chiero-exec` are already
+> two halves of the same format living in two crates, so this is the moment to fix that rather than
+> add a third copy.
 >
-> Then: `FpExt 64 -> 80` and `SiToFp -> 80` (exact, and both want `x87_bits` reachable from the engine
-> rather than only from lowering), `FpTrunc 80 -> 64` (round-to-nearest-even), and arithmetic last.
+> Then: `FpExt 64 -> 80` (exact, wants the same shared encoder), `FpTrunc 80 -> 64`
+> (round-to-nearest-even), and arithmetic last.
+>
+> **Still open on literals:** a *fractional* decimal `long double` is still parsed at `f64`
+> precision, and `float_literal`'s comment still calls that "a narrowing this records rather than
+> hides" while nothing records it. Correct decimal-to-binary rounding needs arbitrary precision and a
+> tie-breaking rule; the honest cheap alternative is to declare the narrowing. **Hex float literals
+> are the workaround and they now parse exactly** (wave 231), so an exact `long double` can always be
+> written in source.
 >
 > ### What else is left
 >
@@ -1273,6 +1274,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A surviving mutant may mean the sweep is missing a file** (wave 232). Two survivors died the
+> moment `shapes.rs` joined the test set, and one of them was caught by a fixture that had been
+> there for two waves. **Before writing a fixture for a survivor, check that the sweep runs the file
+> that would already catch it** — I nearly wrote a second zero test.
+>
+> **A property truncation cannot see needs a test that is not a value comparison** (wave 232). An
+> integral-literal path that accepted `2.5L` and dropped the fraction passed every differential
+> fixture, because `(int)` of 2.5 and 2.0 are both 2 and the arithmetic that separates them is a
+> gap. The bit pattern is where the difference lives, so the assertion belongs in the encoding test.
+> **Ask what the observable projection discards.**
+>
+> **Two halves of one format in two crates is a third copy waiting to happen** (wave 232). `x87_bits`
+> encodes in `chiero-lower`, `x87_trunc_to_int` decodes in `chiero-exec`, and `SiToFp` now wants the
+> encoder in `chiero-exec` too. 001 §4 forbids the obvious import, so the answer is a shared home
+> rather than a duplicate — and the moment to move it is before the third copy, not after.
 >
 > **A comment saying "this order matters" is a testable claim** (wave 231). I recorded two hazards I
 > had reasoned about and avoided — stripping `0x` before the suffix, and stripping a `+` before
