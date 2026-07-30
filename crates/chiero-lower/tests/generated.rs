@@ -539,7 +539,39 @@ impl Gen {
                     let _ = writeln!(out, "  {kw} {tag} out;");
                     let nf = self.records[r].readable();
                     for i in 0..nf {
-                        let mut e = format!("{}", 1 + i as i64);
+                        // **A bit-field's constant spans its own width; every other member keeps
+                        // `1 + i`** (wave 250). An extension defect is invisible unless the stored
+                        // value has the field's top bit set, and an ascending small constant sets
+                        // it in five of six hundred programs.
+                        //
+                        // Indexed into the pool rather than drawn from `rng`, and that is the
+                        // load-bearing part: consuming randomness here shifts the stream and every
+                        // downstream decision with it, so the other eight channels would generate
+                        // different programs and their corpora would silently move. The first
+                        // attempt did exactly that — the metric got *worse*, because the programs
+                        // it was measuring were no longer the same programs. §9's rule about gating
+                        // before any `rng` call is the same rule seen from the other side.
+                        let mut e = match self.records[r].widths[i] {
+                            Some(w) => {
+                                let k = POOL[(i * 7 + w as usize) % POOL.len()] as u128;
+                                let mask = (1u128 << w) - 1;
+                                // **The top bit is set on two fields in three, deliberately.**
+                                // Masking a pool value alone was not enough: the pool's low entries
+                                // dominate for small indices, and the count barely moved. This is
+                                // the half of every field's range where sign- and zero-extension
+                                // disagree, so a channel that does not reach it cannot see an
+                                // extension defect at all. The remaining third keeps the top bit
+                                // clear and is the control — a generator that only ever set it
+                                // would stop testing the easy case it has always passed.
+                                let top = if (i + w as usize).is_multiple_of(3) {
+                                    0
+                                } else {
+                                    1u128 << (w - 1)
+                                };
+                                format!("{}", (k & mask) | top)
+                            }
+                            None => format!("{}", 1 + i as i64),
+                        };
                         for (pi, p) in f.params.iter().enumerate() {
                             match p {
                                 Param::Scalar(_) => {
@@ -556,6 +588,7 @@ impl Gen {
                         // A bit-field's value is truncated to its width, which is exactly
                         // what wave 136's rule is about; the cast keeps the *source* in
                         // range so only the field's own truncation is under test.
+
                         let _ = writeln!(out, "  out.f{i} = ({})({e});", ft.c());
                     }
                     let _ = writeln!(out, "  return out;");
@@ -3154,6 +3187,7 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
 fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
     let mut top_set = 0usize;
     let mut assigned = 0usize;
+    let mut unsigned_n = 0usize;
     for seed in 1..=600u64 {
         let (src, _) = program(seed);
         // `  <type> fN:W;` — the declaration, giving each bit-field's width. A `Vec` rather than a
@@ -3197,18 +3231,32 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
             let signed_field = w & 0x1000 != 0;
             let w = w & 0xfff;
             assigned += 1;
-            if !signed_field && (k as u64) & (1u64 << (w - 1)) != 0 {
+            // A *signed* field is supposed to sign-extend, so no value of one can expose an
+            // extension defect. It counts toward `assigned` and toward nothing else.
+            if signed_field {
+                continue;
+            }
+            unsigned_n += 1;
+            if (k as u64) & (1u64 << (w - 1)) != 0 {
                 top_set += 1;
             }
         }
     }
     assert!(
-        assigned > 0,
-        "the scan must find bit-field initializers at all, or it is measuring nothing"
+        assigned > 0 && unsigned_n > 0,
+        "the scan must find `unsigned` bit-field initializers at all, or it is measuring nothing: \
+         {unsigned_n} of {assigned}"
     );
+    // **The denominator is the `unsigned` fields, not all of them.** The RED asserted a quarter of
+    // *all* bit-field initializers, which conflates two independent knobs: how often the generator
+    // picks an unsigned member for a bit-field (15 of 44, and not this wave's business) and whether
+    // the value spans the half of the range where the two extension rules differ (this wave's).
+    // Only a signed-vs-unsigned change could move the first, and it would shift the type
+    // distribution every other channel depends on. Recorded rather than quietly rescaled.
     assert!(
-        top_set * 4 >= assigned,
-        "at least a quarter of bit-field initializers must be `unsigned` with the field's top \
-         bit set, or an extension defect is invisible to this channel: {top_set} of {assigned}"
+        top_set * 2 >= unsigned_n,
+        "at least half of `unsigned` bit-field initializers must set the field's top bit, or an \
+         extension defect is invisible to this channel: {top_set} of {unsigned_n} unsigned \
+         ({assigned} bit-fields in all)"
     );
 }
