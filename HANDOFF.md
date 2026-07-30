@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 249) — 1393 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 250) — 1396 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -689,7 +689,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > dependency**, and the `cold_sat` helper in `crates/chiero-solver/tests/cache.rs` is the shape to
 > reuse.
 >
-> ### 🔴 Do this first: a `maybe` about definedness discards a value about contents
+> ### ✅ Closed in wave 249 — §9's oldest open item, and the framing was wrong twice
+>
+> **The fix is a return value.** `report_faults` now hands back the faults that survive discharge,
+> and the scalar load consults *those*. Discharging a `maybe` costs up to three solver queries per
+> fault; the result was computed, used for reporting, and dropped — so the caller deciding whether
+> the *value* was usable had only the raw list. The engine proved the byte was written, correctly
+> reported nothing, and threw the value away anyway. **One fault list decided two things and only one
+> of them saw the proof.**
+>
+> Wave 248's inference — that the opaque init guard defeated the discharge — was wrong, and it was
+> marked unverified, which is the only reason it cost twenty minutes instead of another six waves.
+> The check it asked for printed `neg=Unsat`: the discharge *succeeds*.
+>
+> Wave 247's framing was also wrong, and is worth keeping as a lesson rather than deleting. It asked
+> whether a `maybe` about definedness should discard a value about contents. It should not — but no
+> `maybe` survives here to do so, so the question never arose. **Two waves of design thinking on a
+> question that a single `eprintln!` dissolved.**
+>
+> The old text follows, because the method that corrected it is the reusable part.
+>
+> ### ~~🔴 a `maybe` about definedness discards a value about contents~~ — RESOLVED
 >
 > **Wave 247 ran the check this section asked for and the answer was no.** What follows the rule is
 > the corrected chain; the old hypothesis is kept below it because the *method* that disproved it is
