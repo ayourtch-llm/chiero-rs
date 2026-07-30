@@ -2093,8 +2093,33 @@ impl Cx<'_> {
                 // want the coercion.
                 let pointer_displacement = matches!(op, Some(BinOp::Add) | Some(BinOp::Sub))
                     && matches!(self.out.ty(lty), Ty::Ptr(_) | Ty::Array { .. });
+                // **`b += e` with `b` a `_Bool` does not convert `e` to `_Bool`.** C11
+                // 6.5.16.2p3 makes it mean `b = b + e`, and 6.5p4 promotes both operands — so
+                // the addition happens in `int` and only the *result* is converted back.
+                //
+                // Coercing the right operand first is invisible for every other integer type,
+                // which is why it stood for a hundred waves: conversion to `char` is a
+                // truncation, and truncation commutes with `+`, `-` and `*`, so
+                // `(char)(1 + 300)` and `1 + (char)300` are both 45. Conversion to `_Bool` is
+                // `!= 0`, which commutes with nothing — `-1` became `1` here and `b += -1`
+                // stopped depending on `b` at all.
+                //
+                // Same shape as the pointer case above and wave 133's fix: sema coercing a
+                // compound assignment's right operand to the lvalue's type when the operation
+                // does not call for it. The *result* is still converted, by the store.
+                let bool_lvalue =
+                    op.is_some() && matches!(self.out.ty(lty), Ty::Int { bits: 1, .. });
                 let r = if pointer_displacement {
                     r
+                } else if bool_lvalue {
+                    // **Promoted, not coerced.** The operation happens in `int`, so the right
+                    // operand takes the integer promotions like any other arithmetic operand —
+                    // which is also what makes the widths match: lowering widens the loaded
+                    // `_Bool` to `int`, and a right operand left at one bit meets it as
+                    // "Add operand is Int(1), declared Int(32)". Dropping the conversion
+                    // altogether was the first attempt and produced exactly that, on seven of
+                    // the two hundred generated programs.
+                    self.promote_node(r, *rhs, span)
                 } else {
                     self.coerce(r, lty, Conversion::Assignment, *rhs)
                 };

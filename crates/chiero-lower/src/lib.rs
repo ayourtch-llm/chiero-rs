@@ -3162,32 +3162,16 @@ impl Lowerer<'_> {
                 } else {
                     loaded
                 };
+                // **The right operand arrives already promoted**, and used not to.
+                //
+                // sema coerced a compound assignment's right-hand side to the lvalue's type,
+                // so for `_Bool` it handed back a one-bit value and this widened it back to
+                // 32 bits to match the loaded operand. That round trip is exactly the defect:
+                // the coercion to `_Bool` is `!= 0`, so `-1` had already become `1` and no
+                // widening could recover it. Wave 217 stopped sema coercing for a `_Bool`
+                // lvalue — the same exemption the pointer case has, for the same reason — so
+                // there is nothing to widen here.
                 let r = self.expr(rhs);
-                // The right operand is promoted too. sema coerces a compound assignment's
-                // right-hand side to the *lvalue's* type, which for `_Bool` hands back a
-                // one-bit value — so without this the addition has a 32-bit and a one-bit
-                // operand and the engine ends the path on a width mismatch. Wave 133 fixed
-                // the same over-eager coercion in sema for pointers; here the operand is
-                // widened at the use instead, because unlike a pointer count a `_Bool` right
-                // operand really is being converted, just to `int` rather than to `_Bool`.
-                let r = if ty == CTy::Int(1) {
-                    let w = self.new_value();
-                    self.emit(
-                        InstKind::Assign {
-                            dst: w,
-                            rv: RValue::Cast {
-                                kind: chiero_cir::CastKind::ZExt,
-                                a: r,
-                                from: CTy::Int(1),
-                                to: CTy::Int(32),
-                            },
-                        },
-                        span,
-                    );
-                    Operand::Value(w)
-                } else {
-                    r
-                };
                 // **`p += n` displaces by elements too.** The `Bin` below would add the
                 // count to the address unscaled and at the lvalue's width, which is the
                 // same defect `p + n` had — three spellings, one operation.
