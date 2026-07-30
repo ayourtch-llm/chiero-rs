@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 222) — 1346 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 223) — 1348 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -745,42 +745,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > two programs instead of enough to grade on — caught by the adequacy guard.
 > **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### The generator channel is searched out; the engine's *bounds* are what it now tests
+> ### 🔴 A duplicated budget check that nothing reaches, and probably nothing can
 >
-> Waves 218–221 ran the census method to completion and then tested its own follow-up hypothesis.
+> Wave 222 followed wave 221's `gap: Bounded` runs down to the mechanism, and the answer to §9's
+> question — *does a `Bounded` run say enough for a reader to act on?* — is **yes, and the machinery
+> is right**. `findings()` and `reports()` are empty (a degradation is not a defect in the program),
+> and the reason is on `State::assumptions()` with a kind, a span and a detail:
 >
-> **Statements** (218–219): `switch`, `do`-`while`, `goto`, `continue` were unemitted — all
-> generated. **Expressions** (220): `sizeof`, `_Alignof`, statement expressions, string literals,
-> character constants, `->`, `~` were unemitted — `~`, `sizeof`, character constants and
-> string-literal subscripts generated. **Composition** (221): loop bodies and `switch` arms held a
-> single compound assignment each, so `if`/`else` was the only construct whose body could hold
-> statements; both now take arbitrary statements under a `nest` bound.
+> ```text
+> max_loop_iters (8) reached on the back edge BlockId(16) -> BlockId(15) in `probe`
+> ```
 >
-> **~3900 new comparisons across the four waves. One defect** — wave 217's `_Bool b += -1`, from a
-> `_Bool` accumulator in a `do`-`while`. Thirty hand-written shapes also agree with gcc, including
-> backward `goto`, jumps into and out of blocks, scope re-entry, `continue` in three loop forms,
-> `-1 < sizeof(int)`, `~` on every narrow type, the GNU statement expression, `_Alignof`, and five
-> `->` shapes.
+> **One message did not hold to that standard and now does:** `max_depth` said "max_depth reached",
+> at both its sites, where the other six name their value. 023 §8's report exists so a reader can
+> tell a generous bound from a trivial one. Fixed, with an invariant test over `Budget` as a whole
+> rather than a seventh per-field test.
 >
-> **The one new signal is six `gap: Bounded` runs**, which no earlier grammar produced. Nested
-> loops multiply trip counts — three levels of four is sixty-four passes — and the engine's
-> exploration budget is reached on about one program in four hundred. Honest degradation (023 §7),
-> not a wrong answer, and **the first sign that this channel now tests the engine's bounds rather
-> than its semantics**. That is where I would look next: what bound is it, is it the right one, and
-> does a `Bounded` run still say enough for a reader to act on. It is a capability question with a
-> reproducible trigger, which is more than most of the remaining list has.
+> **The open item, found while mutating that fix.** `Budget::max_depth` is checked in two places —
+> the per-instruction step loop and `take_edge` — and mutating them *separately* showed the
+> `take_edge` copy is killed by nothing. Instrumenting it with an `eprintln!` and running the whole
+> workspace fired it **zero times**. (My first reading said four; those were compiler diagnostics
+> quoting the inserted line, not runtime output. Print the matching lines, not their count.)
 >
-> Still deliberately unemitted: `_Alignof` (asks no conversion question), statement expressions
-> (parsed and lowered correctly, checked by hand), `->` in the generator (clean on five fixtures —
-> and `tests/corpus/c/pointer_fields.c` remains owed, so **re-diagnose it rather than assuming
-> arrow access is the gap**), backward `goto` (bounded out of the corpus so comparisons cannot hang;
-> asserted).
+> It is plausibly *unreachable*: `s.steps` is incremented only in the step loop, which tests `>`
+> immediately afterwards, so on entry to `take_edge` the same comparison cannot have newly become
+> true. **Do not delete it on that argument alone** — wave 163's watchdog kept a line that documents
+> a distinction no fixture can see, and this may be the same. What is owed is a decision: prove it
+> unreachable and remove it, or find the state shape that reaches it (a resumed or forked state
+> carrying `steps` past the bound is the candidate) and pin the message there. Either way the
+> duplicated condition should stop being a coin flip.
 >
-> **The knob and the frontier:** everything new is behind `extended`, gated *before* any `rng` call
-> so the eight other channels stay byte-identical. Fixed batch
-> `control_flow_programs_agree_with_gcc` (122 comparisons); shape counts sample 600 seeds
-> independently; `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` open-ended. Frontier: `SOAK_CF=1` clean to
-> **2600**, plain grammar clean to 1600.
+> **The generator channel, for the record:** waves 218–221 added `switch`, `do`-`while`, `goto`,
+> `continue`, `&&`, `||`, `~`, `sizeof`, character constants and string-literal subscripts, then let
+> loop bodies and `switch` arms hold statements. **~3900 comparisons, one defect** (wave 217's
+> `_Bool b += -1`). Frontier: `SOAK_CF=1` clean to 2600, plain grammar to 1600. Everything new is
+> behind `extended`, gated before any `rng` call. Still unemitted by choice: `_Alignof`, statement
+> expressions, `->` in the generator (and `pointer_fields.c` remains owed — **re-diagnose it, arrow
+> access is clean on five shapes**), backward `goto` (bounded out so comparisons cannot hang).
 >
 > ### The three parked decisions, unchanged
 >
@@ -1200,6 +1201,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Mutate duplicated conditions separately** (wave 222). One `.replace()` covering both copies of
+> the `max_depth` check reported KILLED and hid that only one copy is tested. Anchoring by line
+> number and running each site on its own found the second unreached — the same "one defect, two
+> homes" shape as wave 207, arriving through the sweep rather than through the fix.
+>
+> **`grep -c` on a build-and-run log counts the compiler too** (wave 222). An instrumentation marker
+> appeared four times in four unrelated test files, which is what a diagnostic quoting the inserted
+> line looks like, not what runtime firings look like. Identical counts across unrelated inputs are
+> the tell. **Print the matching lines before believing the number.**
+>
+> **A question answered "no defect" is still worth the wave** (wave 222). §9 asked whether a
+> `Bounded` run says enough to act on; it does, and finding that out located the one message that
+> did not and a duplicated check nothing reaches. **The investigation's value was in the map, not
+> the verdict.**
 >
 > **A structural bound in a generator is invisible until you look for it** (wave 221). Every
 > construct count was satisfied and every construct agreed with gcc, and a loop body still could
