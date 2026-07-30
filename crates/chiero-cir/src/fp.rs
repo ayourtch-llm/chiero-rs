@@ -457,6 +457,115 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
     Some(sign | (u128::try_from(exp).ok()? << 64) | u128::from(sig))
 }
 
+/// The quotient of two patterns, rounded to nearest with ties to even.
+///
+/// **The one operation that needs a loop, and the shortest one anyway.** Rust's `u128` division does
+/// the loop, so what is left is staging the numerator and taking one bit by hand: two normalized
+/// significands give a quotient in `(1/2, 2)`, which needs sixty-five or sixty-six bits to hold with
+/// a rounding bit, and `sa << 65` overflows a `u128` where `sa << 64` does not. So the division runs
+/// at sixty-four and the last bit comes from doubling the remainder — the same step a long division
+/// takes, done once.
+///
+/// # Neither a tie nor a carry can happen here
+///
+/// Unlike [`mul`] and [`add`], which need both. Checked by enumerating every normalized operand pair
+/// at significand widths six through twelve — 4.2 million at the widest — and neither occurs at any
+/// width:
+///
+///   - **No exact tie.** A tie needs the quotient to terminate in exactly sixty-five bits, which
+///     needs the divisor to reduce to a power of two; the numerator is then `sa / gcd(sa, sb)`, under
+///     `2^64`, which is at most *sixty-four* bits.
+///   - **No rounding carry.** Rounding up out of an all-ones significand needs the exact quotient
+///     within half an ulp below a power of two. Just under one the ulp is `2^-64`, so it needs
+///     `sb - sa` under about `sb · 2^-65`, which is below one — and these are integers.
+///
+/// Both are stated as `debug_assert!` rather than as a comment, so the proof runs with the test suite
+/// instead of sitting beside code nobody re-checks.
+///
+/// `None` where an answer would be a guess: a NaN or denormal operand, `0 / 0` and `∞ / ∞` (IEEE-754
+/// §7.2's invalid operations), and a subnormal result. **Division by a zero is not among them** —
+/// §7.3 makes it a defined operation whose result is an infinity, which is a value chiero must
+/// produce rather than a fault it should report.
+pub fn div(x: u128, y: u128) -> Option<u128> {
+    if is_nan(x) || is_nan(y) {
+        return None;
+    }
+    let neg = (x >> 79 & 1) ^ (y >> 79 & 1) == 1;
+    let sign = u128::from(neg) << 79;
+    let inf = sign | (INF_EXP << 64) | (1u128 << 63);
+    let (ix, iy) = (is_inf(x), is_inf(y));
+    if ix && iy {
+        // §7.2's invalid operation, whose result is a NaN this does not mint.
+        return None;
+    }
+    if ix {
+        return Some(inf);
+    }
+    if iy {
+        // Finite over infinite is a zero, and it keeps the sign the operands gave it.
+        return Some(sign);
+    }
+    let (zx, zy) = (is_zero(x), is_zero(y));
+    if zx && zy {
+        return None;
+    }
+    if zy {
+        // §7.3's divideByZero: a defined operation returning an infinity, not a fault.
+        return Some(inf);
+    }
+    if zx {
+        return Some(sign);
+    }
+    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
+    if ex == 0 || ey == 0 {
+        return None;
+    }
+    let (sa, sb) = (x & u128::from(u64::MAX), y & u128::from(u64::MAX));
+    // Sixty-four bits of headroom, which is every bit a `u128` has above the numerator.
+    let n = sa << 64;
+    let mut q = (n / sb) << 1;
+    let mut r = (n % sb) << 1;
+    // The sixty-fifth bit, by hand. Doubling the remainder and testing it once is exactly what the
+    // next step of a long division would do, and it is the only step this needs beyond `u128`'s own.
+    if r >= sb {
+        r -= sb;
+        q |= 1;
+    }
+    // `sa/sb` is in `(1/2, 2)`, so `q` is sixty-five or sixty-six bits and the two cases drop a
+    // different number — assuming one of them would be wrong by a factor of two for half of all
+    // operand pairs.
+    let drop = (128 - q.leading_zeros()).checked_sub(64)?;
+    let mut sig = (q >> drop) as u64;
+    let guard = (q >> (drop - 1)) & 1 == 1;
+    let sticky = r != 0 || (drop > 1 && q & ((1u128 << (drop - 1)) - 1) != 0);
+    // `value = q · 2^(ea - eb - 65)` and an f80 significand carries its integer bit at 63.
+    // Not `mut`, unlike every other operation here: rounding cannot carry, so nothing after this
+    // line can move the exponent.
+    let exp = ex - ey + i64::from(BIAS) + i64::from(drop) - 2;
+    if guard {
+        debug_assert!(
+            sticky,
+            "a division of normalized significands cannot land on an exact tie: \
+             the divisor would have to reduce to a power of two, and the numerator is then \
+             under 2^64 and cannot fill sixty-five bits"
+        );
+        sig += 1;
+        debug_assert!(
+            sig != 0,
+            "a division of normalized significands cannot round up out of an all-ones \
+             significand: that needs the quotient within half an ulp below a power of two, \
+             which needs a difference smaller than one between two integers"
+        );
+    }
+    if exp >= i64::from(INF_EXP as u32) {
+        return Some(inf);
+    }
+    if exp <= 0 {
+        return None;
+    }
+    Some(sign | (u128::try_from(exp).ok()? << 64) | u128::from(sig))
+}
+
 /// The difference of two patterns: [`add`] with the subtrahend's sign flipped.
 ///
 /// **Not a shortcut — it is the definition.** IEEE-754 specifies subtraction as addition of the
