@@ -4514,7 +4514,20 @@ impl<'m> Engine<'m> {
                 let below = a.slt(t, lo);
                 let above = a.slt(hi, t);
                 let out = a.or(below, above);
-                if let CheckResult::Sat(_) = self.probe(a, s, &[out]) {
+                if let CheckResult::Sat(m) = self.probe(a, s, &[out]) {
+                    // **The witness comes out of the model, not out of `obj_size`.**
+                    //
+                    // The field's contract is "an offset the path allows, which is past the
+                    // object", and `obj_size` satisfies only the second half. One past the end is
+                    // always outside, so the sentence never looked absurd — but for
+                    // `pool + ((i & 31) + 64)` the path reaches byte offsets 256..380 and the
+                    // report said 32, naming an input that does not exist. A false specific claim
+                    // is worse than a vague one, because a reader goes looking.
+                    //
+                    // `m` is the model that made `out` true, so evaluating the offset term under
+                    // it yields an offset this path really does allow. Same source as wave 205's
+                    // uninitialized-read witness and wave 208's location.
+                    let witness = a.eval(&m, t).map_or(obj_size as i64, |c| c.bits() as i64);
                     self.report_faults(
                         a,
                         s,
@@ -4526,7 +4539,7 @@ impl<'m> Engine<'m> {
                         &[chiero_mem::MemFault::PointerOutsideObject {
                             obj: p.base,
                             obj_size,
-                            witness: obj_size as i64,
+                            witness,
                             at: span,
                         }],
                         span,
