@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 205) — 1291 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 206) — 1295 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,60 +722,55 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The symbolic read does not consult `arr.init`, and that is the last link in the chain
+> ### 🔴 Four mutants survive wave 205's check, and one of them can lose a finding
 >
-> ~~Nothing discharges a `MaybeUninitialized` guard.~~ **Done in wave 204.** The guard now
-> travels on the fault (`guard: Option<Term>`) and `report_faults` resolves it against the path
-> condition with wave 156's three outcomes: implied → silent, unsatisfiable → definite
-> `uninitialized-read`, anything else *including `Unknown`* → `maybe`. Four mutants confirm it
-> (discharge-disabled, outcomes-swapped, refuted-dropped, guard-not-carried).
+> ~~The symbolic read does not consult `arr.init`.~~ **Done in wave 205**, and the whole chain
+> now works: `back-to-byte-index` and `only-first-bit` — survivors since wave 199 — are dead,
+> along with `guard-byte-index`, `guard-only-first-bit`, `check-disabled` and
+> `exceptions-skipped`. Crossing `ITE_THRESHOLD` no longer decides whether a fault exists.
 >
-> **It did not make the symbolic init marking testable, and wave 203's reason for that was
-> wrong.** `back-to-byte-index` and `only-first-bit` still survive. They are not equivalent
-> mutants and never were; the cause is that **nothing reads what the write marks**.
-> `read_term_at`'s promoted branch returns `select(arr.data, i)` with `faults: vec![]` and says
-> so in a comment. Wave 205's fixtures in `symbolic_readback_init.rs` prove it the hard way:
-> write and read the same symbolic index, offset the range past byte 0, and even pin the index
-> through the path condition so a *concrete* read covers the written byte — all three are silent
-> under both mutants.
+> Three pieces made it work, and the middle one is the reusable idea:
+> `TermArena::select_expand` turns a store chain into `ite` comparisons, so an array question
+> reaches the solver as bitvector arithmetic and nothing has to *fold*; promotion seeds the
+> **dominant** init bit as a constant array and stores only the exceptions, which is what keeps
+> the expansion short enough to matter; and `MemFault::UninitializedSymbolic` carries the
+> question rather than a verdict, so the engine can name a concrete offset from the model
+> (`a.eval(&m, off)`) instead of reporting "some value of `i`".
 >
-> So the front is the check wave 202 declined to ship. Its objection was that a conjunction of
-> `select(arr.init, off * 8 + k)` reports `maybe-uninitialized-read` on a byte written at the
-> same symbolic offset, because a read of bit `k` must walk past seven stores whose symbolic
-> indices it cannot compare, so only the outermost folds. **That objection was about syntactic
-> folding, and wave 204 removed its premise.** The check no longer has to *fold* the guard — it
-> emits it, and the engine hands it to a solver with array theory, which can prove
-> `select(store(A, bi, 1), bi) = 1` past non-matching stores without any arena-level rewrite.
-> Try that before the representation changes below; it is a much smaller step and it reuses a
-> capability that already exists.
+> **Ranked most to least serious, the four that survive:**
 >
-> Order of work: emit the guard from `read_term_at` (it has the arena and the index), then
-> check that the three `symbolic_readback_init.rs` fixtures stay silent — they are the exact
-> false positive wave 202 feared, and they are already in the tree as controls. The RED is a
-> symbolic read of a byte no write reached, which must report and today does not.
+> **1. `always-base-zero` — this one can lose a finding.** Seeding the constant array with 0
+> instead of the dominant bit agrees on every fixture in the tree, because none has enough
+> *initialized* bits for the difference to bite. It bites past 256 exception stores: a
+> mostly-written object of 32 bytes or more, read at a symbolic index, needs `base = 1` for
+> `select_expand` to stay under its limit, and with `base = 0` the expansion returns `None`
+> and the read reports nothing. The fixture is a loop that writes every byte but one — 64
+> bytes, 63 written — then a symbolic read. Worth doing: it is a real lost finding and the
+> only survivor that is.
 >
-> If the solver *cannot* decide it, the representation options are the ones wave 202 named:
-> make the write leave **one store per byte** rather than eight (an `init` companion at byte
-> granularity), or have the read ask a single question about the byte. Decide which before
-> coding, and record why the solver route failed — a degraded answer here is `Unknown`, which
-> the discharge already turns into an honest `maybe`.
+> **2. `expand-unbounded` — status unknown.** Deleting `select_expand`'s limit check never ran;
+> the sweep timed out on it. Re-run it before anything else, since it is cheap and the answer
+> may be another missing fixture.
 >
-> **`Unknown` itself is untested.** `unknown-is-definite` and `unknown-is-clean` both survive
-> the sweep, so `an_undecided_guard_stays_a_maybe` reaches `Sat`, not `Unknown` — the tri-state's
-> whole purpose is unverified. It needs a guard the backend gives up on (or a seam to inject one),
-> and it is worth doing because both mutants collapse the third state in opposite directions and
-> neither is caught.
+> **3. `expand-forgets-shadowing` — iterating the chain in the wrong order.** Survives because
+> init stores almost all write `1`, so which of two stores shadows the other rarely changes the
+> answer. It needs two stores at indices that *may* alias with *different* values, which means
+> a promotion-time `0` exception store under a later symbolic `1` — reachable, but the fixture
+> has to make the aliasing decidable in one direction to assert anything.
 >
-> ~~**The promoted read does not consult `arr.init`.**~~ **Wrong — corrected in wave 202.**
-> `init_bit_via` selects from `arr.init` and handles the tri-state correctly. What made four
-> waves of init fixes untestable was **the fixtures**: every array in
-> `symbolic_offset_store.rs` is declared at *file scope*, and C zero-initializes those
-> (6.7.9p10), so the init mask is all-`Yes` and nothing observable can depend on it. Declare the
-> array **inside `probe`** and the init state becomes visible — `int probe(void){ char ca[64];
-> return ca[0]; }` reports `uninitialized-read` today, and
-> `ca[i & 63] = 7; return ca[0];` reports `maybe-uninitialized-read`, which is exactly right.
-> **Rewrite those fixtures as locals before touching init code again**; two waves were spent on
-> a hypothesis about the code because nobody checked the fixture.
+> **4. `ground-true-reported` — equivalent, with the mechanism checked rather than assumed.**
+> Emitting the fault even when the guard folds ground-true is *semantically* the same: the
+> engine probes `¬true`, gets `Unsat`, and drops it. The difference is two solver calls per
+> symbolic read of a fully-initialized object — which is every read of every global array — so
+> the fast path is an optimization and not a verdict. Gradeable by asserting solver-call counts
+> rather than findings, and worth pinning that way; **do not** record it as "equivalent" and
+> move on, which is the mistake wave 203 made with a pair that turned out not to be.
+>
+> **`Unknown` is still untested.** `unknown-is-definite` and `unknown-is-clean` both survive:
+> `an_undecided_guard_stays_a_maybe` reaches a `Sat`, so the tri-state's third outcome has
+> never been exercised. It needs a guard the backend gives up on, or a seam to inject one.
+> `UninitializedSymbolic`'s own `Display` is only reachable that way too, so that message is
+> unexercised for the same reason.
 >
 > **The symbolic read genuinely does not check init** — folded into the front above, which is
 > now the live plan. Wave 202's argument, kept because the next attempt has to answer it: Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
@@ -1161,6 +1156,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A rejected fix is a fix waiting for its premise to change** (wave 205). Wave 202 declined
+> the symbolic-read init check because the guard had to fold past seven non-matching stores.
+> Two waves later the guard did not have to fold at all — `select_expand` eliminates the array
+> and the solver answers arithmetic. **The check was re-attempted only because the refusal had
+> recorded its reason**, and the reason had expired. Sixteen candidates and thirty-two had
+> disagreed about whether a fault exists for four waves.
+>
+> **Put the question where the facts are** (wave 205). `chiero-mem` knows the whole init mask
+> and cannot call a solver; the engine can call a solver and knows nothing about bits. The
+> shape that worked is mem emitting a *term* and the engine discharging it — and the same split
+> gives the report its witness, since only the engine has a model to read an offset out of.
+> Neither half could have produced the finding alone.
+>
+> **An encoding that nothing can ask a question about is not a representation, it is a wall**
+> (wave 205). Seeding 512 stores and seeding one constant array mean the same thing; only one
+> of them lets a symbolic read reach its own answer. The fix that mattered most in this wave
+> was not the check — it was making the data the check reads shallow enough to eliminate.
 >
 > **"Equivalent mutant" is a hypothesis, and it needs the same disproof as any other** (wave
 > 205). Wave 203 called `back-to-byte-index` and `only-first-bit` equivalent because every
