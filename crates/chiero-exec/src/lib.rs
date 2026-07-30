@@ -4822,8 +4822,12 @@ impl<'m> Engine<'m> {
                     return self.lowering_gap(s, span, &format!("a load of {ty:?}"));
                 }
                 let r = s.mem.read_term(a, p, size, Endian::Little, span);
-                self.report_faults(a, s, &r.faults, span);
-                match r.value.filter(|_| !unusable(&r.faults)) {
+                // **The discharged list decides usability, not the raw one** (wave 249). A `maybe`
+                // the engine has just proved away must not still be a reason to throw the value
+                // out — that is what made a byte written before promotion read back as an invented
+                // symbol while the report, correctly, said nothing at all.
+                let live = self.report_faults(a, s, &r.faults, span);
+                match r.value.filter(|_| !unusable(&live)) {
                     // A pointer-typed load comes back as a **pointer**. The recorded
                     // provenance first — the bits alone cannot say which object they name
                     // — and then the address, because bytes written by `calloc`, `memset`
@@ -6489,13 +6493,23 @@ impl<'m> Engine<'m> {
         f.access_paths.get(v).map(|p| p.render())
     }
 
+    /// Report what survives discharge, **and hand the survivors back**.
+    ///
+    /// The return value is the point of wave 249. Discharging a `maybe` costs up to three solver
+    /// queries per fault, and the result used to be consumed here and dropped — so a caller that
+    /// also needed to know whether the *value* was usable consulted the raw list instead, and
+    /// discarded values the engine had just proved were fine. One fault list decided two things and
+    /// only one of them saw the proof.
+    ///
+    /// Most callers ignore the return and only want the reporting; the two that decide a value's
+    /// usability are the scalar and bit-field loads.
     fn report_faults(
         &mut self,
         a: &mut TermArena,
         s: &mut State,
         faults: &[chiero_mem::MemFault],
         span: Span,
-    ) {
+    ) -> Vec<chiero_mem::MemFault> {
         // 021 §5 step 3: misalignment is **recorded** on every access and is a *finding*
         // only in `ub-strict` mode, because x86-64 tolerates it and VPP relies on that.
         // Reporting it unconditionally fired on every `CLIB_PACKED` packet header — and
@@ -6605,8 +6619,7 @@ impl<'m> Engine<'m> {
                 other => Some(other),
             })
             .collect();
-        let faults = &faults[..];
-        for f in faults {
+        for f in &faults {
             self.finding_seq += 1;
             let key = FindingKey {
                 kind: f.kind(),
@@ -6683,6 +6696,7 @@ impl<'m> Engine<'m> {
             s.status = Status::Terminated(TermReason::Crashed);
             let _ = f;
         }
+        faults
     }
 
     /// 023 §5 / 024 §1 step 4: **a call chiero did not perform invalidates what it was
