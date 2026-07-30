@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 231) — 1365 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 232) — 1366 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,25 +778,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: a `long double` literal is rounded to `f64` before it is encoded
+> ### 🔴 x87: a *decimal* `long double` literal is still rounded through `f64`
 >
-> The milestone has moved two steps in two waves, and the *order* §9 recorded turned out to be
-> shorter than it looked.
+> Wave 231 went after the literal and found a bigger, unrelated defect on the way: **a hexadecimal
+> float literal made lowering refuse the function.** `float_literal` recognised the syntax and then
+> handed the text to Rust's `f64` parser, which rejects hex float syntax, so lowering took the integer
+> path and emitted `Const::Int` where a float was declared. Every program containing a `0x1p3`
+> anywhere lost that function. Fixed exactly — a hex literal's digits are already binary, so the value
+> is `mantissa × 2^(exp - 4 × fraction_digits)` with no rounding to get wrong, which is what C99
+> 6.4.4.2 has the syntax for.
 >
-> ~~Step 1, a value that survives a store and a load.~~ **Already done by wave 229's encoding fix** —
-> `long double y = x;` is `Exact` with no assumptions. Nothing further was needed.
+> **That matters for x87 specifically**: a hex literal is now the only way to write an exact
+> `long double` in source, and it works. So the milestone has a way to specify test values exactly
+> even though decimal literals do not yet round correctly.
 >
-> ~~Step 2, `FpToSi`.~~ **Done in wave 230**, and `(int)` of a `long double` now agrees with gcc.
-> `x87_trunc_to_int` reads the significand — x87's value is `sig × 2^(e - 63)`, so truncation toward
-> zero is a shift — rather than decoding to `f64` first, which would round 64 bits of significand
-> into 53 and be wrong for a 64-bit target. `x87_out_of_range` decides C11 6.3.1.4's event on the
-> exact value for the same reason. **`FNeg` came along with it**: C has no negative literals, so
-> `-2.5L` is `fneg` of a positive constant and every negative `long double` in every program went
-> through an arm that had no width-80 case. Negation is the sign bit alone (IEEE-754 §5.5.1), so it
-> needs no significand and no soft-float — one xor of bit 79.
->
-> **The next step is upstream of all of it: the literal.** Lowering carries a float literal as an
-> `f64`, so an `f80` literal is rounded to 53 bits of significand before `x87_bits` ever sees it:
+> **What remains on the literal.** A *decimal* `long double` literal is parsed at `f64` precision and
+> then re-encoded, so it loses the bottom eleven bits of significand:
 >
 > ```text
 >   4611686018427387905.0L   (2^62 + 1)
@@ -804,16 +801,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   gcc                     0x403d8000000000000001
 > ```
 >
-> Verified in the CIR, not inferred. It is why `long_double_to_int_agrees_with_gcc` cannot yet
-> contain the one fixture that would *prove* the conversion never rounds through `f64` — the comment
-> where that fixture would go says so, with both patterns. **Fixing it means carrying a literal at
-> its declared type's precision from the parser down**, which is a decimal-to-`f80` conversion rather
-> than a wider field, and it is the last thing before conversions and arithmetic can be graded
-> exactly.
+> `float_literal`'s comment calls this "a narrowing this records rather than hides" — and **nothing
+> records it**: no diagnostic, no assumption, nothing in the output. That is the honest thing to fix
+> first, and it is cheaper than correct decimal-to-`f80` rounding (which needs an arbitrary-precision
+> decimal parser, since Rust has no `f80`). Either declare the narrowing per literal, or do the
+> rounding properly; **do not leave a comment claiming a record that does not exist.**
 >
-> Then: `FpExt 64 -> 80` and `SiToFp -> 80` (both exact, and both wanting `x87_bits` reachable from
-> the engine rather than only from lowering), `FpTrunc 80 -> 64` (needs round-to-nearest-even), and
-> arithmetic last, which is the soft-float `fbin`'s comment declines to write for one operation.
+> Then: `FpExt 64 -> 80` and `SiToFp -> 80` (exact, and both want `x87_bits` reachable from the engine
+> rather than only from lowering), `FpTrunc 80 -> 64` (round-to-nearest-even), and arithmetic last.
 >
 > ### What else is left
 >
@@ -1278,6 +1273,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A comment saying "this order matters" is a testable claim** (wave 231). I recorded two hazards I
+> had reasoned about and avoided — stripping `0x` before the suffix, and stripping a `+` before
+> parsing an exponent — and mutation killed neither, because neither hazard exists: a hex float's
+> mandatory `p` puts a digit before the suffix, and `i32::from_str` accepts `+` already. One line was
+> dead code. **A surviving mutant on a line you called load-bearing means the line is not**, and the
+> claim in the comment is what mutation was testing.
+>
+> **Reasoned-about hazards are the ones to distrust** (wave 231). Both wrong claims were about traps
+> avoided by thinking rather than observed by running. The parts I had actually measured — the
+> significand width, the fraction scaling — were right. **Write down what you observed; mark what you
+> inferred as inferred.**
+>
+> **A comment claiming a record is a claim about behaviour** (wave 231). `float_literal` says the
+> `long double` narrowing is "a narrowing this records rather than hides", and nothing records it
+> anywhere. That is the same defect class as wave 214's silent skip, hiding in prose instead of in
+> code — and §9 now carries it as the next step rather than the reassurance it reads as.
 >
 > **A recorded plan's steps may already be done — measure before starting one** (wave 230). §9's step
 > 1 was "a value that survives a store and a load", and wave 229's encoding fix had already
