@@ -1574,6 +1574,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **One value consumed twice will be discharged once** (wave 249). `report_faults` filtered a fault
+> list, reported from the filtered copy, and returned `()`. A second consumer needed the same list to
+> decide whether the *value* was usable, had only the raw one, and threw away values the engine had
+> just proved fine. **When an expensive refinement is computed for one consumer, check who else reads
+> the unrefined input** — the cost of the proof is the tell that it is worth sharing.
+>
+> **A wrong answer can hide behind an operation that commutes with truncation** (wave 249, and 217
+> before it). An `unsigned` bit-field was sign-extended on read for a hundred waves. `s.a += 1` could
+> not see it — reading 5 or -3, adding one and truncating to three bits gives 6 either way — and
+> neither could any value whose top bit was clear. Division, shift and the value a *postfix* form
+> yields are what see it. **Pick the operator that does not commute with the narrowing, and pick
+> operands in the half of the range where the two rules differ.**
+>
+> **`is_signed(expr)` and "the declared type is signed" are different questions** (wave 249). C11
+> 6.3.1.1 promotes a narrow bit-field to `int`, so the expression is signed where the field is not —
+> and the promotion applies to an rvalue but not to an lvalue, so the two answers agree at some sites
+> and not others. That is exactly the shape that makes a helper look right everywhere it is tested.
+>
+> **A commit message is a claim and mutation checks it** (wave 249). The GREEN said the
+> compound-assignment path was "the same defect one layer in". The mutant would not die; four
+> fixtures later, instrumenting both expressions showed they agree at that site and the path was
+> never broken. **The sweep audits the prose as well as the code**, and the correction belongs in the
+> tree, not only in memory.
+>
 > **A hypothesis in §9 is a liability until someone runs its own check** (wave 247). "The `arr.data`
 > the read sees does not contain the seeding stores" sat at the top of the open list from wave 201 to
 > 247, complete with the one-`eprintln!` check that would settle it. Running that check took twenty
