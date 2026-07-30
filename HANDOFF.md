@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 213) — 1327 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 214) — 1328 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,37 +722,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The two report channels spell a `kind` differently, and one of them has no dedup key
+> ### 🔴 A checker report has no dedup key, and nothing today makes that visible
 >
-> **Reporting is finished across all three routes.** Wave 212 closed the last one: a checker's
-> `Action::Report` and `Action::ReportRequiring` push straight onto the state, passing neither
-> `report_faults` nor the model loop, so the whole UBSan-parity surface waves 157–176 built had no
-> location at all. Both routes now stamp the *instruction's* span — a `Function`'s and a `Block`'s
-> each point at their own start, so any other span would report every finding in a function at its
-> opening brace.
+> ~~The two channels spell a `kind` differently.~~ **Done in wave 213.** Four slugs —
+> `division-by-zero`, `shift-past-operand-width`, `signed-overflow`,
+> `float-to-integer-conversion-out-of-range` — so `signed-overflow: …` now reads like
+> `use-after-free: …` and a consumer splitting on the first `:` gets one convention. Hyphenated
+> rather than renamed, and mutation pins each arm separately.
 >
-> §9 had called this "covered by argument" on the belief that checker findings shared the model
-> route. **They share nothing with it.** The fixture I recorded as impossible to write in wave 209
-> was easy: 001 §4 rule 7 forbids this crate a *frontend*, and `SourceMap::add_file` is public, so
-> a hand-built map over hand-built spans tests the whole thing. **"I cannot write that fixture"
-> deserves one more minute of thought than I gave it.**
+> **An open naming question, deliberately not answered unasked:** UBSan's own slugs are
+> `signed-integer-overflow`, `shift-exponent-too-large`, `float-cast-overflow`,
+> `integer-divide-by-zero`. chiero is graded against UBSan site for site, so sharing its names
+> would make the census rows directly comparable and would help anyone reading both tools' output.
+> It is a rename rather than a spelling fix, so it wants a decision rather than a wave.
 >
-> **Two things this turned up, in order:**
+> **The remaining item, and the honest status is "not reachable today":** both checker push sites
+> pass `key: None`, so a checker report is exempt from 023 §6.1's deduplication. I checked what
+> that costs before proposing work on it:
 >
->   - **The channels spell `kind` differently.** `MemFault` uses hyphenated slugs
->     (`use-after-free`, `maybe-uninitialized-read`); checker reports use prose with spaces
->     (`signed overflow`, `division by zero`). 023 §6.1 makes the kind half the dedup key, so a
->     consumer grouping findings sees two conventions and any tooling that splits on the first
->     `:` gets a different shape depending on which channel produced the report. Pick one — the
->     slug, since it is what `MemFault::kind` returns and what the dedup key already uses — and
->     change `ub_phrase`. `undefined_arithmetic.rs` and `union_pun.rs` match on the current
->     spelling, so the tests come with it.
->   - **A checker report has `key: None`**, so it is exempt from 023 §6.1's deduplication
->     entirely. Both checker push sites pass `None` where `report_faults` builds a `FindingKey`.
->     The `UbState.reported` list dedups within one checker's own bookkeeping, which is not the
->     same thing: two checkers reporting the same event, or one checker across forked states,
->     produce copies the run cannot merge. Worth checking whether that is reachable before
->     building anything.
+>   - **A fork's copies are already handled** — `reports()` dedups by finding id, which is shared
+>     by every state descended from the one that reported.
+>   - **One checker reporting a site twice is handled by the checker** — `UbState.reported` keys on
+>     `(kind, span)`, which is what `one_faulting_site_in_a_loop_is_one_finding` pins.
+>   - **Two checkers reporting the same event is the gap, and `default_checkers()` is
+>     `OrderDependence` and `UndefinedArithmetic`**, which observe disjoint things. So no
+>     duplicate is reachable with the checkers that exist.
+>
+> That makes it a latent hazard rather than a defect: the *third* checker to watch arithmetic gets
+> duplicates the run cannot merge, and `union-pun` is already off-by-default and overlapping in
+> spirit. Either give `Action::Report` a key (the checker knows its own kind and span, which is
+> exactly 023 §6.1's pair) or write down that checkers own their own deduplication. **Do not build
+> the machinery before deciding which** — the first option makes `reported` redundant, the second
+> makes the missing key correct, and doing both would leave two mechanisms for one job.
 >
 > **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the model
 > route the call span and the fault's access span coincide for every model that exists) and
@@ -1168,6 +1169,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A filename match is not a dependency** (wave 213). The RED commit predicted the differential
+> oracle would need updating because `generated.rs` contained the string "division by zero". It did
+> not: that line reads *gcc's* UBSan stderr, and chiero's side of the comparison uses
+> `format!("{:?}", u.kind)` — the enum's `Debug`, not the message. **Read the site before writing
+> down what depends on it**, especially when the claim is going into a commit message as fact.
+>
+> **Measure the blast radius by what asserts, not by what matches** (wave 213). Thirteen files
+> contained "division by zero"; two contained an assertion on it, and one of those was a
+> preprocessor diagnostic for `#if 1/0` — a different message class that correctly kept its
+> wording. The grep that mattered was `contains("…")`, not `"…"`.
+>
+> **A tempting improvement that nobody asked for goes in §9, not in the commit** (wave 213).
+> Aligning these slugs to UBSan's own names would be genuinely useful and is a rename, not a
+> spelling fix. Recording it as a question keeps the wave honest and keeps the decision with the
+> person whose project it is.
+>
+> **Establish whether a hazard is reachable before proposing work on it** (wave 213). The missing
+> dedup key on checker reports looked like the next defect; five minutes of reading showed forks
+> are handled by id, one checker's repeats by its own state, and the only real gap needs a third
+> arithmetic checker that does not exist. It is a latent hazard with a design decision attached,
+> which is a different thing from a bug, and §9 now says so.
 >
 > **"I cannot write that fixture" is a claim to re-examine, not a fact to record** (wave 212).
 > Wave 209 wrote down that a checker report could not be tested from `chiero-lower` because the
