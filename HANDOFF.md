@@ -778,6 +778,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
+> ### 🔖 Handoff point — waves 239–244 were one arc, and it is finished
+>
+> Six waves, one subject: **`long double` went from "literals only, and some of those wrong" to a
+> complete finite model of x87's 80-bit format**, verified against the hardware rather than against a
+> manual. In order — 239 multiply, 240 exact decimal literals, 241 add and subtract, 242 divide (the
+> milestone), 243 NaNs, 244 subnormals. `crates/chiero-cir/src/fp.rs` is where all of it lives, with
+> `pack` as the single rounding site and `unpack` as the single decode.
+>
+> **What the next context should know.** The verification harness is worth reusing before writing any
+> more float code: `scratchpad/soak.c` generates random 80-bit operand pairs, runs them through gcc's
+> own x87 by `memcpy`, and prints operands and result; `scratchpad/chk` compares that against `fp`.
+> Nearly two million cases across the four operations, all four classes of special operand, and the
+> subnormal boundary — no disagreement. Two lessons about it are recorded below and both cost real
+> time: a random soak cannot reach a rounding boundary (`2^-62` events), and a generator that makes
+> one operand special at a time never reaches the interactions.
+>
+> **The one float gap left is narrowing `long double` to `float`**, item 3 below. Everything else on
+> floats is either done or needs a solver theory.
+>
+> **The thing worth doing that is not about floats** is the fall-through audit the wave 244 rule
+> asks for: lowering answers a refusal from `fp` by falling back to an `f64`, which has silently
+> converted a declared limit into a wrong number *twice* (waves 240 and 244). That is a structural
+> hazard on the lowering path, not a float issue, and nobody has looked at the other places it
+> happens.
+
 > ### ✅ x87 arithmetic — the milestone, closed in wave 242
 >
 > ~~An unmodelled store leaves the stale value.~~ **Fixed in wave 238.** A store chiero cannot
