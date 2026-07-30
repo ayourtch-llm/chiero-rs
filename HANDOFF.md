@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 217) — 1344 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 218) — 1346 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,65 +722,46 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Three decisions parked, and the next defects are capability items
+> ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
-> **Symbolic arithmetic UB is no longer owed.** Wave 215 closed what wave 174 planned and wave 175
-> deliberately skipped: `note_ub` needed both operands concrete, so a program with real inputs
-> produced no arithmetic UB event at all and the run called itself `Exact`.
+> **Wave 217 found a real defect by widening the grammar, not by running more seeds.** Seeds
+> 800..1600 of the existing soak came back clean — 490 comparisons, zero defects — so the *shapes*
+> were exhausted rather than the seed count. Asking what `StmtKind` can hold rather than what the
+> generator emits turned up two forms lowering has always supported and the generator never
+> produced: `Switch` and `DoWhile`. Seed 344 then mismatched.
 >
-> `forced_signed_overflow` asks whether `P ∧ ¬overflow` is **unsatisfiable** — every model of the
-> path overflows — for `Add`, `Sub` and `Mul`. The condition is computed one bit wider (`2w` for
-> `Mul`) and compared against the narrow range, which is C11 6.5p5's definition. `Sat` and
-> `Unknown` stay silent, so the change is monotone: it adds findings and removes none.
+> **The defect:** `_Bool b = 1; b += -1;` gave 1 where gcc gives 0. C11 6.5.16.2p3 makes `b += e`
+> mean `b = b + e` with both operands promoted, so the addition happens in `int` and only the
+> *result* is converted; sema coerced the right operand to the lvalue's type first, so `-1` became
+> `1` and the expression stopped depending on `b`. **Invisible for every other integer type** —
+> conversion to `char` is a truncation and truncation commutes with `+`, `-`, `*`, so
+> `(char)(1 + 300)` and `1 + (char)300` are both 45. `_Bool` conversion is `!= 0`, which commutes
+> with nothing. That is why a hundred waves of differential testing never saw it.
 >
-> **The decision §9 asked for, and its answer.** Wave 156's divisor query reports on `Sat`, and that
-> does not transfer: with an unconstrained `x`, `x + 1` is satisfiably overflowing and correct for
-> four billion values, so `Sat` would put a finding on every arithmetic instruction in every program
-> that takes an input. Division by zero needs one specific divisor; overflow needs only a large
-> operand.
+> **The channel and its knob.** `control_flow_programs_agree_with_gcc` is the fixed batch (121
+> comparisons), `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` searches open-ended, and the new arms are gated
+> **before any `rng` call** so the eight existing channels are byte-for-byte unchanged. The first
+> version was ungated and shifted the memory-UB corpus until `stack-buffer-overflow` appeared in
+> two programs instead of enough to grade on — caught by the adequacy guard.
+> **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### The three decisions, none of them defects
+> ### What to widen next, in the same way
 >
-> **1. Report an overflow the path merely *admits*?** Today: no, and
-> `an_overflow_the_path_merely_admits_is_not_reported` pins that so changing it is a choice rather
-> than a side effect. The argument for yes is wave 156's precedent plus a witness naming the input;
-> the argument against is a finding on every addition in every program with an input. **A
-> `may-overflow` kind, mirroring `may-be-out-of-bounds` and `maybe-uninitialized-read`, is the shape
-> that would make yes tolerable** — the memory channel already has that split and this channel does
-> not.
+> The method is what carried this wave: enumerate what the AST/CIR can represent, subtract what the
+> generator emits, and pick from the difference. `StmtKind` still has forms the grammar never
+> produces — **`goto` and labels** (28 mentions in lowering, zero in the generator) — and the
+> expression grammar is worth the same census. Candidates the generator has never emitted:
+> `static` locals (a distinct storage duration), `do`-`while` with `continue`, nested `switch`,
+> a `switch` over an enum, and the comma operator in a `for` header.
 >
-> **2. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
-> report is exempt from 023 §6.1. Not reachable today: forks dedup by finding id, a checker's own
-> repeats by its `(kind, span)` memory, and `default_checkers()` ships two checkers watching
-> disjoint things. Either give `Action::Report` a key or write down that checkers own their
-> deduplication — **not both**, since each makes the other redundant or correct.
+> ### The three parked decisions, unchanged
 >
-> **3. UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
-> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`; UBSan spells the same four
-> `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
-> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing names would make
-> the census rows directly comparable. It is a rename, so it wants a decision.
->
-> **The next defects are the capability items below**: x87 80-bit floats, symbolic floats, the soak
-> frontier at seed 2000, and `tests/corpus/c/pointer_fields.c`.
->
-> **The tri-state's third outcome is now exercised.** Wave 216 killed `unknown-is-definite`,
-> `unknown-is-clean` and `unknown-reports`, which had survived every sweep since wave 204. §9 asked
-> for "a seam to inject an `Unknown`" and there was already one: `SolverTier::LiteOnly` refuses to
-> look for a backend and tier 1 is deliberately incomplete, so a question needing array theory or
-> wide arithmetic comes back undecided with no test-only code path at all.
-> `crates/chiero-lower/tests/solver_gave_up.rs` holds it, and
-> `MemFault::UninitializedSymbolic`'s message — written in wave 205, recorded as unreachable — is
-> what an undecided symbolic read says.
->
-> **Surviving mutants, recorded rather than filed as tested:** `unsigned-too` (dropping the `signed`
-> guard reports nothing anyway, because the query's own `sext` sends large unsigned values back
-> inside the signed range — the guard is defence in depth, which is worth knowing before someone
-> deletes it); `always-opaque` and `expand-forgets-shadowing` (performance and robustness, not
-> correctness); `stamp-uses-call-span` (the call span and the fault's access span coincide for every
-> model that exists); `map-mandatory` (needs a span outside every file in the map — 010 §6.2 makes
-> `FileId` per-TU, so a map from another TU is the natural fixture, and that one is now the *only*
-> remaining survivor with a plausible fixture behind it).
+> **1. Report an overflow the path merely *admits*?** Today no, pinned by test. A `may-overflow`
+> kind mirroring `may-be-out-of-bounds` is the shape that would make yes tolerable.
+> **2. Checker reports and deduplication** — give `Action::Report` a key, or write down that
+> checkers own it. Not both.
+> **3. UBSan's slugs** — `signed-integer-overflow` and friends would make the census rows directly
+> comparable. A rename, so it wants a decision.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1191,6 +1172,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **When a fuzzer comes back clean, widen the grammar rather than the seed range** (wave 217). 490
+> comparisons found nothing; two new statement forms found a defect in 700 seeds. The generator can
+> only find what it can *say*, so the productive question is what the AST can hold that the grammar
+> never emits — `StmtKind::Switch` and `DoWhile` had been supported by lowering and unreachable
+> from the generator since it was written.
+>
+> **A defect invisible under one type may be invisible because the operation commutes** (wave 217).
+> Coercing a compound assignment's right operand before the operation is wrong for every type and
+> observable for exactly one: truncation commutes with `+`, `-` and `*`, so every wrapping integer
+> hides it, and `_Bool`'s `!= 0` does not. **When a wrong order of operations passes, ask which
+> types make the two orders agree** — that set is where the fixtures were.
+>
+> **Gate a new generator arm before it consumes randomness** (wave 217). An ungated `chance()`
+> reshuffles every seed's program, and the memory-UB corpus lost enough `stack-buffer-overflow`
+> programs to stop being gradeable. The adequacy guard caught it. `if self.knob && self.rng...` —
+> short-circuit order is the whole mechanism.
+>
+> **The verifier caught what the fixtures did not** (wave 217). Dropping sema's conversion instead
+> of promoting refused seven of two hundred generated programs with `Add operand is Int(1),
+> declared Int(32)`. Nine hand-written cases had all passed. A structural check over the whole
+> corpus sees what a fixture set aimed at semantics cannot.
+>
+> **Grade a channel on the shapes it claims, not on emitting the construct** (wave 217). Removing
+> the fallthrough case and demoting the `default` both left the new channel passing — the programs
+> still agreed with gcc, and the channel had quietly stopped exploring the two shapes it exists for.
+> Count the shapes across the corpus, the way the `>= 20 of each form` guard already did.
 >
 > **An assertion of silence is worth nothing in a crate that cannot speak** (wave 216). I put the
 > undecided-overflow test in `chiero-lower`, where it passed — and the mutant that turns `Unknown`
