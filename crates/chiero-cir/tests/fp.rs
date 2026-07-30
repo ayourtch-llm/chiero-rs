@@ -260,3 +260,81 @@ fn adding_opposite_infinities_is_a_gap() {
     assert_eq!(fp::add(NAN, INF), None);
     assert_eq!(fp::sub(ONE, NAN), None);
 }
+
+/// **The three ways a division has no answer, and the one that looks like a fourth but is not.**
+///
+/// `0/0` and `∞/∞` are IEEE-754 §7.2's invalid operations, whose results are NaNs `fp` does not mint.
+/// A quotient below the format's floor is a subnormal, the gap every operation here declines. And
+/// **division by zero is not one of them**: §7.3 makes it a defined operation returning an infinity,
+/// so a fix that lumped it in with `0/0` would turn a value into a refusal.
+///
+/// None of the four is reachable from a C fixture. `agree` compares values, so a declared gap fails
+/// it on principle, and gcc folds an out-of-range constant quotient before chiero sees the program.
+#[test]
+fn division_declines_the_invalid_operations_but_not_division_by_zero() {
+    let (pz, nz) = (0u128, 1u128 << 79);
+    let ninf = INF | (1 << 79);
+    assert_eq!(fp::div(pz, pz), None, "§7.2: `0/0` is invalid");
+    assert_eq!(fp::div(nz, pz), None, "whatever the zeros' signs");
+    assert_eq!(fp::div(INF, INF), None, "§7.2: `∞/∞` is invalid");
+    assert_eq!(fp::div(INF, ninf), None);
+    // §7.3: dividing a *nonzero* by zero is an infinity, signed by both operands.
+    assert_eq!(
+        fp::div(ONE, pz),
+        Some(INF),
+        "§7.3's divideByZero is a value"
+    );
+    assert_eq!(fp::div(ONE, nz), Some(ninf), "and the zero's sign counts");
+    assert_eq!(fp::div(ONE | (1 << 79), pz), Some(ninf));
+    assert_eq!(fp::div(ONE | (1 << 79), nz), Some(INF));
+    // Zero over nonzero, and finite over infinite, are zeros rather than gaps.
+    assert_eq!(fp::div(pz, ONE), Some(pz));
+    assert_eq!(fp::div(nz, ONE), Some(nz));
+    assert_eq!(fp::div(ONE, INF), Some(pz));
+    assert_eq!(
+        fp::div(ONE, ninf),
+        Some(nz),
+        "the sign survives the underflow to zero"
+    );
+    // Infinite over finite is that infinity.
+    assert_eq!(fp::div(INF, ONE), Some(INF));
+    assert_eq!(fp::div(ninf, ONE), Some(ninf));
+    // A NaN anywhere is a gap, and it is decided before any of the above.
+    assert_eq!(fp::div(NAN, ONE), None);
+    assert_eq!(fp::div(ONE, NAN), None);
+    assert_eq!(
+        fp::div(NAN, pz),
+        None,
+        "even where `0` would otherwise give an infinity"
+    );
+}
+
+/// **A quotient outside the format's range: an infinity at the top, a gap at the bottom.**
+///
+/// The same asymmetry `mul`, `add` and `from_decimal` all have, reached through the fourth operation.
+/// The exponent difference does the work here rather than a sum, so this is a distinct arithmetic
+/// path to the same two checks.
+#[test]
+fn a_quotient_outside_the_range_overflows_or_refuses() {
+    let big = (u128::from(32_000u32) << 64) | (1 << 63);
+    let small = (u128::from(300u32) << 64) | (1 << 63);
+    assert_eq!(
+        fp::div(big, small),
+        Some(INF),
+        "an exponent difference past the top is §7.4's infinity"
+    );
+    assert_eq!(
+        fp::div(big, small).map(|v| v >> 79),
+        Some(0),
+        "and it is positive, since both operands were"
+    );
+    assert_eq!(
+        fp::div(small, big),
+        None,
+        "and past the bottom it is a subnormal, which is a gap rather than a zero"
+    );
+    // The bound is a bound: a difference inside the range still divides.
+    let mid = (u128::from(20_000u32) << 64) | (1 << 63);
+    assert!(fp::div(mid, small).is_some());
+    assert!(fp::div(mid, big).is_some());
+}

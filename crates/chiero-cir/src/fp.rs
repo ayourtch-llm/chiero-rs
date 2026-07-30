@@ -537,6 +537,12 @@ pub fn div(x: u128, y: u128) -> Option<u128> {
     let drop = (128 - q.leading_zeros()).checked_sub(64)?;
     let mut sig = (q >> drop) as u64;
     let guard = (q >> (drop - 1)) & 1 == 1;
+    // **Computed for the assertion below and for nothing else**, because the rounding decision here
+    // does not consult it: with no tie possible, `guard` alone settles the direction. Mutation
+    // records the consequence honestly — forcing this to `true` survives the whole suite, and must,
+    // since killing it would need an input where the tie the proof rules out actually occurs. It
+    // stays because a vacuous assertion is cheaper than an unchecked proof, and because if the proof
+    // is ever wrong this is the line that says so.
     let sticky = r != 0 || (drop > 1 && q & ((1u128 << (drop - 1)) - 1) != 0);
     // `value = q · 2^(ea - eb - 65)` and an f80 significand carries its integer bit at 63.
     // Not `mut`, unlike every other operation here: rounding cannot carry, so nothing after this
