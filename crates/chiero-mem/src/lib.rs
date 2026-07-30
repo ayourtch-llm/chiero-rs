@@ -1252,24 +1252,37 @@ impl std::fmt::Display for MemFault {
             // name where the object died as well as where it was touched: "freed
             // earlier" sends a reader looking, and the engine has known the answer all
             // along — the fault has carried it since it was defined.
+            //
+            // **Wave 207: it was rendering that span as `bytes 85..92`, which is an offset
+            // into the preprocessed buffer.** The intent above is right and the rendering was
+            // not: nothing in `chiero-exec` or `chiero-cir` holds a `SourceMap`, so neither
+            // this layer nor the engine can turn a `BytePos` into a line, and printing the
+            // raw *pair* was worse than that — a reader has no use for an end offset, and
+            // `85..92` reads as a location it is not. What survives is the start, labelled as
+            // what it actually is. An existing test pins that this number is present (024
+            // contract 10 wants the reader told where the object died), so dropping it would
+            // have traded one defect for a real loss; §9 carries the work of giving the engine
+            // a `SourceMap` so this can become a line and column.
             MemFault::UseAfterFree { obj, freed_at, .. } => write!(
                 f,
-                "{obj:?} was freed at bytes {}..{} before this access",
-                freed_at.lo.0, freed_at.hi.0
+                "{obj:?} was freed earlier on this path (source offset {}), before this access",
+                freed_at.lo.0
             ),
-            MemFault::DoubleFree { obj, freed_at, .. } => write!(
-                f,
-                "{obj:?} was already freed at bytes {}..{}",
-                freed_at.lo.0, freed_at.hi.0
-            ),
+            MemFault::DoubleFree { obj, freed_at, .. } => {
+                write!(
+                    f,
+                    "{obj:?} was already freed earlier on this path (source offset {})",
+                    freed_at.lo.0
+                )
+            }
             MemFault::UseAfterScope {
                 obj,
                 scope_ended_at,
                 ..
             } => write!(
                 f,
-                "{obj:?} left scope at bytes {}..{}, before this access",
-                scope_ended_at.lo.0, scope_ended_at.hi.0
+                "{obj:?} left scope earlier on this path (source offset {}), before this access",
+                scope_ended_at.lo.0
             ),
             MemFault::ReadOnly { obj, off, .. } => {
                 write!(f, "write at offset {off} of read-only {obj:?}")
@@ -2728,11 +2741,24 @@ impl Memory {
             })
     }
 
-    /// Whether this object is still on the `Bytes` fast path (021 §3).
+    /// This object's size in bytes, or `None` if there is no such object.
+    ///
+    /// (The doc comment here described `is_bytes` below it until wave 207 — a stray line that
+    /// told a reader the wrong thing about a public accessor.)
     pub fn size_of_pub(&self, id: ObjectId) -> Option<u64> {
         self.entry(id).map(|e| e.size)
     }
 
+    /// What kind of storage this object is, or `None` if there is no such object.
+    ///
+    /// Exists so a report can say *what* an anonymous object is. `chiero-mem` cannot name a
+    /// variable — it has no module — but "heap" against "stack" is a fact it owns, and a reader
+    /// who is told which of the two it is can find the allocation without an `ObjectId`.
+    pub fn kind_of(&self, id: ObjectId) -> Option<ObjKind> {
+        self.entry(id).map(|e| e.kind)
+    }
+
+    /// Whether this object is still on the `Bytes` fast path (021 §3).
     pub fn is_bytes(&self, id: ObjectId) -> bool {
         self.entry(id).is_some_and(|e| e.repr == Repr::Bytes)
     }

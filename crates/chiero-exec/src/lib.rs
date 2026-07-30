@@ -6106,6 +6106,46 @@ impl<'m> Engine<'m> {
     /// did not report.
     /// What a reader calls the object `o`: a local's declared name, a global's, or `None`
     /// when chiero invented the object and there is nothing to call it.
+    /// How to refer to an object in a report: its name if it has one, a description if not.
+    ///
+    /// 023 §9 asks for a report a person can act on, and every fault message names the object it
+    /// is about. A variable name is the best answer and `object_name` gives it — but anonymous
+    /// objects are ordinary, not exceptional: every `malloc` makes one, and it is exactly the
+    /// memory whose faults matter most.
+    ///
+    /// What is left is what `chiero-mem` knows: which kind of storage it is and how big. "the
+    /// 4-byte heap allocation" does not say *which* `malloc` — the finding's own span says where
+    /// the access is, and the free site is on the fault — but it tells a reader what they are
+    /// looking for, which the counter never did.
+    fn object_desc(&self, s: &State, o: chiero_mem::ObjectId) -> String {
+        if let Some(name) = self.object_name(s, o) {
+            return name;
+        }
+        let size = s.mem.size_of_pub(o);
+        // **Kind first, size second.** A reader who is told "heap" already knows to look at
+        // allocations; the size narrows it among them. Reversing that reads as a fact about
+        // bytes rather than about storage.
+        let what = match s.mem.kind_of(o) {
+            Some(chiero_mem::ObjKind::Heap) => "heap allocation",
+            Some(chiero_mem::ObjKind::Stack) => "unnamed local",
+            Some(chiero_mem::ObjKind::Global) => "unnamed global",
+            Some(chiero_mem::ObjKind::Extern) => "object defined outside this translation unit",
+            Some(chiero_mem::ObjKind::Function) => "function",
+            // 021 §6: memory chiero invented on first dereference because the caller's
+            // structure had to point somewhere. Saying so is the honest description — a reader
+            // told "heap allocation" would go looking for a `malloc` that is not there.
+            Some(chiero_mem::ObjKind::Lazy) => "object reached through an unconstrained pointer",
+            Some(chiero_mem::ObjKind::VarArgs) => "variadic argument area",
+            // No entry at all. Saying so beats inventing a kind, and it is the one case where
+            // there is genuinely nothing to describe.
+            None => return "an object this run no longer has".to_string(),
+        };
+        match size {
+            Some(n) => format!("the {n}-byte {what}"),
+            None => format!("the {what}"),
+        }
+    }
+
     fn object_name(&self, s: &State, o: chiero_mem::ObjectId) -> Option<String> {
         if let Some(g) = s.global_objs.iter().find(|(_, id)| **id == o) {
             return self
@@ -6300,10 +6340,13 @@ impl<'m> Engine<'m> {
             // printed differently with `mem2reg` on. `chiero-opt`'s transparency sweep
             // normalized it away for eight waves to keep working; that workaround goes
             // with this.
-            let message = match f.object().and_then(|o| self.object_name(s, o)) {
-                Some(name) => {
-                    message.replace(&format!("{:?}", f.object().expect("just matched")), &name)
-                }
+            //
+            // **An object with no name still gets described**, because the alternative is the
+            // counter. Wave 207: a `malloc` has no name, so the substitution never fired for
+            // heap memory and every finding in that whole class — four of the six memory-UB
+            // classes — printed `ObjectId(3)` at the reader.
+            let message = match f.object() {
+                Some(o) => message.replace(&format!("{o:?}"), &self.object_desc(s, o)),
                 None => message,
             };
             // **A null dereference names the assumption it rests on, when it rests on one.**
@@ -6716,6 +6759,15 @@ impl<'m> Engine<'m> {
         }
         for (fault, text) in keyed {
             self.finding_seq += 1;
+            // **The second route for a memory fault, and it needed the same substitution.**
+            // `ModelRegistry::lift` renders a fault with `to_string`, which prints an
+            // `ObjectId` because `chiero-mem` cannot name a variable. `report_faults` fixes
+            // that on its own path; this one is how `free` reports a double free, and it did
+            // not — so the same defect had two homes and one fix.
+            let text = match fault.as_ref().and_then(chiero_mem::MemFault::object) {
+                Some(o) => text.replace(&format!("{o:?}"), &self.object_desc(s, o)),
+                None => text,
+            };
             let key = fault.as_ref().map(|f| FindingKey {
                 kind: f.kind(),
                 span: f.at(),
