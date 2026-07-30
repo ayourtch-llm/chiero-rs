@@ -2415,3 +2415,45 @@ fn a_float_widened_to_long_double_agrees_with_gcc() {
     agree("double d = 0.0; long double x = d; return (int)x;");
     agree("double d = 0.5; long double x = d; return (int)x;");
 }
+
+/// **Narrowing `long double` to `double` rounds to nearest, ties to even.**
+///
+/// The first x87 step with a *decision* in it. Everything so far was exact by construction —
+/// widening cannot lose bits, an integer is its own significand — and this discards eleven bits of
+/// significand, so IEEE-754's default rule has to be implemented rather than inherited.
+///
+/// **Truncating to an `int` cannot see rounding**, which is why these compare the narrowed `double`
+/// against a literal instead: `f64` comparison is already modelled, so the result of the rounding is
+/// observable directly. Every fixture is `== 1` under gcc, so a wrong rounding shows up as a `0`.
+///
+/// The ties are the point. `1 + 2^-53` sits exactly halfway between `1.0` and the next `double`, and
+/// round-half-up would give the wrong one — ties go to the candidate with an even last bit, which is
+/// `1.0`. `(1 + 2^-52) + 2^-53` is the same distance from *its* two neighbours and rounds the other
+/// way, because there the even one is above. A rule that always rounds half away from zero passes
+/// the first and fails the second; one that always truncates fails both.
+///
+/// The literals are hexadecimal because that is the only spelling that reaches the bits exactly
+/// (wave 231) — a decimal `long double` is still parsed at `f64` precision, which would defeat the
+/// fixture before the conversion ever ran.
+#[test]
+fn narrowing_long_double_to_double_rounds_to_nearest_even() {
+    // Exactly halfway, and the lower neighbour is even: rounds down to 1.0.
+    agree("long double x = 0x1.00000000000008p0L; double d = x; return (int)(d == 1.0);");
+    // Exactly halfway, and the lower neighbour is odd: rounds up.
+    agree(
+        "long double x = 0x1.00000000000018p0L; double d = x; \
+         return (int)(d == 0x1.0000000000002p0);",
+    );
+    // Above and below halfway, where parity does not enter into it.
+    agree(
+        "long double x = 0x1.00000000000009p0L; double d = x; \
+         return (int)(d == 0x1.0000000000001p0);",
+    );
+    agree("long double x = 0x1.00000000000007p0L; double d = x; return (int)(d == 1.0);");
+    // A value `f64` holds exactly, which must come back unchanged.
+    agree("long double x = 2.5L; double d = x; return (int)(d == 2.5);");
+    // Past `f64`'s range: IEEE says infinity, and `1e400L` is representable in x87.
+    agree("long double x = 0x1p2000L; double d = x; return (int)(d > 1e308);");
+    // Narrowing to `float`, which is the same opcode discarding many more bits.
+    agree("long double x = 2.5L; float f = x; return (int)(f == 2.5f);");
+}
