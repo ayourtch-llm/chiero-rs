@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 207) — 1299 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 208) — 1303 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,27 +722,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The report text is only guarded for `MemFault`, and three other message sets drift
+> ### 🔴 A finding cannot say *where* anything happened, because nothing downstream has a `SourceMap`
 >
-> Wave 206 found that **no test in the tree looked at the text a user reads.** Every fault test
-> checks a kind or a field, so the prose was unowned, and it had rotted in seven places across
-> four crates — including one message with no predicate at all:
+> Wave 207 chased §9's message front into what the reports actually render and found the
+> `ObjectId` leak: `use-after-free: ObjectId(3) was freed at bytes 85..92`. Every heap finding —
+> four of the six memory-UB classes, the whole channel waves 178–179 built — named an allocation
+> counter, because the engine substituted a *name* over the id and a `malloc` has none. Fixed on
+> both routes (`report_faults` and `ModelRegistry::lift`; the second only surfaced because the
+> test asserted all four classes). Anonymous objects now describe themselves from what
+> `chiero-mem` owns: `object_desc` + the new `kind_of`, giving "the 4-byte heap allocation".
 >
-> ```text
->   may-be-out-of-bounds: 4-byte access of ObjectId(3) (8 bytes) may be out of bounds —
->                    offset 9 is
-> ```
+> **What is owed is the location.** A fault's secondary span still renders as `(source offset
+> 85)`, which is honest about what the number is and useless as a location. Two things are
+> missing and they are one piece of work:
 >
-> `crates/chiero-mem/tests/messages.rs` now constructs all eighteen `MemFault` variants and
-> asserts what any wording would want: no run of two spaces, no whitespace edges, no embedded
-> newline, content beyond the kind prefix, and the kind leading (023 §6.1 makes it half the
-> dedup key). Mutation kills each of the four with its own defect.
+>   - **Nothing in `chiero-exec` or `chiero-cir` holds a `SourceMap`.** `chiero-span` has
+>     `lookup_loc`, so a line and column are one call away from any layer that has the map, and
+>     no layer downstream of the front end does. Threading it in is a 001 §4 layering question,
+>     which is why this is a design step and not a patch.
+>   - **`Finding` has no field for a secondary span.** The access site is `Finding::span`; where
+>     the object *died* has nowhere structural to live, so it survives only as prose. That is
+>     what forced the compromise above: an existing test
+>     (`a_store_through_a_pointer_to_a_dead_scope_is_one_use_after_scope`, 024 contract 10)
+>     asserts the number is present, and my first attempt deleted it — trading a cosmetic defect
+>     for a real loss. Ten `StateFinding` push sites and one `Finding` construction, all
+>     mechanical, once the map exists to render it.
 >
-> **What is still unguarded**, and the next work here: the three refusal and degradation
-> messages in `chiero-exec` and the `union-pun` message in `chiero-check` were fixed by the same
-> sweep, and **nothing tests them**, so they can drift back tomorrow. `Refusal` and the
-> degradation reasons want the same invariant. Do not record this as done because the strings
-> are currently clean — that is exactly the state the `MemFault` messages were in.
+> Do the `SourceMap` first: without it a structural span is a `BytePos` in a different shape.
+>
+> **Still unguarded, from wave 206:** the three refusal and degradation messages in
+> `chiero-exec` and `union-pun` in `chiero-check` have no invariant. `messages.rs` covers
+> `MemFault` only, and these are built at runtime by checkers, so the durable answer is either an
+> xtask gate over message literals or an invariant over the findings a corpus run produces. Both
+> classes are clean *today* — do not file them as done, which is exactly the state `MemFault`'s
+> messages were in when they rotted.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1153,6 +1166,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A substring can collide with the word for its own absence** (wave 207). The control asserting
+> `ca` is still named passed with the naming deleted, because the fallback description is "the
+> 8-byte unnamed lo**ca**l" — and `g` hides in "unnamed **g**lobal". Match names as words, and
+> assert the absence of the fallback's own vocabulary. Wave 184's rule from a direction no one
+> would guess.
+>
+> **Look at what the product renders, not at what the source says** (wave 207). §9's front was
+> "message literals are unguarded"; scanning the literals came back clean twice. Running a
+> fixture and reading the finding took one command and found that every heap report named an
+> allocation counter. The literal is a template; the defect was in what filled it.
+>
+> **One defect, two homes** (wave 207). `report_faults` substituted the object name and
+> `ModelRegistry::lift` did not, so `free`'s report kept the counter after the other three were
+> fixed. It surfaced only because the test named all four heap classes rather than the one that
+> motivated the wave. **When a fix is a substitution, ask what else builds the same string.**
+>
+> **Deleting the bad rendering can cost more than the defect** (wave 207). Replacing
+> `freed at bytes 85..92` with prose that named no location at all broke a test that asserts the
+> reader is told where the object died — 024 contract 10, and the code comment said as much. The
+> answer was to keep the number and stop mislabelling it. **Check what the ugly thing is carrying
+> before removing it.**
 >
 > **The output nobody tests is the output the user reads** (wave 206). Every fault test in the
 > tree asserted a kind or a field; none rendered the message. Seven were malformed and one had
