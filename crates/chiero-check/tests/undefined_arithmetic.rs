@@ -677,3 +677,77 @@ fn a_float_cast_overflow_is_reported() {
         findings(&ok)
     );
 }
+
+/// **Every kind is spelled as a slug, the way `MemFault::kind` spells its own.**
+///
+/// A finding's message is `"{kind}: {detail}"` in both channels, so the leading token plays the
+/// same structural role in both — and 023 §6.1 makes the kind half the dedup key. `MemFault`
+/// spells it `use-after-free`; this channel spelled it `signed overflow`. A consumer grouping
+/// findings by kind, or any tooling splitting on the first `:`, sees two conventions depending on
+/// which channel produced the report.
+///
+/// **All four `UbKind` variants**, because `ub_phrase`'s match is exhaustive and the compiler will
+/// demand an arm for a fifth — but it cannot demand that the arm is a slug. That is what this
+/// asserts, and it is why the test enumerates the kinds rather than checking one.
+#[test]
+fn every_ub_kind_is_spelled_as_a_slug() {
+    let overflow = |op, a_val: i128, b_val: i128| {
+        module(vec![block(
+            0,
+            vec![inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Bin {
+                        op,
+                        ty: CTy::Int(32),
+                        a: k(a_val),
+                        b: k(b_val),
+                        signed: true,
+                    },
+                },
+                10,
+            )],
+            Terminator::Return(Some(Operand::Value(ValueId(0)))),
+        )])
+    };
+    let float_cast = module(vec![block(
+        0,
+        vec![inst(
+            InstKind::Assign {
+                dst: ValueId(0),
+                rv: RValue::Cast {
+                    kind: CastKind::FpToSi,
+                    to: CTy::Int(16),
+                    from: CTy::Float(FloatKind::F64),
+                    a: Operand::Const(Const::Float(
+                        FloatKind::F64,
+                        (-4_294_905_087.0f64).to_bits(),
+                    )),
+                },
+            },
+            10,
+        )],
+        Terminator::Return(Some(k(0))),
+    )]);
+    let cases = [
+        ("division by zero", overflow(BinOp::SDiv, 100, 0)),
+        ("over-wide shift", overflow(BinOp::Shl, 1, 33)),
+        (
+            "signed overflow",
+            overflow(BinOp::Add, i128::from(i32::MAX), 1),
+        ),
+        ("float cast", float_cast),
+    ];
+    for (what, m) in cases {
+        let f = findings(&m);
+        assert_eq!(f.len(), 1, "`{what}`: expected one finding: {f:?}");
+        let kind = f[0].split(':').next().expect("split always yields one");
+        assert!(
+            !kind.is_empty()
+                && kind
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "`{what}`: a kind is a slug, as `MemFault::kind` spells its own: {kind:?}"
+        );
+    }
+}
