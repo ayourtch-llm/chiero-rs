@@ -2507,3 +2507,37 @@ fn comparing_long_doubles_agrees_with_gcc() {
     // pinned where it can be reached without arithmetic — `chiero-cir`'s `fp` unit tests, on
     // `partial_cmp` itself.
 }
+
+/// **Multiplying two `long double`s agrees with gcc.**
+///
+/// The first arithmetic operation, and the one that needs no iteration: two sixty-four-bit
+/// significands make a *one-hundred-and-twenty-eight*-bit product, which is exactly a `u128`. Add the
+/// exponents, normalize by one bit, round the low half to nearest-even. Division needs long division
+/// and addition needs alignment with a sticky bit; multiplication needs neither, which is why it goes
+/// first.
+///
+/// **The rounding fixture is the point.** `(1 + 2^-63)²` is `1 + 2^-62 + 2^-126`, and only the first
+/// two terms fit — so an implementation that drops the product's low half without rounding, and one
+/// that rounds up unconditionally, disagree here and with gcc. Both operands need all sixty-four bits
+/// of significand, which is writable only because wave 236 made hex literals exact.
+#[test]
+fn multiplying_long_doubles_agrees_with_gcc() {
+    agree("long double a = 2.0L, b = 3.0L; return (int)(a * b);");
+    agree("long double a = -2.0L, b = 3.0L; return (int)(a * b);");
+    agree("long double a = -2.0L, b = -3.0L; return (int)(a * b);");
+    agree("long double a = 0.5L, b = 4.0L; return (int)(a * b);");
+    // Zero times anything, including the sign of the result.
+    agree("long double a = 0.0L, b = 3.0L; return (int)(a * b == 0.0L);");
+    // A product needing more than sixty-four bits of significand, so the rounding decides it.
+    agree(
+        "long double a = 0x1.0000000000000002p0L; long double p = a * a; \
+         return (int)(p == 0x1.0000000000000004p0L);",
+    );
+    // Exact in sixty-four bits, so rounding must *not* move it.
+    agree(
+        "long double a = 0x1.8p0L, b = 0x1.8p0L; long double p = a * b; \
+         return (int)(p == 0x1.2p1L);",
+    );
+    // A product past `f64`'s range but well inside x87's, which is the range this format exists for.
+    agree("long double a = 0x1p1000L, b = 0x1p1000L; return (int)(a * b > 0x1p1999L);");
+}
