@@ -84,12 +84,13 @@ pub fn from_u64_scaled(mant: u64, scale: i32, negative: bool) -> Option<u128> {
     // `from_u64` placed the exponent for `mant × 2^0`; shifting the value by `2^scale` moves the
     // exponent field by exactly `scale`, because the significand is unchanged.
     let exp = i64::try_from((base >> 64) & INF_EXP).ok()? + i64::from(scale);
-    if exp <= 0 || exp >= i64::from(INF_EXP as u32) {
-        return None;
-    }
-    let sign = base & (1u128 << 79);
     let sig = base & u128::from(u64::MAX);
-    Some(sign | (u128::try_from(exp).ok()? << 64) | sig)
+    // **Through `pack`, so a scale below the format's floor gives a subnormal rather than a refusal**
+    // (wave 244). The refusal was the dangerous kind: lowering falls through to the `f64` that
+    // `float_literal` computes, and `0x1p-16400` is a *zero* there — so `0x1p-16400L != 0.0L`
+    // answered false. Nothing is discarded on this path, so the sticky flag is off and `pack`'s
+    // rounding only ever fires for the denormal shift.
+    Some(pack(negative, sig << 63, false, exp))
 }
 
 /// A pattern truncated toward zero, exactly, without building an `f64`.
@@ -277,6 +278,92 @@ fn propagate_nan(x: u128, y: u128) -> Option<u128> {
     Some(pick | (1u128 << 62))
 }
 
+/// The smallest exponent field a *normal* value has. A subnormal shares its scale with a zero field.
+const MIN_NORMAL_EXP: i64 = 1;
+
+/// A pattern's sign, its significand normalized so the integer bit is set, and its exponent.
+///
+/// **The whole of subnormal support on the way in.** x87 stores a subnormal with the exponent field
+/// pinned at zero and the integer bit *clear*, so its significand is not in the range every routine
+/// here assumes. Shifting it up until the integer bit lands, and pushing the exponent below the
+/// format's floor by the same amount, gives back a value the ordinary arithmetic can use — the value
+/// is unchanged, only its spelling is. Exponent zero and exponent one denote the same scale, which is
+/// what makes `1 - leading_zeros` the right answer rather than `-leading_zeros`.
+///
+/// Callers must have dealt with zeros, infinities and NaNs first; this is for finite nonzero values.
+fn unpack(bits: u128) -> (bool, u64, i64) {
+    let neg = bits >> 79 & 1 == 1;
+    let exp = ((bits >> 64) & INF_EXP) as i64;
+    let sig = (bits & u128::from(u64::MAX)) as u64;
+    if exp != 0 {
+        return (neg, sig, exp);
+    }
+    let shift = sig.leading_zeros();
+    (neg, sig << shift, MIN_NORMAL_EXP - i64::from(shift))
+}
+
+/// Round a computed significand and exponent into a pattern: overflow, normal, subnormal or zero.
+///
+/// **The whole of subnormal support on the way out, and the one rounding site all four operations
+/// share.** `r` carries the significand with its integer bit at 126, which leaves sixty-three bits of
+/// extra precision below it, and `sticky` says whether anything was discarded beneath *those*.
+///
+/// The exponent decides which of four things happens:
+///
+///   - **at or above the top**, an infinity, because IEEE-754 §7.4 specifies one
+///   - **at or below the floor**, gradual underflow: instead of normalizing, the significand shifts
+///     right by however far the exponent is under the floor, and the exponent stops there. The bits
+///     that shift out join the sticky flag, so a subnormal is rounded on the same evidence a normal
+///     is — which is what keeps `x - y` nonzero for distinct `x` and `y` all the way down.
+///   - **in between**, an ordinary normal
+///   - **below even the smallest subnormal**, a zero — the one place a zero is the right answer for
+///     a nonzero value, and it is reached by rounding rather than by giving up
+///
+/// The encoded exponent field is `0` exactly when the integer bit came out clear, so a subnormal that
+/// *rounds up* into the integer bit becomes the smallest normal with no special case at all: the two
+/// share a scale, so the same exponent works for both.
+fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
+    let sign = u128::from(neg) << 79;
+    let inf = sign | (INF_EXP << 64) | (1u128 << 63);
+    if exp >= i64::from(INF_EXP as u32) {
+        return inf;
+    }
+    let (mut r, mut sticky, mut exp) = (r, sticky, exp);
+    if exp < MIN_NORMAL_EXP {
+        let k = MIN_NORMAL_EXP - exp;
+        if k >= 128 {
+            // Further under the floor than the significand is wide. Nothing survives the shift, and
+            // nothing that could survive would round back up either.
+            return sign;
+        }
+        let k = k as u32;
+        sticky = sticky || r & ((1u128 << k) - 1) != 0;
+        r >>= k;
+        exp = MIN_NORMAL_EXP;
+    }
+    let mut sig = (r >> 63) as u64;
+    let guard = (r >> 62) & 1 == 1;
+    let sticky = sticky || r & ((1u128 << 62) - 1) != 0;
+    if guard && (sticky || sig & 1 == 1) {
+        let (next, carried) = sig.overflowing_add(1);
+        sig = if carried {
+            exp += 1;
+            1u64 << 63
+        } else {
+            next
+        };
+    }
+    if exp >= i64::from(INF_EXP as u32) {
+        return inf;
+    }
+    if sig == 0 {
+        return sign;
+    }
+    // The integer bit is the whole distinction: set means normal, clear means the field is zero.
+    let field = if sig >> 63 == 1 { exp } else { 0 };
+    sign | ((field as u128) << 64) | u128::from(sig)
+}
+
 /// The product of two patterns, rounded to nearest with ties to even.
 ///
 /// **Exact before it rounds, which is what makes multiplication the operation to do first.** Two
@@ -310,46 +397,20 @@ pub fn mul(x: u128, y: u128) -> Option<u128> {
     if zero_x || zero_y {
         return Some(sign);
     }
-    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
-    // An x87 denormal is far below anything this can normalize back, so it is a gap rather than a
-    // zero — a zero would be a confident answer about a value that is merely very small.
-    if ex == 0 || ey == 0 {
-        return None;
-    }
-    let (sx, sy) = (x & u128::from(u64::MAX), y & u128::from(u64::MAX));
-    let prod = sx * sy;
+    // A subnormal operand arrives normalized, with an exponent below the format's floor, so the
+    // arithmetic below cannot tell the difference (wave 244).
+    let (_, sx, ex) = unpack(x);
+    let (_, sy, ey) = unpack(y);
+    let prod = u128::from(sx) * u128::from(sy);
     // Both operands have the integer bit set, so the product's bit 127 or 126 is — one normalization
-    // step at most, and which one it is decides the exponent.
-    let (sig, extra, exp_adj) = if prod >> 127 & 1 == 1 {
-        (prod >> 64, prod & u128::from(u64::MAX), 1i64)
+    // step at most, and which one it is decides the exponent. `pack` wants the integer bit at 126,
+    // which is where `add` leaves it too, so the rounding is shared rather than repeated.
+    let (r, sticky, exp_adj) = if prod >> 127 & 1 == 1 {
+        (prod >> 1, prod & 1 != 0, 1i64)
     } else {
-        (
-            (prod >> 63) & u128::from(u64::MAX),
-            (prod << 1) & u128::from(u64::MAX),
-            0,
-        )
+        (prod, false, 0)
     };
-    // Round to nearest, ties to even, on the sixty-four bits being discarded. The tie is exactly
-    // half, and it goes to the candidate whose low bit is already zero.
-    let half = 1u128 << 63;
-    let mut sig = sig;
-    let mut exp = ex + ey - i64::from(BIAS) + exp_adj;
-    if extra > half || (extra == half && sig & 1 == 1) {
-        sig += 1;
-        // Rounding up can carry out of the significand, which is another normalization step: the
-        // value becomes a power of two and the integer bit moves.
-        if sig >> 64 & 1 == 1 {
-            sig >>= 1;
-            exp += 1;
-        }
-    }
-    if exp >= i64::from(INF_EXP as u32) {
-        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
-    }
-    if exp <= 0 {
-        return None;
-    }
-    Some(sign | (u128::try_from(exp).ok()? << 64) | sig)
+    Some(pack(neg, r, sticky, ex + ey - i64::from(BIAS) + exp_adj))
 }
 
 /// Whether a pattern is an infinity: the all-ones exponent with the bare integer bit.
@@ -412,12 +473,9 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
     if is_zero(y) {
         return Some(x);
     }
-    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
-    if ex == 0 || ey == 0 {
-        return None;
-    }
-    let sx = (x & u128::from(u64::MAX)) as u64;
-    let sy = (y & u128::from(u64::MAX)) as u64;
+    // Subnormal operands arrive normalized, with an exponent below the floor (wave 244).
+    let (_, sx, ex) = unpack(x);
+    let (_, sy, ey) = unpack(y);
     // The larger magnitude leads, and it decides the result's sign. Comparing the exponent before
     // the significand is the whole comparison, because both significands are normalized.
     let ((ea, sa, na), (eb, sb, nb)) = if (ex, sx) >= (ey, sy) {
@@ -469,26 +527,7 @@ pub fn add(x: u128, y: u128) -> Option<u128> {
         r <<= u32::try_from(k).ok()?;
         exp -= k;
     }
-    let mut sig = (r >> 63) as u64;
-    let guard = (r >> 62) & 1 == 1;
-    let sticky = sticky || r & ((1u128 << 62) - 1) != 0;
-    if guard && (sticky || sig & 1 == 1) {
-        let (next, carried) = sig.overflowing_add(1);
-        sig = if carried {
-            exp += 1;
-            1u64 << 63
-        } else {
-            next
-        };
-    }
-    let sign = u128::from(na) << 79;
-    if exp >= i64::from(INF_EXP as u32) {
-        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
-    }
-    if exp <= 0 {
-        return None;
-    }
-    Some(sign | (u128::try_from(exp).ok()? << 64) | u128::from(sig))
+    Some(pack(na, r, sticky, exp))
 }
 
 /// The quotient of two patterns, rounded to nearest with ties to even.
@@ -550,11 +589,11 @@ pub fn div(x: u128, y: u128) -> Option<u128> {
     if zx {
         return Some(sign);
     }
-    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
-    if ex == 0 || ey == 0 {
-        return None;
-    }
-    let (sa, sb) = (x & u128::from(u64::MAX), y & u128::from(u64::MAX));
+    // Subnormal operands arrive normalized, with an exponent below the floor (wave 244) — which is
+    // what keeps `sa/sb` in `(1/2, 2)` and the two proofs below true.
+    let (_, sa64, ex) = unpack(x);
+    let (_, sb64, ey) = unpack(y);
+    let (sa, sb) = (u128::from(sa64), u128::from(sb64));
     // Sixty-four bits of headroom, which is every bit a `u128` has above the numerator.
     let n = sa << 64;
     let mut q = (n / sb) << 1;
@@ -569,41 +608,37 @@ pub fn div(x: u128, y: u128) -> Option<u128> {
     // different number — assuming one of them would be wrong by a factor of two for half of all
     // operand pairs.
     let drop = (128 - q.leading_zeros()).checked_sub(64)?;
-    let mut sig = (q >> drop) as u64;
     let guard = (q >> (drop - 1)) & 1 == 1;
-    // **Computed for the assertion below and for nothing else**, because the rounding decision here
-    // does not consult it: with no tie possible, `guard` alone settles the direction. Mutation
-    // records the consequence honestly — forcing this to `true` survives the whole suite, and must,
-    // since killing it would need an input where the tie the proof rules out actually occurs. It
-    // stays because a vacuous assertion is cheaper than an unchecked proof, and because if the proof
-    // is ever wrong this is the line that says so.
-    let sticky = r != 0 || (drop > 1 && q & ((1u128 << (drop - 1)) - 1) != 0);
-    // `value = q · 2^(ea - eb - 65)` and an f80 significand carries its integer bit at 63.
-    // Not `mut`, unlike every other operation here: rounding cannot carry, so nothing after this
-    // line can move the exponent.
-    let exp = ex - ey + i64::from(BIAS) + i64::from(drop) - 2;
-    if guard {
-        debug_assert!(
-            sticky,
-            "a division of normalized significands cannot land on an exact tie: \
-             the divisor would have to reduce to a power of two, and the numerator is then \
-             under 2^64 and cannot fill sixty-five bits"
-        );
-        sig += 1;
-        debug_assert!(
-            sig != 0,
-            "a division of normalized significands cannot round up out of an all-ones \
-             significand: that needs the quotient within half an ulp below a power of two, \
-             which needs a difference smaller than one between two integers"
-        );
-    }
-    if exp >= i64::from(INF_EXP as u32) {
-        return Some(inf);
-    }
-    if exp <= 0 {
-        return None;
-    }
-    Some(sign | (u128::try_from(exp).ok()? << 64) | u128::from(sig))
+    // **The two proofs, restated about the quotient rather than about the result.** `pack` does the
+    // rounding now, and for a *subnormal* result it discards further bits — where ties are ordinary
+    // and carries are ordinary. So the claims are asserted here, where they are about `q` alone and
+    // stay exactly as true as wave 242's enumeration found them.
+    //
+    // Both are computed for the assertions and for nothing else, and mutation records the
+    // consequence honestly: forcing either to its passing value survives the whole suite, and must,
+    // since killing it would need an input the proof rules out. They stay because a vacuous
+    // assertion is cheaper than an unchecked proof.
+    debug_assert!(
+        !guard || r != 0 || (drop > 1 && q & ((1u128 << (drop - 1)) - 1) != 0),
+        "a division of normalized significands cannot land on an exact tie: \
+         the divisor would have to reduce to a power of two, and the numerator is then \
+         under 2^64 and cannot fill sixty-five bits"
+    );
+    debug_assert!(
+        !guard || (q >> drop) as u64 != u64::MAX,
+        "a division of normalized significands cannot round up out of an all-ones \
+         significand: that needs the quotient within half an ulp below a power of two, \
+         which needs a difference smaller than one between two integers"
+    );
+    // `pack` wants the integer bit at 126 and `q` carries `64 + drop` bits, so the shift is what is
+    // left. The bits below `drop` travel along rather than being discarded here, which is what lets
+    // `pack` re-round them if the result turns out to be subnormal.
+    Some(pack(
+        neg,
+        q << (63 - drop),
+        r != 0,
+        ex - ey + i64::from(BIAS) + i64::from(drop) - 2,
+    ))
 }
 
 /// The difference of two patterns: [`add`] with the subtrahend's sign flipped.
@@ -796,10 +831,18 @@ impl Big {
     }
 }
 
-/// The widest decimal magnitude worth computing: x87 reaches about `1.19e4932` at the top and
-/// `3.36e-4932` at the bottom, so anything an order of magnitude past either end is settled without
-/// building a five-thousand-digit integer to confirm it.
+/// The widest decimal magnitude worth computing at the top: x87 reaches about `1.19e4932`, so
+/// anything an order of magnitude past that is an infinity without building a five-thousand-digit
+/// integer to confirm it.
 const DECIMAL_LIMIT: i64 = 4940;
+
+/// And at the bottom — which is **not** the mirror of the top, because subnormals go further.
+///
+/// The smallest normal is about `3.36e-4932` but the smallest *subnormal* is about `3.6e-4951`, so a
+/// bound placed at the normal floor would refuse nineteen orders of magnitude of representable
+/// values. Wave 244 found that the hard way: `1e-4950L` is an ordinary subnormal and this shortcut
+/// was answering zero for it.
+const DECIMAL_MIN: i64 = -4960;
 
 /// **`digits × 10^exp10`, correctly rounded to x87's sixty-four bits.**
 ///
@@ -827,8 +870,12 @@ pub fn from_decimal(digits: &str, exp10: i32, negative: bool) -> Option<u128> {
     if mag > DECIMAL_LIMIT {
         return Some(sign | (INF_EXP << 64) | (1u128 << 63));
     }
-    if mag < -DECIMAL_LIMIT {
-        return None;
+    if mag < DECIMAL_MIN {
+        // **A zero, not a refusal.** Below half the smallest subnormal the correctly rounded answer
+        // *is* zero, so this is an answer rather than a limit — and returning `None` here would send
+        // lowering down the `f64` fall-through, which answers zero anyway but by accident and
+        // without having established it.
+        return Some(sign);
     }
     let n = Big::from_digits(trimmed)?;
     let (num, den) = if exp10 >= 0 {
@@ -889,14 +936,16 @@ pub fn from_decimal(digits: &str, exp10: i32, negative: bool) -> Option<u128> {
             next
         };
     }
-    let biased = exp + i64::from(BIAS);
-    if biased >= i64::from(INF_EXP as u32) {
-        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
-    }
-    if biased <= 0 {
-        return None;
-    }
-    Some(sign | (u128::try_from(biased).ok()? << 64) | u128::from(sig))
+    // Through `pack` as well, so a decimal below the floor is a subnormal (wave 244). The
+    // significand has already been rounded to sixty-four bits here, so it is re-staged with nothing
+    // beneath it — `pack` will round a second time only if the denormal shift discards something,
+    // which is a double rounding and is exactly what the hardware does for a literal too.
+    Some(pack(
+        negative,
+        u128::from(sig) << 63,
+        false,
+        exp + i64::from(BIAS),
+    ))
 }
 
 /// Schoolbook multiplication, used once — to apply a positive power of ten to the digits.

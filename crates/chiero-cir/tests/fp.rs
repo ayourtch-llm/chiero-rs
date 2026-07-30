@@ -61,20 +61,38 @@ fn the_two_zeros_are_equal() {
 /// value that overflowed would be a number where a limit belongs, and wrapping the exponent field
 /// would be a plausible wrong number — the worse of the two.
 #[test]
-fn a_scaled_exponent_outside_the_range_is_refused() {
+fn a_scaled_exponent_outside_the_range_saturates_rather_than_refusing() {
     // 1.0 shifted up and down past the fifteen-bit exponent's reach.
-    assert_eq!(fp::from_u64_scaled(1, 20_000, false), None, "past the top");
+    // Wave 244: neither end refuses any more, and both answers were read off the hardware.
+    // `0x1p20000L` is an infinity there and `0x1p-20000L` is a zero — a literal too small to
+    // represent is not a limit, it is a value that rounds to nothing.
+    assert_eq!(
+        fp::from_u64_scaled(1, 20_000, false),
+        Some((0x7fffu128 << 64) | (1 << 63)),
+        "past the top is §7.4's infinity"
+    );
     assert_eq!(
         fp::from_u64_scaled(1, -20_000, false),
-        None,
-        "past the bottom"
+        Some(0),
+        "past the bottom rounds to zero"
     );
+    // And in the subnormal band it is a *value*, with the exponent field pinned at zero.
+    let sub = fp::from_u64_scaled(1, -16_400, false).expect("subnormals are representable");
+    assert_eq!(
+        (sub >> 64) & 0x7fff,
+        0,
+        "subnormal: the exponent field is zero"
+    );
+    assert_ne!(sub & u128::from(u64::MAX), 0, "and the significand is not");
     // And just inside it still works, so the bound is a bound rather than a refusal of everything.
     assert!(fp::from_u64_scaled(1, 16_000, false).is_some());
     assert!(fp::from_u64_scaled(1, -16_000, false).is_some());
     // Zero is representable at any scale, because there is no exponent to move.
     assert_eq!(fp::from_u64_scaled(0, 20_000, false), Some(0));
 }
+
+/// x87's exponent bias, as a `u32`, for building patterns by hand.
+const BIAS_U32: u32 = 16383;
 
 /// An 80-bit pattern from a biased exponent and a significand, for the cases no C literal reaches.
 fn f80(exp: u32, sig: u64, neg: bool) -> u128 {
@@ -93,7 +111,7 @@ fn f80(exp: u32, sig: u64, neg: bool) -> u128 {
 /// Neither end is reachable from a C fixture — gcc folds an overflowing constant product at compile
 /// time — which is why they are answered here.
 #[test]
-fn a_product_overflows_to_infinity_and_underflows_to_a_gap() {
+fn a_product_overflows_to_infinity_and_underflows_through_the_subnormals() {
     let big = f80(32_000, 1 << 63, false);
     assert_eq!(
         fp::mul(big, big),
@@ -105,11 +123,31 @@ fn a_product_overflows_to_infinity_and_underflows_to_a_gap() {
         Some(INF | (1 << 79)),
         "and it keeps the sign it earned"
     );
+    // **Wave 244 changed this from `None` to a zero, and the zero is the right answer.** Before
+    // subnormals existed, refusing was the honest response to a result below the floor. Now the
+    // floor is `2^-16445` and this product is `2^-32566` — not merely subnormal but far under the
+    // smallest one, so it rounds to zero the way the hardware does, which was checked rather than
+    // assumed. The assertion had to change because the capability did; wave 237's rule, again.
     let tiny = f80(100, 1 << 63, false);
     assert_eq!(
         fp::mul(tiny, tiny),
-        None,
-        "the answer is a denormal, and a zero here would be a wrong number rather than a gap"
+        Some(0),
+        "`2^-32566` is below half the smallest subnormal, so it rounds to zero"
+    );
+    // A product that lands *inside* the subnormal range keeps bits, which is the case a fix that
+    // simply replaced the refusal with a zero would get wrong.
+    let small = f80(1, 1 << 63, false);
+    let half = f80(BIAS_U32 - 1, 1 << 63, false);
+    let got = fp::mul(small, half).expect("a subnormal is a value");
+    assert_eq!(
+        (got >> 64) & 0x7fff,
+        0,
+        "the exponent field of a subnormal is zero"
+    );
+    assert_eq!(
+        got & u128::from(u64::MAX),
+        1 << 62,
+        "and the integer bit is clear, which is what makes it subnormal"
     );
     // The bound is a bound: just inside it, both ends still produce values.
     assert!(fp::mul(f80(20_000, 1 << 63, false), f80(20_000, 1 << 63, false)).is_some());
@@ -210,7 +248,7 @@ fn a_nan_operand_comes_back_with_its_payload() {
 /// exponent check at the end that has to catch it. A fix that only had the shortcut would pass the
 /// first and fail the second.
 #[test]
-fn a_decimal_past_the_format_s_range_overflows_or_refuses() {
+fn a_decimal_past_the_format_s_range_overflows_or_rounds_to_zero() {
     let inf = INF;
     assert_eq!(
         fp::from_decimal("1", 5000, false),
@@ -227,11 +265,24 @@ fn a_decimal_past_the_format_s_range_overflows_or_refuses() {
         Some(inf | (1 << 79)),
         "and it keeps its sign"
     );
-    assert_eq!(fp::from_decimal("1", -5000, false), None, "the shortcut");
+    // Wave 244: the bottom is no longer a refusal, and the two ends are no longer mirror images.
+    // `1e-5000` is below half the smallest subnormal and rounds to zero; `1e-4933` is an ordinary
+    // *subnormal*, nineteen orders of magnitude of representable values the old bound refused.
     assert_eq!(
-        fp::from_decimal("1", -4933, false),
-        None,
-        "and the computed path reaches the same answer for a subnormal"
+        fp::from_decimal("1", -5000, false),
+        Some(0),
+        "the shortcut, and it rounds to zero"
+    );
+    let sub = fp::from_decimal("1", -4933, false).expect("`1e-4933` is a subnormal, not a limit");
+    assert_eq!(
+        (sub >> 64) & 0x7fff,
+        0,
+        "the exponent field of a subnormal is zero"
+    );
+    assert_eq!(
+        sub & u128::from(u64::MAX),
+        0x03ce_a0c7_4b75_2265,
+        "and this is the significand x87 gives it — read off a running program, not derived here"
     );
     // The bound is a bound: values inside it still convert.
     assert!(fp::from_decimal("1", 4000, false).is_some());
@@ -390,7 +441,7 @@ fn division_answers_the_invalid_operations_with_the_indefinite_and_zero_with_an_
 /// The exponent difference does the work here rather than a sum, so this is a distinct arithmetic
 /// path to the same two checks.
 #[test]
-fn a_quotient_outside_the_range_overflows_or_refuses() {
+fn a_quotient_outside_the_range_overflows_or_rounds_to_zero() {
     let big = (u128::from(32_000u32) << 64) | (1 << 63);
     let small = (u128::from(300u32) << 64) | (1 << 63);
     assert_eq!(
@@ -403,11 +454,24 @@ fn a_quotient_outside_the_range_overflows_or_refuses() {
         Some(0),
         "and it is positive, since both operands were"
     );
+    // Wave 244: past the bottom is a value now. This quotient is `2^-31700`, far under the
+    // smallest subnormal, so it rounds to zero.
     assert_eq!(
         fp::div(small, big),
-        None,
-        "and past the bottom it is a subnormal, which is a gap rather than a zero"
+        Some(0),
+        "past the bottom, and it rounds to zero"
     );
+    // A quotient that lands *inside* the subnormal band keeps bits, which a fix that replaced the
+    // refusal with a flat zero would get wrong.
+    let smallest_normal = (1u128 << 64) | (1 << 63);
+    let by_four = (u128::from(BIAS_U32 + 2) << 64) | (1 << 63);
+    let got = fp::div(smallest_normal, by_four).expect("a subnormal is a value");
+    assert_eq!(
+        (got >> 64) & 0x7fff,
+        0,
+        "subnormal: the exponent field is zero"
+    );
+    assert_ne!(got & u128::from(u64::MAX), 0, "and the significand is not");
     // The bound is a bound: a difference inside the range still divides.
     let mid = (u128::from(20_000u32) << 64) | (1 << 63);
     assert!(fp::div(mid, small).is_some());
