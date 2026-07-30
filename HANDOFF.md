@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 208) — 1303 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 209) — 1308 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,40 +722,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 A finding cannot say *where* anything happened, because nothing downstream has a `SourceMap`
+> ### 🔴 Only *one* of a report's two locations is rendered, and only in prose
 >
-> Wave 207 chased §9's message front into what the reports actually render and found the
-> `ObjectId` leak: `use-after-free: ObjectId(3) was freed at bytes 85..92`. Every heap finding —
-> four of the six memory-UB classes, the whole channel waves 178–179 built — named an allocation
-> counter, because the engine substituted a *name* over the id and a `malloc` has none. Fixed on
-> both routes (`report_faults` and `ModelRegistry::lift`; the second only surfaced because the
-> test asserted all four classes). Anonymous objects now describe themselves from what
-> `chiero-mem` owns: `object_desc` + the new `kind_of`, giving "the 4-byte heap allocation".
+> ~~A finding cannot say where anything happened.~~ **Half done in wave 208.** A memory fault's
+> *second* location — where the object was freed, where its scope ended — now renders as
+> `t.c:5:1` instead of `source offset 85`. `Engine::with_source_map` is optional (a run without
+> one says less rather than guessing), `MemFault::secondary()` keeps that span separate from
+> `at()` so nobody reports the free at the access's line, and the rewrite happens on both
+> message routes. `chiero-exec` already depended on `chiero-span`, so no 001 §4 question arose:
+> the map is data the front end already built.
 >
-> **What is owed is the location.** A fault's secondary span still renders as `(source offset
-> 85)`, which is honest about what the number is and useless as a location. Two things are
-> missing and they are one piece of work:
+> **What is left, and it is the bigger half:**
 >
->   - **Nothing in `chiero-exec` or `chiero-cir` holds a `SourceMap`.** `chiero-span` has
->     `lookup_loc`, so a line and column are one call away from any layer that has the map, and
->     no layer downstream of the front end does. Threading it in is a 001 §4 layering question,
->     which is why this is a design step and not a patch.
->   - **`Finding` has no field for a secondary span.** The access site is `Finding::span`; where
->     the object *died* has nowhere structural to live, so it survives only as prose. That is
->     what forced the compromise above: an existing test
->     (`a_store_through_a_pointer_to_a_dead_scope_is_one_use_after_scope`, 024 contract 10)
->     asserts the number is present, and my first attempt deleted it — trading a cosmetic defect
->     for a real loss. Ten `StateFinding` push sites and one `Finding` construction, all
->     mechanical, once the map exists to render it.
+>   - **The *primary* location is still not in the report.** `Finding::span` carries where the
+>     access was, structurally, and every consumer is expected to render it — so a finding read
+>     as text names the free's line and not the fault's own. `findings()` is the projection most
+>     tests and the CLI use. Either it renders the span (it now can, when the engine has a map)
+>     or every consumer reimplements the same lookup.
+>   - **`Finding` still has no structural field for the secondary span**, so that location exists
+>     only inside a sentence. A consumer wanting to jump to the free site has to parse prose.
+>     Ten `StateFinding` push sites and one `Finding` construction; mechanical now that the map
+>     exists to render it.
+>   - **The `.replace()` substitutions are up to two per message.** Object name, then location.
+>     Both reconstruct the token from the fault, so both are sound, and the third one will not
+>     be. The clean shape is `MemFault::describe(&self, obj: impl Fn(ObjectId) -> String, loc:
+>     impl Fn(Span) -> String)` with `Display` delegating to it with the raw-offset defaults —
+>     the arms compose the sentence and the caller supplies what only it knows. The engine
+>     comment at the substitution site has wanted this since wave 207 ("that workaround goes with
+>     this").
 >
-> Do the `SourceMap` first: without it a structural span is a `BytePos` in a different shape.
->
-> **Still unguarded, from wave 206:** the three refusal and degradation messages in
-> `chiero-exec` and `union-pun` in `chiero-check` have no invariant. `messages.rs` covers
-> `MemFault` only, and these are built at runtime by checkers, so the durable answer is either an
-> xtask gate over message literals or an invariant over the findings a corpus run produces. Both
-> classes are clean *today* — do not file them as done, which is exactly the state `MemFault`'s
-> messages were in when they rotted.
+> **`map-mandatory` survives mutation:** replacing `lookup_loc`'s `None` guard with an `expect`
+> breaks nothing, because every span in every fixture resolves. Reaching it needs a fault
+> carrying a span outside any file in the map — a synthesized location, or a `SourceMap` from a
+> different TU (010 §6.2 makes `FileId` per-TU, so that is a real caller error worth a test).
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1166,6 +1165,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A mutant that is equivalent today is a trap for the next arm** (wave 208). `secondary()`
+> returning the access span for every other fault changed nothing, because only three messages
+> render a location. The fourth would have been silently wrong. **Assert the contract where it is
+> stated, not where it currently happens to matter** — the test was three lines in a file that
+> already built all eighteen variants.
+>
+> **When the implementation is better than the test's wording, say so and change the test**
+> (wave 208). The RED asserted the words "line 5"; what shipped is `t.c:5:1`, the form editors
+> parse. The requirement was "a reader can find the place" and the wording was mine — but the
+> matchers had to be re-checked for force afterwards, not just made to pass: the access-line
+> control became `t.c:6` and the no-map control the absence of `t.c:`.
+>
+> **An optional capability keeps every existing caller working, and needs a test that says so**
+> (wave 208). Making the `SourceMap` mandatory was the shorter fix and would have broken every
+> `Engine::new` in the repo. The no-map control is what makes "optional" a fact rather than an
+> intention, and it also pins the honest degradation: say less, never guess a line.
 >
 > **A substring can collide with the word for its own absence** (wave 207). The control asserting
 > `ca` is still named passed with the naming deleted, because the fallback description is "the
