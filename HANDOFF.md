@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 238) — 1375 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 239) — 1375 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,49 +778,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 An unmodelled `RValue` leaves its destination holding the stale value
+> ### 🔴 x87 arithmetic — the milestone, now unblocked
 >
-> **This is a wrong answer, not a gap, and it is the front.** Found by
-> `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled` when wave 237 made comparison
-> work — but it is pre-existing and has nothing to do with comparison:
+> ~~An unmodelled store leaves the stale value.~~ **Fixed in wave 238.** A store chiero cannot
+> translate now writes a *fresh symbolic value* rather than returning: the program did store, chiero
+> does not know what, and "written, value unknown" is the only answer true of both. Marking it
+> uninitialized would re-create wave 195's invented `uninitialized-read` — the comment ten lines above
+> the fix records that failure, which is why the fix is a symbol and not a refusal.
 >
-> ```text
->   long double x = 2.0L; x = x * 3.0L; return (int)x;     chiero 2, gcc 6
-> ```
+> **Every conversion into and out of x87 is exact and no path produces a wrong number**, so arithmetic
+> is the only thing left and it can now be graded: a fixture that computes something is either right
+> or a declared gap, with no third outcome hiding a stale value.
 >
-> `FMul` on `f80` is unmodelled, so nothing is written to `x` — and the *old* value is still there,
-> so `(int)x` reads 2.0 and answers 2. The run degrades to `Unknown`, so it declares something; the
-> value is confidently wrong anyway, which is the one outcome 023 §7 forbids. Wrong since wave 230
-> made `(int)x` work.
+> **What arithmetic needs.** A soft-float over a sixty-four-bit significand: add, subtract, multiply,
+> divide, and the C11 6.5 conversions between them. `fbin`'s comment declines to write it "to get one
+> operation right", which is the correct judgement for one and the wrong one for all of them.
+> `chiero_cir::fp` already holds the format and the pieces this needs — `partial_cmp` orders, and the
+> encode/decode pair normalizes — so a new operation writes arithmetic, not layout.
 >
-> **The fix is that an unmodelled `RValue` writes `Undef` to its destination**, which 020 contract 43
-> already says is a value rather than a gap — the poison then flows and each consumer declares its
-> own gap, exactly as it does for `long double y = x;` on a value that never arrived. It touches
-> every `lowering_gap` site that has a destination, so **expect the fixture set to move**: some runs
-> that produce a plausible number today will start declaring gaps, which is the point. Do it against
-> the disjunction test, which is the thing that noticed.
->
-> **Why this outranks the rest of x87:** every conversion is exact now, so a stale value is the only
-> way left for this area to produce a wrong number, and arithmetic cannot be graded until it does not.
->
-> ### x87 state
->
-> | path | state |
-> |-|-|
-> | literals: integral decimal (233), hex (236) | exact |
-> | literals: fractional decimal | rounds through `f64`, and the comment claiming it is recorded still lies |
-> | `SiToFp`/`UiToFp` (233), `FpExt` (234), `FpToSi`/`FpToUi` (230), `FNeg` (230) | exact |
-> | `FpTrunc` 80 -> 64 (235) | exact, ties to even |
-> | comparison (237) | exact on the patterns |
-> | `FpTrunc` -> 32, subnormal, NaN payloads | declared gaps, each with a reason |
-> | arithmetic | declared gap — the milestone, and blocked on the stale-value fix above |
+> **Surviving mutant, recorded:** `width-guard-dropped`. `chiero-solver` caps a term at 128 bits and
+> panics past it, so the fresh value is minted only where a term can hold it; without the guard a
+> 256-bit store would mint a *128*-bit symbol and write the wrong size. Nothing observes it because
+> the only wide-store fixture (`step.rs`'s `a_store_chiero_cannot_perform_forbids_a_proof`) asserts on
+> fidelity and sealing rather than on memory contents. **The stale-value defect therefore survives for
+> `Int(256)` and nothing narrower** — say so rather than claiming the class is closed.
 >
 > ### What else is left
 >
->   1. **Symbolic floats** — needs an FP theory in the solver or a bit-blasted encoding.
->   2. **UBSan's slugs** — a preference with a compatibility cost, yours.
->   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. Known-cost,
->      low-yield.
+>   1. **The fractional decimal `long double` literal** rounds through `f64`, and `float_literal`'s
+>      comment still calls that "a narrowing this records rather than hides" while nothing records it.
+>   2. **Symbolic floats** — needs an FP theory in the solver or a bit-blasted encoding.
+>   3. **UBSan's slugs** — a preference with a compatibility cost, yours.
+>   4. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600.
 >
 > ### The "also open" list is settled; what is left is milestone-sized or a preference
 >
@@ -1277,6 +1266,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Two failures can share a site and point opposite ways** (wave 238). Refusing to write left a stale
+> value; writing an *uninitialized* marker would have re-created wave 195's invented
+> `uninitialized-read`. The comment recording the second failure was ten lines above the line causing
+> the first, and reading it is what produced the answer that avoids both — a fresh symbol, meaning
+> written-but-unknown. **When a fix has an obvious form, check whether the opposite fix has already
+> been tried here.**
+>
+> **A panic is a fixture telling you the shape you missed** (wave 238). Minting a symbol for the
+> stored value crashed on a 256-bit store, because the arena caps a term at 128 bits — and the test
+> that found it was written years-of-waves ago for a different purpose entirely. The guard that
+> followed is narrow and its cost is recorded: the defect survives for `Int(256)`.
 >
 > **A declared degradation does not make the value honest** (wave 237). The stale-value defect ran at
 > `Fidelity::Unknown` with the unmodelled operation named — every honesty mechanism firing — and still
