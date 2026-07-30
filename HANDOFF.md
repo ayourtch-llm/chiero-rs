@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 219) — 1346 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 220) — 1346 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -745,34 +745,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > two programs instead of enough to grade on — caught by the adequacy guard.
 > **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### The census, run — four constructs left unemitted
+> ### The census set is closed, and it was all sound
 >
-> Wave 218 ran it properly: count constructs in 200 *generated programs* of each grammar rather
-> than grepping the generator's source, which conflates its Rust with its output. Never emitted by
-> either grammar: **`goto`, `continue`, `sizeof`, `->`, `&&`, `||`**.
+> Wave 218 counted constructs in generated *programs* (not in the generator's source, which
+> conflates its Rust with its output) and found six the grammar had never emitted: `goto`,
+> `continue`, `sizeof`, `->`, `&&`, `||`. Waves 218–219 generated the control-flow ones and
+> probed the rest by hand.
 >
-> `&&` and `||` are now generated, with the witness that makes short-circuiting observable, and
-> **900 comparisons over seeds 0..1500 came back clean**. `->` was probed by hand on five shapes —
-> read, write, through a global pointer, through a helper that mutates its argument, and pointer
-> arithmetic into an array of structs — and all five agree with gcc.
+> **Result: all of it agrees with gcc.** 1081 comparisons over seeds 0..1700 across `switch`,
+> `do`-`while`, `&&`, `||`, `goto` and `continue`, zero defects. Thirteen hand-written shapes also
+> agree: forward *and* backward `goto`, out of a nested block, out of a loop, out of a `switch`,
+> *into* a block, re-entering a scope whose local is re-initialized, `continue` in all three loop
+> forms, `sizeof` folded, and five `->` shapes including a compound assignment through a pointer
+> and pointer arithmetic into an array of structs.
 >
-> **Remaining, in the order I would take them:**
+> **The one defect this channel found was wave 217's**: `_Bool b += -1`, surfaced by a `_Bool`
+> accumulator in a `do`-`while`. That is the pattern to expect — the constructs themselves were
+> fine, and it was the *interaction* that broke.
 >
->   - **`goto` and labels** — 28 mentions in lowering, zero emitted. Forward jumps only, or a
->     generated program can fail to terminate and the comparison hangs; that constraint is what
->     makes this a small arm rather than a hard one. A forward `goto` out of a nested block also
->     exercises scope exit, which `Scope(Exit)` and wave 210's `hi - 1` rule both depend on.
->   - **`continue`** — the arm the `for`/`do`-`while` bodies never use, and the one place where a
->     loop's increment is skipped rather than the loop left.
->   - **`sizeof`** — a compile-time constant lowering must fold, and the generator has never asked
->     for one.
->   - **`->` in the *generator*** rather than by hand. It is clean on five fixtures, which is not
->     the same as clean across a corpus, and `tests/corpus/c/pointer_fields.c` is still owed.
+> **What the corpus still cannot say**, and it is where I would look next:
 >
-> **The knob and the frontier:** new arms go behind `control_flow`, gated *before* any `rng` call so
-> the other channels stay byte-identical. `control_flow_programs_agree_with_gcc` is the fixed batch
-> (124 comparisons); `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` searches open-ended. Frontier: `SOAK_CF=1`
-> clean to 1500, plain grammar clean to 1600.
+>   - **`->` in the generator.** Clean on five fixtures is not clean across a corpus, and
+>     `tests/corpus/c/pointer_fields.c` is still owed. Arrow access is apparently *not* the missing
+>     part, so that item needs re-diagnosing rather than assuming.
+>   - **`goto` is forward-only in the corpus** — a deliberate bound, asserted so it cannot erode,
+>     because a backward jump can hang the comparison. Backward jumps are covered only by the
+>     hand-written shapes.
+>   - **`sizeof` is unemitted still**, and it is the one construct on the list whose answer is a
+>     compile-time constant rather than a computation.
+>   - **The knob:** new arms go behind `control_flow`, gated *before* any `rng` call so the other
+>     channels stay byte-identical. Fixed batch `control_flow_programs_agree_with_gcc` (123
+>     comparisons); `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` open-ended. Frontier: `SOAK_CF=1` clean to
+>     1700, plain grammar clean to 1600.
+>
+> With the grammar exhausted for statements, the expression grammar is the next census: `ExprKind`
+> against what `expr` emits.
 >
 > ### The three parked decisions, unchanged
 >
@@ -1192,6 +1199,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A coverage assertion can match the text of a statement instead of a statement** (wave 219). The
+> check that a `goto` skips something looked for `" += "` in the span between jump and label, and a
+> mutant that commented the line out passed it — `//` removes the effect and leaves the characters.
+> **When asserting that generated code does something, exclude the forms that only look like it.**
+>
+> **One keyword can be two constructs** (wave 219). `continue` in a `for` still runs the increment;
+> in a `do`-`while` it jumps to the condition. Counting the keyword found them together and turning
+> one off changed nothing any assertion could see. Count what differs, not what is spelled the same.
+>
+> **A bound on the corpus is not a bound on the construct, and the difference belongs in an
+> assertion** (wave 219). Generated `goto`s are forward-only because a backward jump can hang the
+> comparison — not because chiero gets backward jumps wrong, which was checked by hand first. The
+> assertion that every emitted jump goes forward keeps the bound from eroding into a belief that
+> backward jumps are untestable.
 >
 > **Census the generator's *output*, not its source** (wave 218). Grepping `generated.rs` for
 > `continue` counts the generator's own Rust control flow; generating two hundred programs and
