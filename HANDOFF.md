@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 228) — 1359 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 229) — 1361 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -777,6 +777,53 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      bit-blasted encoding still stands.
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
+>
+> ### 🔴 An `f80` constant carries `f64` bits — start the x87 milestone here
+>
+> Wave 228 measured what `long double` does today, and the answer reframes the milestone.
+>
+> **What works:** `sizeof` is 16, `_Alignof` is 16, a struct containing one lays out correctly, and
+> lowering emits real `f80` CIR — `alloca %0 : f80`, `store f80 …`, `load f80`, `fptosi f80 %2 to
+> i32`. So the type reaches CIR intact.
+>
+> **What is honest:** arithmetic degrades to `Fidelity::Unknown` with the operation named
+> (`"`FDiv` is not modeled"`, `"`FpExt 64 -> 80 on a symbolic operand` is not modeled"`).
+> `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled` in `differential.rs` now pins the
+> disjunction 023 §7 promises, and `long_double_layout_is_exact` pins the parts that work.
+>
+> **What is wrong, and it is the place to start:**
+>
+> ```text
+>   long double x = 1.0L;
+>   store f80 fconst:f80:0x3ff0000000000000 -> %0
+> ```
+>
+> `0x3FF0000000000000` is the **`f64`** encoding of 1.0. An 80-bit 1.0 is `0x3FFF8000000000000000` —
+> a 15-bit exponent and an *explicit* integer bit, which `f64` does not have. So an `f80` constant
+> carries an `f64` payload. It is invisible today because the engine refuses `f80` arithmetic, and it
+> is the first thing that would bite when the milestone lands: arithmetic on those bits computes on
+> garbage that *looks* like a number.
+>
+> **Fix the literal before implementing arithmetic**, and note that `Const::Float`'s `u128` payload
+> is already wide enough for 80 bits, so this is an encoding change in lowering rather than a
+> representation change in CIR.
+>
+> **Why the gap is robust, which is worth knowing before touching it.** I mutated `fbin` to treat
+> 80-bit as `f64`, then `fbin` *and* `fcast` together — the plausible shape of a bad milestone — and
+> both survived every test. The gap is not enforced in the float code: the value is `Undef` long
+> before arithmetic, so `scalar()` returns `None` and each consumer declares its own gap (020
+> contract 43 — `Undef` is a value, not a gap, so the poison flows). **Implementing x87 means making
+> an 80-bit value survive a store and a load as a scalar term first**; arithmetic is the second step,
+> not the first.
+>
+> ### What else is left
+>
+>   1. **Symbolic floats** — the other milestone. Needs an FP theory in the solver or a bit-blasted
+>      encoding; §9's earlier note stands.
+>   2. **UBSan's slugs** — a preference with a compatibility cost, yours, and its motivating argument
+>      retracted in wave 227 (the census compares by the `UbKind` enum's `Debug`, not by `ub_phrase`).
+>   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. Known-cost,
+>      low-yield.
 >
 > ### The "also open" list is settled; what is left is milestone-sized or a preference
 >
@@ -1233,6 +1280,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Read the CIR, not only the verdict** (wave 228). `long double` degrades honestly and names the
+> operation, which is the right *behaviour* — and printing the module showed
+> `fconst:f80:0x3ff0000000000000`, an `f64` bit pattern in an `f80` slot. The verdict was correct
+> and the artifact was wrong, and only one of those was visible from the outside.
+>
+> **A gap enforced upstream cannot be defeated downstream** (wave 228). Two mutants that implemented
+> 80-bit arithmetic as `f64` both survived, because the value is `Undef` before arithmetic ever runs.
+> That is a real property of `Undef` propagation (020 contract 43) rather than a hole in the tests —
+> and it says where the milestone starts: a value that survives a store and a load, before any
+> arithmetic.
+>
+> **Say when a test is a forward contract rather than a regression guard** (wave 228). The
+> `long double` disjunction has no mutant that defeats it today. That does not make it decoration —
+> it will bind the milestone — but claiming mutation coverage for it would have been false, and the
+> honest label is what tells the next reader which kind of test they are looking at.
 >
 > **Ask why a duplicate is *identical*, not why there are two** (wave 227). Two
 > `pointer-outside-object` lines from two paths is documented, deliberate behaviour — the engine
