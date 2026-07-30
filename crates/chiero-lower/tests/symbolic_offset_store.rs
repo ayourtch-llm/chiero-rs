@@ -175,20 +175,30 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
 /// fault, and `r.value.filter(|_| !unusable(&r.faults))` throws the value away, because
 /// `yields_unknown_value` lists that fault. The term it discards is the correct one.
 ///
-/// **So the question is whether a `maybe` about *definedness* should discard a value about
-/// *contents*.** They are different claims: the memory model knows byte 0 holds 5 — it folds to 5
-/// with no solver — and is separately unsure whether reading it is defined, because the init chain
-/// after a symbolic store is 512 nodes deep and `init_guard` gives up past `EXPAND_LIMIT`. Reporting
-/// the `maybe` is right. Replacing the value with a free variable is what makes a program that
-/// *has* an answer report a different one.
+/// **And wave 249 found there is no design question here at all.** Logging the discharge for byte 0:
 ///
-/// Not fixed here because `unusable` gates every `maybe`-uninitialized read in the engine, and
-/// changing what it means is a wave with its own fixtures rather than a line at the end of this one.
+/// ```text
+///   DISCHARGE obj=ObjectId(4) off=0 bit=0 neg=Unsat t=Sat
+/// ```
 ///
-/// `#[ignore]`d rather than left red, following `replay_coverage.rs`'s precedent for a known-blocked
-/// defect: a runnable test that names the failure beats the prose comment it replaces, and a
-/// permanently red suite is how a real regression goes unread.
-#[ignore = "open: a MaybeUninitialized fault discards a value the memory model computed correctly, and the engine invents a symbol in its place — see the doc comment"]
+/// `neg=Unsat` means the guard's negation is unsatisfiable — the engine **proves** the byte was
+/// written, and wave 204's discharge drops the fault. It reports nothing, correctly. Then the value
+/// is discarded anyway.
+///
+/// The cause is that one fault list decides two things and only one of them is discharged:
+///
+/// ```text
+///   self.report_faults(a, s, &r.faults, span);           // discharges, internally, for reporting
+///   match r.value.filter(|_| !unusable(&r.faults)) {     // consults the RAW list
+/// ```
+///
+/// `report_faults` returns `()`. Its filtered list — the one three solver queries per fault were
+/// spent producing — is thrown away, and `unusable` sees the undischarged faults. So the engine
+/// pays for a proof, acts on it in the report, and ignores it where the value is decided.
+///
+/// **The wave-247 question was the wrong question**, and worth recording as such: it asked whether a
+/// `maybe` about definedness should discard a value about contents. It should not, but that is not
+/// what is happening — there is no surviving `maybe` here at all.
 #[test]
 fn a_concrete_byte_written_before_promotion_survives_it() {
     use chiero_solver::{CheckResult, Solver, TieredSolver};
