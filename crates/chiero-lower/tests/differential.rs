@@ -2318,3 +2318,40 @@ fn a_hex_float_literal_agrees_with_gcc() {
     // ordinary — mutation found this one missing.
     agree("return (int)0x1p+3;");
 }
+
+/// **An integral decimal `long double` literal is exact.**
+///
+/// `float_literal` parses every float literal at `f64` precision, so a `long double` loses the
+/// bottom eleven bits of its significand before `x87_bits` re-encodes it. §9's evidence is the
+/// smallest case that shows it:
+///
+/// ```text
+///   4611686018427387905.0L   (2^62 + 1)
+///   chiero  fconst:f80:0x403d8000000000000000
+///   gcc                     0x403d8000000000000001
+/// ```
+///
+/// Now that `(long long)` of an `f80` works exactly (wave 230), the loss is observable end to end:
+/// the `+ 1` is gone by the time anything can look at it.
+///
+/// **Integral literals only, and that is a deliberate line.** Correct decimal-to-binary rounding in
+/// general is famously hard — Rust's own `f64` parser is a substantial algorithm — and there is no
+/// `f80` to lean on. An *integer*, though, needs no rounding decision at all when it fits in
+/// sixty-four bits of significand: the digits are the value. That covers the case §9 recorded, and a
+/// fraction stays at `f64` precision until someone writes the general parser, which §9 keeps.
+#[test]
+fn an_integral_long_double_literal_keeps_all_its_bits() {
+    // 2^62 + 1: representable in x87's 64-bit significand, not in `f64`'s 53.
+    agree("long double x = 4611686018427387905.0L; return (int)(long long)x;");
+    // 2^53 + 1 is the smallest integer `f64` cannot represent, so it is the tightest case.
+    agree("long double x = 9007199254740993.0L; return (int)(long long)x;");
+    // Without the `.0`, which is an integer literal converted to `long double` rather than a
+    // floating one — a different path to the same value, and it must agree.
+    agree("long double x = 9007199254740993; return (int)(long long)x;");
+    // Small integers must not regress: the exponent and the significand both move for these.
+    agree("long double x = 1.0L; return (int)(long long)x;");
+    agree("long double x = 3.0L; return (int)(long long)x;");
+    // And a fraction still works, at whatever precision it has — this pins that the new path does
+    // not swallow the old one.
+    agree("long double x = 2.5L; return (int)x;");
+}
