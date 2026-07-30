@@ -1487,6 +1487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### Rules earned, most recent first
 >
+> **A hypothesis in §9 is a liability until someone runs its own check** (wave 247). "The `arr.data`
+> the read sees does not contain the seeding stores" sat at the top of the open list from wave 201 to
+> 247, complete with the one-`eprintln!` check that would settle it. Running that check took twenty
+> minutes and disproved it. **Six waves of readers took the conclusion and skipped the check** — the
+> note even said "only revisit the design question if the term ids turn out to match", and they did.
+> Write the hypothesis down, but mark plainly that it is unverified, and run the check *before*
+> building on it.
+>
+> **A wrong value and an invented value look identical from the outside** (wave 247). "Solves to 0,
+> not 5" reads as a stale array. It was a *free variable*: the engine discarded a correct term,
+> minted an unconstrained symbol, declared `Unknown`, and the solver picked 0. **Before chasing where
+> a wrong value came from, check whether it is a value at all** — a symbol the solver was free to
+> choose will impersonate any wrong answer you expect.
+>
+> **`return_value_bits` means "no *ground* value", not "no value"** (wave 247). After promotion a
+> returned byte is a `select` over a symbolic array, so it answers `None`, and the first version of
+> the RED read that as "no value at all". Solving the path and evaluating under the model is what
+> reproduces the symptom. A helper that answers `None` for two different reasons will be misread.
+>
+> **Verify instrumentation before believing its silence** (wave 247, and 222 before it). Four tagged
+> write-back sites logged nothing, which reads as "these never run". A control line at the function's
+> entry proved the logging worked *and* that those sites genuinely did not fire — so the real writer
+> was one I had not tagged, and the silence was two facts, not one.
+>
 > **A release-built soak cannot see an arithmetic panic** (wave 246). Factoring `pack`'s body into a
 > width-parameterized `round_to` introduced `sig >> width`, which at width sixty-four is a shift of
 > sixty-four on a `u64` — an overflow in its own right. 960,000 soak cases passed while the debug
