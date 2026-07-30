@@ -165,13 +165,30 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
 /// the array is what six waves of notes have been pointing at.
 ///
 /// **This is wave 244's rule in `chiero-exec`**: a refusal upstream becoming an invented value
-/// downstream. The remaining question is narrow and is *not* about promotion — why does the load
-/// path get `None` when `read_term_at`'s neighbourhood demonstrably built a `select` for byte 0?
+/// downstream. And the last link is now checked too, rather than guessed:
+///
+/// ```text
+///   DISCARDED faults=["MaybeUninitialized"]
+/// ```
+///
+/// The load does *not* get `None` from memory. It gets a value **and** a `MaybeUninitialized`
+/// fault, and `r.value.filter(|_| !unusable(&r.faults))` throws the value away, because
+/// `yields_unknown_value` lists that fault. The term it discards is the correct one.
+///
+/// **So the question is whether a `maybe` about *definedness* should discard a value about
+/// *contents*.** They are different claims: the memory model knows byte 0 holds 5 — it folds to 5
+/// with no solver — and is separately unsure whether reading it is defined, because the init chain
+/// after a symbolic store is 512 nodes deep and `init_guard` gives up past `EXPAND_LIMIT`. Reporting
+/// the `maybe` is right. Replacing the value with a free variable is what makes a program that
+/// *has* an answer report a different one.
+///
+/// Not fixed here because `unusable` gates every `maybe`-uninitialized read in the engine, and
+/// changing what it means is a wave with its own fixtures rather than a line at the end of this one.
 ///
 /// `#[ignore]`d rather than left red, following `replay_coverage.rs`'s precedent for a known-blocked
 /// defect: a runnable test that names the failure beats the prose comment it replaces, and a
 /// permanently red suite is how a real regression goes unread.
-#[ignore = "open: the load path invents a symbol for a byte the memory model can produce — see the doc comment, wave 247 disproved the stale-array hypothesis"]
+#[ignore = "open: a MaybeUninitialized fault discards a value the memory model computed correctly, and the engine invents a symbol in its place — see the doc comment"]
 #[test]
 fn a_concrete_byte_written_before_promotion_survives_it() {
     use chiero_solver::{CheckResult, Solver, TieredSolver};
