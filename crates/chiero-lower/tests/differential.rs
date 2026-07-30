@@ -2654,6 +2654,49 @@ fn dividing_long_doubles_agrees_with_gcc() {
     agree("return (int)(0x1.fffffffffffffffep0L / 1.0L == 0x1.fffffffffffffffep0L);");
 }
 
+/// **A conditional over two function designators.**
+///
+/// Found by auditing the fall-throughs wave 244's rule asks about: every place in lowering where a
+/// missing answer is replaced by a substituted *value* rather than by a refusal. Twenty-nine
+/// `size_of`/`align_of` fallbacks were instrumented and the whole suite run; twenty-eight never fire
+/// at all, and this is the one that does.
+///
+/// `c ? f : g` has type "pointer to function returning int" — C11 6.3.2.1 decays each arm from a
+/// function designator, and 6.5.15 makes the result their common type. Sema keeps `Ty::Func`, so
+/// `align_of` returns `None` (a function has no alignment, correctly), and lowering answers that
+/// `None` with a literal `4`.
+///
+/// **The alignment is the symptom, not the disease.** What is wrong is the type, and `sizeof` is
+/// where a type shows: `sizeof(c ? f : g)` is eight on this target, because the conditional is a
+/// pointer.
+///
+/// Only that one fixture is RED. **The three calls below already pass**, and knowing that changes
+/// what this wave is about: lowering's `slot_ty` fallback picks `Ptr` and is right, so calling
+/// through the conditional works and the substituted alignment never reaches an answer. The audit
+/// found a *type* that is wrong in one observable place, not a fall-through corrupting values —
+/// worth stating plainly, because the rule that prompted the audit predicted the louder thing and
+/// this is the quieter one.
+#[test]
+fn a_conditional_over_function_designators_is_a_pointer() {
+    agree_with(
+        "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
+        "int c = 1; return (int)sizeof(c ? f : g);",
+    );
+    agree_with(
+        "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
+        "int c = 1; return (c ? f : g)(10);",
+    );
+    agree_with(
+        "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
+        "int c = 0; return (c ? f : g)(10);",
+    );
+    // Through a variable, which is the spelling that already works and the control for it.
+    agree_with(
+        "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
+        "int c = 1; int (*p)(int) = c ? f : g; return p(10);",
+    );
+}
+
 /// **Subnormal `long double`s — the last float gap, and it is a wrong answer rather than a gap.**
 ///
 /// x87's smallest normal is `2^-16382`; below it the format keeps going with the integer bit *clear*
