@@ -563,7 +563,12 @@ impl Gen {
                                 // extension defect at all. The remaining third keeps the top bit
                                 // clear and is the control — a generator that only ever set it
                                 // would stop testing the easy case it has always passed.
-                                let top = if (i + w as usize).is_multiple_of(3) {
+                                // Split on the pool entry's own parity, which varies across the
+                                // pool where `i` and `w` barely do — ten of twenty-one entries are
+                                // odd. `(i + w) % 3` was the first try and put *every* unsigned
+                                // bit-field in the top half, because the handful of `(i, w)` pairs
+                                // that actually occur all landed on one side.
+                                let top = if k.is_multiple_of(2) {
                                     0
                                 } else {
                                     1u128 << (w - 1)
@@ -3188,7 +3193,12 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
     let mut top_set = 0usize;
     let mut assigned = 0usize;
     let mut unsigned_n = 0usize;
-    for seed in 1..=600u64 {
+    // **Three thousand seeds, not six hundred.** Generating a program is string work — the whole
+    // scan runs in well under a second — and the six-hundred-seed sample yielded seven unambiguous
+    // unsigned bit-field initializers, which is too few for a ratio to mean anything. Mutation said
+    // so: removing the top-bit rule entirely still passed, because seven samples can land either
+    // way by accident.
+    for seed in 1..=3000u64 {
         let (src, _) = program(seed);
         // `  <type> fN:W;` — the declaration, giving each bit-field's width. A `Vec` rather than a
         // map because the workspace disallows `HashMap` for determinism, and a struct has a
@@ -3205,6 +3215,19 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
             {
                 let uns = t.starts_with("unsigned");
                 width.push((name.to_string(), if uns { w } else { w | 0x1000 }));
+            } else if let Some(semi) = t.find(';')
+                && !t.contains('(')
+                && !t.contains(':')
+                && let Some(name) = t[..semi].rsplit(' ').next()
+                && name.starts_with('f')
+            {
+                // **A plain member with the same name, which must poison the lookup.** Field names
+                // repeat across records — every struct has an `f0` — so a map keyed on the name
+                // alone attributes one record's `f0` to another's. Forcing the top bit on and
+                // watching this count *not* reach the total is what exposed it: five of fifteen
+                // "unsigned bit-fields" were some other struct's ordinary member. An adequacy guard
+                // that misattributes is the failure this whole wave is about, one level up.
+                width.push((name.to_string(), 0));
             }
         }
         if width.is_empty() {
@@ -3219,9 +3242,16 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
             let Some((name, val)) = rest.split_once(" = ") else {
                 continue;
             };
-            let Some(&(_, w)) = width.iter().find(|(n, _)| n == name) else {
+            // Ambiguous or non-bit-field names are skipped rather than guessed at: more than one
+            // entry means two records share the name, and a zero width means it is not a
+            // bit-field at all.
+            let mut hits = width.iter().filter(|(n, _)| n == name);
+            let Some(&(_, w)) = hits.next() else {
                 continue;
             };
+            if hits.next().is_some() || w & 0xfff == 0 {
+                continue;
+            }
             let Some(inner) = val.rsplit_once(")(").map(|x| x.1) else {
                 continue;
             };
@@ -3253,6 +3283,15 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
     // the value spans the half of the range where the two extension rules differ (this wave's).
     // Only a signed-vs-unsigned change could move the first, and it would shift the type
     // distribution every other channel depends on. Recorded rather than quietly rescaled.
+    // **And the other half must still be reached.** Mutation: forcing the top bit on *every*
+    // bit-field passed everything above, which would quietly stop testing the case that has always
+    // worked — the same trap as a fix that never extends at all. The comment beside the generator
+    // called the remaining third "the control", and until now nothing checked that it existed.
+    assert!(
+        top_set < unsigned_n,
+        "some `unsigned` bit-field initializers must leave the top bit clear, or the half of the \
+         range that has always passed stops being tested: {top_set} of {unsigned_n} unsigned"
+    );
     assert!(
         top_set * 2 >= unsigned_n,
         "at least half of `unsigned` bit-field initializers must set the field's top bit, or an \
