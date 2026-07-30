@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 239) — 1375 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 240) — 1379 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -790,11 +790,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is the only thing left and it can now be graded: a fixture that computes something is either right
 > or a declared gap, with no third outcome hiding a stale value.
 >
-> **What arithmetic needs.** A soft-float over a sixty-four-bit significand: add, subtract, multiply,
-> divide, and the C11 6.5 conversions between them. `fbin`'s comment declines to write it "to get one
-> operation right", which is the correct judgement for one and the wrong one for all of them.
-> `chiero_cir::fp` already holds the format and the pieces this needs — `partial_cmp` orders, and the
-> encode/decode pair normalizes — so a new operation writes arithmetic, not layout.
+> **Multiplication landed in wave 239.** `chiero_cir::fp::mul`, wired into `fbin`'s width-80 arm.
+> It went first because it is the operation that needs no iteration and no alignment: two sixty-four-bit
+> significands make a product that fits *exactly* in a `u128`, so the value is computed with nothing
+> lost and rounded once, on the truth. Add the exponents, normalize by one bit (chosen by bit 127,
+> never a loop), round the discarded half to nearest-even — and then check for a carry, because
+> rounding an all-ones significand up is a *second* normalization and skipping it is the classic
+> soft-float defect. Overflow returns an infinity (§7.4 specifies one); underflow, `0 × ∞` and a NaN
+> operand return `None`, because the honest answers there are a denormal and two NaNs `fp` will not
+> mint. Twelve mutants, all killed; the six that survived the first sweep were all missing fixtures
+> and are recorded in the rules list.
+>
+> **Still owed: add, subtract, divide.** Both are harder than multiply in a specific way. Addition
+> needs the operands aligned to a common exponent first, and the bits the alignment shifts out have to
+> be remembered in a sticky bit or the rounding is wrong; it also needs cancellation handled, where
+> subtracting near-equal values leaves a significand that must be renormalized by many bits rather
+> than one. Division needs a quotient loop and its own sticky remainder. Subtraction is addition with
+> a flipped sign, so it comes free with the alignment work. `fp::mul`'s structure — special cases
+> first, exact arithmetic, one rounding site, an explicit carry check — is the shape to repeat.
 >
 > **Surviving mutant, recorded:** `width-guard-dropped`. `chiero-solver` caps a term at 128 bits and
 > panics past it, so the fresh value is minted only where a term can hold it; without the guard a
@@ -807,6 +820,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   1. **The fractional decimal `long double` literal** rounds through `f64`, and `float_literal`'s
 >      comment still calls that "a narrowing this records rather than hides" while nothing records it.
+>      **Wave 239 moved this to the front of the list, because multiplication changed what it costs.**
+>      It was harmless while arithmetic was a gap; now `1e300L * 1e10L > 1e309L` returns a *wrong
+>      number*, since `1e309` overflows `f64` to infinity and the comparison asks whether 1e310 exceeds
+>      it. One `differential.rs` fixture was rewritten with exact hex literals to keep testing what it
+>      says it tests, and the comment there records why. **This is now a wrong-answer defect, not a
+>      precision preference** — every decimal literal past `f64`'s range or precision is one. The fix
+>      needs decimal-to-binary conversion at sixty-four significand bits, which means a big-integer
+>      scaling loop rather than `str::parse::<f64>`; `hex_float_parts` is the shape, without the
+>      convenience that a hex literal's exponent is already binary.
 >   2. **Symbolic floats** — needs an FP theory in the solver or a bit-blasted encoding.
 >   3. **UBSan's slugs** — a preference with a compatibility cost, yours.
 >   4. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600.
@@ -1266,6 +1288,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A fixture whose reasoning you trusted is a fixture you have not tested** (wave 239). The RED's
+> rounding case squared `1 + 2^-63`; the exact product does not fit in sixty-four bits, so I recorded
+> that the low half must decide it. It does not fit, and the discarded half is *two* — nowhere near
+> the halfway point, so truncation and round-to-nearest agree and the `truncate` mutant survived. The
+> argument was true and the conclusion did not follow. **When a fixture is supposed to exercise a
+> boundary, compute where it actually lands** — the replacements here were found by simulating the
+> algorithm over candidate operands and keeping the ones that hit `> ½ ulp`, `= ½ ulp` and the carry.
+>
+> **The barely-reachable case is the one worth searching for** (wave 239). Rounding an all-ones
+> significand up carries into a new power of two — a second normalization after the one the product's
+> width forces, and the classic soft-float defect. It needs the exact product within `2^-63` of a
+> power of two: unreachable outright in the branch where the product already fills 128 bits, and one
+> part in `2^64` in the other. **No fixture written by picking round-looking numbers lands there.**
+> Six of twelve mutants survived the first sweep and every one was a hole in the fixtures.
+>
+> **Overflow and underflow are not symmetric, and the asymmetry is 023 §7** (wave 239). An overflowed
+> product *is* an infinity — fully specified by IEEE-754 §7.4 — so refusing it would declare a limit
+> chiero does not have. An underflowed one is a denormal, and the plausible substitute is a zero: a
+> confident claim that a very small number is nothing. **Return the value where one exists and the gap
+> where the only alternative is a guess**; which end of a range you are at does not settle it.
+>
+> **A gap in one place makes a wrong answer safe somewhere else, until it isn't** (wave 239). Decimal
+> `long double` literals have rounded through `f64` for six waves, harmlessly, because arithmetic
+> could not observe it. The moment multiplication worked, `1e300L * 1e10L > 1e309L` answered *no* —
+> `1e309` had overflowed `f64` to infinity. **A known gap's blast radius is a function of what else
+> works**, so re-price the open list when a capability lands, not only when the gap itself moves.
 >
 > **Two failures can share a site and point opposite ways** (wave 238). Refusing to write left a stale
 > value; writing an *uninitialized* marker would have re-created wave 195's invented
