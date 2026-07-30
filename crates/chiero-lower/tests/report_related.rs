@@ -61,6 +61,14 @@ fn line(map: &chiero_span::SourceMap, s: chiero_span::Span) -> u32 {
     map.lookup_loc(s.lo).expect("the fixture's own map").line
 }
 
+/// Line *and* column. Mutation is why: a scope's end is at the closing brace, and both `hi` and
+/// `hi - 1` land on the same line, differing only in the column. Checking the line alone let the
+/// off-by-one through.
+fn line_col(map: &chiero_span::SourceMap, s: chiero_span::Span) -> (u32, u32) {
+    let l = map.lookup_loc(s.lo).expect("the fixture's own map");
+    (l.line, l.col)
+}
+
 /// **The free is reachable as data, and it is the free's line.**
 #[test]
 fn a_use_after_free_carries_the_free_as_a_span() {
@@ -110,7 +118,11 @@ fn a_use_after_scope_carries_the_scope_end() {
     let (f, map) = run(src);
     let uas = of_kind(&f, "use-after-scope");
     let rel = uas.related.expect("the scope's end is the second place");
-    assert_eq!(line(&map, rel.at), 6, "the block closes on line 6");
+    assert_eq!(
+        line_col(&map, rel.at),
+        (6, 1),
+        "the closing brace is line 6 column 1 — one past it is not where the scope ended"
+    );
     assert!(
         rel.what.contains("scope"),
         "and it is a scope ending, not a free: {:?}",
@@ -146,5 +158,32 @@ fn the_message_still_names_both_places() {
     assert!(
         m.contains("(t.c:5:") && m.contains("(at t.c:6:"),
         "offering the data must not remove what a person reads: {m:?}"
+    );
+}
+
+/// **The model route carries it too.**
+///
+/// A `double-free` reaches a `Finding` through `ModelRegistry::lift` rather than
+/// `report_faults`, and mutation proved the difference matters: setting `related` to `None` on
+/// that route alone passed every other test in this file. Wave 207's rule, now with a fixture
+/// instead of a note.
+#[test]
+fn the_model_route_carries_the_second_place() {
+    let src = "void *malloc(unsigned long);\n\
+               void free(void *);\n\
+               int probe(void){\n\
+               int *p = malloc(4);\n\
+               free(p);\n\
+               free(p);\n\
+               return 0;\n\
+               }\n";
+    let (f, map) = run(src);
+    let df = of_kind(&f, "double-free");
+    let rel = df.related.expect("the first free is the second place");
+    assert_eq!(line(&map, rel.at), 5, "the first `free` is on line 5");
+    assert_eq!(
+        line(&map, df.span),
+        6,
+        "and the fault is the second one, on line 6"
     );
 }
