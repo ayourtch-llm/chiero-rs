@@ -2735,6 +2735,23 @@ impl Cx<'_> {
                     })
                 }
             }
+            // **C11 6.5.15p6, which only the conditional reaches.** A pointer never takes part in
+            // the usual arithmetic conversions — those are defined on arithmetic types — so any
+            // caller arriving here with one is the conditional, and these are its rules.
+            //
+            // A null pointer constant beside a pointer yields the *pointer* type. Chiero used to
+            // fall into the catch-all below and answer with the integer, which made
+            // `sizeof(c ? 0 : a)` four rather than eight — a wrong number rather than a refusal.
+            //
+            // Whether the integer really is a null pointer constant is not checked, and it does not
+            // need to be: if it is not, the program is a constraint violation that a front end
+            // rejects, so there is no correct answer being displaced.
+            (Ty::Ptr(_), Ty::Int { .. }) => a,
+            (Ty::Int { .. }, Ty::Ptr(_)) => b,
+            // Two pointers: `void *` wins, because 6.5.15p6 says the result is a pointer to void
+            // when either operand is one. Otherwise they must be compatible and either will do.
+            (Ty::Ptr(x), Ty::Ptr(_)) if matches!(self.out.types[x.0 as usize], Ty::Void) => a,
+            (Ty::Ptr(_), Ty::Ptr(y)) if matches!(self.out.types[y.0 as usize], Ty::Void) => b,
             _ => a,
         }
     }

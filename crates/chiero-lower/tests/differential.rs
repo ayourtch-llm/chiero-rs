@@ -2717,6 +2717,10 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     // not know, found by writing the fixture above that isolates the else arm's decay.
     agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? 0 : a);");
     agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? a : 0);");
+    // Two pointers, where `void *` wins (6.5.15p6 again) and the value must survive the trip.
+    agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return (int)sizeof(c ? v : p);");
+    agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return (int)sizeof(c ? p : v);");
+    agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return *(int*)(c ? v : p);");
     // Through a variable, which is the spelling that already works and the control for it.
     agree_with(
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
