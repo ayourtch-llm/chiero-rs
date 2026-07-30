@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 216) — 1338 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 217) — 1344 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -764,14 +764,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **The next defects are the capability items below**: x87 80-bit floats, symbolic floats, the soak
 > frontier at seed 2000, and `tests/corpus/c/pointer_fields.c`.
 >
-> **Surviving mutants across the reporting and UB work, recorded rather than filed as tested:**
-> `unknown-reports` and the guard-discharge `Unknown` pair (nothing makes the solver give up, so the
-> tri-state's third outcome is exercised nowhere — a seam to inject an `Unknown` would close several
-> of these at once); `unsigned-too` (dropping the `signed` guard reports nothing anyway, because the
-> query's own `sext` sends large unsigned values back inside the signed range — the guard is defence
-> in depth, which is worth knowing before someone deletes it); `always-opaque` and
-> `expand-forgets-shadowing` (performance and robustness); `stamp-uses-call-span` and
-> `map-mandatory`.
+> **The tri-state's third outcome is now exercised.** Wave 216 killed `unknown-is-definite`,
+> `unknown-is-clean` and `unknown-reports`, which had survived every sweep since wave 204. §9 asked
+> for "a seam to inject an `Unknown`" and there was already one: `SolverTier::LiteOnly` refuses to
+> look for a backend and tier 1 is deliberately incomplete, so a question needing array theory or
+> wide arithmetic comes back undecided with no test-only code path at all.
+> `crates/chiero-lower/tests/solver_gave_up.rs` holds it, and
+> `MemFault::UninitializedSymbolic`'s message — written in wave 205, recorded as unreachable — is
+> what an undecided symbolic read says.
+>
+> **Surviving mutants, recorded rather than filed as tested:** `unsigned-too` (dropping the `signed`
+> guard reports nothing anyway, because the query's own `sext` sends large unsigned values back
+> inside the signed range — the guard is defence in depth, which is worth knowing before someone
+> deletes it); `always-opaque` and `expand-forgets-shadowing` (performance and robustness, not
+> correctness); `stamp-uses-call-span` (the call span and the fault's access span coincide for every
+> model that exists); `map-mandatory` (needs a span outside every file in the map — 010 §6.2 makes
+> `FileId` per-TU, so a map from another TU is the natural fixture, and that one is now the *only*
+> remaining survivor with a plausible fixture behind it).
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1182,6 +1191,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An assertion of silence is worth nothing in a crate that cannot speak** (wave 216). I put the
+> undecided-overflow test in `chiero-lower`, where it passed — and the mutant that turns `Unknown`
+> into a finding survived it, because that harness registers no checkers, so *no* arithmetic report
+> is possible there whatever the engine does. Wave 212 had already established this and I walked
+> into it anyway. **Before asserting an absence, produce the thing whose absence you are claiming.**
+>
+> **A seam you are about to build may already be a public method** (wave 216). §9 asked for a way to
+> inject a solver `Unknown` for three waves. `SolverTier::LiteOnly` has done it since wave 161 and
+> four tests already used it — tier 1's incompleteness *is* the injection point, and it needs no
+> test-only code. Look for the capability before designing the hook.
+>
+> **Two queries need two undecided fixtures** (wave 216). The discharge asks "is the guard implied"
+> and "is it refuted" and the arms take their answers independently, so relaxing the *first* `Unsat`
+> survived every fixture whose first query happened to come back `Sat`. One `Unknown` fixture does
+> not exercise every `Unknown` arm; count the queries, not the arms.
+>
+> **A control that guesses wrong is worth more than one that guesses right** (wave 216). I asserted
+> tier 1 would still refute a guard it cannot, and the failure produced the best test in the file:
+> one program, `maybe` without a backend and definite with one. `Unknown` weakens a verdict rather
+> than fabricating or dropping it — which is the property the whole tri-state exists for, and I
+> would not have written it if the guess had held.
 >
 > **When a precedent does not transfer, say why in the code** (wave 215). Wave 156 reports a
 > symbolic divisor on `Sat`; this query asks for `Unsat` of the negation instead, and the difference
