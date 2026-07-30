@@ -2416,7 +2416,23 @@ fn a_float_widened_to_long_double_agrees_with_gcc() {
     agree("double d = 0.5; long double x = d; return (int)x;");
 }
 
-/// **Narrowing `long double` to `double` rounds to nearest, ties to even.**
+/// **Narrowing `long double` to `double` agrees with gcc.**
+///
+/// **This does *not* yet exercise the tie-break, and the fixtures below say otherwise — read this
+/// first.** Mutation found it: replacing the rounding with a truncation changed nothing, because
+/// `hex_float` returns an `f64`, so a literal needing more than fifty-three significant bits is
+/// rounded *at parse time* and the conversion then has nothing left to decide.
+///
+/// ```text
+///   0x1.00000000000008p0L  (1 + 2^-53)    -> fconst:f80:0x3fff8000000000000000   (= 1.0)
+///   0x1.00000000000018p0L  (1 + 3·2^-53)  -> fconst:f80:0x3fff8000000000001000   (= 1 + 2^-51)
+/// ```
+///
+/// Both were rounded to even before `FpTrunc` ran, which is why the fixtures pass and why they pass
+/// for the wrong reason. They are kept because agreeing with gcc is still worth asserting, and
+/// renamed so the name does not claim the coverage. §9 carries the fix: `hex_float` has to hand out
+/// a mantissa and a scale instead of an `f64`, exactly as `integral_float_literal` was changed to
+/// hand out a `u64` in wave 233 — the same seam, found the same way.
 ///
 /// The first x87 step with a *decision* in it. Everything so far was exact by construction —
 /// widening cannot lose bits, an integer is its own significand — and this discards eleven bits of
@@ -2426,7 +2442,8 @@ fn a_float_widened_to_long_double_agrees_with_gcc() {
 /// against a literal instead: `f64` comparison is already modelled, so the result of the rounding is
 /// observable directly. Every fixture is `== 1` under gcc, so a wrong rounding shows up as a `0`.
 ///
-/// The ties are the point. `1 + 2^-53` sits exactly halfway between `1.0` and the next `double`, and
+/// The ties *would* be the point, once the literals reach the conversion intact. `1 + 2^-53` sits
+/// exactly halfway between `1.0` and the next `double`, and
 /// round-half-up would give the wrong one — ties go to the candidate with an even last bit, which is
 /// `1.0`. `(1 + 2^-52) + 2^-53` is the same distance from *its* two neighbours and rounds the other
 /// way, because there the even one is above. A rule that always rounds half away from zero passes
@@ -2436,7 +2453,7 @@ fn a_float_widened_to_long_double_agrees_with_gcc() {
 /// (wave 231) — a decimal `long double` is still parsed at `f64` precision, which would defeat the
 /// fixture before the conversion ever ran.
 #[test]
-fn narrowing_long_double_to_double_rounds_to_nearest_even() {
+fn narrowing_long_double_to_double_agrees_with_gcc() {
     // Exactly halfway, and the lower neighbour is even: rounds down to 1.0.
     agree("long double x = 0x1.00000000000008p0L; double d = x; return (int)(d == 1.0);");
     // Exactly halfway, and the lower neighbour is odd: rounds up.
