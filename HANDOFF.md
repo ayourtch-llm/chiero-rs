@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 230) — 1364 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 231) — 1365 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,43 +778,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: the literal is right; a value still cannot survive a store and a load
+> ### 🔴 x87: a `long double` literal is rounded to `f64` before it is encoded
 >
-> ~~An `f80` constant carries `f64` bits.~~ **Fixed in wave 229.** `1.0L` is now
-> `0x3fff8000000000000000` — gcc's pattern, read out of object bytes rather than derived, because
-> deriving it is what produced the bug. `Const::Float`'s payload widened from `u64` to `u128`
-> (**correcting my own §9 note**, which claimed it was already wide enough — it is a representation
-> change, ten sites across four crates), and `x87_bits` handles zero, infinity/NaN and normals
-> separately, since rebiasing a zero would make a denormal with the integer bit set, which x87 calls
-> invalid. `f32` and `f64` print identically, so no golden moved.
+> The milestone has moved two steps in two waves, and the *order* §9 recorded turned out to be
+> shorter than it looked.
 >
-> **Where the milestone actually continues.** Wave 228 established that the gap is enforced upstream
-> of arithmetic: the value is `Undef` before `fbin` or `fcast` ever runs, so mutants implementing
-> 80-bit as `f64` in either or both survived every test. The order of work is therefore:
+> ~~Step 1, a value that survives a store and a load.~~ **Already done by wave 229's encoding fix** —
+> `long double y = x;` is `Exact` with no assumptions. Nothing further was needed.
 >
->   1. **A value that survives a store and a load as a scalar term.** Today
->      `long double x = 1.0L;` reports `"a store of an untranslatable value" is not modeled`, so the
->      literal is correct and immediately discarded. This is the step that unblocks everything else,
->      and it is where a partial implementation would first be able to lie — so do it against
->      `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled`, which holds the disjunction
->      023 §7 promises.
->   2. **Conversions** (`FpExt 64 -> 80`, `FpTrunc`, `SiToFp`, `FpToSi`) — exact, and testable
->      against gcc one at a time.
->   3. **Arithmetic**, which needs a soft-float with a 64-bit significand. `fbin`'s comment is right
->      that emulating it for one operation is not worth it; emulating it for all of them is the
->      milestone.
+> ~~Step 2, `FpToSi`.~~ **Done in wave 230**, and `(int)` of a `long double` now agrees with gcc.
+> `x87_trunc_to_int` reads the significand — x87's value is `sig × 2^(e - 63)`, so truncation toward
+> zero is a shift — rather than decoding to `f64` first, which would round 64 bits of significand
+> into 53 and be wrong for a 64-bit target. `x87_out_of_range` decides C11 6.3.1.4's event on the
+> exact value for the same reason. **`FNeg` came along with it**: C has no negative literals, so
+> `-2.5L` is `fneg` of a positive constant and every negative `long double` in every program went
+> through an arm that had no width-80 case. Negation is the sign bit alone (IEEE-754 §5.5.1), so it
+> needs no significand and no soft-float — one xor of bit 79.
 >
-> **Not to be deleted on a surviving mutant:** `x87_bits`'s sign term. C has no negative literals —
-> `-1.0L` is `fneg` of a positive constant — so nothing reaches the encoder negative today, and
-> `a_negative_x87_literal_is_a_negation_of_a_positive_constant` records that with the reason the term
-> stays: a constant fold of `-1.0L` passes one through the moment arithmetic lands.
+> **The next step is upstream of all of it: the literal.** Lowering carries a float literal as an
+> `f64`, so an `f80` literal is rounded to 53 bits of significand before `x87_bits` ever sees it:
+>
+> ```text
+>   4611686018427387905.0L   (2^62 + 1)
+>   chiero  fconst:f80:0x403d8000000000000000
+>   gcc                     0x403d8000000000000001
+> ```
+>
+> Verified in the CIR, not inferred. It is why `long_double_to_int_agrees_with_gcc` cannot yet
+> contain the one fixture that would *prove* the conversion never rounds through `f64` — the comment
+> where that fixture would go says so, with both patterns. **Fixing it means carrying a literal at
+> its declared type's precision from the parser down**, which is a decimal-to-`f80` conversion rather
+> than a wider field, and it is the last thing before conversions and arithmetic can be graded
+> exactly.
+>
+> Then: `FpExt 64 -> 80` and `SiToFp -> 80` (both exact, and both wanting `x87_bits` reachable from
+> the engine rather than only from lowering), `FpTrunc 80 -> 64` (needs round-to-nearest-even), and
+> arithmetic last, which is the soft-float `fbin`'s comment declines to write for one operation.
 >
 > ### What else is left
 >
 >   1. **Symbolic floats** — the other milestone. Needs an FP theory in the solver or a bit-blasted
 >      encoding.
->   2. **UBSan's slugs** — a preference with a compatibility cost, yours; its motivating argument was
->      retracted in wave 227.
+>   2. **UBSan's slugs** — a preference with a compatibility cost, yours.
 >   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. Known-cost,
 >      low-yield.
 >
@@ -1273,6 +1278,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A recorded plan's steps may already be done — measure before starting one** (wave 230). §9's step
+> 1 was "a value that survives a store and a load", and wave 229's encoding fix had already
+> delivered it: re-probing took one command and showed `long double y = x;` at `Exact` with no
+> assumptions. The frontier had moved further than the wave that moved it realised.
+>
+> **The one-line version of a conversion is the wrong one** (wave 230). Teaching `as_f64` width 80
+> would have made every `f80` cast work at once, and silently rounded a 64-bit significand into 53 —
+> a wrong answer where a gap was declared. **When a decode makes several things work at once, ask
+> what precision it spends**, and read the value out of the representation instead.
+>
+> **A fixture that fails for a reason upstream of the change belongs in a comment, not in the
+> test** (wave 230). `2^62 + 1` would prove the conversion is exact and fails because the *literal*
+> is rounded first. Deleting it silently would have lost the finding; leaving it failing would have
+> blamed the wrong layer. The comment where it would go carries both bit patterns and §9 carries the
+> step.
 >
 > **`cargo test | grep FAILED` reports nothing when the build is broken** (wave 229). Widening
 > `Const::Float` broke five test files, and my sweep for `^test .* FAILED` came back clean because
