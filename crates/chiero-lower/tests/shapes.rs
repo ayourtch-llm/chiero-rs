@@ -402,6 +402,29 @@ fn an_x87_literal_is_encoded_in_eighty_bits() {
     }
 }
 
+/// **A negative literal is a negation of a positive constant**, so no constant carries a sign.
+///
+/// Mutation found `x87_bits`'s sign term droppable with nothing noticing, and the reason is this:
+/// `-1.0L` lowers to `fneg f80 fconst:f80:0x3fff8000000000000000`, because C has no negative
+/// literals — the minus is a unary operator. So nothing in this project hands `x87_bits` a negative
+/// `f64` today.
+///
+/// The term stays, and this test says why rather than leaving a reader to wonder. The function's
+/// contract is "an `f64` re-encoded", not "a literal re-encoded", and a constant fold of
+/// `-1.0L` would pass one through the moment `f80` arithmetic lands. Unlike wave 223's duplicated
+/// bound check, this is not a second copy of a decision made elsewhere — it is the only place that
+/// would get it right.
+#[test]
+fn a_negative_x87_literal_is_a_negation_of_a_positive_constant() {
+    let t = print(&lower(
+        "int probe(void){ long double x = -1.0L; return (int)x; }",
+    ));
+    assert!(
+        t.contains("fneg f80 fconst:f80:0x3fff8000000000000000"),
+        "the sign is an operation and the constant is unsigned: {t}"
+    );
+}
+
 /// And `f32`/`f64` literals are unchanged. **The control.**
 ///
 /// Widening the payload must not move the formats that already worked. Their printed form is the
