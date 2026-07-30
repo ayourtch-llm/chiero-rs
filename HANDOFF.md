@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 236) — 1370 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 237) — 1371 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,43 +778,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: every literal path still rounds through `f64` — that is the one thing left blocking
+> ### 🔴 x87: comparison next; one literal path still rounds through `f64`
 >
-> `FpTrunc 80 -> 64` landed in wave 235, rounding to nearest with ties to even — obtained from
-> `sig as f64` rather than hand-rolled, since that *is* the target's default rule and scaling by a
-> power of two afterwards is exact. Subnormal results, NaN and `-> f32` return `None` and declare
-> themselves, each for a stated reason.
+> Wave 236 made hex literals exact, which **retroactively fixed wave 235's tests**: the `FpTrunc`
+> tie fixtures were measuring the parser's rounding, and `rounds-by-truncation` — a truncating
+> implementation of round-to-nearest-even — now dies against them. That is the sequence worth
+> remembering: the conversion was right, its tests were not, and the fix was upstream of both.
 >
-> **And its tie fixtures do not test the tie**, which mutation found: replacing the rounding with a
-> truncation changed nothing.
+> | path | hands out | state |
+> |-|-|-|
+> | `integral_float_literal` | `u64` | exact (wave 233) |
+> | `hex_float_parts` | mantissa + scale | exact (wave 236) |
+> | `float_literal` (decimal, fractional) | `f64` | **rounds; the last one** |
+> | `SiToFp`/`UiToFp` -> 80 | — | exact (wave 233) |
+> | `FpExt` 32/64 -> 80 | — | exact (wave 234) |
+> | `FpToSi`/`FpToUi` 80 -> n | — | exact (wave 230) |
+> | `FpTrunc` 80 -> 64 | — | exact, ties to even (wave 235) |
+> | `FpTrunc` 80 -> 32, subnormal, NaN | — | declared gaps, each with a reason |
+> | `FNeg` on 80 | — | exact (wave 230) |
+> | comparison, arithmetic | — | **declared gaps** |
 >
-> ```text
->   0x1.00000000000008p0L  (1 + 2^-53)    -> fconst:f80:0x3fff8000000000000000   (= 1.0)
->   0x1.00000000000018p0L  (1 + 3·2^-53)  -> fconst:f80:0x3fff8000000000001000   (= 1 + 2^-51)
-> ```
+> **Comparison is the next step and needs no soft-float.** `FOLt` and its siblings are decidable on
+> the patterns directly: same sign, compare exponent then significand; different signs, the negative
+> is smaller — with the IEEE special cases (NaN unordered, ±0 equal). It unblocks every
+> `long double` comparison fixture and is the last thing before arithmetic, which is the milestone.
 >
-> **`hex_float` returns an `f64`**, so a literal needing more than fifty-three significant bits is
-> rounded at parse time and the conversion has nothing left to decide. This also corrects wave 231's
-> claim: hex literals are exact in *syntax*, not in the pipeline.
+> **The fractional decimal literal is the last rounding path.** `float_literal`'s comment still calls
+> it "a narrowing this records rather than hides" while nothing records it. Correct
+> decimal-to-binary rounding needs arbitrary precision and a tie-break; declaring the narrowing is
+> the cheap honest alternative. **Hex literals are now the exact workaround, so a test needing precise
+> bits has one.**
 >
-> **So the literal is the front, and it is now the only thing blocking the rest of the milestone.**
-> Three paths hand out an `f64` and each needs the same treatment wave 233 gave the integral one:
->
->   | path | hands out | should hand out |
->   |-|-|-|
->   | `integral_float_literal` | `u64` ✔ (wave 233) | — |
->   | `hex_float` | `f64` | mantissa + binary scale |
->   | `float_literal` (decimal, fractional) | `f64` | needs arbitrary precision, or a *declared* narrowing |
->
-> `hex_float` is the tractable one and unblocks the tie fixtures immediately: the digits are already
-> binary, so a `u64` mantissa and an `i32` scale reach `fp::from_u64`-style encoding without a rounding
-> decision. **Do that next**, then the wave-235 fixtures start testing what they claim and
-> `rounds-by-truncation`, `subnormal-not-a-gap` and `nan-becomes-infinity` become killable.
->
-> The fractional decimal case stays what it has been: `float_literal`'s comment calls it "a narrowing
-> this records rather than hides" and nothing records it.
->
-> Then: comparison (`FOLt` and siblings — exact on the patterns, no soft-float), and arithmetic last.
+> **Surviving mutant, recorded:** `scaled-exponent-unchecked` — removing `from_u64_scaled`'s range
+> check. No fixture has an exponent outside x87's own range (about ±16384), so nothing reaches it;
+> without it a literal past the top would wrap into a wrong exponent rather than being declared. A
+> fixture wants gcc's behaviour for `0x1p20000L` established first, which is a question about the
+> oracle rather than about chiero.
 >
 > ### What else is left
 >
@@ -1278,6 +1277,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Fixing the layer beneath can retroactively arm the tests above it** (wave 236). Wave 235's
+> tie fixtures passed for the wrong reason and a truncating implementation survived them; making hex
+> literals exact turned the same fixtures into real tests, and `rounds-by-truncation` now dies. **A
+> test that cannot discriminate is sometimes waiting on a different layer rather than badly written**
+> — worth checking before rewriting it.
+>
+> **The widest legal input is a fixture, not an edge case** (wave 236). `0x1.fffffffffffffffep0` —
+> every significand bit set — was a *refused function* before this wave and no test had noticed,
+> because seventeen hex digits overflow a `u64` accumulator while the value fits x87 exactly. **When a
+> format has a maximum, write it down as a fixture**; the trailing-zero shift that makes it fit was
+> only found by trying.
+>
+> **A padded dump is not an expectation** (wave 236). I copied gcc's `0x017f8…` into a fixture and the
+> printer does not zero-pad, so a correct value failed. The comment says so now, because the next
+> person reading gcc's output into a test will do the same thing.
 >
 > **A fixture can measure the wrong layer and still pass** (wave 235). The tie fixtures for
 > round-to-nearest-even were rounded by the *parser* before the conversion saw them, so they agreed
