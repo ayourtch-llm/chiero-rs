@@ -2668,7 +2668,8 @@ fn dividing_long_doubles_agrees_with_gcc() {
 ///
 /// **The alignment is the symptom, not the disease.** What is wrong is the type, and `sizeof` is
 /// where a type shows: `sizeof(c ? f : g)` is eight on this target, because the conditional is a
-/// pointer.
+/// pointer. The same decay is missing for **arrays**, and there it produces a *number*:
+/// `sizeof(c ? a : b)` for two `int[4]` is eight, and chiero says sixteen.
 ///
 /// Only that one fixture is RED. **The three calls below already pass**, and knowing that changes
 /// what this wave is about: lowering's `slot_ty` fallback picks `Ptr` and is right, so calling
@@ -2690,6 +2691,13 @@ fn a_conditional_over_function_designators_is_a_pointer() {
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
         "int c = 0; return (c ? f : g)(10);",
     );
+    // **An array conditional, which is the same missing decay and a louder failure.** `sizeof` of
+    // it is the *pointer* size, because C11 6.3.2.1 decays both arms before 6.5.15 picks a common
+    // type — so an implementation that skips the decay reports the array's own size and is wrong by
+    // a factor of the element count. This one is a number rather than a refusal.
+    agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=1; return (int)sizeof(c ? a : b);");
+    agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=1; return (c ? a : b)[1];");
+    agree("int a[4]={1,2,3,4},b[4]={5,6,7,8}; int c=0; return (c ? a : b)[1];");
     // Through a variable, which is the spelling that already works and the control for it.
     agree_with(
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",
