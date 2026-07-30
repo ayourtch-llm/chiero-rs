@@ -2759,6 +2759,36 @@ fn a_conditional_over_function_designators_is_a_pointer() {
 /// this bug, and the small ones a fixture author reaches for are exactly the invisible half.
 #[test]
 fn an_unsigned_bitfield_zero_extends() {
+    // **Where the defect fires and where it hides**, which is what wave 253 set out to find. All
+    // four of these pass today; before wave 249's fix only the *last* failed. That asymmetry is the
+    // fifth condition wave 251's four-factor model was missing:
+    //
+    //   `(long)(s.a)`  the member is an operand of an explicit cast, so `top(e)` is the field's own
+    //                  type — `is_signed(e)` answered `unsigned` and the bug never fired
+    //   `return s.a`   the member is converted to the return type, so `top(e)` is the promoted
+    //                  `int`, which is signed, and the bug fired
+    //
+    // The generator reads a bit-field exactly one way — `(long)(x.f)` — which is the hiding shape,
+    // and that is why five waves of rate improvements never caught anything. The fixtures stay
+    // because the boundary is worth pinning: a change to how conversions are recorded could move a
+    // read from one side of it to the other, and only the pair would show it.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 4; return (int)(long)(s.a);",
+    );
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 4; long v = (long)(s.a); return (int)v;",
+    );
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 4; long acc = 0; acc = acc * 31 + (long)(s.a); return (int)acc;",
+    );
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 4; return s.a;",
+    );
+
     // Every width where the top bit is set, so the two extensions disagree.
     agree_with(
         "struct S { unsigned a : 3; };\n",
