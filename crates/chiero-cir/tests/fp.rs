@@ -75,3 +75,81 @@ fn a_scaled_exponent_outside_the_range_is_refused() {
     // Zero is representable at any scale, because there is no exponent to move.
     assert_eq!(fp::from_u64_scaled(0, 20_000, false), Some(0));
 }
+
+/// An 80-bit pattern from a biased exponent and a significand, for the cases no C literal reaches.
+fn f80(exp: u32, sig: u64, neg: bool) -> u128 {
+    (u128::from(neg) << 79) | (u128::from(exp) << 64) | u128::from(sig)
+}
+
+/// **A product past the top exponent is an infinity; a product past the bottom is a gap.**
+///
+/// The asymmetry is deliberate and is the whole of `mul`'s relationship with 023 §7. IEEE-754 §7.4
+/// says an overflowed product *is* an infinity — a value, fully specified, and refusing to produce it
+/// would declare a limit chiero does not have. Underflow is the opposite: the answer is a denormal,
+/// `mul` does not shift denormals, and the plausible substitute is a zero. A zero is a confident
+/// statement that a very small number is nothing, so `None` is the honest answer and §7 gets a
+/// declared limit instead of a wrong one.
+///
+/// Neither end is reachable from a C fixture — gcc folds an overflowing constant product at compile
+/// time — which is why they are answered here.
+#[test]
+fn a_product_overflows_to_infinity_and_underflows_to_a_gap() {
+    let big = f80(32_000, 1 << 63, false);
+    assert_eq!(
+        fp::mul(big, big),
+        Some(INF),
+        "2^15617 squared is past the top exponent, and §7.4 makes that an infinity"
+    );
+    assert_eq!(
+        fp::mul(big, f80(32_000, 1 << 63, true)),
+        Some(INF | (1 << 79)),
+        "and it keeps the sign it earned"
+    );
+    let tiny = f80(100, 1 << 63, false);
+    assert_eq!(
+        fp::mul(tiny, tiny),
+        None,
+        "the answer is a denormal, and a zero here would be a wrong number rather than a gap"
+    );
+    // The bound is a bound: just inside it, both ends still produce values.
+    assert!(fp::mul(f80(20_000, 1 << 63, false), f80(20_000, 1 << 63, false)).is_some());
+    assert!(fp::mul(f80(9_000, 1 << 63, false), f80(9_000, 1 << 63, false)).is_some());
+}
+
+/// **Zero times infinity is a gap, and it is the only zero that is.**
+///
+/// IEEE-754 §7.2 makes it an invalid operation whose result is a NaN. Nothing in `fp` mints NaNs, so
+/// the honest answer is that there is not one — and the two plausible wrong answers are both *values*
+/// a reader would believe: the zero the first operand suggests and the infinity the second does.
+///
+/// The control matters as much: an ordinary zero product must still be a zero, or a fix that refused
+/// every zero would satisfy the assertion above and take multiplication by zero out of the engine.
+#[test]
+fn zero_times_infinity_is_a_gap_but_zero_times_a_number_is_not() {
+    assert_eq!(fp::mul(0, INF), None, "IEEE-754 §7.2's invalid operation");
+    assert_eq!(fp::mul(INF, 0), None, "in either order");
+    assert_eq!(fp::mul(1 << 79, INF), None, "and for the negative zero too");
+    // The control. An ordinary zero product is a zero, signed by the operands.
+    assert_eq!(fp::mul(0, ONE), Some(0));
+    assert_eq!(fp::mul(0, ONE | (1 << 79)), Some(1 << 79), "0 × -1 is -0");
+    assert_eq!(fp::mul(1 << 79, ONE | (1 << 79)), Some(0), "-0 × -1 is +0");
+    // And infinity times a number is that infinity, which is what makes the pair above a *special*
+    // case rather than a general refusal of either operand.
+    assert_eq!(fp::mul(INF, ONE), Some(INF));
+    assert_eq!(fp::mul(INF, ONE | (1 << 79)), Some(INF | (1 << 79)));
+}
+
+/// **A NaN operand is a gap, because `mul` has no NaN to return.**
+///
+/// §6.2 says a product with a NaN operand is that NaN, payload and all. `fp` does not propagate
+/// payloads, so producing *some* NaN would be inventing one — and the alternative a mutant reaches
+/// for is worse: with the check removed, a NaN's all-ones exponent falls through to the infinity arm
+/// and `NaN × 2` becomes an infinity, which compares ordered against everything.
+#[test]
+fn a_nan_operand_is_a_gap_rather_than_an_infinity() {
+    assert_eq!(fp::mul(NAN, ONE), None);
+    assert_eq!(fp::mul(ONE, NAN), None);
+    assert_eq!(fp::mul(NAN, NAN), None);
+    assert_eq!(fp::mul(NAN, INF), None, "not the infinity either");
+    assert_eq!(fp::mul(NAN, 0), None, "and not the zero");
+}

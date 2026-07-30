@@ -2522,10 +2522,27 @@ fn comparing_long_doubles_agrees_with_gcc() {
 /// and addition needs alignment with a sticky bit; multiplication needs neither, which is why it goes
 /// first.
 ///
-/// **The rounding fixture is the point.** `(1 + 2^-63)²` is `1 + 2^-62 + 2^-126`, and only the first
-/// two terms fit — so an implementation that drops the product's low half without rounding, and one
-/// that rounds up unconditionally, disagree here and with gcc. Both operands need all sixty-four bits
-/// of significand, which is writable only because wave 236 made hex literals exact.
+/// **The rounding fixtures are the point, and picking them took mutation rather than thought.** The
+/// obvious one — `(1 + 2^-63)²`, whose exact value `1 + 2^-62 + 2^-126` does not fit — turns out to
+/// discard a low half of *two*, which is so far below the halfway point that truncation and
+/// round-to-nearest agree. It kills a mutant that rounds up unconditionally and nothing else. Three
+/// more were computed to sit exactly where the decisions are:
+///
+/// ```text
+///   discarded half > ½ ulp    (1+2^-63) × (1.5+2^-63)   rounds up; truncation would not
+///   discarded half = ½ ulp    1.5 × (1+3·2^-63)         a tie, to the even candidate
+///   round-up carries out      (1+2^-63) × (2-2^-62)     all-ones + 1 → a new power of two
+/// ```
+///
+/// The third is the one worth staring at. Rounding a significand of all ones up carries into bit 64:
+/// the value has become a power of two and the integer bit moves, which is a *second* normalization
+/// after the one the product's width already forced. It is also barely reachable — it needs the exact
+/// product within `2^-63` of a power of two, and the search that found these pairs shows the window
+/// admits roughly one partner per operand. Missing it is the classic soft-float defect, and no
+/// fixture written by picking round-looking numbers will ever land in that window.
+///
+/// All of these need all sixty-four bits of significand, which is writable only because wave 236 made
+/// hex literals exact.
 #[test]
 fn multiplying_long_doubles_agrees_with_gcc() {
     agree("long double a = 2.0L, b = 3.0L; return (int)(a * b);");
@@ -2546,4 +2563,21 @@ fn multiplying_long_doubles_agrees_with_gcc() {
     );
     // A product past `f64`'s range but well inside x87's, which is the range this format exists for.
     agree("long double a = 0x1p1000L, b = 0x1p1000L; return (int)(a * b > 0x1p1999L);");
+    // **The discarded half exceeds ½ ulp**, so the result rounds up and truncation is visible.
+    agree(
+        "long double a = 0x1.0000000000000002p0L, b = 0x1.8000000000000002p0L; \
+         return (int)(a * b == 0x1.8000000000000006p0L);",
+    );
+    // **Exactly ½ ulp**, so the tie goes to the even candidate rather than away from zero.
+    agree(
+        "long double a = 0x1.8p0L, b = 0x1.0000000000000006p0L; \
+         return (int)(a * b == 0x1.8000000000000008p0L);",
+    );
+    // **Rounding up carries out of the significand.** The exact product is `2 - 2^-125`, which is
+    // within half an ulp of two, so the answer is two exactly — and getting there means an all-ones
+    // significand becoming a power of two with the exponent stepping up behind it.
+    agree(
+        "long double a = 0x1.0000000000000002p0L, b = 0x1.fffffffffffffffcp0L; \
+         return (int)(a * b == 0x1p1L);",
+    );
 }
