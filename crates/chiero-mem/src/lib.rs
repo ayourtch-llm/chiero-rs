@@ -10,7 +10,7 @@
 //! provenance build on it.
 
 use chiero_solver::{CheckResult, Solver, SolverLite, Term, TermArena};
-use chiero_span::Span;
+use chiero_span::{BytePos, Span};
 use std::collections::BTreeMap;
 
 /// An object's identity. Two reserved values are present in every state.
@@ -1176,14 +1176,31 @@ impl MemFault {
     /// Separate from `at` rather than a second field on it, because a caller that renders
     /// locations has to know which is which: reporting the free at the access's line is worse
     /// than reporting no line at all.
-    pub fn secondary(&self) -> Option<Span> {
-        match self {
+    pub fn secondary(&self) -> Option<SecondEvent> {
+        let (at, what) = match self {
             MemFault::UseAfterFree { freed_at, .. } | MemFault::DoubleFree { freed_at, .. } => {
-                Some(*freed_at)
+                (*freed_at, "freed here")
             }
-            MemFault::UseAfterScope { scope_ended_at, .. } => Some(*scope_ended_at),
-            _ => None,
-        }
+            // **Collapsed to the span's last byte, and both halves of that matter.**
+            //
+            // A scope's span covers the whole block, so its `lo` is the `{` that *opened* it:
+            // rendering that reads "x left scope earlier (t.c:3:1)" while pointing at the line
+            // the scope began on. The event is at the closing brace.
+            //
+            // And `hi` is one *past* the end, so it names the character after the `}` — off by
+            // one in real code, and off by one in the other direction for a synthetic
+            // point-like span such as `[30, 31)`. The last byte is the closing token itself
+            // under both, which is why the rule is `hi - 1` rather than `hi`.
+            //
+            // One collapse, here, so the sentence and `Finding::related` cannot name different
+            // places.
+            MemFault::UseAfterScope { scope_ended_at, .. } => {
+                let end = BytePos(scope_ended_at.hi.0.saturating_sub(1));
+                (Span::new(end, end, scope_ended_at.ctx), "scope ended here")
+            }
+            _ => return None,
+        };
+        Some(SecondEvent { at, what })
     }
 
     /// Where the access was. The second component of 023 §6.1's dedup key.
@@ -1318,7 +1335,7 @@ impl std::fmt::Display for MemFault {
             } => write!(
                 f,
                 "{obj:?} left scope earlier on this path (source offset {}), before this access",
-                scope_ended_at.lo.0
+                scope_ended_at.hi.0.saturating_sub(1)
             ),
             MemFault::ReadOnly { obj, off, .. } => {
                 write!(f, "write at offset {off} of read-only {obj:?}")

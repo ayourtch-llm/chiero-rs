@@ -195,6 +195,9 @@ struct StateFinding {
     key: Option<FindingKey>,
     message: String,
     span: Span,
+    /// The fault's other place, carried through to `Finding::related`. `None` for everything
+    /// that is about a single moment — which is every refusal and every single-event fault.
+    related: Option<chiero_mem::SecondEvent>,
     /// What a witness must satisfy to reproduce *this* report, beyond the path.
     requires: Vec<Term>,
     /// Solved from `requires`; `None` falls back to the state's witness.
@@ -1002,7 +1005,7 @@ impl RunResult {
                 id: f.id,
                 message: f.message.clone(),
                 span: f.span,
-                related: None,
+                related: f.related,
                 // **This finding's own witness when it has one.** A report that recorded
                 // a condition was solved separately, because the state's single witness
                 // cannot satisfy two findings that need different inputs. Falling back to
@@ -1760,6 +1763,7 @@ impl<'m> Engine<'m> {
                         span,
                         requires: Vec::new(),
                         witness: None,
+                        related: None,
                     });
                 }
                 Action::ReportRequiring { message, requires } => {
@@ -1776,6 +1780,7 @@ impl<'m> Engine<'m> {
                         span,
                         requires,
                         witness: None,
+                        related: None,
                     });
                 }
                 // **Onto the path condition, not a side list** (contract 19). A
@@ -2415,6 +2420,7 @@ impl<'m> Engine<'m> {
                 span,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
             s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
             return None;
@@ -2440,6 +2446,7 @@ impl<'m> Engine<'m> {
                 span,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
             s.degrade(Fidelity::Unknown, AssumptionKind::NoInformation, span, &why);
             return None;
@@ -2478,6 +2485,7 @@ impl<'m> Engine<'m> {
                 span: Span::DUMMY,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
             s.degrade(
                 Fidelity::Unknown,
@@ -5168,6 +5176,7 @@ impl<'m> Engine<'m> {
             span,
             requires: Vec::new(),
             witness: None,
+            related: None,
         });
         s.degrade(
             Fidelity::Unknown,
@@ -5271,6 +5280,7 @@ impl<'m> Engine<'m> {
                     span,
                     requires: Vec::new(),
                     witness: None,
+                    related: None,
                 });
                 gap.status = Status::Terminated(TermReason::Crashed);
                 self.pending.push(gap);
@@ -5294,6 +5304,7 @@ impl<'m> Engine<'m> {
                     span,
                     requires: Vec::new(),
                     witness: None,
+                    related: None,
                 });
                 over.status = Status::Terminated(TermReason::Crashed);
                 self.pending.push(over);
@@ -5614,6 +5625,7 @@ impl<'m> Engine<'m> {
                 span,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
             s.degrade(
                 Fidelity::Unknown,
@@ -6137,7 +6149,7 @@ impl<'m> Engine<'m> {
     /// token rewritten is the one that span produced and nothing else that happens to look like
     /// it.
     fn locate(&self, f: &chiero_mem::MemFault, message: String) -> String {
-        let (Some(map), Some(sp)) = (self.source_map, f.secondary()) else {
+        let (Some(map), Some(sp)) = (self.source_map, f.secondary().map(|e| e.at)) else {
             return message;
         };
         let Some(loc) = map.lookup_loc(sp.lo) else {
@@ -6437,6 +6449,9 @@ impl<'m> Engine<'m> {
                 span: f.at(),
                 requires: Vec::new(),
                 witness: None,
+                // The same second place the sentence names, as data. One source for both, so
+                // the prose and the field cannot disagree about which event it is.
+                related: f.secondary(),
             });
         }
         // **A finding is not automatically a degradation.** A null dereference or a bad
@@ -6824,6 +6839,7 @@ impl<'m> Engine<'m> {
                 span,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
         }
         for (fault, text) in keyed {
@@ -6857,6 +6873,9 @@ impl<'m> Engine<'m> {
                 span: at,
                 requires: Vec::new(),
                 witness: None,
+                // The model and checker route. Wave 207's rule: when a fix is about a fault's
+                // rendering, ask what else builds a finding from one.
+                related: fault.as_ref().and_then(chiero_mem::MemFault::secondary),
             });
         }
         if let (Some(d), Some(v)) = (dst, result) {
@@ -6936,6 +6955,7 @@ impl<'m> Engine<'m> {
                         span,
                         requires: Vec::new(),
                         witness: None,
+                        related: None,
                     });
                     if dst.is_some() {
                         sib.status = Status::Terminated(TermReason::Crashed);
@@ -6975,6 +6995,7 @@ impl<'m> Engine<'m> {
                 span,
                 requires: Vec::new(),
                 witness: None,
+                related: None,
             });
         }
         if let Some(spec) = havoc {
@@ -7167,6 +7188,7 @@ impl<'m> Engine<'m> {
                     span,
                     requires: Vec::new(),
                     witness: None,
+                    related: None,
                 });
             }
             IntrinsicOutcome::Degrade(why) => {
