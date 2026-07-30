@@ -3427,8 +3427,45 @@ impl<'m> Engine<'m> {
                         t
                     }
                     None => {
+                        // **A store chiero cannot translate still happens.** Returning here left
+                        // the slot holding whatever was there before, so `x = x * 3.0L` on 2.0 read
+                        // back as 2 — a confidently wrong number, with the run degraded and the
+                        // operation named. Declaring the gap and poisoning the value are two
+                        // obligations and this site met only the first.
+                        //
+                        // **A fresh symbol, not an uninitialized slot**, and the comment above says
+                        // why: wave 195's draft refused to write and made a later read accuse the
+                        // program of never storing what it had just stored. The program did store;
+                        // chiero does not know what. "Written, value unknown" is the only answer
+                        // that is true of both.
+                        //
+                        // The same rule the extern-return site states one level up: a value nobody
+                        // modeled is a fresh input, because silently keeping a plausible one is the
+                        // failure that reads uninitialized memory as zero.
                         self.lowering_gap(s, i.span, "a store of an untranslatable value");
-                        return;
+                        // **Only where a term can hold it.** A value wider than the arena's
+                        // maximum has no symbol to mint, and asking for one panics rather than
+                        // degrading — which is how the wide-store fixture in `step.rs` found this
+                        // line. For those the old behaviour stands and the slot keeps what it had;
+                        // that is the stale-value defect surviving in the narrow case, and it is
+                        // recorded in §9 rather than papered over. `Int(256)` is the only shape in
+                        // the tree that reaches it.
+                        let width = size_of_cty(ty) * 8;
+                        let Ok(w) = u32::try_from(width).map(|w| w.min(chiero_solver::MAX_BV_BITS))
+                        else {
+                            return;
+                        };
+                        if u64::from(w) != width {
+                            return;
+                        }
+                        self.fresh_count += 1;
+                        self.input(
+                            a,
+                            s,
+                            chiero_solver::Sort::BitVec(w),
+                            &format!("opaque{}", self.fresh_count),
+                            InputOrigin::Opaque { span: i.span },
+                        )
                     }
                 };
                 let _ = align;
