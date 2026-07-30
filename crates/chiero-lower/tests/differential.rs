@@ -2651,6 +2651,57 @@ fn dividing_long_doubles_agrees_with_gcc() {
     agree("return (int)(0x1.fffffffffffffffep0L / 1.0L == 0x1.fffffffffffffffep0L);");
 }
 
+/// **Subnormal `long double`s — the last float gap, and it is a wrong answer rather than a gap.**
+///
+/// x87's smallest normal is `2^-16382`; below it the format keeps going with the integer bit *clear*
+/// and the exponent field pinned at zero, down to `2^-16445`. That is gradual underflow, and it is
+/// what stops `x - y` from being zero for two distinct values.
+///
+/// Every part of `fp` declines these. Conversion refuses a scale that would produce one, and all four
+/// operations return `None` for an operand with a zero exponent field or a result below the floor.
+/// **The refusal in the literal path is the serious one**, because a refused literal does not stay
+/// refused: it falls through to the `f64` value `float_literal` computes, `0x1p-16400` is zero in an
+/// `f64`, and so the program gets a confident *zero* where the value is merely very small. That is
+/// the shape 023 §7 exists to forbid, and it is the same fall-through that made wave 240's decimal
+/// literals wrong.
+///
+/// # What the fixtures pin
+///
+/// Subnormals have to work on the way *in* (a literal), on the way *out* (a result that underflows),
+/// and in between (an operand that is already one, which every operation must normalize before it can
+/// use it). The three are separate code, so:
+///
+///   - literals at the top, the bottom, and one step below the bottom, which rounds to zero
+///   - each of the four operations producing one by underflow
+///   - each of them consuming one, including `0x1p-16400L / 0x1p-16445L`, where *both* operands are
+///     subnormal and the quotient is an ordinary `2^45`
+///   - the round trip `(smallest normal - smallest subnormal) + smallest subnormal`, which is only
+///     the smallest normal again if the intermediate kept all sixty-three of its bits
+#[test]
+fn subnormal_long_doubles_agree_with_gcc() {
+    // On the way in. The third rounds to zero, so "any nonzero" is not enough to pass.
+    agree("return (int)(0x1p-16400L != 0.0L);");
+    agree("return (int)(0x1p-16445L != 0.0L);");
+    agree("return (int)(0x1p-16446L == 0.0L);");
+    agree("return (int)(1e-4950L != 0.0L);");
+    agree("return (int)(0x1p-16400L < 0x1p-16382L);");
+    // On the way out, once per operation.
+    agree("return (int)(0x1p-16400L + 0x1p-16400L == 0x1p-16399L);");
+    agree("return (int)(0x1p-16382L * 0x1p-20L == 0x1p-16402L);");
+    agree("return (int)(0x1p-16382L / 0x1p20L == 0x1p-16402L);");
+    agree("return (int)(0x1p-16382L - 0x1p-16445L < 0x1p-16382L);");
+    // **Gradual underflow, stated as a round trip.** The difference is the largest subnormal, and
+    // adding back what was taken returns the smallest normal only if every bit survived.
+    agree("return (int)((0x1p-16382L - 0x1p-16445L) + 0x1p-16445L == 0x1p-16382L);");
+    // On the way through: an operand that is already subnormal must be normalized before use.
+    agree("return (int)(0x1.8p-16445L * 1.0L == 0x1p-16444L);");
+    agree("return (int)(0x1p-16444L + 0x1p-16445L == 0x1.8p-16444L);");
+    // Both operands subnormal, and an entirely ordinary quotient.
+    agree("return (int)(0x1p-16400L / 0x1p-16445L == 0x1p45L);");
+    // Under the floor is a zero, which is the one place a zero *is* the right answer.
+    agree("return (int)(0x1p-16445L * 0.5L == 0.0L);");
+}
+
 /// **A NaN produced by arithmetic agrees with gcc.**
 ///
 /// Division made this reachable: `0.0L / 0.0L` is how C creates a NaN, and until wave 242 there was
