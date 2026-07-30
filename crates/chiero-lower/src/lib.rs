@@ -1967,6 +1967,16 @@ impl Lowerer<'_> {
                     && let Some(text) = self.names.text(sym)
                     && let Some((_, val)) = chiero_sema::float_literal(text)
                 {
+                    // **The exact path first, for an integral `long double`.** `float_literal`
+                    // answers in `f64`, eleven bits short of x87's significand, so
+                    // `4611686018427387905.0L` would arrive rounded. Anything it declines — a
+                    // fraction, an exponent, a value past 2^64 — falls through to the `f64` path
+                    // unchanged.
+                    if k == chiero_cir::FloatKind::X87_80
+                        && let Some(bits) = chiero_sema::x87_integral_literal(text)
+                    {
+                        return Operand::Const(Const::Float(k, bits));
+                    }
                     return Operand::Const(Const::Float(k, float_bits(k, val)));
                 }
                 match v {

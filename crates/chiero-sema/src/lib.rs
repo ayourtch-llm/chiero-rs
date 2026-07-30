@@ -1778,6 +1778,54 @@ fn align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
 ///
 /// `None` for anything that is not a floating literal, which is how the caller tells this
 /// from an integer one without parsing twice.
+/// The exact x87 80-bit pattern of an **integral** decimal literal, when there is one.
+///
+/// `float_literal` answers in `f64`, which is eleven bits short of x87's significand — so
+/// `4611686018427387905.0L` (2^62 + 1) arrives already rounded and the `+ 1` is gone before
+/// anything can see it. This is the path that does not round.
+///
+/// **Integers only, and the restriction is what makes it correct rather than approximate.** General
+/// decimal-to-binary rounding needs arbitrary precision and a tie-breaking rule; an integer that
+/// fits in sixty-four bits of significand needs neither, because the digits *are* the value. Shift
+/// it up until the top bit is set, and the exponent is however far it moved.
+///
+/// `None` for anything else — a fraction, an exponent, a value past 2^64 — and the caller falls back
+/// to the `f64` path it already had. Returning `None` rather than an approximation is what keeps the
+/// two paths honest about which one answered.
+pub fn x87_integral_literal(text: &str) -> Option<u128> {
+    let t = text.replace('\'', "");
+    let lower = t.to_ascii_lowercase();
+    if !lower.ends_with('l') || lower.starts_with("0x") {
+        return None;
+    }
+    // `123.0L` is integral; `1.5L`, `1e3L` and `0x1p1L` are not. A trailing `.0` (or bare `.`) is
+    // the only fraction this accepts, because it contributes nothing.
+    let digits = lower.trim_end_matches('l');
+    let digits = match digits.split_once('.') {
+        None => digits,
+        Some((int, frac)) if frac.chars().all(|c| c == '0') => int,
+        Some(_) => return None,
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for c in digits.chars() {
+        v = v.checked_mul(10)?.checked_add(u64::from(c.to_digit(10)?))?;
+    }
+    if v == 0 {
+        // Zero is all-zero in x87 too, and the normalization below would loop forever on it.
+        return Some(0);
+    }
+    // Normalize: x87 keeps the integer bit explicitly, so the significand is the value shifted
+    // until bit 63 is set, and the unbiased exponent is the position of that bit.
+    let shift = v.leading_zeros();
+    let sig = u128::from(v) << shift;
+    let unbiased = 63 - i32::try_from(shift).ok()?;
+    let exp = u128::try_from(unbiased + 16383).ok()?;
+    Some((exp << 64) | sig)
+}
+
 pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
     let t = text.replace('\'', ""); // C23 digit separators
     let lower = t.to_ascii_lowercase();
