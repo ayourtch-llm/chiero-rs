@@ -708,6 +708,40 @@ fn every_bound_that_cuts_a_run_names_its_value() {
     }
 }
 
+/// **A bound is declared once, not once per place that checks it.**
+///
+/// `Budget::max_depth` is tested in two places — the per-instruction step loop and `take_edge` —
+/// and wave 222 found the second unreachable: `steps` is incremented at exactly one site, which
+/// tests the same `>` immediately afterwards, so on entry to `take_edge` the comparison cannot have
+/// newly become true. Instrumenting it fired zero times across the whole workspace.
+///
+/// Wave 223 removed it. This is the guard that makes reintroducing a *live* duplicate visible: two
+/// checks that both fire would record the same fact twice on one state, and 023 §6.1's whole
+/// argument is that a reader counts reports. A duplicate that cannot fire is dead code; a duplicate
+/// that can is a double report.
+#[test]
+fn a_hit_bound_is_declared_once_per_state() {
+    let mut a = TermArena::new();
+    let r = Engine::new(&straight_line(12))
+        .with_budget(Budget {
+            max_depth: 3,
+            ..Budget::default()
+        })
+        .run(&mut a);
+    for st in r.states() {
+        let n = st
+            .assumptions()
+            .iter()
+            .filter(|x| x.detail.contains("max_depth ("))
+            .count();
+        assert!(
+            n <= 1,
+            "one state, one statement of the bound that cut it: {:?}",
+            st.assumptions()
+        );
+    }
+}
+
 /// A run that hits nothing says nothing. **The control.**
 ///
 /// Every assertion above is about the presence of a reason, which a fix that recorded one
