@@ -9,6 +9,7 @@ use indexmap::IndexMap;
 use smallvec::SmallVec;
 use std::sync::Arc;
 
+pub mod fp;
 pub mod text;
 pub mod verify;
 
