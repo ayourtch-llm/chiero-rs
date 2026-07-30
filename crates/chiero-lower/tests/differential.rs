@@ -2584,6 +2584,61 @@ fn a_decimal_long_double_literal_keeps_all_its_bits() {
     agree("return (int)(1e10L == 0x1.2a05f2p33L);");
 }
 
+/// **Dividing `long double`s agrees with gcc.**
+///
+/// The last of the four, and the only one that needs a loop — one quotient bit at a time with its own
+/// sticky remainder, which is the shape wave 240's `from_decimal` already uses. Two normalized
+/// significands give a quotient between a half and two, so the numerator is staged sixty-four bits up
+/// and one further bit is taken by hand: `sa << 64` fits a `u128` and `sa << 65` does not.
+///
+/// # Division cannot round on a tie, and cannot carry
+///
+/// Both were checked by enumerating every normalized operand pair at significand widths six through
+/// twelve — 4.2 million pairs at the widest — and neither occurs at any width:
+///
+///   - **No exact tie.** A tie needs the quotient to terminate in exactly sixty-five bits, which
+///     needs the divisor to reduce to a power of two; and then the quotient's numerator is
+///     `sa / gcd(sa, sb)`, which is under `2^64` and so has at most *sixty-four*.
+///   - **No rounding carry.** Rounding up out of an all-ones significand needs the exact quotient
+///     within half an ulp below a power of two. Just under one the ulp is `2^-64`, so it needs
+///     `sb - sa` to be under about `sb · 2^-65`, which is less than one — and these are integers.
+///
+/// So the fixtures below cover rounding up, rounding down and exact division, and there is nothing to
+/// write for the two cases `mul` and `add` both need. The implementation says so with a
+/// `debug_assert!` rather than a comment, which puts the proof under the test suite.
+#[test]
+fn dividing_long_doubles_agrees_with_gcc() {
+    agree("long double a = 6.0L, b = 3.0L; return (int)(a / b);");
+    agree("long double a = -6.0L, b = 3.0L; return (int)(a / b);");
+    agree("long double a = -6.0L, b = -3.0L; return (int)(a / b);");
+    // Exact: a power-of-two divisor divides without a remainder at all.
+    agree("return (int)(1.0L / 2.0L == 0x1p-1L);");
+    agree("return (int)(0x1.8p3L / 0x1p2L == 0x1.8p1L);");
+    // **Rounding up**, against the exact quotient in hex.
+    agree("return (int)(1.0L / 3.0L == 0x1.5555555555555556p-2L);");
+    agree("return (int)(1.0L / 10.0L == 0x1.999999999999999ap-4L);");
+    agree("return (int)(1.0L / 0x1.8p0L == 0x1.5555555555555556p-1L);");
+    // **Rounding down**, which a fix that rounded up whenever a remainder was left would get wrong.
+    agree("return (int)(1.0L / 7.0L == 0x1.2492492492492492p-3L);");
+    agree("return (int)(10.0L / 3.0L == 0x1.aaaaaaaaaaaaaaaap1L);");
+    // **Both quotient widths.** `sa/sb` lands in `[1, 2)` or in `[1/2, 1)`, and the two need a
+    // different number of bits dropped — a fix that assumed one of them gets the other off by a
+    // factor of two.
+    agree("return (int)(0x1.8p0L / 0x1p0L == 0x1.8p0L);");
+    agree("return (int)(0x1p0L / 0x1.8p0L == 0x1.5555555555555556p-1L);");
+    // Zero on top, and the sign that comes with it.
+    agree("return (int)(0.0L / 3.0L == 0.0L);");
+    // **Division by zero is not undefined for floats**, it is IEEE-754 §7.3's divideByZero and its
+    // result is an infinity — so this is a value chiero must produce rather than a fault to report.
+    agree("return (int)(1.0L / 0.0L > 0x1p16000L);");
+    agree("return (int)(-1.0L / 0.0L < -0x1p16000L);");
+    // Past `f64`'s range at both ends, which is what this format is for.
+    agree("return (int)(1e4000L / 1e-4000L > 0x1p16000L);");
+    agree("return (int)(1e-4000L / 1e4000L < 1e-4000L);");
+    // A quotient that stays put: dividing by one is the identity even for the widest significand.
+    agree("return (int)(0x1.fffffffffffffffep0L / 1.0L == 0x1.fffffffffffffffep0L);");
+}
+
 /// **Adding and subtracting `long double`s agrees with gcc.**
 ///
 /// Harder than multiplication in three specific ways, which is why it went second.
