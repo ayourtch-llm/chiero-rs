@@ -133,6 +133,12 @@ fn no_finding_names_raw_byte_positions() {
 }
 
 /// The named case still names the variable. **The control.**
+///
+/// The name is matched as a *word*, and mutation is why. Deleting the name lookup altogether
+/// left this test passing: `ca` is a substring of "the 8-byte unnamed lo**ca**l", and `g` of
+/// "unnamed **g**lobal". Both generic descriptions contain the name they were supposed to have
+/// replaced — wave 184's substring rule, arriving from a direction no one would guess. Asserting
+/// that "unnamed" is absent is the other half: it is the word every nameless description uses.
 #[test]
 fn a_named_object_is_still_named() {
     for (what, src, want) in [
@@ -148,9 +154,18 @@ fn a_named_object_is_still_named() {
         ),
     ] {
         let f = findings(src);
+        let names_it = f.iter().any(|m| {
+            m.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == want)
+        });
         assert!(
-            f.iter().any(|m| m.contains(want)),
+            names_it,
             "`{what}`: the engine knows this object's name and the report must use it: {f:?}"
+        );
+        assert!(
+            f.iter().all(|m| !m.contains("unnamed")),
+            "`{what}`: this object has a name, so no report about it is of an unnamed \
+             object: {f:?}"
         );
     }
 }
