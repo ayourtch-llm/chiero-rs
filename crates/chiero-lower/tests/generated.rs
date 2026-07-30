@@ -975,6 +975,9 @@ impl Gen {
         if self.control_flow && self.rng.chance(3) && self.short_circuit_stmt() {
             return;
         }
+        if self.control_flow && self.rng.chance(3) && self.goto_stmt() {
+            return;
+        }
         match self.rng.below(10) {
             0 if self.arrays.len() < 3 && self.rng.chance(2) => self.push_local_array(),
             3 if !self.globals.is_empty() && self.rng.chance(2) => {
@@ -1108,11 +1111,25 @@ impl Gen {
                     let n = 1 + self.rng.below(4);
                     let i = self.fresh();
                     let e = self.expr(v.ty);
-                    let _ = writeln!(
-                        self.body,
-                        "  for (int {i} = 0; {i} < {n}; {i}++) {{ {} += {e}; }}",
-                        v.name
-                    );
+                    // **`continue` under the control-flow knob**, which the census found the
+                    // grammar had never emitted. It is the one place a loop's *increment* still
+                    // runs while the rest of the body does not — distinct from `break`, and
+                    // distinct again in a `do`-`while`, where `continue` jumps to the condition.
+                    if self.control_flow && self.rng.chance(2) {
+                        let k = self.rng.below(n.max(1));
+                        let _ = writeln!(
+                            self.body,
+                            "  for (int {i} = 0; {i} < {n}; {i}++) {{ if ({i} == {k}) continue; \
+                             {} += {e}; }}",
+                            v.name
+                        );
+                    } else {
+                        let _ = writeln!(
+                            self.body,
+                            "  for (int {i} = 0; {i} < {n}; {i}++) {{ {} += {e}; }}",
+                            v.name
+                        );
+                    }
                 }
             }
         }
@@ -1162,6 +1179,38 @@ impl Gen {
             }
         }
         let _ = writeln!(self.body, "  }}");
+        true
+    }
+
+    /// **A forward `goto` over a statement that would otherwise run.**
+    ///
+    /// The last of the six constructs the census found unemitted, and the one with a termination
+    /// constraint attached: a *backward* goto can loop forever and no generated program may hang,
+    /// so the label is always emitted after the jump. That is not a limitation of the construct
+    /// being tested — chiero agrees with gcc on backward jumps, checked by hand — it is what keeps
+    /// this arm safe to put in a corpus.
+    ///
+    /// The skipped statement mutates a live variable, so whether the jump was taken reaches the
+    /// checksum. A `goto` nobody can observe is a `goto` that tests the parser and nothing else.
+    ///
+    /// The label goes in its own namespace in C (6.2.3p1), so `L7` cannot collide with a variable;
+    /// the prefix is for a reader rather than for the compiler.
+    fn goto_stmt(&mut self) -> bool {
+        let Some(v) = self.pick_var() else {
+            return false;
+        };
+        if matches!(v.ty, Ty::F32 | Ty::F64) {
+            return false;
+        }
+        self.next_id += 1;
+        let label = format!("L{}", self.next_id);
+        let cond = self.expr(v.ty);
+        let _ = writeln!(self.body, "  if (({cond}) != 0) goto {label};");
+        let e = self.expr(v.ty);
+        let _ = writeln!(self.body, "  {} += {e};", v.name);
+        // **A label needs a statement after it** (6.8.1), and an empty one is the only choice that
+        // does not change what the program computes.
+        let _ = writeln!(self.body, "  {label}: ;");
         true
     }
 
@@ -1229,11 +1278,24 @@ impl Gen {
         let i = self.fresh();
         let e = self.expr(v.ty);
         let _ = writeln!(self.body, "  int {i} = 0;");
-        let _ = writeln!(
-            self.body,
-            "  do {{ {} += {e}; {i}++; }} while ({i} < {n});",
-            v.name
-        );
+        // `continue` in a `do`-`while` jumps to the *condition*, so the counter has to be
+        // incremented before it or the loop cannot terminate. That ordering is the whole
+        // difference between this and the `for` form, and getting it wrong here would hang the
+        // comparison rather than fail it.
+        if self.control_flow && self.rng.chance(2) {
+            let k = 1 + self.rng.below(n.max(1));
+            let _ = writeln!(
+                self.body,
+                "  do {{ {i}++; if ({i} == {k}) continue; {} += {e}; }} while ({i} < {n});",
+                v.name
+            );
+        } else {
+            let _ = writeln!(
+                self.body,
+                "  do {{ {} += {e}; {i}++; }} while ({i} < {n});",
+                v.name
+            );
+        }
         true
     }
 
@@ -2091,6 +2153,85 @@ fn control_flow_programs_agree_with_gcc() {
         "a short-circuit whose witness nothing reads is emitted and not graded: {graded} \
          program(s) observe theirs"
     );
+    // **`goto` and `continue`**, the last two constructs the census found unemitted. Counted the
+    // same way and for the same reason: emitting a construct is not the claim, exercising it is.
+    // **The two `continue` forms are counted apart**, because they are different constructs
+    // wearing one keyword: in a `for` the increment still runs, in a `do`-`while` control jumps to
+    // the condition. Counting the keyword found them together, and turning the `for` form off
+    // alone changed nothing any assertion could see.
+    let (mut with_goto, mut cont_for, mut cont_do) = (0usize, 0usize, 0usize);
+    for seed in 0..200u64 {
+        let body = program_control_flow(seed).1;
+        if body.contains("goto L") {
+            with_goto += 1;
+        }
+        for l in body.lines() {
+            if !l.contains("continue;") {
+                continue;
+            }
+            if l.contains("for (") {
+                cont_for += 1;
+            }
+            if l.contains("do {") {
+                cont_do += 1;
+            }
+        }
+    }
+    assert!(
+        with_goto >= 10 && cont_for >= 10 && cont_do >= 10,
+        "the last two census constructs have to appear, and `continue` in both loop forms: \
+         {with_goto} goto, {cont_for} for-continue, {cont_do} do-continue"
+    );
+    // **A `goto` has to skip something observable.** Deleting the statement between the jump and
+    // its label left every count above satisfied and the construct testing the parser and nothing
+    // else — the same failure the short-circuit witness had.
+    let goto_skips = (0..200u64)
+        .filter(|seed| {
+            let body = program_control_flow(*seed).1;
+            body.match_indices("goto L").any(|(i, _)| {
+                let label = body[i + 5..]
+                    .split(';')
+                    .next()
+                    .expect("terminated")
+                    .trim()
+                    .to_string();
+                let target = body.find(&format!("{label}: ;")).unwrap_or(0);
+                // An *executable* statement, not merely the text of one. The first version
+                // matched `" += "` anywhere in the span and a mutant that commented the line
+                // out passed it — the characters survive a `//` and the effect does not.
+                target > i
+                    && body[i..target]
+                        .lines()
+                        .any(|l| l.contains(" += ") && !l.trim_start().starts_with("//"))
+            })
+        })
+        .count();
+    assert!(
+        goto_skips >= 10,
+        "a jump over nothing is a jump nothing can observe: {goto_skips}"
+    );
+    // Every `goto` this grammar emits jumps **forward**, and that is a safety property rather than
+    // a coverage one: a backward jump can loop forever and a hanging comparison is worse than a
+    // failing one. chiero agrees with gcc on backward jumps — checked by hand — so this bounds the
+    // corpus, not the construct.
+    for seed in 0..200u64 {
+        let body = program_control_flow(seed).1;
+        for (i, _) in body.match_indices("goto L") {
+            let label = body[i + 5..]
+                .split(';')
+                .next()
+                .expect("the arm emits a terminated statement")
+                .trim()
+                .to_string();
+            let target = body
+                .find(&format!("{label}: ;"))
+                .unwrap_or_else(|| panic!("seed {seed}: `{label}` has no label"));
+            assert!(
+                target > i,
+                "seed {seed}: `goto {label}` jumps backward, which this corpus must never do"
+            );
+        }
+    }
     assert!(
         compared >= 50,
         "too few comparisons to mean anything: {compared}"
