@@ -1537,9 +1537,10 @@ pub struct Memory {
 /// and the guard is a conjunction over the eight bits — the same arithmetic
 /// `write_at_symbolic_offset` uses to mark them, and the reason the two must be read together.
 ///
-/// `None` when the chain is too long to eliminate. That is a real answer and not a failure:
-/// the alternative is an expansion whose size grows with the number of stores ever made to
-/// the object, and a caller that gets `None` reports nothing rather than guessing.
+/// Always a guard. Wave 214: it used to give up when the chain was too long to eliminate, and
+/// "too long" is a fact about how big the object is — so `struct P pa[4]` reported its padding and
+/// `pa[5]` did not. The expansion is still bounded; what changed is that exceeding the bound
+/// downgrades the *form* of the question rather than withdrawing it.
 fn init_guard(a: &mut TermArena, arr: ArrayContents, i: Term) -> Option<Term> {
     // Generous, because the chain is per-object and the common shapes are a constant array
     // (length 0) or a handful of concrete stores. A `memset` is what makes it long, and a
@@ -1552,7 +1553,14 @@ fn init_guard(a: &mut TermArena, arr: ArrayContents, i: Term) -> Option<Term> {
     for k in 0..8u128 {
         let off_k = a.bv(arr.idx_bits, k);
         let bi = a.add(base, off_k);
-        let bit = a.select_expand(arr.init, bi, EXPAND_LIMIT)?;
+        // **Refusing to expand is not refusing to ask.** Past the limit the guard is the opaque
+        // `select` instead of an `ite` chain: the solver then needs array theory and may answer
+        // `Unknown`, which wave 204's discharge turns into a `maybe` — the honest verdict for a
+        // question nobody settled. Returning `None` here instead skipped the check outright, so
+        // one more array element made a real finding vanish with nothing said about it.
+        let bit = a
+            .select_expand(arr.init, bi, EXPAND_LIMIT)
+            .unwrap_or_else(|| a.select(arr.init, bi));
         let is_set = a.eq(bit, one);
         acc = Some(match acc {
             None => is_set,
