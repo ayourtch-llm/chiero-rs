@@ -1476,6 +1476,8 @@ fn split_mix64(state: &mut u64) -> u64 {
 #[derive(Debug)]
 pub struct Engine<'m> {
     module: &'m Module,
+    /// 023 §9: what turns a `BytePos` a fault carries into a line a reader can open.
+    source_map: Option<&'m chiero_span::SourceMap>,
     tier: SolverTier,
     next_state: u32,
     solver_calls: u64,
@@ -1543,6 +1545,7 @@ impl<'m> Engine<'m> {
             arenas: Vec::new(),
             arena_bases: Vec::new(),
             module,
+            source_map: None,
             tier: SolverTier::default(),
             next_state: 0,
             solver_calls: 0,
@@ -1597,6 +1600,16 @@ impl<'m> Engine<'m> {
     /// saying that it made the assumption, which it does.
     pub fn with_fork_on_alias(mut self, on: bool) -> Self {
         self.fork_on_alias = on;
+        self
+    }
+
+    /// Give the engine the front end's `SourceMap`, so a report can name a line.
+    ///
+    /// Optional, and every existing caller omits it. A run without one is not degraded — the
+    /// analysis does not depend on source locations — it simply cannot render the second
+    /// location a memory fault names, and says less rather than guessing.
+    pub fn with_source_map(mut self, map: &'m chiero_span::SourceMap) -> Self {
+        self.source_map = Some(map);
         self
     }
 
