@@ -2357,3 +2357,28 @@ fn an_integral_long_double_literal_keeps_all_its_bits() {
     // not swallow the old one.
     agree("long double x = 2.5L; return (int)x;");
 }
+
+/// **An integer converted to `long double` keeps all its bits.**
+///
+/// `long double x = 9007199254740993;` is an *integer* literal converted by `SiToFp`, not a floating
+/// literal — a different path to the same value, and the one wave 232 had to leave out. 2^53 + 1 is
+/// the smallest integer `f64` cannot represent, so a conversion that detours through `f64` loses the
+/// `+ 1` and `(long long)` brings back an even number.
+///
+/// Exact for the same reason the integral literal is: an integer is its own significand once
+/// normalized, so there is no rounding decision. Both signednesses, because `SiToFp` and `UiToFp`
+/// are separate opcodes and a fix for one leaves the other refusing.
+#[test]
+fn an_integer_converted_to_long_double_keeps_all_its_bits() {
+    agree("long double x = 9007199254740993; return (int)(long long)x;");
+    agree("long long n = 9007199254740993; long double x = n; return (int)(long long)x;");
+    // Unsigned, which takes `UiToFp`.
+    agree(
+        "unsigned long long n = 18014398509481985u; long double x = n; return (int)(long long)x;",
+    );
+    // Negative, where the sign is the conversion's rather than an `fneg`'s.
+    agree("long long n = -9007199254740993; long double x = n; return (int)(long long)x;");
+    // Small and zero, which move both exponent and significand.
+    agree("long double x = 3; return (int)(long long)x;");
+    agree("long double x = 0; return (int)(long long)x;");
+}
