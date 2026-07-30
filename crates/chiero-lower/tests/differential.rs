@@ -2514,6 +2514,54 @@ fn comparing_long_doubles_agrees_with_gcc() {
     // `partial_cmp` itself.
 }
 
+/// **A decimal `long double` literal keeps all sixty-four of its significand bits.**
+///
+/// `float_literal` parses every decimal literal with `str::parse::<f64>` and widens the result, so a
+/// `long double` literal arrives already rounded to fifty-three bits and clamped to `f64`'s range.
+/// Its comment calls this "a narrowing this records rather than hides" and **nothing records it** —
+/// no diagnostic, no fidelity change, no `Undef`.
+///
+/// # Why this is a defect now and was a preference before
+///
+/// For six waves it cost nothing observable, because `f80` arithmetic was a declared gap: a program
+/// could not compute with these values, so it could not disagree about them. Wave 239 shipped
+/// multiplication and the same day `1e300L * 1e10L > 1e309L` started answering **no** — `1e309`
+/// overflows `f64` to an infinity, and the comparison asks whether 1e310 exceeds infinity. That is a
+/// wrong number, which 023 §7 does not permit at any fidelity. One fixture in
+/// `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled` was rewritten in hex to keep
+/// testing what it claims to test, and this is the defect it was rewritten around.
+///
+/// # The two halves, which fail for different reasons
+///
+/// **Precision.** `0.1L` is the true tenth rounded to sixty-four bits; `0.1` is the true tenth
+/// rounded to fifty-three and then widened, which lands *above* it. So `0.1L < 0.1` is true in C and
+/// false here, where both spellings produce the same bits.
+///
+/// **Range.** `1e309` and `1e4000` are ordinary `long double`s — the format reaches about 1.19e4932 —
+/// and both become infinities in an `f64`. The range failure is the louder of the two and the
+/// precision failure is the one that will outlive it, since a fix that widens the range without
+/// widening the significand still gets `0.1L` wrong.
+///
+/// Hex literals are exact already (wave 236), so every expectation here is written against one.
+#[test]
+fn a_decimal_long_double_literal_keeps_all_its_bits() {
+    // Precision: the same decimal at two types is not the same number.
+    agree("return (int)(0.1L < 0.1);");
+    agree("long double a = 1.1L; return (int)(a != (long double)1.1);");
+    // Range, just past `f64`'s top. `1e309` is about 2^1026, so it is under 2^1030 and over 2^1020.
+    agree("return (int)(1e309L < 0x1p1030L);");
+    agree("return (int)(1e309L > 0x1p1020L);");
+    // Range, far past it and still ordinary for this format.
+    agree("return (int)(1e4000L > 0x1p13000L);");
+    // Range, past the bottom: `1e-320` is a subnormal `double` and a normal `long double`.
+    agree("return (int)(1e-320L > 0.0L);");
+    // The control. A literal `f64` can represent exactly must still round-trip, or a fix that
+    // widened everything by hand would break the values that were already right.
+    agree("return (int)(0.5L == 0x1p-1L);");
+    agree("return (int)(2.0L == 0x1p1L);");
+    agree("return (int)(1e10L == 0x1.2a05f2p33L);");
+}
+
 /// **Multiplying two `long double`s agrees with gcc.**
 ///
 /// The first arithmetic operation, and the one that needs no iteration: two sixty-four-bit
