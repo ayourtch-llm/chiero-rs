@@ -613,3 +613,120 @@ fn assumptions_from_every_path_reach_the_report() {
         "reading state 0 alone would pass on this fixture: {per_state:?}"
     );
 }
+
+// -------------------------------------------------------------------------------------------
+// 023 §8's honesty contract: a bound that cuts a run names **itself and its value**.
+//
+// Found by following wave 221's `gap: Bounded` runs down to the mechanism. The machinery is
+// right — one read `max_loop_iters (8) reached on the back edge BlockId(16) -> BlockId(15) in
+// `probe`` — and six of the seven budget fields say that much. `max_depth` says
+// "max_depth reached", at two sites, and a reader told that cannot tell a trivial bound from a
+// generous one. §8 exists so they can: it is "reported whether or not it was hit, so a reader can
+// tell `Exact`-with-generous-bounds from `Exact`-with-trivial-bounds".
+//
+// The standard is already written down in this file, above
+// `no_findings_under_a_hit_budget_renders_the_bound_not_a_proof`: "the bound and its value have
+// to be asserted *together* or the assertion is nearly vacuous". That comment was about the
+// assertion; it is just as true of the message.
+// -------------------------------------------------------------------------------------------
+
+/// A straight-line function of `n` instructions, to be cut by `max_depth` (which §8 counts in
+/// instructions rather than edges).
+fn straight_line(n: u32) -> Module {
+    let insts: Vec<Inst> = (0..n)
+        .map(|k| Inst {
+            kind: InstKind::Assign {
+                dst: ValueId(k),
+                rv: RValue::Bin {
+                    op: BinOp::Add,
+                    ty: CTy::Int(32),
+                    a: i32c(1),
+                    b: i32c(1),
+                    signed: true,
+                },
+            },
+            span: Span::DUMMY,
+            generated: false,
+        })
+        .collect();
+    func(
+        vec![block(0, insts, Terminator::Return(Some(i32c(0))))],
+        CTy::Int(32),
+    )
+}
+
+/// **Every bound that cuts a run names itself *and* its value.**
+///
+/// One test over a list, because the claim is about `Budget` as a whole: six fields satisfy it and
+/// a seventh does not, and the shape that catches the next field added is a list rather than a
+/// seventh test.
+///
+/// `max_states`, `max_forks` and `max_indirect` are pinned in `step.rs` and need a forking fixture
+/// this file has no builder for; they are named here so the division is visible rather than
+/// implied.
+#[test]
+fn every_bound_that_cuts_a_run_names_its_value() {
+    let cases: Vec<(&str, Budget, Module)> = vec![
+        (
+            "max_depth",
+            Budget {
+                max_depth: 3,
+                ..Budget::default()
+            },
+            straight_line(12),
+        ),
+        (
+            "max_loop_iters",
+            Budget {
+                max_loop_iters: 2,
+                ..Budget::default()
+            },
+            bounded_run(&mut TermArena::new()).0,
+        ),
+    ];
+    for (what, budget, module) in cases {
+        let mut a = TermArena::new();
+        let r = Engine::new(&module).with_budget(budget).run(&mut a);
+        assert_ne!(
+            r.fidelity(),
+            Fidelity::Exact,
+            "`{what}`: the fixture must actually reach the bound, or what follows is vacuous"
+        );
+        let details: Vec<String> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .map(|x| x.detail.clone())
+            .collect();
+        // The name **and** a parenthesised value. `contains(what)` alone passes on
+        // "max_depth reached", which is the message this test exists to reject.
+        assert!(
+            details.iter().any(|d| d.contains(&format!("{what} ("))),
+            "`{what}`: a reader told a bound was hit, and not what it was set to, cannot tell a \
+             trivial bound from a generous one: {details:?}"
+        );
+    }
+}
+
+/// A run that hits nothing says nothing. **The control.**
+///
+/// Every assertion above is about the presence of a reason, which a fix that recorded one
+/// unconditionally would satisfy — and that would put a bound in the report of every exhaustive
+/// run, which is the opposite defect.
+#[test]
+fn a_run_within_its_budget_records_no_bound() {
+    let mut a = TermArena::new();
+    let m = straight_line(3);
+    let r = Engine::new(&m).run(&mut a);
+    assert_eq!(r.fidelity(), Fidelity::Exact);
+    let details: Vec<String> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    assert!(
+        details.is_empty(),
+        "nothing was given up, so there is nothing to declare: {details:?}"
+    );
+}
