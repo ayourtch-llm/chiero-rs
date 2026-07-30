@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 227) — 1357 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 228) — 1359 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,42 +778,45 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### The owed corpus file is written; one decision left, and it is a preference
+> ### The "also open" list is settled; what is left is milestone-sized or a preference
 >
-> **`tests/corpus/c/pointer_fields.c` exists**, with its golden, closing an item owed since the
-> review recorded below. Five shapes the whole thirteen-file corpus lacked — a pointer-typed global,
-> a load and a store through it, a struct returned by value, a struct passed by value, a local array
-> decaying — each of which broke at least once at a site no golden could reach.
+> Wave 227 worked that list to the bottom. **Two entries were stale, three shapes were clean, and
+> one live defect came out of the last of them.**
 >
-> **A re-diagnosis §9 asked for, and my own note was what needed correcting.** I had written "arrow
-> access is clean on five shapes, so `pointer_fields.c` must be about something else". `->` is clean
-> and was never what the item was about — `struct_walk.c` and `packed_header.c` both use it. The gap
-> was **aggregate value semantics** and **pointer-typed storage at file scope**.
+> **Stale:** `is_aggregate` excluding `Ty::Vector` is long fixed — the predicate includes it, the
+> comment at its definition explains the three-predicates-disagreeing bug, and `differential.rs`'s
+> `a_vector_and_a_function_designator_have_no_value_form_either` covers the copy, the high half and
+> the scaled index. "Floats do not execute at all" is stale for the same reason (waves 167–172).
 >
-> The golden holds `global static @gp : size 8 align 8 addr @0 0`, so wave 189's regression (an
-> address initializer read as null) now shows as `bytes 0000000000000000` and fails. Verified by
-> mutation: making `global_addr_init` return `None` fails
-> `every_corpus_c_file_matches_its_lowered_golden`, which nothing in the corpus could detect before.
-> `the_c_corpus_exercises_pointer_and_aggregate_shapes` guards the inventory, so a shape leaving the
-> corpus fails loudly instead of quietly certifying nothing.
+> **Clean:** all three "shapes untried" agree with gcc — a union inside a struct read through
+> `pool[k].u.c[0]`, a `goto` out of three nested scopes, and a `switch` on a struct member reached
+> through a pointer, default arm included.
 >
-> ### The last decision, and why it is yours
+> **The defect was found by asking the right question about a duplicate.** The symbolic-index
+> variant produced two *identical* `pointer-outside-object` lines. Cross-path duplication is
+> deliberate and documented — keying across states once collapsed `buf + 64` and `buf + 128` and
+> threw away a witness — so the question was not "why two?" but "why identical?". Because `witness`
+> was `obj_size`, a constant, where the field's own doc says "an offset the path allows": for
+> `pool + ((i & 31) + 64)` the path reaches offsets 256..380 and the report said 32. Fixed by
+> binding the `Sat(m)` the probe already computes and evaluating the offset under it, which is the
+> source waves 205 and 208 already use.
 >
-> **UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
-> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`, `may-signed-overflow`;
-> UBSan spells its four `signed-integer-overflow`, `integer-divide-by-zero`,
-> `shift-exponent-too-large`, `float-cast-overflow`.
+> ### What is actually left
 >
-> Waves 224–225 took the other two decisions because the repo had already answered them. **This one
-> it has not, and the argument that motivated it turns out not to apply**: the census channel does
-> not use the slugs at all. `arithmetic_ub_agrees_with_gcc_site_for_site` classifies gcc's stderr by
-> substring and chiero's side by `format!("{:?}", u.kind)` — the *enum's* `Debug`, not `ub_phrase`.
-> So "the census rows would be directly comparable" was already true by other means, and renaming
-> buys only that a human reading both tools' output sees one vocabulary.
+>   1. **x87 80-bit floats** and **symbolic floats** — the two remaining capability items, both
+>      milestone-sized. §9's earlier note stands: a symbolic float needs an FP theory or a
+>      bit-blasted encoding, and x87's 80-bit format has no Rust primitive.
+>   2. **UBSan's slugs** — a preference with a compatibility cost, left to you, and its motivating
+>      argument retracted in wave 227: the census classifies chiero's side by the `UbKind` enum's
+>      `Debug`, not by `ub_phrase`, so the rows were already comparable.
+>   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. A known-cost,
+>      low-yield errand.
 >
-> Against it: `may-signed-overflow` has no UBSan counterpart, so the sets align only partly; and 023
-> §6.1 makes the kind a dedup key, so a rename breaks anything grouping on it. **It is a preference
-> with a compatibility cost rather than a question with a right answer, which is why I have left it.**
+> **Surviving mutants, recorded rather than filed as tested:** `witness-zero-fallback` (a `0`
+> fallback when `a.eval` fails; unreachable in the fixture set, and the choice matters for
+> *coherence* — offset 0 would read "at offset 0, which is outside it", contradicting itself, where
+> `obj_size` at least is outside); `unsigned-too`, `always-opaque`, `expand-forgets-shadowing`,
+> `stamp-uses-call-span`, `map-mandatory`, `nest-unbounded`, `accumulate-dropped`.
 >
 > **This one has no precedent to follow, and that is why it is still open.** It is a rename with two
 > real arguments against: `may-signed-overflow` has no UBSan counterpart, so the sets would only
@@ -1230,6 +1233,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Ask why a duplicate is *identical*, not why there are two** (wave 227). Two
+> `pointer-outside-object` lines from two paths is documented, deliberate behaviour — the engine
+> keeps both so a second witness is not lost. What was wrong was that the two sentences were the
+> same, because the witness was a constant instead of the path's own offset. The interesting
+> question was one step past the one the output invited.
+>
+> **A witness that is always true is not always a witness** (wave 227). `obj_size` is outside the
+> object by construction, so the sentence never looked wrong — and on a path that cannot reach it,
+> it names an input that does not exist. **A false specific claim is worse than a vague one**,
+> because a reader acts on it. Check that a witness is reachable *on this path*, not merely
+> consistent with the fault.
+>
+> **A stale "also open" entry costs more than an empty one** (wave 227). Two of four had been fixed
+> waves earlier, one with a comment at the fix site describing the exact bug the entry named.
+> Reading them cost a wave's opening, and leaving them would have cost the next session the same.
+> **When an item is checked and found done, strike it in the same wave.**
 >
 > **Grep the artifact's vocabulary, not the code's** (wave 226). I checked a freshly blessed golden
 > for `CopyMem` and found none, and nearly recorded that the aggregate copies were missing — the
