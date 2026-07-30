@@ -229,6 +229,29 @@ fn a_concrete_byte_written_before_promotion_survives_it() {
     );
 }
 
+/// **A definitely-uninitialized read must not hand back a value.** The control for wave 249.
+///
+/// Mutation found nothing observed `unusable` doing its job: deleting the filter outright — so
+/// every read's value is used no matter what faults came with it — passed the whole suite. The
+/// reports were unaffected, because reporting and value-selection are separate paths; what changed
+/// silently was that a byte nobody ever wrote started answering with whatever the memory model had
+/// underneath it.
+///
+/// So this asserts the *value* side: an uninitialized read declares that its result is invented, and
+/// the returned byte is a fresh symbol rather than a confident number.
+#[test]
+fn an_uninitialized_read_invents_its_value_rather_than_using_one() {
+    let (vals, gaps) = run("int probe(void){ char ca[8]; return ca[0]; }");
+    assert!(
+        gaps.iter().any(|g| g.contains("invented")),
+        "nothing wrote this byte, so the load has no value to give and must say so: {gaps:?}"
+    );
+    assert!(
+        vals.is_empty(),
+        "and the result is a symbol, not a number the reader would believe: {vals:?}"
+    );
+}
+
 /// **A multi-byte element, stored and read back at the same symbolic offset.**
 ///
 /// Mutation found no fixture needed more than one byte: every store fixture above used a

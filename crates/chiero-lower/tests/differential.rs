@@ -2805,6 +2805,46 @@ fn an_unsigned_bitfield_zero_extends() {
         "struct S { unsigned a : 3; unsigned b : 5; };\n",
         "struct S s; s.a = 5; s.b = 17; return s.b;",
     );
+    // **A read-modify-write, with an operator truncation does not commute with.** Mutation kept
+    // the compound-assignment path's signedness alive through every `+=` fixture, for the reason
+    // wave 217 recorded about `_Bool`: `s.a += 1` reads 5 or -3, adds one, and truncates to three
+    // bits — 6 either way. Division and shift do not commute with truncation, so they can see
+    // which value the read produced.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; s.a /= 2; return s.a;",
+    );
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; s.a >>= 1; return s.a;",
+    );
+    // The same operator on a plain read, which is the other path and already passes.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; return s.a / 2;",
+    );
+    // And the signed control, which must still sign-extend through the same route.
+    agree_with(
+        "struct S { signed a : 4; };\n",
+        "struct S s; s.a = -3; s.a /= 2; return s.a;",
+    );
+    // **Postfix increment, which is the only shape that shows the increment path's read.**
+    // `/=` and `>>=` go through `assign`; `++` has its own site, and there the *value* is what a
+    // postfix form yields — the byte as it was read, before the addition. `s.a++` on a three-bit
+    // `unsigned` holding 5 yields 5 or -3 depending on the extension, where `++s.a` yields 6 either
+    // way because truncation commutes with the `+ 1`.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; return s.a++;",
+    );
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; return ++s.a;",
+    );
+    agree_with(
+        "struct S { signed a : 4; };\n",
+        "struct S s; s.a = -3; return s.a++;",
+    );
 }
 
 /// **Subnormal `long double`s — the last float gap, and it is a wrong answer rather than a gap.**

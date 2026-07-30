@@ -3315,9 +3315,16 @@ impl Lowerer<'_> {
             let Some(addr) = self.lvalue_addr(operand, span) else {
                 return Operand::Const(Const::Undef(unit));
             };
-            // The field's signedness, for the same reason the plain read uses it: a read-modify-
-            // write reads first, and reading an `unsigned` field sign-extended corrupts the value
-            // before the arithmetic ever sees it.
+            // The field's signedness — **which here is the same answer `is_signed(operand)` gives,
+            // and wave 249's commit message wrongly claimed otherwise.** Mutation caught it:
+            // swapping the two back changes nothing, and instrumenting both shows them agreeing on
+            // every fixture. The reason is that `operand` is an *lvalue* at this site, so no
+            // integer promotion has been applied and `top` is still the field's own type; the
+            // plain-read site sees the promoted rvalue and that is where the two diverge.
+            //
+            // Kept rather than reverted, because asking the field is right for a reason that does
+            // not depend on an lvalue never being promoted — but recorded as equivalent so the next
+            // sweep does not rediscover it as a survivor.
             let signed = field_signed;
             let width = match &unit {
                 CTy::Int(w) => *w,
