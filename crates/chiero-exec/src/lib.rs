@@ -4036,16 +4036,26 @@ impl<'m> Engine<'m> {
     /// which needs no dominator analysis to recognize at run time.
     fn take_edge(&mut self, s: &mut State, to: BlockId) -> Option<State> {
         let from = s.pc.0;
-        if s.steps > self.budget.max_depth {
-            s.status = Status::Terminated(TermReason::Budget);
-            s.degrade(
-                Fidelity::Bounded,
-                AssumptionKind::BudgetHit,
-                Span::DUMMY,
-                &format!("max_depth ({}) reached", self.budget.max_depth),
-            );
-            return None;
-        }
+        // **The bound is enforced where it is counted, and that is the only place it can be.**
+        //
+        // This used to repeat the step loop's `s.steps > max_depth` check and degrade here too.
+        // Wave 222 showed the branch is unreachable: `steps` is initialized to zero at every
+        // construction site and incremented at exactly one, which tests the same comparison
+        // immediately afterwards — so a state arriving here has already been cut if it was over.
+        // Mutating the two sites separately confirmed it (only the step loop's copy is killed by
+        // anything), and an `eprintln!` in the branch fired zero times across the whole workspace.
+        //
+        // What replaces it is the invariant itself, executed by every test rather than a branch no
+        // test can reach: an unreachable guard always survives mutation, so it protects nothing and
+        // reports nothing. If a second increment site is ever added without a check beside it, this
+        // fires immediately and names the reason.
+        debug_assert!(
+            s.steps <= self.budget.max_depth,
+            "a state reached an edge over max_depth ({}) with {} steps: the step loop is the only \
+             place that counts, so a second counting site has appeared without a bound check",
+            self.budget.max_depth,
+            s.steps
+        );
         if to.0 <= from.0 {
             let fid = s.func();
             let n = s.edge_counts.entry((fid, from, to)).or_insert(0);

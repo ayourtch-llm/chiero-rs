@@ -675,6 +675,19 @@ fn every_bound_that_cuts_a_run_names_its_value() {
             },
             straight_line(12),
         ),
+        // **The tight case**, one instruction past the bound. Mutation is why: `> max_depth + 1`
+        // still cuts a twelve-instruction program, one step later than it should, and nothing
+        // noticed. Four instructions against a bound of three is the smallest program that a
+        // bound off by one lets run to completion — where it comes back `Exact` and the
+        // `assert_ne!` below fails.
+        (
+            "max_depth",
+            Budget {
+                max_depth: 3,
+                ..Budget::default()
+            },
+            straight_line(4),
+        ),
         (
             "max_loop_iters",
             Budget {
