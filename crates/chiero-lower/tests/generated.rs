@@ -972,6 +972,9 @@ impl Gen {
         if self.control_flow && self.rng.chance(3) && self.do_while_stmt() {
             return;
         }
+        if self.control_flow && self.rng.chance(3) && self.short_circuit_stmt() {
+            return;
+        }
         match self.rng.below(10) {
             0 if self.arrays.len() < 3 && self.rng.chance(2) => self.push_local_array(),
             3 if !self.globals.is_empty() && self.rng.chance(2) => {
@@ -1159,6 +1162,54 @@ impl Gen {
             }
         }
         let _ = writeln!(self.body, "  }}");
+        true
+    }
+
+    /// **`&&` and `||`, with a side effect that records whether the right operand ran.**
+    ///
+    /// Neither operator appeared anywhere in either grammar — the census that found `switch` and
+    /// `do`-`while` also found this, and it is the more interesting gap: short-circuiting is
+    /// control flow wearing an expression's clothes. C11 6.5.13p4 puts a sequence point between
+    /// the operands and evaluates the right one **only if** the left does not already decide the
+    /// answer, so a lowering that evaluates both is wrong in a way no value-only comparison of
+    /// pure operands could ever see.
+    ///
+    /// The witness is `sN`, initialized to zero and assigned only inside the right operand. It is
+    /// registered as a live variable, so the checksum reads it: if the right operand runs when it
+    /// should not, `sN` is 1 where gcc leaves 0.
+    ///
+    /// One modification, inside an operand with a sequence point before it, and the same variable
+    /// is not read elsewhere in the expression — so the fixture is well defined and the UB filter
+    /// has nothing to discard.
+    fn short_circuit_stmt(&mut self) -> bool {
+        let Some(v) = self.pick_var() else {
+            return false;
+        };
+        if matches!(v.ty, Ty::F32 | Ty::F64) {
+            // A float operand is fine in C but makes the left operand's truthiness depend on
+            // float comparison, which this arm is not about.
+            return false;
+        }
+        let sink = self.fresh();
+        let _ = writeln!(self.body, "  int {sink} = 0;");
+        let cond = self.expr(v.ty);
+        // Both operators, because they short-circuit on *opposite* truth values: `&&` skips the
+        // right operand when the left is false and `||` when it is true, so a lowering that got
+        // one branch's polarity backwards would pass a fixture set with only one of them.
+        let op = if self.rng.chance(2) { "&&" } else { "||" };
+        let t = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  int {t} = (({cond}) != 0) {op} (({sink} = 1) != 0);"
+        );
+        self.vars.push(Var {
+            name: sink,
+            ty: Ty::Int,
+        });
+        self.vars.push(Var {
+            name: t,
+            ty: Ty::Int,
+        });
         true
     }
 
@@ -1917,6 +1968,11 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 /// always claimed to handle, which this generator never emitted — found by asking what the AST can
 /// hold rather than what the grammar happened to say.
 ///
+/// `&&` and `||` came from the same census and are the more interesting gap: short-circuiting is
+/// control flow wearing an expression's clothes, and C11 §6.5.13p4 evaluates the right operand only
+/// if the left does not already decide the answer. The generated fixture records that in a live
+/// variable, so a lowering that evaluates both shows up in the checksum rather than in nothing.
+///
 /// `switch` is the one construct here whose arms *fall through*, and the generator emits empty
 /// cases that fall into the next, a `default` that is not last, and arms with and without `break`.
 /// `do`-`while` is the one loop whose body runs before the condition is tested, so a lowering that
@@ -1992,6 +2048,48 @@ fn control_flow_programs_agree_with_gcc() {
         with_early_default >= 20,
         "a `default` before the last case is ordinary C and easy to lower wrongly: \
          {with_early_default}"
+    );
+    // **Both short-circuit operators, and the witness that says whether the right operand ran.**
+    // `&&` and `||` skip on *opposite* truth values, so a lowering with one branch's polarity
+    // backwards would pass a corpus containing only one of them.
+    let (mut with_and, mut with_or) = (0usize, 0usize);
+    for seed in 0..200u64 {
+        let body = program_control_flow(seed).1;
+        if body.contains("&&") {
+            with_and += 1;
+        }
+        if body.contains("||") {
+            with_or += 1;
+        }
+    }
+    assert!(
+        with_and >= 10 && with_or >= 10,
+        "short-circuiting is control flow wearing an expression's clothes, and both directions \
+         have to appear: {with_and} `&&`, {with_or} `||`"
+    );
+    // **And the witness has to reach the checksum.** Mutation found the arm's `vars.push` for the
+    // sink removable with nothing noticing: the program still contains `&&`, still agrees with
+    // gcc, and no longer observes whether the right operand ran — which is the only thing the arm
+    // is for.
+    //
+    // A count rather than a universal, and the first version was the universal: it failed on seed
+    // 89, where the short-circuit sits inside a nested block whose variables `nested` correctly
+    // truncates at the closing brace. Out of scope is out of the checksum, so what can be required
+    // is that the shape is *often* observable, not always.
+    let graded = (0..200u64)
+        .filter(|seed| {
+            let body = program_control_flow(*seed).1;
+            body.match_indices("= 1) != 0)").any(|(i, _)| {
+                let open = body[..i].rfind("((").expect("the arm emits the pair");
+                let name = body[open + 2..i].trim();
+                body.contains(&format!("(long)({name})"))
+            })
+        })
+        .count();
+    assert!(
+        graded >= 10,
+        "a short-circuit whose witness nothing reads is emitted and not graded: {graded} \
+         program(s) observe theirs"
     );
     assert!(
         compared >= 50,
