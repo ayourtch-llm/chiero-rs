@@ -288,9 +288,15 @@ struct Gen {
     /// read and written through all of `access`'s spellings — and forking the grammar to
     /// get them would mean maintaining two of everything and grading the copy.
     memory_ub: bool,
-    /// Emit `switch` and `do`-`while`. Off by default so every channel that measured a census
-    /// against the old grammar still sees it byte for byte.
-    control_flow: bool,
+    /// Emit the constructs the wave-218 and wave-220 censuses found unemitted: `switch`,
+    /// `do`-`while`, `&&`, `||`, `goto`, `continue`, and the wider expression leaves. Off by
+    /// default so every channel that measured a census against the old grammar still sees it byte
+    /// for byte.
+    ///
+    /// One knob rather than one per census: the point of the gate is that *nothing* new perturbs
+    /// the old streams, and a second flag would double the combinations without covering a shape
+    /// the union does not.
+    extended: bool,
     /// **Allow a zero divisor.** Off for every channel that compares *values*, for the same
     /// reason `memory_ub` is: `x / 0` is undefined, so `judge` discards the program and the
     /// value differential learns nothing from it.
@@ -330,7 +336,7 @@ impl Gen {
             global_arrays: Vec::new(),
             global_ptrs: Vec::new(),
             memory_ub: false,
-            control_flow: false,
+            extended: false,
             div_zero: false,
             heaps: Vec::new(),
             escaped: Vec::new(),
@@ -623,6 +629,27 @@ impl Gen {
             return self.leaf(want);
         }
         self.depth += 1;
+        // **The wave-220 census's expression forms**, gated before any `rng` call so the old
+        // grammar's stream is untouched. `~` and `sizeof` are here rather than in `leaf` because
+        // both are *conversion* shapes: `~` promotes its operand and `sizeof` yields `size_t`,
+        // whose unsignedness wins the usual arithmetic conversions and turns `- 5` into a very
+        // large number. That class is where wave 217's defect lived.
+        if self.extended && self.rng.chance(8) {
+            self.depth += 1;
+            let inner = self.expr(want);
+            self.depth -= 1;
+            return match self.rng.below(4) {
+                // Complement, which promotes a narrow operand to `int` before inverting.
+                0 => format!("({})(~({}){inner})", want.c(), want.c()),
+                // `sizeof` in arithmetic: unsigned, and wider than `int` on this target.
+                1 => format!("({})(sizeof(long) + ({}){inner})", want.c(), want.c()),
+                // A character constant, whose type is `int` in C however narrow the value.
+                2 => format!("({})('A' + (({}){inner} & 3))", want.c(), want.c()),
+                // A string literal indexed at a constant: an array of static storage duration,
+                // read through a subscript, with no pointer value reaching the checksum.
+                _ => format!("({})(\"abcd\"[(({}){inner} & 3)])", want.c(), want.c()),
+            };
+        }
         let e = match self.rng.below(10) {
             0..=2 => self.leaf(want),
             3..=5 => {
@@ -966,16 +993,16 @@ impl Gen {
         // program, and the first version of this shifted the memory-UB corpus until
         // `stack-buffer-overflow` appeared in two programs instead of enough to grade on. The
         // adequacy guard caught it, which is what that guard is for.
-        if self.control_flow && self.rng.chance(3) && self.switch_stmt() {
+        if self.extended && self.rng.chance(3) && self.switch_stmt() {
             return;
         }
-        if self.control_flow && self.rng.chance(3) && self.do_while_stmt() {
+        if self.extended && self.rng.chance(3) && self.do_while_stmt() {
             return;
         }
-        if self.control_flow && self.rng.chance(3) && self.short_circuit_stmt() {
+        if self.extended && self.rng.chance(3) && self.short_circuit_stmt() {
             return;
         }
-        if self.control_flow && self.rng.chance(3) && self.goto_stmt() {
+        if self.extended && self.rng.chance(3) && self.goto_stmt() {
             return;
         }
         match self.rng.below(10) {
@@ -1115,7 +1142,7 @@ impl Gen {
                     // grammar had never emitted. It is the one place a loop's *increment* still
                     // runs while the rest of the body does not — distinct from `break`, and
                     // distinct again in a `do`-`while`, where `continue` jumps to the condition.
-                    if self.control_flow && self.rng.chance(2) {
+                    if self.extended && self.rng.chance(2) {
                         let k = self.rng.below(n.max(1));
                         let _ = writeln!(
                             self.body,
@@ -1282,7 +1309,7 @@ impl Gen {
         // incremented before it or the loop cannot terminate. That ordering is the whole
         // difference between this and the `for` form, and getting it wrong here would hang the
         // comparison rather than fail it.
-        if self.control_flow && self.rng.chance(2) {
+        if self.extended && self.rng.chance(2) {
             let k = 1 + self.rng.below(n.max(1));
             let _ = writeln!(
                 self.body,
@@ -1398,7 +1425,7 @@ fn program_arith_ub(seed: u64) -> (String, String) {
 /// grammar stays comparable and this one can be graded on its own terms.
 fn program_control_flow(seed: u64) -> (String, String) {
     let mut g = Gen::new(seed);
-    g.control_flow = true;
+    g.extended = true;
     let prelude = g.prelude();
     let n = 3 + g.rng.below(7);
     for _ in 0..n {
@@ -2066,10 +2093,10 @@ fn control_flow_programs_agree_with_gcc() {
     // **The channel has to actually run these programs**, or a grammar that quietly stopped
     // emitting `switch` would leave this test passing on nothing. Wave 216's rule: before
     // asserting an absence, produce the thing whose absence you are claiming.
-    let with_switch = (0..200u64)
+    let with_switch = (0..SHAPE_SEEDS)
         .filter(|s| program_control_flow(*s).1.contains("switch ("))
         .count();
-    let with_do = (0..200u64)
+    let with_do = (0..SHAPE_SEEDS)
         .filter(|s| program_control_flow(*s).1.contains("do {"))
         .count();
     assert!(
@@ -2081,7 +2108,7 @@ fn control_flow_programs_agree_with_gcc() {
     // is the only thing here that no other construct in this grammar can express. Mutation found
     // the empty-case arm removable with nothing noticing, which is a channel quietly exploring
     // less than it says it does.
-    let with_fallthrough = (0..200u64)
+    let with_fallthrough = (0..SHAPE_SEEDS)
         .filter(|s| {
             program_control_flow(*s)
                 .1
@@ -2097,7 +2124,7 @@ fn control_flow_programs_agree_with_gcc() {
     // A `default` that is **not last**, which C allows and a lowering that assumes otherwise
     // would still pass every fixture that puts it at the end. Also mutation-motivated: swapping
     // `default` for another `case` label changed nothing any test could see.
-    let with_early_default = (0..200u64)
+    let with_early_default = (0..SHAPE_SEEDS)
         .filter(|s| {
             let body = program_control_flow(*s).1;
             let Some(d) = body.find("  default:") else {
@@ -2115,7 +2142,7 @@ fn control_flow_programs_agree_with_gcc() {
     // `&&` and `||` skip on *opposite* truth values, so a lowering with one branch's polarity
     // backwards would pass a corpus containing only one of them.
     let (mut with_and, mut with_or) = (0usize, 0usize);
-    for seed in 0..200u64 {
+    for seed in 0..SHAPE_SEEDS {
         let body = program_control_flow(seed).1;
         if body.contains("&&") {
             with_and += 1;
@@ -2138,7 +2165,7 @@ fn control_flow_programs_agree_with_gcc() {
     // 89, where the short-circuit sits inside a nested block whose variables `nested` correctly
     // truncates at the closing brace. Out of scope is out of the checksum, so what can be required
     // is that the shape is *often* observable, not always.
-    let graded = (0..200u64)
+    let graded = (0..SHAPE_SEEDS)
         .filter(|seed| {
             let body = program_control_flow(*seed).1;
             body.match_indices("= 1) != 0)").any(|(i, _)| {
@@ -2159,8 +2186,15 @@ fn control_flow_programs_agree_with_gcc() {
     // wearing one keyword: in a `for` the increment still runs, in a `do`-`while` control jumps to
     // the condition. Counting the keyword found them together, and turning the `for` form off
     // alone changed nothing any assertion could see.
+    // **The shape counts sample more seeds than the comparison does**, and deliberately: they ask
+    // whether the *grammar* emits a shape often enough to exercise it, which is a different
+    // question from how many programs this batch compared. Adding the wave-220 expression arms
+    // reshuffled the stream and dropped `for`-continue to nine lines in two hundred programs —
+    // the guard fired, which is what it is for, and the answer is a bigger sample rather than a
+    // lower bar.
+    const SHAPE_SEEDS: u64 = 600;
     let (mut with_goto, mut cont_for, mut cont_do) = (0usize, 0usize, 0usize);
-    for seed in 0..200u64 {
+    for seed in 0..SHAPE_SEEDS {
         let body = program_control_flow(seed).1;
         if body.contains("goto L") {
             with_goto += 1;
@@ -2185,7 +2219,7 @@ fn control_flow_programs_agree_with_gcc() {
     // **A `goto` has to skip something observable.** Deleting the statement between the jump and
     // its label left every count above satisfied and the construct testing the parser and nothing
     // else — the same failure the short-circuit witness had.
-    let goto_skips = (0..200u64)
+    let goto_skips = (0..SHAPE_SEEDS)
         .filter(|seed| {
             let body = program_control_flow(*seed).1;
             body.match_indices("goto L").any(|(i, _)| {
@@ -2210,11 +2244,37 @@ fn control_flow_programs_agree_with_gcc() {
         goto_skips >= 10,
         "a jump over nothing is a jump nothing can observe: {goto_skips}"
     );
+    // **The wave-220 expression forms**, each counted separately because each is a different
+    // conversion question: `~` promotes a narrow operand, `sizeof` contributes an unsigned type
+    // wider than `int` and drags the usual arithmetic conversions with it, a character constant is
+    // an `int` however narrow its value, and a string literal is an array of static storage
+    // duration read through a subscript.
+    let mut leaves = [0usize; 4];
+    for seed in 0..SHAPE_SEEDS {
+        let body = program_control_flow(seed).1;
+        for (i, pat) in ["(~(", "sizeof(long)", "'A'", "\"abcd\"["]
+            .iter()
+            .enumerate()
+        {
+            if body.contains(pat) {
+                leaves[i] += 1;
+            }
+        }
+    }
+    assert!(
+        leaves.iter().all(|c| *c >= 10),
+        "every expression form the census found unemitted has to be emitted now: \
+         ~={} sizeof={} char={} string={}",
+        leaves[0],
+        leaves[1],
+        leaves[2],
+        leaves[3]
+    );
     // Every `goto` this grammar emits jumps **forward**, and that is a safety property rather than
     // a coverage one: a backward jump can loop forever and a hanging comparison is worse than a
     // failing one. chiero agrees with gcc on backward jumps — checked by hand — so this bounds the
     // corpus, not the construct.
-    for seed in 0..200u64 {
+    for seed in 0..SHAPE_SEEDS {
         let body = program_control_flow(seed).1;
         for (i, _) in body.match_indices("goto L") {
             let label = body[i + 5..]
