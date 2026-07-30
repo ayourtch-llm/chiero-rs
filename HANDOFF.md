@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 244) — 1389 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 245) — 1390 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -833,12 +833,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      **`sub` tests for a NaN before flipping the sign**, which is the whole of its correctness:
 >      `1 - -NaN` is `-NaN`, and flipping first would differ from x87 in exactly the bit a program
 >      inspecting a NaN can see.
->   2. **Subnormals**, at both ends of all four operations — now the *only* float gap, and the one
->      the disjunction test exercises. Honest as long as it is declared, and it is. The work is
->      denormal shifting on the way out (a result below the smallest normal keeps its bits at a fixed
->      exponent instead of normalizing) and accepting a denormal operand on the way in, where all
->      four operations currently return `None` for `exp == 0`.
->   3. **Symbolic floats** — still needs an FP theory in the solver or a bit-blasted encoding.
+>   2. ~~**Subnormals**~~ **Done in wave 244, and it was a wrong answer rather than a gap** — see the
+>      fall-through rule below. `fp::unpack` normalizes a subnormal operand into an exponent below
+>      the format's floor, and `fp::pack` is now the single rounding site for all four operations
+>      *and* both literal paths, doing gradual underflow where it belongs. The encoded exponent field
+>      is `0` exactly when the integer bit came out clear, which is why a subnormal rounding up into
+>      the integer bit becomes the smallest normal with no special case. Division's two proofs moved
+>      to being claims about the quotient rather than the result, since `pack` re-rounds subnormals
+>      where ties and carries are ordinary. Verified by 1,980,000 soak cases against gcc's own x87.
+>
+>   3. **Narrowing `long double` to `float`** — the float gap that is left, and the one the
+>      disjunction test now exercises. `fcast` rounds `f80` to `f64` and lets the target round that
+>      to `f32`; double rounding differs from a single correctly rounded step for some values, so it
+>      refuses. The fix is to round `f80` straight to twenty-four significand bits, which `pack`'s
+>      shape already suggests — it is the same denormal-and-round problem at a different width, and
+>      generalizing `pack` over the target's significand width is probably the whole of it.
+>   4. **Symbolic floats** — still needs an FP theory in the solver or a bit-blasted encoding.
 >
 > **The verification pattern, which all four operations used and the next float work should:** exact
 > fixtures in hex for the rounding boundaries, a mutation sweep, a randomized soak against gcc's own
@@ -1334,6 +1344,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A refusal upstream can become an invented value downstream** (wave 244). `fp` declining a
+> subnormal was honest. But lowering falls through to the `f64` that `float_literal` computes when
+> `fp` declines, and `0x1p-16400` is a *zero* there — so `0x1p-16400L != 0.0L` answered false. **The
+> same fall-through produced wave 240's decimal defect**, which makes it a structural hazard rather
+> than two coincidences: a declared limit is only declared if nothing downstream substitutes for it.
+> Worth an audit of every `?` and `unwrap_or` on the lowering path.
+>
+> **Errors that cancel hide a whole class of fixture** (wave 244). Removing `unpack`'s normalization
+> entirely passed every subnormal fixture there was, because `pack`'s denormal shift undoes exactly
+> what the normalization did — so whenever the result is *also* subnormal, two wrongs make a right.
+> Only an input whose result **escapes** the special range can tell. **When two stages are inverses,
+> a fixture that stays inside their domain proves nothing about either.**
+>
+> **The shrink-and-enumerate trick is now the standard answer to a surviving rounding mutant** (wave
+> 244, after 241 and 242). Three million random products could not produce the pattern the denormal
+> sticky needs — sixty-two consecutive zeros in a product's low half — and enumerating at five- to
+> eight-bit significands found it in seconds, in a shape that scaled straight back to sixty-four. Used
+> three times now: to find a witness (241), to prove two witnesses do not exist (242), and to find one
+> again here. **Reach for it before reaching for a bigger random sample.**
 >
 > **A test that names a constant instead of a value is testing the name** (wave 243). Every unit test
 > about an invalid operation asserted `Some(fp::INDEFINITE)`, which compares the implementation
