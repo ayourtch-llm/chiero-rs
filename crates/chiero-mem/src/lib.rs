@@ -1185,8 +1185,7 @@ impl MemFault {
         obj: &dyn Fn(ObjectId) -> String,
         loc: &dyn Fn(Span) -> String,
     ) -> String {
-        let _ = (obj, loc);
-        self.to_string()
+        self.describe_with(obj, loc)
     }
 
     /// The **other** place this fault names, where it names one.
@@ -1296,33 +1295,37 @@ pub struct SecondEvent {
 /// puts an LLM at the other end of them — and `Uninitialized { obj: ObjectId(2), off: 0,
 /// bit: 0, at: Span { lo: BytePos(0), … } }` makes a reader decode chiero's internals to
 /// learn that byte 0 was never written.
-impl std::fmt::Display for MemFault {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: ", self.kind())?;
-        match self {
+impl MemFault {
+    /// [`MemFault::describe`]'s body. `Display` delegates here with the raw defaults.
+    fn describe_with(
+        &self,
+        name_of: &dyn Fn(ObjectId) -> String,
+        loc_of: &dyn Fn(Span) -> String,
+    ) -> String {
+        // **Resolved once, before the match, rather than per arm.** `object()` and `secondary()`
+        // already say which id and which span each variant is about, so an arm needs neither the
+        // binding nor a call — it interpolates `{o}` and `{sec}` and stays a sentence. It also
+        // means `describe`, `kind` and `secondary` all read the same two accessors, so a new
+        // variant cannot render an object that `object()` does not report.
+        let o = self.object().map(name_of).unwrap_or_default();
+        let sec = self.secondary().map(|e| loc_of(e.at)).unwrap_or_default();
+        let body = match self {
             MemFault::OutOfBounds {
-                obj,
                 off,
                 size,
                 obj_size,
                 ..
-            } => write!(
-                f,
-                "{size}-byte access at offset {off} of {obj:?}, which is {obj_size} bytes"
-            ),
-            MemFault::Uninitialized { obj, off, bit, .. } => write!(
-                f,
-                "read at offset {off} of {obj:?} touches bit {bit}, which was never written"
-            ),
-            MemFault::MaybeUninitialized { obj, off, bit, .. } => write!(
-                f,
-                "read at offset {off} of {obj:?} touches bit {bit}, which was written only \
+            } => format!("{size}-byte access at offset {off} of {o}, which is {obj_size} bytes"),
+            MemFault::Uninitialized { off, bit, .. } => {
+                format!("read at offset {off} of {o} touches bit {bit}, which was never written")
+            }
+            MemFault::MaybeUninitialized { off, bit, .. } => format!(
+                "read at offset {off} of {o} touches bit {bit}, which was written only \
                  under a condition that may not hold here"
             ),
-            MemFault::Misaligned { obj, off, want, .. } => write!(
-                f,
-                "access at offset {off} of {obj:?} wants {want}-byte alignment"
-            ),
+            MemFault::Misaligned { off, want, .. } => {
+                format!("access at offset {off} of {o} wants {want}-byte alignment")
+            }
             // **Both spans, not just the access.** 024 contracts 8 and 10 ask these to
             // name where the object died as well as where it was touched: "freed
             // earlier" sends a reader looking, and the engine has known the answer all
@@ -1338,96 +1341,79 @@ impl std::fmt::Display for MemFault {
             // contract 10 wants the reader told where the object died), so dropping it would
             // have traded one defect for a real loss; §9 carries the work of giving the engine
             // a `SourceMap` so this can become a line and column.
-            MemFault::UseAfterFree { obj, freed_at, .. } => write!(
-                f,
-                "{obj:?} was freed earlier on this path (source offset {}), before this access",
-                freed_at.lo.0
-            ),
-            MemFault::DoubleFree { obj, freed_at, .. } => {
-                write!(
-                    f,
-                    "{obj:?} was already freed earlier on this path (source offset {})",
-                    freed_at.lo.0
-                )
+            MemFault::UseAfterFree { .. } => {
+                format!("{o} was freed earlier on this path ({sec}), before this access")
             }
-            MemFault::UseAfterScope {
-                obj,
-                scope_ended_at,
-                ..
-            } => write!(
-                f,
-                "{obj:?} left scope earlier on this path (source offset {}), before this access",
-                scope_ended_at.hi.0.saturating_sub(1)
-            ),
-            MemFault::ReadOnly { obj, off, .. } => {
-                write!(f, "write at offset {off} of read-only {obj:?}")
+            MemFault::DoubleFree { .. } => {
+                format!("{o} was already freed earlier on this path ({sec})")
+            }
+            MemFault::UseAfterScope { .. } => {
+                format!("{o} left scope earlier on this path ({sec}), before this access")
+            }
+            MemFault::ReadOnly { off, .. } => {
+                format!("write at offset {off} of read-only {o}")
             }
             MemFault::BadRange {
                 want_bits,
                 max_bits,
                 ..
-            } => write!(
-                f,
-                "{want_bits}-bit access exceeds the {max_bits}-bit limit chiero can carry"
-            ),
-            MemFault::AllocationTooLarge { obj, size, .. } => write!(
-                f,
-                "{obj:?} at {size} bytes is past the {MAX_MATERIALIZED_BYTES}-byte limit, \
+            } => {
+                format!("{want_bits}-bit access exceeds the {max_bits}-bit limit chiero can carry")
+            }
+            MemFault::AllocationTooLarge { size, .. } => format!(
+                "{o} at {size} bytes is past the {MAX_MATERIALIZED_BYTES}-byte limit, \
                  so it is not materialized and every access to it faults"
             ),
-            MemFault::NullDeref { off, .. } => write!(f, "access at offset {off} of NULL"),
-            MemFault::WildPointer { off, .. } => write!(
-                f,
-                "access through a pointer at address {off} matching no known object"
-            ),
-            MemFault::SymbolicByte { obj, off, .. } => write!(
-                f,
-                "byte {off} of {obj:?} holds a symbolic value, which a concrete access \
+            MemFault::NullDeref { off, .. } => format!("access at offset {off} of NULL"),
+            MemFault::WildPointer { off, .. } => {
+                format!("access through a pointer at address {off} matching no known object")
+            }
+            MemFault::SymbolicByte { off, .. } => format!(
+                "byte {off} of {o} holds a symbolic value, which a concrete access \
                  cannot answer for"
             ),
             // No offset, on purpose: this variant only reaches a report when the solver
             // could not decide the guard, and every offset it could name would be a guess.
-            MemFault::UninitializedSymbolic { obj, .. } => write!(
-                f,
-                "a read at a symbolic offset of {obj:?} may touch bytes that were never \
+            MemFault::UninitializedSymbolic { .. } => format!(
+                "a read at a symbolic offset of {o} may touch bytes that were never \
                  written, and the solver could not settle which"
             ),
             MemFault::PointerOutsideObject {
-                obj,
-                obj_size,
-                witness,
-                ..
-            } => write!(
-                f,
-                "a pointer into {obj:?} ({obj_size} bytes) can be computed at offset \
+                obj_size, witness, ..
+            } => format!(
+                "a pointer into {o} ({obj_size} bytes) can be computed at offset \
                  {witness}, which is outside it"
             ),
             MemFault::OutOfBoundsMaybe {
-                obj,
                 size,
                 obj_size,
                 witness,
                 ..
-            } => write!(
-                f,
-                "{size}-byte access of {obj:?} ({obj_size} bytes) may be out of bounds: the \
+            } => format!(
+                "{size}-byte access of {o} ({obj_size} bytes) may be out of bounds: the \
                  path allows offset {witness}, which is outside it"
             ),
-            MemFault::OverlappingCopy {
-                obj,
-                dst,
-                src,
-                size,
-                ..
-            } => write!(
-                f,
-                "{size}-byte copy within {obj:?} from {src} to {dst} overlaps, which \
+            MemFault::OverlappingCopy { dst, src, size, .. } => format!(
+                "{size}-byte copy within {o} from {src} to {dst} overlaps, which \
                  `memcpy` forbids"
             ),
-            MemFault::BadFree { obj, kind, .. } => {
-                write!(f, "free of {obj:?}, which is {kind:?} memory, not heap")
+            MemFault::BadFree { kind, .. } => {
+                format!("free of {o}, which is {kind:?} memory, not heap")
             }
-        }
+        };
+        format!("{}: {body}", self.kind())
+    }
+}
+
+impl std::fmt::Display for MemFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The defaults are what `chiero-mem` can say on its own: the id it was given, and the
+        // byte offset it was given. A caller that knows better passes closures; one that does
+        // not still gets a sentence.
+        let s = self.describe_with(&|o| format!("{o:?}"), &|s| {
+            format!("source offset {}", s.lo.0)
+        });
+        write!(f, "{s}")
     }
 }
 

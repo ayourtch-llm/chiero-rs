@@ -6138,28 +6138,21 @@ impl<'m> Engine<'m> {
     /// did not report.
     /// What a reader calls the object `o`: a local's declared name, a global's, or `None`
     /// when chiero invented the object and there is nothing to call it.
-    /// Rewrite a fault's second location from a `BytePos` into somewhere a reader can open.
+    /// A span as somewhere a reader can open: `path:line:col`.
     ///
-    /// `chiero-mem` renders that span as `(source offset 85)` because it has no `SourceMap` and
-    /// cannot do better. The engine may have one, and when it does this replaces the offset with
-    /// **`path:line:col`** — the form every compiler and editor already understands, which is
-    /// what 023 §9's "a report a person can act on" means in practice.
-    ///
-    /// The substring replaced is reconstructed from the fault's own `secondary()` span, so the
-    /// token rewritten is the one that span produced and nothing else that happens to look like
-    /// it.
-    fn locate(&self, f: &chiero_mem::MemFault, message: String) -> String {
-        let (Some(map), Some(sp)) = (self.source_map, f.secondary().map(|e| e.at)) else {
-            return message;
+    /// The form every compiler and editor already understands, which is what 023 §9's "a report a
+    /// person can act on" means in practice. Falls back to what `chiero-mem` would have said on
+    /// its own when there is no map or the span resolves to no file — saying less, never guessing.
+    fn render_loc(&self, sp: Span) -> String {
+        let Some(loc) = self.source_map.and_then(|m| m.lookup_loc(sp.lo)) else {
+            return format!("source offset {}", sp.lo.0);
         };
-        let Some(loc) = map.lookup_loc(sp.lo) else {
-            return message;
-        };
-        let file = map.file(loc.file).path().display();
-        message.replace(
-            &format!("source offset {}", sp.lo.0),
-            &format!("{file}:{}:{}", loc.line, loc.col),
-        )
+        let file = self
+            .source_map
+            .expect("resolved above")
+            .file(loc.file)
+            .path();
+        format!("{}:{}:{}", file.display(), loc.line, loc.col)
     }
 
     /// Append where this finding *is*, when the engine can name it.
@@ -6172,15 +6165,19 @@ impl<'m> Engine<'m> {
     /// **Appended, not prefixed.** `path:line:col:` first is the compiler's convention and would
     /// be the better rendering in isolation; the kind has to lead here, because 023 §6.1 makes it
     /// half the dedup key and every consumer in this repo matches on it.
+    ///
+    /// An append rather than a substitution, which is why it survived wave 211's refactor: it adds
+    /// a clause instead of rewriting one.
     fn stamp(&self, at: Span, message: String) -> String {
-        let (Some(map), Some(loc)) = (
-            self.source_map,
-            self.source_map.and_then(|m| m.lookup_loc(at.lo)),
-        ) else {
+        let Some(loc) = self.source_map.and_then(|m| m.lookup_loc(at.lo)) else {
             return message;
         };
-        let file = map.file(loc.file).path().display();
-        format!("{message} (at {file}:{}:{})", loc.line, loc.col)
+        let file = self
+            .source_map
+            .expect("resolved above")
+            .file(loc.file)
+            .path();
+        format!("{message} (at {}:{}:{})", file.display(), loc.line, loc.col)
     }
 
     /// How to refer to an object in a report: its name if it has one, a description if not.
@@ -6402,31 +6399,21 @@ impl<'m> Engine<'m> {
             // "offset 36 of ObjectId(1)" — dozens of VPP nodes reinterpret that region and
             // the offset alone does not say which one is wrong. Reporting-only, so a
             // missing path costs the message some words and nothing else.
+            // **The fault composes its own sentence from what only the engine knows.**
+            //
+            // `chiero-mem` has no module and no `SourceMap`, so it can name neither the variable
+            // nor the line; the engine has both and passes them in. Until wave 211 this was two
+            // `.replace()` calls over the finished sentence — sound, because each rebuilt its own
+            // token from the fault, and four layers deep with no argument for why the fifth would
+            // be. The id is an allocation counter: it means nothing to a reader and is not stable
+            // across pass configurations, so the *same defect in the same program* printed
+            // differently with `mem2reg` on, and `chiero-opt`'s transparency sweep normalized it
+            // away for eight waves to keep working.
+            let described = f.describe(&|o| self.object_desc(s, o), &|sp| self.render_loc(sp));
             let message = match self.path_for_current_access(s) {
-                Some(p) => format!("{f} through {p}"),
-                None => f.to_string(),
+                Some(p) => format!("{described} through {p}"),
+                None => described,
             };
-            // **Name the object the fault is about.** `MemFault` prints an `ObjectId`
-            // because `chiero-mem` has no module and cannot know what a variable is
-            // called; the engine does. The substitution is exact rather than a regex —
-            // `f.object()` says precisely which id this fault names, so the token replaced
-            // is the one meant and nothing else.
-            //
-            // The id is an allocation counter: it means nothing to a reader, and it is not
-            // stable across pass configurations, so the *same defect in the same program*
-            // printed differently with `mem2reg` on. `chiero-opt`'s transparency sweep
-            // normalized it away for eight waves to keep working; that workaround goes
-            // with this.
-            //
-            // **An object with no name still gets described**, because the alternative is the
-            // counter. Wave 207: a `malloc` has no name, so the substitution never fired for
-            // heap memory and every finding in that whole class — four of the six memory-UB
-            // classes — printed `ObjectId(3)` at the reader.
-            let message = match f.object() {
-                Some(o) => message.replace(&format!("{o:?}"), &self.object_desc(s, o)),
-                None => message,
-            };
-            let message = self.locate(f, message);
             // **A null dereference names the assumption it rests on, when it rests on one.**
             //
             // Only on this state's own null parameter, and only for a null fault: a null the
@@ -6844,17 +6831,13 @@ impl<'m> Engine<'m> {
         }
         for (fault, text) in keyed {
             self.finding_seq += 1;
-            // **The second route for a memory fault, and it needed the same substitution.**
-            // `ModelRegistry::lift` renders a fault with `to_string`, which prints an
-            // `ObjectId` because `chiero-mem` cannot name a variable. `report_faults` fixes
-            // that on its own path; this one is how `free` reports a double free, and it did
-            // not — so the same defect had two homes and one fix.
-            let text = match fault.as_ref().and_then(chiero_mem::MemFault::object) {
-                Some(o) => text.replace(&format!("{o:?}"), &self.object_desc(s, o)),
-                None => text,
-            };
+            // **Re-described from the fault rather than patched.** `ModelRegistry::lift` renders
+            // with `to_string`, because `chiero-model` knows no more than `chiero-mem` does — but
+            // it keeps the fault beside the text, so the engine can compose the sentence properly
+            // instead of rewriting the one it was handed. A report with no fault behind it is a
+            // checker's own words and stays exactly as written.
             let text = match fault.as_ref() {
-                Some(f) => self.locate(f, text),
+                Some(f) => f.describe(&|o| self.object_desc(s, o), &|sp| self.render_loc(sp)),
                 None => text,
             };
             let at_span = fault.as_ref().map_or(span, chiero_mem::MemFault::at);
