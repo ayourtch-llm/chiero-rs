@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 210) — 1313 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 211) — 1319 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,41 +722,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The locations are in prose only, and the `.replace()` chain is at three
+> ### 🔴 Do the `MemFault::describe` refactor before adding a fifth thing to a message
 >
-> **Both locations now render.** Wave 208 did the fault's second location, wave 209 the
-> finding's own: `use-after-free: the 4-byte heap allocation was freed earlier on this path
-> (t.c:5:1), before this access (at t.c:6:1)`, and a single-event fault that named no place at
-> all now ends `(at t.c:3:1)`. Two forms on purpose — a bare `(t.c:5:1)` is an event the fault
-> names, an appended `(at …)` is where the finding sits — and they differ by the word "at",
-> which is what makes confusing them detectable. Appended rather than prefixed because the kind
-> must lead (023 §6.1's dedup key, 37 `starts_with` assertions).
+> **The location work is finished.** Both places a memory fault names render as text (waves
+> 208–209) and both are available as data: `Finding::span` for the access, `Finding::related` —
+> a `chiero_mem::SecondEvent { at, what }` — for the `free` or the scope's end. The label travels
+> with the span because a position alone does not say which of two places is the bug and which is
+> the cause. Wave 210 also found and fixed a real defect doing it: a use-after-scope pointed at
+> the line the scope *began* on, because a scope's span covers the whole block and everything
+> rendered `lo`. The rule is the span's **last byte**, not `hi` — `hi` is one past the closing
+> brace in real code and one past a single-byte marker in a synthetic span, and the last byte is
+> the closing token under both.
 >
-> **What is left here, in order:**
+> **This is now the front, and it is a refactor rather than a defect.** A finding's message is
+> assembled by four layers of `.replace()`/`format!`: the object description, the fault's own
+> location, the null-parameter clause, and the access stamp. Every one is sound — each
+> reconstructs its token from the fault it came from — and that is the whole reason the fifth will
+> not be. The shape to move to, which the engine's own comment has wanted since wave 207:
 >
->   - **`Finding` still has no structural field for the secondary span.** The access span is
->     `Finding::span`; where the object died exists only inside a sentence, so a consumer that
->     wants to jump there parses prose. Ten `StateFinding` push sites and one `Finding`
->     construction — mechanical, and now the only thing standing between a consumer and both
->     locations as data.
->   - **The message pipeline is up to three `.replace()`/`format!` layers**: object description,
->     the fault's location, the access stamp, plus the null-parameter clause. Each is sound —
->     every substitution reconstructs its token from the fault — and the *fourth* will not be.
->     The clean shape, wanted by the engine's own comment since wave 207:
->     `MemFault::describe(&self, obj: impl Fn(ObjectId) -> String, loc: impl Fn(Span) -> String)`
->     with `Display` delegating using the raw defaults. The arms compose the sentence; the caller
->     supplies what only it knows. **Do this before adding a fifth thing to a message.**
->   - **A checker report has no direct fixture for any of this.** Arithmetic UB reports nothing
->     through an `Engine` built the way `chiero-lower`'s tests build one — the checkers are not
->     registered — so checker findings are covered only transitively, by sharing the model route.
->     Wiring checkers into a `chiero-lower` fixture is small and would make the arithmetic
->     channel's reports gradeable for readability the way the memory channel's now are.
+> ```rust
+> MemFault::describe(&self, obj: impl Fn(ObjectId) -> String, loc: impl Fn(Span) -> String) -> String
+> ```
 >
-> **Two mutants survive and are recorded rather than filed as tested:**
-> `stamp-uses-call-span` (on the model route the call span and the fault's access span coincide
-> for every model that exists, so nothing distinguishes them) and `map-mandatory` from wave 208
-> (reaching `lookup_loc`'s `None` needs a span outside every file in the map — 010 §6.2 makes
-> `FileId` per-TU, so a map from another TU is the natural fixture).
+> `Display` delegates to it with the raw defaults (`{obj:?}`, `source offset {n}`), the arms
+> compose their sentence from what the caller supplies, and both textual substitutions disappear.
+> `messages.rs` and `report_readability.rs` already pin the output, so this is a refactor with its
+> tests in place — the rare cheap one. **Do it before adding anything else to a message.**
+>
+> **Then: a checker report has no direct fixture for any of the report work.** Arithmetic UB
+> reports nothing through an `Engine` built the way `chiero-lower`'s tests build one — the
+> checkers are not registered — so checker findings are covered only by sharing the model route.
+> Wiring them into a `chiero-lower` fixture would make the arithmetic channel's reports gradeable
+> for readability the way the memory channel's now are.
+>
+> **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the
+> model route the call span and the fault's access span coincide for every model that exists) and
+> `map-mandatory` from wave 208 (reaching `lookup_loc`'s `None` needs a span outside every file in
+> the map; 010 §6.2 makes `FileId` per-TU, so a map from another TU is the natural fixture).
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1167,6 +1169,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Assert the line *and* the column** (wave 210). The off-by-one this wave existed to fix
+> survived its own test: a scope's closing brace has `hi` and `hi - 1` on the same line, one
+> column apart. Fourth consecutive wave where the assertion was aimed at what the fixture
+> happens to produce rather than at the property claimed — line but not column, one route but not
+> the other, `ca` inside "unnamed local", a filename instead of the stamp. **When an assertion
+> passes, ask which nearby wrong answer would also pass it.**
+>
+> **A rule without a fixture is a note** (wave 210). Wave 207 earned "one defect, two homes" and
+> this wave wired both routes from it — then wrote six fixtures that all exercised the first one,
+> and mutation caught the second being dead. The rule was applied to the *code* and not to the
+> *test*.
+>
+> **A pre-existing test passing unchanged is evidence the rule is general** (wave 210). Collapsing
+> a scope span to `hi` broke a synthetic point-span test; `hi - 1` fixed the real case and left
+> that test untouched. When a fix makes an old test pass without editing it, the rule fits more
+> than the fixture that prompted it — and when it needs the old test edited, suspect the opposite.
+>
+> **Script an edit across many literals by brace-matching, not by pattern** (wave 210). Adding one
+> field to fifteen `StateFinding` literals by matching the line after `span:` put seven of ten
+> insertions into function signatures, and three of those compiled. Match the construction, walk
+> to its closing brace, insert there.
 >
 > **An assertion written against what the fixture produces is not an assertion about the
 > property** (wave 209). The no-map control checked for the absence of `t.c:` and let a mutant
