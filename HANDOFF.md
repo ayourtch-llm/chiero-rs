@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 212) — 1322 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 213) — 1327 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,32 +722,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The reporting thread is closed. Next: a checker report has no fixture for any of it
+> ### 🔴 The two report channels spell a `kind` differently, and one of them has no dedup key
 >
-> ~~Do the `MemFault::describe` refactor.~~ **Done in wave 211, and every sentence is
-> byte-identical.** Zero `.replace()` calls remain in the message pipeline. `MemFault::describe`
-> takes the two things `chiero-mem` cannot know — how to name an object, how to render a span —
-> and the arms interpolate them; `Display` delegates with the raw defaults and
-> `display_is_describe_with_the_defaults` pins that for all eighteen variants so there is one
-> sentence per fault rather than two kept in step by hand. The model route re-describes from the
-> fault it already carries instead of patching the string it was handed. `stamp` survived, and the
-> distinction is the point: appending a clause was never the fragile kind, rewriting one was.
+> **Reporting is finished across all three routes.** Wave 212 closed the last one: a checker's
+> `Action::Report` and `Action::ReportRequiring` push straight onto the state, passing neither
+> `report_faults` nor the model loop, so the whole UBSan-parity surface waves 157–176 built had no
+> location at all. Both routes now stamp the *instruction's* span — a `Function`'s and a `Block`'s
+> each point at their own start, so any other span would report every finding in a function at its
+> opening brace.
 >
-> Five waves of reporting work are finished: an object is named or described (207), both locations
-> render (208–209), both are available as data (210), and the sentence is composed rather than
-> patched (211). The tests written in 207–210 are what made 211 cheap — they pinned the output
-> before the refactor touched it.
+> §9 had called this "covered by argument" on the belief that checker findings shared the model
+> route. **They share nothing with it.** The fixture I recorded as impossible to write in wave 209
+> was easy: 001 §4 rule 7 forbids this crate a *frontend*, and `SourceMap::add_file` is public, so
+> a hand-built map over hand-built spans tests the whole thing. **"I cannot write that fixture"
+> deserves one more minute of thought than I gave it.**
 >
-> **Next, and it is the last loose thread in this area:** a **checker** report has no direct
-> fixture for any of the above. Arithmetic UB reports nothing through an `Engine` built the way
-> `chiero-lower`'s tests build one, because the checkers are not registered there — so every
-> claim about checker findings is transitive, resting on their sharing the model route. Wiring
-> `chiero-check`'s defaults into a `chiero-lower` fixture would make the arithmetic channel's
-> reports gradeable for readability the way the memory channel's now are, and it is the one place
-> where "covered" currently means "covered by argument".
+> **Two things this turned up, in order:**
 >
-> **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the
-> model route the call span and the fault's access span coincide for every model that exists) and
+>   - **The channels spell `kind` differently.** `MemFault` uses hyphenated slugs
+>     (`use-after-free`, `maybe-uninitialized-read`); checker reports use prose with spaces
+>     (`signed overflow`, `division by zero`). 023 §6.1 makes the kind half the dedup key, so a
+>     consumer grouping findings sees two conventions and any tooling that splits on the first
+>     `:` gets a different shape depending on which channel produced the report. Pick one — the
+>     slug, since it is what `MemFault::kind` returns and what the dedup key already uses — and
+>     change `ub_phrase`. `undefined_arithmetic.rs` and `union_pun.rs` match on the current
+>     spelling, so the tests come with it.
+>   - **A checker report has `key: None`**, so it is exempt from 023 §6.1's deduplication
+>     entirely. Both checker push sites pass `None` where `report_faults` builds a `FindingKey`.
+>     The `UbState.reported` list dedups within one checker's own bookkeeping, which is not the
+>     same thing: two checkers reporting the same event, or one checker across forked states,
+>     produce copies the run cannot merge. Worth checking whether that is reachable before
+>     building anything.
+>
+> **Surviving mutants, recorded rather than filed as tested:** `stamp-uses-call-span` (on the model
+> route the call span and the fault's access span coincide for every model that exists) and
 > `map-mandatory` from wave 208 (reaching the `None` branch needs a span outside every file in the
 > map; 010 §6.2 makes `FileId` per-TU, so a map from another TU is the natural fixture).
 >
@@ -1160,6 +1168,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **"I cannot write that fixture" is a claim to re-examine, not a fact to record** (wave 212).
+> Wave 209 wrote down that a checker report could not be tested from `chiero-lower` because the
+> checkers are not registered there, and left it. The obstacle was real and the conclusion was
+> wrong: 001 §4 rule 7 forbids `chiero-check` a *frontend*, not a `SourceMap`, and
+> `SourceMap::add_file` is public — so a hand-built map over the spans these fixtures already build
+> tests the whole thing. Three waves of "covered by argument" for want of one more minute.
+>
+> **Enumerate the variants the code can take, not the ones the fixture happens to use** (wave 212).
+> `Action` has two report variants; five fixtures exercised one, because a constant overflow
+> carries no condition and only a symbolic operand produces `requires`. The untested route was the
+> one with the *best* evidence behind it. The tell was in the enum, visible before mutation, and I
+> did not look. Sixth consecutive wave of this shape.
+>
+> **A span that is convenient is usually the wrong one** (wave 212). A `Function`'s span and a
+> `Block`'s both point at their own start, so stamping either passes any test that asks for "a
+> location" while reporting every finding in a function at its opening brace. Assert *which* line,
+> from several candidates that differ.
 >
 > **Tests written for the defects are what make the refactor cheap** (wave 211). Four waves of
 > report fixtures pinned every sentence before `describe` rewrote how they are built, so "1322
