@@ -112,13 +112,25 @@ fn a_double_free_names_the_line_of_the_first_free() {
 /// The sharpest thing this file pins. A fix that rendered `Finding::span` — the *access* — would
 /// satisfy "contains a line number" and name line 6 for an event on line 5, which is worse than
 /// the offset it replaced: it would be confidently wrong instead of merely useless.
+///
+/// **Rewritten in wave 209**, which added the access location to the same sentence. This test
+/// asserted line 6 was absent, and that was the right assertion in a report carrying exactly one
+/// location; it is the wrong one now that the access is named on purpose. The requirement has not
+/// moved — the *free* must not be rendered at the access's line — so what it checks is the form:
+/// a bare `(t.c:5:1)` is the event the fault names, and the appended `(at t.c:6:1)` is where the
+/// finding sits. A confusion between them shows up as `(t.c:6` with no `at`.
 #[test]
 fn the_line_named_is_the_free_and_not_the_access() {
     let f = findings_with_map(UAF);
     let uaf = find(&f, "use-after-free");
     assert!(
-        !uaf.contains("t.c:6"),
-        "line 6 is where the access is, and `Finding::span` already carries that: {uaf:?}"
+        uaf.contains("(t.c:5:"),
+        "the free's own location is the bare parenthetical: {uaf:?}"
+    );
+    assert!(
+        !uaf.contains("(t.c:6"),
+        "line 6 is where the access is, and it must not be presented as where the free was: \
+         {uaf:?}"
     );
 }
 

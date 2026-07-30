@@ -6143,6 +6143,27 @@ impl<'m> Engine<'m> {
         )
     }
 
+    /// Append where this finding *is*, when the engine can name it.
+    ///
+    /// The access location is already on the finding as a `Span`, and `reports()` hands it over
+    /// for a caller that renders locations itself. This puts it in the sentence too, because
+    /// `findings()` is the projection most consumers read and a report whose text names the
+    /// *free*'s line and not its own is worse than one that names neither.
+    ///
+    /// **Appended, not prefixed.** `path:line:col:` first is the compiler's convention and would
+    /// be the better rendering in isolation; the kind has to lead here, because 023 §6.1 makes it
+    /// half the dedup key and every consumer in this repo matches on it.
+    fn stamp(&self, at: Span, message: String) -> String {
+        let (Some(map), Some(loc)) = (
+            self.source_map,
+            self.source_map.and_then(|m| m.lookup_loc(at.lo)),
+        ) else {
+            return message;
+        };
+        let file = map.file(loc.file).path().display();
+        format!("{message} (at {file}:{}:{})", loc.line, loc.col)
+    }
+
     /// How to refer to an object in a report: its name if it has one, a description if not.
     ///
     /// 023 §9 asks for a report a person can act on, and every fault message names the object it
@@ -6399,6 +6420,9 @@ impl<'m> Engine<'m> {
                 ),
                 _ => message,
             };
+            // Last, so the location ends the sentence rather than interrupting a clause that
+            // still has something to say.
+            let message = self.stamp(f.at(), message);
             s.findings.push(StateFinding {
                 id: self.finding_seq,
                 key: Some(key),
@@ -6810,6 +6834,8 @@ impl<'m> Engine<'m> {
                 Some(f) => self.locate(f, text),
                 None => text,
             };
+            let at_span = fault.as_ref().map_or(span, chiero_mem::MemFault::at);
+            let text = self.stamp(at_span, text);
             let key = fault.as_ref().map(|f| FindingKey {
                 kind: f.kind(),
                 span: f.at(),
