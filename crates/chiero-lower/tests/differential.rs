@@ -2186,15 +2186,18 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         // destination holding the stale value, so this answered with a *number* that was wrong
         // rather than declaring a gap.
         "long double x = 2.0L; x = x / 3.0L; return (int)x;",
-        // **The body that still takes the second branch, and as of wave 242 it is the only one.**
-        // All four operations are modelled now, so every other fixture here produces a value and
-        // this test had quietly become "agrees with gcc" — a disjunction whose second half nothing
-        // reached. What is left unmodelled is the *subnormal*: `1e-4940` is below x87's smallest
-        // normal, `fp` declines to shift denormals, and 023 §7 gets a declared limit rather than
-        // the zero that would be a confident claim about a number that is merely very small.
-        // gcc computes it, so the fixture is a real disagreement in outcome — and the contract
-        // this test exists for says a gap is an acceptable outcome where a wrong number is not.
-        "long double x = 1e-4900L; x = x * 1e-40L; return (int)(x < 1e-4900L);",
+        // **The body that still takes the second branch — and it has now been replaced twice.**
+        // Wave 242 put a subnormal here when division made every other body produce a value; wave
+        // 244 implemented subnormals and made *that* body produce one too. Each time the cause was
+        // a capability landing, which is the point: this test's second half measures what is left,
+        // so it necessarily decays as the list shortens.
+        //
+        // What is left is **narrowing `long double` to `float`**. Chiero rounds `f80` to `f64` and
+        // lets the target round that to `f32`, and double rounding differs from a single correctly
+        // rounded step for some values — so `fcast` refuses rather than answering, and the comment
+        // there says why. gcc narrows in one step, so the outcomes genuinely differ, which is
+        // exactly the situation this test exists to adjudicate.
+        "long double x = 0x1.0000000000000002p0L; float f = (float)x; return (int)(f == 1.0f);",
         // **Hexadecimal, and wave 239 is why.** This was `1e300L * 1e10L > 1e309L`, and the moment
         // multiplication started working it returned a wrong *number*: `1e309L` is a decimal
         // literal, decimal literals are still parsed at `f64` precision, and 1e309 overflows `f64`
