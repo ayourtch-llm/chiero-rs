@@ -1972,6 +1972,14 @@ impl Lowerer<'_> {
                     // `4611686018427387905.0L` would arrive rounded. Anything it declines — a
                     // fraction, an exponent, a value past 2^64 — falls through to the `f64` path
                     // unchanged.
+                    // A hex literal is exact in binary, so it reaches x87 whole rather than
+                    // through the `f64` `float_literal` answers in.
+                    if k == chiero_cir::FloatKind::X87_80
+                        && let Some((m, scale)) = chiero_sema::hex_float_parts(text)
+                        && let Some(bits) = chiero_cir::fp::from_u64_scaled(m, scale, false)
+                    {
+                        return Operand::Const(Const::Float(k, bits));
+                    }
                     if k == chiero_cir::FloatKind::X87_80
                         && let Some(n) = chiero_sema::integral_float_literal(text)
                     {

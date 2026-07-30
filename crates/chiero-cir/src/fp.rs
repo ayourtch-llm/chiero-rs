@@ -67,6 +67,31 @@ pub fn from_u64(v: u64, negative: bool) -> u128 {
     sign | (exp << 64) | sig
 }
 
+/// `mant × 2^scale`, exactly, for a mantissa of up to sixty-four bits.
+///
+/// The companion to [`from_u64`], which is this with `scale` at zero. A hexadecimal float literal is
+/// exactly this shape — its digits are binary and its `p` exponent is a power of two — so it reaches
+/// x87 without a rounding decision, which is what C99 6.4.4.2 has the syntax for.
+///
+/// `None` when the exponent leaves x87's range: past the top is an overflow the caller should report
+/// rather than silently turn into an infinity, and below the bottom is a subnormal this does not
+/// encode.
+pub fn from_u64_scaled(mant: u64, scale: i32, negative: bool) -> Option<u128> {
+    let base = from_u64(mant, negative);
+    if mant == 0 {
+        return Some(base);
+    }
+    // `from_u64` placed the exponent for `mant × 2^0`; shifting the value by `2^scale` moves the
+    // exponent field by exactly `scale`, because the significand is unchanged.
+    let exp = i64::try_from((base >> 64) & INF_EXP).ok()? + i64::from(scale);
+    if exp <= 0 || exp >= i64::from(INF_EXP as u32) {
+        return None;
+    }
+    let sign = base & (1u128 << 79);
+    let sig = base & u128::from(u64::MAX);
+    Some(sign | (u128::try_from(exp).ok()? << 64) | sig)
+}
+
 /// A pattern truncated toward zero, exactly, without building an `f64`.
 ///
 /// Decoding to `f64` first would round sixty-four bits of significand into fifty-three, which is

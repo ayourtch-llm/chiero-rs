@@ -1863,7 +1863,30 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
 /// The mantissa is accumulated in a `u64` and the scaling is left to `f64` arithmetic on a power of
 /// two, which is exact for any mantissa `f64` can hold. A literal needing more than 53 significant
 /// bits rounds here, which is the same narrowing decimal literals have and not a new one.
+/// A hexadecimal float literal's mantissa and binary scale, exactly.
+///
+/// `hex_float` composes these into an `f64`, which is fifty-three bits — so a literal with more than
+/// that lost the rest before anything could use it, and `FpTrunc`'s tie fixtures were measuring the
+/// loss rather than the conversion (§9). The parts have no such limit: the digits are binary and the
+/// `p` exponent is a power of two, so `mant × 2^scale` *is* the value.
+///
+/// **Not an encoding**, for the reason wave 233 established: `chiero-sema` runs before CIR exists, so
+/// what the bits look like belongs beside `FloatKind` and what the literal *says* belongs here.
+pub fn hex_float_parts(text: &str) -> Option<(u64, i32)> {
+    let t = text.replace('\'', "");
+    let lower = t.to_ascii_lowercase();
+    if !lower.starts_with("0x") {
+        return None;
+    }
+    hex_parts(&lower)
+}
+
 fn hex_float(lower: &str) -> Option<f64> {
+    let (m, scale) = hex_parts(lower)?;
+    Some(m as f64 * 2f64.powi(scale))
+}
+
+fn hex_parts(lower: &str) -> Option<(u64, i32)> {
     // `0x` first, then the suffix. The order is not load-bearing — for any *valid* hex float the
     // mandatory `p` exponent puts a decimal digit between the mantissa and the suffix, so trimming
     // `f`/`l` can never eat a hex digit — and mutation says so: swapping the two changes nothing.
@@ -1877,17 +1900,33 @@ fn hex_float(lower: &str) -> Option<f64> {
     if int_part.is_empty() && frac_part.is_empty() {
         return None;
     }
-    let mut m: u64 = 0;
+    // **Accumulated in a `u128`, because sixty-four significant bits need more than sixty-four
+    // digits' worth of room.** `0x1.fffffffffffffffep0` is seventeen hex digits — sixty-eight bits as
+    // an integer — and its value fits x87's significand exactly, because the low bit is a zero. A
+    // `u64` accumulator overflowed and returned `None`, which turned the widest legal literal into a
+    // refused function.
+    let mut m: u128 = 0;
     for c in int_part.chars().chain(frac_part.chars()) {
-        m = m.checked_mul(16)?.checked_add(u64::from(c.to_digit(16)?))?;
+        m = m
+            .checked_mul(16)?
+            .checked_add(u128::from(c.to_digit(16)?))?;
     }
     // C allows a sign on the exponent and `i32::from_str` accepts both, `+3` included — so there
     // is nothing to strip. I wrote a `strip_prefix('+')` here on the assumption that it did not,
     // and mutation showed the line was dead: removing it changed nothing, including for `0x1p+3`.
     let e: i32 = exp.parse().ok()?;
     // Every fraction digit is four binary places below the point.
-    let scale = e.checked_sub(4i32.checked_mul(i32::try_from(frac_part.len()).ok()?)?)?;
-    Some(m as f64 * 2f64.powi(scale))
+    let mut scale = e.checked_sub(4i32.checked_mul(i32::try_from(frac_part.len()).ok()?)?)?;
+    // **Trailing zeros are scale, not significance.** Shifting them out is exact — the value is
+    // unchanged — and it is what lets a sixty-eight-bit integer with four trailing zeros be a
+    // sixty-four-bit significand. A literal that still does not fit has more than sixty-four
+    // significant bits and would need *rounding*, so it returns `None` and the caller declares the
+    // gap rather than inventing a rule here.
+    while m > u128::from(u64::MAX) && m.is_multiple_of(2) {
+        m >>= 1;
+        scale = scale.checked_add(1)?;
+    }
+    Some((u64::try_from(m).ok()?, scale))
 }
 
 fn parse_int_literal(text: &str, target: &TargetConfig) -> Option<IntVal> {

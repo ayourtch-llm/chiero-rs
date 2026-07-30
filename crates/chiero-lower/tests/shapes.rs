@@ -431,7 +431,10 @@ fn a_hex_literal_reaches_all_sixty_four_bits() {
         // Every bit of the significand set, which is the widest a hex literal can be.
         ("0x1.fffffffffffffffep0L", "0x3fffffffffffffffffff"),
         // An exponent far outside `f64`'s range, where going through `f64` underflows to zero.
-        ("0x1p-16000L", "0x017f8000000000000000"),
+        // The printer does not zero-pad, so this is gcc's `0x017f8…` without the leading zero —
+        // the same number, and worth saying because copying a padded dump into an expectation is
+        // how the first version of this fixture failed.
+        ("0x1p-16000L", "0x17f8000000000000000"),
         // An ordinary one, so the common case is pinned beside the extremes.
         ("0x1.8p3L", "0x4002c000000000000000"),
     ] {
