@@ -356,10 +356,11 @@ fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
     if exp >= i64::from(INF_EXP as u32) {
         return inf;
     }
-    if sig == 0 {
-        return sign;
-    }
-    // The integer bit is the whole distinction: set means normal, clear means the field is zero.
+    // The integer bit is the whole distinction: set means normal, clear means the field is zero —
+    // and that covers a significand rounded away to nothing without a branch, since a zero
+    // significand has the integer bit clear like any other subnormal and `sign | 0 | 0` is the zero.
+    // There was an `if sig == 0 { return sign }` here; mutation showed removing it changed nothing,
+    // which is what a redundant guard looks like. Wave 241 deleted a dead line for the same reason.
     let field = if sig >> 63 == 1 { exp } else { 0 };
     sign | ((field as u128) << 64) | u128::from(sig)
 }

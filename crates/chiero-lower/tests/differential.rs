@@ -2700,6 +2700,30 @@ fn subnormal_long_doubles_agree_with_gcc() {
     agree("return (int)(0x1p-16400L / 0x1p-16445L == 0x1p45L);");
     // Under the floor is a zero, which is the one place a zero *is* the right answer.
     agree("return (int)(0x1p-16445L * 0.5L == 0.0L);");
+    // **A subnormal operand producing a *normal* result**, which is the only shape that catches a
+    // conversion that failed to normalize it. Mutation is why these exist: multiplication and
+    // division turn out to be scale-invariant — `pack`'s denormal shift undoes exactly what
+    // `unpack`'s normalization did — so every fixture whose result is *also* subnormal passes
+    // either way. Only a result that escapes the subnormal band can tell.
+    agree("return (int)(0x1p-16400L * 0x1p16000L == 0x1p-400L);");
+    agree("return (int)(0x1p-16400L / 0x1p-16000L == 0x1p-400L);");
+    agree("return (int)(0x1.8p-16444L * 0x1p16000L == 0x1.8p-444L);");
+    agree("return (int)(0x1p-16400L + 0x1p0L == 0x1p0L);");
+    // **The denormal shift discards bits, and they decide the rounding.** Two products with the
+    // same exponents, differing only in one bit at the very bottom of one operand:
+    //
+    //   `2^-8223 × 2^-8223`               exactly half the smallest subnormal — a tie, to zero
+    //   `2^-8223 × (1 + 2^-63)·2^-8223`   a hair above that tie, so it rounds up to the smallest
+    //
+    // The bits that make the difference are shifted out by the denormal step itself, so this is
+    // the one pair that proves that step keeps a sticky flag. It was found by enumerating the
+    // algorithm at five- to eight-bit significands: the pattern needs sixty-two consecutive zeros
+    // in the product's low half, which three million random cases never produced.
+    agree("return (int)(0x1p-8223L * 0x1p-8223L == 0.0L);");
+    agree("return (int)(0x1p-8223L * 0x1.0000000000000002p-8223L == 0x1p-16445L);");
+    // Ties inside the subnormal band go to the even candidate, same as everywhere else.
+    agree("return (int)(0x1.0000000000000002p-16382L * 0.5L == 0x1p-16383L);");
+    agree("return (int)(0x1.0000000000000006p-16382L * 0.5L == 0x1.0000000000000008p-16383L);");
 }
 
 /// **A NaN produced by arithmetic agrees with gcc.**
