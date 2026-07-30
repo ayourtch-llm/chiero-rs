@@ -121,19 +121,59 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
     );
 }
 
-// **A concrete byte written *before* promotion is not visible after it — §9's next front.**
-//
-// The test for it was written and is not here, because it fails and the cause is not yet
-// known. What is established: `promote_to_array` *does* seed both arrays from the frozen
-// `Bytes` view (chiero-mem, `for b in 0..size { data = store(data, i, v) }`), so the value
-// ought to survive — and yet
-//
-//     ca[0] = 5;  ca[(i & 31) + 32] = 7;  return ca[0];   ->  solves to 0, not 5
-//
-// with the symbolic write masked into the upper half where it cannot reach byte 0. Wave 200
-// fixed two real bugs on the way to this (a promoted store bypassed by a ground-constant fast
-// path, and an `init` array indexed per byte where it is read per bit) and stopped here rather
-// than guess a third time. §9 carries the reproduction and says to instrument the seeding.
+/// **A concrete byte written *before* promotion is still there after it.**
+///
+/// The reproduction §9 has carried since wave 200, now a test rather than a comment. It was
+/// written then and withheld because it failed and the cause was unknown — but a failing test is
+/// what a RED commit is, and a defect described in prose is one nobody's suite can observe.
+///
+/// ```text
+///   ca[0] = 5;  ca[(i & 31) + 32] = 7;  return ca[0];   ->  solves to 0, not 5
+/// ```
+///
+/// The symbolic write is masked into the *upper* half, so it cannot reach byte 0 whatever `i` is.
+/// Byte 0 was written concretely before the object was promoted to an array, and reads back as
+/// zero — **a wrong value, not a refusal**, which is the outcome 023 §7 forbids outright.
+///
+/// What waves 200 and 201 established, so the next reader does not re-establish it:
+///
+///   - **promotion seeds correctly** — `byte0=5`, `init0=Yes`, observed at the seeding loop
+///   - **the read goes to the array**, on the right object, with `repr == Array`
+///   - **`eval` does walk store chains for `Select`**, so a seeded store at index 0 would be found
+///
+/// Those three leave one claim standing: the `arr.data` the *read* sees is not the one promotion
+/// seeded. Two ordinary bugs were fixed on the way here (a promoted store bypassed by a
+/// ground-constant fast path, and an `init` array indexed per byte where it is read per bit), and
+/// wave 200 stopped rather than guess a third time.
+#[test]
+fn a_concrete_byte_written_before_promotion_survives_it() {
+    use chiero_solver::{CheckResult, Solver, TieredSolver};
+    let m = harness::lower(
+        "int probe(int i){ char ca[64]; ca[0] = 5; ca[(i & 31) + 32] = 7; return ca[0]; }",
+    );
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let mut vals: Vec<u128> = Vec::new();
+    for st in r.states() {
+        let mut solver = TieredSolver::new();
+        if let CheckResult::Sat(model) = solver.check(&mut arena, &st.path)
+            && let Some(bits) = st.return_value_under(&model, &arena)
+        {
+            vals.push(bits);
+        }
+    }
+    let gaps: Vec<String> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    assert!(
+        !vals.is_empty() && vals.iter().all(|v| *v == 5),
+        "byte 0 was written before promotion and the symbolic write is masked into the upper \
+         half, so nothing can have touched it: {vals:?} {gaps:?}"
+    );
+}
 
 /// **A multi-byte element, stored and read back at the same symbolic offset.**
 ///
