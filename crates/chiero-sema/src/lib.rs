@@ -1800,7 +1800,46 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
         return None;
     }
     let digits = t.trim_end_matches(['f', 'F', 'l', 'L']);
+    // **Rust's parser does not accept hex float syntax**, and `looks_float` above already said
+    // this is one. Falling through returned `None`, lowering took the integer path, and the
+    // verifier refused the function for emitting `Const::Int` where a float was declared — a
+    // whole function lost to a literal C99 6.4.4.2 has had since 1999.
+    if hex {
+        return hex_float(&lower).map(|v| (kind, v));
+    }
     digits.parse::<f64>().ok().map(|v| (kind, v))
+}
+
+/// `0x1.8p1` and friends, C99 6.4.4.2.
+///
+/// **Exact, because a hex literal's digits are already binary.** Each digit is four bits and the
+/// `p` exponent is a power of two, so the value is `mantissa × 2^(exp - 4 × fraction_digits)` with
+/// no decimal-to-binary rounding to get wrong. That is the whole reason C has this syntax, and it
+/// is why an `f80` value can be written exactly in source even though a *decimal* `long double`
+/// literal is still rounded through `f64` (§9).
+///
+/// The mantissa is accumulated in a `u64` and the scaling is left to `f64` arithmetic on a power of
+/// two, which is exact for any mantissa `f64` can hold. A literal needing more than 53 significant
+/// bits rounds here, which is the same narrowing decimal literals have and not a new one.
+fn hex_float(lower: &str) -> Option<f64> {
+    let body = lower.strip_prefix("0x")?.trim_end_matches(['f', 'l']);
+    // The exponent is mandatory in C for a hex float; without it the literal is not one, which
+    // `looks_float` has already decided.
+    let (mant, exp) = body.split_once('p')?;
+    let (int_part, frac_part) = mant.split_once('.').unwrap_or((mant, ""));
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    let mut m: u64 = 0;
+    for c in int_part.chars().chain(frac_part.chars()) {
+        m = m.checked_mul(16)?.checked_add(u64::from(c.to_digit(16)?))?;
+    }
+    // A `+` is allowed and means nothing; a `-` is not, and `i32::from_str_radix` rejects both
+    // silently if they arrive as part of the digits.
+    let e: i32 = exp.strip_prefix('+').unwrap_or(exp).parse().ok()?;
+    // Every fraction digit is four binary places below the point.
+    let scale = e.checked_sub(4i32.checked_mul(i32::try_from(frac_part.len()).ok()?)?)?;
+    Some(m as f64 * 2f64.powi(scale))
 }
 
 fn parse_int_literal(text: &str, target: &TargetConfig) -> Option<IntVal> {
