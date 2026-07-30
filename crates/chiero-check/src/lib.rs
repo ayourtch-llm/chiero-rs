@@ -370,16 +370,23 @@ impl CheckerState for UbState {
 /// Spelled out rather than derived from `Debug`: `Shl` is what the operator is called and
 /// "shift" is what went wrong, and a reader looking for the second should not have to know
 /// the first. The operation itself is in the event's own detail, which the message carries.
+/// The kind a UB finding leads with, as a slug.
+///
+/// **Slugs, not prose, and the same shape `MemFault::kind` uses.** Both channels build a message
+/// as `"{kind}: {detail}"` and 023 §6.1 makes the kind half the dedup key, so `signed overflow`
+/// beside `use-after-free` gave a consumer two conventions to group by. The words are the ones
+/// this channel already used — hyphenated, not renamed — because the change is about the spelling
+/// and not about what these faults are called.
 fn ub_phrase(kind: UbKind) -> &'static str {
     match kind {
-        UbKind::DivByZero => "division by zero",
-        UbKind::Shift => "shift past the operand width",
-        UbKind::SignedOverflow => "signed overflow",
+        UbKind::DivByZero => "division-by-zero",
+        UbKind::Shift => "shift-past-operand-width",
+        UbKind::SignedOverflow => "signed-overflow",
         // **The compiler asked for this.** Wave 169 removed the catch-all from the engine's
         // `cmp` on the argument that a new variant should be a compile error rather than a
         // silent fallthrough; the same holds here, and adding `FloatCastOverflow` in the
         // engine failed this match rather than producing a finding with no name.
-        UbKind::FloatCastOverflow => "float-to-integer conversion out of range",
+        UbKind::FloatCastOverflow => "float-to-integer-conversion-out-of-range",
     }
 }
 

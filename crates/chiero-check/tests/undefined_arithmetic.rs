@@ -650,7 +650,7 @@ fn a_float_cast_overflow_is_reported() {
     let f = findings(&m);
     assert_eq!(f.len(), 1, "one conversion, one finding: {f:?}");
     assert!(
-        f[0].contains("float-to-integer conversion out of range"),
+        f[0].starts_with("float-to-integer-conversion-out-of-range:"),
         "the finding should name what went wrong: {f:?}"
     );
 
