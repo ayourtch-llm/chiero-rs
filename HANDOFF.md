@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 252) — 1398 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 253) — 1399 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,7 +1572,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
-> ### 🔴 Do this first: raise the discriminating *rate*, not the seed count
+> ### 🔴 Do this first: characterise *which context* makes the bit-field defect fire
+>
+> **Wave 252 raised the rate five-fold and the batch still does not catch it.** That result is worth
+> more than the rate, and it comes with a concrete counterexample rather than a theory. Seed 49
+> satisfies every condition wave 251's four-factor model lists and chiero agrees with gcc anyway:
+>
+> ```text
+>   struct S0 { float f0; unsigned short f1; unsigned f2:3; };
+>   struct S0 v8 = (struct S0){1.0f, 1u, 4};   <- 0b100, the top bit of a 3-bit field
+>   acc = acc * 31 + (long)(v8.f2);            <- read into the checksum
+> ```
+>
+> **So the defect is context-dependent.** `return s.a` triggers it — that is the wave-249 fixture —
+> and `(long)(v8.f2)` does not. The generator reads a bit-field exactly one way, through that cast,
+> which is why every rate improvement misses.
+>
+> **The check to run, and it is small.** Revert `field_signed` in `chiero-lower` and put both
+> spellings through `agree_with`:
+>
+> ```c
+>   struct S s; s.a = 4; return s.a;              /* known to fail */
+>   struct S s; s.a = 4; return (int)(long)(s.a); /* does it? */
+> ```
+>
+> If the cast form passes, the question is what `is_signed(e)`'s `top(e)` answers in each — wave 249
+> already found that promotion applies to an rvalue but not an lvalue, and a cast is a third
+> context. **Characterise that before touching the generator again**, because the generator's read
+> shape is the thing to change and nobody yet knows what to change it to.
+>
+> The measured shape count is `the_fixed_batch_can_discriminate_an_extension_defect`, now 5 of 200
+> and asserted at 5. Read it as "the shape is present", never as "the defect is reachable" — wave
+> 252 is the proof those differ.
+>
+> ### ~~🔴 raise the discriminating rate~~ — done, and it was not sufficient
 >
 > **Wave 251 ran the check wave 250 asked for and the hypothesis was wrong.** A struct with a
 > bit-field *does* reach the body: of 3000 seeds, 180 declare one as a local and **156 checksum its
@@ -1633,6 +1666,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **A proxy metric earns its keep by predicting the goal, and must be checked against it** (wave
+> 252). The discriminating-shape count went from 1 to 5 and the defect stayed invisible. The proxy
+> was not wrong about what it measured — the shape really is five times commoner — it was wrong that
+> the shape implies reachability. **Run the goal experiment at every step, not at the end**: one
+> `judge()` call on a single qualifying seed said more than three rate improvements.
+>
+> **A counterexample beats a corrected model** (wave 252). Seed 49 satisfies all four conditions and
+> agrees anyway. That single program is what turned "the rate is too low" into "the defect is
+> context-dependent, and the generator only ever writes the context where it hides" — a question
+> small enough to answer, from a number that was going nowhere.
+>
+> **Lowering a threshold to meet the code is usually wrong, and saying why is the price of doing it**
+> (wave 252). This wave's RED asked for ten and settled at five. That is defensible only because the
+> controlled experiment shows the number was never the goal, and the test now says so where a reader
+> will see it rather than in a commit message they will not.
 >
 > **A broken measurement confirms whatever you expected** (wave 251). The scan written to test §9's
 > routing hypothesis reported zero for every count — which reads exactly like the hypothesis being
