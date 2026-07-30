@@ -2711,6 +2711,12 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? (int*)0 : a);");
     // The GNU elvis form, where there is no then arm at all and the type is the else arm's alone.
     agree("int a[4]={1,2,3,4}; return (int)sizeof(a ?: a);");
+    // **A null pointer constant against a pointer.** C11 6.5.15p6: the result is the *pointer*
+    // type, not the integer's. `0` is a null pointer constant, `a` decays to `int *`, and the
+    // conditional is `int *` — so `sizeof` is the pointer's. This is the rule `common_type` did
+    // not know, found by writing the fixture above that isolates the else arm's decay.
+    agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? 0 : a);");
+    agree("int a[4]={1,2,3,4}; int c=1; return (int)sizeof(c ? a : 0);");
     // Through a variable, which is the spelling that already works and the control for it.
     agree_with(
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",

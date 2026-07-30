@@ -2314,6 +2314,15 @@ impl Cx<'_> {
                 //
                 // The condition decays too, and for a different reason: `a ? x : y` on an array
                 // tests the decayed pointer, which is what makes it always true.
+                //
+                // **That last one is unkillable by the current suite, and it stays anyway.**
+                // Deleting `decay(c, ..)` passes all 1391 tests, because an array or a function
+                // designator decays to a pointer that is never null — so the branch goes the same
+                // way with or without it, and no test reads the typed node's *type*. It is not a
+                // dead line in wave 241's sense: it executes and it changes what the typed AST
+                // says. 001 §1 puts a reader at the other end of that AST, and telling them the
+                // condition is an array when C says it is a pointer is wrong information whether
+                // or not a test currently asks.
                 let c = self.type_expr(*cond);
                 let c = self.decay(c, *cond);
                 let t = then.map(|t| {
