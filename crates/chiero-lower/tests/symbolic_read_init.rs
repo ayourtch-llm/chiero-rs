@@ -31,9 +31,10 @@
 //! was right.
 //!
 //! What changed is where the guard goes. Wave 202 needed it to fold in the arena; wave 204
-//! made an unresolved guard a *solver* question, and a solver with array theory proves
-//! `select(store(A, bi, 1), bi) = 1` without any rewrite. So the check may now emit what it
-//! could not previously prove. `symbolic_readback_init.rs` holds the three fixtures that fail
+//! made an unresolved guard a *solver* question, and wave 205 eliminates the array from the
+//! question entirely — `select_expand` turns the chain into `ite` comparisons, so what reaches
+//! the solver is bitvector arithmetic and no walk has to fold anything. So the check may now
+//! emit what it could not previously prove. `symbolic_readback_init.rs` holds the three fixtures that fail
 //! if this reasoning is wrong, and they are the controls for this file.
 
 mod harness;
@@ -104,5 +105,30 @@ fn a_symbolic_read_disjoint_from_a_symbolic_write_reports() {
         reports_uninit(src),
         "the write can only land in 0..32 and the read only in 32..64: {:?}",
         findings(src)
+    );
+}
+
+/// **All eight bits of the byte, not just the first.**
+///
+/// `arr.init` is bit-indexed and the read is byte-wide, so the guard is a conjunction over
+/// eight bits. Checking one of them survives every other test in the tree, because C gives a
+/// program almost no way to write part of a byte — the exception is a bit-field, which is why
+/// this fixture reaches for one.
+///
+/// `sa[0].f = 1` writes bit 0 of byte 0 and nothing else. Every byte of `sa` therefore has at
+/// least seven bits nobody wrote, so the guard is false for every offset the read can name and
+/// the verdict is **definite**. A guard that consults only bit 0 finds it set at offset 0,
+/// cannot refute itself, and degrades to `maybe` — the same fault, reported as weaker than it
+/// is. Asserting the *kind* rather than a substring is what makes the two distinguishable
+/// (`maybe-uninitialized-read` contains `uninitialized-read`).
+#[test]
+fn the_guard_covers_every_bit_of_the_byte() {
+    let src = "struct S { unsigned char f:1; };\n\
+               int probe(int i){ struct S sa[40]; sa[0].f = 1;\n\
+               char *p = (char *)sa; return p[i & 31]; }";
+    let f = findings(src);
+    assert!(
+        f.iter().any(|s| s.starts_with("uninitialized-read")),
+        "seven bits of every byte were never written, so this is definite, not a maybe: {f:?}"
     );
 }
