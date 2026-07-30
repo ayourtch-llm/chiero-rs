@@ -168,7 +168,15 @@ fn every_fault_message_is_a_single_clean_line() {
     let mut a = TermArena::new();
     for f in every_fault(&mut a) {
         let s = f.to_string();
-        assert!(!s.trim().is_empty(), "`{}` renders empty", f.kind());
+        // **Content beyond the prefix**, not merely non-empty. `Display` writes the kind
+        // unconditionally, so `s` can never be empty and an emptiness check is an assertion
+        // nothing can fail — mutation said so, by having no way to express the mutant. An arm
+        // that writes only its kind is a report with no content, and that is expressible.
+        assert!(
+            s.len() > f.kind().len() + 2,
+            "`{}` renders nothing beyond its own kind: {s:?}",
+            f.kind()
+        );
         assert_eq!(s, s.trim(), "`{}` renders with padded edges", f.kind());
         assert!(
             !s.contains('\n') && !s.contains('\t'),
