@@ -1759,7 +1759,13 @@ impl<'m> Engine<'m> {
                     s.findings.push(StateFinding {
                         id: self.finding_seq,
                         key: None,
-                        message,
+                        // **A checker's report is located like any other.** This route reaches a
+                        // `StateFinding` without passing `report_faults` or the model loop, so it
+                        // inherited none of waves 207-211's work and every arithmetic-UB finding
+                        // was unlocatable. `span` is the instruction's, which is the only span
+                        // that is right: a `Function`'s and a `Block`'s both point at their own
+                        // start.
+                        message: self.stamp(span, message),
                         span,
                         requires: Vec::new(),
                         witness: None,
@@ -1776,7 +1782,9 @@ impl<'m> Engine<'m> {
                     s.findings.push(StateFinding {
                         id: self.finding_seq,
                         key: None,
-                        message,
+                        // Both checker routes, for the reason wave 207 recorded: when a fix is
+                        // about how a finding is built, ask what else builds one.
+                        message: self.stamp(span, message),
                         span,
                         requires,
                         witness: None,
