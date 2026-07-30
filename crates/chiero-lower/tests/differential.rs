@@ -2819,6 +2819,50 @@ fn subnormal_long_doubles_agree_with_gcc() {
     agree("return (int)(0x1.0000000000000006p-16382L * 0.5L == 0x1.0000000000000008p-16383L);");
 }
 
+/// **Narrowing `long double` to `float`** — the last float gap, and the only one left after wave 244.
+///
+/// `fcast` rounds `f80` to `f64` and lets the target round that to `f32`. Two roundings are not one
+/// rounding, so it refuses instead, and the comment there says why. That refusal is the honest
+/// answer and it is also the last body the disjunction test has to work with.
+///
+/// # The witness, and why the obvious fixtures cannot find it
+///
+/// `1 + 2^-24 + 2^-60` is a hair above the midpoint between `1.0f` and the next `float`, so a single
+/// correct rounding takes it **up** to `0x1.000002p0f`. Round it to `f64` first and the `2^-60`
+/// vanishes — it is below half an ulp at that width — leaving exactly the midpoint, which then ties
+/// to even and gives `1.0f`. One value, two answers, and the wrong one is the value a reader would
+/// never question.
+///
+/// Every round-numbered fixture below agrees under both schemes, which is the point of including
+/// them: they are the controls that stop a fix from buying the hard case by breaking the easy ones.
+///
+/// # What else has to survive the trip
+///
+/// `f32`'s range is far narrower than `f80`'s at both ends, so narrowing has its own overflow, its
+/// own subnormal band and its own floor — three things wave 244 built for `f80` and which do not
+/// transfer, because they are at a different width. Hence `0x1p1000L` (an infinity), `0x1p-140L` (an
+/// `f32` subnormal), `0x1p-149L` (the smallest one) and `0x1p-150L` (a zero).
+#[test]
+fn narrowing_a_long_double_to_float_agrees_with_gcc() {
+    // **The double-rounding witness**, in both signs.
+    agree("return (int)((float)0x1.0000010000000010p0L == 0x1.000002p0f);");
+    agree("return (int)((float)-0x1.0000010000000010p0L == -0x1.000002p0f);");
+    // Controls: values every scheme agrees on.
+    agree("return (int)((float)1.0L == 1.0f);");
+    agree("return (int)((float)0x1.8p3L == 12.0f);");
+    agree("return (int)((float)0x1p200L > 0x1p120f);");
+    // Past `f32`'s top, which is an infinity there and an ordinary number in `f80`.
+    agree("return (int)((float)0x1p1000L > 0x1p120f);");
+    // `f32`'s own subnormal band and its own floor, neither of which is `f80`'s.
+    agree("return (int)((float)0x1p-140L > 0.0f);");
+    agree("return (int)((float)0x1p-149L > 0.0f);");
+    agree("return (int)((float)0x1p-150L == 0.0f);");
+    agree("return (int)((float)0x1p-200L == 0.0f);");
+    // A NaN and an infinity survive the narrowing as themselves.
+    agree("long double n = 0.0L/0.0L; float f = (float)n; return (int)(f != f);");
+    agree("long double i = 1.0L/0.0L; float f = (float)i; return (int)(f > 0x1p120f);");
+}
+
 /// **A NaN produced by arithmetic agrees with gcc.**
 ///
 /// Division made this reachable: `0.0L / 0.0L` is how C creates a NaN, and until wave 242 there was
