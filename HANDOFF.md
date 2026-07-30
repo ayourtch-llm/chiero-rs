@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 220) — 1346 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 221) — 1346 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -745,41 +745,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > two programs instead of enough to grade on — caught by the adequacy guard.
 > **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### The census set is closed, and it was all sound
+> ### Both censuses are closed and the generator channel is exhausted for now
 >
-> Wave 218 counted constructs in generated *programs* (not in the generator's source, which
-> conflates its Rust with its output) and found six the grammar had never emitted: `goto`,
-> `continue`, `sizeof`, `->`, `&&`, `||`. Waves 218–219 generated the control-flow ones and
-> probed the rest by hand.
+> Waves 218–220 ran the census method to completion: enumerate what the AST can hold, count what
+> the generator *emits* (in generated programs, not in the generator's source), and generate the
+> difference.
 >
-> **Result: all of it agrees with gcc.** 1081 comparisons over seeds 0..1700 across `switch`,
-> `do`-`while`, `&&`, `||`, `goto` and `continue`, zero defects. Thirteen hand-written shapes also
-> agree: forward *and* backward `goto`, out of a nested block, out of a loop, out of a `switch`,
-> *into* a block, re-entering a scope whose local is re-initialized, `continue` in all three loop
-> forms, `sizeof` folded, and five `->` shapes including a compound assignment through a pointer
-> and pointer arithmetic into an array of structs.
+> **Statements** (wave 218–219): `switch`, `do`-`while`, `goto`, `continue` were unemitted. All
+> generated. **Expressions** (wave 220): `sizeof`, `_Alignof`, statement expressions, string
+> literals, character constants, `->`, `~` were unemitted; `~`, `sizeof`, character constants and
+> string-literal subscripts are now generated.
 >
-> **The one defect this channel found was wave 217's**: `_Bool b += -1`, surfaced by a `_Bool`
-> accumulator in a `do`-`while`. That is the pattern to expect — the constructs themselves were
-> fine, and it was the *interaction* that broke.
+> **The result of ~2250 new comparisons: one defect.** Wave 217's `_Bool b += -1`, surfaced by a
+> `_Bool` accumulator in a `do`-`while`. Everything else agrees with gcc, including thirty
+> hand-written shapes across the two censuses — backward `goto`, jumps into and out of blocks,
+> scope re-entry, `continue` in three loop forms, `-1 < sizeof(int)`, `~` on every narrow type, the
+> GNU statement expression, `_Alignof`, and five `->` shapes.
 >
-> **What the corpus still cannot say**, and it is where I would look next:
+> **So this channel is exhausted for now, and that is a finding rather than a stopping point.**
+> The productive question has moved: the constructs are individually right and the one defect came
+> from an *interaction*. What the generator still cannot produce is not a missing construct but a
+> missing *combination* — a `_Bool` field inside a union inside an array, a `goto` out of a `switch`
+> inside a loop, a helper taking a struct by value and returning one. Those are compositions of
+> arms that already exist, and the grammar's `depth`/`chance` bounds are what keep them rare.
+> **Raising the depth bound and re-soaking is cheaper than a new construct.**
 >
->   - **`->` in the generator.** Clean on five fixtures is not clean across a corpus, and
->     `tests/corpus/c/pointer_fields.c` is still owed. Arrow access is apparently *not* the missing
->     part, so that item needs re-diagnosing rather than assuming.
->   - **`goto` is forward-only in the corpus** — a deliberate bound, asserted so it cannot erode,
->     because a backward jump can hang the comparison. Backward jumps are covered only by the
->     hand-written shapes.
->   - **`sizeof` is unemitted still**, and it is the one construct on the list whose answer is a
->     compile-time constant rather than a computation.
->   - **The knob:** new arms go behind `control_flow`, gated *before* any `rng` call so the other
->     channels stay byte-identical. Fixed batch `control_flow_programs_agree_with_gcc` (123
->     comparisons); `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` open-ended. Frontier: `SOAK_CF=1` clean to
->     1700, plain grammar clean to 1600.
+> Still unemitted and deliberately so: `_Alignof` (no conversion question of its own),
+> statement expressions (a GNU extension; parsed and lowered correctly, checked by hand),
+> `->` in the generator (clean on five fixtures, and `tests/corpus/c/pointer_fields.c` remains
+> owed — **arrow access is apparently not what it is about, so re-diagnose rather than assume**),
+> and backward `goto` (bounded out of the corpus to keep comparisons from hanging; asserted).
 >
-> With the grammar exhausted for statements, the expression grammar is the next census: `ExprKind`
-> against what `expr` emits.
+> **The knob and the frontier:** everything new is behind `extended`, gated *before* any `rng` call
+> so the eight other channels stay byte-identical. Fixed batch
+> `control_flow_programs_agree_with_gcc` (128 comparisons); shape counts sample 600 seeds
+> independently of it; `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` searches open-ended. Frontier: `SOAK_CF=1`
+> clean to 1800, plain grammar clean to 1600.
 >
 > ### The three parked decisions, unchanged
 >
@@ -1199,6 +1200,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Separate "does the grammar emit this often enough" from "how big was this batch"** (wave 220).
+> Adding expression arms consumed randomness, reshuffled the stream and dropped `for`-continue to
+> nine lines in the two hundred compared programs — under a threshold of ten. The guard was right
+> and the threshold was not the problem: the shape counts now sample six hundred seeds, because
+> they are a question about the grammar's propensity and not about this batch's size. **A coverage
+> guard that fires after an unrelated change wants a bigger sample, not a lower bar.**
+>
+> **Pick the unemitted construct by the question it asks, not by the gap it fills** (wave 220).
+> Seven expression forms were missing; four were generated, chosen because `~` promotes a narrow
+> operand and `sizeof` drags unsigned conversions into the arithmetic — the class the one real
+> defect of these three waves came from. `_Alignof` fills a gap and asks nothing.
+>
+> **An exhausted channel is a finding** (wave 220). Two censuses, ~2250 comparisons, one defect,
+> and that defect came from an interaction rather than a construct. That redirects the next wave
+> from "add a construct" to "compose the arms that exist" — which is a cheaper experiment and a
+> different hypothesis, and it only becomes visible if the clean intervals are written down.
 >
 > **A coverage assertion can match the text of a statement instead of a statement** (wave 219). The
 > check that a `goto` skips something looked for `" += "` in the span between jump and label, and a
