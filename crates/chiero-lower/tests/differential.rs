@@ -2150,3 +2150,90 @@ fn compound_assignment_to_a_bool_converts_the_result_and_not_the_operand() {
     agree("unsigned char c = 200; c += 100; return (int)c;");
     agree("short s = 32767; s += 1; return (int)s;");
 }
+
+// -------------------------------------------------------------------------------------------
+// `long double` — 023 §7's contract, executable.
+//
+// x87's 80-bit format has no Rust primitive, so the engine does not model arithmetic on it and
+// says so: a run degrades to `Fidelity::Unknown` and records assumptions naming the operation
+// ("`FDiv` is not modeled", "`FpExt 64 -> 80 on a symbolic operand` is not modeled"). That is
+// the honest answer and §9 carries the implementation as a milestone.
+//
+// **Nothing anywhere tested it.** No file outside this block mentions `long double` at all, so
+// the one thing that must never happen — a wrong answer where a gap was declared — was
+// unguarded. A refactor treating `X87_80` as `F64` would compute `1.0L / 3.0L` in 53 bits of
+// mantissa, disagree with gcc, and pass the suite.
+//
+// This is the baseline the milestone needs: whatever 80-bit arithmetic eventually lands, a
+// *partial* implementation cannot lie on the way.
+// -------------------------------------------------------------------------------------------
+
+/// **A `long double` computation gives gcc's answer or declares that it cannot.**
+///
+/// Written as a disjunction on purpose. Asserting "it degrades" would freeze today's limitation
+/// into a requirement and fail the moment the milestone lands; asserting "it agrees" fails now.
+/// What 023 §7 actually promises is the disjunction, and that is what holds across the change.
+///
+/// The declaration has to *name the operation*, not merely be non-`Exact` — the distinction wave
+/// 222 drew for `max_depth`, where "reached" without a value was the defect.
+#[test]
+fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
+    for body in [
+        "long double x = 1.0L; x = x / 3.0L; return (int)(x * 300000);",
+        "long double a = 1.0L, b = 3.0L; return (int)(a / b > 0.333);",
+        "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
+        "long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);",
+    ] {
+        let expected = match gcc_answer("", body) {
+            Ok(v) => v,
+            Err(Oracle::NoGcc) => {
+                eprintln!("skipping `{body}`: gcc not on PATH");
+                SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            Err(Oracle::Broken(why)) => panic!("the oracle is broken, not absent: {why}"),
+        };
+        let src = format!("int probe(void) {{ {body} }}");
+        let m = harness::lower(&src);
+        let mut arena = TermArena::new();
+        let r = chiero_exec::Engine::new(&m)
+            .with_entry("probe")
+            .run(&mut arena);
+        let got = r
+            .states()
+            .iter()
+            .find_map(|s| s.return_value_bits(&mut arena))
+            .map(|b| b as u32 as i32);
+        if let Some(v) = got {
+            assert_eq!(
+                v, expected,
+                "`{body}`: chiero produced a value, so it must be gcc's — a wrong answer is \
+                 the one outcome §7 forbids"
+            );
+            continue;
+        }
+        let why: Vec<String> = r
+            .states()
+            .iter()
+            .flat_map(|s| s.assumptions())
+            .map(|x| x.detail.clone())
+            .collect();
+        assert!(
+            why.iter().any(|d| d.contains("not modeled")),
+            "`{body}`: no value and no statement of what is unmodelled is a silent gap: {why:?}"
+        );
+    }
+}
+
+/// **The parts that do work must keep working.** `sizeof` and `_Alignof` on `long double`.
+///
+/// sema knows x86-64's layout (16 bytes, 16-byte aligned) even though the engine models no
+/// arithmetic, and those are the two answers a program can get right today. Separate from the
+/// disjunction above because they are not a gap at all: a run that degraded *these* would be a
+/// regression dressed as honesty.
+#[test]
+fn long_double_layout_is_exact() {
+    agree("return (int)sizeof(long double);");
+    agree("return (int)_Alignof(long double);");
+    agree("struct S { char c; long double d; }; return (int)sizeof(struct S);");
+}
