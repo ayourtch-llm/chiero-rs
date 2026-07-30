@@ -8075,8 +8075,33 @@ fn fcmp(a: &mut TermArena, op: CmpOp, x: Term, y: Term) -> Option<Term> {
             f64::from_bits(xc.bits() as u64),
             f64::from_bits(yc.bits() as u64),
         ),
-        // x87's 80-bit form has no Rust primitive; comparing it would need a second float
-        // implementation nobody tests.
+        // **x87 is compared on the patterns, not narrowed.** The comment here used to say comparing
+        // it "would need a second float implementation nobody tests" — true of arithmetic, and a
+        // comparison needs none: `fp::partial_cmp` reads the fields. Narrowing to `f64` first would
+        // call `1 + 2^-53` equal to `1.0`.
+        80 => {
+            let ord = chiero_cir::fp::partial_cmp(xc.bits(), yc.bits());
+            let unordered = ord.is_none();
+            let eq = ord == Some(core::cmp::Ordering::Equal);
+            let lt = ord == Some(core::cmp::Ordering::Less);
+            // **Only the four orderings CIR defines, plus `FOrd`/`FUno`.** There is no `FOGt`:
+            // 020 spells `a > b` by swapping the operands, so implementing one here would be a
+            // variant the rest of the system never emits.
+            let r = match op {
+                CmpOp::FOEq => eq,
+                CmpOp::FONe => !unordered && !eq,
+                CmpOp::FOLt => lt,
+                CmpOp::FOLe => lt || eq,
+                CmpOp::FUEq => unordered || eq,
+                CmpOp::FUNe => unordered || !eq,
+                CmpOp::FULt => unordered || lt,
+                CmpOp::FULe => unordered || lt || eq,
+                CmpOp::FOrd => !unordered,
+                CmpOp::FUno => unordered,
+                _ => return None,
+            };
+            return Some(a.bv(1, u128::from(r)));
+        }
         _ => return None,
     };
     // Widening `f32` to `f64` is exact, so comparing at the wider type gives the same

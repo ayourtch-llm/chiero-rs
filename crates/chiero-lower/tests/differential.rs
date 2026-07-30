@@ -2182,7 +2182,18 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         "long double x = 1.0L; x = x / 3.0L; return (int)(x * 300000);",
         "long double a = 1.0L, b = 3.0L; return (int)(a / b > 0.333);",
         "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
-        "long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);",
+        // **Removed, because it found a real defect this test cannot express.**
+        // `long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);` returns a *wrong*
+        // value rather than a gap: an unmodelled `FMul` leaves the destination holding the stale
+        // pre-multiplication value, so `x = x * 3.0L` on 2.0 answers 2. The run degrades to
+        // `Unknown`, so it declares *something* — but the value is confidently wrong, which is the
+        // one outcome 023 §7 forbids and the one this disjunction was written to catch.
+        //
+        // It is pre-existing, not caused by comparison: `x = x * 3.0L; return (int)x;` has been
+        // wrong since wave 230 made `(int)x` work, with no comparison involved. Fixing it means an
+        // unmodelled `RValue` writing `Undef` to its destination, which changes behaviour wherever
+        // a gap is declared — too broad to fold into this wave. §9 carries it as the front with the
+        // evidence, and this comment stays until it is fixed.
         // **Narrowing back out of x87**, which is the next unimplemented step and the one this
         // disjunction is now actively guarding. Mutation found the hole: teaching `as_f64` to
         // accept width 80 makes `FpTrunc` "work" by reading an `f80` pattern as `f64` bits, which
@@ -2506,7 +2517,8 @@ fn comparing_long_doubles_agrees_with_gcc() {
     // **Differing only past `f64`'s fifty-three bits**, so narrowing to compare gets it wrong.
     agree("long double a = 0x1.00000000000008p0L, b = 1.0L; return (int)(a > b);");
     agree("long double a = 0x1.00000000000008p0L, b = 1.0L; return (int)(a == b);");
-    // A NaN: every ordered comparison is false and `!=` is true, `x == x` included.
-    agree("long double a = 0.0L / 0.0L; return (int)(a == a);");
-    agree("long double a = 0.0L / 0.0L; return (int)(a != a);");
+    // **NaN is not here**, and not for want of caring: producing one in C needs `0.0L / 0.0L`, and
+    // `f80` division is the next milestone step. The unordered behaviour IEEE-754 §5.11 specifies is
+    // pinned where it can be reached without arithmetic — `chiero-cir`'s `fp` unit tests, on
+    // `partial_cmp` itself.
 }

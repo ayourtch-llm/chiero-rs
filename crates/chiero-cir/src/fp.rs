@@ -195,3 +195,49 @@ pub fn to_f64(bits: u128) -> Option<f64> {
     }
     Some(if neg { -scaled } else { scaled })
 }
+
+/// Two patterns ordered, or `None` when either is a NaN.
+///
+/// **No arithmetic and no narrowing.** Narrowing to `f64` to compare would call `1 + 2^-53` equal to
+/// `1.0`, because both round to the same `f64` — so the comparison has to happen on the patterns, and
+/// on the patterns it is nearly free: x87's fields are laid out most-significant-first, so for a
+/// fixed sign the exponent-and-significand bits compare as one unsigned integer.
+///
+/// `None` is *unordered*, which is not the same as "no answer": IEEE-754 §5.11 gives every ordered
+/// comparison with a NaN the answer `false` and `!=` the answer `true`, so the caller has to
+/// distinguish the two rather than treat this as a gap.
+pub fn partial_cmp(x: u128, y: u128) -> Option<core::cmp::Ordering> {
+    use core::cmp::Ordering;
+    if is_nan(x) || is_nan(y) {
+        return None;
+    }
+    let (xn, yn) = (x >> 79 & 1 == 1, y >> 79 & 1 == 1);
+    // **Both zeros are equal**, whatever their signs — IEEE-754 §5.11 again, and the only place the
+    // sign bit does not decide the ordering.
+    if is_zero(x) && is_zero(y) {
+        return Some(Ordering::Equal);
+    }
+    if xn != yn {
+        return Some(if xn {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        });
+    }
+    // Magnitude: everything below the sign bit, compared as one unsigned number. That works because
+    // a larger exponent outranks any significand, which is what putting the exponent above the
+    // significand in the layout means.
+    let mag = |v: u128| v & ((1u128 << 79) - 1);
+    let ord = mag(x).cmp(&mag(y));
+    Some(if xn { ord.reverse() } else { ord })
+}
+
+/// Whether a pattern is a NaN: the all-ones exponent with anything but the bare integer bit.
+pub fn is_nan(bits: u128) -> bool {
+    (bits >> 64) & INF_EXP == INF_EXP && (bits & u128::from(u64::MAX)) != 1u128 << 63
+}
+
+/// Whether a pattern is a zero of either sign.
+pub fn is_zero(bits: u128) -> bool {
+    (bits >> 64) & INF_EXP == 0 && bits & u128::from(u64::MAX) == 0
+}
