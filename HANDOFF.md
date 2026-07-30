@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 237) — 1371 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 238) — 1375 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,42 +778,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: comparison next; one literal path still rounds through `f64`
+> ### 🔴 An unmodelled `RValue` leaves its destination holding the stale value
 >
-> Wave 236 made hex literals exact, which **retroactively fixed wave 235's tests**: the `FpTrunc`
-> tie fixtures were measuring the parser's rounding, and `rounds-by-truncation` — a truncating
-> implementation of round-to-nearest-even — now dies against them. That is the sequence worth
-> remembering: the conversion was right, its tests were not, and the fix was upstream of both.
+> **This is a wrong answer, not a gap, and it is the front.** Found by
+> `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled` when wave 237 made comparison
+> work — but it is pre-existing and has nothing to do with comparison:
 >
-> | path | hands out | state |
-> |-|-|-|
-> | `integral_float_literal` | `u64` | exact (wave 233) |
-> | `hex_float_parts` | mantissa + scale | exact (wave 236) |
-> | `float_literal` (decimal, fractional) | `f64` | **rounds; the last one** |
-> | `SiToFp`/`UiToFp` -> 80 | — | exact (wave 233) |
-> | `FpExt` 32/64 -> 80 | — | exact (wave 234) |
-> | `FpToSi`/`FpToUi` 80 -> n | — | exact (wave 230) |
-> | `FpTrunc` 80 -> 64 | — | exact, ties to even (wave 235) |
-> | `FpTrunc` 80 -> 32, subnormal, NaN | — | declared gaps, each with a reason |
-> | `FNeg` on 80 | — | exact (wave 230) |
-> | comparison, arithmetic | — | **declared gaps** |
+> ```text
+>   long double x = 2.0L; x = x * 3.0L; return (int)x;     chiero 2, gcc 6
+> ```
 >
-> **Comparison is the next step and needs no soft-float.** `FOLt` and its siblings are decidable on
-> the patterns directly: same sign, compare exponent then significand; different signs, the negative
-> is smaller — with the IEEE special cases (NaN unordered, ±0 equal). It unblocks every
-> `long double` comparison fixture and is the last thing before arithmetic, which is the milestone.
+> `FMul` on `f80` is unmodelled, so nothing is written to `x` — and the *old* value is still there,
+> so `(int)x` reads 2.0 and answers 2. The run degrades to `Unknown`, so it declares something; the
+> value is confidently wrong anyway, which is the one outcome 023 §7 forbids. Wrong since wave 230
+> made `(int)x` work.
 >
-> **The fractional decimal literal is the last rounding path.** `float_literal`'s comment still calls
-> it "a narrowing this records rather than hides" while nothing records it. Correct
-> decimal-to-binary rounding needs arbitrary precision and a tie-break; declaring the narrowing is
-> the cheap honest alternative. **Hex literals are now the exact workaround, so a test needing precise
-> bits has one.**
+> **The fix is that an unmodelled `RValue` writes `Undef` to its destination**, which 020 contract 43
+> already says is a value rather than a gap — the poison then flows and each consumer declares its
+> own gap, exactly as it does for `long double y = x;` on a value that never arrived. It touches
+> every `lowering_gap` site that has a destination, so **expect the fixture set to move**: some runs
+> that produce a plausible number today will start declaring gaps, which is the point. Do it against
+> the disjunction test, which is the thing that noticed.
 >
-> **Surviving mutant, recorded:** `scaled-exponent-unchecked` — removing `from_u64_scaled`'s range
-> check. No fixture has an exponent outside x87's own range (about ±16384), so nothing reaches it;
-> without it a literal past the top would wrap into a wrong exponent rather than being declared. A
-> fixture wants gcc's behaviour for `0x1p20000L` established first, which is a question about the
-> oracle rather than about chiero.
+> **Why this outranks the rest of x87:** every conversion is exact now, so a stale value is the only
+> way left for this area to produce a wrong number, and arithmetic cannot be graded until it does not.
+>
+> ### x87 state
+>
+> | path | state |
+> |-|-|
+> | literals: integral decimal (233), hex (236) | exact |
+> | literals: fractional decimal | rounds through `f64`, and the comment claiming it is recorded still lies |
+> | `SiToFp`/`UiToFp` (233), `FpExt` (234), `FpToSi`/`FpToUi` (230), `FNeg` (230) | exact |
+> | `FpTrunc` 80 -> 64 (235) | exact, ties to even |
+> | comparison (237) | exact on the patterns |
+> | `FpTrunc` -> 32, subnormal, NaN payloads | declared gaps, each with a reason |
+> | arithmetic | declared gap — the milestone, and blocked on the stale-value fix above |
 >
 > ### What else is left
 >
@@ -1277,6 +1277,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A declared degradation does not make the value honest** (wave 237). The stale-value defect ran at
+> `Fidelity::Unknown` with the unmodelled operation named — every honesty mechanism firing — and still
+> returned 2 for `2.0 * 3.0`. **Degrading the run and poisoning the value are two obligations**, and
+> only one of them was met. 020 contract 43 says `Undef` is a value precisely so the second can be.
+>
+> **Implementing one operation can expose another's defect** (wave 237). Comparison had nothing to do
+> with the stale multiply; it merely gave the disjunction test a second way to observe `x` after an
+> unmodelled write. **When a new capability lands, re-read what the existing tests now reach** — the
+> failure was in a test I had not touched.
+>
+> **A pure function's edge cases belong in a unit test, not in a fixture waiting on a feature**
+> (wave 237). NaN comparison could not be written in C without `f80` division, so it went to
+> `chiero-cir`'s own tests where `partial_cmp` is directly callable. The alternative was leaving
+> IEEE-754 §5.11 untested until arithmetic lands, for no reason but habit about where tests live.
 >
 > **Fixing the layer beneath can retroactively arm the tests above it** (wave 236). Wave 235's
 > tie fixtures passed for the wrong reason and a truncating implementation survived them; making hex
