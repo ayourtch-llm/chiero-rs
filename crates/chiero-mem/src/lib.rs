@@ -1046,6 +1046,26 @@ pub enum MemFault {
         witness: i64,
         at: Span,
     },
+    /// **A read at a symbolic offset whose initialization is a question, not a fact.**
+    ///
+    /// 021 §3.1 puts the line here: the memory model knows *under what condition* every bit
+    /// the read touches was written, and only the engine can decide whether that condition
+    /// holds on this path. So this variant carries the question rather than a verdict, and
+    /// the engine rewrites it into [`MemFault::Uninitialized`],
+    /// [`MemFault::MaybeUninitialized`], or nothing at all.
+    ///
+    /// It reaches a report only when the solver cannot decide, which is why its message
+    /// names no offset: there is no offset to name, and inventing one would be the "witness
+    /// nobody can act on" 023 §9 rules out.
+    UninitializedSymbolic {
+        obj: ObjectId,
+        /// The offset term the read used, so the engine can name a concrete offset from a
+        /// model rather than describing the fault as "some value of `i`".
+        off: Term,
+        /// Holds exactly when every bit this read touches had been written.
+        guard: Term,
+        at: Span,
+    },
     OutOfBoundsMaybe {
         obj: ObjectId,
         size: u64,
@@ -1092,6 +1112,9 @@ impl MemFault {
             MemFault::SymbolicByte { .. } => "symbolic-byte",
             MemFault::OutOfBoundsMaybe { .. } => "may-be-out-of-bounds",
             MemFault::PointerOutsideObject { .. } => "pointer-outside-object",
+            // Only ever seen when the solver could not decide, so `maybe` is the whole
+            // truth about it; the engine renames the two cases it can settle.
+            MemFault::UninitializedSymbolic { .. } => "maybe-uninitialized-read",
             MemFault::OverlappingCopy { .. } => "overlapping-copy",
             MemFault::BadFree { .. } => "bad-free",
         }
@@ -1134,6 +1157,7 @@ impl MemFault {
             self,
             MemFault::Uninitialized { .. }
                 | MemFault::MaybeUninitialized { .. }
+                | MemFault::UninitializedSymbolic { .. }
                 | MemFault::SymbolicByte { .. }
                 | MemFault::OutOfBoundsMaybe { .. }
                 | MemFault::PointerOutsideObject { .. }
@@ -1149,6 +1173,7 @@ impl MemFault {
             MemFault::OutOfBounds { at, .. }
             | MemFault::Uninitialized { at, .. }
             | MemFault::MaybeUninitialized { at, .. }
+            | MemFault::UninitializedSymbolic { at, .. }
             | MemFault::Misaligned { at, .. }
             | MemFault::UseAfterFree { at, .. }
             | MemFault::DoubleFree { at, .. }
@@ -1173,6 +1198,7 @@ impl MemFault {
             MemFault::OutOfBounds { obj, .. }
             | MemFault::Uninitialized { obj, .. }
             | MemFault::MaybeUninitialized { obj, .. }
+            | MemFault::UninitializedSymbolic { obj, .. }
             | MemFault::Misaligned { obj, .. }
             | MemFault::UseAfterFree { obj, .. }
             | MemFault::DoubleFree { obj, .. }
@@ -1267,6 +1293,13 @@ impl std::fmt::Display for MemFault {
             MemFault::SymbolicByte { obj, off, .. } => write!(
                 f,
                 "byte {off} of {obj:?} holds a symbolic value, which a concrete access                  cannot answer for"
+            ),
+            // No offset, on purpose: this variant only reaches a report when the solver
+            // could not decide the guard, and every offset it could name would be a guess.
+            MemFault::UninitializedSymbolic { obj, .. } => write!(
+                f,
+                "a read at a symbolic offset of {obj:?} may touch bytes that were never \
+                 written, and the solver could not settle which"
             ),
             MemFault::PointerOutsideObject {
                 obj,
@@ -1417,6 +1450,37 @@ pub struct Memory {
     /// Names the arrays a havoc installs. Per-`Memory` and monotone, so two havocs are
     /// two unrelated unknowns and a re-run produces the same names (001 §5).
     havoc_seq: u64,
+}
+
+/// Holds exactly when all eight bits of the byte at index `i` had been written.
+///
+/// `arr.data` is byte-indexed and `arr.init` bit-indexed, so the byte index scales by eight
+/// and the guard is a conjunction over the eight bits — the same arithmetic
+/// `write_at_symbolic_offset` uses to mark them, and the reason the two must be read together.
+///
+/// `None` when the chain is too long to eliminate. That is a real answer and not a failure:
+/// the alternative is an expansion whose size grows with the number of stores ever made to
+/// the object, and a caller that gets `None` reports nothing rather than guessing.
+fn init_guard(a: &mut TermArena, arr: ArrayContents, i: Term) -> Option<Term> {
+    // Generous, because the chain is per-object and the common shapes are a constant array
+    // (length 0) or a handful of concrete stores. A `memset` is what makes it long, and a
+    // `memset` is also what makes the answer uninteresting.
+    const EXPAND_LIMIT: usize = 256;
+    let eight = a.bv(arr.idx_bits, 8);
+    let base = a.mul(i, eight);
+    let one = a.bv(1, 1);
+    let mut acc: Option<Term> = None;
+    for k in 0..8u128 {
+        let off_k = a.bv(arr.idx_bits, k);
+        let bi = a.add(base, off_k);
+        let bit = a.select_expand(arr.init, bi, EXPAND_LIMIT)?;
+        let is_set = a.eq(bit, one);
+        acc = Some(match acc {
+            None => is_set,
+            Some(prev) => a.and(prev, is_set),
+        });
+    }
+    acc
 }
 
 impl Memory {
@@ -2919,17 +2983,38 @@ impl Memory {
         }
         if let Some(arr) = self.entry(id).and_then(|e| e.arr) {
             let i = fit(a, off, arr.idx_bits);
-            // **This path still does not check initialization, and wave 202 established why the
-            // obvious fix is not enough.** See §9: the check itself is easy — a conjunction of
-            // `select(arr.init, off * 8 + k)` — but proving it *true* for a byte written at the
-            // same symbolic offset needs the select to see past seven non-matching stores, and
-            // the store-chain walk must stop at the first symbolic index it cannot compare. The
-            // result is a `maybe-uninitialized-read` on memory the program definitely wrote,
-            // which is a worse answer than the silence it replaces.
-            return AccessResult {
-                value: Some(a.select(arr.data, i)),
-                faults: vec![],
+            // **The initialization check, which wave 202 built and rejected.** Its objection was
+            // that proving the byte written needs `select` to fold past seven non-matching
+            // stores, so a byte written at the *same* symbolic offset came back
+            // `maybe-uninitialized-read` — a false report on memory the program definitely
+            // wrote, worse than the silence it replaced.
+            //
+            // Two things removed that objection. `select_expand` turns the array into `ite`
+            // comparisons, so the question reaches a solver as bitvector arithmetic instead of
+            // needing the walk to fold; and wave 204's discharge gives an unresolved guard
+            // somewhere to go. Neither existed when wave 202 wrote the check.
+            let guard = init_guard(a, arr, i);
+            let value = Some(a.select(arr.data, i));
+            // Ground-true is the overwhelmingly common answer — every static object is
+            // all-`Yes` by C11 6.7.9p10, and promotion seeds that as a constant array — so it
+            // costs nothing and asks no solver anything.
+            //
+            // Everything else is handed over as the term it is, including a guard that folds
+            // ground-*false*. Reporting that one here would be easy and would still be wrong:
+            // the engine can name a concrete offset from a model and this cannot, and one code
+            // path for the report beats two that have to agree about the wording.
+            let faults = match guard {
+                Some(g) if a.eval_ground_bool(g) != Ok(true) => {
+                    vec![MemFault::UninitializedSymbolic {
+                        obj: id,
+                        off: i,
+                        guard: g,
+                        at,
+                    }]
+                }
+                _ => vec![],
             };
+            return AccessResult { value, faults };
         }
         // The `Bytes` path: an ite chain, innermost first, over the candidates.
         let w = a.width(off);
@@ -3289,7 +3374,6 @@ impl Memory {
         };
         let idx_bits = 64u32;
         let mut data = a.array_const(idx_bits, 8, 0);
-        let mut init = a.array_const(idx_bits, 1, 0);
         let (bytes, syms, bits): (Vec<_>, Vec<_>, Vec<_>) = (
             (0..size).map(|b| o.raw_byte(b)).collect(),
             (0..size).map(|b| o.sym_at(b)).collect(),
@@ -3303,12 +3387,31 @@ impl Memory {
             let i = a.bv(idx_bits, b as u128);
             data = a.store(data, i, v);
         }
+        // **A uniform mask becomes a constant array rather than `size * 8` stores.** Both
+        // encodings mean the same thing, and the difference is whether anything can ask a
+        // question about it: `select` folds through an `ArrayConst` at any index, concrete or
+        // symbolic, and stops dead at the first store it cannot compare. A 64-byte object
+        // seeded store-by-store puts 512 nodes between a symbolic read and its answer; seeded
+        // as a constant it puts none. The two cases this catches are the two that matter —
+        // C11 6.7.9p10 makes every static object all-`Yes`, and a fresh local all-`No`.
+        // The *dominant* bit becomes the constant and only the exceptions get a store, which
+        // is a strict generalization: a uniform mask has no exceptions and needs no stores at
+        // all. Both directions occur — a fresh local is all-`No` and a static object all-`Yes`
+        // (C11 6.7.9p10) — and the shape that made this necessary is neither: a mostly-unwritten
+        // buffer with one field set produced 512 stores where 8 will do, which is the difference
+        // between a question `select_expand` can eliminate and one it gives up on.
+        let yes = bits.iter().filter(|b| **b == InitBit::Yes).count();
+        let no = bits.iter().filter(|b| **b == InitBit::No).count();
+        let base = u128::from(yes >= no);
+        let mut init = a.array_const(idx_bits, 1, base);
         for bit in 0..size * 8 {
             // `No → 0`, `Yes → 1`, `Cond(t) → ite(t, 1, 0)` — 021 §3.1's mapping, which
             // is what makes the two paths agree rather than merely coexist.
             let one = a.bv(1, 1);
             let zero = a.bv(1, 0);
             let v = match bits[bit as usize] {
+                InitBit::No if base == 0 => continue,
+                InitBit::Yes if base == 1 => continue,
                 InitBit::No => zero,
                 InitBit::Yes => one,
                 InitBit::Cond(t) => a.ite(t, one, zero),

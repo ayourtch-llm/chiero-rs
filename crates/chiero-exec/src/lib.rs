@@ -6216,6 +6216,56 @@ impl<'m> Engine<'m> {
                         })
                     }
                 }
+                // The same three outcomes, for a read whose *offset* is symbolic too. What
+                // differs is that there is no offset to put in the report until a model
+                // supplies one, so the `Sat` case is not merely "undecided" — it is where the
+                // witness comes from. 023 §9: a report a person cannot act on is not a report,
+                // and "some value of `i`" is not actionable.
+                chiero_mem::MemFault::UninitializedSymbolic {
+                    obj,
+                    off,
+                    guard,
+                    at,
+                } => {
+                    let neg = a.not(guard);
+                    match self.probe(a, s, &[neg]) {
+                        // Every bit the read touches was written on every model of the path.
+                        CheckResult::Unsat => None,
+                        CheckResult::Sat(m) => {
+                            // An offset the path allows at which the read is *not* fully
+                            // initialized — so it is a witness for whichever of the two
+                            // verdicts follows, and both want the same one.
+                            let w = a.eval(&m, off).map_or(0, |c| c.bits() as i64);
+                            if matches!(self.probe(a, s, &[guard]), CheckResult::Unsat) {
+                                Some(chiero_mem::MemFault::Uninitialized {
+                                    obj,
+                                    off: w,
+                                    bit: w as u64 * 8,
+                                    at,
+                                })
+                            } else {
+                                Some(chiero_mem::MemFault::MaybeUninitialized {
+                                    obj,
+                                    off: w,
+                                    bit: w as u64 * 8,
+                                    guard: Some(guard),
+                                    at,
+                                })
+                            }
+                        }
+                        // **The one report `UninitializedSymbolic` makes for itself.** No model
+                        // means no witness, and the variant's own message says exactly that
+                        // rather than naming an offset nobody proved.
+                        CheckResult::Unknown(_) => {
+                            Some(chiero_mem::MemFault::UninitializedSymbolic {
+                                obj,
+                                off,
+                                guard,
+                                at,
+                            })
+                        }
+                    }
+                }
                 other => Some(other),
             })
             .collect();

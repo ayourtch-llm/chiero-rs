@@ -432,6 +432,46 @@ impl TermArena {
         self.intern(Node::Store { a, i, v })
     }
 
+    /// A `select` with the array eliminated: `ite(i = i₁, v₁, ite(i = i₂, v₂, … val))`.
+    ///
+    /// [`Self::select`] stops at the first store whose index it cannot compare with `i`,
+    /// which is right for a *value* — the answer genuinely depends on a comparison the
+    /// solver owns. This builds that comparison instead, so the question reaches a solver
+    /// as pure bitvector arithmetic and needs no array theory. The caller decides which it
+    /// wants: `select` when the term is a value to compute with, this when the term is a
+    /// question to ask.
+    ///
+    /// `None` if the chain is longer than `limit` or does not bottom out in an
+    /// [`Node::ArrayConst`] — an unbounded expansion is how a linear chain becomes a
+    /// quadratic formula, and a caller that gets `None` still has `select` and the honest
+    /// `Unknown` that follows from it.
+    pub fn select_expand(&mut self, arr: Term, i: Term, limit: usize) -> Option<Term> {
+        // Innermost value first, then wrap each store around it on the way back out, so the
+        // outermost store ends up outermost in the `ite` — a later store shadows an earlier
+        // one, which is the whole meaning of the chain.
+        let mut chain = Vec::new();
+        let mut cur = arr;
+        let base = loop {
+            match self.nodes[cur.0 as usize] {
+                Node::Store { a, i: si, v } => {
+                    if chain.len() == limit {
+                        return None;
+                    }
+                    chain.push((si, v));
+                    cur = a;
+                }
+                Node::ArrayConst { val, .. } => break val,
+                _ => return None,
+            }
+        };
+        let mut acc = base;
+        for (si, v) in chain.into_iter().rev() {
+            let c = self.eq(si, i);
+            acc = self.ite(c, v, acc);
+        }
+        Some(acc)
+    }
+
     /// `select`, folding only when the index comparison is **decidable at construction**.
     ///
     /// Folding a symbolic index to the underlying array's default would silently decide
