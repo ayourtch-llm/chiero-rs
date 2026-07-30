@@ -3305,3 +3305,97 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
          ({assigned} bit-fields in all)"
     );
 }
+
+/// **A bit-field's value reaches the checksum, which is where a difference can be seen.**
+///
+/// §9 recorded a hypothesis after wave 250: that a struct with a bit-field only ever appears as a
+/// *parameter* of a prelude function, never as a local in the `probe()` body, so its contents never
+/// reach the comparison. **Running the count disproves it** — of 3000 seeds, 180 declare such a
+/// struct in the body and 156 checksum its fields.
+///
+/// The guard stays because the routing is what makes the construct observable at all, and nothing
+/// else asserts it. A later change to the body grammar could quietly stop declaring struct locals,
+/// and every bit-field test in this file would still pass while testing a value nothing reads.
+///
+/// # The controls are not optional here
+///
+/// The first version of this scan read `program(seed).0` — the prelude — and reported **zero** for
+/// every count, which reads exactly like the hypothesis being confirmed. What exposed it was asking
+/// the scan to also count things it obviously should find: any struct local at all, any field in
+/// any checksum line. Both were zero too, and a scan that cannot see the ordinary case is not
+/// evidence about the rare one. A generated program is two strings and the body is the second.
+#[test]
+fn a_bitfield_struct_reaches_the_checksum() {
+    let (mut declared, mut checksummed, mut any_local, mut any_field) = (0usize, 0usize, 0, 0);
+    for seed in 1..=3000u64 {
+        let (prelude, body) = program(seed);
+        let src = format!("{prelude}\n{body}");
+        let mut tag = String::new();
+        let mut bf_tags: Vec<String> = Vec::new();
+        for l in src.lines() {
+            let t = l.trim();
+            if let Some(rest) = t.strip_prefix("struct ")
+                && t.ends_with('{')
+                && let Some(name) = rest.split_whitespace().next()
+            {
+                tag = name.to_string();
+            }
+            if let Some(c) = t.find(':')
+                && t.ends_with(';')
+                && !t.contains('(')
+                && !tag.is_empty()
+                && t[..c].contains(' ')
+                && !bf_tags.contains(&tag)
+            {
+                bf_tags.push(tag.clone());
+            }
+        }
+        // The controls: the ordinary shapes this scan must be able to see.
+        if src.lines().any(|l| {
+            let t = l.trim();
+            t.starts_with("struct ") && t.contains('=') && t.ends_with(';')
+        }) {
+            any_local += 1;
+        }
+        if src
+            .lines()
+            .any(|l| l.contains("acc = acc * 31") && l.contains('.'))
+        {
+            any_field += 1;
+        }
+        if bf_tags.is_empty() {
+            continue;
+        }
+        let locals: Vec<String> = src
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                bf_tags.iter().find_map(|bt| {
+                    t.strip_prefix(&format!("struct {bt} "))
+                        .filter(|_| t.contains('='))
+                        .and_then(|rest| rest.split_whitespace().next())
+                        .map(|n| n.trim_end_matches(';').to_string())
+                })
+            })
+            .collect();
+        if locals.is_empty() {
+            continue;
+        }
+        declared += 1;
+        if src.lines().any(|l| {
+            l.contains("acc = acc * 31") && locals.iter().any(|n| l.contains(&format!("({n}.")))
+        }) {
+            checksummed += 1;
+        }
+    }
+    assert!(
+        any_local > 100 && any_field > 100,
+        "the scan must see the ordinary shapes before its rare counts mean anything: \
+         {any_local} struct locals, {any_field} checksummed fields"
+    );
+    assert!(
+        checksummed >= 50,
+        "a struct with a bit-field must reach the checksum, or every bit-field test above is \
+         testing a value nothing reads: {checksummed} of {declared} declared"
+    );
+}
