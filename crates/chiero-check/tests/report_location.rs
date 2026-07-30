@@ -199,3 +199,53 @@ fn without_a_source_map_nothing_is_stamped() {
         "a run with no map must not claim a location: {f:?}"
     );
 }
+
+/// **The route a report with its own witness takes.**
+///
+/// Mutation found this one: leaving `Action::ReportRequiring` unstamped passed every test above,
+/// because a constant overflow's UB event carries no condition and so takes `Action::Report`. A
+/// *symbolic* divisor does carry one — wave 156's query — and the checker joins it to the report so
+/// the witness names an input under which something actually faults.
+///
+/// That makes it the route with the strongest evidence behind it, which is the worst one to leave
+/// unlocatable.
+#[test]
+fn a_report_carrying_its_own_condition_is_located_too() {
+    let map = map_of_four_lines();
+    let m = module(vec![block(
+        0,
+        vec![
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                },
+                2,
+            ),
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Bin {
+                        op: BinOp::SDiv,
+                        ty: CTy::Int(32),
+                        a: k(100),
+                        b: Operand::Value(ValueId(0)),
+                        signed: true,
+                    },
+                },
+                17,
+            ),
+        ],
+        Terminator::Return(Some(Operand::Value(ValueId(1)))),
+    )]);
+    let f = findings(&m, Some(&map));
+    assert!(
+        !f.is_empty(),
+        "a symbolic divisor the solver can make zero must be reported"
+    );
+    assert!(
+        f.iter().any(|m| m.contains("ub.c:4:")),
+        "the division is at byte 17, which this map calls line 4 — and the `Fresh` above it is on \
+         line 1, so a fix that stamped the wrong instruction would say so: {f:?}"
+    );
+}
