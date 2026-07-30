@@ -2731,6 +2731,78 @@ impl<'m> Engine<'m> {
     /// Only division and remainder reach here. A constant divisor is settled by the caller
     /// without a query, so the query count is one per *symbolic* division rather than one
     /// per arithmetic instruction.
+    /// **An overflow every value the path admits produces** (C11 6.5p5).
+    ///
+    /// Wave 156's three outcomes, asked the other way round. The divisor query reports on `Sat` --
+    /// *some* input divides by zero -- and that does not transfer here: with an unconstrained `x`,
+    /// `x + 1` is satisfiably overflowing and fine for four billion values, so `Sat` would put a
+    /// finding on every arithmetic instruction in every program that takes an input. §9 records
+    /// that as an open decision.
+    ///
+    /// So this asks whether the path *forces* it: `P ∧ ¬overflow` unsatisfiable means every model
+    /// of the path overflows, which is a definite fault under any reading and adds no report to a
+    /// program that merely could. `Sat` and `Unknown` both stay silent, which is what chiero did
+    /// before this existed.
+    ///
+    /// The condition is computed one bit wider and compared against the narrow range, which is
+    /// the definition rather than a trick: `sext` both operands to `w + 1`, do the arithmetic
+    /// there, and ask whether the result left `[-2^(w-1), 2^(w-1) - 1]`. `Mul` needs `2w` because
+    /// two `w`-bit factors need `2w` bits to hold their product.
+    fn forced_signed_overflow(
+        &mut self,
+        a: &mut TermArena,
+        s: &mut State,
+        op: BinOp,
+        w: u32,
+        // The operands as a pair rather than two arguments: clippy caps a function at seven and
+        // these two are one thing.
+        (x, y): (Term, Term),
+        span: Span,
+    ) {
+        // Only the three C makes undefined on overflow. Division's overflow case
+        // (`INT_MIN / -1`) is a different shape and belongs with the divisor query.
+        let wide = match op {
+            BinOp::Add | BinOp::Sub => w + 1,
+            BinOp::Mul => w * 2,
+            _ => return,
+        };
+        // A zero-width type would make the range terms meaningless, and `1 << (w - 1)`
+        // underflow. `bits_of_cty` can only return this for `void`, which cannot be an operand.
+        if w == 0 {
+            return;
+        }
+        let xs = a.sext(x, wide);
+        let ys = a.sext(y, wide);
+        let exact = match op {
+            BinOp::Add => a.add(xs, ys),
+            BinOp::Sub => a.sub(xs, ys),
+            _ => a.mul(xs, ys),
+        };
+        let max = a.bv(wide, (1u128 << (w - 1)) - 1);
+        let min_mag = a.bv(wide, 1u128 << (w - 1));
+        let zero = a.bv(wide, 0);
+        let neg_min = a.sub(zero, min_mag);
+        let too_high = a.slt(max, exact);
+        let too_low = a.slt(exact, neg_min);
+        let overflows = a.or(too_high, too_low);
+        let safe = a.not(overflows);
+        // **`Unsat` of the negation, not `Sat` of the condition.** The distinction is the whole
+        // decision recorded above, and it is one character in the match arm — worth the sentence.
+        if matches!(self.probe(a, s, &[safe]), CheckResult::Unsat) {
+            s.ub.push(UbEvent {
+                kind: UbKind::SignedOverflow,
+                span,
+                detail: format!("{op:?} overflows for every value this path allows"),
+                // **The condition still travels**, even though it is implied by the path. 023 §9
+                // wants a witness that reproduces the fault, and a solver handed the overflow
+                // condition explicitly names operands that produce it rather than any model of
+                // the path — which for a forced overflow is the same set, and for a reader is
+                // the difference between an input and *the* input.
+                requires: vec![overflows],
+            });
+        }
+    }
+
     fn symbolic_div_by_zero(
         &mut self,
         a: &mut TermArena,
@@ -2880,6 +2952,9 @@ impl<'m> Engine<'m> {
         let w = bits_of_cty(ty).unwrap_or_else(|| a.width(x));
         let (Some(xc), Some(yc)) = (a.as_const(x), a.as_const(y)) else {
             self.symbolic_div_by_zero(a, s, op, w, y, span);
+            if signed {
+                self.forced_signed_overflow(a, s, op, w, (x, y), span);
+            }
             return;
         };
         let mut push = |kind: UbKind, detail: String| {
