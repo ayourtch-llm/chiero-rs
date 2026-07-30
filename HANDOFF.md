@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 206) — 1295 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 207) — 1299 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,55 +722,52 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Four mutants survive wave 205's check, and one of them can lose a finding
+> ### 🔴 The report text is only guarded for `MemFault`, and three other message sets drift
 >
-> ~~The symbolic read does not consult `arr.init`.~~ **Done in wave 205**, and the whole chain
-> now works: `back-to-byte-index` and `only-first-bit` — survivors since wave 199 — are dead,
-> along with `guard-byte-index`, `guard-only-first-bit`, `check-disabled` and
-> `exceptions-skipped`. Crossing `ITE_THRESHOLD` no longer decides whether a fault exists.
+> Wave 206 found that **no test in the tree looked at the text a user reads.** Every fault test
+> checks a kind or a field, so the prose was unowned, and it had rotted in seven places across
+> four crates — including one message with no predicate at all:
 >
-> Three pieces made it work, and the middle one is the reusable idea:
-> `TermArena::select_expand` turns a store chain into `ite` comparisons, so an array question
-> reaches the solver as bitvector arithmetic and nothing has to *fold*; promotion seeds the
-> **dominant** init bit as a constant array and stores only the exceptions, which is what keeps
-> the expansion short enough to matter; and `MemFault::UninitializedSymbolic` carries the
-> question rather than a verdict, so the engine can name a concrete offset from the model
-> (`a.eval(&m, off)`) instead of reporting "some value of `i`".
+> ```text
+>   may-be-out-of-bounds: 4-byte access of ObjectId(3) (8 bytes) may be out of bounds —
+>                    offset 9 is
+> ```
 >
-> **Ranked most to least serious, the four that survive:**
+> `crates/chiero-mem/tests/messages.rs` now constructs all eighteen `MemFault` variants and
+> asserts what any wording would want: no run of two spaces, no whitespace edges, no embedded
+> newline, content beyond the kind prefix, and the kind leading (023 §6.1 makes it half the
+> dedup key). Mutation kills each of the four with its own defect.
 >
-> **1. `always-base-zero` — this one can lose a finding.** Seeding the constant array with 0
-> instead of the dominant bit agrees on every fixture in the tree, because none has enough
-> *initialized* bits for the difference to bite. It bites past 256 exception stores: a
-> mostly-written object of 32 bytes or more, read at a symbolic index, needs `base = 1` for
-> `select_expand` to stay under its limit, and with `base = 0` the expansion returns `None`
-> and the read reports nothing. The fixture is a loop that writes every byte but one — 64
-> bytes, 63 written — then a symbolic read. Worth doing: it is a real lost finding and the
-> only survivor that is.
+> **What is still unguarded**, and the next work here: the three refusal and degradation
+> messages in `chiero-exec` and the `union-pun` message in `chiero-check` were fixed by the same
+> sweep, and **nothing tests them**, so they can drift back tomorrow. `Refusal` and the
+> degradation reasons want the same invariant. Do not record this as done because the strings
+> are currently clean — that is exactly the state the `MemFault` messages were in.
 >
-> **2. `expand-unbounded` — status unknown.** Deleting `select_expand`'s limit check never ran;
-> the sweep timed out on it. Re-run it before anything else, since it is cheap and the answer
-> may be another missing fixture.
+> ### 🔴 Then: three mutants still survive wave 205's init check
 >
-> **3. `expand-forgets-shadowing` — iterating the chain in the wrong order.** Survives because
-> init stores almost all write `1`, so which of two stores shadows the other rarely changes the
-> answer. It needs two stores at indices that *may* alias with *different* values, which means
-> a promotion-time `0` exception store under a later symbolic `1` — reachable, but the fixture
-> has to make the aliasing decidable in one direction to assert anything.
+> **1. `always-base-zero` — the one that can lose a finding.** Seeding the init array with 0
+> instead of the dominant bit needs more than 256 exception stores to bite, and no fixture
+> reaches that. **The obvious fixture does not work**: a loop writing 63 of 64 bytes ends
+> `fid=Bounded` before it reaches the read, so the finding is absent for an unrelated reason.
+> Use padding instead of a loop — `struct P { char a; long b; }` is 16 bytes with 7 of padding,
+> so `struct P pa[4]` with all eight fields assigned individually gives 288 written bits against
+> 224 unwritten, which is the right side of the limit under `base = 1` and the wrong side under
+> `base = 0`. Reading it through a `char *` at a symbolic index is a real MSan class as well as
+> a mutant killer.
 >
-> **4. `ground-true-reported` — equivalent, with the mechanism checked rather than assumed.**
-> Emitting the fault even when the guard folds ground-true is *semantically* the same: the
-> engine probes `¬true`, gets `Unsat`, and drops it. The difference is two solver calls per
-> symbolic read of a fully-initialized object — which is every read of every global array — so
-> the fast path is an optimization and not a verdict. Gradeable by asserting solver-call counts
-> rather than findings, and worth pinning that way; **do not** record it as "equivalent" and
-> move on, which is the mistake wave 203 made with a pair that turned out not to be.
+> **2. `expand-unbounded` — still never ran.** Two sweeps have now timed out before reaching it.
+> Run it on its own.
+>
+> **3. `expand-forgets-shadowing`** — needs two stores at indices that may alias with
+> *different* values, which means a promotion-time `0` exception store under a later symbolic
+> `1`. `ground-true-reported` was resolved as genuinely equivalent up to solver calls (the
+> discharge drops it), and is gradeable by call count if anyone wants it pinned.
 >
 > **`Unknown` is still untested.** `unknown-is-definite` and `unknown-is-clean` both survive:
-> `an_undecided_guard_stays_a_maybe` reaches a `Sat`, so the tri-state's third outcome has
-> never been exercised. It needs a guard the backend gives up on, or a seam to inject one.
-> `UninitializedSymbolic`'s own `Display` is only reachable that way too, so that message is
-> unexercised for the same reason.
+> `an_undecided_guard_stays_a_maybe` reaches a `Sat`, so the tri-state's third outcome has never
+> been exercised, and `UninitializedSymbolic`'s own message is unreachable for the same reason.
+> It needs a guard the backend gives up on, or a seam to inject one.
 >
 > **The symbolic read genuinely does not check init** — folded into the front above, which is
 > now the live plan. Wave 202's argument, kept because the next attempt has to answer it: Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
@@ -1156,6 +1153,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **The output nobody tests is the output the user reads** (wave 206). Every fault test in the
+> tree asserted a kind or a field; none rendered the message. Seven were malformed and one had
+> lost its predicate to an old edit, and the suite was green throughout. Where a component's
+> product is text, assert on the text.
+>
+> **An invariant finds the class; a fixture finds the instance** (wave 206). The test was written
+> for one bad string and immediately failed on six more in four crates. Pin what any correct
+> version must satisfy — no double space, content beyond the prefix — rather than the wording,
+> and the test constrains the defect instead of the design.
+>
+> **An assertion with no mutant is not protection** (wave 206). `!s.trim().is_empty()` could not
+> fail, because the kind prefix is written unconditionally; the sweep revealed it by having
+> nothing to mutate. Rewritten as "content beyond the prefix", an empty arm fails it. **A mutant
+> that will not build is a fact about the test, not a dud** — worth a second look before
+> discarding.
+>
+> **Check the mechanism before writing it down** (wave 206). The RED commit blamed a `\` line
+> continuation keeping its indentation. Rust's `\`-newline strips it, the two real continuations
+> in the same `impl` render correctly, and `rustc` confirms it in three lines. The cause was an
+> over-long single-line literal. Same failure as waves 198–203: a plausible mechanism written
+> down as fact.
+>
+> **`git checkout --` after a mutation run destroyed uncommitted work again** (wave 206). Wave
+> 205's message fix was wiped between the edit and `git add`, so `bd6075b` claims a change that
+> was not in the tree. Wave 154's rule, twice in one session: **commit before sweeping**, and
+> when a commit claims a fix, `git show` it.
 >
 > **A rejected fix is a fix waiting for its premise to change** (wave 205). Wave 202 declined
 > the symbolic-read init check because the guard had to fold past seven non-matching stores.
