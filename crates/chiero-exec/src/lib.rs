@@ -7870,10 +7870,22 @@ fn fcast(
             (v as u128) & mask_bits(tw)
         }
         CastKind::FpTrunc | CastKind::FpExt => {
-            // `as_f64` still refuses `fw == 80`, so a *narrowing* from x87 stays a declared gap.
-            // That is deliberate: `FpTrunc 80 -> 64` discards eleven bits of significand and needs
-            // a rounding rule, which is its own wave with its own fixtures on the ties.
-            let v = as_f64(fw, c.bits())?;
+            // **A narrowing out of x87 goes through the shared decoder**, which rounds to nearest
+            // with ties to even and returns `None` where the answer would be a guess (§9). `as_f64`
+            // still refuses 80, so this is the only route and the two directions cannot borrow each
+            // other's behaviour.
+            //
+            // **To `f64` only.** Narrowing straight to `f32` would round twice — once into `f64`
+            // here, once in the `as f32` below — and double rounding differs from the single
+            // correctly-rounded answer for some values, so that stays a declared gap.
+            let v = if fw == 80 {
+                if tw != 64 {
+                    return None;
+                }
+                chiero_cir::fp::to_f64(c.bits())?
+            } else {
+                as_f64(fw, c.bits())?
+            };
             match tw {
                 32 => u128::from((v as f32).to_bits()),
                 64 => u128::from(v.to_bits()),

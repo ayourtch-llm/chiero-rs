@@ -121,3 +121,52 @@ pub fn out_of_int_range(bits: u128, width: u32, signed: bool) -> bool {
         t >= 1i128 << width || t < 0
     }
 }
+
+/// A pattern narrowed to `f64`, rounded to nearest with ties to even.
+///
+/// **The rounding is IEEE's, obtained rather than hand-rolled.** `sig as f64` rounds a
+/// sixty-four-bit integer to `f64`'s fifty-three bits under the hardware's default rule, which *is*
+/// round-to-nearest-ties-to-even — and scaling by a power of two afterwards is exact, so no second
+/// rounding happens. Writing the eleven-bit decision by hand would be a reimplementation of
+/// something the target already does correctly.
+///
+/// `None` where the honest answer is a declared gap rather than a number:
+///
+///   - **a result in `f64`'s subnormal range.** Scaling into it rounds a *second* time, so the
+///     answer could be one ULP off — a wrong number where this project reports gaps. Handling it
+///     means manual denormal shifting, and pretending otherwise in a comment is the mistake
+///     `float_literal` still carries (§9).
+///   - **NaN**, whose payload this does not attempt to map.
+///
+/// Infinity and overflow are *not* gaps: a magnitude past `f64::MAX` becomes infinity, which is what
+/// IEEE-754 §7.4 requires and what the multiplication below produces on its own.
+pub fn to_f64(bits: u128) -> Option<f64> {
+    let neg = bits >> 79 & 1 == 1;
+    let exp = ((bits >> 64) & INF_EXP) as i32;
+    let sig = (bits & u128::from(u64::MAX)) as u64;
+    if exp == 0 {
+        // Zero, and x87 denormals — which are far below `f64`'s smallest subnormal, so they
+        // underflow to zero rather than needing a decision.
+        return Some(if neg { -0.0 } else { 0.0 });
+    }
+    if exp == INF_EXP as i32 {
+        // The integer bit alone is infinity; anything else in the significand is a NaN.
+        if sig == 1u64 << 63 {
+            return Some(if neg {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            });
+        }
+        return None;
+    }
+    let scaled = (sig as f64) * 2f64.powi(exp - BIAS - 63);
+    // Subnormal or underflowed-to-zero from a nonzero value: the scaling rounded a second time.
+    if scaled != 0.0 && scaled.abs() < f64::MIN_POSITIVE {
+        return None;
+    }
+    if scaled == 0.0 && sig != 0 {
+        return None;
+    }
+    Some(if neg { -scaled } else { scaled })
+}
