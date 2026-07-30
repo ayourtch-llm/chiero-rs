@@ -92,6 +92,11 @@ fn findings(m: &Module) -> Vec<String> {
 
 /// `x = Fresh`, then `cmp x, bound` and a branch; the true block does `x op rhs`.
 fn guarded(op: BinOp, cmp: CmpOp, bound: i128, rhs: i128) -> Module {
+    guarded_as(op, cmp, bound, rhs, true)
+}
+
+/// The same, with the operation's signedness spelled out.
+fn guarded_as(op: BinOp, cmp: CmpOp, bound: i128, rhs: i128, signed: bool) -> Module {
     module(vec![
         block(
             0,
@@ -132,7 +137,7 @@ fn guarded(op: BinOp, cmp: CmpOp, bound: i128, rhs: i128) -> Module {
                         ty: CTy::Int(32),
                         a: Operand::Value(ValueId(0)),
                         b: k(rhs),
-                        signed: true,
+                        signed,
                     },
                 },
                 10,
@@ -227,4 +232,57 @@ fn an_overflow_the_path_forbids_is_not_reported() {
             "`{what}`: nothing on this path can overflow: {f:?}"
         );
     }
+}
+
+/// **The boundary is `INT_MAX`, not one past it.**
+///
+/// `x > 2147483646` leaves exactly one value, and `x + 1` is `2147483648` — the first integer
+/// that does not fit. Every other forced fixture here overflows by more than that, so a range
+/// whose upper bound is off by one still catches them; mutation found `max = 1 << (w - 1)` passing
+/// the whole file. The smallest overflow there is is the one that pins the constant.
+#[test]
+fn an_overflow_of_exactly_one_past_the_maximum_is_reported() {
+    let f = findings(&guarded(BinOp::Add, CmpOp::SGt, 2_147_483_646, 1));
+    assert!(
+        f.iter().any(|s| s.starts_with("signed-overflow")),
+        "2147483647 + 1 is the smallest signed overflow that exists: {f:?}"
+    );
+}
+
+/// **Unsigned arithmetic does not overflow.** C11 6.2.5p9 makes it wrap, and wrapping is defined.
+///
+/// The signedness guard, which mutation showed nothing was holding: dropping it put the query on
+/// unsigned operations too, where a forced "overflow" is a program doing exactly what the standard
+/// says it does. This is the same distinction wave 174 gave CIR `signed` on `RValue::Bin` for.
+#[test]
+fn unsigned_arithmetic_the_path_forces_to_wrap_is_not_reported() {
+    for (what, op, cmp, bound, rhs) in [
+        ("Add", BinOp::Add, CmpOp::UGt, 4_294_967_290i128, 10i128),
+        ("Mul", BinOp::Mul, CmpOp::UGt, 2_147_483_648, 2),
+    ] {
+        let f = findings(&guarded_as(op, cmp, bound, rhs, false));
+        assert!(
+            f.iter().all(|s| !s.contains("overflow")),
+            "`{what}`: unsigned arithmetic wraps by definition, so there is nothing to report: \
+             {f:?}"
+        );
+    }
+}
+
+/// **`INT_MIN` is a value, not an overflow.**
+///
+/// The mirror of the test above, and it asserts *silence* because the two ends of the range are not
+/// symmetric: the largest representable signed integer is `2^(w-1) - 1` and the smallest is
+/// `-2^(w-1)`. A lower bound written as `-max` rather than `-2^(w-1)` is off by one in the
+/// direction that invents a fault, and mutation found it passing every other fixture here — they
+/// all overflow by more than one, so only the exact boundary can see it.
+///
+/// `x == -2147483638` pins one value; `x - 10` is exactly `INT_MIN`, which fits.
+#[test]
+fn a_result_of_exactly_the_minimum_is_not_an_overflow() {
+    let f = findings(&guarded(BinOp::Sub, CmpOp::Eq, -2_147_483_638, 10));
+    assert!(
+        f.iter().all(|s| !s.contains("overflow")),
+        "-2147483648 is representable, so computing it is not undefined: {f:?}"
+    );
 }
