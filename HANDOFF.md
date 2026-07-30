@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 226) — 1356 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 227) — 1357 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,32 +778,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### One decision left; two taken by precedent
+> ### The owed corpus file is written; one decision left, and it is a preference
 >
-> Three sat unanswered for ten waves while the instruction stayed "continue". Waves 224–225 took the
-> first two, and **both times the repo had already answered the question** — which is what made them
-> judgment calls rather than preferences.
+> **`tests/corpus/c/pointer_fields.c` exists**, with its golden, closing an item owed since the
+> review recorded below. Five shapes the whole thirteen-file corpus lacked — a pointer-typed global,
+> a load and a store through it, a struct returned by value, a struct passed by value, a local array
+> decaying — each of which broke at least once at a site no golden could reach.
 >
-> **1. ~~Report an overflow the path merely *admits*?~~ Done in wave 224 — an opt-in.**
-> `Engine::with_admitted_overflow(true)` reports `may-signed-overflow`; the default stays silent,
-> because with unconstrained inputs every `x + y` admits an overflow. The precedent was `UnionPun`,
-> off by default "for the projects that want the stricter reading rather than for this one". The
-> weaker claim is its own *kind* (mirroring `may-be-out-of-bounds`), so the kind *is* the certainty
-> and one operation yields exactly one of the two.
+> **A re-diagnosis §9 asked for, and my own note was what needed correcting.** I had written "arrow
+> access is clean on five shapes, so `pointer_fields.c` must be about something else". `->` is clean
+> and was never what the item was about — `struct_walk.c` and `packed_header.c` both use it. The gap
+> was **aggregate value semantics** and **pointer-typed storage at file scope**.
 >
-> **2. ~~Checker reports and deduplication.~~ Done in wave 225 — the checker owns it.** The precedent
-> was `undefined_arithmetic.rs`'s own explanation of why `UbState` carries a `reported` list. It is
-> also better on the merits: a checker may have two distinct things to say about one instruction, and
-> only it can tell that from the same thing said twice. **No behaviour changed** — what changed is
-> that `crates/chiero-check/tests/report_dedup.rs` now pins both halves (the engine inventing no key;
-> a checker with memory reporting once), and the contract sits on `Action::report` where a checker
-> author will find it rather than in a test about loops.
+> The golden holds `global static @gp : size 8 align 8 addr @0 0`, so wave 189's regression (an
+> address initializer read as null) now shows as `bytes 0000000000000000` and fails. Verified by
+> mutation: making `global_addr_init` return `None` fails
+> `every_corpus_c_file_matches_its_lowered_golden`, which nothing in the corpus could detect before.
+> `the_c_corpus_exercises_pointer_and_aggregate_shapes` guards the inventory, so a shape leaving the
+> corpus fails loudly instead of quietly certifying nothing.
 >
-> **3. UBSan's slugs — the one still open.** chiero spells kinds `signed-overflow`,
-> `division-by-zero`, `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`, and now
-> `may-signed-overflow`; UBSan spells its four `signed-integer-overflow`, `integer-divide-by-zero`,
-> `shift-exponent-too-large`, `float-cast-overflow`. Sharing names would make the census rows
-> directly comparable, since chiero is graded against UBSan site for site.
+> ### The last decision, and why it is yours
+>
+> **UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
+> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`, `may-signed-overflow`;
+> UBSan spells its four `signed-integer-overflow`, `integer-divide-by-zero`,
+> `shift-exponent-too-large`, `float-cast-overflow`.
+>
+> Waves 224–225 took the other two decisions because the repo had already answered them. **This one
+> it has not, and the argument that motivated it turns out not to apply**: the census channel does
+> not use the slugs at all. `arithmetic_ub_agrees_with_gcc_site_for_site` classifies gcc's stderr by
+> substring and chiero's side by `format!("{:?}", u.kind)` — the *enum's* `Debug`, not `ub_phrase`.
+> So "the census rows would be directly comparable" was already true by other means, and renaming
+> buys only that a human reading both tools' output sees one vocabulary.
+>
+> Against it: `may-signed-overflow` has no UBSan counterpart, so the sets align only partly; and 023
+> §6.1 makes the kind a dedup key, so a rename breaks anything grouping on it. **It is a preference
+> with a compatibility cost rather than a question with a right answer, which is why I have left it.**
 >
 > **This one has no precedent to follow, and that is why it is still open.** It is a rename with two
 > real arguments against: `may-signed-overflow` has no UBSan counterpart, so the sets would only
@@ -1220,6 +1230,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Grep the artifact's vocabulary, not the code's** (wave 226). I checked a freshly blessed golden
+> for `CopyMem` and found none, and nearly recorded that the aggregate copies were missing — the
+> printer writes `copymem`. The Rust variant name and the text format are two vocabularies, and a
+> golden is written in the second. Same family as wave 222's `grep -c` counting compiler output.
+>
+> **When an item says "re-diagnose", suspect the note rather than the item** (wave 226).
+> `pointer_fields.c` was owed for aggregate value semantics; I had recorded "arrow access is clean, so
+> it must be about something else", which was true and irrelevant — `->` was never the subject. **A
+> clean probe of the wrong thing is not evidence about the right thing.**
+>
+> **A corpus is an instrument, and its coverage is assertable** (wave 226). The goldens quantify over
+> `tests/corpus/c/`, so a construct absent from it is held fixed by nothing — six defects once passed
+> 1102 tests that way. Asserting the *inventory* (which shapes the corpus contains) is what stops the
+> instrument silently narrowing, and it is a different test from any golden's bytes.
 >
 > **The precedent is usually in a comment explaining why some existing code is the way it is**
 > (wave 225). Both parked decisions were answered by prose written for another purpose — `UnionPun`'s
