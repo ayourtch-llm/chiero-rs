@@ -322,11 +322,22 @@ fn unpack(bits: u128) -> (bool, u64, i64) {
 /// The encoded exponent field is `0` exactly when the integer bit came out clear, so a subnormal that
 /// *rounds up* into the integer bit becomes the smallest normal with no special case at all: the two
 /// share a scale, so the same exponent works for both.
-fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
-    let sign = u128::from(neg) << 79;
-    let inf = sign | (INF_EXP << 64) | (1u128 << 63);
-    if exp >= i64::from(INF_EXP as u32) {
-        return inf;
+/// Round a staged significand to `width` bits, doing gradual underflow, and say what came out.
+///
+/// **The rounding core, shared by every width chiero packs into** (wave 246). It was `pack`'s body
+/// until narrowing to `float` needed the same three decisions at twenty-four bits instead of
+/// sixty-four: round to nearest with ties to even, shift right instead of normalizing when the
+/// exponent is under the floor, and let a rounding that carries into the integer bit turn a
+/// subnormal into the smallest normal without a special case.
+///
+/// `r` carries the significand with its integer bit at 126 whatever the target width, so a caller
+/// stages once and the width only decides where the cut falls. The returned significand has its
+/// integer bit at `width - 1` when the result is normal and clear when it is subnormal — which is
+/// the flag the caller uses to choose the exponent field, and the reason this returns a pair rather
+/// than assembling anything itself. `exp >= max_exp` on the way out means an infinity.
+fn round_to(r: u128, sticky: bool, exp: i64, width: u32, max_exp: i64) -> (u64, i64) {
+    if exp >= max_exp {
+        return (0, max_exp);
     }
     let (mut r, mut sticky, mut exp) = (r, sticky, exp);
     if exp < MIN_NORMAL_EXP {
@@ -334,26 +345,42 @@ fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
         if k >= 128 {
             // Further under the floor than the significand is wide. Nothing survives the shift, and
             // nothing that could survive would round back up either.
-            return sign;
+            return (0, MIN_NORMAL_EXP);
         }
         let k = k as u32;
         sticky = sticky || r & ((1u128 << k) - 1) != 0;
         r >>= k;
         exp = MIN_NORMAL_EXP;
     }
-    let mut sig = (r >> 63) as u64;
-    let guard = (r >> 62) & 1 == 1;
-    let sticky = sticky || r & ((1u128 << 62) - 1) != 0;
+    // The cut is `127 - width` bits up from the bottom: at sixty-four that is 63, at twenty-four it
+    // is 103, and the guard bit is always the one just below it.
+    let cut = 127 - width;
+    let mut sig = (r >> cut) as u64;
+    let guard = (r >> (cut - 1)) & 1 == 1;
+    let sticky = sticky || r & ((1u128 << (cut - 1)) - 1) != 0;
     if guard && (sticky || sig & 1 == 1) {
+        // Rounding out of an all-ones significand is a new power of two: the integer bit moves up
+        // and the exponent follows it. **At sixty-four bits that is a `u64` overflow and at
+        // twenty-four it is not**, so the test has to be both — and `sig >> width` is not the way to
+        // spell it, because a shift of sixty-four on a `u64` is an overflow in its own right. That
+        // was the first version and it panicked; `width - 1` is always a legal shift.
         let (next, carried) = sig.overflowing_add(1);
-        sig = if carried {
+        if carried || next >> (width - 1) > 1 {
+            sig = 1u64 << (width - 1);
             exp += 1;
-            1u64 << 63
         } else {
-            next
-        };
+            sig = next;
+        }
     }
-    if exp >= i64::from(INF_EXP as u32) {
+    (sig, exp)
+}
+
+fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
+    let sign = u128::from(neg) << 79;
+    let inf = sign | (INF_EXP << 64) | (1u128 << 63);
+    let max = i64::from(INF_EXP as u32);
+    let (sig, exp) = round_to(r, sticky, exp, 64, max);
+    if exp >= max {
         return inf;
     }
     // The integer bit is the whole distinction: set means normal, clear means the field is zero —
@@ -363,6 +390,55 @@ fn pack(neg: bool, r: u128, sticky: bool, exp: i64) -> u128 {
     // which is what a redundant guard looks like. Wave 241 deleted a dead line for the same reason.
     let field = if sig >> 63 == 1 { exp } else { 0 };
     sign | ((field as u128) << 64) | u128::from(sig)
+}
+
+/// **An 80-bit pattern rounded to an IEEE binary32, once.**
+///
+/// The conversion `fcast` used to refuse. Going through an `f64` rounds twice, and two roundings are
+/// not one: `1 + 2^-24 + 2^-60` is above the midpoint between `1.0f` and its successor, so a single
+/// rounding takes it up — but the `2^-60` disappears into `f64` first, leaving exactly the midpoint,
+/// which ties to even and goes back down.
+///
+/// **`f32`'s boundaries are its own**, and none of the `f80` work transfers: it overflows at `2^128`,
+/// its subnormals start at `2^-126`, and its floor is `2^-149`. `round_to` handles all three, because
+/// they are the same three decisions at a different width — which is why it exists.
+///
+/// A NaN keeps its sign and the top twenty-three bits of its payload, with the quiet bit forced on.
+/// That is what the target does, established by soak rather than by inspection — see the comment at
+/// the check itself, which records getting it wrong first.
+pub fn to_f32(bits: u128) -> u32 {
+    let sign = ((bits >> 79) as u32 & 1) << 31;
+    if is_nan(bits) {
+        // **The payload is kept, truncated, and quieted** — three things, and I had this wrong
+        // twice. Probing the target with three hand-picked NaNs said the payload was dropped
+        // entirely; all three happened to carry their bits *below* the twenty-three that survive,
+        // so a canonical answer and a truncating one looked identical. A 480,000-case soak
+        // disagreed on one case in ten.
+        //
+        // What actually happens: the twenty-three bits just under the integer bit become the
+        // fraction, and the quiet bit is set on top. Forcing that bit is not cosmetic — a NaN whose
+        // payload lives entirely below bit 40 truncates to *nothing*, and a fraction of zero is an
+        // infinity, not a NaN.
+        return sign | 0x7f80_0000 | (((bits >> 40) as u32) & 0x007f_ffff) | 0x0040_0000;
+    }
+    if is_inf(bits) {
+        return sign | 0x7f80_0000;
+    }
+    if is_zero(bits) {
+        return sign;
+    }
+    let (_, sig, exp) = unpack(bits);
+    // Restage at the integer bit `round_to` expects, and rebase the exponent onto `f32`'s bias. The
+    // significand is unchanged by either — only the two formats' idea of where zero is differs.
+    let r = u128::from(sig) << 63;
+    let (m, e) = round_to(r, false, exp - i64::from(BIAS) + 127, 24, 255);
+    if e >= 255 {
+        return sign | 0x7f80_0000;
+    }
+    // The same rule as `pack`'s, one format down: the integer bit decides whether the exponent field
+    // is real or zero. `f32` stores the fraction only, so the bit is masked off rather than kept.
+    let field = if m >> 23 == 1 { e as u32 } else { 0 };
+    sign | (field << 23) | (m as u32 & 0x007f_ffff)
 }
 
 /// The product of two patterns, rounded to nearest with ties to even.

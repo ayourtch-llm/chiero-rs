@@ -7912,9 +7912,14 @@ fn fcast(
             // still refuses 80, so this is the only route and the two directions cannot borrow each
             // other's behaviour.
             //
-            // **To `f64` only.** Narrowing straight to `f32` would round twice — once into `f64`
-            // here, once in the `as f32` below — and double rounding differs from the single
-            // correctly-rounded answer for some values, so that stays a declared gap.
+            // **`f80` narrows in one step, per target width** (wave 246). This used to go to `f64`
+            // and let the `as f32` below finish the job, which rounds twice — and two roundings are
+            // not one, so it refused `f32` outright rather than answering wrongly. `fp::to_f32`
+            // rounds the eighty-bit significand straight to twenty-four, so the refusal is gone and
+            // the `match tw` below is bypassed for this source width entirely.
+            if fw == 80 && tw == 32 {
+                return Some(a.bv(tw, u128::from(chiero_cir::fp::to_f32(c.bits()))));
+            }
             let v = if fw == 80 {
                 if tw != 64 {
                     return None;
