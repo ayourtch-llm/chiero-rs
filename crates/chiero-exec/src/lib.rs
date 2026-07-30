@@ -3154,7 +3154,10 @@ impl<'m> Engine<'m> {
                     Fidelity::Bounded,
                     AssumptionKind::BudgetHit,
                     b.span,
-                    "max_depth reached",
+                    // The value too, not just the field. 023 §8's report exists so a reader
+                    // can tell a generous bound from a trivial one, and six of the seven
+                    // budget messages already say which they were.
+                    &format!("max_depth ({}) reached", self.budget.max_depth),
                 );
                 return None;
             }
@@ -4039,7 +4042,7 @@ impl<'m> Engine<'m> {
                 Fidelity::Bounded,
                 AssumptionKind::BudgetHit,
                 Span::DUMMY,
-                "max_depth reached",
+                &format!("max_depth ({}) reached", self.budget.max_depth),
             );
             return None;
         }
