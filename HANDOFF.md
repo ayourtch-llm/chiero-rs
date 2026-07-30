@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 233) — 1367 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 234) — 1368 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,43 +778,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: `SiToFp` to width 80, and the normalization wants a shared home
+> ### 🔴 x87: `FpExt`/`FpTrunc` between 64 and 80, then arithmetic
 >
-> Wave 232 made an **integral** decimal `long double` literal exact. `x87_integral_literal` parses
-> the digits into a `u64` and normalizes — x87 keeps the integer bit explicitly, so the significand is
-> the value shifted until bit 63 is set and the unbiased exponent is how far it moved. No rounding
-> decision arises, which is why the path is restricted to integers and returns `None` for everything
-> else rather than approximating.
+> **The format has one home now.** `chiero_cir::fp` owns `from_f64`, `from_u64`, `trunc_to_int` and
+> `out_of_int_range`; `chiero-lower` and `chiero-exec` both call it and neither has a copy.
+> `chiero-cir` is the only crate below both, and `FloatKind::X87_80` is defined there.
 >
-> ```text
->   4611686018427387905.0L   (2^62 + 1)
->   before  fconst:f80:0x403d8000000000000000   -> (long long) lost the + 1
->   after                   0x403d8000000000000001
-> ```
+> **The layering corrected a mistake while this moved.** Wave 232 had put the integral-literal
+> *encoding* in `chiero-sema`, and relocating it failed to compile: sema runs before CIR exists, so
+> 001 §4 puts CIR below it. That is the seam — "is this literal an integer" is syntactic and stays in
+> sema (`integral_float_literal`, returning a `u64`), "what does 2^62 + 1 look like in eighty bits" is
+> a target format and lives beside `FloatKind`. **If a shared home refuses to compile, the split is
+> probably in the wrong place rather than the home.**
 >
-> **The next step, with its design note.** `long double x = 9007199254740993;` — an *integer* literal
-> converted to `long double` — takes `SiToFp` to width 80, which is still a declared gap. It is the
-> same normalization `x87_integral_literal` already does. `chiero-exec` cannot depend on
-> `chiero-sema` (001 §4), so **do not write it a second time**: give the encode/decode pair a home
-> both can reach. `chiero-cir` is the only crate below both, and the pair is arguably part of what
-> `FloatKind` means. `x87_bits` in `chiero-lower` and `x87_trunc_to_int` in `chiero-exec` are already
-> two halves of the same format living in two crates, so this is the moment to fix that rather than
-> add a third copy.
+> **`SiToFp`/`UiToFp` to width 80 are exact.** They take the integer rather than the `f64` the other
+> widths use: `f64` is at least as wide as every narrower target, and *narrower* than x87, so a 64-bit
+> integer past 2^53 would arrive pre-rounded. `i64::MIN` is why magnitude and sign are passed
+> separately — `unsigned_abs` needs the bit a negation inside `i64` does not have.
 >
-> Then: `FpExt 64 -> 80` (exact, wants the same shared encoder), `FpTrunc 80 -> 64`
-> (round-to-nearest-even), and arithmetic last.
+> ### What remains, in order
 >
-> **Still open on literals:** a *fractional* decimal `long double` is still parsed at `f64`
-> precision, and `float_literal`'s comment still calls that "a narrowing this records rather than
-> hides" while nothing records it. Correct decimal-to-binary rounding needs arbitrary precision and a
-> tie-breaking rule; the honest cheap alternative is to declare the narrowing. **Hex float literals
-> are the workaround and they now parse exactly** (wave 231), so an exact `long double` can always be
-> written in source.
+>   1. **`FpExt 64 -> 80`** — exact, and now a one-line call to `fp::from_f64` at the `fw`/`tw`
+>      guard in `fcast`. Probably the cheapest remaining step.
+>   2. **`FpTrunc 80 -> 64`** — the first step that needs a *rounding* decision (round-to-nearest-even
+>      over eleven discarded bits), so it wants its own wave and gcc fixtures on the ties.
+>   3. **Comparison** (`FOLt` and siblings) — decidable on the exact patterns without arithmetic, and
+>      worth doing before arithmetic because a comparison needs no soft-float.
+>   4. **Arithmetic** — the soft-float with a 64-bit significand. `fbin`'s comment declines to write
+>      it for one operation; all of them together is the milestone.
+>
+> **Still open on literals:** a *fractional* decimal `long double` is parsed at `f64` precision, and
+> `float_literal`'s comment still calls that "a narrowing this records rather than hides" while nothing
+> records it. Hex float literals parse exactly (wave 231), so an exact value can always be written in
+> source.
 >
 > ### What else is left
 >
->   1. **Symbolic floats** — the other milestone. Needs an FP theory in the solver or a bit-blasted
->      encoding.
+>   1. **Symbolic floats** — needs an FP theory in the solver or a bit-blasted encoding.
 >   2. **UBSan's slugs** — a preference with a compatibility cost, yours.
 >   3. **The soak frontier** — `SOAK_CF=1` clean to 2600, plain grammar to 1600. Known-cost,
 >      low-yield.
@@ -1274,6 +1274,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **If a shared home refuses to compile, the split is in the wrong place** (wave 233). Moving the
+> integral-literal encoder from `chiero-sema` to `chiero-cir` failed, because sema runs before CIR
+> exists and 001 §4 puts CIR below it. The fix was not a dependency but a smaller sema function: the
+> syntactic question stays, the target format leaves. **A layering gate refusing a move is telling
+> you what the function is.**
+>
+> **The conversion that is harmless everywhere else is the one to check** (wave 233). Every
+> integer-to-float target routes through `f64` because `f64` is at least as wide — and x87 is
+> *wider*, so the same code rounds a 64-bit integer before it arrives. **When a width is added to a
+> family, ask which existing shortcut assumed it was the widest.**
+>
+> **Move a duplicated pair before the third copy, not after** (wave 233). An encoder in lowering and
+> a decoder in the engine looked tolerable until `SiToFp` needed the encoder in the engine too. The
+> third call site is what forces the question, and it is cheaper to answer it in the wave that
+> discovers it than to add the copy and plan a cleanup.
 >
 > **A surviving mutant may mean the sweep is missing a file** (wave 232). Two survivors died the
 > moment `shapes.rs` joined the test set, and one of them was caught by a fixture that had been
