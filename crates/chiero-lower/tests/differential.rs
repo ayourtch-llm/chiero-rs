@@ -2555,6 +2555,28 @@ fn a_decimal_long_double_literal_keeps_all_its_bits() {
     agree("return (int)(1e4000L > 0x1p13000L);");
     // Range, past the bottom: `1e-320` is a subnormal `double` and a normal `long double`.
     agree("return (int)(1e-320L > 0.0L);");
+    // **The rounding decision itself, against the exact value written in hex.** Every fixture
+    // above compares a decimal against another *decimal* or a coarse bound, which a conversion
+    // that truncated instead of rounding would still satisfy — mutation said so. These name the
+    // correctly-rounded `f80` outright, and each one sits on a different branch of the decision.
+    //
+    // Round up, with the sticky coming from the division's remainder: `0.1 × 2^67` is
+    // `0xCCCC…CCCC.CCC…`, an *even* significand with the guard bit set. It is a tie only if the
+    // remainder is forgotten, and a forgotten tie on an even significand rounds the wrong way.
+    agree("return (int)(0.1L == 0x1.999999999999999ap-4L);");
+    // Guard clear — the value rounds *down*, which is what a fix that rounded up whenever bits
+    // were discarded would get wrong.
+    agree("return (int)(0.7L == 0x1.6666666666666666p-1L);");
+    // **An exact tie, on an even candidate**: `2^64 + 1` is sixty-five bits with nothing below
+    // them, so ties-to-even keeps `2^64` where ties-away-from-zero would not.
+    agree("return (int)(18446744073709551617.0L == 0x1p64L);");
+    // **An exact tie on an odd candidate, whose round up carries.** `2^65 - 1` rounds to a new
+    // power of two, the second normalization `mul` needs and this needs for the same reason.
+    agree("return (int)(36893488147419103231.0L == 0x1p65L);");
+    // **The sticky bits from the quotient rather than the remainder.** `2^65 + 3` divides
+    // exactly — there is no remainder to be sticky — but the quotient is sixty-six bits, so the
+    // bit below the guard is the only thing separating this from a tie.
+    agree("return (int)(36893488147419103235.0L == 0x1.0000000000000002p65L);");
     // The control. A literal `f64` can represent exactly must still round-trip, or a fix that
     // widened everything by hand would break the values that were already right.
     agree("return (int)(0.5L == 0x1p-1L);");

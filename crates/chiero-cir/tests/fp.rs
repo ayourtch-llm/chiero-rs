@@ -153,3 +153,46 @@ fn a_nan_operand_is_a_gap_rather_than_an_infinity() {
     assert_eq!(fp::mul(NAN, INF), None, "not the infinity either");
     assert_eq!(fp::mul(NAN, 0), None, "and not the zero");
 }
+
+/// **A decimal literal past x87's range is an infinity at the top and a gap at the bottom.**
+///
+/// The same asymmetry `mul` has and for the same reason, tested here because no C fixture reaches
+/// it: gcc folds an out-of-range constant at compile time, so the literal never arrives.
+///
+/// The pairs matter more than the values. `1e5000` is settled by the magnitude shortcut — a value
+/// whose digit count plus exponent is past `DECIMAL_LIMIT` cannot be represented, and confirming
+/// that by building a five-thousand-digit integer would be work with a known answer. `2e4932` is
+/// *not*: its magnitude is inside the shortcut's bound and outside the format's, so it is the
+/// exponent check at the end that has to catch it. A fix that only had the shortcut would pass the
+/// first and fail the second.
+#[test]
+fn a_decimal_past_the_format_s_range_overflows_or_refuses() {
+    let inf = INF;
+    assert_eq!(
+        fp::from_decimal("1", 5000, false),
+        Some(inf),
+        "the shortcut"
+    );
+    assert_eq!(
+        fp::from_decimal("2", 4932, false),
+        Some(inf),
+        "inside the shortcut's bound and past the format's, so the exponent check must catch it"
+    );
+    assert_eq!(
+        fp::from_decimal("1", 5000, true),
+        Some(inf | (1 << 79)),
+        "and it keeps its sign"
+    );
+    assert_eq!(fp::from_decimal("1", -5000, false), None, "the shortcut");
+    assert_eq!(
+        fp::from_decimal("1", -4933, false),
+        None,
+        "and the computed path reaches the same answer for a subnormal"
+    );
+    // The bound is a bound: values inside it still convert.
+    assert!(fp::from_decimal("1", 4000, false).is_some());
+    assert!(fp::from_decimal("1", -4000, false).is_some());
+    // Zero has no exponent to move, so no scale puts it out of range.
+    assert_eq!(fp::from_decimal("0", 9000, false), Some(0));
+    assert_eq!(fp::from_decimal("000", -9000, true), Some(1 << 79));
+}
