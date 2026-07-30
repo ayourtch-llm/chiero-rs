@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 245) — 1390 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 246) — 1391 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -797,11 +797,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **The one float gap left is narrowing `long double` to `float`**, item 3 below. Everything else on
 > floats is either done or needs a solver theory.
 >
-> **The thing worth doing that is not about floats** is the fall-through audit the wave 244 rule
-> asks for: lowering answers a refusal from `fp` by falling back to an `f64`, which has silently
-> converted a declared limit into a wrong number *twice* (waves 240 and 244). That is a structural
-> hazard on the lowering path, not a float issue, and nobody has looked at the other places it
-> happens.
+> **The fall-through audit is done — wave 245 — and the answer is reassuring.** Twenty-nine
+> `size_of`/`align_of` fall-throughs were instrumented and the suite run: twenty-eight never fire.
+> The one that did led to a real defect, though not the predicted kind: sema's conditional never
+> decayed its operands, so `sizeof(c ? a : b)` for two `int[4]` said sixteen and `sizeof(c ? f : g)`
+> refused the function. Fixing it exposed a second: `common_type` did not know C11 6.5.15p6, so
+> `sizeof(c ? 0 : a)` said four. Both fixed, both soaked in fixtures that break the arms' symmetry.
+>
+> **Two things wave 245 saw and deliberately did not chase**, either of which is a fine next wave:
+>
+>   - **A conditional slot's `store` prints `align 4` while its `alloca` now prints `align 8`.** Two
+>     places compute the same alignment and disagree. Visible in
+>     `tests/corpus/lowered/corpus_indirect_call.cir`. Not what either RED observed, so it was left.
+>   - **The `f64` fall-through in the *float literal* path is now nearly unreachable** — every
+>     `chiero_cir::fp` conversion returns a value where it used to refuse — but it is still written,
+>     and a path that cannot fire is a path nobody checks. Worth deleting or proving reachable.
 
 > ### ✅ x87 arithmetic — the milestone, closed in wave 242
 >
@@ -1369,6 +1379,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An audit's best outcome is a small number** (wave 245). Twenty-nine `size_of`/`align_of`
+> fall-throughs in `chiero-lower` were instrumented and the whole suite run against them; **twenty-
+> eight never fire at all**. The hazard wave 244 named is, in this crate, almost entirely theoretical
+> — and knowing that is worth more than the one defect the audit found, because it says where *not*
+> to spend the next wave. Instrumenting and counting beat reading and worrying.
+>
+> **Symmetric fixtures test one side** (wave 245). Every conditional fixture had an array in both
+> arms or a function in both arms, so the *then* arm's decay alone produced the right common type and
+> the else arm's could be deleted unnoticed — and nothing had ever put an array in the *condition*.
+> Mutation found both. **When an operation has interchangeable positions, at least one fixture must
+> make them differ.**
+>
+> **A fixture written to isolate a mutant is a good place to find a second defect** (wave 245).
+> `c ? 0 : a` was written only because it breaks the arms' symmetry; it then failed for a reason of
+> its own — `common_type` did not know 6.5.15p6's null-pointer-constant rule and answered `sizeof`
+> four instead of eight. Two defects, one of them found by the tooling for the other.
+>
+> **`sizeof` is blind to which pointer a rule picked** (wave 245). Both `void *` mutants survived a
+> fixture set built entirely on `sizeof`, because every pointer is eight bytes. Pointer *arithmetic*
+> distinguishes them — `void *` advances one byte, `int *` four. **Pick the observable that the rule
+> actually changes**, not the one that is easiest to write.
 >
 > **A refusal upstream can become an invented value downstream** (wave 244). `fp` declining a
 > subnormal was honest. But lowering falls through to the `f64` that `float_literal` computes when
