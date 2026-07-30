@@ -2721,6 +2721,22 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return (int)sizeof(c ? v : p);");
     agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return (int)sizeof(c ? p : v);");
     agree("int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; return *(int*)(c ? v : p);");
+    // **`sizeof` cannot see which pointer won**, since every pointer is eight bytes — mutation
+    // said so by surviving both `void *` arms. Arithmetic can: adding one to a `void *` advances
+    // one byte (the GNU extension's `sizeof(void)`), and to an `int *` four. So this is the pair
+    // that pins the rule, in both operand orders, with the same-type case as the control.
+    agree(
+        "int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; \
+         return (int)((char*)((c ? p : v) + 1) - (char*)a);",
+    );
+    agree(
+        "int a[4]={1,2,3,4}; int c=1; void *v=a; int *p=a; \
+         return (int)((char*)((c ? v : p) + 1) - (char*)a);",
+    );
+    agree(
+        "int a[4]={1,2,3,4}; int c=1; int *p=a; \
+         return (int)((char*)((c ? p : p) + 1) - (char*)a);",
+    );
     // Through a variable, which is the spelling that already works and the control for it.
     agree_with(
         "int f(int x){return x+1;}\nint g(int x){return x+2;}\n",

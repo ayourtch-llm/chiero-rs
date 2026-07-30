@@ -2750,7 +2750,12 @@ impl Cx<'_> {
             (Ty::Int { .. }, Ty::Ptr(_)) => b,
             // Two pointers: `void *` wins, because 6.5.15p6 says the result is a pointer to void
             // when either operand is one. Otherwise they must be compatible and either will do.
-            (Ty::Ptr(x), Ty::Ptr(_)) if matches!(self.out.types[x.0 as usize], Ty::Void) => a,
+            //
+            // **Only the `b` direction needs stating**, and mutation is what established that: the
+            // catch-all below already returns `a`, so an arm returning `a` when the *first* operand
+            // is the `void *` cannot change an answer. It was written, it survived the sweep, and
+            // it is gone. Two arms would read as a symmetric rule and one of them would be a lie
+            // about which line is doing the work.
             (Ty::Ptr(_), Ty::Ptr(y)) if matches!(self.out.types[y.0 as usize], Ty::Void) => b,
             _ => a,
         }
