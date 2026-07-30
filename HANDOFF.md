@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 242) — 1384 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 243) — 1387 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,7 +778,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87 arithmetic — the milestone, now unblocked
+> ### ✅ x87 arithmetic — the milestone, closed in wave 242
 >
 > ~~An unmodelled store leaves the stale value.~~ **Fixed in wave 238.** A store chiero cannot
 > translate now writes a *fresh symbolic value* rather than returning: the program did store, chiero
@@ -815,10 +815,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the result cannot fall more than one bit short of normalized, so a sticky flag never survives a
 > long left shift.
 >
-> **Still owed: divide.** The only operation left, and the one that needs a loop — a quotient bit at a
-> time with its own sticky remainder, which is the shape `from_decimal`'s binary long division already
-> has in wave 240. Note that a working divide also unlocks the NaN fixtures every `fp` unit test
-> currently works around: `0.0L / 0.0L` is how C produces one.
+> **Wave 242 added division, and the milestone is closed.** All four operations run. The loop is
+> `u128`'s own division plus one bit taken by hand, because `sa << 65` overflows a `u128` where
+> `sa << 64` does not. It needs neither a tie branch nor a carry branch — see the enumeration rule
+> below — and division by zero is §7.3's *value*, an infinity, not the fault the integer checker
+> reports for the same spelling.
+>
+> ### What is left on floats, in order
+>
+>   1. **NaN production and propagation.** Now reachable: `0.0L / 0.0L` is how C makes one, and `div`
+>      declines it. Every `fp` unit test currently works around this, and `partial_cmp`/`is_nan`
+>      already handle NaNs correctly — what is missing is *minting* one. The question the next wave
+>      has to answer is whether a canonical quiet NaN is honest when the payload IEEE-754 §6.2 would
+>      propagate is not tracked. It probably is, and the alternative is that every program producing
+>      a NaN is a gap; but it is a decision, not an implementation.
+>   2. **Subnormals**, at both ends of all four operations. This is the one gap the disjunction test
+>      now exercises, and the honest limit as long as it is declared.
+>   3. **Symbolic floats** — still needs an FP theory in the solver or a bit-blasted encoding.
+>
+> **The verification pattern, which all four operations used and the next float work should:** exact
+> fixtures in hex for the rounding boundaries, a mutation sweep, a randomized soak against gcc's own
+> x87 through `memcpy` of raw 80-bit patterns (`scratchpad/soak.c` + `scratchpad/chk`, 840,000 cases
+> across the four with zero disagreements), and — when a mutant survives both — an exhaustive
+> enumeration at a narrow significand width to decide whether a witness exists at all.
 >
 > **The verification pattern for all three, worth repeating for divide:** exact fixtures for the
 > rounding boundaries, a mutation sweep, a randomized soak against gcc's own x87 through `memcpy` of
@@ -1308,6 +1327,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Enumeration can prove a case does not exist, and that is a design input** (wave 242). Division
+> needs neither a tie branch nor a carry branch — enumerating every normalized operand pair at
+> significand widths six through twelve says so, and the structural reasons hold at every width. So
+> the branches were never written, and their absence is stated as `debug_assert!` rather than as a
+> comment, which puts the proof under `cargo test` instead of beside code nobody re-checks. **Prove
+> the case away before writing the branch, not after.**
+>
+> **A fourth reason a mutant survives: an assertion about an absent case** (wave 242). Forcing `div`'s
+> `sticky` to `true` survives everything, because `sticky` feeds only the assertion that records why
+> there is no tie. Killing it would need the very input the proof rules out. That is not a missing
+> fixture, not a defect, and not dead code — it is unfalsifiable by construction, and it stays,
+> because a vacuous assertion is cheaper than an unchecked proof.
+>
+> **When a fixture and the code disagree, the fixture is a suspect too** (wave 242). `1e-4000L /
+> 1e4000L` was written into the RED and then failed the GREEN, and the code was right: the quotient
+> is far below the format's floor, so a declared gap is the honest answer and `agree` compares
+> *values*. **A RED fixture is a hypothesis about the answer, not the answer.**
+>
+> **A disjunctive test can lose half of itself silently** (wave 242). "Agrees with gcc *or* declares a
+> gap" was reached only on the first branch once every operation worked, so it had become a plain
+> `agree` with a misleading name. Instrumenting which branch each body took found it — and the fix is
+> a body that still takes the second one. **When a capability lands, ask which existing assertions it
+> just made vacuous**, which is wave 237's rule pointed at tests instead of code.
 >
 > **A random soak and a constructed fixture cover disjoint things, and neither substitutes for the
 > other** (wave 241). 520,000 random operand pairs against gcc's own x87 found zero disagreements in
