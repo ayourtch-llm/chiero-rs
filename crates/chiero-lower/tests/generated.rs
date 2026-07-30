@@ -3399,3 +3399,102 @@ fn a_bitfield_struct_reaches_the_checksum() {
          testing a value nothing reads: {checksummed} of {declared} declared"
     );
 }
+
+/// **How many of the fixed batch can see an extension defect at all.**
+///
+/// Wave 251 estimated the answer by multiplying four measured rates and got about one program in
+/// two hundred. This counts it directly: **one**, over the exact seed range
+/// `generated_programs_agree_with_gcc` uses. Twenty-one over three thousand.
+///
+/// A program is counted only when all of it lines up — an `unsigned` bit-field, a local of that
+/// record initialized by a compound literal, a value whose bit `w-1` is set, and a checksum line
+/// reading that field. Anything less cannot distinguish sign- from zero-extension, so it is not
+/// coverage of one however much it exercises bit-fields.
+///
+/// **This is the number to move, and not by adding seeds.** More seeds buys the rate linearly; the
+/// four factors multiply, so fixing the weakest buys it in one change. §9 names the two knobs.
+///
+/// The threshold is ten of two hundred rather than "more than one", because a channel that
+/// discriminates once per batch catches a defect only when luck cooperates — wave 249's bit-field
+/// bug survived a hundred waves at exactly this rate.
+#[test]
+fn the_fixed_batch_can_discriminate_an_extension_defect() {
+    let mut discriminating = 0usize;
+    for seed in 0..200u64 {
+        let (prelude, body) = program(seed);
+        let src = format!("{prelude}\n{body}");
+        if discriminates(&src) {
+            discriminating += 1;
+        }
+    }
+    assert!(
+        discriminating >= 10,
+        "only {discriminating} of the 200 fixed-batch programs can tell sign- from zero-extension \
+         on a bit-field; the rate is the coverage, and a channel that discriminates once per batch \
+         is how wave 249's defect survived a hundred waves"
+    );
+}
+
+/// Whether one generated program could observe a bit-field extension defect.
+///
+/// Four things have to coincide, and the scan reports `true` only when they all do in the *same*
+/// record and field: an `unsigned` bit-field, a local of that record with a compound-literal
+/// initializer, a value whose top bit for that width is set, and a checksum line reading it.
+///
+/// Compound literals only, because that is the initializer whose per-field values are readable
+/// here — a local initialized from a struct-returning helper is real coverage this undercounts. A
+/// lower bound is the safe direction for a floor.
+fn discriminates(src: &str) -> bool {
+    let mut tag = String::new();
+    let mut fields: Vec<(String, usize, u32)> = Vec::new();
+    let mut nth = 0usize;
+    for l in src.lines() {
+        let t = l.trim();
+        if let Some(rest) = t.strip_prefix("struct ")
+            && t.ends_with('{')
+            && let Some(n) = rest.split_whitespace().next()
+        {
+            tag = n.to_string();
+            nth = 0;
+        } else if t.ends_with(';') && !t.contains('(') && !tag.is_empty() && t.contains(' ') {
+            // A member of the record being declared, bit-field or not — the *position* is what a
+            // compound literal is indexed by, so plain members have to be counted too.
+            if let Some(c) = t.find(':')
+                && t.starts_with("unsigned")
+                && let Ok(w) = t[c + 1..t.len() - 1].parse::<u32>()
+            {
+                fields.push((tag.clone(), nth, w));
+            }
+            nth += 1;
+        } else if t == "};" {
+            tag.clear();
+        }
+    }
+    fields.iter().any(|(bt, idx, w)| {
+        src.lines().any(|l| {
+            let t = l.trim();
+            let Some(rest) = t.strip_prefix(&format!("struct {bt} ")) else {
+                return false;
+            };
+            let Some((lname, init)) = rest.split_once(" = ") else {
+                return false;
+            };
+            let Some((_, after)) = init.split_once("){") else {
+                return false;
+            };
+            let Some((inner, _)) = after.split_once('}') else {
+                return false;
+            };
+            let Some(v) = inner.split(", ").nth(*idx) else {
+                return false;
+            };
+            let Ok(k) = v.trim_end_matches(['u', 'U', 'l', 'L']).parse::<i64>() else {
+                return false;
+            };
+            (k as u64) & (1u64 << (w - 1)) != 0
+                && src.lines().any(|c| {
+                    c.contains("acc = acc * 31") && c.contains(&format!("({lname}.f{idx})"))
+                })
+        })
+    })
+}
