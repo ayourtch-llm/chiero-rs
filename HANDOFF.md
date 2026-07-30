@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 223) — 1348 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 224) — 1349 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -745,43 +745,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > two programs instead of enough to grade on — caught by the adequacy guard.
 > **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### 🔴 A duplicated budget check that nothing reaches, and probably nothing can
+> ### The `Bounded` thread is closed; the three parked decisions are what is left
 >
-> Wave 222 followed wave 221's `gap: Bounded` runs down to the mechanism, and the answer to §9's
-> question — *does a `Bounded` run say enough for a reader to act on?* — is **yes, and the machinery
-> is right**. `findings()` and `reports()` are empty (a degradation is not a defect in the program),
-> and the reason is on `State::assumptions()` with a kind, a span and a detail:
+> Waves 222–223 followed wave 221's `gap: Bounded` runs to the bottom. **The machinery is right:**
+> `findings()` and `reports()` are empty because a degradation is not a defect in the program, and
+> the reason is on `State::assumptions()` with a kind, a span and a detail naming the bound, its
+> value and the back edge. Two things came out of looking:
 >
-> ```text
-> max_loop_iters (8) reached on the back edge BlockId(16) -> BlockId(15) in `probe`
-> ```
+>   - **`max_depth` was the one message not naming its value**, at both its sites. Fixed, with an
+>     invariant test over `Budget` as a whole rather than a seventh per-field test — including the
+>     *tight* case, four instructions against a bound of three, because `> max_depth + 1` still cuts
+>     a twelve-instruction program one step late and nothing noticed.
+>   - **`take_edge`'s copy of the check was unreachable** and is now a `debug_assert!` on
+>     `steps <= max_depth`. `steps` is zeroed at three construction sites, incremented at one, and
+>     tested there immediately; mutating the two sites separately killed only the step loop's, and an
+>     `eprintln!` fired zero times across the workspace. An unreachable guard always survives
+>     mutation, so it protected nothing — the assertion fires the moment a second counting site
+>     appears, which is what the branch was for, and mutation confirms it (three tests fail when a
+>     second `steps +=` is added).
 >
-> **One message did not hold to that standard and now does:** `max_depth` said "max_depth reached",
-> at both its sites, where the other six name their value. 023 §8's report exists so a reader can
-> tell a generous bound from a trivial one. Fixed, with an invariant test over `Budget` as a whole
-> rather than a seventh per-field test.
+> **What is left is the three parked decisions and the capability list.** No open defect has a
+> reproducible trigger right now: the generator channel is searched out (~3900 comparisons, one
+> defect), the reporting and symbolic-memory threads are closed, and the budget messages hold to one
+> standard. The honest next steps, in the order I would take them:
 >
-> **The open item, found while mutating that fix.** `Budget::max_depth` is checked in two places —
-> the per-instruction step loop and `take_edge` — and mutating them *separately* showed the
-> `take_edge` copy is killed by nothing. Instrumenting it with an `eprintln!` and running the whole
-> workspace fired it **zero times**. (My first reading said four; those were compiler diagnostics
-> quoting the inserted line, not runtime output. Print the matching lines, not their count.)
->
-> It is plausibly *unreachable*: `s.steps` is incremented only in the step loop, which tests `>`
-> immediately afterwards, so on entry to `take_edge` the same comparison cannot have newly become
-> true. **Do not delete it on that argument alone** — wave 163's watchdog kept a line that documents
-> a distinction no fixture can see, and this may be the same. What is owed is a decision: prove it
-> unreachable and remove it, or find the state shape that reaches it (a resumed or forked state
-> carrying `steps` past the bound is the candidate) and pin the message there. Either way the
-> duplicated condition should stop being a coin flip.
->
-> **The generator channel, for the record:** waves 218–221 added `switch`, `do`-`while`, `goto`,
-> `continue`, `&&`, `||`, `~`, `sizeof`, character constants and string-literal subscripts, then let
-> loop bodies and `switch` arms hold statements. **~3900 comparisons, one defect** (wave 217's
-> `_Bool b += -1`). Frontier: `SOAK_CF=1` clean to 2600, plain grammar to 1600. Everything new is
-> behind `extended`, gated before any `rng` call. Still unemitted by choice: `_Alignof`, statement
-> expressions, `->` in the generator (and `pointer_fields.c` remains owed — **re-diagnose it, arrow
-> access is clean on five shapes**), backward `goto` (bounded out so comparisons cannot hang).
+>   1. **A decision** (below) — any of the three unblocks work rather than needing investigation.
+>   2. **`tests/corpus/c/pointer_fields.c`**, still owed, and **re-diagnose it**: arrow access is
+>      clean on five hand-written shapes, so whatever that corpus file is about, it is not `->`.
+>   3. **x87 80-bit floats** and **symbolic floats** — the two remaining capability items, both
+>      milestone-sized, and §9's earlier note that a symbolic float needs an FP theory or a
+>      bit-blasted encoding still stands.
+>   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
+>      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
 > ### The three parked decisions, unchanged
 >
@@ -1201,6 +1196,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **An unreachable guard protects nothing and reports nothing — make it an assertion** (wave 223).
+> `take_edge` repeated a bound check that could not fire, so it always survived mutation. A
+> `debug_assert!` on the invariant it was guarding *can* fail, is executed by every test, and names
+> the reason: three tests now fail if a second counting site appears. **When a branch cannot be
+> reached, the invariant behind it can still be stated.**
+>
+> **Two independent grounds before deleting defensive code** (wave 223). The static argument (one
+> increment site, checked immediately) and the empirical one (zero firings across 1349 tests, and
+> the removal changed no outcome) were both required — waves 198–203 were a run of confident
+> readings that were wrong, and one argument would have been another.
+>
+> **A bound needs its tight case** (wave 223). `> max_depth + 1` cuts a twelve-instruction program
+> one step late and every assertion passed. The smallest program the wrong bound lets *complete* is
+> what discriminates: four instructions against a bound of three. Same rule as wave 215's
+> `INT_MAX + 1` and `INT_MIN`, at a different bound — **fixtures well past a boundary cannot see an
+> off-by-one at it.**
 >
 > **Mutate duplicated conditions separately** (wave 222). One `.replace()` covering both copies of
 > the `max_depth` check reported KILLED and hid that only one copy is tested. Anchoring by line
