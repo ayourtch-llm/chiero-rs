@@ -3119,3 +3119,96 @@ fn the_corpus_commits_memory_ub_and_chiero_reports_all_of_it() {
         &t.missed[..t.missed.len().min(8)]
     );
 }
+
+/// **The generator emits bit-fields and never fills their top bit.**
+///
+/// Wave 249 found an `unsigned` bit-field being sign-extended on read — a wrong answer that
+/// survived a hundred waves of differential testing. This channel is why: bit-fields *are*
+/// generated, in about a quarter of programs, and *are* read. What they are never given is a value
+/// the defect can be seen through.
+///
+/// **Two conditions have to coincide and they were counted separately.** An extension defect is
+/// visible only when the field is `unsigned` *and* the stored value has the field's top bit set —
+/// a signed field is supposed to sign-extend, and a value below the halfway point extends the same
+/// way either way. Measured over the fixed seed range:
+///
+/// ```text
+///   bit-field initializers            44
+///   with the top bit set              15   <- looks adequate
+///   unsigned AND with the top bit set  5   <- the number that matters
+/// ```
+///
+/// Five chances in six hundred seeds, and each of those still has to survive being read, summed and
+/// cast to the function's return type. That is why 400 soak seeds run against the wave-249 defect
+/// found nothing.
+///
+/// The first version of this test counted only the top bit and **passed**, which is worth recording:
+/// an adequacy guard measuring one of two necessary conditions reports the coverage you hoped for.
+/// It is an adequacy guard in the shape §9 records for the memory-UB corpus — a channel that runs
+/// and cannot observe its subject is worse than one that does not run, because it reports coverage
+/// it does not have.
+///
+/// Only the parameterless shape is counted, because only there is the initializer a literal this
+/// test can read. That undercounts, which is the safe direction for a lower bound.
+#[test]
+fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
+    let mut top_set = 0usize;
+    let mut assigned = 0usize;
+    for seed in 1..=600u64 {
+        let (src, _) = program(seed);
+        // `  <type> fN:W;` — the declaration, giving each bit-field's width. A `Vec` rather than a
+        // map because the workspace disallows `HashMap` for determinism, and a struct has a
+        // handful of fields.
+        let mut width: Vec<(String, u32)> = Vec::new();
+        for l in src.lines() {
+            let t = l.trim();
+            if let Some(c) = t.find(':')
+                && let Some(semi) = t.find(';')
+                && semi > c
+                && !t.contains('(')
+                && let Ok(w) = t[c + 1..semi].parse::<u32>()
+                && let Some(name) = t[..c].rsplit(' ').next()
+            {
+                let uns = t.starts_with("unsigned");
+                width.push((name.to_string(), if uns { w } else { w | 0x1000 }));
+            }
+        }
+        if width.is_empty() {
+            continue;
+        }
+        // `  out.fN = (type)(K);` — the parameterless initializer, whose value is a literal.
+        for l in src.lines() {
+            let t = l.trim();
+            let Some(rest) = t.strip_prefix("out.") else {
+                continue;
+            };
+            let Some((name, val)) = rest.split_once(" = ") else {
+                continue;
+            };
+            let Some(&(_, w)) = width.iter().find(|(n, _)| n == name) else {
+                continue;
+            };
+            let Some(inner) = val.rsplit_once(")(").map(|x| x.1) else {
+                continue;
+            };
+            let Some(k) = inner.trim_end_matches(");").parse::<i64>().ok() else {
+                continue;
+            };
+            let signed_field = w & 0x1000 != 0;
+            let w = w & 0xfff;
+            assigned += 1;
+            if !signed_field && (k as u64) & (1u64 << (w - 1)) != 0 {
+                top_set += 1;
+            }
+        }
+    }
+    assert!(
+        assigned > 0,
+        "the scan must find bit-field initializers at all, or it is measuring nothing"
+    );
+    assert!(
+        top_set * 4 >= assigned,
+        "at least a quarter of bit-field initializers must be `unsigned` with the field's top \
+         bit set, or an extension defect is invisible to this channel: {top_set} of {assigned}"
+    );
+}
