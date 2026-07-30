@@ -213,3 +213,62 @@ fn every_corpus_c_file_matches_its_lowered_golden() {
         );
     }
 }
+
+/// **The corpus has to contain the shapes the goldens are supposed to certify.**
+///
+/// A golden quantifies over the corpus, so a construct no corpus file contains is a construct no
+/// golden holds fixed — and the goldens are what `shapes.rs` explicitly does *not* cover ("the parts
+/// nobody thought to name"). A review recorded in §9 read all thirteen files and found the whole
+/// corpus has **no pointer-typed global, no struct returned by value, no struct passed by value and
+/// no local array decaying to a pointer**. Six defects passed 1102 tests that way: every changed site
+/// was unreachable from the corpus.
+///
+/// This asserts the inventory rather than a golden's bytes, because the bytes are the mechanism and
+/// the coverage is the claim. It is textual and crude on purpose — the same trade the generator's
+/// shape counts make — and it fails loudly when a shape leaves rather than quietly certifying
+/// nothing.
+///
+/// (Wave 226 note, since §9 said to re-diagnose this item: it has nothing to do with `->`, which is
+/// already in `struct_walk.c` and `packed_header.c` and agrees with gcc on five hand-written shapes.
+/// The gap is *value* semantics for aggregates and pointer-typed storage at file scope.)
+#[test]
+fn the_c_corpus_exercises_pointer_and_aggregate_shapes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let dir = root.join("tests/corpus/c");
+    let mut all = String::new();
+    for e in std::fs::read_dir(&dir).expect("the C corpus exists") {
+        let p = e.expect("entry").path();
+        if p.extension().is_some_and(|x| x == "c") {
+            all.push_str(&std::fs::read_to_string(&p).expect("readable"));
+            all.push('\n');
+        }
+    }
+    // Each probe is a construct, with the reason it is not covered by the others.
+    let wanted: &[(&str, &str)] = &[
+        // A pointer-typed *global*: `AddrOfGlobal` plus a store, which wave 132 broke and
+        // wave 189 broke again in a different way (`GlobalInit` losing every address form).
+        ("a pointer-typed global", "*gp ="),
+        // Reading through it, which is the half that reads as null when the initializer is lost.
+        ("a load through a pointer global", "= *gp"),
+        // A struct **returned** by value: 020 has no aggregate values, so this is an sret slot,
+        // and waves 126-132 spent five waves on it.
+        ("a struct returned by value", "struct pair make_"),
+        // A struct **passed** by value, which is a copy the caller makes.
+        ("a struct passed by value", "(struct pair "),
+        // A local array decaying to a pointer, distinct from a global array's decay.
+        ("a local array decaying", "= local_arr"),
+    ];
+    let missing: Vec<&str> = wanted
+        .iter()
+        .filter(|(_, pat)| !all.contains(*pat))
+        .map(|(what, _)| *what)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the goldens quantify over this corpus, so these shapes are held fixed by nothing: \
+         {missing:?}"
+    );
+}
