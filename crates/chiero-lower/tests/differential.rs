@@ -2651,6 +2651,64 @@ fn dividing_long_doubles_agrees_with_gcc() {
     agree("return (int)(0x1.fffffffffffffffep0L / 1.0L == 0x1.fffffffffffffffep0L);");
 }
 
+/// **A NaN produced by arithmetic agrees with gcc.**
+///
+/// Division made this reachable: `0.0L / 0.0L` is how C creates a NaN, and until wave 242 there was
+/// no way to make one at all — which is why every `fp` unit test until now had to build its NaNs from
+/// raw bits.
+///
+/// # The payload question, settled by asking the hardware
+///
+/// §9 recorded this as a decision to make: whether minting a *canonical* quiet NaN is honest when
+/// IEEE-754 §6.2 says an operation should return the payload of one of its NaN operands. The answer
+/// is that the question does not arise, because x87's behaviour is small enough to implement exactly:
+///
+/// ```text
+///   an invalid operation      the "real indefinite": sign 1, significand 0xC000000000000000
+///   one NaN operand           that NaN, with the quiet bit set and everything else untouched
+///   two NaN operands          the one with the larger significand, its sign included
+/// ```
+///
+/// Every one of those was read off a running program rather than a manual, and with `volatile`
+/// operands so gcc could not fold them — the constant-folded and runtime answers agree, which is
+/// itself worth knowing. So there is no approximation here and nothing for 023 §7 to declare.
+///
+/// **`-x + y` is not among the fixtures**, and deliberately: gcc rewrites it to `y - x`, which is
+/// exact for every operand except a NaN, whose sign then comes from the other one. That is a
+/// difference between chiero and *this compiler's* algebra rather than between chiero and the format.
+#[test]
+fn a_nan_from_arithmetic_agrees_with_gcc() {
+    // **The definition of a NaN, as a C program can see it**: unordered with everything, itself
+    // included (IEEE-754 §5.11).
+    agree("long double n = 0.0L / 0.0L; return (int)(n != n);");
+    agree("long double n = 0.0L / 0.0L; return (int)(n == n);");
+    agree("long double n = 0.0L / 0.0L; return (int)(n < 1.0L);");
+    agree("long double n = 0.0L / 0.0L; return (int)(n > 1.0L);");
+    agree("long double n = 0.0L / 0.0L; return (int)(n <= n);");
+    // The other three invalid operations, each reaching the same NaN by a different route.
+    agree("long double i = 1.0L / 0.0L; long double n = i - i; return (int)(n != n);");
+    agree("long double i = 1.0L / 0.0L; long double n = i / i; return (int)(n != n);");
+    agree("long double i = 1.0L / 0.0L; long double n = 0.0L * i; return (int)(n != n);");
+    // **Propagation.** A NaN going into any of the four comes out of it.
+    agree("long double n = 0.0L / 0.0L; return (int)((n + 1.0L) != (n + 1.0L));");
+    agree("long double n = 0.0L / 0.0L; return (int)((n - 1.0L) != (n - 1.0L));");
+    agree("long double n = 0.0L / 0.0L; return (int)((n * 2.0L) != (n * 2.0L));");
+    agree("long double n = 0.0L / 0.0L; return (int)((n / 2.0L) != (n / 2.0L));");
+    agree("long double n = 0.0L / 0.0L; return (int)((1.0L + n) != (1.0L + n));");
+    agree("long double n = 0.0L / 0.0L; return (int)((2.0L / n) != (2.0L / n));");
+    // A NaN times a zero is still a NaN, which is the case an implementation keyed on the *other*
+    // operand's zero-ness would answer with a zero.
+    agree("long double n = 0.0L / 0.0L; return (int)((n * 0.0L) != (n * 0.0L));");
+    agree("long double n = 0.0L / 0.0L; return (int)((n + 0.0L) != (n + 0.0L));");
+    // And a NaN reaching an infinity does not become one.
+    agree("long double n = 0.0L / 0.0L, i = 1.0L / 0.0L; return (int)((n + i) != (n + i));");
+    agree("long double n = 0.0L / 0.0L, i = 1.0L / 0.0L; return (int)((n * i) != (n * i));");
+    // The control. Arithmetic that produces no NaN must still produce a number, or "everything is
+    // a NaN" would satisfy every assertion above.
+    agree("long double a = 6.0L, b = 3.0L; return (int)(a / b == 2.0L);");
+    agree("long double i = 1.0L / 0.0L; return (int)(i == i);");
+}
+
 /// **Adding and subtracting `long double`s agrees with gcc.**
 ///
 /// Harder than multiplication in three specific ways, which is why it went second.
