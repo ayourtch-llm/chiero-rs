@@ -1167,6 +1167,28 @@ impl MemFault {
         )
     }
 
+    /// The fault as a sentence, with the two things `chiero-mem` cannot know supplied by the
+    /// caller.
+    ///
+    /// `chiero-mem` has no module and no `SourceMap`, so it can name neither a variable nor a
+    /// line. The engine has both. Until wave 211 that was resolved by the engine *rewriting* the
+    /// rendered sentence — `.replace("ObjectId(3)", …)` and `.replace("source offset 85", …)` —
+    /// with each substitution reconstructing its own token from the fault so that the token
+    /// replaced was the one meant. Sound, and four layers deep, and the next one would not have
+    /// been.
+    ///
+    /// Here the arms compose the sentence from what they are given. [`std::fmt::Display`]
+    /// delegates with the defaults, so a caller with nothing to add still gets a sentence and the
+    /// two renderings cannot drift.
+    pub fn describe(
+        &self,
+        obj: &dyn Fn(ObjectId) -> String,
+        loc: &dyn Fn(Span) -> String,
+    ) -> String {
+        let _ = (obj, loc);
+        self.to_string()
+    }
+
     /// The **other** place this fault names, where it names one.
     ///
     /// A memory fault is often about two events: the access, and whatever made the memory

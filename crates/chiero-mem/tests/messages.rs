@@ -253,3 +253,82 @@ fn only_a_two_event_fault_has_a_secondary_location() {
          other fault has a second event to name"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// `describe`: the two things `chiero-mem` cannot know, supplied by the caller.
+//
+// The engine used to rewrite the finished sentence — `.replace("ObjectId(3)", …)` for the object
+// and `.replace("source offset 85", …)` for the location. Each substitution reconstructed its own
+// token from the fault, so each was sound; there were four layers of them, and the argument for
+// the fifth being sound too was getting thinner every wave. These tests pin the composed form.
+// ---------------------------------------------------------------------------------------------
+
+/// Every fault that names an object lets the caller name it.
+#[test]
+fn describe_uses_the_caller_s_name_for_the_object() {
+    let mut a = TermArena::new();
+    for f in every_fault(&mut a) {
+        let Some(o) = f.object() else { continue };
+        let s = f.describe(
+            &|got| {
+                assert_eq!(got, o, "the arm asks about the object the fault is about");
+                "THE-BUFFER".to_string()
+            },
+            &|_| "L".to_string(),
+        );
+        assert!(
+            s.contains("THE-BUFFER"),
+            "`{}` renders an object and must take it from the caller: {s:?}",
+            f.kind()
+        );
+        assert!(
+            !s.contains("ObjectId"),
+            "`{}` still renders the raw id, so a caller cannot replace it: {s:?}",
+            f.kind()
+        );
+    }
+}
+
+/// Every fault with a second event lets the caller render it.
+#[test]
+fn describe_uses_the_caller_s_rendering_for_the_location() {
+    let mut a = TermArena::new();
+    for f in every_fault(&mut a) {
+        let Some(ev) = f.secondary() else { continue };
+        let s = f.describe(&|_| "O".to_string(), &|got| {
+            assert_eq!(got, ev.at, "the arm asks about the event's own span");
+            "somewhere.c:9:4".to_string()
+        });
+        assert!(
+            s.contains("somewhere.c:9:4"),
+            "`{}` names a second place and must let the caller render it: {s:?}",
+            f.kind()
+        );
+        assert!(
+            !s.contains("source offset"),
+            "`{}` still renders a byte offset the caller cannot replace: {s:?}",
+            f.kind()
+        );
+    }
+}
+
+/// **`Display` and `describe` cannot drift.**
+///
+/// The control that makes this a refactor rather than a second implementation: `Display` must be
+/// `describe` with the defaults, for every variant, so there is one sentence per fault and not
+/// two that have to be kept in step.
+#[test]
+fn display_is_describe_with_the_defaults() {
+    let mut a = TermArena::new();
+    for f in every_fault(&mut a) {
+        let by_hand = f.describe(&|o| format!("{o:?}"), &|s| {
+            format!("source offset {}", s.lo.0)
+        });
+        assert_eq!(
+            f.to_string(),
+            by_hand,
+            "`{}` renders differently through the two entry points",
+            f.kind()
+        );
+    }
+}
