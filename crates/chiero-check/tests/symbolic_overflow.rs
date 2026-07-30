@@ -322,3 +322,106 @@ fn an_undecided_overflow_is_not_reported() {
         "tier 1 cannot decide this, and a guess is worse than silence: {lite:?}"
     );
 }
+
+// -------------------------------------------------------------------------------------------
+// The decision section 9 parked in wave 215, taken in wave 224.
+//
+// With unconstrained inputs *every* `x + y` admits an overflow, so reporting on satisfiability
+// puts a finding on every arithmetic instruction in every program that takes an argument. Wave
+// 215 shipped only the forced case and left the rest a decision.
+//
+// **Resolution: an opt-in, with its own kind.** This repo already has the pattern —
+// `UnionPun` is off by default because it is "for the projects that want the stricter reading
+// rather than for this one" — and the two readings here are equally legitimate. A caller auditing
+// a library whose inputs really are unconstrained wants every `x + y` flagged; a caller hunting
+// definite defects does not.
+//
+// The weaker claim is a *different kind*, `may-signed-overflow`, mirroring `may-be-out-of-bounds`
+// in the memory channel: 023 §6.1 makes the kind half the dedup key, so a reader filtering on
+// certainty can do it with one rule across both channels.
+// -------------------------------------------------------------------------------------------
+
+/// **An overflow the path admits is reported when asked for.**
+#[test]
+fn an_admitted_overflow_is_reported_when_the_caller_asks() {
+    let m = module(vec![block(
+        0,
+        vec![
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(0),
+                    rv: RValue::Fresh { ty: CTy::Int(32) },
+                },
+                5,
+            ),
+            inst(
+                InstKind::Assign {
+                    dst: ValueId(1),
+                    rv: RValue::Bin {
+                        op: BinOp::Add,
+                        ty: CTy::Int(32),
+                        a: Operand::Value(ValueId(0)),
+                        b: k(1),
+                        signed: true,
+                    },
+                },
+                10,
+            ),
+        ],
+        Terminator::Return(Some(Operand::Value(ValueId(1)))),
+    )]);
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m).with_admitted_overflow(true);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let f = e.run(&mut a).findings();
+    assert!(
+        f.iter().any(|s| s.starts_with("may-signed-overflow")),
+        "some value of `x` makes `x + 1` overflow, and the caller asked to be told: {f:?}"
+    );
+    assert!(
+        f.iter().all(|s| !s.starts_with("signed-overflow")),
+        "but the path does not *force* it, and the stronger kind would be a claim chiero \
+         cannot support: {f:?}"
+    );
+}
+
+/// A forced overflow keeps the definite kind even with the knob on. **The control.**
+///
+/// The knob adds a weaker report; it must not weaken a stronger one. A fix that routed every
+/// overflow through the new kind would satisfy the test above and lose the distinction the
+/// kinds exist for.
+#[test]
+fn the_knob_does_not_weaken_a_forced_overflow() {
+    let m = guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10);
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m).with_admitted_overflow(true);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let f = e.run(&mut a).findings();
+    assert!(
+        f.iter().any(|s| s.starts_with("signed-overflow")),
+        "every value this path allows overflows, which is the definite kind: {f:?}"
+    );
+}
+
+/// An overflow the path **forbids** is silent even with the knob on. **The control.**
+///
+/// `Unsat` is a proof, and the knob is about what to do with `Sat`. Without this, a knob that
+/// simply reported every arithmetic instruction would pass everything above.
+#[test]
+fn the_knob_does_not_invent_an_impossible_overflow() {
+    let m = guarded(BinOp::Add, CmpOp::SLt, 1000, 10);
+    let mut a = TermArena::new();
+    let mut e = Engine::new(&m).with_admitted_overflow(true);
+    for c in chiero_check::default_checkers() {
+        e = e.with_checker(c);
+    }
+    let f = e.run(&mut a).findings();
+    assert!(
+        f.iter().all(|s| !s.contains("overflow")),
+        "nothing on this path can overflow, whatever the caller asked for: {f:?}"
+    );
+}

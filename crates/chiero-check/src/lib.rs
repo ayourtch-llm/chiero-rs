@@ -382,6 +382,10 @@ fn ub_phrase(kind: UbKind) -> &'static str {
         UbKind::DivByZero => "division-by-zero",
         UbKind::Shift => "shift-past-operand-width",
         UbKind::SignedOverflow => "signed-overflow",
+        // The weaker claim gets the `may-` prefix the memory channel already uses for
+        // `may-be-out-of-bounds`, so the two channels read the same way and a reader filtering on
+        // certainty can do it with one rule.
+        UbKind::MaybeSignedOverflow => "may-signed-overflow",
         // **The compiler asked for this.** Wave 169 removed the catch-all from the engine's
         // `cmp` on the argument that a new variant should be a compile error rather than a
         // silent fallthrough; the same holds here, and adding `FloatCastOverflow` in the

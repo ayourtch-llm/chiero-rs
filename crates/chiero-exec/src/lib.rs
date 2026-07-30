@@ -162,6 +162,13 @@ pub enum UbKind {
     Shift,
     /// `UDiv`/`SDiv`/`URem`/`SRem` by zero.
     DivByZero,
+    /// A signed `Add`/`Sub`/`Mul` the path **allows** to overflow without forcing it.
+    ///
+    /// A different kind from `SignedOverflow` rather than the same kind with a softer detail,
+    /// because 023 §6.1 makes the kind half the dedup key: a reader grouping findings has to be
+    /// able to separate "this overflows" from "this can overflow", exactly as the memory channel
+    /// separates `out-of-bounds` from `may-be-out-of-bounds`.
+    MaybeSignedOverflow,
     /// A float-to-integer conversion whose value the destination cannot represent, NaN
     /// included (C11 6.3.1.4).
     ///
@@ -1488,6 +1495,8 @@ pub struct Engine<'m> {
     module: &'m Module,
     /// 023 §9: what turns a `BytePos` a fault carries into a line a reader can open.
     source_map: Option<&'m chiero_span::SourceMap>,
+    /// Whether an overflow the path merely admits is reported. See `with_admitted_overflow`.
+    admitted_overflow: bool,
     tier: SolverTier,
     next_state: u32,
     solver_calls: u64,
@@ -1556,6 +1565,7 @@ impl<'m> Engine<'m> {
             arena_bases: Vec::new(),
             module,
             source_map: None,
+            admitted_overflow: false,
             tier: SolverTier::default(),
             next_state: 0,
             solver_calls: 0,
@@ -1610,6 +1620,29 @@ impl<'m> Engine<'m> {
     /// saying that it made the assumption, which it does.
     pub fn with_fork_on_alias(mut self, on: bool) -> Self {
         self.fork_on_alias = on;
+        self
+    }
+
+    /// Report a signed overflow the path merely **admits**, as well as one it forces.
+    ///
+    /// **Off by default, and the default is the interesting half of the decision.** With
+    /// unconstrained inputs *every* `x + y` admits an overflow, so reporting on satisfiability
+    /// puts a finding on every arithmetic instruction in every program that takes an argument.
+    /// Wave 215 shipped only the forced case for that reason and §9 carried the rest as a
+    /// decision.
+    ///
+    /// This is the resolution, and it follows this repo's own precedent rather than inventing one:
+    /// `chiero_check::UnionPun` is off by default because it is "for the projects that want the
+    /// stricter reading rather than for this one". A caller auditing a library whose inputs are
+    /// genuinely unconstrained wants every `x + y` flagged; a caller looking for definite defects
+    /// does not. Both are legitimate, so it is a knob and not a verdict.
+    ///
+    /// The two answers are different *kinds*, not one kind with a different detail:
+    /// `signed-overflow` for a path that forces it and `may-signed-overflow` for one that allows
+    /// it, mirroring `out-of-bounds` against `may-be-out-of-bounds` in the memory channel. 023
+    /// §6.1 makes the kind half the dedup key, so a reader can group or filter on the distinction.
+    pub fn with_admitted_overflow(mut self, on: bool) -> Self {
+        self.admitted_overflow = on;
         self
     }
 
