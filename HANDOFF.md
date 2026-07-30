@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 251) — 1397 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 252) — 1398 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,7 +1572,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
-> ### 🔴 Do this first: the generator can construct the shape and still not observe it
+> ### 🔴 Do this first: raise the discriminating *rate*, not the seed count
+>
+> **Wave 251 ran the check wave 250 asked for and the hypothesis was wrong.** A struct with a
+> bit-field *does* reach the body: of 3000 seeds, 180 declare one as a local and **156 checksum its
+> fields**. The guard is `a_bitfield_struct_reaches_the_checksum`, kept so a later body-grammar
+> change cannot silently stop routing them.
+>
+> **What the numbers now say, as an estimate rather than a measurement.** For a program to be able to
+> observe an extension defect, four things must coincide, and each is roughly measured:
+>
+> ```text
+>   a bit-field struct reaches the checksum     156 / 3000   ~5%
+>   the field is `unsigned`                      15 / 44     ~1/3
+>   the stored value sets the field's top bit     9 / 15      ~1/2   (wave 250 raised this)
+>   the program is compared, not discarded       >= 100 / 200 ~1/2   (existing adequacy floor)
+> ```
+>
+> That multiplies to roughly **one discriminating program per two hundred seeds** — so the fixed
+> batch expects about one and the 700-seed soak about three. Observing zero is unlucky rather than
+> impossible, which is why "run more seeds" is the wrong instinct: the rate is the problem.
+>
+> **Two knobs worth trying, in order.** Both are cheap and both must be gated *before* any `rng` call
+> so the other channels' streams are unchanged (wave 250 learned that the hard way):
+>
+>   1. **Make a bit-field prefer an `unsigned` member.** The choice currently falls out of whichever
+>      fields happen to be `Ty::Int`/`Ty::UInt`, giving one in three. A `signed` bit-field cannot
+>      expose an extension defect at all, so this is a third of the coverage going to a case that is
+>      already covered by every other integer member.
+>   2. **Make the body's struct-local arm prefer a record that has a bit-field** when one exists.
+>      The arm picks uniformly from all records today.
+>
+> Either should be verified the same way: revert the `field_signed` fix in `chiero-lower`, run the
+> fixed batch, and see whether it now fails. That controlled experiment is the only thing that
+> settles it — the metrics above are proxies and wave 250 showed a proxy can improve while the goal
+> does not move.
+>
+> ### ~~🔴 the generator can construct the shape and still not observe it~~ — the routing half is answered
 >
 > **Wave 250 widened the generator's bit-field values and it did not catch wave 249's defect.** That
 > is the finding, and it is worth more than the widening. The controlled experiment: revert the
@@ -1597,6 +1633,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **A broken measurement confirms whatever you expected** (wave 251). The scan written to test §9's
+> routing hypothesis reported zero for every count — which reads exactly like the hypothesis being
+> right. It was reading the prelude; a generated program is two strings and the body is the second.
+> **What caught it was counting things the scan obviously should find** — any struct local, any
+> checksummed field — and seeing those come back zero too. Those controls are assertions in the test
+> now, not a step someone happened to take. Third wave running where a measurement overturned the
+> standing story, and the second where the measurement itself was broken in the direction of the
+> expected answer.
+>
+> **When a conjunction of four conditions is the coverage, multiply before adding seeds** (wave 251).
+> Observing an extension defect needs the struct routed, the field unsigned, the value in the
+> discriminating half, and the program compared — about `5% × 1/3 × 1/2 × 1/2`, or one program per
+> two hundred seeds. More seeds buys that rate linearly; fixing the weakest factor buys it in one
+> change. **Estimate the product before running the long job.**
+>
+> **A mutant that disables an assertion cannot be killed by that assertion** (wave 251). Two
+> survivors in this sweep were `true || X` on the guard's own asserts — a degenerate class worth
+> recognising rather than chasing, since no test can observe its own removal.
 >
 > **A generator can emit a construct, read it, and still be unable to observe a defect in it** (wave
 > 250). Bit-fields were generated in a quarter of programs and read in most of those, and 400 soak
