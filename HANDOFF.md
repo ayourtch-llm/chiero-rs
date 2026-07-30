@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 218) — 1346 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 219) — 1346 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -745,14 +745,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > two programs instead of enough to grade on — caught by the adequacy guard.
 > **Frontier: `SOAK_CF=1` clean to seed 900 after the fix; the plain grammar clean to 1600.**
 >
-> ### What to widen next, in the same way
+> ### The census, run — four constructs left unemitted
 >
-> The method is what carried this wave: enumerate what the AST/CIR can represent, subtract what the
-> generator emits, and pick from the difference. `StmtKind` still has forms the grammar never
-> produces — **`goto` and labels** (28 mentions in lowering, zero in the generator) — and the
-> expression grammar is worth the same census. Candidates the generator has never emitted:
-> `static` locals (a distinct storage duration), `do`-`while` with `continue`, nested `switch`,
-> a `switch` over an enum, and the comma operator in a `for` header.
+> Wave 218 ran it properly: count constructs in 200 *generated programs* of each grammar rather
+> than grepping the generator's source, which conflates its Rust with its output. Never emitted by
+> either grammar: **`goto`, `continue`, `sizeof`, `->`, `&&`, `||`**.
+>
+> `&&` and `||` are now generated, with the witness that makes short-circuiting observable, and
+> **900 comparisons over seeds 0..1500 came back clean**. `->` was probed by hand on five shapes —
+> read, write, through a global pointer, through a helper that mutates its argument, and pointer
+> arithmetic into an array of structs — and all five agree with gcc.
+>
+> **Remaining, in the order I would take them:**
+>
+>   - **`goto` and labels** — 28 mentions in lowering, zero emitted. Forward jumps only, or a
+>     generated program can fail to terminate and the comparison hangs; that constraint is what
+>     makes this a small arm rather than a hard one. A forward `goto` out of a nested block also
+>     exercises scope exit, which `Scope(Exit)` and wave 210's `hi - 1` rule both depend on.
+>   - **`continue`** — the arm the `for`/`do`-`while` bodies never use, and the one place where a
+>     loop's increment is skipped rather than the loop left.
+>   - **`sizeof`** — a compile-time constant lowering must fold, and the generator has never asked
+>     for one.
+>   - **`->` in the *generator*** rather than by hand. It is clean on five fixtures, which is not
+>     the same as clean across a corpus, and `tests/corpus/c/pointer_fields.c` is still owed.
+>
+> **The knob and the frontier:** new arms go behind `control_flow`, gated *before* any `rng` call so
+> the other channels stay byte-identical. `control_flow_programs_agree_with_gcc` is the fixed batch
+> (124 comparisons); `SOAK_CF=1 SOAK_LO=.. SOAK_HI=..` searches open-ended. Frontier: `SOAK_CF=1`
+> clean to 1500, plain grammar clean to 1600.
 >
 > ### The three parked decisions, unchanged
 >
@@ -1172,6 +1192,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **Census the generator's *output*, not its source** (wave 218). Grepping `generated.rs` for
+> `continue` counts the generator's own Rust control flow; generating two hundred programs and
+> counting constructs in them found six C constructs neither grammar had ever emitted. The
+> measurement has to be taken on the artifact, not on the thing that makes it.
+>
+> **A clean soak after a grammar extension is a result, not a null result** (wave 218). 900
+> comparisons over the new `&&`/`||` shapes found nothing, which says short-circuit lowering is
+> sound — worth recording as an interval, because the next person to suspect it should know it was
+> looked at and how hard.
+>
+> **A coverage assertion may have to be a count rather than a universal** (wave 218). "Every
+> short-circuit's witness is checksummed" failed on the *correct* code: a short-circuit inside a
+> nested block has its variables truncated at the closing brace, because out of scope is out of the
+> checksum. The count version still kills the mutant that stops observing the shape entirely.
 >
 > **When a fuzzer comes back clean, widen the grammar rather than the seed range** (wave 217). 490
 > comparisons found nothing; two new statement forms found a defect in 700 seeds. The generator can
