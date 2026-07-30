@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 234) — 1368 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 235) — 1369 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,39 +778,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: `FpExt`/`FpTrunc` between 64 and 80, then arithmetic
+> ### 🔴 x87: `FpTrunc 80 -> 64`, the first step with a rounding decision
 >
-> **The format has one home now.** `chiero_cir::fp` owns `from_f64`, `from_u64`, `trunc_to_int` and
-> `out_of_int_range`; `chiero-lower` and `chiero-exec` both call it and neither has a copy.
-> `chiero-cir` is the only crate below both, and `FloatKind::X87_80` is defined there.
+> Everything *into* x87 is now exact and everything out of it to an integer is too:
 >
-> **The layering corrected a mistake while this moved.** Wave 232 had put the integral-literal
-> *encoding* in `chiero-sema`, and relocating it failed to compile: sema runs before CIR exists, so
-> 001 §4 puts CIR below it. That is the seam — "is this literal an integer" is syntactic and stays in
-> sema (`integral_float_literal`, returning a `u64`), "what does 2^62 + 1 look like in eighty bits" is
-> a target format and lives beside `FloatKind`. **If a shared home refuses to compile, the split is
-> probably in the wrong place rather than the home.**
+> | | |
+> |-|-|
+> | literal, integral decimal | exact (wave 232) |
+> | literal, hex | exact (wave 231) |
+> | `SiToFp`/`UiToFp` -> 80 | exact (wave 233) |
+> | `FpExt` 32/64 -> 80 | exact (wave 234) |
+> | `FpToSi`/`FpToUi` 80 -> n | exact (wave 230) |
+> | `FNeg` on 80 | exact (wave 230) |
+> | literal, fractional decimal | **rounded through `f64`** |
+> | `FpTrunc` 80 -> 64/32 | **declared gap** |
+> | comparison, arithmetic | **declared gap** |
 >
-> **`SiToFp`/`UiToFp` to width 80 are exact.** They take the integer rather than the `f64` the other
-> widths use: `f64` is at least as wide as every narrower target, and *narrower* than x87, so a 64-bit
-> integer past 2^53 would arrive pre-rounded. `i64::MIN` is why magnitude and sign are passed
-> separately — `unsigned_abs` needs the bit a negation inside `i64` does not have.
+> **`FpTrunc` is next and it is the first one that needs a rule.** Narrowing 80 to 64 discards eleven
+> bits of significand, so it wants round-to-nearest-even and fixtures on the ties — a value exactly
+> halfway between two `f64`s must round to the even one, and gcc is the oracle for each. The gap is
+> currently held by `as_f64` refusing width 80 as a *source*, which is the line to change; that same
+> refusal is what keeps `FpExt` (widening, exact) and `FpTrunc` (narrowing, a decision) in one arm
+> without either borrowing the other's behaviour.
 >
-> ### What remains, in order
+> **The disjunction test now guards it actively.** `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled`
+> carries a `double d = x;` fixture, so a `FpTrunc` that produces a plausible number instead of a
+> declared gap fails. Wave 228 labelled that test a forward contract because no mutation defeated it;
+> wave 234's sweep found the mutant it could not see (`as_f64` accepting 80 reads an `f80` as `f64`
+> bits), and the fixture closed it. **It is now a regression guard, and the label in §9 should stay
+> accurate as that changes.**
 >
->   1. **`FpExt 64 -> 80`** — exact, and now a one-line call to `fp::from_f64` at the `fw`/`tw`
->      guard in `fcast`. Probably the cheapest remaining step.
->   2. **`FpTrunc 80 -> 64`** — the first step that needs a *rounding* decision (round-to-nearest-even
->      over eleven discarded bits), so it wants its own wave and gcc fixtures on the ties.
->   3. **Comparison** (`FOLt` and siblings) — decidable on the exact patterns without arithmetic, and
->      worth doing before arithmetic because a comparison needs no soft-float.
->   4. **Arithmetic** — the soft-float with a 64-bit significand. `fbin`'s comment declines to write
->      it for one operation; all of them together is the milestone.
+> Then: comparison (`FOLt` and siblings — decidable on the exact patterns, no soft-float needed), and
+> arithmetic last.
 >
 > **Still open on literals:** a *fractional* decimal `long double` is parsed at `f64` precision, and
-> `float_literal`'s comment still calls that "a narrowing this records rather than hides" while nothing
-> records it. Hex float literals parse exactly (wave 231), so an exact value can always be written in
-> source.
+> `float_literal`'s comment still calls that "a narrowing this records rather than hides" while
+> nothing records it. Hex literals are the exact workaround.
 >
 > ### What else is left
 >
@@ -1274,6 +1277,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **One refusal can keep two behaviours apart** (wave 234). `FpExt` and `FpTrunc` share an arm, and
+> `as_f64` refusing width 80 as a *source* is the whole reason widening became exact while narrowing
+> stayed a declared gap. Adding the widening was one line because that refusal already separated
+> them. **When two operations differ only in direction, find the one guard that distinguishes them
+> rather than splitting the code.**
+>
+> **A forward contract becomes a regression guard, and the label should follow** (wave 234). Wave 228
+> recorded the `long double` disjunction as untestable-by-mutation and said so rather than claiming
+> coverage. This wave's sweep found the mutant it could not see and one fixture closed it. The honest
+> label changed, and §9 now says which kind of test it is — **a claim about a test's strength has a
+> date on it.**
 >
 > **If a shared home refuses to compile, the split is in the wrong place** (wave 233). Moving the
 > integral-literal encoder from `chiero-sema` to `chiero-cir` failed, because sema runs before CIR
