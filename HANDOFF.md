@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 235) — 1369 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 236) — 1370 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,42 +778,43 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔴 x87: `FpTrunc 80 -> 64`, the first step with a rounding decision
+> ### 🔴 x87: every literal path still rounds through `f64` — that is the one thing left blocking
 >
-> Everything *into* x87 is now exact and everything out of it to an integer is too:
+> `FpTrunc 80 -> 64` landed in wave 235, rounding to nearest with ties to even — obtained from
+> `sig as f64` rather than hand-rolled, since that *is* the target's default rule and scaling by a
+> power of two afterwards is exact. Subnormal results, NaN and `-> f32` return `None` and declare
+> themselves, each for a stated reason.
 >
-> | | |
-> |-|-|
-> | literal, integral decimal | exact (wave 232) |
-> | literal, hex | exact (wave 231) |
-> | `SiToFp`/`UiToFp` -> 80 | exact (wave 233) |
-> | `FpExt` 32/64 -> 80 | exact (wave 234) |
-> | `FpToSi`/`FpToUi` 80 -> n | exact (wave 230) |
-> | `FNeg` on 80 | exact (wave 230) |
-> | literal, fractional decimal | **rounded through `f64`** |
-> | `FpTrunc` 80 -> 64/32 | **declared gap** |
-> | comparison, arithmetic | **declared gap** |
+> **And its tie fixtures do not test the tie**, which mutation found: replacing the rounding with a
+> truncation changed nothing.
 >
-> **`FpTrunc` is next and it is the first one that needs a rule.** Narrowing 80 to 64 discards eleven
-> bits of significand, so it wants round-to-nearest-even and fixtures on the ties — a value exactly
-> halfway between two `f64`s must round to the even one, and gcc is the oracle for each. The gap is
-> currently held by `as_f64` refusing width 80 as a *source*, which is the line to change; that same
-> refusal is what keeps `FpExt` (widening, exact) and `FpTrunc` (narrowing, a decision) in one arm
-> without either borrowing the other's behaviour.
+> ```text
+>   0x1.00000000000008p0L  (1 + 2^-53)    -> fconst:f80:0x3fff8000000000000000   (= 1.0)
+>   0x1.00000000000018p0L  (1 + 3·2^-53)  -> fconst:f80:0x3fff8000000000001000   (= 1 + 2^-51)
+> ```
 >
-> **The disjunction test now guards it actively.** `long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled`
-> carries a `double d = x;` fixture, so a `FpTrunc` that produces a plausible number instead of a
-> declared gap fails. Wave 228 labelled that test a forward contract because no mutation defeated it;
-> wave 234's sweep found the mutant it could not see (`as_f64` accepting 80 reads an `f80` as `f64`
-> bits), and the fixture closed it. **It is now a regression guard, and the label in §9 should stay
-> accurate as that changes.**
+> **`hex_float` returns an `f64`**, so a literal needing more than fifty-three significant bits is
+> rounded at parse time and the conversion has nothing left to decide. This also corrects wave 231's
+> claim: hex literals are exact in *syntax*, not in the pipeline.
 >
-> Then: comparison (`FOLt` and siblings — decidable on the exact patterns, no soft-float needed), and
-> arithmetic last.
+> **So the literal is the front, and it is now the only thing blocking the rest of the milestone.**
+> Three paths hand out an `f64` and each needs the same treatment wave 233 gave the integral one:
 >
-> **Still open on literals:** a *fractional* decimal `long double` is parsed at `f64` precision, and
-> `float_literal`'s comment still calls that "a narrowing this records rather than hides" while
-> nothing records it. Hex literals are the exact workaround.
+>   | path | hands out | should hand out |
+>   |-|-|-|
+>   | `integral_float_literal` | `u64` ✔ (wave 233) | — |
+>   | `hex_float` | `f64` | mantissa + binary scale |
+>   | `float_literal` (decimal, fractional) | `f64` | needs arbitrary precision, or a *declared* narrowing |
+>
+> `hex_float` is the tractable one and unblocks the tie fixtures immediately: the digits are already
+> binary, so a `u64` mantissa and an `i32` scale reach `fp::from_u64`-style encoding without a rounding
+> decision. **Do that next**, then the wave-235 fixtures start testing what they claim and
+> `rounds-by-truncation`, `subnormal-not-a-gap` and `nan-becomes-infinity` become killable.
+>
+> The fractional decimal case stays what it has been: `float_literal`'s comment calls it "a narrowing
+> this records rather than hides" and nothing records it.
+>
+> Then: comparison (`FOLt` and siblings — exact on the patterns, no soft-float), and arithmetic last.
 >
 > ### What else is left
 >
@@ -1277,6 +1278,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A fixture can measure the wrong layer and still pass** (wave 235). The tie fixtures for
+> round-to-nearest-even were rounded by the *parser* before the conversion saw them, so they agreed
+> with gcc for a reason that had nothing to do with the code under test — and a truncating
+> implementation passed all of them. **Mutation is what distinguishes "passes" from "tests"**, and
+> four survivors on a five-mutant sweep is the signal to stop and ask what the fixtures actually
+> reach.
+>
+> **The same seam appears three times before you name it** (wave 235). `integral_float_literal`
+> handed out an `f64` (wave 232, fixed 233), `hex_float` hands out an `f64`, and `float_literal` hands
+> out an `f64`. Each was found separately as "this one loses precision"; they are one design decision
+> — the front end answers in `f64` — and the fix is the same each time. **When a defect recurs in a
+> third place, describe the shape rather than the instance.**
 >
 > **One refusal can keep two behaviours apart** (wave 234). `FpExt` and `FpTrunc` share an arm, and
 > `as_f64` refusing width 80 as a *source* is the whole reason widening became exact while narrowing
