@@ -226,3 +226,30 @@ fn the_list_covers_every_variant() {
          here as sixteen: {kinds:?}"
     );
 }
+
+/// **Only a fault about two events has a second location.**
+///
+/// `secondary()` feeds the engine's location rendering, and the engine replaces a span it gets
+/// back into the message. A fault with one event has nothing to put there, and answering with
+/// the *access* span instead would eventually name the wrong place — the failure mode
+/// `the_line_named_is_the_free_and_not_the_access` guards on the engine's side, one layer down.
+///
+/// Mutation is why this exists as its own test: making `secondary()` a catch-all that returns
+/// `at()` changed nothing observable, because only three messages render a location today. It is
+/// the fourth one that would be silently wrong, so the contract is asserted where it is stated
+/// rather than where it currently happens to matter.
+#[test]
+fn only_a_two_event_fault_has_a_secondary_location() {
+    let mut a = TermArena::new();
+    let with: Vec<&str> = every_fault(&mut a)
+        .iter()
+        .filter(|f| f.secondary().is_some())
+        .map(MemFault::kind)
+        .collect();
+    assert_eq!(
+        with,
+        vec!["use-after-free", "double-free", "use-after-scope"],
+        "these three name where the memory died as well as where it was touched, and no \
+         other fault has a second event to name"
+    );
+}
