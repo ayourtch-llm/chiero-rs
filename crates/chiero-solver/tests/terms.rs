@@ -643,3 +643,53 @@ fn extract_of_extract_shifts_by_the_inner_lo() {
         a.to_smtlib(deeper)
     );
 }
+
+/// **`select_expand`'s bound is a bound**, and refusing past it is the whole point.
+///
+/// `select` stops at the first store it cannot compare with the index, which is right for a value.
+/// `select_expand` builds the comparison instead, so an array question reaches a solver as plain
+/// bitvector arithmetic — and the cost of that is one `ite` per store, so an unbounded expansion
+/// turns a linear chain into a formula that grows with every store ever made to the object.
+///
+/// Mutation is why this is here: deleting the limit check changed nothing observable anywhere in
+/// the tree, because a caller that gets a large formula still gets a *correct* one. The bound's
+/// effect is on size alone, `TermArena` exposes no node count, and the API is public — so this
+/// asserts it where it is decided rather than through a symptom four crates away.
+#[test]
+fn select_expand_refuses_a_chain_longer_than_its_limit() {
+    let mut a = TermArena::new();
+    let mut arr = a.array_const(8, 8, 0);
+    let one = a.bv(8, 1);
+    for k in 0..300u128 {
+        let i = a.bv(8, k % 256);
+        arr = a.store(arr, i, one);
+    }
+    let probe = a.var(Sort::BitVec(8), "i");
+    assert!(
+        a.select_expand(arr, probe, 256).is_none(),
+        "300 stores past a limit of 256 must be refused, not expanded"
+    );
+    assert!(
+        a.select_expand(arr, probe, 512).is_some(),
+        "and the same chain under a limit that admits it must expand"
+    );
+}
+
+/// A chain that bottoms out in something other than a constant array is refused too.
+///
+/// The other half of `None`, and separate because a fix keyed on length alone would pass the test
+/// above. An expansion has to end somewhere: without a known base value there is no innermost
+/// `ite` to build, and answering anyway would mean inventing one.
+#[test]
+fn select_expand_refuses_a_chain_with_no_constant_base() {
+    let mut a = TermArena::new();
+    let base = a.var(Sort::Array { idx: 8, elem: 8 }, "a");
+    let i = a.bv(8, 3);
+    let v = a.bv(8, 7);
+    let arr = a.store(base, i, v);
+    let probe = a.var(Sort::BitVec(8), "i");
+    assert!(
+        a.select_expand(arr, probe, 256).is_none(),
+        "a symbolic array has no base value to end the expansion with"
+    );
+}
