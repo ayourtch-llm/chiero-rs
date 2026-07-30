@@ -2182,11 +2182,17 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         "long double x = 1.0L; x = x / 3.0L; return (int)(x * 300000);",
         "long double a = 1.0L, b = 3.0L; return (int)(a / b > 0.333);",
         "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
-        // The defect wave 237 found and wave 238 fixed: an unmodelled `FMul` used to leave the
-        // destination holding the stale pre-multiplication value, so this answered with a *number*
-        // that was wrong rather than declaring a gap.
-        "long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);",
-        "long double x = 2.0L; x = x * 3.0L; return (int)x;",
+        // The defect wave 237 found and wave 238 fixed: an unmodelled operation used to leave the
+        // destination holding the stale value, so this answered with a *number* that was wrong
+        // rather than declaring a gap. `FDiv` is still unmodelled, so it still exercises that path.
+        "long double x = 2.0L; x = x / 3.0L; return (int)x;",
+        // **Hexadecimal, and wave 239 is why.** This was `1e300L * 1e10L > 1e309L`, and the moment
+        // multiplication started working it returned a wrong *number*: `1e309L` is a decimal
+        // literal, decimal literals are still parsed at `f64` precision, and 1e309 overflows `f64`
+        // to infinity — so the comparison asked whether 1e310 exceeds infinity and answered no.
+        // The rounding was harmless while arithmetic was a gap and is not any more, which is why
+        // §9 moved it to the front.
+        "long double x = 0x1p1000L; x = x * 0x1p1000L; return (int)(x > 0x1p1999L);",
     ] {
         let expected = match gcc_answer("", body) {
             Ok(v) => v,

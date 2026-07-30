@@ -241,3 +241,83 @@ pub fn is_nan(bits: u128) -> bool {
 pub fn is_zero(bits: u128) -> bool {
     (bits >> 64) & INF_EXP == 0 && bits & u128::from(u64::MAX) == 0
 }
+
+/// The product of two patterns, rounded to nearest with ties to even.
+///
+/// **Exact before it rounds, which is what makes multiplication the operation to do first.** Two
+/// sixty-four-bit significands multiply into a hundred and twenty-eight bits — a `u128` holds the
+/// whole product with nothing lost — so the only decision is how to put it back into sixty-four, and
+/// that decision is made once, on the exact value. Addition would need the operands aligned first and
+/// division would need a loop; this needs neither.
+///
+/// `None` where an answer would be a guess rather than a value:
+///
+///   - **a subnormal or underflowed result**, which needs denormal shifting this does not do
+///   - **a NaN operand**, whose payload is not propagated
+///   - **zero times infinity**, which IEEE-754 §7.2 makes an invalid operation producing a NaN
+///
+/// Overflow is *not* a gap: past the top exponent the answer is an infinity, which §7.4 requires.
+pub fn mul(x: u128, y: u128) -> Option<u128> {
+    let neg = (x >> 79 & 1) ^ (y >> 79 & 1) == 1;
+    let sign = u128::from(neg) << 79;
+    if is_nan(x) || is_nan(y) {
+        return None;
+    }
+    let (inf_x, inf_y) = (is_inf(x), is_inf(y));
+    let (zero_x, zero_y) = (is_zero(x), is_zero(y));
+    if (inf_x && zero_y) || (inf_y && zero_x) {
+        // 0 × ∞ is the invalid operation, and its result is a NaN this does not mint.
+        return None;
+    }
+    if inf_x || inf_y {
+        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
+    }
+    if zero_x || zero_y {
+        return Some(sign);
+    }
+    let (ex, ey) = (((x >> 64) & INF_EXP) as i64, ((y >> 64) & INF_EXP) as i64);
+    // An x87 denormal is far below anything this can normalize back, so it is a gap rather than a
+    // zero — a zero would be a confident answer about a value that is merely very small.
+    if ex == 0 || ey == 0 {
+        return None;
+    }
+    let (sx, sy) = (x & u128::from(u64::MAX), y & u128::from(u64::MAX));
+    let prod = sx * sy;
+    // Both operands have the integer bit set, so the product's bit 127 or 126 is — one normalization
+    // step at most, and which one it is decides the exponent.
+    let (sig, extra, exp_adj) = if prod >> 127 & 1 == 1 {
+        (prod >> 64, prod & u128::from(u64::MAX), 1i64)
+    } else {
+        (
+            (prod >> 63) & u128::from(u64::MAX),
+            (prod << 1) & u128::from(u64::MAX),
+            0,
+        )
+    };
+    // Round to nearest, ties to even, on the sixty-four bits being discarded. The tie is exactly
+    // half, and it goes to the candidate whose low bit is already zero.
+    let half = 1u128 << 63;
+    let mut sig = sig;
+    let mut exp = ex + ey - i64::from(BIAS) + exp_adj;
+    if extra > half || (extra == half && sig & 1 == 1) {
+        sig += 1;
+        // Rounding up can carry out of the significand, which is another normalization step: the
+        // value becomes a power of two and the integer bit moves.
+        if sig >> 64 & 1 == 1 {
+            sig >>= 1;
+            exp += 1;
+        }
+    }
+    if exp >= i64::from(INF_EXP as u32) {
+        return Some(sign | (INF_EXP << 64) | (1u128 << 63));
+    }
+    if exp <= 0 {
+        return None;
+    }
+    Some(sign | (u128::try_from(exp).ok()? << 64) | sig)
+}
+
+/// Whether a pattern is an infinity: the all-ones exponent with the bare integer bit.
+pub fn is_inf(bits: u128) -> bool {
+    (bits >> 64) & INF_EXP == INF_EXP && (bits & u128::from(u64::MAX)) == 1u128 << 63
+}

@@ -8005,8 +8005,12 @@ fn fbin(a: &mut TermArena, op: BinOp, x: Term, y: Term) -> Option<Term> {
             );
             u128::from(fop64(op, p, q)?.to_bits())
         }
-        // x87's 80-bit extended format has no Rust primitive, and emulating it to get one
-        // operation right would be a second float implementation nobody tests.
+        // **x87 multiplication, which needs no `f64` and no loop.** The comment here used to say
+        // emulating the format "to get one operation right would be a second float implementation
+        // nobody tests" — a correct judgement about one operation before `chiero_cir::fp` existed,
+        // and the wrong one now that the format lives in one place and is tested. The other three
+        // operations still fall through and still declare themselves.
+        80 if op == BinOp::FMul => chiero_cir::fp::mul(xc.bits(), yc.bits())?,
         _ => return None,
     };
     Some(a.bv(w, bits))
