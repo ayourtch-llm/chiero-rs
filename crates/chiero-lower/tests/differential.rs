@@ -2744,6 +2744,69 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     );
 }
 
+/// **An `unsigned` bit-field whose top bit is set reads back sign-extended.**
+///
+/// Found while writing a fixture for something else entirely: `struct S { unsigned a : 3; }` with
+/// `s.a = 5` returns **-3**, and `5` is `0b101` — sign-extended from three bits, that is exactly
+/// -3. The width is respected and the *signedness* is not.
+///
+/// C11 6.7.2.1p10 gives a bit-field the declared type's signedness, so an `unsigned` field zero-
+/// extends. Nothing here is exotic: three bits, one assignment, one read.
+///
+/// **Why a hundred waves of differential testing missed it.** The generator emits bit-fields (wave
+/// 142) but the value has to have its *top* bit set for the two extensions to differ — `s.a = 3` in
+/// three bits is `0b011` and reads back 3 either way. Half the values of any width are invisible to
+/// this bug, and the small ones a fixture author reaches for are exactly the invisible half.
+#[test]
+fn an_unsigned_bitfield_zero_extends() {
+    // Every width where the top bit is set, so the two extensions disagree.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 5; return s.a;",
+    );
+    agree_with(
+        "struct S { unsigned a : 1; };\n",
+        "struct S s; s.a = 1; return s.a;",
+    );
+    agree_with(
+        "struct S { unsigned a : 4; };\n",
+        "struct S s; s.a = 9; return s.a;",
+    );
+    agree_with(
+        "struct S { unsigned a : 7; };\n",
+        "struct S s; s.a = 100; return s.a;",
+    );
+    agree_with(
+        "struct S { unsigned a : 31; };\n",
+        "struct S s; s.a = 0x7fffffff; return s.a;",
+    );
+    // A *signed* bit-field must still sign-extend, which is the control that stops the fix from
+    // simply never extending.
+    agree_with(
+        "struct S { signed a : 3; };\n",
+        "struct S s; s.a = -3; return s.a;",
+    );
+    agree_with(
+        "struct S { signed a : 4; };\n",
+        "struct S s; s.a = -8; return s.a;",
+    );
+    // And values with the top bit clear, which read back the same either way — the controls that
+    // hid this for a hundred waves.
+    agree_with(
+        "struct S { unsigned a : 3; };\n",
+        "struct S s; s.a = 3; return s.a;",
+    );
+    agree_with(
+        "struct S { signed a : 4; };\n",
+        "struct S s; s.a = 3; return s.a;",
+    );
+    // A second field after it, so the shift is exercised as well as the mask.
+    agree_with(
+        "struct S { unsigned a : 3; unsigned b : 5; };\n",
+        "struct S s; s.a = 5; s.b = 17; return s.b;",
+    );
+}
+
 /// **Subnormal `long double`s — the last float gap, and it is a wrong answer rather than a gap.**
 ///
 /// x87's smallest normal is `2^-16382`; below it the format keeps going with the integer bit *clear*
