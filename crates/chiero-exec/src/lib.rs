@@ -216,6 +216,12 @@ pub struct Finding {
     pub witness: Option<Witness>,
     /// Why there is no witness. The absence is allowed; the silence is not.
     pub unwitnessed: Option<String>,
+    /// **The other place this finding is about**, where there is one — the `free`, or the
+    /// scope's end. `span` is where the bug *is*; this is what made it one.
+    ///
+    /// Carried as data because the message carries it as prose, and a consumer offering "jump to
+    /// the free" should not have to parse a sentence to do it.
+    pub related: Option<chiero_mem::SecondEvent>,
     /// The fidelity of the path this was found on — not the run's. A definite fault on an
     /// `Exact` path stays actionable in a run some *other* path degraded.
     pub fidelity: Fidelity,
@@ -996,6 +1002,7 @@ impl RunResult {
                 id: f.id,
                 message: f.message.clone(),
                 span: f.span,
+                related: None,
                 // **This finding's own witness when it has one.** A report that recorded
                 // a condition was solved separately, because the state's single witness
                 // cannot satisfy two findings that need different inputs. Falling back to

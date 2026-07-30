@@ -1236,6 +1236,23 @@ impl MemFault {
     }
 }
 
+/// **The second event a memory fault names**, as data rather than as prose.
+///
+/// A use-after-free is about two places: the access, and the `free`. 023 §9 wants a report a
+/// person can act on, and a consumer that has to parse "was freed earlier on this path
+/// (t.c:5:1)" out of a sentence to offer "jump to the free" will not bother.
+///
+/// The label travels with the span because a location alone does not say what is *at* it. A
+/// reader shown two file positions needs to know which is the bug and which is the cause, and
+/// deriving that from the finding's kind would make every consumer re-implement the mapping this
+/// type states once.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SecondEvent {
+    pub at: Span,
+    /// A phrase that can stand beside a location: "freed here", "scope ended here".
+    pub what: &'static str,
+}
+
 /// A sentence, not a struct dump. The findings a run produces are the product — 001 §1
 /// puts an LLM at the other end of them — and `Uninitialized { obj: ObjectId(2), off: 0,
 /// bit: 0, at: Span { lo: BytePos(0), … } }` makes a reader decode chiero's internals to
