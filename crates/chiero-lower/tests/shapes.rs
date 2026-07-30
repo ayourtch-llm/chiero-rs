@@ -388,6 +388,12 @@ fn an_x87_literal_is_encoded_in_eighty_bits() {
         // Zero is all-zero in both formats, and is the control: a fix that shifted every payload
         // unconditionally would still get this one right, and that is the point of including it.
         ("0.0L", "0x0"),
+        // **A fraction, whose bits truncation cannot see.** Wave 232 added an exact path for
+        // *integral* `long double` literals, and a version of it that accepted `2.5L` and threw the
+        // fraction away passed every value comparison — because `(int)` of 2.5 and of 2.0 are both
+        // 2, and arithmetic that could tell them apart is still a gap. The pattern is where the
+        // difference lives.
+        ("2.5L", "0x4000a000000000000000"),
     ] {
         let t = print(&lower(&format!(
             "int probe(void){{ long double x = {lit}; return (int)x; }}"
