@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 246) — 1391 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 247) — 1393 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -909,12 +909,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      to being claims about the quotient rather than the result, since `pack` re-rounds subnormals
 >      where ties and carries are ordinary. Verified by 1,980,000 soak cases against gcc's own x87.
 >
->   3. **Narrowing `long double` to `float`** — the float gap that is left, and the one the
->      disjunction test now exercises. `fcast` rounds `f80` to `f64` and lets the target round that
->      to `f32`; double rounding differs from a single correctly rounded step for some values, so it
->      refuses. The fix is to round `f80` straight to twenty-four significand bits, which `pack`'s
->      shape already suggests — it is the same denormal-and-round problem at a different width, and
->      generalizing `pack` over the target's significand width is probably the whole of it.
+>   3. ~~**Narrowing `long double` to `float`**~~ **Done in wave 246, and the guess about how was
+>      right.** `pack`'s body is now `round_to`, parameterized by significand width: the three
+>      decisions — round to nearest with ties to even, shift right instead of normalizing below the
+>      floor, promote a subnormal whose rounding carries into the integer bit — are the same at
+>      twenty-four bits as at sixty-four, and only the cut moves (`127 - width`). `fp::to_f32` stages
+>      the significand and rebases the exponent; `round_to` knows nothing about bias. Soaked at
+>      480,000 narrowings against the target, in debug.
+>
+>      **A NaN keeps the twenty-three bits under its integer bit, with the quiet bit forced on.**
+>      Forcing it is load-bearing: a payload living entirely below bit 40 truncates to nothing, and a
+>      `float` with an all-ones exponent and a zero fraction is an *infinity*.
+>
+>      **With this, floats are done.** Every conversion and all four operations are exact across
+>      x87's whole finite range and both narrowings, verified by about 2.4 million cases against
+>      gcc's own arithmetic. What remains under "floats" is only item 4.
 >   4. **Symbolic floats** — still needs an FP theory in the solver or a bit-blasted encoding.
 >
 > **The verification pattern, which all four operations used and the next float work should:** exact
@@ -1411,6 +1420,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **A release-built soak cannot see an arithmetic panic** (wave 246). Factoring `pack`'s body into a
+> width-parameterized `round_to` introduced `sig >> width`, which at width sixty-four is a shift of
+> sixty-four on a `u64` — an overflow in its own right. 960,000 soak cases passed while the debug
+> test suite panicked, because `--release` turns off exactly the checks that catch it. **Run the soak
+> in debug too**, and remember that a passing soak is evidence about answers, not about panics.
+>
+> **Three samples cannot distinguish two rules** (wave 246). Probing the target with three hand-picked
+> NaNs said narrowing drops the payload; all three happened to carry their bits *below* the
+> twenty-three that survive, so truncation and a canonical answer were indistinguishable. A
+> 480,000-case soak disagreed on one in ten. Wave 243's "ask the hardware" is right and incomplete —
+> **ask it with inputs that could tell the answers apart**, which means picking probes against the
+> hypotheses rather than for readability.
+>
+> **`x != x` is a test of NaN-ness and no test of which NaN** (wave 246, and 243 before it). Every C
+> fixture for a narrowed NaN asked exactly that, so three payload mutants survived a suite that
+> looked thorough. The lesson belongs to the shape of the assertion rather than to the format, since
+> it had to be learned twice — at eighty bits and again at thirty-two.
+>
+> **A flake is worth reproducing before it is worth explaining** (wave 246). Two solver-cache tests
+> failed in a sweep and passed four times in isolation. Twelve spinners on a twelve-core box made
+> them fail every run: both assert `Sat` on a cold query as *setup*, and 022 §4's watchdog fires on a
+> loaded machine. The first hypothesis — "my change broke the solver" — was wrong, and the
+> reproduction is what said so rather than the reasoning.
 >
 > **An audit's best outcome is a small number** (wave 245). Twenty-nine `size_of`/`align_of`
 > fall-throughs in `chiero-lower` were instrumented and the whole suite run against them; **twenty-
