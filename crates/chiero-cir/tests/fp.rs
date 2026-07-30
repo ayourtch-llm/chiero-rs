@@ -413,3 +413,38 @@ fn a_quotient_outside_the_range_overflows_or_refuses() {
     assert!(fp::div(mid, small).is_some());
     assert!(fp::div(mid, big).is_some());
 }
+
+/// **The indefinite's own bits, written out rather than referred to.**
+///
+/// Mutation found this one, and it is a shape worth naming: every other assertion about an invalid
+/// operation says `Some(fp::INDEFINITE)`, which compares the implementation against *itself*.
+/// Flipping the constant's sign bit changes both sides at once and the whole suite still passes —
+/// and the C fixtures do not help, because `n != n` is true of every NaN whatever its sign.
+///
+/// So the number is spelled out here. It came from a running program, not a manual: x87 answers every
+/// invalid operation with the "real indefinite", which is *negative*, and the sign is the part a
+/// reader would least expect and a fix would most easily drop.
+#[test]
+fn the_indefinite_is_the_exact_pattern_x87_produces() {
+    assert_eq!(
+        fp::INDEFINITE,
+        0x0000_ffff_c000_0000_0000_0000u128 | (1u128 << 79),
+        "sign 1, exponent all ones, significand 0xC000000000000000 — and the sign is not decoration"
+    );
+    assert_eq!(
+        fp::INDEFINITE >> 79,
+        1,
+        "negative, which is the surprising half"
+    );
+    assert_eq!(
+        (fp::INDEFINITE >> 64) & 0x7fff,
+        0x7fff,
+        "the exponent is all ones"
+    );
+    assert_eq!(
+        fp::INDEFINITE & u128::from(u64::MAX),
+        0xC000_0000_0000_0000,
+        "the integer bit and the quiet bit, and no payload"
+    );
+    assert!(fp::is_nan(fp::INDEFINITE) && !fp::is_inf(fp::INDEFINITE));
+}
