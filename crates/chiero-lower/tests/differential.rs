@@ -2382,3 +2382,28 @@ fn an_integer_converted_to_long_double_keeps_all_its_bits() {
     agree("long double x = 3; return (int)(long long)x;");
     agree("long double x = 0; return (int)(long long)x;");
 }
+
+/// **A `double` or `float` widened to `long double` keeps its value.**
+///
+/// `FpExt` to width 80 was the last conversion *into* x87 still refusing, and it is exact by
+/// construction: every `f64` is representable in a format with a wider exponent and a wider
+/// significand, so there is no rounding decision — which is why it comes before `FpTrunc`, where
+/// there is one.
+///
+/// Both source widths, because `f32 -> f80` and `f64 -> f80` are the same opcode at different
+/// `fw`, and a fix keyed on 64 leaves `float` refusing.
+#[test]
+fn a_float_widened_to_long_double_agrees_with_gcc() {
+    agree("double d = 2.5; long double x = d; return (int)x;");
+    agree("float f = 2.5f; long double x = f; return (int)x;");
+    agree("double d = -2.5; long double x = d; return (int)x;");
+    // A value needing most of `f64`'s significand, so a widening that dropped bits shows up once
+    // it is truncated back to an integer.
+    agree("double d = 9007199254740992.0; long double x = d; return (int)(long long)x;");
+    // Through a cast rather than an assignment — the same conversion, spelled the way a programmer
+    // usually writes it.
+    agree("double d = 7.75; return (int)(long double)d;");
+    // Zero and a denormal-adjacent small value, where the exponent path differs.
+    agree("double d = 0.0; long double x = d; return (int)x;");
+    agree("double d = 0.5; long double x = d; return (int)x;");
+}
