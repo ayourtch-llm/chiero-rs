@@ -2277,3 +2277,40 @@ fn long_double_to_int_agrees_with_gcc() {
     // that cannot be demonstrated end to end until a literal can carry more than 53 bits. §9 has it
     // as the next step, with the two patterns as evidence.
 }
+
+/// **A hexadecimal floating literal is a float, not an integer** (C99 6.4.4.2).
+///
+/// `0x1p3` is 8.0. `float_literal` recognises the syntax — it checks for `0x` and a `p` exponent —
+/// and then hands the text to Rust's `f64` parser, which rejects hex float syntax and returns
+/// `None`. Lowering falls through to the integer path, emits `Const::Int` where the declared type is
+/// `Float(F64)`, and the verifier refuses the whole function:
+///
+/// ```text
+///   `probe` lowered to CIR the verifier rejects
+///   (cast source operand is Int(32), declared Float(F64))
+/// ```
+///
+/// Honest — a refusal, not a wrong number — and it costs every program containing one, which for
+/// hex floats means anything that specifies a bit pattern deliberately. That is also why it belongs
+/// to the x87 milestone: a hex literal is the only way to write an exact `long double` in source,
+/// and §9's next step is that decimal `long double` literals are rounded through `f64`.
+///
+/// All three suffixes, because the kind is chosen by the suffix and the value by the digits, and a
+/// fix that handled one would leave the others refusing.
+#[test]
+fn a_hex_float_literal_agrees_with_gcc() {
+    agree("return (int)0x1p3;");
+    // A fraction, so the mantissa digits after the point are exercised rather than just the
+    // exponent.
+    agree("return (int)0x1.8p1;");
+    // A negative exponent, which divides rather than multiplies.
+    agree("return (int)(0x1p-1 + 0.5);");
+    // The suffixes: `f` narrows to `float`, `L` widens to `long double`.
+    agree("return (int)0x1.8p1f;");
+    agree("return (int)0x1p3L;");
+    // In an expression, where the integer fallthrough produced a plausible number rather than a
+    // refusal — `0x1p10` read as an integer is not 1024.
+    agree("return (int)(0x1p10 + 1);");
+    // Upper-case `P` and `X`, which C admits and a parser keyed on the lower-case spelling misses.
+    agree("return (int)0X1P3;");
+}
