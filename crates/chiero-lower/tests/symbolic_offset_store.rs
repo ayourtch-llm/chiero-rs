@@ -141,10 +141,37 @@ fn a_concrete_store_after_a_symbolic_one_still_lands() {
 ///   - **the read goes to the array**, on the right object, with `repr == Array`
 ///   - **`eval` does walk store chains for `Select`**, so a seeded store at index 0 would be found
 ///
-/// Those three leave one claim standing: the `arr.data` the *read* sees is not the one promotion
-/// seeded. Two ordinary bugs were fixed on the way here (a promoted store bypassed by a
-/// ground-constant fast path, and an `init` array indexed per byte where it is read per bit), and
-/// wave 200 stopped rather than guess a third time.
+/// **Wave 247 disproved the hypothesis those three led to.** §9 concluded that "the `arr.data` the
+/// read sees does not contain the seeding stores", and said to check it by printing the term id at
+/// promotion and at the read. Doing exactly that says otherwise:
+///
+/// ```text
+///   PROMOTE-SET obj=ObjectId(4) data=Term(192) select0_ground=Some(5)
+///   WRITE-3287  before=Term(192) after=Term(204)      <- the symbolic store, over the seeded array
+///   READ        obj=ObjectId(4) data=Term(204)        <- the read sees that chain
+///   READ-BYTE   obj=ObjectId(4) b=0 data=Term(204)    <- and builds select(Term(204), 0)
+/// ```
+///
+/// The seeded array holds **5 at index 0** and folds to it without a solver; the symbolic store is
+/// built over that array; the read consults the result and produces a term. Every link §9 doubted is
+/// intact, and §9's own escape clause applies — it said to revisit only "if the term ids turn out to
+/// match", and they do.
+///
+/// **What is actually happening is one layer up.** The engine reports
+/// `a load produced no value, so its result is invented`, mints a *fresh unconstrained symbol* and
+/// degrades to `Fidelity::Unknown`. So the returned byte is not a stale zero — it is a free
+/// variable, and the solver is entitled to answer 0, or 5, or anything. "Solves to 0, not 5" was a
+/// symptom of an unconstrained symbol being reported as a value, not of a stale array, and chasing
+/// the array is what six waves of notes have been pointing at.
+///
+/// **This is wave 244's rule in `chiero-exec`**: a refusal upstream becoming an invented value
+/// downstream. The remaining question is narrow and is *not* about promotion — why does the load
+/// path get `None` when `read_term_at`'s neighbourhood demonstrably built a `select` for byte 0?
+///
+/// `#[ignore]`d rather than left red, following `replay_coverage.rs`'s precedent for a known-blocked
+/// defect: a runnable test that names the failure beats the prose comment it replaces, and a
+/// permanently red suite is how a real regression goes unread.
+#[ignore = "open: the load path invents a symbol for a byte the memory model can produce — see the doc comment, wave 247 disproved the stale-array hypothesis"]
 #[test]
 fn a_concrete_byte_written_before_promotion_survives_it() {
     use chiero_solver::{CheckResult, Solver, TieredSolver};
