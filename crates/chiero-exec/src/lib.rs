@@ -4890,6 +4890,14 @@ impl<'m> Engine<'m> {
                             64u32,
                             u128::from((-f64::from_bits(c.bits() as u64)).to_bits()),
                         )),
+                        // **x87 needs no float arithmetic to negate.** The comment above is the
+                        // reason it belongs here rather than waiting for the milestone: negation
+                        // is defined on the sign bit alone, so it is exact at any width and
+                        // wants no significand. Bit 79 is x87's sign.
+                        //
+                        // Without this, `-2.5L` was a gap — C has no negative literals, so every
+                        // negative `long double` in every program is an `fneg` of a positive one.
+                        80 => Some((80u32, c.bits() ^ (1u128 << 79))),
                         _ => None,
                     }) {
                         Some((w, bits)) => Value::Scalar(a.bv(w, bits)),
@@ -7774,6 +7782,72 @@ fn sort_of(ty: &CTy) -> chiero_solver::Sort {
 /// Compared as `f64` rather than by casting the bound to an integer: `2^31` is exactly
 /// representable and the endpoints have to be *inclusive* on one side and *exclusive* on the
 /// other, which is the off-by-one this function exists to get right once.
+/// An x87 80-bit pattern truncated toward zero, exactly.
+///
+/// **Not via `f64`, and that is the whole point.** `fcast`'s `as_f64` decodes widths 32 and 64, and
+/// teaching it 80 would make every `f80` conversion work in one line — while quietly losing
+/// precision, because `f64` carries 53 bits of significand where x87 carries 64. `(long long)` of
+/// `2^62 + 1` would come back off by one: a wrong answer where a gap is declared, which is what
+/// 023 §7 forbids.
+///
+/// The integer is in the significand already. x87's layout is a sign, a 15-bit exponent biased by
+/// 16383, and a 64-bit significand whose top bit is the *explicit* integer bit — so the value is
+/// `sig × 2^(e - 63)` for an unbiased `e`, and truncating toward zero is a shift.
+///
+/// `None` when the result does not fit in `i128`, which is the caller's cue to treat the conversion
+/// as the C11 6.3.1.4 event it is rather than to invent a number.
+fn x87_trunc_to_int(bits: u128) -> Option<i128> {
+    let neg = bits >> 79 & 1 == 1;
+    let exp = ((bits >> 64) & 0x7fff) as i32;
+    let sig = bits & u128::from(u64::MAX);
+    // Zero and denormals: a denormal's magnitude is below 1, so truncation gives zero either way.
+    if exp == 0 {
+        return Some(0);
+    }
+    // Infinity and NaN have no integer value at all; the caller reports the event.
+    if exp == 0x7fff {
+        return None;
+    }
+    let e = exp - 16383;
+    // Below 1.0 in magnitude, so the integer part is zero — and `-0.5L` is `0`, not `-1`,
+    // because C truncates toward zero rather than flooring.
+    if e < 0 {
+        return Some(0);
+    }
+    // `sig` is the value scaled by 2^63, so shifting right by `63 - e` truncates. Past that the
+    // value needs more bits than `i128` holds.
+    let mag: u128 = if e <= 63 {
+        sig >> (63 - e)
+    } else if e <= 126 {
+        sig.checked_shl((e - 63) as u32)?
+    } else {
+        return None;
+    };
+    let m = i128::try_from(mag).ok()?;
+    Some(if neg { -m } else { m })
+}
+
+/// Whether an x87 value is outside what `bits` of integer can hold, decided on the exact value.
+///
+/// The `f64` version above cannot serve here for the same reason `x87_trunc_to_int` exists: the
+/// comparison would be made on a rounded number.
+fn x87_out_of_range(bits: u128, width: u32, signed: bool) -> bool {
+    let exp = ((bits >> 64) & 0x7fff) as i32;
+    // NaN and infinity are out of range for every width (C11 6.3.1.4).
+    if exp == 0x7fff {
+        return true;
+    }
+    let Some(t) = x87_trunc_to_int(bits) else {
+        return true;
+    };
+    if signed {
+        let hi = 1i128 << (width - 1);
+        t >= hi || t < -hi
+    } else {
+        t >= 1i128 << width || t < 0
+    }
+}
+
 fn out_of_range(v: f64, bits: u32, signed: bool) -> bool {
     if v.is_nan() {
         return true;
@@ -7820,6 +7894,17 @@ fn fcast(
                 64 => u128::from(v.to_bits()),
                 _ => return None,
             }
+        }
+        // **x87 first, and exactly.** Falling through to `as_f64` would round an 80-bit
+        // significand into 53 bits before truncating it.
+        CastKind::FpToSi | CastKind::FpToUi if fw == 80 => {
+            let signed = kind == CastKind::FpToSi;
+            *overflowed = x87_out_of_range(c.bits(), tw, signed);
+            // A conversion that does not fit is undefined, so any pattern is a legal answer and
+            // the *event* is what matters — reported above. Zero is the answer that invents the
+            // least.
+            let t = x87_trunc_to_int(c.bits()).unwrap_or(0);
+            (t as u128) & mask_bits(tw)
         }
         CastKind::FpToSi => {
             let v = as_f64(fw, c.bits())?;

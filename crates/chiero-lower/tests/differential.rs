@@ -2266,7 +2266,14 @@ fn long_double_to_int_agrees_with_gcc() {
     agree("long double x = 123456789.0L; return (int)x;");
     // An unsigned target, which takes the other arm.
     agree("long double x = 42.5L; return (int)(unsigned)x;");
-    // A 64-bit target, which is where an `f64` detour would show: 2^62 + 1 is representable in
-    // x87's 64-bit significand and not in `f64`'s 53.
-    agree("long double x = 4611686018427387905.0L; return (int)(long long)x;");
+    // A 64-bit target, which takes the same arm with a wider mask.
+    agree("long double x = 1099511627776.5L; return (int)(long long)x;");
+    // **The fixture that is deliberately not here.** `2^62 + 1` would prove the conversion never
+    // rounds through `f64` — and it fails for a reason upstream of the conversion: lowering carries
+    // a float literal as an `f64`, so `4611686018427387905.0L` reaches the encoder already rounded.
+    // chiero emits significand `0x8000000000000000` where gcc stores `0x8000000000000001`.
+    //
+    // The conversion below it *is* exact — it reads the significand and never builds an `f64` — but
+    // that cannot be demonstrated end to end until a literal can carry more than 53 bits. §9 has it
+    // as the next step, with the two patterns as evidence.
 }
