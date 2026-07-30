@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 203) — 1285 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 205) — 1291 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -722,28 +722,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Nothing discharges a `MaybeUninitialized` guard, and that bounds this whole area
+> ### 🔴 The symbolic read does not consult `arr.init`, and that is the last link in the chain
 >
-> Wave 203 closed the observability question and the answer names one missing capability.
+> ~~Nothing discharges a `MaybeUninitialized` guard.~~ **Done in wave 204.** The guard now
+> travels on the fault (`guard: Option<Term>`) and `report_faults` resolves it against the path
+> condition with wave 156's three outcomes: implied → silent, unsatisfiable → definite
+> `uninitialized-read`, anything else *including `Unknown`* → `maybe`. Four mutants confirm it
+> (discharge-disabled, outcomes-swapped, refuted-dropped, guard-not-carried).
 >
-> `init-not-marked` — deleting the init store from the unpinned symbolic write — is now
-> **killed**, so three waves of init work are finally tested at all. Two mutants remain and
-> they are **equivalent given the engine as it stands**, not gaps:
-> `back-to-byte-index` and `only-first-bit` change *which* init bits a symbolic write marks, and
-> a symbolic write's marking is conditional per byte however it is indexed — so the verdict is
-> `maybe-uninitialized-read` either way. The guard differs; the report does not.
+> **It did not make the symbolic init marking testable, and wave 203's reason for that was
+> wrong.** `back-to-byte-index` and `only-first-bit` still survive. They are not equivalent
+> mutants and never were; the cause is that **nothing reads what the write marks**.
+> `read_term_at`'s promoted branch returns `select(arr.data, i)` with `faults: vec![]` and says
+> so in a comment. Wave 205's fixtures in `symbolic_readback_init.rs` prove it the hard way:
+> write and read the same symbolic index, offset the range past byte 0, and even pin the index
+> through the path condition so a *concrete* read covers the written byte — all three are silent
+> under both mutants.
 >
-> 023 says the guard is "the engine's to discharge against the path condition, not the memory
-> model's to guess", and **the engine does not discharge it**. Until it does, no test can
-> distinguish a correct symbolic init marking from a wrong one, because every answer is a maybe.
+> So the front is the check wave 202 declined to ship. Its objection was that a conjunction of
+> `select(arr.init, off * 8 + k)` reports `maybe-uninitialized-read` on a byte written at the
+> same symbolic offset, because a read of bit `k` must walk past seven stores whose symbolic
+> indices it cannot compare, so only the outermost folds. **That objection was about syntactic
+> folding, and wave 204 removed its premise.** The check no longer has to *fold* the guard — it
+> emits it, and the engine hands it to a solver with array theory, which can prove
+> `select(store(A, bi, 1), bi) = 1` past non-matching stores without any arena-level rewrite.
+> Try that before the representation changes below; it is a much smaller step and it reuses a
+> capability that already exists.
 >
-> So the next capability is guard discharge: take the `Cond(t)` a `MaybeUninitialized` carries,
-> ask the solver whether `t` is implied by the path condition (→ initialized, no report) or
-> unsatisfiable under it (→ definite `uninitialized-read`), and only report `maybe` when it is
-> genuinely undecided. That turns a class of unfalsifiable code into testable code, and it is
-> the same three-outcome shape as wave 156's divisor query. Note the field: `MemFault::
-> MaybeUninitialized` carries no guard term today, so it has to grow one — which is exactly the
-> "give the type no way to express the wrong report" rule pointing the other way.
+> Order of work: emit the guard from `read_term_at` (it has the arena and the index), then
+> check that the three `symbolic_readback_init.rs` fixtures stay silent — they are the exact
+> false positive wave 202 feared, and they are already in the tree as controls. The RED is a
+> symbolic read of a byte no write reached, which must report and today does not.
+>
+> If the solver *cannot* decide it, the representation options are the ones wave 202 named:
+> make the write leave **one store per byte** rather than eight (an `init` companion at byte
+> granularity), or have the read ask a single question about the byte. Decide which before
+> coding, and record why the solver route failed — a degraded answer here is `Unknown`, which
+> the discharge already turns into an honest `maybe`.
+>
+> **`Unknown` itself is untested.** `unknown-is-definite` and `unknown-is-clean` both survive
+> the sweep, so `an_undecided_guard_stays_a_maybe` reaches `Sat`, not `Unknown` — the tri-state's
+> whole purpose is unverified. It needs a guard the backend gives up on (or a seam to inject one),
+> and it is worth doing because both mutants collapse the third state in opposite directions and
+> neither is caught.
 >
 > ~~**The promoted read does not consult `arr.init`.**~~ **Wrong — corrected in wave 202.**
 > `init_bit_via` selects from `arr.init` and handles the tri-state correctly. What made four
@@ -756,8 +777,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **Rewrite those fixtures as locals before touching init code again**; two waves were spent on
 > a hypothesis about the code because nobody checked the fixture.
 >
-> **The symbolic read genuinely does not check init**, and wave 202 established that the obvious
-> fix is not sufficient. Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
+> **The symbolic read genuinely does not check init** — folded into the front above, which is
+> now the live plan. Wave 202's argument, kept because the next attempt has to answer it: Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
 > missing report appear — but it also reports `maybe-uninitialized-read` for a byte written at
 > the *same* symbolic offset, because the write leaves eight stores on the chain and a read of
 > bit `k` must walk past seven whose symbolic indices it cannot compare. The walk has to stop
@@ -767,12 +788,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > than eight**, i.e. give `init` a byte-granular companion, or to have the read ask a single
 > question about the byte. Both are representation changes; decide which before coding.
 >
-> **A second promoted-object gap, found by mutation and unfixed:** the promoted *read* path
-> does not consult the `init` array. `mem-forgets-to-init` — deleting the initialization store
-> from `chiero-mem`'s unpinned write — survives the whole suite, because nothing downstream can
-> tell an initialized promoted byte from an uninitialized one. The write is correct by
-> construction and not by test, and the fix belongs with the read-side plumbing above: both are
-> "the promoted representation is not fully served".
+> ~~**A second promoted-object gap:** `mem-forgets-to-init` survives.~~ **Killed in wave 204**
+> (as `no-init-marking`) — the discharge made a *deleted* marking observable through a concrete
+> read. A *wrong* marking still is not, which is the front above.
 >
 > **Still refusing, and each now a small increment:** `PtrAdd` on a `SymPtr` (a second
 > symbolic step), `PtrDiff`, passing one as a call argument, and the `memcpy`-family models.
@@ -1143,6 +1161,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **"Equivalent mutant" is a hypothesis, and it needs the same disproof as any other** (wave
+> 205). Wave 203 called `back-to-byte-index` and `only-first-bit` equivalent because every
+> conditional-init verdict was a `maybe`; wave 204 landed the discharge that removes that
+> reason, and both survived unchanged. The real cause — no reader for what the write marks —
+> was written in a comment in the function all along. **Prefer reading the code path the
+> mutant sits on to arguing about what the mutant cannot express**; the argument was
+> self-consistent and wrong twice.
+>
+> **A survivor that three new fixtures cannot kill is telling you about the architecture,
+> not the fixtures** (wave 205). Write-then-read at the same symbolic index, offset past
+> byte 0, and a path-pinned index read concretely: all silent under both mutants. The fourth
+> fixture was not the answer; `read_term_at` returning `faults: vec![]` was. When targeted
+> fixtures keep missing, stop writing fixtures.
+>
+> **A rejection recorded with its reason can expire; one recorded as a verdict cannot** (wave
+> 205). Wave 202 declined the symbolic-read init check *because* proving the byte written
+> needed a `select` to fold past seven non-matching stores. Wave 204 made the guard a solver
+> question rather than a folding problem, and the premise was gone — visible only because the
+> refusal named its own reason. Write down why, not just what.
+>
+> **`Unknown` needs its own fixture, or the tri-state is a two-state** (wave 205). Both
+> mutants that collapse `Unknown` — into a definite report and into silence — survive, because
+> the "undecided" test reaches a `Sat`. A third state nothing exercises is a third state
+> nobody has checked; a *decidable* undecided case is not the same test.
 >
 > **Re-run the sweep instead of trusting the diagnosis** (wave 203). Wave 202 concluded the
 > fixtures were why no init mutant died, and it was half right: rewriting them as locals killed
