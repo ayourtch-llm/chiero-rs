@@ -3586,3 +3586,54 @@ fn discriminates(src: &str) -> bool {
         })
     })
 }
+
+/// **Every read of a struct field is wrapped in a cast, and that is the shape the defect hides in.**
+///
+/// Wave 253 found the fifth condition wave 251's model was missing: a bit-field read that is an
+/// operand of an explicit cast has `top(e)` equal to the field's own type, so a signedness bug in
+/// the extension never fires. Read directly, `top(e)` is the promoted `int` and it does.
+///
+/// The checksum writes `acc = acc * 31 + (long)(x.f);` for every field of every struct in scope, so
+/// **every** bit-field the generator can observe is observed through the hiding shape. Waves 250 and
+/// 252 raised the frequency of that shape five-fold and caught nothing, which is what this test
+/// exists to stop happening again.
+///
+/// The cast is load-bearing for a `float` or `double` member — `(long)` there is a real conversion,
+/// not a formality — so this asks only that *some* integer-typed field is read without one, not that
+/// none has a cast.
+#[test]
+fn the_generator_reads_a_field_without_a_cast() {
+    let mut bare = 0usize;
+    let mut cast = 0usize;
+    for seed in 0..200u64 {
+        let (_, body) = program(seed);
+        for l in body.lines() {
+            let t = l.trim();
+            let Some(rest) = t.strip_prefix("acc = acc * 31 + ") else {
+                continue;
+            };
+            if !rest.contains('.') {
+                continue;
+            }
+            // `(long)(x.f);` is the cast form and `(x.f);` is the bare one, so the tell is the
+            // `)(` between them. The first version of this test asked whether the text began with
+            // `(` followed by a letter, which is true of *both* — and the control assertion below
+            // caught it by reporting zero casts in a batch that is entirely casts.
+            if rest.contains(")(") {
+                cast += 1;
+            } else {
+                bare += 1;
+            }
+        }
+    }
+    assert!(
+        cast > 0,
+        "the scan must see the cast form it is contrasting against, or it is measuring nothing"
+    );
+    assert!(
+        bare >= 20,
+        "no struct field is read without a cast in the fixed batch ({bare} bare, {cast} cast); \
+         a cast operand is exactly the context wave 253 showed a bit-field extension defect hides \
+         in, so the channel cannot observe one however often it emits the construct"
+    );
+}
