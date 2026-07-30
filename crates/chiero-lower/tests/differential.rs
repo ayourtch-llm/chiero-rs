@@ -2111,3 +2111,42 @@ fn the_oracle_can_observe_a_disagreement() {
         assert_ne!(ga, gb, "and gcc agrees they differ");
     }
 }
+
+/// **Compound assignment to a `_Bool` promotes, operates, then converts.**
+///
+/// C11 6.5.16.2p3 makes `b += e` behave as `b = b + e` except that `b` is evaluated once, and
+/// 6.5p4 promotes both operands of `+` — so the addition happens in `int` and the *result* is
+/// converted back. chiero converted the right-hand side to the lvalue's type first:
+///
+/// ```text
+///   _Bool b = 1; b += -1;      gcc 0    chiero 1
+///   _Bool b = 0; b += -1;      gcc 1    chiero 1
+/// ```
+///
+/// **The two orders agree for every other integer type**, which is why this survived every
+/// differential channel for a hundred waves. Converting to `char` is a truncation and truncation
+/// commutes with `+`, `-` and `*`: `(char)(1 + 300)` and `1 + (char)300` are both 45. Converting to
+/// `_Bool` is `!= 0`, which commutes with nothing — so `_Bool` is the only type where the
+/// difference is observable, and chiero's answer stopped depending on `b` at all.
+///
+/// Found by the generated-program soak once the grammar learned `do`-`while`: a `_Bool`
+/// accumulator in a loop alternates, so the wrong answer diverged from the right one every
+/// iteration instead of once.
+#[test]
+fn compound_assignment_to_a_bool_converts_the_result_and_not_the_operand() {
+    // Both starting values, because a fix that converts the *operand* gives 1 for both and a fix
+    // that ignores the operand gives 0 for both. Only the pair pins the arithmetic.
+    agree("_Bool b = 1; b += -1; return (int)b;");
+    agree("_Bool b = 0; b += -1; return (int)b;");
+    // The alternation the soak actually tripped over.
+    agree("_Bool b = 1; for (int i = 0; i < 3; i++) { b += -1; } return (int)b;");
+    // Every operator that takes a compound form, since the lowering is one path.
+    agree("_Bool b = 1; b -= 1; return (int)b;");
+    agree("_Bool b = 1; b *= 2; return (int)b;");
+    agree("_Bool b = 1; b += 2; return (int)b;");
+    // And a narrow integer, to hold the case where the two orders agree — a fix must not
+    // "correct" these.
+    agree("signed char c = 1; c += 300; return (int)c;");
+    agree("unsigned char c = 200; c += 100; return (int)c;");
+    agree("short s = 32767; s += 1; return (int)s;");
+}

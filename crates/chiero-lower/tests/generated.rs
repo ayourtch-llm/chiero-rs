@@ -288,6 +288,9 @@ struct Gen {
     /// read and written through all of `access`'s spellings — and forking the grammar to
     /// get them would mean maintaining two of everything and grading the copy.
     memory_ub: bool,
+    /// Emit `switch` and `do`-`while`. Off by default so every channel that measured a census
+    /// against the old grammar still sees it byte for byte.
+    control_flow: bool,
     /// **Allow a zero divisor.** Off for every channel that compares *values*, for the same
     /// reason `memory_ub` is: `x / 0` is undefined, so `judge` discards the program and the
     /// value differential learns nothing from it.
@@ -327,6 +330,7 @@ impl Gen {
             global_arrays: Vec::new(),
             global_ptrs: Vec::new(),
             memory_ub: false,
+            control_flow: false,
             div_zero: false,
             heaps: Vec::new(),
             escaped: Vec::new(),
@@ -953,6 +957,21 @@ impl Gen {
         if self.memory_ub && self.heap_stmt() {
             return;
         }
+        // **Two statement forms lowering has always supported and this generator never
+        // emitted**, found by asking what `StmtKind` can hold rather than what the grammar
+        // happens to say: `Switch` and `DoWhile`.
+        //
+        // **Behind a knob, checked before any `rng` call**, exactly as the heap arms are. That is
+        // not tidiness: `chance` consumes randomness, so an ungated call reshuffles every seed's
+        // program, and the first version of this shifted the memory-UB corpus until
+        // `stack-buffer-overflow` appeared in two programs instead of enough to grade on. The
+        // adequacy guard caught it, which is what that guard is for.
+        if self.control_flow && self.rng.chance(3) && self.switch_stmt() {
+            return;
+        }
+        if self.control_flow && self.rng.chance(3) && self.do_while_stmt() {
+            return;
+        }
         match self.rng.below(10) {
             0 if self.arrays.len() < 3 && self.rng.chance(2) => self.push_local_array(),
             3 if !self.globals.is_empty() && self.rng.chance(2) => {
@@ -1096,6 +1115,77 @@ impl Gen {
         }
     }
 
+    /// **A `switch` over a live variable**, with fallthrough, a `default`, and empty cases.
+    ///
+    /// C's `switch` is a multi-way branch whose arms *fall through* unless broken out of, which is
+    /// the part no other construct in this grammar has. An empty case that falls into the next one
+    /// and a `default` in a position other than last are both ordinary C and both easy to lower
+    /// wrongly.
+    ///
+    /// The controlling expression is `% 4` of a variable so every arm is reachable, and the
+    /// generator emits `break` on some arms and not others so fallthrough is exercised rather than
+    /// merely available.
+    fn switch_stmt(&mut self) -> bool {
+        let Some(v) = self.pick_var() else {
+            return false;
+        };
+        if !matches!(
+            v.ty,
+            Ty::Int | Ty::UInt | Ty::Long | Ty::ULong | Ty::Short | Ty::UShort
+        ) {
+            return false;
+        }
+        let target = match self.pick_var() {
+            Some(t) => t,
+            None => return false,
+        };
+        let sel = self.fresh();
+        let _ = writeln!(self.body, "  int {sel} = (int)({} & 3);", v.name);
+        let _ = writeln!(self.body, "  switch ({sel}) {{");
+        // `default` first on purpose: its position is free in C and a lowering that assumes it
+        // comes last would still pass every fixture that puts it there.
+        let d = self.expr(target.ty);
+        let _ = writeln!(self.body, "  default: {} += {d}; break;", target.name);
+        for c in 0..3u32 {
+            let e = self.expr(target.ty);
+            // Every third case is empty and falls into the next, which is the shape that makes
+            // `switch` different from a chain of `if`s.
+            if c == 1 {
+                let _ = writeln!(self.body, "  case {c}:");
+            } else if self.rng.chance(2) {
+                let _ = writeln!(self.body, "  case {c}: {} += {e};", target.name);
+            } else {
+                let _ = writeln!(self.body, "  case {c}: {} += {e}; break;", target.name);
+            }
+        }
+        let _ = writeln!(self.body, "  }}");
+        true
+    }
+
+    /// **A `do`-`while` with a structurally bounded trip count.**
+    ///
+    /// The one loop form whose body runs before the condition is ever tested, so a lowering that
+    /// emits the test first is wrong by exactly one iteration — and nothing in this grammar could
+    /// see that, because every loop it generated was a `for`.
+    ///
+    /// Bounded the same way the `for` arm is: a fresh counter and a literal limit, so no generated
+    /// program can fail to terminate and no comparison can hang.
+    fn do_while_stmt(&mut self) -> bool {
+        let Some(v) = self.pick_var() else {
+            return false;
+        };
+        let n = 1 + self.rng.below(4);
+        let i = self.fresh();
+        let e = self.expr(v.ty);
+        let _ = writeln!(self.body, "  int {i} = 0;");
+        let _ = writeln!(
+            self.body,
+            "  do {{ {} += {e}; {i}++; }} while ({i} < {n});",
+            v.name
+        );
+        true
+    }
+
     /// A nested block's statements. Variables declared inside do not escape, which is what
     /// makes the checksum below well defined.
     fn nested(&mut self) {
@@ -1189,6 +1279,21 @@ fn program_arith_ub(seed: u64) -> (String, String) {
 }
 
 /// The same grammar with [`Gen::oob`] on, for the memory-UB oracle.
+/// The same grammar plus `switch` and `do`-`while`.
+///
+/// A separate entry point rather than a wider default, so every census measured against the old
+/// grammar stays comparable and this one can be graded on its own terms.
+fn program_control_flow(seed: u64) -> (String, String) {
+    let mut g = Gen::new(seed);
+    g.control_flow = true;
+    let prelude = g.prelude();
+    let n = 3 + g.rng.below(7);
+    for _ in 0..n {
+        g.stmt();
+    }
+    (prelude, g.finish())
+}
+
 fn program_memory_ub(seed: u64) -> (String, String) {
     program_with(seed, true)
 }
@@ -1806,6 +1911,59 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
     assert_eq!(p2, prelude);
 }
 
+/// **`switch` and `do`-`while` compute what gcc computes.**
+///
+/// Two statement forms `StmtKind` has always had, the parser has always parsed and lowering has
+/// always claimed to handle, which this generator never emitted — found by asking what the AST can
+/// hold rather than what the grammar happened to say.
+///
+/// `switch` is the one construct here whose arms *fall through*, and the generator emits empty
+/// cases that fall into the next, a `default` that is not last, and arms with and without `break`.
+/// `do`-`while` is the one loop whose body runs before the condition is tested, so a lowering that
+/// emits the test first is wrong by exactly one iteration and every `for` in the old grammar would
+/// have agreed with gcc anyway.
+///
+/// Fixed seeds, for the reason `generated_programs_agree_with_gcc` gives: an unseeded random test
+/// that fails one run in ten gets muted, and a muted channel is worse than none.
+#[test]
+fn control_flow_programs_agree_with_gcc() {
+    let mut compared = 0usize;
+    let mut discarded = 0usize;
+    let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
+    for seed in 0..200u64 {
+        let (prelude, body) = program_control_flow(seed);
+        match judge(&prelude, &body) {
+            Verdict::Agree => compared += 1,
+            Verdict::Discarded | Verdict::Refused { .. } | Verdict::Gap { .. } => discarded += 1,
+            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
+        }
+    }
+    eprintln!("control-flow channel: {compared} compared, {discarded} not");
+    assert!(
+        defects.is_empty(),
+        "chiero disagreed with gcc on {} program(s): {:#?}",
+        defects.len(),
+        defects
+    );
+    // **The channel has to actually run these programs**, or a grammar that quietly stopped
+    // emitting `switch` would leave this test passing on nothing. Wave 216's rule: before
+    // asserting an absence, produce the thing whose absence you are claiming.
+    let with_switch = (0..200u64)
+        .filter(|s| program_control_flow(*s).1.contains("switch ("))
+        .count();
+    let with_do = (0..200u64)
+        .filter(|s| program_control_flow(*s).1.contains("do {"))
+        .count();
+    assert!(
+        with_switch >= 20 && with_do >= 20,
+        "the grammar must emit both forms often enough to grade: {with_switch} switch, {with_do} do-while"
+    );
+    assert!(
+        compared >= 50,
+        "too few comparisons to mean anything: {compared}"
+    );
+}
+
 /// **Open-ended search**, which CI's fixed batch deliberately is not.
 ///
 /// `generated_programs_agree_with_gcc` runs seeds 0..200 every time, because a test that
@@ -1841,8 +1999,16 @@ fn zz_soak() {
     let (mut compared, mut discarded) = (0usize, 0usize);
     let mut refused: std::collections::BTreeMap<String, usize> = Default::default();
     let mut defects: Vec<(u64, String, String)> = Vec::new();
+    // **`SOAK_CF=1` searches the `switch`/`do`-`while` grammar** instead of the default one. A
+    // separate switch rather than a wider default, so a census taken here stays comparable with
+    // every earlier one — the frontier numbers in §9 were all measured on the old shapes.
+    let cf = std::env::var("SOAK_CF").is_ok_and(|v| v != "0");
     for seed in lo..hi {
-        let (prelude, body) = program(seed);
+        let (prelude, body) = if cf {
+            program_control_flow(seed)
+        } else {
+            program(seed)
+        };
         match judge(&prelude, &body) {
             Verdict::Agree => compared += 1,
             Verdict::Discarded => discarded += 1,
