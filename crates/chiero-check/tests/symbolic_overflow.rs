@@ -82,8 +82,18 @@ fn module(blocks: Vec<Block>) -> Module {
 }
 
 fn findings(m: &Module) -> Vec<String> {
+    findings_tier(m, None)
+}
+
+/// The same, with a solver tier named. `LiteOnly` refuses to look for a backend (022 §4) and tier 1
+/// is deliberately incomplete, so a query it cannot settle comes back `Unknown` — which is the only
+/// way to reach the third arm of anything in this file.
+fn findings_tier(m: &Module, tier: Option<chiero_exec::SolverTier>) -> Vec<String> {
     let mut a = TermArena::new();
     let mut e = Engine::new(m);
+    if let Some(t) = tier {
+        e = e.with_solver(t);
+    }
     for c in chiero_check::default_checkers() {
         e = e.with_checker(c);
     }
@@ -284,5 +294,31 @@ fn a_result_of_exactly_the_minimum_is_not_an_overflow() {
     assert!(
         f.iter().all(|s| !s.contains("overflow")),
         "-2147483648 is representable, so computing it is not undefined: {f:?}"
+    );
+}
+
+/// **An overflow nobody could settle is not reported.**
+///
+/// Wave 215 chose that -- `Unknown` means silence here, because an addition whose overflow nobody
+/// settled is not evidence of anything and every addition admits one -- and nothing tested it. Tier
+/// 1 cannot decide the forced case, so `LiteOnly` reaches the arm.
+///
+/// **This test lives here and not in `chiero-lower`, where I first wrote it.** That crate's harness
+/// registers no checkers, so an assertion that no overflow is reported passes whatever the engine
+/// does; the mutant that turns `Unknown` into a finding survived it. An assertion of silence is
+/// only worth something in a crate that can speak.
+#[test]
+fn an_undecided_overflow_is_not_reported() {
+    let m = guarded(BinOp::Add, CmpOp::SGt, 2_147_483_640, 10);
+    assert!(
+        !findings(&m).is_empty(),
+        "with a backend this is the forced case and must report, or the tier is not what \
+         differs: {:?}",
+        findings(&m)
+    );
+    let lite = findings_tier(&m, Some(chiero_exec::SolverTier::LiteOnly));
+    assert!(
+        lite.iter().all(|s| !s.contains("overflow")),
+        "tier 1 cannot decide this, and a guess is worse than silence: {lite:?}"
     );
 }
