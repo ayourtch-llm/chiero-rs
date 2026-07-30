@@ -44,7 +44,7 @@ fn inst(kind: InstKind, lo: u32) -> Inst {
 }
 
 fn f64c(v: f64) -> Operand {
-    Operand::Const(Const::Float(FloatKind::F64, v.to_bits()))
+    Operand::Const(Const::Float(FloatKind::F64, u128::from(v.to_bits())))
 }
 
 fn i32c(v: i128) -> Operand {
@@ -268,7 +268,7 @@ fn a_symbolic_float_operand_is_unknown_not_folded() {
 }
 
 fn f32c(v: f32) -> Operand {
-    Operand::Const(Const::Float(FloatKind::F32, u64::from(v.to_bits())))
+    Operand::Const(Const::Float(FloatKind::F32, u128::from(v.to_bits())))
 }
 
 /// **The single-precision path is a second implementation and needs its own fixtures.**
@@ -503,7 +503,7 @@ fn an_unsigned_float_conversion_has_its_own_range() {
                         kind: CastKind::FpToUi,
                         to: to.clone(),
                         from: CTy::Float(FloatKind::F64),
-                        a: Operand::Const(Const::Float(FloatKind::F64, v.to_bits())),
+                        a: Operand::Const(Const::Float(FloatKind::F64, u128::from(v.to_bits()))),
                     },
                 },
                 10,

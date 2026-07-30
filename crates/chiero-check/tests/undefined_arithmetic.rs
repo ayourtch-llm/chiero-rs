@@ -639,7 +639,7 @@ fn a_float_cast_overflow_is_reported() {
                     from: CTy::Float(FloatKind::F64),
                     a: Operand::Const(Const::Float(
                         FloatKind::F64,
-                        (-4_294_905_087.0f64).to_bits(),
+                        u128::from((-4_294_905_087.0f64).to_bits()),
                     )),
                 },
             },
@@ -664,7 +664,7 @@ fn a_float_cast_overflow_is_reported() {
                     kind: CastKind::FpToSi,
                     to: CTy::Int(32),
                     from: CTy::Float(FloatKind::F64),
-                    a: Operand::Const(Const::Float(FloatKind::F64, 2.7f64.to_bits())),
+                    a: Operand::Const(Const::Float(FloatKind::F64, u128::from(2.7f64.to_bits()))),
                 },
             },
             10,
@@ -721,7 +721,7 @@ fn every_ub_kind_is_spelled_as_a_slug() {
                     from: CTy::Float(FloatKind::F64),
                     a: Operand::Const(Const::Float(
                         FloatKind::F64,
-                        (-4_294_905_087.0f64).to_bits(),
+                        u128::from((-4_294_905_087.0f64).to_bits()),
                     )),
                 },
             },

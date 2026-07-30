@@ -873,7 +873,7 @@ impl<'a> Parser<'a> {
                 "f80" => FloatKind::X87_80,
                 o => return Err(self.perr(&format!("unknown float kind `{o}`"))),
             };
-            let bits = u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+            let bits = u128::from_str_radix(hex.trim_start_matches("0x"), 16)
                 .map_err(|_| self.perr("bad float bits"))?;
             return Ok(Operand::Const(Const::Float(kind, bits)));
         }
@@ -1386,7 +1386,7 @@ impl<'a> Parser<'a> {
                     "f80" => FloatKind::X87_80,
                     o => return Err(self.perr(&format!("unknown float kind `{o}`"))),
                 };
-                let bits = u64::from_str_radix(g(2).trim_start_matches("0x"), 16)
+                let bits = u128::from_str_radix(g(2).trim_start_matches("0x"), 16)
                     .map_err(|_| self.perr("bad float bits"))?;
                 RValue::Use(Operand::Const(Const::Float(k, bits)))
             }

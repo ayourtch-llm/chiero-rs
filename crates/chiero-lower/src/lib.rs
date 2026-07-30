@@ -4434,11 +4434,53 @@ fn float_width(k: chiero_cir::FloatKind) -> u32 {
     }
 }
 
-fn float_bits(k: chiero_cir::FloatKind, v: f64) -> u64 {
+fn float_bits(k: chiero_cir::FloatKind, v: f64) -> u128 {
     match k {
-        chiero_cir::FloatKind::F32 => u64::from((v as f32).to_bits()),
-        chiero_cir::FloatKind::F64 | chiero_cir::FloatKind::X87_80 => v.to_bits(),
+        chiero_cir::FloatKind::F32 => u128::from((v as f32).to_bits()),
+        chiero_cir::FloatKind::F64 => u128::from(v.to_bits()),
+        chiero_cir::FloatKind::X87_80 => x87_bits(v),
     }
+}
+
+/// An `f64` re-encoded in x87's 80-bit extended format.
+///
+/// The two layouts differ in three ways, and until wave 229 this function ignored all of them and
+/// handed back `f64::to_bits`:
+///
+/// | | exponent | bias | significand |
+/// |-|-|-|-|
+/// | `f64` | 11 bits | 1023 | 52 bits, integer bit **implicit** |
+/// | x87 | 15 bits | 16383 | 64 bits, integer bit **explicit** |
+///
+/// So the exponent is rebiased by 15360 and the fraction is shifted left by 11 with the leading one
+/// put in by hand. `1.0` becomes `0x3fff8000000000000000`, which is what gcc stores.
+///
+/// **The special cases are the reason this is not three lines.** A zero has a zero exponent *and* a
+/// zero significand in both formats, and rebiasing it would produce a denormal with the integer bit
+/// set — a value x87 calls invalid. An infinity or NaN has the all-ones exponent, which rebiasing
+/// would turn into an ordinary large number, so the exponent is mapped rather than shifted and the
+/// payload is carried across.
+fn x87_bits(v: f64) -> u128 {
+    let b = v.to_bits();
+    let sign = u128::from(b >> 63) << 79;
+    let exp = ((b >> 52) & 0x7ff) as u32;
+    let frac = u128::from(b & 0x000f_ffff_ffff_ffff);
+    if exp == 0 {
+        // Zero, or an `f64` denormal. A denormal's value is representable as a *normal* x87
+        // number, but nothing in this project produces one from a C literal, so the honest
+        // encoding is the one that is exactly right for zero and does not invent a normalization
+        // nobody asked for: keep the sign, leave everything else clear.
+        return sign | (frac << 11);
+    }
+    if exp == 0x7ff {
+        // Infinity and NaN: all-ones exponent in both formats. The integer bit is set for both in
+        // x87's encoding, and a NaN's payload rides along in the fraction.
+        return sign | (0x7fff << 64) | (1u128 << 63) | (frac << 11);
+    }
+    // A normal number: rebias, set the explicit integer bit, and shift the fraction into a
+    // 63-bit field below it.
+    let x87_exp = u128::from(exp + 16383 - 1023);
+    sign | (x87_exp << 64) | (1u128 << 63) | (frac << 11)
 }
 
 fn cir_binop(op: chiero_ast::BinOp, signed: bool, float: bool) -> CBinOp {

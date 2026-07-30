@@ -7568,7 +7568,7 @@ impl<'m> Engine<'m> {
                     FloatKind::F64 => 64,
                     FloatKind::X87_80 => 80,
                 },
-                u128::from(*bits),
+                *bits,
             ))),
             Operand::Const(Const::Null) => Some(Value::Ptr(Pointer {
                 base: chiero_mem::ObjectId::NULL,

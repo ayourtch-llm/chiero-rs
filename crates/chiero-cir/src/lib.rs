@@ -115,7 +115,12 @@ pub enum Const {
         words: Vec<u64>,
     },
     /// Raw bits, so NaN payloads survive a round trip.
-    Float(FloatKind, u64),
+    /// The literal's bit pattern, at the kind's own width.
+    ///
+    /// **`u128`, because x87's 80 bits do not fit in a `u64`.** It held one until wave 229, so an
+    /// `f80` literal carried an `f64` payload — the right type with the wrong number in it. `f32`
+    /// and `f64` are unaffected: the printed hex is the same either way.
+    Float(FloatKind, u128),
     Null,
     GlobalAddr {
         g: GlobalId,
