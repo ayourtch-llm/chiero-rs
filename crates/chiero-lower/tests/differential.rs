@@ -2183,6 +2183,14 @@ fn long_double_arithmetic_agrees_with_gcc_or_says_it_is_unmodelled() {
         "long double a = 1.0L, b = 3.0L; return (int)(a / b > 0.333);",
         "double d = 0.1; long double l = d; return (int)(l == (long double)0.1);",
         "long double x = 1e300L; x = x * 1e10L; return (int)(x > 1e309L);",
+        // **Narrowing back out of x87**, which is the next unimplemented step and the one this
+        // disjunction is now actively guarding. Mutation found the hole: teaching `as_f64` to
+        // accept width 80 makes `FpTrunc` "work" by reading an `f80` pattern as `f64` bits, which
+        // is garbage — and nothing narrowed from `long double` anywhere, so nothing objected.
+        // Either this is a declared gap or it equals gcc; a plausible number is the one outcome
+        // 023 §7 forbids.
+        "long double x = 2.5L; double d = x; return (int)d;",
+        "long double x = 2.5L; float f = x; return (int)f;",
     ] {
         let expected = match gcc_answer("", body) {
             Ok(v) => v,
