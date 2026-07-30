@@ -778,7 +778,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### 🔖 Handoff point — waves 239–245
+> ### 🔖 Handoff point — waves 239–246: floats are finished
+>
+> **Waves 239–244 built `long double`.** From "literals only, and some of those wrong" to a complete
+> finite model of x87's 80-bit format — 239 multiply, 240 exact decimal literals, 241 add and
+> subtract, 242 divide (the milestone), 243 NaNs, 244 subnormals. `crates/chiero-cir/src/fp.rs` holds
+> all of it: `unpack` the single decode, `round_to` the single rounding core, `pack` and `to_f32` its
+> two callers.
+>
+> **Wave 245 audited the fall-through hazard** those waves named, and the answer was a number: of
+> twenty-nine `size_of`/`align_of` fall-throughs in lowering, twenty-eight never fire. It found and
+> fixed two wrong-number defects in the conditional operator on the way — 6.3.2.1's missing decay and
+> 6.5.15p6's null-pointer-constant rule.
+>
+> **Wave 246 closed the last float gap**, narrowing to `float`, by parameterizing the rounding core
+> over significand width. **Floats are done.** About 2.4 million cases against gcc's own arithmetic,
+> no disagreement.
+>
+> ### What the next context should know
+>
+> **The soak harness is in `scratchpad/`** and is worth reusing before any float work:
+> `soak.c` generates random 80-bit operand pairs and runs them through gcc's x87 by `memcpy`;
+> `nsoak.c` does the same for narrowing; `chk` compares against `fp`. **Build it in debug** — the
+> release build hid a shift-overflow panic for 960,000 cases.
+>
+> **The four verification lessons in the rules list cost real time and are not float-specific**: a
+> random soak cannot reach a rounding boundary (`2^-62` events — shrink and enumerate instead), a
+> generator that makes one operand special at a time never reaches the interactions, three hand-picked
+> probes cannot distinguish two rules, and `x != x` is no test of *which* NaN.
+>
+> **Nothing on the float list is left except symbolic floats**, which need an FP theory in the solver
+> or a bit-blasted encoding — a different kind of wave from these seven.
+
+> ### 🔖 Earlier handoff — waves 239–245
 >
 > **Waves 239–244 were one arc: `long double`.** From "literals only, and some of those wrong" to a
 > complete finite model of x87's 80-bit format, verified against the hardware rather than a manual —
