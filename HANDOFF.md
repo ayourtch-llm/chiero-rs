@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 250) — 1396 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 251) — 1397 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,7 +1572,57 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
+> ### 🔴 Do this first: the generator can construct the shape and still not observe it
+>
+> **Wave 250 widened the generator's bit-field values and it did not catch wave 249's defect.** That
+> is the finding, and it is worth more than the widening. The controlled experiment: revert the
+> `field_signed` fix in `chiero-lower`, run the fixed batch plus 700 soak seeds against the widened
+> generator, and nothing fails.
+>
+> What *is* now true, measured over 3000 seeds: bit-fields appear in about a quarter of programs, are
+> read in most of those, and an `unsigned` one's stored value now sets the field's top bit about half
+> the time — the half where sign- and zero-extension disagree. The guard is
+> `the_generator_fills_an_unsigned_bitfield_s_top_bit`.
+>
+> **So the gap is in how the value reaches the comparison, not in the value.** The generated program
+> has no `main`: it is a prelude of `static` functions plus a `probe()` body that accumulates a
+> checksum over the scalars, arrays and struct fields *in scope in the body*. A bit-field written
+> into a struct that only ever appears as a **parameter of a prelude function** is never in that
+> scope, so nothing it holds reaches the checksum. Seed 6 is the shape to read: `h1()` fills a
+> bit-field, `h2(p0, p1)` reads it, and nothing calls either.
+>
+> **The check to run before designing anything** — and this is a hypothesis, marked as one: count how
+> often a struct *with a bit-field* is a local in the `probe()` body rather than only a prelude
+> parameter. If that count is near zero, the fix is to make the body declare and checksum such a
+> struct, not to touch values again.
+>
 > ### Rules earned, most recent first
+>
+> **A generator can emit a construct, read it, and still be unable to observe a defect in it** (wave
+> 250). Bit-fields were generated in a quarter of programs and read in most of those, and 400 soak
+> seeds against a known wrong answer found nothing. Emitting a construct, giving it a value that
+> discriminates, and routing that value to the comparison are **three** conditions, and coverage
+> talk usually counts the first.
+>
+> **An adequacy guard that measures one of two necessary conditions reports the coverage you hoped
+> for** (wave 250). The first version counted bit-fields whose top bit was set — 15 of 44, healthy —
+> and passed. The number that mattered was `unsigned` *and* top-bit-set: 5. I wrote the guard, it
+> went green, and it was measuring the wrong thing.
+>
+> **A ratio over seven samples decides nothing** (wave 250). With the misattribution fixed, the
+> six-hundred-seed range yielded seven unambiguous unsigned initializers, and mutants that removed
+> the rule entirely still passed. Widening to three thousand seeds — string work, a fifth of a
+> second — killed them. **Check the sample size before trusting an adequacy ratio.**
+>
+> **A scan keyed on a name will attribute one record's field to another** (wave 250). Every generated
+> struct has an `f0`. The guard's own lookup was misattributing five of fifteen, and it surfaced only
+> because forcing the top bit *on* failed to make the count reach the total — an experiment run to
+> check a mutant, not to check the scan.
+>
+> **Consuming randomness to add a feature moves every corpus** (wave 250). The first attempt drew the
+> bit-field value from `rng`, shifting the stream and every downstream decision; the metric got
+> *worse*, because the programs being measured were no longer the same programs. §9's rule about
+> gating new arms before any `rng` call is the same rule from the other side.
 >
 > **One value consumed twice will be discharged once** (wave 249). `report_faults` filtered a fault
 > list, reported from the filtered copy, and returned `()`. A second consumer needed the same list to
