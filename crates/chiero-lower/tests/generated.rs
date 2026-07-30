@@ -3242,6 +3242,12 @@ fn the_generator_fills_an_unsigned_bitfield_s_top_bit() {
             let Some((name, val)) = rest.split_once(" = ") else {
                 continue;
             };
+            // **Mutation records this check as a survivor, and it stays.** Dropping it leaves every
+            // assertion passing — it makes the count wrong (ten "unsigned bit-fields" where seven
+            // exist) without moving the ratio far enough to fail. A number wrong for a knowable
+            // reason is worse than one merely coarse, and this misattribution is what hid an
+            // earlier measurement error for most of wave 250.
+            //
             // Ambiguous or non-bit-field names are skipped rather than guessed at: more than one
             // entry means two records share the name, and a zero width means it is not a
             // bit-field at all.
