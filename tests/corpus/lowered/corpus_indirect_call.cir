@@ -47,7 +47,7 @@ entry: ; span 296:338:0
 func @main() -> i32 { ; span 340:802:0
   alloca %0 : i32 x 1 align 4 scope 1 lifetime scope "pick" ; span 359:371:0
   alloca %1 : ptr x 1 align 8 scope 1 lifetime scope "fn" ; span 428:466:0
-  alloca %2 : ptr x 1 align 4 scope 1 lifetime scope ; span 445:466:0
+  alloca %2 : ptr x 1 align 8 scope 1 lifetime scope ; span 445:466:0
   alloca %3 : i32 x 1 align 4 scope 1 lifetime scope "r" ; span 470:483:0
 entry: ; span 340:802:0
   .line 11

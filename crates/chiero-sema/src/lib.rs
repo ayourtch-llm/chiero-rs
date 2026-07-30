@@ -2306,9 +2306,22 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Cond { cond, then, els } => {
+                // **C11 6.3.2.1 before 6.5.15.** Both arms decay — an array to a pointer to its
+                // first element, a function to a pointer to itself — and only then does the
+                // conditional pick their common type. Skipping it made `sizeof(c ? a : b)` for two
+                // `int[4]` report *sixteen* rather than eight, and `sizeof(c ? f : g)` refuse the
+                // whole function because a `Ty::Func` has no size to report.
+                //
+                // The condition decays too, and for a different reason: `a ? x : y` on an array
+                // tests the decayed pointer, which is what makes it always true.
                 let c = self.type_expr(*cond);
-                let t = then.map(|t| self.type_expr(t));
+                let c = self.decay(c, *cond);
+                let t = then.map(|t| {
+                    let n = self.type_expr(t);
+                    self.decay(n, t)
+                });
                 let e = self.type_expr(*els);
+                let e = self.decay(e, *els);
                 let ety = self.out.typed.ty_of(e);
                 let ty = match t {
                     Some(t) => {
