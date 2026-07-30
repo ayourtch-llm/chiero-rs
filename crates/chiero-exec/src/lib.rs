@@ -1782,7 +1782,8 @@ impl<'m> Engine<'m> {
                         AssumptionKind::OpaqueCode,
                         span,
                         &format!(
-                            "the `{who}` checker assumed a condition, so paths the                              program allows were not explored"
+                            "the `{who}` checker assumed a condition, so paths the \
+                             program allows were not explored"
                         ),
                     );
                 }
@@ -5407,7 +5408,8 @@ impl<'m> Engine<'m> {
                 AssumptionKind::BudgetHit,
                 span,
                 &format!(
-                    "lazy materialization stopped at `{what}`: the linked structure is                      deeper than max_depth ({})",
+                    "lazy materialization stopped at `{what}`: the linked structure is \
+                     deeper than max_depth ({})",
                     self.lazy.max_depth
                 ),
             );
@@ -6911,7 +6913,8 @@ impl<'m> Engine<'m> {
                     s,
                     AssumptionKind::OpaqueCode,
                     span,
-                    "`chiero_make_symbolic` with a non-pointer target or symbolic length                      was not applied",
+                    "`chiero_make_symbolic` with a non-pointer target or symbolic length \
+                     was not applied",
                 );
                 s.degrade(
                     Fidelity::Unknown,

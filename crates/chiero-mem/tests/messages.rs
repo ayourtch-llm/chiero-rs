@@ -9,9 +9,12 @@
 //!   only under a                  guard the engine has not discharged
 //! ```
 //!
-//! Eighteen spaces mid-sentence, from a `\` line continuation whose second line kept its source
-//! indentation. Rust puts every column after the backslash into the string, and the compiler has
-//! nothing to say about it.
+//! Eighteen spaces mid-sentence — and **not** from a `\` line continuation, which was the first
+//! guess and is wrong: Rust's `\`-newline escape skips the next line's leading whitespace, and the
+//! two genuine continuations in that same `impl` render correctly, which is the proof. It is a
+//! single over-long literal with the spaces sitting inside it, of the kind produced by joining two
+//! lines by hand. `cargo fmt` will not split a string literal and has nothing to say about its
+//! contents, so no gate in this repo could see it.
 //!
 //! # Why an invariant and not a fixture per message
 //!
@@ -149,8 +152,8 @@ fn no_fault_message_has_a_run_of_spaces() {
         let s = f.to_string();
         assert!(
             !s.contains("  "),
-            "`{}` renders with a run of spaces, which is a `\\` continuation that kept its \
-             source indentation: {s:?}",
+            "`{}` renders with a run of spaces, which no wording wants and no formatter \
+             will find: {s:?}",
             f.kind()
         );
     }

@@ -1241,7 +1241,8 @@ impl std::fmt::Display for MemFault {
             ),
             MemFault::MaybeUninitialized { obj, off, bit, .. } => write!(
                 f,
-                "read at offset {off} of {obj:?} touches bit {bit}, written only under a                  guard the engine has not discharged"
+                "read at offset {off} of {obj:?} touches bit {bit}, which was written only \
+                 under a condition that may not hold here"
             ),
             MemFault::Misaligned { obj, off, want, .. } => write!(
                 f,
@@ -1283,7 +1284,8 @@ impl std::fmt::Display for MemFault {
             ),
             MemFault::AllocationTooLarge { obj, size, .. } => write!(
                 f,
-                "{obj:?} at {size} bytes is past the {MAX_MATERIALIZED_BYTES}-byte limit,                  so it is not materialized and every access to it faults"
+                "{obj:?} at {size} bytes is past the {MAX_MATERIALIZED_BYTES}-byte limit, \
+                 so it is not materialized and every access to it faults"
             ),
             MemFault::NullDeref { off, .. } => write!(f, "access at offset {off} of NULL"),
             MemFault::WildPointer { off, .. } => write!(
@@ -1292,7 +1294,8 @@ impl std::fmt::Display for MemFault {
             ),
             MemFault::SymbolicByte { obj, off, .. } => write!(
                 f,
-                "byte {off} of {obj:?} holds a symbolic value, which a concrete access                  cannot answer for"
+                "byte {off} of {obj:?} holds a symbolic value, which a concrete access \
+                 cannot answer for"
             ),
             // No offset, on purpose: this variant only reaches a report when the solver
             // could not decide the guard, and every offset it could name would be a guess.
@@ -1319,7 +1322,8 @@ impl std::fmt::Display for MemFault {
                 ..
             } => write!(
                 f,
-                "{size}-byte access of {obj:?} ({obj_size} bytes) may be out of bounds —                  offset {witness} is"
+                "{size}-byte access of {obj:?} ({obj_size} bytes) may be out of bounds: the \
+                 path allows offset {witness}, which is outside it"
             ),
             MemFault::OverlappingCopy {
                 obj,
@@ -1329,7 +1333,8 @@ impl std::fmt::Display for MemFault {
                 ..
             } => write!(
                 f,
-                "{size}-byte copy within {obj:?} from {src} to {dst} overlaps, which                  `memcpy` forbids"
+                "{size}-byte copy within {obj:?} from {src} to {dst} overlaps, which \
+                 `memcpy` forbids"
             ),
             MemFault::BadFree { obj, kind, .. } => {
                 write!(f, "free of {obj:?}, which is {kind:?} memory, not heap")

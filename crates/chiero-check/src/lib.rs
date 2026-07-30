@@ -120,7 +120,8 @@ impl Checker for UnionPun {
             return vec![];
         }
         vec![Action::report(format!(
-            "union-pun: reading {width} byte(s) at offset {off} of bytes last written as              {w_width} byte(s) at offset {w_off}"
+            "union-pun: reading {width} byte(s) at offset {off} of bytes last written as \
+             {w_width} byte(s) at offset {w_off}"
         ))]
     }
 }
