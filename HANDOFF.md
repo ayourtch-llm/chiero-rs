@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 225) — 1354 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 226) — 1356 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -778,35 +778,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   4. **The soak frontier**, if a cheap wave is wanted: `SOAK_CF=1` is clean to 2600 and the plain
 >      grammar to 1600, so pushing either is a known-cost, low-yield errand.
 >
-> ### Two decisions left, one taken
+> ### One decision left; two taken by precedent
 >
-> These sat unanswered for ten waves while the instruction stayed "continue", so wave 224 took the
-> first rather than blocking further. **The resolution came from this repo's own precedent, not from
-> my taste**, which is what made it a judgment call rather than a preference: `UnionPun` is off by
-> default because it is "for the projects that want the stricter reading rather than for this one",
-> and the same tension applies exactly.
+> Three sat unanswered for ten waves while the instruction stayed "continue". Waves 224–225 took the
+> first two, and **both times the repo had already answered the question** — which is what made them
+> judgment calls rather than preferences.
 >
-> **1. ~~Report an overflow the path merely *admits*?~~ Done in wave 224 — as an opt-in.**
+> **1. ~~Report an overflow the path merely *admits*?~~ Done in wave 224 — an opt-in.**
 > `Engine::with_admitted_overflow(true)` reports `may-signed-overflow`; the default stays silent,
-> because with unconstrained inputs every `x + y` admits an overflow and a finding on every
-> arithmetic instruction serves nobody hunting definite defects. The weaker claim is its own *kind*
-> (mirroring `may-be-out-of-bounds`), because 023 §6.1 makes the kind half the dedup key — so the
-> kind *is* the certainty, and one operation yields exactly one of the two.
+> because with unconstrained inputs every `x + y` admits an overflow. The precedent was `UnionPun`,
+> off by default "for the projects that want the stricter reading rather than for this one". The
+> weaker claim is its own *kind* (mirroring `may-be-out-of-bounds`), so the kind *is* the certainty
+> and one operation yields exactly one of the two.
 >
-> **2. Checker reports and deduplication.** Both checker push sites pass `key: None`, so a checker
-> report is exempt from 023 §6.1. Not reachable today: forks dedup by finding id, a checker's own
-> repeats by its `(kind, span)` memory, and `default_checkers()` ships two checkers watching
-> disjoint things. Either give `Action::Report` a key (the checker knows its own kind and span,
-> which is exactly §6.1's pair) or write down that checkers own their deduplication — **not both**,
-> since each makes the other redundant or correct. **Wave 224's precedent applies here too**: when
-> the codebase has already resolved the same tension somewhere, follow it rather than deliberating.
+> **2. ~~Checker reports and deduplication.~~ Done in wave 225 — the checker owns it.** The precedent
+> was `undefined_arithmetic.rs`'s own explanation of why `UbState` carries a `reported` list. It is
+> also better on the merits: a checker may have two distinct things to say about one instruction, and
+> only it can tell that from the same thing said twice. **No behaviour changed** — what changed is
+> that `crates/chiero-check/tests/report_dedup.rs` now pins both halves (the engine inventing no key;
+> a checker with memory reporting once), and the contract sits on `Action::report` where a checker
+> author will find it rather than in a test about loops.
 >
-> **3. UBSan's slugs.** chiero spells kinds `signed-overflow`, `division-by-zero`,
-> `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`; UBSan spells the same four
-> `signed-integer-overflow`, `integer-divide-by-zero`, `shift-exponent-too-large`,
-> `float-cast-overflow`. chiero is graded against UBSan site for site, so sharing names would make
-> the census rows directly comparable. A rename, so it wants a decision — and note that wave 224 has
-> now added a fifth kind, `may-signed-overflow`, which UBSan has no counterpart for.
+> **3. UBSan's slugs — the one still open.** chiero spells kinds `signed-overflow`,
+> `division-by-zero`, `shift-past-operand-width`, `float-to-integer-conversion-out-of-range`, and now
+> `may-signed-overflow`; UBSan spells its four `signed-integer-overflow`, `integer-divide-by-zero`,
+> `shift-exponent-too-large`, `float-cast-overflow`. Sharing names would make the census rows
+> directly comparable, since chiero is graded against UBSan site for site.
+>
+> **This one has no precedent to follow, and that is why it is still open.** It is a rename with two
+> real arguments against: `may-signed-overflow` has no UBSan counterpart, so the sets would only
+> partly align; and 023 §6.1's key is the *kind*, so renaming is a compatibility break for anything
+> already grouping on it. The cheap middle path, if wanted, is a mapping table in the census channel
+> rather than a rename in the engine — that keeps the reports chiero's and the comparison UBSan's.
 >
 > ### 🔴 Then: three mutants still survive wave 205's init check
 >
@@ -1217,6 +1220,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
 > ### Rules earned, most recent first
+>
+> **The precedent is usually in a comment explaining why some existing code is the way it is**
+> (wave 225). Both parked decisions were answered by prose written for another purpose — `UnionPun`'s
+> "off by default … for the projects that want the stricter reading" and
+> `one_faulting_site_in_a_loop_is_one_finding`'s explanation of why `UbState` needs memory. **Search
+> the rationales, not just the code.**
+>
+> **Resolving a decision in favour of current behaviour still changes something** (wave 225). The
+> checker-dedup answer was "what the code already does", and the wave was not empty: the contract
+> moved to where a checker author looks, and two tests now make it a contract instead of an accident.
+> Choosing neither option was the only outcome that left a later change free to pick one silently.
+>
+> **State a contract at the call site, not at the discovery site** (wave 225). The rule about checker
+> dedup lived in a test's doc comment about loops, because that is where someone hit it. It belongs on
+> `Action::report`, which is what a checker author is looking at when they need it.
 >
 > **A decision parked for ten waves is a decision to take** (wave 224). Three were recorded as
 > "yours to make" and the instruction stayed "continue autonomously"; blocking indefinitely was the
