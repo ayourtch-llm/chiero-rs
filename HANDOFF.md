@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 248) — 1393 tests, 5 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 249) — 1393 tests, 5 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -721,6 +721,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > since wave 195's invented `uninitialized-read` is what this conservatism was built against. The
 > reproduction is `a_concrete_byte_written_before_promotion_survives_it` in
 > `crates/chiero-lower/tests/symbolic_offset_store.rs`, `#[ignore]`d with the chain in its doc comment.
+>
+> #### Wave 248 read the code around it. Two facts, and one inference marked as one.
+>
+> **Fact.** `init_guard` (chiero-mem, just above `impl Memory`) expands the init chain with
+> `select_expand(arr.init, bi, EXPAND_LIMIT)` where `EXPAND_LIMIT = 256`, and falls back to an opaque
+> `a.select(arr.init, bi)` past it. Wave 214 made that fallback deliberate: refusing to expand is not
+> refusing to ask, and returning `None` there once made a real finding vanish.
+>
+> **Fact.** A symbolic store rewrites **every init bit of the whole object** — the loop is
+> `for b in 0..size { for bit in b*8..b*8+8 { … } }`, so a 64-byte object gets a **512-store** chain
+> from one symbolic store. 512 > 256, so on this shape the limit is always exceeded and the guard is
+> always the opaque form. The data marking itself is correct (`ite(hit, one, prev)` preserves what was
+> already known); it is the *depth* that is the problem, not the content.
+>
+> **Inference, not yet checked.** That the opaque guard is what the discharge then fails to settle,
+> giving `MaybeUninitialized` for a byte whose init bit is provably 1. It is consistent with
+> everything observed, and it is exactly the kind of plausible chain wave 247 spent a wave
+> disproving — so **check it before building on it.** The check: log the guard term and the
+> discharge's verdict for byte 0 in this fixture.
+>
+> #### Three directions, in the order they look worth trying
+>
+>   1. **Make the limit about the work, not the length.** `select_expand` refuses at 256 *stores*
+>      before folding anything; for a **concrete** index every comparison decides immediately and no
+>      `ite` is ever built, so there is nothing to bound. `select`'s own walk already folds on
+>      syntactic index identity. A limit that counted `ite`s *constructed* rather than stores *seen*
+>      would let the concrete case through at any depth.
+>   2. **Do not rewrite 512 bits to record one conditional write.** The chain's depth is what defeats
+>      every downstream fold. Whether a cheaper encoding exists is a design question, not a bug fix.
+>   3. **Separate "no value" from "a value I am unsure is defined"** in `unusable` — the wave 247
+>      question. Note this is *last*, not first: if 1 or 2 lands, byte 0 stops being a `maybe` at all
+>      and the question becomes narrower.
 >
 > ### ~~🔴 `arr.data` at read time lacks its seeding stores~~ — DISPROVED in wave 247
 >
