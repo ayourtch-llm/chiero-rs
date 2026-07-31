@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 279) — 1426 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 280) — 1427 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,22 +808,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Four declarator defects are open — the census that found them is wave 278's
+> ### 🔴 Two declarator defects are open — the census that found them is wave 278's
 >
-> **The declarator grammar had never been censused**, and twenty-seven shapes against gcc found
-> **five wrong answers**. Wave 278 fixed the worst; these four are open, in severity order, and
-> all are *silent wrong answers* rather than refusals:
+> **The declarator grammar census** (wave 278) ran twenty-seven shapes against gcc and found five
+> wrong answers. Three are closed: the reversed array dimensions and brace elision (278), and
+> anonymous struct/union members (279). Two remain, plus one found while fixing them:
 >
->   1. **`_Alignas` is ignored.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4, gcc says 16.
->   2. **An anonymous struct member does not resolve.**
->      `struct S { struct { int a; int b; }; int c; };` then `s.a` is wrong.
->   3. **An anonymous union member returns nothing.** `union U { struct { int a; }; int b; };`
->      with `u.b = 7; return u.a;` gives `None` where gcc gives 7.
->   4. **Pointer-to-array indexing.** `int (*p)[3] = a; p[1][0]` gave 5 where gcc gives 4 — this
->      *may* have been a consequence of the dimension reversal and should be re-probed first,
->      since wave 278's fixtures now cover `p[1][0]` and `p[1][2]` and both pass.
+>   1. **`_Alignas` is ignored on a variable.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4,
+>      gcc says 16. A *wrong answer*, but narrow: three VPP files, and it only matters to a
+>      program that asks. Note `struct A { char c; _Alignas(16) int v; }` already sizes
+>      correctly, so this may be the variable path alone — probe both before assuming.
+>   2. **`__builtin_offsetof` parses its member argument as an ordinary identifier**, so
+>      `__builtin_offsetof(struct S, b)` reports "`b` was not declared". Found in wave 279 while
+>      writing offset fixtures, which use an address difference instead. `<stddef.h>`'s `offsetof`
+>      is this builtin on gcc, so any TU that includes it and uses the macro is refused.
 >
-> Anonymous members are the pair worth taking together: they are one feature and VPP uses them.
+> **Pointer-to-array indexing is struck**: re-probed at the start of wave 279 and already fixed
+> by 278's dimension work, so it was a symptom rather than a defect.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -2011,6 +2012,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The zero case is the symmetric case wearing a different hat** (wave 279). Two mutants — the
+> offset rebase and the bit-offset rebase — survived fifteen fixtures because *every* one declared
+> the anonymous member first, and rebasing onto offset 0 adds nothing. Wave 278's square array,
+> one wave later, in a new costume. **When a fix adds an adjustment, make sure a fixture has
+> something to adjust**; the natural way to write the example puts the interesting member first,
+> which is exactly where the adjustment vanishes.
+>
+> **Severity ranks kinds of failure; the target ranks features** (wave 279). `_Alignas` is a wrong
+> answer and anonymous members were only a refusal, so severity said take `_Alignas`. Two greps
+> said anonymous members are in **34 VPP files including `vnet/buffer.h`** and `_Alignas` is in
+> three. Take the one that unblocks the target. **Use severity to order defects of comparable
+> reach, not to override reach.**
+>
+> **Re-probe an open item before working it** (wave 279). Of wave 278's four declarator defects,
+> one — pointer-to-array indexing — was already fixed: it had been a *symptom* of the dimension
+> reversal, not a defect of its own. Three minutes of probing struck an item off the list.
 >
 > **The symmetric case is its own reverse, and hides the bug** (wave 278). `int a[2][3]` was typed
 > `int a[3][2]` for the whole life of the project. Every two-dimensional fixture in the suite used
