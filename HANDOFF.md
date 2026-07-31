@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 301) — 1470 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 302) — 1473 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -855,9 +855,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > constant passes. **When a defect is found in one implementation, try it against the others
 > before looking for a new one.**
 >
-> **Still to check by this method:** integer *literal* spelling has three parsers too
-> (`chiero-lex`, `parse_if_literal`, and sema's), and string literals had three until waves 150–152
-> merged them.
+> ~~**Still to check by this method:** integer *literal* spelling has three parsers.~~ **Checked in
+> wave 301, and it came back clean** — every spelling, suffix and width probed agreed with gcc in
+> both the runtime and the constant-expression path, including the cases where the *type* differs
+> between spellings of the same value (`-0x80000000` is unsigned and `-2147483648` is not;
+> `0xFFFFFFFF + 1` wraps to zero and `4294967295 + 1` does not).
+>
+> **The probe found something else on the way, which is the more useful lesson.** Six `sizeof`
+> cases disagreed, all in constant contexts: `const_eval` had an arm for `SizeofType` and none for
+> `SizeofExpr`, so `sizeof(int)` folded and `sizeof(1)` did not. And it was *silent*, because the
+> enumeration walk folded initializers with `.unwrap_or(next)` — anything `const_eval` could not
+> answer became the implicit next value, the same number the enumerator would have had with no
+> initializer written. **A gap that returns the plausible answer is worse than one that returns
+> none**, and it is why the missing arm could only ever be found by accident. Both are fixed; the
+> fallback is kept (an enumeration that stopped resolving would cascade) but announced.
+>
+> **Where else does `.unwrap_or` swallow a fold failure?** That pattern, not the missing `sizeof`
+> arm, is the reusable finding. Grep `const_eval` and `eval(` call sites for a default that is
+> indistinguishable from a computed answer.
 >
 > ### 🟢 The `#if` differential channel — `chiero-pp/tests/if_differential.rs`
 >
@@ -2199,6 +2214,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A fallback that equals the ordinary answer makes its own gap invisible** (wave 301). The
+> enumeration walk used `self.eval(e).map(|v| v.v).unwrap_or(next)` — so an initializer the engine
+> could not fold produced *exactly* the value an absent initializer would have. No test can catch
+> that, because there is nothing to see; the missing `sizeof` arm behind it was found by a
+> differential probe aimed at something else entirely. **When choosing a fallback, prefer one that
+> cannot be mistaken for success, or announce it.** Announcing is usually right: the fallback
+> itself was correct here — an enumeration that stopped resolving would cascade into every use of
+> its type — only the silence was wrong.
+>
+> **Write the claim the mutation supports, not the one that motivated the code** (wave 301). The
+> fix's commit message argued that reusing an existing typing prevented a node being built where
+> locals are invisible. Mutation said otherwise: forcing the reuse off leaves the whole suite
+> green, as does keeping the diagnostics the fix discards. Both were kept — the two behaviours are
+> equivalent today and the retained one is cheaper — but the comment now says *equivalent today*
+> rather than *required*, and the test written to distinguish them was renamed for what it
+> actually pins. **A rationale that mutation cannot support is a hypothesis; label it as one.**
 >
 > **A defect found in one implementation is a question to ask of every other** (wave 300). The
 > usual arithmetic conversions and the conditional operator's type were wrong in `#if` (wave 298)
