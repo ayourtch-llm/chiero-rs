@@ -115,8 +115,18 @@ fn a_check_after_the_dereference_does_not_save_it() {
 /// — a report a person can *dismiss* is barely one, and the difference is which evidence it cites.
 #[test]
 fn a_null_dereference_cites_the_program_s_own_check() {
+    // **With a `SourceMap`, because the clause names a line.** The plain `findings` helper builds
+    // an engine without one, and `render_loc` then says "source offset 31" — true, and not
+    // something a reader can open an editor at. The point of citing the program's own check is that
+    // it can be looked at.
     let src = "int probe(int *p){ int v = *p; if (p) return v; return 0; }";
-    let f = findings(src);
+    let (m, map) = harness::lower_maybe_with_map(src).expect("the fixture lowers");
+    let mut arena = TermArena::new();
+    let f = Engine::new(&m)
+        .with_source_map(&map)
+        .with_entry("probe")
+        .run(&mut arena)
+        .findings();
     let d = f
         .iter()
         .find(|x| x.contains("null-dereference"))

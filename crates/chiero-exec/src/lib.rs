@@ -540,7 +540,7 @@ pub struct State {
     ///
     /// A plain `Option<String>`: a state is forked for at most one parameter, since wave
     /// 186 chose one null state per parameter rather than every combination.
-    entry_null_param: Option<String>,
+    entry_null_param: Option<(ValueId, String)>,
 }
 
 impl State {
@@ -2308,7 +2308,7 @@ impl<'m> Engine<'m> {
                             off: 0,
                         }),
                     );
-                    nul.entry_null_param = Some(format!("%{}", vid.0));
+                    nul.entry_null_param = Some((*vid, format!("%{}", vid.0)));
                     work.push(nul);
                 }
             }
@@ -6531,6 +6531,81 @@ impl<'m> Engine<'m> {
     ///
     /// Most callers ignore the return and only want the reporting; the two that decide a value's
     /// usability are the scalar and bit-field loads.
+    /// Where the current function compares `vid` against a null pointer, if it does.
+    ///
+    /// **Only a comparison against a null *constant*.** `p == q` for two pointers says nothing
+    /// about either being null, and reporting it as a null test would put a false claim in a
+    /// finding — worse than the vaguer sentence it replaces, because a reader would go and look.
+    ///
+    /// The whole function is searched rather than the blocks already executed: the shape this
+    /// exists for is a check *below* the dereference, which by construction has not run. Searching
+    /// forward from the fault would find nothing at all.
+    fn null_test_of(&self, s: &State, vid: ValueId) -> Option<Span> {
+        let f = self.module.funcs.iter().find(|f| f.id == s.func())?;
+        let insts = || f.blocks.iter().flat_map(|b| b.insts.iter());
+
+        // **The comparison is not on the parameter, and that is the whole difficulty.** Lowering
+        // stores every parameter into a slot at entry, so `if (p)` reads the slot back and compares
+        // *that*: `%7 = addrlocal %0`, `%8 = load ptr %7`, `%9 = cmp ne ptr %8, null`. Matching the
+        // parameter's own `ValueId` finds nothing — the first version of this did exactly that and
+        // the fixture stayed red.
+        //
+        // So: find the slot the parameter was stored into, then the loads from it, then a
+        // comparison of one of those against null.
+        let addr_of = |v: ValueId| {
+            insts().find_map(|i| match &i.kind {
+                InstKind::Assign {
+                    dst,
+                    rv: RValue::AddrOfLocal { alloca },
+                } if *dst == v => Some(*alloca),
+                _ => None,
+            })
+        };
+        let slot = insts().find_map(|i| match &i.kind {
+            InstKind::Store {
+                addr: Operand::Value(a),
+                val: Operand::Value(v),
+                ..
+            } if *v == vid => addr_of(*a),
+            _ => None,
+        })?;
+        let loaded: Vec<ValueId> = insts()
+            .filter_map(|i| match &i.kind {
+                InstKind::Assign {
+                    dst,
+                    rv:
+                        RValue::Load {
+                            addr: Operand::Value(a),
+                            ..
+                        },
+                } if addr_of(*a) == Some(slot) => Some(*dst),
+                _ => None,
+            })
+            .collect();
+
+        // **A null *constant* only.** `p == q` for two pointers says nothing about either being
+        // null, and calling it a null test would put a false claim in a finding — worse than the
+        // vaguer sentence it replaces, because a reader would go and look at the line.
+        let is_null = |o: &Operand| {
+            matches!(o, Operand::Const(Const::Null))
+                || matches!(o, Operand::Const(Const::Int { val: 0, .. }))
+        };
+        let is_it = |o: &Operand| matches!(o, Operand::Value(v) if loaded.contains(v));
+
+        // The *whole* function, not the blocks already executed: the shape this exists for is a
+        // check below the dereference, which by construction has not run.
+        insts().find_map(|i| {
+            let InstKind::Assign {
+                rv: RValue::Cmp { a, b, .. },
+                ..
+            } = &i.kind
+            else {
+                return None;
+            };
+            ((is_it(a) && is_null(b)) || (is_null(a) && is_it(b))).then_some(i.span)
+        })
+    }
+
     fn report_faults(
         &mut self,
         a: &mut TermArena,
@@ -6682,9 +6757,25 @@ impl<'m> Engine<'m> {
             // it, because the two want opposite responses. One says "your caller can do
             // this"; the other says "your code does this".
             let message = match (&s.entry_null_param, f.kind()) {
-                (Some(p), "null-dereference") => format!(
-                    "{message}, where {p} is a pointer parameter assumed to be possibly null"
-                ),
+                (Some((vid, p)), "null-dereference") => {
+                    let base = format!(
+                        "{message}, where {p} is a pointer parameter assumed to be possibly null"
+                    );
+                    // **And when the program tests it, say so instead of assuming.**
+                    //
+                    // "Assumed" is the weakest thing chiero can offer, and it invites the reply
+                    // that these callers never pass null. A test in the function's own body is the
+                    // author stating the pointer can be — evidence a reader cannot argue with, and
+                    // it is already sitting in the CIR. 023 §9's rule about a report a person
+                    // cannot act on, one step on: a report a person can *dismiss* is barely one.
+                    match self.null_test_of(s, *vid) {
+                        Some(at) => format!(
+                            "{base}; the function tests it against null at {}",
+                            self.render_loc(at)
+                        ),
+                        None => base,
+                    }
+                }
                 _ => message,
             };
             // Last, so the location ends the sentence rather than interrupting a clause that
