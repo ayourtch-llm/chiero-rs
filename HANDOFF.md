@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 261) — 1403 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 262) — 1403 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1212,12 +1212,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      30 / 30   SignedOverflow
 > ```
 >
-> - **`FloatCastOverflow` at 7 is the thin row, and is now the front here** — the same shape as
->   `stack-buffer-overflow` at 1 in wave 180, and the same fix: make the shape more common in the
->   corpus rather than lower the floor. **Read waves 250–253 before starting**: raising a shape's
->   frequency three times failed to catch a known defect there, because the *context* of the
->   construct was what mattered and not its count. Ask first what a `FloatCastOverflow` site looks
->   like in the corpus and whether that shape can discriminate at all.
+> - ~~**`FloatCastOverflow` at 7 is the thin row.**~~ **Closed in wave 261, and the recommended fix
+>   would not have worked.** The advice was "make the shape more common in the corpus"; the warning
+>   attached to it — ask what the row can *observe* first — is what mattered. Mutating the range
+>   check says the row is not thin in general but blind in two directions:
+>
+>   ```text
+>     negative into unsigned destination   KILLED
+>     signed high end                      KILLED
+>     signedness of destination ignored    KILLED
+>     signed *low* end                     SURVIVED
+>     NaN treated as in range              SURVIVED
+>   ```
+>
+>   A float too *negative* for a signed destination, and a NaN converted to an integer. Neither is
+>   about how often a float cast appears, so more of them would have left both holes open. Three
+>   fixtures in `signedness.rs` — beside the mirror cases that were already there and were already
+>   killing the other three — close it. All five mutants die.
 > - **The substring classification is sound and that was checked, not assumed.** An
 >   unclassified gcc message becomes kind `"?"`, which chiero never emits, so it scores as a
 >   *miss* and fails loudly. §9 predicted this front would be about the substrings; they were
@@ -1700,6 +1711,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **A thin row is a question, not a diagnosis** (wave 261). `FloatCastOverflow` at 7 sites looked
+> like "not enough of this shape", and §9 recommended making more. Mutating the code the row is
+> supposed to grade showed three of five checks were already covered and named the two that were
+> not — a negative float into a signed destination, and a NaN. **Neither has anything to do with
+> frequency**, so the recommended fix would have added sites and closed nothing. **Ask what a
+> coverage number can observe before treating its size as the problem.**
+>
+> **Look for the mirror of a fixture you already have** (wave 261). The two gaps were the mirrors of
+> two cases already written down: "too large for signed" existed and "too negative for signed" did
+> not; "negative into unsigned" existed and "NaN into anything" did not. A fixture list is worth
+> reading as a grid, and the empty cells are cheap to find and cheap to fill.
 >
 > **"Cannot be asserted to zero" is not "cannot be asserted"** (wave 260). `extra` counts sites
 > chiero reports and gcc does not, and it genuinely cannot be required to be zero — gcc elides
