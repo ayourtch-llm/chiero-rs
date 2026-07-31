@@ -2247,6 +2247,14 @@ impl Lowerer<'_> {
                 if let Some(v) = self.ptr_arith(*op, *lhs, *rhs, span) {
                     return v;
                 }
+                // **A vector operator works lane by lane, not on the aggregate.** Same cause
+                // as `ptr_arith` directly above: the operand's CIR type is not the type the
+                // operator works at. A vector is an aggregate, so the generic arm below gets a
+                // `CTy::Ptr` while the expression's declared type says `Int(32)`, and the
+                // verifier rejects the function.
+                if let Some(v) = self.vec_arith(*op, *lhs, *rhs, span) {
+                    return v;
+                }
                 // **Left to right** (015 §2, normative): the left operand's side effects
                 // are emitted before the right's.
                 let a = self.expr(*lhs);
@@ -2405,6 +2413,11 @@ impl Lowerer<'_> {
                 span,
             ),
             chiero_ast::ExprKind::Unary { op, operand } => {
+                // Elementwise, for the same reason the binary arm intercepts: the operand's
+                // CIR type is an address and the operator works at the lane's type.
+                if let Some(v) = self.vec_unary(*op, *operand, span) {
+                    return v;
+                }
                 let a = self.expr(*operand);
                 // The operand's own type: `-2.5` is `FNeg` on a `Float`, and naming it
                 // `Int(32)` gives the verifier an instruction that contradicts itself.
@@ -3231,7 +3244,17 @@ impl Lowerer<'_> {
         // there is nothing to load; and a sequence would silently drop the padding C
         // copies, leaving 021 to see those bytes uninitialized where the program had
         // defined them.
-        if op.is_none()
+        // **A compound assignment reaches here too**, and used not to — the same guard the
+        // bit-field branch above already had to lose, for the same reason. `x += y` on a
+        // vector computed nothing elementwise at all: the guard sent it to the scalar path
+        // below, which stored a `CTy::Ptr` value into a `CTy::Ptr` slot. That is a
+        // *well-typed* instruction meaning the wrong thing, so the verifier passed it and the
+        // answer was simply wrong — the worst outcome, and the one a refusal would not be.
+        //
+        // Only a **vector** gets here with an operator: C has no `+=` on a struct or an array,
+        // so `compound` is `None` for those and the guard still excludes them.
+        let compound = op.filter(|_| self.vector_of(lhs).is_some());
+        if (op.is_none() || compound.is_some())
             && let Some(size) = self.aggregate_size(lhs)
         {
             // **The destination must be an lvalue** — C says so, and if lowering cannot
@@ -3254,9 +3277,31 @@ impl Lowerer<'_> {
             // it yield the *address* for an aggregate, which is exactly what `CopyMem`
             // wants, and it is what `local_decl` has always used — which is why the
             // initializer form `struct S y = (0, x);` worked while the assignment did not.
-            let src = match self.lvalue_addr(rhs, span) {
-                Some(a) => a,
-                None => self.expr(rhs),
+            // With an operator the source is the *result of the operation*, not the right
+            // operand: `x += y` copies back `x + y`. It is built from the destination address
+            // computed just above rather than from `lhs` again, so the lvalue is evaluated
+            // once. `vec_arith`'s result is its own slot — already an address, already the
+            // right size — which is exactly what `CopyMem` wants.
+            let src = match compound {
+                Some(binop) => {
+                    match self.vec_arith_with(binop, lhs, Some(dst.clone()), rhs, span) {
+                        Some(v) => v,
+                        // `vector_of` said yes and `vec_arith` said no, which only the
+                        // comparison operators do. They are a declared limit, and 020 §5 says
+                        // to say so rather than emit something.
+                        None => {
+                            self.diagnostics.push(LowerDiagnostic {
+                                span,
+                                message: "a compound assignment with a vector comparison".into(),
+                            });
+                            return Operand::Const(Const::Undef(CTy::Ptr));
+                        }
+                    }
+                }
+                None => match self.lvalue_addr(rhs, span) {
+                    Some(a) => a,
+                    None => self.expr(rhs),
+                },
             };
             let align = self.aggregate_align(lhs).unwrap_or(1).max(1);
             self.emit(
@@ -4105,6 +4150,256 @@ impl Lowerer<'_> {
     /// difference of two pointers is a count of elements too (6.5.6p9) — not of bytes.
     /// Nothing else in this function is a C conversion, so the widening and scaling here
     /// are lowering's own bookkeeping, spelled once rather than at each call site.
+    /// The element type and lane count of `e`, when it is a vector.
+    fn vector_of(&mut self, e: ExprId) -> Option<(TyId, u32, TyId)> {
+        let t = self.type_of(e)?;
+        match self.analysis.ty(t).clone() {
+            Ty::Vector { elem, lanes, .. } => Some((elem, lanes, t)),
+            _ => None,
+        }
+    }
+
+    /// **Elementwise arithmetic on a vector, lowered lane by lane through memory.**
+    ///
+    /// gcc's `vector_size` gives every arithmetic, bitwise and shift operator an elementwise
+    /// meaning, and converts a scalar operand to the element type and broadcasts it — in either
+    /// operand position, so `1 + x` is the same operation as `x + 1`.
+    ///
+    /// # Through memory, and why that is the right representation here
+    ///
+    /// CIR has `Splat`, `Shuffle`, `InsertLane` and `ExtractLane`, and they are *not* used. They
+    /// operate on a vector held as an SSA **value**, and in this engine a vector is an
+    /// aggregate: `cty` maps it to `CTy::Ptr`, `alloca_for` gives it storage, and wave 272's
+    /// initializer and subscript both address it as bytes. Producing lane ops here would mean
+    /// two representations of one type, and every load, store, copy, member and cast would have
+    /// to know which it was holding. One representation, addressed the way the rest of the
+    /// compiler already addresses it.
+    ///
+    /// The consequence is that the four lane opcodes stay unproduced. That is a real cost and it
+    /// is recorded rather than hidden: they are what an SSA vector representation would need, and
+    /// this is not one.
+    ///
+    /// # Each operand is evaluated once
+    ///
+    /// Before the lane loop, not inside it. `f() + x` must call `f` once however many lanes
+    /// there are, and a broadcast scalar is one value used four times rather than four
+    /// evaluations of one expression.
+    fn vec_arith(
+        &mut self,
+        op: chiero_ast::BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Option<Operand> {
+        self.vec_arith_with(op, lhs, None, rhs, span)
+    }
+
+    /// `vec_arith`, with the left operand's value supplied.
+    ///
+    /// **`x += y` must evaluate the destination's address once** (015 §2.2), and it needs that
+    /// address both to read the old lanes and to copy the result back. Passing it in is what
+    /// keeps `a[f()] += v` from calling `f` twice.
+    fn vec_arith_with(
+        &mut self,
+        op: chiero_ast::BinOp,
+        lhs: ExprId,
+        lhs_val: Option<Operand>,
+        rhs: ExprId,
+        span: Span,
+    ) -> Option<Operand> {
+        // Comparisons and the logical operators are not this function's business. A vector
+        // comparison yields a *signed integer* vector of the lane's width, which for a `v4sf`
+        // is not the operand type at all; it keeps refusing loudly and 015 §7 names it.
+        if cir_cmpop(op, true).is_some()
+            || matches!(op, chiero_ast::BinOp::LogAnd | chiero_ast::BinOp::LogOr)
+        {
+            return None;
+        }
+        let lv = self.vector_of(lhs);
+        let rv = self.vector_of(rhs);
+        let (elem, lanes, vty) = lv.or(rv)?;
+        let esz = self.analysis.size_of(elem).unwrap_or(1);
+        let ecty = self.cty(elem);
+        let esigned = self.ty_signed(elem);
+        let fk = match ecty {
+            CTy::Float(k) => Some(k),
+            _ => None,
+        };
+
+        // Both operands first, in source order (015 §2), and exactly once each.
+        let a0 = match lhs_val {
+            Some(v) => v,
+            None => self.expr(lhs),
+        };
+        let b0 = self.expr(rhs);
+        // A scalar operand is converted to the element type and then broadcast.
+        let a0 = if lv.is_some() {
+            a0
+        } else {
+            self.convert_for_store(a0, lhs, &ecty, esigned, span)
+        };
+        let b0 = if rv.is_some() {
+            b0
+        } else {
+            self.convert_for_store(b0, rhs, &ecty, esigned, span)
+        };
+
+        let align = self.analysis.align_of(vty).unwrap_or(1).max(1);
+        let slot = self.alloca_for(vty, align, None, span);
+        let base = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: base,
+                rv: RValue::AddrOfLocal { alloca: slot },
+            },
+            span,
+        );
+        let base = Operand::Value(base);
+
+        for i in 0..u64::from(lanes) {
+            let off = i * esz;
+            let a = match lv {
+                Some(_) => self.load_lane(a0.clone(), off, &ecty, span),
+                None => a0.clone(),
+            };
+            let b = match rv {
+                Some(_) => self.load_lane(b0.clone(), off, &ecty, span),
+                None => b0.clone(),
+            };
+            let r = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: r,
+                    rv: RValue::Bin {
+                        op: cir_binop(op, esigned, fk.is_some()),
+                        a,
+                        b,
+                        ty: ecty.clone(),
+                        signed: esigned,
+                    },
+                },
+                span,
+            );
+            let addr = self.lane_addr(base.clone(), off, span);
+            self.emit(
+                InstKind::Store {
+                    addr,
+                    val: Operand::Value(r),
+                    ty: ecty.clone(),
+                    align: esz.max(1),
+                    vol: chiero_cir::Volatility::Normal,
+                },
+                span,
+            );
+        }
+        Some(Operand::Value(match base {
+            Operand::Value(v) => v,
+            _ => unreachable!("the base was just built from AddrOfLocal"),
+        }))
+    }
+
+    /// `-v` and `~v`, lane by lane.
+    ///
+    /// `!v` is deliberately not here. C's `!` yields an `int`, not a vector, and gcc rejects it
+    /// on a vector outright — so there is nothing to lower and the generic arm's refusal is the
+    /// right answer.
+    fn vec_unary(&mut self, op: chiero_ast::UnOp, operand: ExprId, span: Span) -> Option<Operand> {
+        if !matches!(op, chiero_ast::UnOp::Minus | chiero_ast::UnOp::BitNot) {
+            return None;
+        }
+        let (elem, lanes, vty) = self.vector_of(operand)?;
+        let esz = self.analysis.size_of(elem).unwrap_or(1);
+        let ecty = self.cty(elem);
+        let src = self.expr(operand);
+        let align = self.analysis.align_of(vty).unwrap_or(1).max(1);
+        let slot = self.alloca_for(vty, align, None, span);
+        let base = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: base,
+                rv: RValue::AddrOfLocal { alloca: slot },
+            },
+            span,
+        );
+        let base = Operand::Value(base);
+        let uop = match op {
+            // A floating negation flips the sign bit; an integer one is a two's-complement
+            // subtraction. The same distinction the scalar arm draws, at the lane's type.
+            chiero_ast::UnOp::Minus if matches!(ecty, CTy::Float(_)) => chiero_cir::UnOp::FNeg,
+            chiero_ast::UnOp::Minus => chiero_cir::UnOp::Neg,
+            _ => chiero_cir::UnOp::Not,
+        };
+        for i in 0..u64::from(lanes) {
+            let off = i * esz;
+            let a = self.load_lane(src.clone(), off, &ecty, span);
+            let r = self.new_value();
+            self.emit(
+                InstKind::Assign {
+                    dst: r,
+                    rv: RValue::Un {
+                        op: uop,
+                        a,
+                        ty: ecty.clone(),
+                    },
+                },
+                span,
+            );
+            let addr = self.lane_addr(base.clone(), off, span);
+            self.emit(
+                InstKind::Store {
+                    addr,
+                    val: Operand::Value(r),
+                    ty: ecty.clone(),
+                    align: esz.max(1),
+                    vol: chiero_cir::Volatility::Normal,
+                },
+                span,
+            );
+        }
+        Some(base)
+    }
+
+    /// `base + off`, or `base` itself when the offset is zero.
+    fn lane_addr(&mut self, base: Operand, off: u64, span: Span) -> Operand {
+        if off == 0 {
+            return base;
+        }
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::PtrAdd {
+                    base,
+                    off: Operand::Const(Const::Int {
+                        bits: 64,
+                        val: off as i128,
+                    }),
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
+    /// One lane, loaded at the element type.
+    fn load_lane(&mut self, base: Operand, off: u64, ecty: &CTy, span: Span) -> Operand {
+        let addr = self.lane_addr(base, off, span);
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Load {
+                    addr,
+                    ty: ecty.clone(),
+                    align: 1,
+                    vol: chiero_cir::Volatility::Normal,
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn ptr_arith(
         &mut self,
         op: chiero_ast::BinOp,

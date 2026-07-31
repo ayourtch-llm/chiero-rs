@@ -3015,6 +3015,35 @@ fn elementwise_vector_arithmetic_agrees_with_gcc() {
         sf,
         "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf h = -f; return (int)(h[1] * 2);",
     );
+    // **A scalar operand whose type is not the lane's.** Every broadcast fixture above happens
+    // to use a scalar already at the element type, where the conversion is a no-op and cannot
+    // be observed — a mutant removing it survived them all. An `int` beside a `float` lane
+    // needs a real `SiToFp`, and a `long` beside an `int` lane a real truncation; C converts
+    // the scalar to the **element** type, not to `int` and not to the scalar's own.
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf h = 10 - f; return (int)(h[1]*2);",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf h = 2 * f; return (int)h[3];",
+    );
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = 10L - x; return z[2];");
+    // **The destination is evaluated once** (015 §2.2). `x += y` needs the lvalue's address
+    // twice — to read the old lanes and to copy the result back — and the obvious way to write
+    // it calls `lvalue_addr` a second time. Every other fixture here has a bare identifier on
+    // the left, where a double evaluation is invisible; this one puts a side effect in the
+    // subscript, which is the only thing that can see it. Found by a surviving mutant.
+    agree_with(
+        si,
+        "v4si a[2] = {{1,2,3,4},{5,6,7,8}}; v4si y = {10,10,10,10}; int i = 0; a[i++] += y; \
+         return a[0][1]*100 + a[1][1]*10 + i;",
+    );
+    agree_with(
+        si,
+        "v4si a[2] = {{1,2,3,4},{5,6,7,8}}; int i = 0; a[i++] *= 2; \
+         return a[0][0]*100 + a[1][0]*10 + i;",
+    );
     // Chained, so a result vector is itself an operand.
     agree_with(
         si,

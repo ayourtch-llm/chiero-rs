@@ -2310,7 +2310,21 @@ impl Cx<'_> {
                 // does not call for it. The *result* is still converted, by the store.
                 let bool_lvalue =
                     op.is_some() && matches!(self.out.ty(lty), Ty::Int { bits: 1, .. });
-                let r = if pointer_displacement {
+                // **`v *= 2` does not convert `2` to a vector.** The third instance of the
+                // shape the two comments above describe, and the same tell each time: an
+                // lvalue whose type the right operand must *not* be dragged to.
+                //
+                // gcc converts a scalar operand to the vector's **element** type and
+                // broadcasts it, and there is no scalar-to-vector conversion for sema to
+                // insert — the broadcast is a lowering step, one value used once per lane.
+                // Coercing produced a node whose lowered form is an address, so the
+                // elementwise multiply met a `Ptr` where its declared type said `Int(32)`.
+                //
+                // Unlike the `_Bool` case this needs no promotion either: `vec_arith`
+                // converts the scalar to the element type itself, which is the conversion C
+                // actually specifies here and is narrower than `int` for a `v8qi`.
+                let vector_lvalue = op.is_some() && matches!(self.out.ty(lty), Ty::Vector { .. });
+                let r = if pointer_displacement || vector_lvalue {
                     r
                 } else if bool_lvalue {
                     // **Promoted, not coerced.** The operation happens in `int`, so the right
@@ -2641,6 +2655,30 @@ impl Cx<'_> {
         let b = self.promote_node(b, be, span);
         let aty = self.out.typed.ty_of(a);
         let bty = self.out.typed.ty_of(b);
+
+        // **A vector and a scalar keep their operands too**, for the reason the pointer branch
+        // below gives. gcc's `vector_size` converts the scalar to the *element* type and
+        // broadcasts it, and there is no scalar-to-vector conversion for sema to insert — the
+        // broadcast is a lowering step, one value used once per lane.
+        //
+        // Coercing here did real damage rather than nothing: the literal in `x + 1` became a
+        // conversion node whose lowered form is an *address*, so the elementwise `Add` had a
+        // `Ptr` operand where its declared type said `Int(32)` and the verifier refused the
+        // function. `x << 1` was correct throughout only because shifts return above without
+        // ever asking for a common type.
+        //
+        // The result is the vector's type in either operand order. `1 + x` is the same
+        // operation as `x + 1`, and `common_type`'s catch-all returns its *first* argument, so
+        // without this branch the two spellings disagreed.
+        let is_vec = |cx: &Cx, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Vector { .. });
+        if is_vec(self, aty) || is_vec(self, bty) {
+            let ty = if is_vec(self, aty) { aty } else { bty };
+            return self.push_typed(TypedNode::Value {
+                expr,
+                ty,
+                operands: vec![a, b],
+            });
+        }
 
         // Pointer arithmetic and comparisons keep their operands as they are: `p + n` has
         // no common type, and forcing one would turn a pointer into an integer.
