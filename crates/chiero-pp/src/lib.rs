@@ -2135,10 +2135,17 @@ fn parse_if_literal(token: &Tok) -> IfValue {
 }
 
 fn parse_char_constant(text: &str) -> i64 {
-    let inside = text
-        .find('\'')
-        .and_then(|start| text.rfind('\'').map(|end| &text[start + 1..end]))
-        .unwrap_or("");
+    // A terminated constant has its body between the first quote and the last. An unterminated
+    // one has only the opening quote, so those are the *same* index and the range would run
+    // backwards; its body is everything after the quote instead. The preprocessor sees malformed
+    // files as a matter of course and must not fault on them (023 §7).
+    let inside = match text.find('\'') {
+        Some(start) => match text.rfind('\'') {
+            Some(end) if end > start => &text[start + 1..end],
+            _ => &text[start + 1..],
+        },
+        None => "",
+    };
     let bytes = inside.as_bytes();
     let mut index = 0;
     let mut value = 0_u64;

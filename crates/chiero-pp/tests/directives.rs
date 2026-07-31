@@ -812,6 +812,13 @@ fn an_unterminated_character_constant_in_an_if_does_not_panic() {
         "#if '\n#endif\n",
         "#if 'a\n#endif\n",
         "#if ('x' == 120) && '\n#endif\n",
+        // A backslash at end of *file*, with no newline after it. This one is not a duplicate of
+        // the first: there, the backslash is followed by a newline and so is a line splice,
+        // removed before the literal is ever lexed. Only at EOF does the constant's body actually
+        // end in a backslash, which is the one way to reach the escape decoder's `index >=
+        // bytes.len()` bound — mutating that bound away survived every other case here.
+        "#if '\\",
+        "#if 'ab\\",
     ] {
         let tu = preprocess_str("unterminated.c", src, Config::default());
         // The value is unspecified; not crashing, and saying something, is the contract.
@@ -820,4 +827,32 @@ fn an_unterminated_character_constant_in_an_if_does_not_panic() {
             "{src:?} must diagnose rather than pass silently"
         );
     }
+}
+
+/// **The `#if` nesting limit is declared once per directive, not once per occurrence.**
+///
+/// The existing deep-nesting test asserts that *a* diagnostic appears, which cannot see the
+/// once-only guard at all: one deeply parenthesized group can only trip the limit a single time,
+/// so with or without the guard the count is one. Three deep groups in the *same* `#if` separate
+/// them — the guard gives one diagnostic, removing it gives three.
+///
+/// 023 §9: a report a person cannot act on is not a report. A bounded parser that announces its
+/// bound once tells the reader their expression was too deep; one that announces it per
+/// occurrence buries that under repetition, and a machine-generated header can carry hundreds.
+#[test]
+fn the_if_nesting_limit_is_diagnosed_once_per_directive() {
+    let deep = "(".repeat(300) + "1" + &")".repeat(300);
+    let src = format!("#if {deep} + {deep} + {deep}\nselected\n#endif\n");
+    let tu = preprocess_str("deep-if.c", &src, Config::default());
+
+    let nesting = tu
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.message.contains("#if nesting"))
+        .count();
+    assert_eq!(
+        nesting, 1,
+        "one declared limit, not one per group: {:?}",
+        tu.diagnostics
+    );
 }
