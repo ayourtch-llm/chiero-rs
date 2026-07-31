@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 283) — 1430 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 284) — 1433 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,32 +808,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟢 The declarator census is closed — five defects, five waves, all fixed
+> ### 🟢 Every named census axis is now run
 >
-> Wave 278's census of the **declarator grammar** ran twenty-seven shapes against gcc and found
-> five wrong answers. All are now closed:
+> **Wave 283 ran the last one, `TypeKind`**, and it found the biggest single item left: `typeof`
+> resolved to nothing, in **37 VPP files**. Twenty-two probes over nine variants — `Builtin` at
+> every width including `__int128` and `_Float16`, `Named`, `Tag` for `struct`/`union`/`enum`,
+> `Ptr`, `Array`, `Func` — and only the two `typeof` variants failed. A *control* in that census
+> also turned up a **source-triggerable panic** on 128-bit signed arithmetic.
 >
->   - reversed array dimensions, and C11 6.7.9p20 brace elision underneath it (278)
->   - anonymous struct/union members (279)
->   - `__builtin_offsetof`, so `<stddef.h>`'s `offsetof` works (280)
->   - `_Alignof(expr)` returning a *size* (281)
->   - a declarator's requested alignment never reaching the storage (282)
+> **The axes and what each gave:** `ExprKind` vs the generator (270, two defects), `CmpOp` vs
+> lowering (271, seven builtins), every CIR enum vs lowering (272, the vector cluster), `UbKind`
+> (272, clean), `Kw::` vs the parser (275–276, `_Generic` and `__label__`), `StmtKind` vs the
+> generator (277, clean), the **declarator grammar** (278, five defects — the best single yield,
+> closed over waves 278–282), the **preprocessor** (281, clean), `TypeKind` (283, `typeof` plus a
+> panic).
 >
-> Pointer-to-array indexing was struck as a symptom of the first. **That one census was the best
-> yield of the last fifteen waves**, and the axis it worked — the shape of a *declaration* — had
-> never been asked about before.
->
-> **One limit is left undone deliberately.** `__attribute__((aligned(1)))` should *reduce* an
-> object's alignment to 1, and gcc accepts it; `_Alignas(1)` is a constraint violation gcc
-> rejects. Both arrive in chiero as one `aligned` attribute, so telling them apart needs the
-> parser to record which spelling was written. `max` is right for every raising use and the
-> reducing direction appears nowhere in the target.
->
-> **Where to look next, now that every named axis is run.** `ExprKind`, `StmtKind`, the CIR
-> enums, `UbKind`, `Kw::`, the declarator grammar and the preprocessor have all been censused.
-> What has not: **`TypeKind`** — which type forms can the AST hold, and which does anything
-> exercise? It is the one grammar-shaped enum left, and the declarator census's yield came from
-> exactly that neighbourhood.
+> **What is left, with no census to point at it:**
+>   - **`__attribute__((aligned(1)))` should reduce an alignment** and `_Alignas(1)` is a
+>     constraint violation gcc rejects; both arrive as one `aligned` attribute, so telling them
+>     apart needs the parser to record the spelling. No reach in the target.
+>   - **`__VA_OPT__`**, `#elifdef`/`#elifndef` diagnostics, and `defined` produced by macro
+>     expansion — all *declared* preprocessor limits, all 0 VPP files.
+>   - **`BinOp::PtrDiff`** is dead in every crate with a working alternative; the spec also lists
+>     a `BinOp::PtrAdd` "reserved" that does not exist in the code. Fix both or leave both.
+>   - **The soak**, which is now a different search: the corpus reaches vectors, `_Generic`,
+>     `__label__`, the classification builtins and `!`, none of which it did a month ago.
+>     `SOAK_CF=1` was clean over seeds 0..1200 in wave 278 with the vector-carrying corpus.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -2021,6 +2021,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The control fixture is a probe too** (wave 283). `__int128 x = 1; x = x << 70;` was written as
+> a *control* in the `TypeKind` census — an ordinary type form that was supposed to already work —
+> and it **panicked the engine**. The eleven real failures around it hid the crash until each was
+> probed on its own. **When a batch fails, separate the rows before reading the result**; a
+> control that fails is the most interesting row in the table.
+>
+> **The arithmetic that computes a boundary has the same boundary problem** (wave 283).
+> `(1i128 << (w - 1)) - 1` is the maximum of a `w`-bit signed value and underflows at `w = 128`,
+> where the shift *is* `i128::MIN`. Every narrower width leaves headroom, so all of them were
+> fine and only the widest was not. **A range check written in the widest type cannot check the
+> widest type.**
+>
+> **A crash fixture proves the crash is gone, not that the answer is right** (wave 283). Seventeen
+> differential fixtures for the panic all passed with the range mutated to `(0, 0)`, because a
+> spurious or missing UB report does not change a program's *value* and the value oracle is all
+> they have. The range needed asserting where a **report** is the observable. **Match the oracle
+> to the property**: value oracles cannot see diagnostics.
+>
+> **Making one thing work exposes what was deferring to it** (wave 283). `sizeof(T)` never
+> resolved `T` — it interned `size_t` and left the answer to `const_eval`, whose throwaway context
+> sees only file-scope declarations. Nothing noticed until `sizeof(__typeof__(x))` named a local.
 >
 > **A specifier is attached where the *parser* put it, not where the feature lives** (wave 282).
 > `_Alignas(32) int a[4]` puts the attribute on the `int` node while the declaration's type is the
