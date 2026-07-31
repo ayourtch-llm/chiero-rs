@@ -142,6 +142,59 @@ fn a_null_dereference_cites_the_program_s_own_check() {
     );
 }
 
+/// The three ways the search could be wrong, each of which mutation kept alive.
+///
+/// Not "does it find a check" but *which* check, and against what. Every one of these passed the
+/// two tests above:
+///
+/// ```text
+///   any comparison counts as a null test    `p == q` would claim a null check
+///   only null-on-the-right is matched       `if (0 == p)` would find nothing
+///   any slot's load counts                  another parameter's check would be attributed to p
+/// ```
+///
+/// The third is the one that would put a false line number in a report, which is worse than the
+/// vague sentence this replaced — a reader who opens the cited line and finds a check on a
+/// different variable learns not to trust the next finding either.
+#[test]
+fn the_cited_check_is_a_null_test_of_this_pointer() {
+    let cite = |src: &str| -> String {
+        let (m, map) = harness::lower_maybe_with_map(src).expect("lowers");
+        let mut arena = TermArena::new();
+        Engine::new(&m)
+            .with_source_map(&map)
+            .with_entry("probe")
+            .run(&mut arena)
+            .findings()
+            .into_iter()
+            .find(|x| x.contains("null-dereference"))
+            .unwrap_or_else(|| panic!("the dereference must be reported"))
+    };
+
+    // Null on the *left*, which C allows and a one-sided match would miss.
+    let d = cite("int probe(int *p){ int v = *p; if (0 == p) return v; return 0; }");
+    assert!(
+        d.contains("tests it"),
+        "`0 == p` is a null test whichever side the constant is on: {d:?}"
+    );
+
+    // A comparison against another pointer says nothing about either being null.
+    let d = cite("int probe(int *p, int *q){ int v = *p; if (p == q) return v; return 0; }");
+    assert!(
+        !d.contains("tests it"),
+        "`p == q` is not a null test, and citing it would send a reader to a line that does not \
+         check anything: {d:?}"
+    );
+
+    // A null test of a *different* parameter must not be attributed to this one.
+    let d = cite("int probe(int *p, int *q){ int v = *p; if (q) return v; return 0; }");
+    assert!(
+        !d.contains("tests it"),
+        "the function tests `q`, not `p`, and a finding that cites the wrong line is worse than \
+         one that cites none: {d:?}"
+    );
+}
+
 /// A function that never tests the pointer gets no such clause. **The control.**
 ///
 /// Without it, a fix that appended the sentence unconditionally would satisfy the test above and

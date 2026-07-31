@@ -6586,9 +6586,28 @@ impl<'m> Engine<'m> {
         // **A null *constant* only.** `p == q` for two pointers says nothing about either being
         // null, and calling it a null test would put a false claim in a finding — worse than the
         // vaguer sentence it replaces, because a reader would go and look at the line.
-        let is_null = |o: &Operand| {
-            matches!(o, Operand::Const(Const::Null))
-                || matches!(o, Operand::Const(Const::Int { val: 0, .. }))
+        // **A null pointer constant reaches the comparison as a *value*, not an operand.** `if (0
+        // == p)` lowers to `%7 = inttoptr i32 0i32 to ptr` and then `cmp eq ptr %7, %9` — C11
+        // 6.3.2.3p3 makes the conversion explicit and CIR keeps it, so a matcher looking only at
+        // `Operand::Const` finds the bare `null` form and misses this one. Both spellings are the
+        // same source construct and a reader would be baffled to see one cited and not the other.
+        let is_null = |o: &Operand| match o {
+            Operand::Const(Const::Null) => true,
+            Operand::Const(Const::Int { val: 0, .. }) => true,
+            Operand::Value(v) => insts().any(|i| {
+                matches!(
+                    &i.kind,
+                    InstKind::Assign {
+                        dst,
+                        rv: RValue::Cast {
+                            kind: chiero_cir::CastKind::IntToPtr,
+                            a: Operand::Const(Const::Int { val: 0, .. }),
+                            ..
+                        },
+                    } if dst == v
+                )
+            }),
+            _ => false,
         };
         let is_it = |o: &Operand| matches!(o, Operand::Value(v) if loaded.contains(v));
 
