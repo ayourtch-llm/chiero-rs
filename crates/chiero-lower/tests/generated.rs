@@ -2805,6 +2805,70 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **The focused channel reaches no designator chain and no `typeof` of a type name.**
+///
+/// Two mutants are on record as surviving because the corpus cannot reach their shape:
+///
+///   - **`offsetof_step`'s chained `.field` arm** (wave 280). The corpus emits a single
+///     identifier, so `__builtin_offsetof(struct S, n.q)` — which walks into a named member and
+///     *then* through an anonymous one — is out of reach and the arm is hand-graded only.
+///   - **`TypeKind::TypeofType`** (wave 284). The corpus emits `typeof(<expression>)`; the
+///     type-name form is a different arm of `ty_of`.
+///
+/// Both need a *shape* rather than more seeds, and both are cheap in a channel whose programs
+/// contain one construct: an anonymous member costs a record definition, and a `typeof` of a type
+/// name costs one declaration. Neither could be afforded in `program_control_flow`, whose
+/// comparison budget wave 287 measured as spent.
+#[test]
+fn the_focused_channel_reaches_the_shapes_the_others_cannot() {
+    let (mut chain, mut anon, mut typeof_type) = (0usize, 0usize, 0usize);
+    for seed in 0..400u64 {
+        let (prelude, body) = program_focused(seed);
+        let all = format!("{prelude}{body}");
+        // A designator with a `.` in it: `offsetof(struct S, n.q)`.
+        if all.contains("__builtin_offsetof") && all.contains(", ") {
+            for (i, _) in all.match_indices("__builtin_offsetof(") {
+                let rest = &all[i..];
+                if let Some(args) = rest.split_once(", ").map(|(_, a)| a)
+                    && let Some(desig) = args.split(')').next()
+                    && desig.contains('.')
+                {
+                    chain += 1;
+                    break;
+                }
+            }
+        }
+        // An anonymous member: a `struct {` or `union {` with no tag and no member name.
+        for l in all.lines() {
+            let t = l.trim();
+            if (t == "struct" || t == "union" || t.ends_with("struct {") || t.ends_with("union {"))
+                && !t.contains(';')
+            {
+                anon += 1;
+                break;
+            }
+        }
+        // `typeof(int)` rather than `typeof(v)`: the operand is a type keyword.
+        if all.contains("__typeof__(int")
+            || all.contains("__typeof__(long")
+            || all.contains("__typeof__(unsigned")
+            || all.contains("__typeof__(char")
+            || all.contains("__typeof__(double")
+        {
+            typeof_type += 1;
+        }
+    }
+    assert!(
+        chain >= 30,
+        "an `offsetof` designator with a `.` chain: {chain}"
+    );
+    assert!(anon >= 30, "an anonymous struct or union member: {anon}");
+    assert!(
+        typeof_type >= 30,
+        "`typeof` of a *type name*, not an expression: {typeof_type}"
+    );
+}
+
 /// **The focused channel computes what gcc computes.**
 ///
 /// The channel waves 284 and 287 concluded was needed: one construct per program, its own
