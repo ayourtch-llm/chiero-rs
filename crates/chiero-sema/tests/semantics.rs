@@ -422,6 +422,14 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         // An object needs a size.
         "struct I; struct I x;",
         "union U; union U u;",
+        // `extern` is not a blanket exemption — it is an exemption for *declarations*. With an
+        // initializer the declaration is a definition (C 6.9.2p1) and the size is needed after
+        // all, and `static` is a tentative definition in this unit, so nothing completes it
+        // later. Both are here because the relaxation above is the easiest thing in this wave to
+        // write too broadly, and mutation confirmed it: widening it to any `extern`, initializer
+        // or not, passed every other case in this test.
+        "struct I; extern struct I x = {0};",
+        "struct I; static struct I x;",
         // An array needs its element's size, for the stride if nothing else.
         "struct I; struct I arr[10];",
         "struct I; extern struct I arr[];",
