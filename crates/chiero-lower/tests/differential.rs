@@ -2890,6 +2890,85 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A multi-dimensional array has its dimensions reversed.**
+///
+///     int a[2][3] = {{1,2,3},{4,5,6}}; return a[1][2];   chiero says 0, gcc says 6
+///     int a[2][3]; return (int)sizeof(a[0]);             chiero says 8, gcc says 12
+///
+/// `int a[2][3]` is typed as `int a[3][2]`. The second line is the one that says so without any
+/// initializer in the way: `a[0]` is `int[3]`, so its size is 12, and 8 is `sizeof(int[2])`.
+///
+/// # Every symptom follows from that, including the ones that look unrelated
+///
+/// With the type reversed, the initializer fills rows of 2 — memory becomes `1 2 4 5 0 0` — and:
+///
+///   - `a[0][0]` is right, because offset 0 is offset 0 whichever way the dimensions go.
+///   - `a[0][2]` reads 4: index 2 at a stride of 2 lands in the next row.
+///   - **`a[1][0]` is right by accident.** Offset `1*2+0` = 2 holds 4, which is also what
+///     `1*3+0` would hold in a correctly laid out array. One of the four corner reads agrees.
+///   - `a[1][2]` and `((int*)a)[4]` read 0 — past the initialized bytes.
+///   - `sizeof(a)` is right: 2·3·4 and 3·2·4 are both 24, so the total says nothing.
+///   - **`int a[2][2]` is entirely correct**, because a square array is its own reverse.
+///
+/// # Why nothing caught it
+///
+/// The generator emits one-dimensional arrays only, and every hand-written fixture in the suite
+/// that uses two dimensions uses a *square* one. The two shapes that would have shown it —
+/// a non-square array, and `sizeof` of a row — are exactly the two nobody wrote.
+///
+/// Found by censusing the **declarator** grammar against gcc, which no wave had done: the
+/// expression, statement, IR and keyword axes were all run, and the shape of a *declaration* was
+/// never asked about.
+#[test]
+fn a_multidimensional_array_keeps_its_dimension_order() {
+    // The control: one dimension, and a square two, both of which already work.
+    agree("int a[3] = {1,2,3}; return a[2];");
+    agree("int a[2][2] = {{1,2},{3,4}}; return a[1][1];");
+    // **The type, with no initializer in the way.** `a[0]` is a row: 3 ints, not 2.
+    agree("int a[2][3]; return (int)sizeof(a[0]);");
+    agree("int a[2][3]; return (int)sizeof(a);");
+    agree("int a[4][2]; return (int)sizeof(a[0]);");
+    agree("int a[2][3][4]; return (int)sizeof(a[0]);");
+    agree("int a[2][3][4]; return (int)sizeof(a[0][0]);");
+    // Every element of a non-square array, so the one that is accidentally right cannot carry it.
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[0][0];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[0][1];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[0][2];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[1][0];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[1][1];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return a[1][2];");
+    // The other way round, so a fix that merely swaps cannot pass.
+    agree("int a[3][2] = {{1,2},{3,4},{5,6}}; return a[2][1];");
+    agree("int a[3][2] = {{1,2},{3,4},{5,6}}; return a[0][1]*10 + a[2][0];");
+    agree("int a[3][2]; return (int)sizeof(a[0]);");
+    // The flat layout, which is what "row-major" actually means.
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; return ((int*)a)[4];");
+    agree(
+        "int a[2][3] = {{1,2,3},{4,5,6}}; int s = 0; for (int i=0;i<6;i++) s = s*10 + ((int*)a)[i]; return s;",
+    );
+    // A flat initializer fills row by row.
+    agree("int a[2][3] = {1,2,3,4,5,6}; return a[1][2];");
+    agree("int a[2][3] = {1,2,3}; return a[0][2]*10 + a[1][0];");
+    // Writes through the subscript, which never depended on the initializer.
+    agree("int a[2][3]; a[1][2] = 6; a[0][2] = 3; return a[1][2]*10 + a[0][2];");
+    // Three dimensions, where a reversal and a rotation differ.
+    agree("int a[2][3][4]; a[1][2][3] = 7; return a[1][2][3];");
+    agree("int a[1][2][3] = {{{1,2,3},{4,5,6}}}; return a[0][1][2];");
+    // A pointer to a row, whose arithmetic scales by the row's size.
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; int (*p)[3] = a; return p[1][0];");
+    agree("int a[2][3] = {{1,2,3},{4,5,6}}; int (*p)[3] = a; return p[1][2];");
+    // A parameter declared as an array of arrays.
+    agree_with(
+        "int sum(int a[2][3]) { int s = 0; for (int i=0;i<2;i++) for (int j=0;j<3;j++) s = s*10 + a[i][j]; return s; }",
+        "int a[2][3] = {{1,2,3},{4,5,6}}; return sum(a);",
+    );
+    // And as a struct member.
+    agree_with(
+        "struct S { int m[2][3]; };",
+        "struct S s = {{{1,2,3},{4,5,6}}}; return s.m[1][2];",
+    );
+}
+
 /// **GNU's `__label__` does not parse, and it is the only keyword left with no production.**
 ///
 ///     expected an expression / expected `;` after an expression statement / ...
