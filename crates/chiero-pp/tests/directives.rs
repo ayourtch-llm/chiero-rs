@@ -700,3 +700,96 @@ fn every_relational_operator_in_an_if_directive_works() {
         assert_eq!(yes(expr), [want.to_string()], "`#if {expr}`");
     }
 }
+
+/// **`#if` arithmetic actually computes, and computes with C's signedness.**
+///
+/// Wave 297's sweep found `*`, `%` and unary `+` unfalsifiable, and — more importantly —
+/// `divide` unreachable in every one of its four arms: both `remainder` branches survived
+/// mutation in *both* directions. The only committed test that used `/` divided by zero, which
+/// short-circuits before `divide` is ever called. So `#if` could multiply, divide and take
+/// remainders wrongly and nothing would notice.
+///
+/// The signedness cases are the ones worth staring at. `usual()` implements C's usual arithmetic
+/// conversions, where one unsigned operand makes the comparison unsigned and `-1` becomes a huge
+/// positive value. `-1 < 1U` was already tested — but it yields "no" whether or not the rule is
+/// applied, so it could not detect the rule being wrong. `-1 < 1` is the case that separates
+/// them: signed says yes, and forcing every comparison unsigned says no.
+#[test]
+fn if_expression_arithmetic_computes_and_respects_signedness() {
+    for (expr, expected) in [
+        // The operators the sweep could not falsify at all.
+        ("2 * 3 == 6", "yes"),
+        ("+1 == 1", "yes"),
+        ("+-1 == -1", "yes"),
+        // `divide`, signed: C truncates toward zero, so the remainder takes the dividend's sign.
+        ("7 / 2 == 3", "yes"),
+        ("-7 / 2 == -3", "yes"),
+        ("7 % 3 == 1", "yes"),
+        ("-7 % 3 == -1", "yes"),
+        // `divide`, unsigned: a `u` on either operand moves both to the unsigned arms.
+        ("7u / 2 == 3", "yes"),
+        ("7 % 3u == 1", "yes"),
+        // The usual arithmetic conversions decide the *signedness of the comparison itself*.
+        ("-1 < 1", "yes"),
+        ("-1 < 1U", "no"),
+        ("-1 > 0u", "yes"),
+    ] {
+        assert_eq!(selected(expr), expected, "`#if {expr}`");
+    }
+}
+
+/// **Modulo by zero in `#if` diagnoses, and does not when the operand is dead.**
+///
+/// The `/` half of this has been tested since early on; the `%` half was written beside it and
+/// never tested, so its zero guard *and* the `live` guard on its diagnostic both survived
+/// mutation in both directions. A `#if` that divides by zero is undefined in C, so the useful
+/// behaviour is the diagnostic — and the short-circuit case matters just as much, because
+/// `#if 0 && 1%0` is how a header guards an expression it knows is only valid sometimes.
+#[test]
+fn live_modulo_by_zero_diagnoses_but_short_circuit_does_not() {
+    let live = preprocess_str("fixture.c", "#if 1%0\nbad\n#endif\n", Config::default());
+    assert_eq!(live.diagnostics.len(), 1, "{:?}", live.diagnostics);
+    assert!(live.diagnostics[0].message.contains("modulo by zero"));
+
+    let dead = preprocess_str(
+        "fixture.c",
+        "#if 0 && 1%0\nbad\n#endif\nok\n",
+        Config::default(),
+    );
+    assert!(dead.diagnostics.is_empty(), "{:?}", dead.diagnostics);
+    assert_eq!(dead.token_texts().collect::<Vec<_>>(), ["ok"]);
+}
+
+/// **Character constants in `#if` decode their escapes.**
+///
+/// `'A' == 65` was tested; nothing with a backslash in it ever was, so the hex and octal escape
+/// decoders were both unfalsifiable. Two edges carry the weight:
+///
+///   - **An octal escape takes at most three digits.** `'\1011'` is the two-character constant
+///     `'A'` followed by `'1'`, not the four-digit octal 1011. Consuming a fourth digit is a
+///     silent wrong answer, which is why the loop bound is asserted rather than assumed.
+///   - **`\x` with no hex digits after it** falls back to the letter itself. C makes this a
+///     constraint violation; this preprocessor chooses a value rather than refusing, and that
+///     choice was untested.
+///
+/// Multi-character constants accumulate a byte at a time — `value << 8 | unit` — which is what
+/// makes the three-digit bound observable at all.
+#[test]
+fn character_constants_in_an_if_directive_decode_their_escapes() {
+    for (expr, expected) in [
+        (r"'\n' == 10", "yes"),
+        (r"'\t' == 9", "yes"),
+        (r"'\0' == 0", "yes"),
+        (r"'\\' == 92", "yes"),
+        (r"'\x41' == 65", "yes"),
+        (r"'\x4a' == 74", "yes"),
+        (r"'\101' == 65", "yes"),
+        (r"'\10' == 8", "yes"),
+        // Three octal digits at most: `'\1011'` is `'A'` then `'1'`, i.e. 65 << 8 | 49.
+        (r"'\1011' == 16689", "yes"),
+        // No hex digits after `\x` yields the letter itself.
+        (r"'\x' == 'x'", "yes"),
+    ] {
+        assert_eq!(selected(expr), expected, "`#if {expr}`");
+    }
+}
