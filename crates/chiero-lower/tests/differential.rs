@@ -2848,6 +2848,50 @@ fn narrow_unsigned_values_extend_the_same_way_gcc_extends_them() {
     agree("short h = -1; unsigned long v = (unsigned long)(long)h; return (int)(v >> 60);");
 }
 
+/// **`!` on a negative zero says the value is non-zero.**
+///
+/// C11 6.5.3.3p5: `!E` is `E == 0`. IEEE-754 makes `-0.0 == 0.0` true, so `!(-0.0)` is 1. Chiero
+/// says 0 — it is testing the *bits*, which are non-zero for a negative zero, rather than comparing
+/// against zero.
+///
+/// # How it was found, which is the part worth keeping
+///
+/// Censusing what `ExprKind` can hold against what the generator emits: of twenty-one variants,
+/// three appear in no generated program at all — `_Alignof`, a statement expression, and **`!`**.
+/// The first two are rare in real code. `!` is everywhere, and it had never been through the
+/// differential oracle in any shape.
+///
+/// That is wave 217's technique — ask what the AST can hold rather than run more seeds — and it
+/// found a wrong answer on the first probe, before the generator was touched at all. Waves 250–253
+/// are the reason for probing first: adding a construct to the corpus is worth nothing if the
+/// context it appears in cannot discriminate, and a handful of hand-written shapes settles that in
+/// a minute.
+///
+/// # The three controls are what make it a `!` defect rather than a truth-testing one
+///
+/// `if (d)`, `d ? 1 : 2` and `d == 0.0` all agree with gcc on the same value. So the engine's truth
+/// test is right and only `!` is wrong, which is a much narrower thing to fix than it first looked.
+#[test]
+fn logical_not_of_a_float_agrees_with_gcc() {
+    // The controls: every other way of asking "is this zero" is already correct.
+    agree("double d = -0.0; if (d) return 7; return 8;");
+    agree("double d = -0.0; return d ? 1 : 2;");
+    agree("double d = -0.0; return d == 0.0;");
+    // The defect.
+    agree("double d = -0.0; return !d;");
+    agree("float f = -0.0f; return !f;");
+    agree("long double l = -0.0L; return !l;");
+    // Ordinary values, which must keep working.
+    agree("double d = 0.0; return !d;");
+    agree("double d = 3.5; return !d;");
+    agree("double n = 0.0/0.0; return !n;");
+    // And on the integer and pointer types, where `!` was equally untested.
+    agree("unsigned char c = 200; return !c;");
+    agree("int *p = 0; return !p;");
+    agree("unsigned u = 4294967295u; return !!u;");
+    agree("struct S { unsigned a : 3; }; struct S s; s.a = 5; return !s.a;");
+}
+
 /// **An `unsigned` bit-field whose top bit is set reads back sign-extended.**
 ///
 /// Found while writing a fixture for something else entirely: `struct S { unsigned a : 3; }` with
