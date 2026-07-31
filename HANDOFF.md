@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 304) — 1475 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 305) — 1476 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -911,14 +911,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > only be wrong about programs it rejects, and the RED enumerates those. An exemption is wrong
 > about programs it *accepts*, and nothing enumerates those unless written on purpose.
 >
-> **Still open, and now the only piece:** `tag()` interns an incomplete tag as `Ty::Error`, so the
-> engine cannot tell "declared, not yet defined" from "never mentioned". Both are errors at every
-> site above, so the five rules are correct either way — but the diagnostics say "incomplete or
-> unknown" because the engine genuinely does not know which, `struct I;` never records the tag at
-> all, and a later definition cannot complete it. Fixing it means a real incomplete-record
-> representation, which touches every `Ty::Error` consumer. **`enum E2 e;` is the visible symptom
-> left over:** gcc rejects it, this engine accepts it, because the enum path returns a default
-> integer type rather than an incomplete one.
+> ### 🟢 Wave 304 gave tags a real representation — and found a linked list never worked
+>
+> `RecordLayout` gained `complete`, and a reference to a named undefined tag now creates that
+> record instead of returning `Ty::Error`. **The load-bearing part is *when*:** `tag()` registers
+> the name *before* laying out the members, so a member mentioning the tag being defined resolves
+> to the record under construction. That one reordering is what makes
+> `struct Node { struct Node *next; }` work — **it never had.** Five differential cases produced
+> no answer at all: `a.next->v`, `p->next->v`, `sizeof(*a.next)`, mutually recursive structs, and
+> use-then-define. Nothing in 1470-odd tests or the VPP corpus covered a self-referential struct.
+>
+> **A sixth case was a regression from wave 303**, and is the sharper lesson. `a.next - &b`
+> compiled and ran before that wave and stopped after it: the new "arithmetic on a pointer to an
+> incomplete type" rule is *correct*, applied to an *incorrect fact*. `a.next` points at a
+> complete type; only the representation said otherwise. **A check is exactly as right as what it
+> asks** — and adding a check over a broken representation converts a silent wrong answer into a
+> loud wrong rejection, which is how a latent modelling bug becomes visible.
+>
+> Two follow-on rules and their non-obvious parts:
+>   - **A member must have a size** (new in 304). This is what makes the early reservation safe:
+>     `struct S { struct S s; }` now *finds* `S`, and what stops it is that the record is still
+>     marked incomplete while its own members are walked. `struct S { struct S *p; }` stays legal.
+>   - **`is_incomplete` is deliberately not "has no size."** A function type and a VLA both have
+>     no size and neither is an incomplete object type; that phrasing would reject every function
+>     declaration and `sizeof(vla)`.
+>   - An **anonymous** undefined tag stays `Ty::Error`: no name means nothing can ever complete it.
+>   - The VPP layout gate now skips incomplete records — opaque glibc tags like
+>     `struct __locale_data` have `RecordId`s now, and asking gcc for their size is asking it to
+>     reject the program.
+>
+> **Still open:** `enum E2 e;` is accepted (gcc rejects it) because the enum path returns a default
+> integer type rather than an incomplete one. `enum_ty` needs the same treatment `tag()` just got,
+> and it is smaller: an enum is completed only by its member list, and nothing may reference one
+> by value before that.
 >
 > ### ✅ Fixed in wave 303 — was: incomplete types are never rejected
 >
@@ -2277,6 +2302,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A check is exactly as right as what it asks** (wave 304). Wave 303's pointer-arithmetic rule
+> is correct C and it broke a working program, because the fact it consulted — "is this pointee
+> incomplete?" — was answered by a representation that called a self-referential struct incomplete
+> forever. **Before adding a check, ask what would have to be true for its input to be wrong**;
+> a new check over a broken model does not create the bug, it converts a silent wrong answer into
+> a loud wrong rejection, which is worse for the user and better for the maintainer.
+>
+> **The suite's blind spots are shaped like the fixtures nobody wrote** (wave 304). A linked list
+> — the first data structure in every C book — produced no answer at all, through 1470 tests, a
+> differential corpus, a generated channel and a VPP header gate. It survived because every
+> fixture that needed a struct wrote a *flat* one. **When a change touches a construct, ask which
+> canonical use of it has no test at all**, rather than which of its rules is untested.
 >
 > **An exemption is the dangerous half of a rule, and no RED enumerates its failures** (wave 303).
 > Five rules went in; mutation killed seven of eight mutants immediately, and the survivor was the
