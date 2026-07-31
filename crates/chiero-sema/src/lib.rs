@@ -831,6 +831,31 @@ impl Cx<'_> {
         self.names.text(sym)
     }
 
+    /// Whether `callee` names one of 7.12.14's floating classification builtins.
+    ///
+    /// Only the ones lowering can express as a single CIR comparison. `isinf`, `isfinite`,
+    /// `isnormal`, `signbit` and `fpclassify` are deliberately absent: they need more than a
+    /// comparison, and 015 §7's refusal — loud, and naming the function it skipped — is the
+    /// honest answer for a capability that is not there. Typing them `int` here while lowering
+    /// still could not represent them would replace a declared limit with a wrong answer.
+    fn is_fp_classify_builtin(&self, callee: ExprId) -> bool {
+        let ExprKind::Ident(n) = self.ast.expr(callee).kind else {
+            return false;
+        };
+        matches!(
+            self.text(n),
+            Some(
+                "__builtin_isnan"
+                    | "__builtin_isunordered"
+                    | "__builtin_isless"
+                    | "__builtin_islessequal"
+                    | "__builtin_isgreater"
+                    | "__builtin_isgreaterequal"
+                    | "__builtin_islessgreater"
+            )
+        )
+    }
+
     fn item(&mut self, id: DeclId) {
         match self.ast.decl(id).kind.clone() {
             DeclKind::Var { name, ty, init, .. } => {
@@ -2417,6 +2442,20 @@ impl Cx<'_> {
                         _ => (self.intern(Ty::Error), Vec::new()),
                     },
                     _ => (self.intern(Ty::Error), Vec::new()),
+                };
+                // **A floating classification macro returns `int`.** 7.12.14's `isless`,
+                // `isunordered` and the rest are macros over `__builtin_*`, which nothing
+                // declares — gcc knows them intrinsically — so the generic path above types
+                // the callee `Ty::Error` and the result with it. That is harmless for the
+                // varargs builtins, whose type 020 §4.4.1 never consults, but these are
+                // *values*: `__builtin_isnan(x) + 2` has to add an `int` to an `int`, and an
+                // `Error` operand poisons the usual arithmetic conversions for the whole
+                // expression.
+                let ret = if self.is_fp_classify_builtin(*callee) {
+                    let bits = (self.target.sizes.int_ * 8) as u32;
+                    self.intern(Ty::Int { signed: true, bits })
+                } else {
+                    ret
                 };
                 let mut ops = vec![c];
                 for (i, a) in args.iter().enumerate() {

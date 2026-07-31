@@ -2475,6 +2475,22 @@ impl Lowerer<'_> {
                 {
                     return self.va_builtin(kind, args, e, span);
                 }
+                // **A floating classification macro is a comparison, not a call.** 7.12.14's
+                // `isless`, `isunordered` and the rest are `<math.h>` macros over
+                // `__builtin_*`; nothing declares them, so lowering reported a call to an
+                // undeclared function and 015 §7 refused the whole function.
+                //
+                // Every one of them is a single CIR comparison, and CIR has had the opcodes
+                // since it was written — `FONe`, `FUno` and the ordered relationals existed
+                // with no producer at all, which is how this gap was found. See
+                // `fp_classify_builtin`.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && let Some(name) = self.names.text(n)
+                    && let Some(b) = fp_classify_builtin(name)
+                    && args.len() == if b.unary { 1 } else { 2 }
+                {
+                    return self.fp_classify(b, args, span);
+                }
                 // **`alloca()` is an allocation, not a call** (015 contract 14, 020 §3).
                 // It differs from a VLA in exactly one way — `Lifetime::Function`, since
                 // the storage lives until the function returns rather than until the block
@@ -2842,6 +2858,84 @@ impl Lowerer<'_> {
     /// **post-conversion**, and 014 has already promoted a `char` to `int`. `cty_of` reports
     /// the type as *written*, which would declare `Int(8)` for an operand the typed AST
     /// widened to 32.
+    /// A floating classification macro, lowered to the one comparison it is.
+    ///
+    /// **The operands are brought to a common floating kind here.** These arrive as arguments to
+    /// an undeclared function, so sema gives them the *default argument promotions* — `float`
+    /// becomes `double` and `long double` stays itself. `isless(l, d)` therefore reaches lowering
+    /// as an `X87_80` beside an `F64`, and a `Cmp` whose two operands disagree with its declared
+    /// type is CIR the verifier rejects. The usual arithmetic conversions are what C actually
+    /// specifies for these macros, and widening the narrower operand is that conversion: every
+    /// float-to-wider-float conversion is exact, so no answer depends on which side moves.
+    fn fp_classify(&mut self, b: FpClassify, args: &[ExprId], span: Span) -> Operand {
+        let (x, y) = (args[0], if b.unary { args[0] } else { args[1] });
+        let mut a = self.expr(x);
+        let mut bb = if b.unary { a.clone() } else { self.expr(y) };
+        let ka = self.float_kind(x);
+        let kb = if b.unary { ka } else { self.float_kind(y) };
+        let (Some(ka), Some(kb)) = (ka, kb) else {
+            // A non-floating operand is not something these macros take. 020 §5: a gap is a
+            // diagnostic, not a licence to answer anyway.
+            self.diagnostics.push(LowerDiagnostic {
+                span,
+                message: "a floating classification builtin applied to a non-floating operand"
+                    .into(),
+            });
+            return Operand::Const(Const::Undef(CTy::Int(32)));
+        };
+        let k = if ka.bits() >= kb.bits() { ka } else { kb };
+        if ka != k {
+            a = self.fp_widen(a, ka, k, span);
+        }
+        if kb != k && !b.unary {
+            bb = self.fp_widen(bb, kb, k, span);
+        }
+        if b.unary {
+            bb = a.clone();
+        }
+        let (a, bb) = if b.swap { (bb, a) } else { (a, bb) };
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Cmp {
+                    op: b.op,
+                    a,
+                    b: bb,
+                    ty: CTy::Float(k),
+                },
+            },
+            span,
+        );
+        // **`int`, by definition rather than by `raw_width_of`.** 7.12.14 says these yield an
+        // `int`, and the call's own type is whatever sema made of an undeclared callee.
+        self.widen_bool(dst, 32, span)
+    }
+
+    /// One operand widened to a wider floating kind, which is always exact.
+    fn fp_widen(
+        &mut self,
+        a: Operand,
+        from: chiero_cir::FloatKind,
+        to: chiero_cir::FloatKind,
+        span: Span,
+    ) -> Operand {
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::Cast {
+                    kind: chiero_cir::CastKind::FpExt,
+                    a,
+                    from: CTy::Float(from),
+                    to: CTy::Float(to),
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
     fn compare_ty(&mut self, e: ExprId) -> CTy {
         if self.is_address(e) {
             CTy::Ptr
@@ -4516,6 +4610,51 @@ fn cir_binop(op: chiero_ast::BinOp, signed: bool, float: bool) -> CBinOp {
         // never reach here.
         _ => CBinOp::And,
     }
+}
+
+/// One of 7.12.14's floating classification macros, as the CIR comparison it is.
+struct FpClassify {
+    op: chiero_cir::CmpOp,
+    /// Whether the operands are exchanged, for the two the ordered set cannot spell directly.
+    swap: bool,
+    /// `isnan` takes one operand and compares it with itself.
+    unary: bool,
+}
+
+/// **The ordered/unordered distinction C draws in its macros and not in its operators.**
+///
+/// C's relational *operators* are all ordered and `!=` is unordered, which is four of CIR's
+/// twenty comparisons. The macros need three more: `FUno` for `isunordered`, `FONe` for
+/// `islessgreater` — which is `!=` **except on NaN**, the entire reason both variants exist —
+/// and the ordered relationals reused with the operands exchanged, because CIR has no `FOGt`
+/// or `FOGe` (`cir_fcmpop` says the same thing about `>` and `>=`).
+///
+/// `isnan(x)` is `FUno(x, x)`: a value is unordered with *itself* exactly when it is NaN.
+///
+/// **`FUNe(x, x)` would do just as well, and mutation says so.** Swapping it survives every
+/// fixture, and that is not a missing one: unordered-not-equal on two copies of the same value is
+/// true exactly when they are unordered, since equal values are never unequal. The two opcodes
+/// coincide on this input for every `x`. A trade-off with no wrong side — recorded rather than
+/// papered over with an assertion that could only restate the choice.
+///
+/// **What is deliberately not here.** `isinf`, `isfinite`, `isnormal`, `signbit` and
+/// `fpclassify` are not comparisons — they need a magnitude test against a constant, or the
+/// sign bit, or a classification tree. They keep refusing, loudly, which 015 §7 makes an
+/// honest declared limit; inventing an approximation would trade a limit anyone can see for a
+/// wrong answer nobody can.
+fn fp_classify_builtin(name: &str) -> Option<FpClassify> {
+    use chiero_cir::CmpOp as C;
+    let (op, swap, unary) = match name {
+        "__builtin_isnan" => (C::FUno, false, true),
+        "__builtin_isunordered" => (C::FUno, false, false),
+        "__builtin_isless" => (C::FOLt, false, false),
+        "__builtin_islessequal" => (C::FOLe, false, false),
+        "__builtin_isgreater" => (C::FOLt, true, false),
+        "__builtin_isgreaterequal" => (C::FOLe, true, false),
+        "__builtin_islessgreater" => (C::FONe, false, false),
+        _ => return None,
+    };
+    Some(FpClassify { op, swap, unary })
 }
 
 /// The comparison of `ty` against zero — "is zero" when `equal`, "is nonzero" otherwise.

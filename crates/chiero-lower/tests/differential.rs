@@ -2960,6 +2960,20 @@ fn the_floating_classification_builtins_agree_with_gcc() {
     agree("long double l = 1.0L; double d = 2.0; return __builtin_isless(l, d);");
     agree("float f = 0.0f/0.0f; return __builtin_isnan(f);");
     agree("long double l = 0.0L/0.0L; return __builtin_isnan(l);");
+    // **The result's *type* is `int`, which takes two shapes to pin.** Nothing declares these
+    // builtins, so sema types an undeclared callee's result `Ty::Error` and the result with it.
+    // Almost every use survives that — an `Error` still lowers to a 32-bit value and
+    // `isnan(a) + 2` comes out right — so it took mutation to find the two uses that do not:
+    // `sizeof` reads the type directly, and mixing with a `double` needs the usual arithmetic
+    // conversions, which an `Error` operand poisons for the whole expression.
+    agree("double a = 0.0/0.0; return (int)sizeof(__builtin_isnan(a));");
+    agree("double a = 0.0/0.0; return (int)(__builtin_isnan(a) * 2.5);");
+    agree("double a = 1.0, b = 2.0; return (int)sizeof(__builtin_islessgreater(a, b));");
+    agree("double a = 1.0, b = 2.0; return (int)(__builtin_isless(a, b) * 1.5);");
+    // And the ordinary integer uses, which were right either way and say so.
+    agree("double a = 0.0/0.0; return __builtin_isnan(a) ? 7 : 8;");
+    agree("double a = 0.0/0.0; return ~__builtin_isnan(a);");
+    agree("double a = 0.0/0.0; int arr[4] = {0,1,2,3}; return arr[__builtin_isnan(a)];");
     // A negative zero is ordered and equal to zero, for all of them.
     agree("double a = -0.0, b = 0.0; return __builtin_isless(a, b);");
     agree("double a = -0.0, b = 0.0; return __builtin_islessequal(a, b);");
