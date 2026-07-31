@@ -299,3 +299,173 @@ fn one_call_writing_twice_is_not_a_conflict() {
         "still exactly one finding, however many times each call writes"
     );
 }
+
+/// A callee that contains a **full expression of its own** — a `SeqPoint` inside its body.
+///
+/// This is the shape `OrderDependence`'s depth guard exists for, and until wave 290 nothing
+/// built it.
+fn mutator_with_seqpoint(id: u32, name: &str, g: u32, val: i128) -> Function {
+    let mut f = mutator(id, name, g, val);
+    // Between the callee's own two "statements": the address computation and the store are one
+    // full expression, and this ends it. Every real callee has at least one.
+    f.blocks[0]
+        .insts
+        .push(inst(InstKind::Marker(MarkerKind::SeqPoint), 130 + id));
+    f
+}
+
+/// Two calls whose callees each end a full expression of their own.
+fn caller_with_inner_seqpoints() -> Module {
+    let mut m = caller(0, 0, false);
+    m.funcs[1] = mutator_with_seqpoint(1, "g", 0, 1);
+    m.funcs[2] = mutator_with_seqpoint(2, "h", 0, 2);
+    m
+}
+
+/// **A `SeqPoint` inside a callee does not close the caller's region.**
+///
+/// `OrderDependence` clears its write set on a sequence point only at `depth == 0`, and the
+/// comment on that guard says why: "a `SeqPoint` *inside* a callee separates that callee's own
+/// statements and says nothing about the caller's region — clearing on it would forget the first
+/// call's writes and lose every conflict with a callee that contains a full expression of its
+/// own, which is every real callee."
+///
+/// **That claim had no fixture.** A wave-290 sweep over this crate's rule conditions forced the
+/// guard to `true` — clear at every depth — and the whole workspace still passed. Every existing
+/// fixture uses a callee whose body is two instructions and no sequence point, which is the one
+/// shape the guard cannot affect.
+///
+/// The negative half matters as much: the same two callees mutating *different* globals must
+/// still be silent, or this passes for a checker that fires on any two calls.
+#[test]
+fn a_sequence_point_inside_a_callee_does_not_close_the_callers_region() {
+    let got = findings(&caller_with_inner_seqpoints());
+    assert_eq!(
+        got.len(),
+        1,
+        "the callee's own sequence point must not forget the first call's write: {got:#?}"
+    );
+    let mut m = caller_with_inner_seqpoints();
+    m.funcs[2] = mutator_with_seqpoint(2, "h", 1, 2);
+    let got = findings(&m);
+    assert!(
+        got.is_empty(),
+        "different globals are no conflict, sequence points or not: {got:#?}"
+    );
+}
+
+/// A callee that itself calls a helper **twice**, both writing the same global.
+///
+/// `int g(void) { k(); k(); return 1; }` — two writes to one object, but *sequenced* by being
+/// two statements inside one function, and both belonging to the same top-level call.
+fn nested_caller(id: u32, name: &str, helper: u32) -> Function {
+    Function {
+        id: FuncId(id),
+        name: name.into(),
+        params: vec![],
+        ret: CTy::Int(32),
+        variadic: false,
+        allocas: vec![],
+        blocks: vec![block(
+            0,
+            vec![
+                inst(
+                    InstKind::Call {
+                        dst: Some(ValueId(0)),
+                        callee: Callee::Direct(FuncId(helper)),
+                        args: vec![],
+                    },
+                    140 + id,
+                ),
+                inst(InstKind::Marker(MarkerKind::SeqPoint), 141 + id),
+                inst(
+                    InstKind::Call {
+                        dst: Some(ValueId(1)),
+                        callee: Callee::Direct(FuncId(helper)),
+                        args: vec![],
+                    },
+                    142 + id,
+                ),
+                inst(InstKind::Marker(MarkerKind::SeqPoint), 143 + id),
+            ],
+            Terminator::Return(Some(i32c(1))),
+        )],
+        entry: BlockId(0),
+        attrs: Default::default(),
+        access_paths: Default::default(),
+        body: Body::Defined,
+        span: at(1),
+        linkage: chiero_cir::Linkage::External,
+    }
+}
+
+/// **Writes inside one top-level call share its site, however deeply they nest.**
+///
+/// The checker attributes each write to the *call site* it happened under and reports a conflict
+/// only between writes from **different** sites. A new site is minted only at `depth == 0`, and
+/// that guard is what stops two nested calls inside one argument evaluation looking like two
+/// unsequenced calls in the caller.
+///
+/// **It is a false-positive guard, and it had no fixture.** A wave-290 sweep forced the condition
+/// to `true` — mint a site at every depth — and the whole workspace still passed, because every
+/// existing fixture calls leaf functions. 023 §9: a report a person cannot act on is not a
+/// report, and "these two writes race" about two statements of one function is exactly that.
+#[test]
+fn two_writes_under_one_call_are_not_a_conflict_however_deep() {
+    let mut m = caller(0, 0, true);
+    // `g` now calls a leaf helper twice; `h` is left as a plain leaf so the module still has
+    // two top-level calls, separated by the sequence point that makes them sequenced.
+    m.funcs[1] = nested_caller(1, "g", 3);
+    m.funcs.push(mutator(3, "k", 0, 7));
+    let got = findings(&m);
+    assert!(
+        got.is_empty(),
+        "two sequenced writes inside one call are not an order dependence: {got:#?}"
+    );
+}
+
+/// **A write in the caller, after a call has returned, belongs to no call site.**
+///
+/// `OrderDependence` clears its current site on `CallReturn` at `depth == 0`, and the code path
+/// that reads it says why: "a write outside any call is the caller's own, and the syntactic half
+/// already owns those" — lowering's own unsequenced-access scan reports those, so reporting them
+/// here would duplicate a finding rather than add one.
+///
+/// **Without the clear, the caller's store inherits the site of the call that just returned**,
+/// and the next call's write then looks like a conflict with it. A wave-290 sweep removed the
+/// clear and the whole workspace passed, because every existing fixture has the caller do
+/// nothing but call.
+///
+/// The module: `g()` writes a *different* global, the caller then stores to `G` itself, and `h()`
+/// writes `G`. The only write this checker should record is `h`'s, so it must stay silent.
+#[test]
+fn a_caller_s_own_write_after_a_call_belongs_to_no_site() {
+    let mut m = caller(1, 0, false);
+    let store = vec![
+        inst(
+            InstKind::Assign {
+                dst: ValueId(5),
+                rv: RValue::AddrOfGlobal { g: GlobalId(0) },
+            },
+            30,
+        ),
+        inst(
+            InstKind::Store {
+                addr: Operand::Value(ValueId(5)),
+                val: i32c(9),
+                ty: CTy::Int(32),
+                align: 4,
+                vol: Volatility::Normal,
+            },
+            31,
+        ),
+    ];
+    // Between the two calls and inside the same region: no sequence point separates them.
+    let insts = &mut m.funcs[0].blocks[0].insts;
+    insts.splice(1..1, store);
+    let got = findings(&m);
+    assert!(
+        got.is_empty(),
+        "the caller's own store is the syntactic scan's to report, not this checker's: {got:#?}"
+    );
+}

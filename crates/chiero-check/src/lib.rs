@@ -209,6 +209,15 @@ impl Checker for OrderDependence {
             Event::CallReturn { .. } => {
                 let st = cx.state_mut::<OrderState>();
                 st.depth = st.depth.saturating_sub(1);
+                // **Only the outermost return ends the site.** A write after a top-level call has
+                // returned is the caller's own, and the syntactic scan in `chiero-lower` already
+                // reports those — attributing it to the call that just finished would duplicate a
+                // finding and make the next call's write look like a conflict with it.
+                //
+                // **Measured, wave 291.** Removing the clear entirely is caught. Clearing at
+                // *every* depth is not, and the shape that would catch it is known: a callee that
+                // makes a nested call and then writes on its own behalf, so an inner return would
+                // strip the site the outer write still needs. No fixture builds that yet.
                 if st.depth == 0 {
                     st.site = None;
                 }
@@ -415,6 +424,9 @@ impl Checker for UndefinedArithmetic {
         let fresh: Vec<(UbKind, chiero_span::Span, String, Vec<chiero_solver::Term>)> = {
             let seen = cx.state_mut::<UbState>().cursor;
             let all = st.ub_events();
+            // **An early-out, and measured as one** (wave 291): removing it leaves the slice
+            // below empty and every answer unchanged. It is unobservable by construction rather
+            // than untested, so it gets a sentence instead of a fixture.
             if all.len() <= seen {
                 return Vec::new();
             }
