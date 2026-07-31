@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 289) — 1441 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 290) — 1442 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,30 +808,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟢 The corpus work is done — a focused channel carries what the shared one cannot
+> ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
-> **Wave 277's rule is discharged and its overflow is housed.** All six lagging constructs went
-> through the corpus (waves 284–287), and the two that the control-flow channel could not
-> afford now live in `program_focused` (288): **one construct per program, its own budget, its own
-> floor.**
+> **Wave 277's rule is discharged, its overflow is housed, and the channel has started paying for
+> itself.** All six lagging constructs went through the corpus (284–287); the two the shared
+> channel could not afford moved to `program_focused` (288); and wave 289 used it for something
+> new — three shapes that were on record as *unreachable*, now graded.
 >
 > | channel | compares | carries |
 > |---|---|---|
 > | `program_control_flow` | 100 / 200 | vectors, `typeof`, `_Generic`, `offsetof`, classification builtins, `__label__`, alignment (present, not discriminating) |
-> | `program_focused` | **200 / 200** | non-square multi-dimensional arrays, alignment specifiers at a discriminating rate |
+> | `program_focused` | **200 / 200** | non-square multi-dimensional arrays; alignment specifiers at a discriminating rate, on scalars and arrays; anonymous members, chained `offsetof` designators, `typeof(<type-name>)` |
 >
-> Between them the corpus now makes **seventeen mutant kills** it could not a fortnight ago,
-> across waves 271, 275, 276, 278, 280, 281, 282 and 283.
+> The corpus now makes **twenty mutant kills** it could not three weeks ago, across waves 271,
+> 275, 276, 278, 279, 280, 281, 282, 283 and 284.
 >
-> **Where to add the next construct.** If it needs an object, a statement, or values flowing
-> through arithmetic, it belongs in `program_focused` — the shared channel has no headroom and
-> every addition there is now paid for by an existing shape losing coverage. If it is an
-> *expression wrapper* (wave 285) or a pure naming construct (wave 286, `__label__`), the shared
-> channel still absorbs it for roughly nothing.
+> **Where the next construct goes.** If it needs an object, a statement, or values flowing through
+> arithmetic — `program_focused`, where it is a `match` arm. If it is an *expression wrapper*
+> (285) or a pure naming construct (286) — the shared channel still absorbs it for roughly
+> nothing. **And if a mutant survives, ask whether it is a missing shape before calling it
+> unreachable**: wave 289 is three counter-examples to that call.
 >
-> **What `program_focused` does not do yet**, in case it is wanted: it emits one construct from a
-> set of two. Adding a third is a `match` arm and a fixture, not a design change — that was the
-> point of building it.
+> **No survivor is currently recorded as shape-limited.** The next mutation sweep that produces
+> one has a channel waiting for it.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2046,6 +2045,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **"Out of reach" is a statement about the corpus, not about the defect** (wave 289). Three
+> mutants were recorded as surviving because no channel emitted their shape — a chained `offsetof`
+> designator (280), `typeof` of a type name (284), an anonymous member at a nonzero offset (279).
+> All three died the moment a channel could afford the shape. **Keep the list of survivors and
+> their reasons**; when the constraint that produced a reason goes away, the list says what to do
+> next.
+>
+> **A surviving mutant is a shape request, and shapes are cheap once a channel is cheap** (wave
+> 289). The cost of these three was one `match` arm. Before wave 288 it would have been a share of
+> a comparison budget that was already spent.
 >
 > **When coverage costs comparisons, build a channel instead of tuning a rate** (wave 288). Waves
 > 284 and 287 each spent a wave tuning — a better fold, restricted element types, four different
