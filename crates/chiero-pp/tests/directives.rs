@@ -793,3 +793,31 @@ fn character_constants_in_an_if_directive_decode_their_escapes() {
         assert_eq!(selected(expr), expected, "`#if {expr}`");
     }
 }
+
+/// **An unterminated character constant in `#if` must not take the process down.**
+///
+/// Found while probing the last two survivors of wave 297's sweep. `parse_char_constant` locates
+/// the constant's body by finding the first `'` and the last `'` — but for an unterminated
+/// literal those are the *same* quote, so the slice runs backwards and panics. `#if '\` is enough.
+///
+/// A preprocessor is the first thing to touch a source file, so it sees every malformed file
+/// there is: a truncated download, a file being written, a paste that lost its tail. 023 §7 says
+/// a limit must be declared rather than taken silently, and 020 §5 that a gap is a diagnostic
+/// rather than a licence — a panic is neither. Whatever the value ends up being, the run has to
+/// survive to report it.
+#[test]
+fn an_unterminated_character_constant_in_an_if_does_not_panic() {
+    for src in [
+        "#if '\\\n#endif\n",
+        "#if '\n#endif\n",
+        "#if 'a\n#endif\n",
+        "#if ('x' == 120) && '\n#endif\n",
+    ] {
+        let tu = preprocess_str("unterminated.c", src, Config::default());
+        // The value is unspecified; not crashing, and saying something, is the contract.
+        assert!(
+            !tu.diagnostics.is_empty(),
+            "{src:?} must diagnose rather than pass silently"
+        );
+    }
+}
