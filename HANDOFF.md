@@ -2111,6 +2111,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 > ### Rules earned, most recent first
 >
+> **Never run a mutation sweep in the tree you commit from** (wave 297). A sweep edits *tracked
+> source* continuously. A `git add -A` landed mid-mutation and committed a preprocessor whose
+> `#if` `>=` branch was `if true`, which would have evaluated `>=` for every operator it did not
+> recognise. Nothing caught it — the suite had been run before the sweep started, and the commit
+> was a documentation commit nobody would think to check for source changes. It surfaced only
+> because a later `diff` against the backup disagreed in the direction that meant *HEAD* was
+> wrong. **Run sweeps in a `git worktree`**, which makes the mistake unrepresentable, and never
+> trust `git status` as a guard against a process that is still writing.
+>
+> **A backup is not a reference; the last good commit is** (wave 297). When the backup file and
+> the working tree disagreed, the first assumption was that the backup had been clobbered. It had
+> not — HEAD had. A scratchpad copy has no provenance and a racing script can overwrite it, so
+> **diff against `git show <commit>:<path>`**, and read the direction of the diff before deciding
+> which side is wrong.
+>
+> **The `true` direction is uninformative for a condition that consumes input** (wave 297). For
+> `if self.take("<<")`, forcing false asks the useful question — does anything notice `<<` going
+> unrecognised? Forcing true means the token is never consumed, so the parser spins or recurses
+> until it dies. That is a "kill", but it proves only that some test reaches the loop, never that
+> any test pins the operator's *meaning*. **Mutate both ways only where both answers are
+> semantic**; on the 30 remaining `chiero-pp` sites this dropped 60 mutants to 46 and removed
+> almost every timeout.
+>
 > **A mutation harness must score three outcomes, not two** (wave 297). Grepping for
 > `test result: FAILED` answers "did a test fail?", but the interesting third answer is "did the
 > runner finish at all?". A mutant that hangs prints nothing and reads as a survivor. Worse, it is
