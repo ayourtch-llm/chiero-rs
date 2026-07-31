@@ -885,6 +885,66 @@ impl Cx<'_> {
         self.names.text(sym)
     }
 
+    /// Whether `callee` names `__builtin_offsetof`.
+    fn is_offsetof(&self, callee: ExprId) -> bool {
+        let ExprKind::Ident(n) = self.ast.expr(callee).kind else {
+            return false;
+        };
+        self.text(n) == Some("__builtin_offsetof")
+    }
+
+    /// One step of a **member designator**, as `(byte offset from `root`, the type reached)`.
+    ///
+    /// C11 7.19 allows a member name, a `.` chain and `[...]` subscripts. The parser already
+    /// builds exactly that shape — `n.y` is a `Member`, `v[2]` an `Index`, both rooted at an
+    /// `Ident` — so this reads the tree it produced rather than adding a grammar. The root
+    /// `Ident` is a *member of `root`*, not a name in scope, which is the whole reason typing
+    /// the argument as an expression reported it undeclared.
+    ///
+    /// **Field lookup goes through `find_field`**, so a designator naming something inside an
+    /// anonymous member resolves and is rebased for free (wave 279). A scan of `l.fields` here
+    /// would work for every fixture that does not use one and quietly fail for the header this
+    /// is for.
+    fn offsetof_step(&mut self, root: TyId, e: ExprId) -> Option<(u64, TyId)> {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Ident(name) => {
+                let Ty::Record(r) = *self.out.ty(root) else {
+                    return None;
+                };
+                let f = self.out.find_field(r, name)?;
+                Some((f.offset, f.ty))
+            }
+            ExprKind::Member {
+                base,
+                field,
+                arrow: false,
+            } => {
+                let (off, ty) = self.offsetof_step(root, base)?;
+                let Ty::Record(r) = *self.out.ty(ty) else {
+                    return None;
+                };
+                let f = self.out.find_field(r, field)?;
+                Some((off.checked_add(f.offset)?, f.ty))
+            }
+            ExprKind::Index { base, index } => {
+                let (off, ty) = self.offsetof_step(root, base)?;
+                let elem = match *self.out.ty(ty) {
+                    Ty::Array { elem, .. } => elem,
+                    // A designator may subscript an array member and nothing else; `->` and a
+                    // pointer are not designators at all.
+                    _ => return None,
+                };
+                let k = self.eval(index)?.v;
+                if k < 0 {
+                    return None;
+                }
+                let esz = size_of_ty(&self.out, &self.target, elem)?;
+                Some((off.checked_add((k as u64).checked_mul(esz)?)?, elem))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether `callee` names one of 7.12.14's floating classification builtins.
     ///
     /// Only the ones lowering can express as a single CIR comparison. `isinf`, `isfinite`,
@@ -1641,6 +1701,23 @@ impl Cx<'_> {
                 let ExprKind::Ident(name) = self.ast.expr(callee).kind else {
                     return None;
                 };
+                // **`__builtin_offsetof` folds to a byte count**, which is all `offsetof` is:
+                // on gcc `<stddef.h>`'s macro *is* this builtin. Lowering asks `const_of` for
+                // it exactly as it does for `sizeof`, so folding here is the whole of the
+                // value half.
+                if self.text(name) == Some("__builtin_offsetof")
+                    && let [tyarg, path] = args[..]
+                    && let ExprKind::TypeName(t) = self.ast.expr(tyarg).kind
+                {
+                    let root = self.ty_of(t);
+                    let (off, _) = self.offsetof_step(root, path)?;
+                    let bits = (self.target.sizes.long_ * 8) as u32;
+                    return Some(IntVal {
+                        v: off as i128,
+                        bits,
+                        signed: false,
+                    });
+                }
                 if self.text(name) != Some("__builtin_constant_p") {
                     return None;
                 }
@@ -2520,6 +2597,28 @@ impl Cx<'_> {
                 // *values*: `__builtin_isnan(x) + 2` has to add an `int` to an `int`, and an
                 // `Error` operand poisons the usual arithmetic conversions for the whole
                 // expression.
+                // **The arguments are not expressions and must not be typed.** The first is a
+                // type name and the second a member designator whose identifiers name members,
+                // not objects — typing it is what reported "`b` was not declared" and refused
+                // every function that used `offsetof`.
+                if self.is_offsetof(*callee) && args.len() == 2 {
+                    let bits = (self.target.sizes.long_ * 8) as u32;
+                    let ty = self.intern(Ty::Int {
+                        signed: false,
+                        bits,
+                    });
+                    // **`set_top` as well as `push_typed`.** Every other arm of `type_expr`
+                    // reaches the `set_top` at its end by falling out of the match; an early
+                    // `return` skips it, and a node that is pushed but not registered is
+                    // invisible to `type_of`. `sizeof(__builtin_offsetof(...))` reads the
+                    // operand's type from exactly there, so it was the one shape that noticed.
+                    let id = self.push_typed(TypedNode::Value {
+                        expr,
+                        ty,
+                        operands: Vec::new(),
+                    });
+                    return self.set_top(expr, id);
+                }
                 let ret = if self.is_fp_classify_builtin(*callee) {
                     let bits = (self.target.sizes.int_ * 8) as u32;
                     self.intern(Ty::Int { signed: true, bits })

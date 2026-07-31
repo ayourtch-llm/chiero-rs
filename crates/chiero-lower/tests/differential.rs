@@ -2960,6 +2960,23 @@ fn builtin_offsetof_computes_a_member_offset() {
         "struct S { long g; union { struct { int x; int y; }; long z; }; };",
         "return (int)__builtin_offsetof(struct S, y);",
     );
+    // **An anonymous member *after* a chain step.** Both fixtures above put the anonymous
+    // member at the root, so the `Ident` arm's lookup covered them and a mutant that made the
+    // `Member` arm scan `l.fields` directly survived. The two arms need the same lookup, and
+    // only a designator that walks into a named struct *and then* through an anonymous one
+    // says so.
+    agree_with(
+        "struct S { int a; struct { int z; struct { int p; int q; }; } n; };",
+        "return (int)__builtin_offsetof(struct S, n.q);",
+    );
+    agree_with(
+        "struct S { int a; struct { long z; union { int p; int q; }; } n; };",
+        "return (int)__builtin_offsetof(struct S, n.q);",
+    );
+    agree_with(
+        "struct S { int a; struct { int z; struct { int v[3]; }; } n; };",
+        "return (int)__builtin_offsetof(struct S, n.v[2]);",
+    );
     // A union, where every member is at 0.
     agree_with(
         "union U { int a; double d; };",

@@ -2510,6 +2510,30 @@ impl Lowerer<'_> {
                 {
                     return self.va_builtin(kind, args, e, span);
                 }
+                // **`__builtin_offsetof` is a constant, not a call.** Its arguments are a type
+                // name and a member designator, neither of which is an expression to evaluate;
+                // sema folds the whole thing and this asks for the answer the same way the
+                // `sizeof` arm does.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && self.names.text(n) == Some("__builtin_offsetof")
+                {
+                    let bits = self.raw_width_of(e).max(1);
+                    return match self.const_of(e) {
+                        Some(v) => Operand::Const(Const::Int { bits, val: v }),
+                        // 020 §5: a gap is a diagnostic, not a licence. A designator naming
+                        // something that is not there must refuse rather than answer 0 —
+                        // which is a plausible offset and so the worst possible guess.
+                        None => {
+                            self.diagnostics.push(LowerDiagnostic {
+                                span,
+                                message: "an `__builtin_offsetof` whose member designator does \
+                                          not resolve"
+                                    .into(),
+                            });
+                            Operand::Const(Const::Undef(CTy::Int(bits)))
+                        }
+                    };
+                }
                 // **A floating classification macro is a comparison, not a call.** 7.12.14's
                 // `isless`, `isunordered` and the rest are `<math.h>` macros over
                 // `__builtin_*`; nothing declares them, so lowering reported a call to an
