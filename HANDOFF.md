@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 306) — 1478 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 307) — 1479 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -848,6 +848,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | `chiero-exec` | C arithmetic at runtime | the corpus, since wave 153 |
 > | `chiero-pp`'s `#if` evaluator | C constant expressions | `if_differential.rs`, wave 298 |
 > | `chiero-sema::const_eval` | C constant expressions | `differential.rs`, wave 300 |
+> | `chiero-solver` terms vs `chiero-exec` bits | the *same* C operation, symbolically | `differential.rs`, wave 306 |
+
+> **Wave 306 took the fourth and it came back clean** — 390 pairs, none wrong, none undecided.
+> The channel pins a symbolic input back to a known value and asks the solver to prove the
+> expression equals what gcc computed, with **three distinguishable outcomes**: proved, provably
+> different, or undecidable-so-both-edges-taken. Keeping the third apart from the first is the
+> design: a channel that merged them would report agreement for a case the solver had given up
+> on, and would go quiet over time without ever failing. The "nothing is undecided" assertion is
+> therefore a *coverage* guard.
+>
+> **Two probes in this wave reported defects that were not there**, both because the probe could
+> not build its own input — the same trap as wave 305's `<stdarg.h>`. First the intrinsics were
+> undeclared; then `return_value_bits` was asked for a value that is symbolic by construction, and
+> `eval_ground` refuses a non-ground term, so every case read as "chiero says None". **A probe
+> against a symbolic engine must return something concrete**: branch on the property and return a
+> literal, which is what the committed channel does.
+>
+> **Where a fifth might be:** `size_of_cty` in `chiero-exec` is a second implementation of type
+> layout, independent of sema's `size_of_ty` (note `CTy::Ptr => 8`, hardcoded rather than read
+> from the target). It is *indirectly* watched — the corpus compares memory behaviour end to end —
+> so it is a weaker candidate than the four above, but it is the next one on the list.
 >
 > Both new-implementation waves found the **same two defects**: the usual arithmetic conversions
 > and the conditional operator's type. That is not coincidence — they are the rules where the
@@ -2329,6 +2350,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A channel must distinguish "agrees" from "could not tell"** (wave 306). The symbolic channel
+> has three outcomes, not two, because the engine can take *both* branch edges when the solver
+> cannot decide — and a two-outcome channel would have scored that as agreement. It would then
+> degrade silently: every case the solver stopped proving would quietly stop testing anything,
+> and the suite would report the same green it always had. **When the thing under test may
+> abstain, abstention needs its own verdict and its own assertion.**
+>
+> **A probe that cannot build its own input reports a defect in the engine** (waves 305–306, three
+> times now). `<stdarg.h>` with no include loader; undeclared intrinsics; and asking
+> `return_value_bits` for a value that is symbolic by construction, where `eval_ground` correctly
+> refuses a non-ground term. Each produced a confident "chiero says None" for every case in the
+> sweep. **A sweep that fails uniformly is evidence about the sweep, not about the engine** —
+> check one case by hand before believing the column.
 >
 > **Delete the fix that was aimed at the wrong problem, do not leave it in** (wave 305). Two
 > diagnostics for one cause looked like duplicates, so `error()` gained exact-duplicate
