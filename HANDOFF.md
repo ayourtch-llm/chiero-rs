@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 271) — 1416 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 272) — 1417 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **Wave 271 closed the two forms wave 270 left, and neither closed the way it looked.** Statement
+> expressions probed **clean** — twenty-four hard shapes, controlled by two engine mutants — and
+> mutating their lowering arm left nothing a generated one could kill, so they were deliberately
+> **not** added to the corpus. `_Alignof` went in during wave 270 for its type.
+>
+> **The census then moved to CIR and paid immediately.** Lowering can emit twelve of `CmpOp`'s
+> twenty variants; the eight it cannot are the ordered/unordered distinctions C makes in 7.12.14's
+> *macros* and not in its operators — and the executor implements all twenty. Seven macros
+> (`isnan`, `isunordered`, `isless`, `islessequal`, `isgreater`, `isgreaterequal`,
+> `islessgreater`) were being refused whole, and they now lower to the one comparison each is.
+> Still unproduced: `FUEq`, `FULt`, `FULe`, `FOrd`.
+>
+> **The obvious next censuses, in the order they look worth running:** `UbKind` (which kinds can
+> the checker ever report?), `Fidelity` (which degradations can actually be reached?), and
+> `InstKind` against the *executor* rather than against lowering. The AST axis is worked out; the
+> IR axis had one finding on its first pass.
+>
+> **Still refusing, deliberately and by name:** `isinf`, `isfinite`, `isnormal`, `signbit`,
+> `fpclassify`. None is a comparison — they need a magnitude test, the sign bit, or a
+> classification tree — and 015 §7's named refusal is an honest declared limit. That is the next
+> obvious capability if numeric C matters more than the census does.
 >
 > **Wave 270 ran the `ExprKind` version of this and it paid twice.** Of twenty-one variants, three
 > appear in *no* generated program in either channel: `AlignofType`, `StmtExpr` and **`!`**. Ten
@@ -1834,6 +1856,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Census the IR, not just the AST — a dead opcode is the fingerprint of a missing feature**
+> (wave 271). Wave 270 asked what `ExprKind` can hold against what the generator emits. Asking the
+> same of **CIR** found that lowering can emit only twelve of `CmpOp`'s twenty variants, and the
+> eight it cannot are not junk: `FUno`, `FONe` and the ordered relationals are exactly the
+> distinctions C draws in its 7.12.14 *macros* and not in its *operators*. `chiero-exec` had
+> implemented all twenty. **Six comparison semantics were sitting in the engine with no producer,
+> waiting for a feature nobody had noticed was absent.** Four are still unproduced: `FUEq`, `FULt`,
+> `FULe`, `FOrd`.
+>
+> **A refusal that is entirely correct still marks a missing capability** (wave 271). This is the
+> other half of wave 270's rule. 015 §7 refused every `__builtin_isnan` loudly and by name, which
+> is the honest outcome and is precisely why no oracle ever flagged it — the differential channel
+> cannot grade what the engine declines to run. **Loud refusals are invisible to the oracle, so
+> only a census finds them.**
+>
+> **Probe before extending the grammar, and be willing to not extend it** (wave 271). Statement
+> expressions were wave 270's other absent form. Twenty-four hard shapes agree with gcc, two engine
+> mutants confirm the probes reach the engine, and mutating the lowering arm left nothing a
+> generated statement expression could kill — so they were **not** added. Coverage that kills no
+> mutant is the thing wave 270 warned against, and declining to add it is the rule working.
+>
+> **Some survivors are the same function twice** (wave 271). `isnan(x)` as `FUNe(x, x)` survives
+> every fixture, and no fixture can kill it: unordered-not-equal on two copies of one value is true
+> exactly when they are unordered. Likewise a `last_stmt_value` restore that is reachable but
+> provably overwritten before any reader. **Record the measurement in the code.** The alternative is
+> the next reader spending a wave writing a fixture that cannot exist.
+>
+> **Mutation justifies the parts of a fix you would not have questioned** (wave 271). Typing the
+> builtins' result `int` in sema looked obviously necessary and survived all 34 fixtures — an
+> `Error` type still lowers to a 32-bit value and `isnan(a) + 2` comes out right. Only `sizeof`,
+> which reads the type directly, and mixing with a `double`, which needs the usual arithmetic
+> conversions, discriminate. **A change nothing can observe is a change you cannot claim.**
 >
 > **A refusal is a defect that costs nothing to hide behind** (wave 270). The control-flow batch
 > lumped `Verdict::Refused` in with `Discarded`, so lowering that produced *nothing at all* read
