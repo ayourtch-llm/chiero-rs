@@ -2253,6 +2253,68 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
     assert_eq!(p2, prelude);
 }
 
+/// **The corpus contains no vectors at all, and three waves of them went in on hand fixtures.**
+///
+/// Waves 272, 273 and 274 built `vector_size` out — initializers, subscripts, elementwise
+/// arithmetic, the scalar broadcast, compound assignment, and comparisons with their mask type —
+/// and every one of those is graded by fixtures written by hand. The generator emits zero
+/// vectors, so nothing in the corpus can find the next vector defect the way it found the
+/// `_Bool b += -1` one.
+///
+/// # This is the wave-270 rule turned on my own work
+///
+/// "Adding a construct to the corpus buys nothing until you know the context can discriminate"
+/// cuts both ways: shipping a construct the corpus cannot reach leaves it graded by whatever a
+/// person thought to spell, which is the bottleneck the generator exists to remove. Three waves
+/// is a lot of surface to leave there.
+///
+/// # What this asserts, and what it deliberately does not
+///
+/// Presence, at the shapes the hand fixtures showed were load-bearing: a lane whose value the
+/// operator changed, a *narrow* lane where the operator's width is not `int`'s, and the result
+/// reaching the checksum. Presence is not discrimination — wave 270 is emphatic about that — so
+/// the justification for this addition is the mutation sweep in the commit that satisfies it,
+/// not this test.
+#[test]
+fn the_corpus_contains_vectors() {
+    let (mut decl, mut init, mut subscript, mut arith, mut cmp, mut narrow) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for seed in 0..600u64 {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        if all.contains("vector_size") {
+            decl += 1;
+        }
+        for l in all.lines() {
+            let t = l.trim();
+            if t.contains("__attribute__((vector_size") && t.contains('=') && t.contains('{') {
+                init += 1;
+            }
+        }
+        if all.contains("_v") && all.contains('[') {
+            subscript += 1;
+        }
+        if all.contains("_v0 +") || all.contains("_v0 *") || all.contains("_v0 &") {
+            arith += 1;
+        }
+        if all.contains("_v0 ==") || all.contains("_v0 <") {
+            cmp += 1;
+        }
+        if all.contains("vector_size(8)") {
+            narrow += 1;
+        }
+    }
+    assert!(decl >= 20, "a vector type is declared: {decl}");
+    assert!(init >= 20, "a vector is braced-initialized: {init}");
+    assert!(subscript >= 20, "a vector lane is read: {subscript}");
+    assert!(arith >= 10, "elementwise arithmetic happens: {arith}");
+    assert!(cmp >= 10, "a vector comparison happens: {cmp}");
+    assert!(
+        narrow >= 10,
+        "a narrow lane, where the operator's width is not `int`'s: {narrow}"
+    );
+}
+
 /// **`switch` and `do`-`while` compute what gcc computes.**
 ///
 /// Two statement forms `StmtKind` has always had, the parser has always parsed and lowering has
