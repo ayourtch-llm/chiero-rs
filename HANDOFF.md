@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 269) — 1411 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 270) — 1414 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1191,15 +1191,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > times. And shrinking the object to eight bytes — the fix §9 recommended — stops `init_guard` being
 > called at all, because a narrow mask enumerates and the symbolic guard is never asked.
 >
-> ### 🔴 Then: a guard *below* a dereference needs no checker after all
+> ### ✅ A guard below a dereference — the presentation half, done in wave 269
 >
-> Wave 185 recorded this as an unwritten checker. It is not needed: with the pointer nullable
-> from the start, `int v = *p; if (p) …` reports because the null state simply reaches the
-> dereference before the guard can prune it. `a_check_after_the_dereference_does_not_save_it`
-> pins it. What remains is *presentation* — the finding says "null dereference", not "you
-> checked this below, so you knew it could be null", and the second is far more convincing to
-> the person who has to fix it. 023 §6's message is where that would go.
+> The checker was never needed (wave 185), and what remained was the sentence. It now reads:
 >
+> ```text
+>   null-dereference: access at offset 0 of NULL, where %1 is a pointer parameter assumed to be
+>   possibly null; the function tests it against null at t.c:1:31
+> ```
+>
+> **"Assumed" invites "but my callers never pass null".** The author's own `if (p)` four tokens
+> later does not, and it was already sitting in the CIR.
+>
+> **The search follows CIR rather than matching it, twice over.** A parameter is spilled to a slot at
+> entry, so the comparison is on a *load* from that slot and not on the parameter's `ValueId`. And a
+> null pointer constant on the left — `if (0 == p)` — is materialised: C11 6.3.2.3p3 makes the
+> conversion explicit and CIR keeps it, so it arrives as `inttoptr i32 0i32 to ptr` rather than a
+> bare `null` operand. Matching the obvious shape found neither.
+>
+> **What the fixtures pin is *which* check is cited**, which is where the risk is: a comparison
+> against another pointer is not a null test, and another parameter's check must not be attributed to
+> this one. A finding that cites a line where nothing is checked is worse than one that cites none —
+> vague is weak, wrong is corrosive.
+>
+
 > ### 🔴 Then: the arithmetic oracle's remaining softness
 >
 > `arithmetic_ub_agrees_with_gcc_site_for_site` now reads:
@@ -1792,6 +1807,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a report cites something, test *which* thing it cites** (wave 269). Two fixtures asked
+> whether the clause appears; three mutants survived them, and all three were about what it points
+> at — any comparison counting as a null test, one operand order, one parameter's check attributed
+> to another. **A finding that names a wrong line is worse than one that names none**, because a
+> reader who checks it learns not to trust the next finding either.
+>
+> **One C construct can have two CIR spellings, and matching one silently misses the other** (wave
+> 269). `if (p)` leaves a bare `null` operand; `if (0 == p)` materialises `inttoptr i32 0i32 to ptr`,
+> because C11 6.3.2.3p3 makes the null pointer constant an explicit conversion. Both are the same
+> thing to the person reading the report. **Dump the CIR for each spelling before writing a matcher**
+> — the second one cost a red fixture to discover.
 >
 > **Reaching a branch is not observing it** (wave 268). Two waves went into getting an object into
 > the state a havoc branch needs; the branch then ran, and the mutants survived anyway — because two
