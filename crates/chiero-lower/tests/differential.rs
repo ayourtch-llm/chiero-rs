@@ -2890,6 +2890,58 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A 128-bit signed operation panics the engine.**
+///
+///     __int128 x = 1; x = x << 70;
+///     panicked at chiero-exec/src/lib.rs: attempt to subtract with overflow
+///
+/// A **source-triggerable panic**, which this codebase has already named the worst outcome there
+/// is (wave 246): it takes the run and every other finding in it, and `catch_unwind` cannot
+/// contain an abort.
+///
+/// # One shape, repeated at every width bound
+///
+/// The UB checks bound a signed type's range with `(1i128 << (w - 1)) - 1` and `-(1i128 << (w -
+/// 1))`. At `w = 128` the shift *is* `i128::MIN`, so the first underflows and the second negates
+/// a value with no positive counterpart. Every width below 128 leaves headroom, so all of them
+/// are fine and the widest is not — the arithmetic that computes the boundary has the same
+/// boundary problem it is checking for.
+///
+/// # Found while writing a control
+///
+/// It is not a `typeof` defect at all. `__int128 x = 1; x = x << 70;` was a *control* in the
+/// `TypeKind` census — one of the ordinary type forms that were supposed to already work — and
+/// probing it individually is what separated the crash from the eleven `typeof` failures around
+/// it.
+#[test]
+fn a_128_bit_operation_does_not_panic_the_engine() {
+    // The shift that crashed: a left shift whose result needs more than 64 bits.
+    agree("__int128 x = 1; x = x << 70; return (int)(x >> 70);");
+    agree("__int128 x = 1; x = x << 100; return (int)(x >> 100);");
+    agree("__int128 x = 3; x = x << 126; return (int)(x >> 126);");
+    // A shift that stays small, which never reached the bound.
+    agree("__int128 x = 5; return (int)(x >> 1);");
+    agree("__int128 x = 1; x = x << 30; return (int)(x >> 30);");
+    // The unsigned counterpart, which uses a different bound and already worked.
+    agree("unsigned __int128 x = ~(unsigned __int128)0; return (int)(x >> 127);");
+    agree("unsigned __int128 x = 1; x = x << 127; return (int)(x >> 127);");
+    // **Division and remainder at 128 bits**, which is the other place the range bound is
+    // built — the `INT_MIN / -1` check negates `1 << (w - 1)`.
+    agree("__int128 x = 7; __int128 y = 2; return (int)(x / y);");
+    agree("__int128 x = 7; __int128 y = 2; return (int)(x % y);");
+    agree("__int128 x = 1; x = x << 100; __int128 y = -1; return (int)((x / y) >> 100);");
+    // Add, subtract and multiply near the top of the range, where the overflow check runs.
+    agree("__int128 x = 1; x = x << 100; x = x + 1; return (int)(x >> 100);");
+    agree("__int128 x = 1; x = x << 100; x = x - 1; return (int)(x >> 99);");
+    agree("__int128 x = 1; x = x << 60; x = x * x; return (int)(x >> 120);");
+    // Negative values, which take the other side of the bound.
+    agree("__int128 x = -1; x = x << 70; return (int)(x >> 70);");
+    agree("__int128 x = -3; return (int)(x / 2);");
+    // And the ordinary widths, which must not move.
+    agree("long x = 1; x = x << 40; return (int)(x >> 40);");
+    agree("int x = 1; x = x << 20; return (int)(x >> 20);");
+}
+
 /// **`typeof` resolves to nothing: every declaration using it has an unknown type.**
 ///
 ///     int x = 3; __typeof__(x) y = x + 1; return y;
