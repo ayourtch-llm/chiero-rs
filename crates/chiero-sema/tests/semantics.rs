@@ -370,3 +370,70 @@ fn bit_field_width_constraints_are_checked() {
         assert_eq!(diags(good), 0, "must be accepted: `struct S {{ {good} }}`");
     }
 }
+
+/// **Where C requires a complete type, and where it deliberately does not.**
+///
+/// §9's front. Following the `unwrap_or(1)` in `addr_of` to its cause found something larger:
+/// an incomplete tag is interned as `Ty::Error`, so this engine cannot tell "declared, not yet
+/// defined" from "never mentioned". One check exists — an object's type must have a size — and
+/// it fires on both, which makes it simultaneously too strict and too lax.
+///
+/// **Too strict** is the more serious half and is listed first below. `extern struct I x;` is
+/// valid C: an external declaration names an object defined elsewhere, and the other translation
+/// unit is where its size is known. Rejecting it turns a correct program into a broken one, which
+/// no amount of missing checks does.
+///
+/// **Too lax** in four places, each of which gcc rejects: an array whose element type is
+/// incomplete (no size means no stride), arithmetic on a pointer to an incomplete type — where
+/// `size_of_ty(..).unwrap_or(1)` was silently scaling by one byte, as if every unknown struct
+/// were a `char` — a pointer difference of the same, and `sizeof` of an incomplete type in either
+/// spelling.
+///
+/// The accepted cases are the ones that make the rule a rule rather than a blanket ban. A pointer
+/// *to* an incomplete type is the whole point of an opaque handle; declaring a function that
+/// takes or returns one is legal as long as it is never called that way; and comparing two such
+/// pointers needs no size at all.
+#[test]
+fn a_complete_type_is_required_exactly_where_c_requires_one() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis.diagnostics.len()
+    };
+
+    for good in [
+        // An external declaration may have an incomplete type; another unit completes it.
+        "struct I; extern struct I x;",
+        // A pointer to an incomplete type is the opaque-handle idiom.
+        "struct I; struct I *p;",
+        "struct I; typedef struct I T; T *tp; int f(void) { return tp != 0; }",
+        "struct I; struct I *p; struct I *q; int f(void) { return p == q; }",
+        // Declaring — not defining, and not calling — is legal.
+        "struct I; struct I g(void);",
+        "struct I; int f(struct I v);",
+        // The complete cases must stay silent, or the check is just noise.
+        "struct C { int a; }; struct C c;",
+        "struct C { int a; }; struct C arr[10]; int f(void) { return (int)sizeof(arr); }",
+        "struct C { int a; }; struct C *p; int f(void) { return (int)(p + 1 - p); }",
+    ] {
+        assert_eq!(diags(good), 0, "must be accepted: `{good}`");
+    }
+
+    for bad in [
+        // An object needs a size.
+        "struct I; struct I x;",
+        "union U; union U u;",
+        // An array needs its element's size, for the stride if nothing else.
+        "struct I; struct I arr[10];",
+        "struct I; extern struct I arr[];",
+        // Pointer arithmetic needs the pointee's size — this is the `unwrap_or(1)` that
+        // silently scaled by one byte.
+        "struct I; struct I *p; void *q = p + 1;",
+        "struct I; struct I *p; int f(void) { p = p + 1; return 0; }",
+        "struct I; struct I *p; int f(void) { return (int)(p - p); }",
+        // `sizeof` of an incomplete type, named directly or reached through a dereference.
+        "struct I; int f(void) { return (int)sizeof(struct I); }",
+        "struct I; struct I *p; int f(void) { return (int)sizeof(*p); }",
+    ] {
+        assert!(diags(bad) > 0, "must be diagnosed: `{bad}`");
+    }
+}
