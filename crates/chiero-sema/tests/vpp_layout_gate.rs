@@ -32,14 +32,12 @@ fn corpus_dir() -> PathBuf {
         .join("tests/corpus/vpp")
 }
 
-const SEEDS: &[&str] = &[
-    "vppinfra/vec.h",
-    "vppinfra/pool.h",
-    "vppinfra/bitmap.h",
-    "vppinfra/format.h",
-    "vppinfra/hash.h",
-    "vppinfra/error.h",
-];
+/// **One definition of "the corpus", shared with `harness::CORPUS_SEEDS`.**
+///
+/// This file used to carry its own copy of the list. Wave 310 widened the harness's from six
+/// headers to twenty and this gate did not move, which is the ordinary fate of a duplicated
+/// constant: the copy nobody remembers is the one that stops covering anything.
+const SEEDS: &[&str] = harness::CORPUS_SEEDS;
 
 fn system_include_paths() -> Option<Vec<PathBuf>> {
     let out = std::process::Command::new("gcc")

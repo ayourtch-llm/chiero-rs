@@ -161,13 +161,77 @@ pub fn corpus_analyses() -> Option<Vec<(&'static str, Parsed)>> {
     Some(out)
 }
 
+/// Analyse one corpus header, returning sema's diagnostics. `None` when gcc is absent.
+pub fn analyse_seed(seed: &str) -> Option<Vec<String>> {
+    let sys = system_include_paths()?;
+    let defines = gcc_predefines();
+    let cfg = Config {
+        include_paths: vec![corpus_dir()],
+        system_paths: sys,
+        defines,
+        ..Config::default()
+    };
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(
+        corpus_dir().join("tu.c"),
+        &format!("#include <{seed}>\n"),
+        cfg,
+        &mut Disk,
+    );
+    assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &Names(&parsed));
+    Some(
+        analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect(),
+    )
+}
+
+/// Every corpus header that is **independently includable**, which is what a seed has to be.
+///
+/// Wave 310 widened this from six to twenty-one by asking the corpus rather than guessing. Seven
+/// of the twenty-eight headers are absent for a reason gcc agrees with, and one for a reason gcc
+/// reports too:
+///
+///   - `bitops.h`, `vec_bootstrap.h` and the five `vector_*.h` are **not standalone**. Each uses a
+///     type an earlier header defines — `static_always_inline`, `u32`, `i8x32` — so gcc rejects
+///     them on their own exactly as this parser does. They are reached through the seeds that do
+///     include them, so nothing is lost by not naming them.
+///   - `memcpy.h` calls `clib_memcpy_fast` at line 60 without including the header that declares
+///     it. That is an **implicit function declaration**, which `gcc -Wall` warns about and C99
+///     forbids — so sema's complaint is correct and the header is genuinely not clean on its own.
+///     It is excluded rather than tolerated, because a gate with a permitted diagnostic in it is a
+///     gate that will grow more.
 pub const CORPUS_SEEDS: &[&str] = &[
-    "vppinfra/vec.h",
-    "vppinfra/pool.h",
+    "vppinfra/atomics.h",
     "vppinfra/bitmap.h",
+    "vppinfra/byte_order.h",
+    "vppinfra/cache.h",
+    "vppinfra/clib.h",
+    "vppinfra/clib_error.h",
+    "vppinfra/error.h",
+    "vppinfra/error_bootstrap.h",
     "vppinfra/format.h",
     "vppinfra/hash.h",
-    "vppinfra/error.h",
+    "vppinfra/mem.h",
+    "vppinfra/memcpy_x86_64.h",
+    "vppinfra/os.h",
+    "vppinfra/pool.h",
+    "vppinfra/random.h",
+    "vppinfra/string.h",
+    "vppinfra/types.h",
+    "vppinfra/vec.h",
+    "vppinfra/vector.h",
+    "vppinfra/warnings.h",
 ];
 
 pub fn corpus_dir() -> std::path::PathBuf {
