@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 281) — 1428 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 282) — 1429 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,25 +808,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟡 One declarator defect is open, and it is the low-reach one
+> ### 🔴 A requested alignment on a variable is still not honoured
 >
-> **The declarator census** (wave 278) ran twenty-seven shapes against gcc and found five wrong
-> answers. Four are closed: reversed array dimensions and brace elision (278), anonymous
-> struct/union members (279), and `__builtin_offsetof` (280). Pointer-to-array indexing was struck
-> as a symptom of the reversal. One remains:
+> Wave 281 split §9's old "`_Alignas` is ignored" item in two and fixed the half that needs no
+> specifier (`_Alignof(expr)` was returning a *size*). What remains, with its observed failure:
 >
->   - **`_Alignas` is ignored on a variable.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4 and
->     the object really is misaligned (`(long)&x & 15` is 4, gcc says 0);
->     `int x __attribute__((aligned(16)))` is wrong the same way. **Only the variable path**: a
->     `struct A { char c; _Alignas(16) int v; }` already sizes, offsets and aligns correctly, so
->     the member path is done. It is a *wrong answer* and so the worse kind, but it appears in
->     **0 VPP files** — reach is why waves 279 and 280 went elsewhere first, and it is now the
->     last one standing.
+>     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero 4,  gcc 16
+>     _Alignas(16) int x = 3; return (int)((long)&x & 15);  chiero 4,  gcc 0
+>     int x __attribute__((aligned(16))) = 3;  — wrong the same way, both lines
 >
-> **The census channel found five defects in one pass and is the best yield of the last ten
-> waves.** The axis that produced them — the shape of a *declaration* — is exhausted; what has
-> never been censused is the **preprocessor**: which `#` directives and macro forms does anything
-> exercise? 012 is a whole crate with no equivalent sweep.
+> The second line is the substantive one: the storage really is at the natural alignment, so a
+> program that aligns a buffer and relies on it gets a differently-aligned object silently.
+>
+> **Reach is real**: `__attribute__((aligned(N)))` is in **16 VPP files directly and `aligned(`
+> in 266** — the cache-line macros expand to it. Only `_Alignas` spelled literally is absent.
+>
+> **Why it is its own wave.** Both spellings already land in the syntactic type's attrs — the
+> parser translates `_Alignas(N)` into an `aligned` attribute — and `Cx::aligned_attr` already
+> reads them for *record layout*. What is missing is a per-**declaration** channel: sema's
+> `values` map is name→`TyId` with no `DeclId`, so nothing can get from an identifier back to the
+> alignment its declaration asked for, and `alloca_for` is handed `align_of(ty)`. A
+> `decl_aligns: IndexMap<DeclId, u64>` on `Analysis` is the shape the `enum_refs` and
+> `generic_selections` precedents suggest.
+>
+> **Only the variable path is broken**: `struct A { char c; _Alignas(16) int v; }` already sizes,
+> offsets and aligns correctly.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -2014,6 +2020,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A clean census is a result, and it hands the wave back** (wave 281). The preprocessor was §9's
+> last unrun axis: forty-four probes found **no silent wrong answer**, and all three gaps are
+> declared with their own diagnostics and in 0 VPP files. That is worth recording rather than
+> padding into a change — and it sent the wave to the last known defect, where probing found a
+> different, worse one underneath.
+>
+> **Probe the reported defect before believing its description** (wave 281). §9 said "`_Alignas`
+> is ignored on a variable", which is what the numbers looked like. `_Alignas(16) int x` reported
+> **4 because 4 is `sizeof(int)`** — the parser recorded `_Alignof(expr)` as a `SizeofExpr`, so
+> `_Alignof` computed a size for every expression, specifier or not. The described defect was a
+> symptom of a bigger one that needs no specifier at all.
+>
+> **Measure the spelling the target uses, not the one the note names** (wave 281). `_Alignas` is
+> in 0 VPP files; `__attribute__((aligned(N)))` — same path, same defect — is in **16 directly and
+> `aligned(` in 266**, because VPP's cache-line macros expand to it. §9 had recorded the item
+> under the spelling with no reach, understating it by two orders of magnitude.
+>
+> **`X - 1 > 0` cannot see signedness** (wave 281). The mutant typing a `size_t` result as signed
+> survived it: four minus one is positive either way. It takes a subtraction that *wraps* —
+> `_Alignof(a) - 5`. **An unsigned-ness fixture has to underflow.**
 >
 > **An early `return` from a function whose tail does bookkeeping skips the bookkeeping** (wave
 > 280). `type_expr` ends with `set_top`, which every arm reaches by falling out of the match. A new
