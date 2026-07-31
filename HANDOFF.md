@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 256) — 1401 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 257) — 1401 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1594,23 +1594,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      has to reach one of them with a narrow *unsigned* operand whose top bit is set; `p += c` with
 >      `unsigned char c = 200` is the shape, and it needs an object big enough for the result to be
 >      in bounds.
->   3. ~~**`SiToFp`/`UiToFp` is not reached at all.**~~ **Wrong — wave 255 found it is reached, and
->      how the mistake happened.** Wave 254's instrumented run logged nothing and that was read as
->      "unreachable"; it had no control line, so it could equally have meant the logging was not in
->      the build. With a control the function runs 1086 times, and three shapes reach the float arm
->      at once: `double d = -5;`, a `double` member initialized by a brace, a `double` array element.
->      **The site was never dead, only never tested** — the whole suite had no int-to-float
->      conversion through `convert_for_store`.
+>   3. ~~**`SiToFp`/`UiToFp`**~~ **Closed in wave 256, by deletion.** The inline copy in
+>      `convert_for_store` is gone; it asks `cast_kind`, which already decided this for every other
+>      conversion. They agreed, so nothing was fixed — **the reason to do it is the coverage**:
+>      mutating the inline arm survived every fixture, and the identical mutation inside `cast_kind`
+>      dies both ways round. Wave 255 spent itself trying to build a fixture that could see the
+>      inline arm; deleting it answered the question instead.
 >
->      One mutant now dies: an `unsigned` source with its top bit set kills "always signed". **The
->      remaining question is narrow**: "always unsigned" survives because all six signed sources
->      reaching the arm hold non-negative values. Find a *negative* int that arrives here rather than
->      through `cast_kind`, or establish that none can — instrument the arm and print the value, do
->      not reason about which spellings ought to reach it.
+>      One survivor is recorded beside the call: swapping `is_signed(from)` for `to_signed` in the
+>      argument list survives, because the two hold the same value for every input that reaches
+>      there and `cast_kind`'s `Int -> Float` arm ignores the destination anyway.
 >
->      The duplication is still worth a look on its own terms. `cast_kind` and this arm both decide
->      `SiToFp` versus `UiToFp` and they agree today; two places computing one thing is the shape
->      waves 151 and 152 spent two commits removing from the string decoders.
+>      **The other two items above are unchanged and are now the front.** Both are still unobserved:
+>      `widen_to_64`'s signedness and the array-index `SExt`/`ZExt`. The lesson from item 3 applies
+>      to both — before building more fixtures, ask whether the site can be *deduped into* one that
+>      is already watched. `widen_to_64` in particular emits a cast whose kind `cast_kind` could
+>      decide.
 >
 > ### ✅ Closed in wave 253 — the generator now catches the bit-field defect
 >
@@ -1730,6 +1729,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **Deleting an untestable site is a legitimate way to close a coverage gap** (wave 256). Wave 255
+> spent itself trying to build a fixture that could observe `convert_for_store`'s inline
+> `SiToFp`/`UiToFp` arm and failed every time. The arm was a *duplicate* of a decision `cast_kind`
+> already made, and the same mutation dies there. **Before writing another fixture for a stubborn
+> site, ask whether the site should exist** — a second place computing one decision is both a drift
+> risk and, usually, the one nothing watches.
+>
+> **A dedup can be justified by a mutation table rather than a failing test** (wave 256). Nothing was
+> broken and the two copies agreed. What changed is that the surviving decision is observable and the
+> deleted one was not, which is a result worth stating in those terms rather than as "tidying".
 >
 > **Instrumentation that logs nothing needs a control every single time** (wave 255). Wave 254
 > concluded a conversion site was unreachable from an empty log. The rule was already in this list —
