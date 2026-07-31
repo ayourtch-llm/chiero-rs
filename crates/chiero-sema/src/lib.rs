@@ -783,6 +783,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
         current_ret: None,
+        current_fn: None,
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -819,6 +820,7 @@ pub fn const_eval(
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
         current_ret: None,
+        current_fn: None,
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -883,6 +885,8 @@ struct Cx<'a> {
     /// elsewhere, but a `None` left behind by a declaration would make the *next*
     /// function's returns unconverted, which is the failure mode nothing would notice.
     current_ret: Option<TyId>,
+    /// The function whose body is being walked, for `__func__`.
+    current_fn: Option<Symbol>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
     values: IndexMap<Symbol, TyId>,
@@ -1112,7 +1116,10 @@ impl Cx<'_> {
                             self.out.decl_types.insert(p, t);
                         }
                     }
-                    // The return type the body's `return` statements convert to.
+                    // The return type the body's `return` statements convert to, and the name
+                    // `__func__` denotes inside it.
+                    let saved_fn = self.current_fn;
+                    self.current_fn = Some(name);
                     let saved_ret = self.current_ret;
                     self.current_ret = match self.out.types[t.0 as usize].clone() {
                         Ty::Func { ret, .. } => Some(ret),
@@ -1120,6 +1127,7 @@ impl Cx<'_> {
                     };
                     self.type_stmt(body);
                     self.current_ret = saved_ret;
+                    self.current_fn = saved_fn;
                     // A parameter does not outlive its function; restoring rather than
                     // removing also undoes any shadowing the body introduced.
                     self.values = saved;
@@ -2717,6 +2725,29 @@ impl Cx<'_> {
                         let t = self.out.enumerator_ty(*sym)?;
                         self.out.enum_refs.insert(expr, (v, t));
                         Some(t)
+                    })
+                    // **`__func__` is declared by the language** (C99 6.4.2.2): the compiler
+                    // behaves as if `static const char __func__[] = "name";` opened every
+                    // function body. gcc's `__FUNCTION__` is the same object under an older
+                    // spelling. It is resolved *after* the ordinary lookups, not before, so a
+                    // program that declares its own `__func__` keeps it — the predefined one is
+                    // what the name means when nothing else has claimed it.
+                    .or_else(|| {
+                        if !matches!(self.text(*sym), Some("__func__" | "__FUNCTION__")) {
+                            return None;
+                        }
+                        let n = self.text(self.current_fn?)?.len() as u64;
+                        let ch = self.intern(Ty::Int {
+                            signed: self.target.char_signed,
+                            bits: 8,
+                        });
+                        // The length includes the terminator, which is what makes
+                        // `sizeof(__func__)` the name's length plus one rather than a pointer
+                        // width. It is an array, and only an array answers that correctly.
+                        Some(self.intern(Ty::Array {
+                            elem: ch,
+                            len: ArrayLen::Fixed(n + 1),
+                        }))
                     })
                     .unwrap_or_else(|| {
                         // An undeclared name is reported **once per name**, not once per

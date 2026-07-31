@@ -269,6 +269,11 @@ struct Lowerer<'a> {
 }
 
 impl Lowerer<'_> {
+    /// The name of the function being lowered, as text — what `__func__` denotes.
+    fn func_name_text(&mut self) -> String {
+        self.fs().name.to_string()
+    }
+
     fn fs(&mut self) -> &mut FnState {
         self.f.as_mut().expect("inside a function")
     }
@@ -2168,6 +2173,27 @@ impl Lowerer<'_> {
                 Operand::Value(dst)
             }
             chiero_ast::ExprKind::Ident(sym) => {
+                // **`__func__` is an object the language declares** (C99 6.4.2.2), so it is
+                // materialised like the string literal it is defined to be: a static array of
+                // the enclosing function's name plus a terminator, interned as a global and
+                // named by its address. `intern_string` is what string literals use, so an
+                // identical `__func__` in two functions with the same name shares one object,
+                // exactly as two identical literals do.
+                //
+                // Read before the local lookup would be wrong: a program is allowed to declare
+                // its own `__func__`, and sema resolves the predefined one only when nothing
+                // else has claimed the name. The check therefore sits *after* locals, in the
+                // same fallback chain, and before the global lookup for the same reason.
+                if self.fs().locals.get(sym).is_none()
+                    && !self.globals.contains_key(sym)
+                    && matches!(self.names.text(*sym), Some("__func__" | "__FUNCTION__"))
+                {
+                    let name = self.func_name_text();
+                    let mut bytes = name.into_bytes();
+                    bytes.push(0);
+                    let g = self.intern_string(bytes, span);
+                    return Operand::Const(Const::GlobalAddr { g, off: 0 });
+                }
                 let Some((slot, ty)) = self.fs().locals.get(sym).cloned() else {
                     // **A file-scope variable is read through its address**, like any
                     // other object. This arm used to return `Undef` for anything that was
