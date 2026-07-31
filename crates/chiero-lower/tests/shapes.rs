@@ -491,3 +491,37 @@ fn f32_and_f64_literals_keep_their_encodings() {
         "1.0 is 0x3ff0000000000000: {t}"
     );
 }
+
+/// **An index's widening to pointer width uses the index's own signedness.**
+///
+/// The last of wave 254's four extension sites, and the one that cannot be settled by comparing a
+/// value. An index is promoted to `int` before it is used, so the only narrow *unsigned* source is a
+/// 32-bit `unsigned` — and its top bit being set means an index of at least `2^31`, which is never
+/// in bounds. Sign- and zero-extension therefore never disagree about an index a program can
+/// legally form, and no differential fixture can tell them apart.
+///
+/// What they do disagree about is the *instruction emitted*, and that is observable here. A signed
+/// index widens with `sext` and an unsigned one with `zext`; forcing either way changes the printed
+/// CIR even when it cannot change an answer.
+///
+/// This is the shape `shapes.rs` exists for: a decision that is real, reachable, and invisible to
+/// the value oracle. Reaching for it earlier would have saved wave 254 three fixtures.
+#[test]
+fn an_index_widens_by_its_own_signedness() {
+    let signed = print(&lower("int f(int *p, int i) { return p[i]; }"));
+    assert!(
+        signed.contains("sext") && !signed.contains("zext"),
+        "a signed index widens with sign extension: {signed}"
+    );
+    let unsigned = print(&lower("int f(int *p, unsigned i) { return p[i]; }"));
+    assert!(
+        unsigned.contains("zext") && !unsigned.contains("sext"),
+        "an unsigned index widens with zero extension: {unsigned}"
+    );
+    // Pointer arithmetic reaches the same widening by the other caller, so both are pinned.
+    let padd = print(&lower("int *f(int *p, unsigned i) { return p + i; }"));
+    assert!(
+        padd.contains("zext"),
+        "`p + i` widens the unsigned operand the same way: {padd}"
+    );
+}

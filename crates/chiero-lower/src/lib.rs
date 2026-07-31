@@ -3865,29 +3865,12 @@ impl Lowerer<'_> {
                 // `int` index and a byte offset is 64 bits, so multiplying them directly
                 // is a width mismatch the verifier rejects — and sign extension is the
                 // right widening, since `a[-1]` is a legal (if unwise) C expression.
-                let iw = self.width_of(index);
-                let idx = if iw < 64 {
-                    let w = self.new_value();
-                    self.emit(
-                        InstKind::Assign {
-                            dst: w,
-                            rv: RValue::Cast {
-                                kind: if self.is_signed(index) {
-                                    chiero_cir::CastKind::SExt
-                                } else {
-                                    chiero_cir::CastKind::ZExt
-                                },
-                                a: idx,
-                                from: CTy::Int(iw),
-                                to: CTy::Int(64),
-                            },
-                        },
-                        span,
-                    );
-                    Operand::Value(w)
-                } else {
-                    idx
-                };
+                // **`widen_to_64`, not a third copy of it** (wave 257). This spelled out the same
+                // width test, the same `SExt`/`ZExt` choice by the source's signedness and the same
+                // `Cast` that `widen_to_64` already emits for the two pointer-arithmetic paths.
+                // Wave 256 removed a duplicate of the int-to-float decision for the same reason and
+                // found the copy nobody could observe was the duplicate; the same held here.
+                let idx = self.widen_to_64(idx, index, span);
                 let elem = self.elem_size_of(base).unwrap_or(1);
                 let scaled = self.new_value();
                 self.emit(
@@ -4167,15 +4150,16 @@ impl Lowerer<'_> {
         }
         let dst = self.new_value();
         let signed = self.is_signed(e);
+        // **`cast_kind` decides, here too.** Widening a narrow integer is the same question it
+        // answers for every explicit conversion, and it is the version mutation can observe —
+        // forcing its `SExt`/`ZExt` arm either way dies, where the same mutation spelled out here
+        // survived the whole suite.
+        let kind = cast_kind(&CTy::Int(w), &CTy::Int(64), signed, true);
         self.emit(
             InstKind::Assign {
                 dst,
                 rv: RValue::Cast {
-                    kind: if signed {
-                        chiero_cir::CastKind::SExt
-                    } else {
-                        chiero_cir::CastKind::ZExt
-                    },
+                    kind,
                     a: v,
                     from: CTy::Int(w),
                     to: CTy::Int(64),
