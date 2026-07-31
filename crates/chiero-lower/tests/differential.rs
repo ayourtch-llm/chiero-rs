@@ -4875,3 +4875,108 @@ fn a_tag_used_before_its_definition_is_completed_by_it() {
         agree_with(prelude, body);
     }
 }
+
+/// **The canonical uses of C, each written the way a textbook writes it.**
+///
+/// Wave 304 found that `struct Node { struct Node *next; }` had never worked — a linked list,
+/// the first data structure in every C book, produced no answer at all and survived 1470 tests,
+/// a differential corpus, a generated channel and a VPP header gate. It survived because every
+/// fixture that needed a struct wrote a *flat* one: the suite tested the engine's *rules*
+/// thoroughly and its *uses* not at all.
+///
+/// This is the net for that. Each case is a shape a C programmer writes without thinking, and
+/// the sweep that produced it found exactly one failure — the one wave 304 had just fixed. That
+/// is a result worth keeping rather than repeating: the value here is not in what it caught but
+/// in what it will catch when a representation changes underneath it again.
+///
+/// `__builtin_va_list` rather than `<stdarg.h>`: this harness has no include loader, and a
+/// fixture that fails to preprocess would report a defect that is not there. It did, in the
+/// sweep, until the include was removed.
+#[test]
+fn the_canonical_uses_of_c_agree_with_gcc() {
+    for (prelude, body) in [
+        // Self-referential and mutually-linked structures.
+        (
+            "struct T { int v; struct T *l, *r; }; static struct T c={3,0,0}, b={2,0,0}, a={1,&b,&c};",
+            "return a.l->v + a.r->v;",
+        ),
+        (
+            "struct N { int v; struct N *next; }; static struct N c={3,0}, b={2,&c}, a={1,&b};",
+            "int s=0; for (struct N *p=&a; p; p=p->next) s+=p->v; return s;",
+        ),
+        // Function pointers: a dispatch table and a typedef'd one.
+        (
+            "static int add1(int x){return x+1;} static int dbl(int x){return x*2;} \
+          static int (*tab[2])(int) = {add1, dbl};",
+            "return tab[0](3) + tab[1](5);",
+        ),
+        (
+            "typedef int (*op)(int,int); static int mul(int a,int b){return a*b;}",
+            "op f = mul; return f(6,7);",
+        ),
+        (
+            "struct P { int k; }; static int cmp(const void *a, const void *b){ \
+            return ((const struct P*)a)->k - ((const struct P*)b)->k; } \
+          static struct P arr[3] = {{3},{1},{2}};",
+            "return cmp(&arr[0], &arr[1]);",
+        ),
+        // Aggregates by value, by array, and nested.
+        (
+            "struct P { int x, y; }; static struct P ps[3] = {{1,2},{3,4},{5,6}};",
+            "int s=0; for (int i=0;i<3;i++) s += ps[i].x*ps[i].y; return s;",
+        ),
+        (
+            "struct P { int x, y; }; static int sum(struct P p){ return p.x+p.y; } \
+          static struct P g = {3,4};",
+            "return sum(g);",
+        ),
+        (
+            "struct P { int x, y; }; static struct P mk(int a){ struct P p; p.x=a; p.y=a*2; return p; }",
+            "struct P q = mk(5); return q.x + q.y;",
+        ),
+        (
+            "struct In { int a; }; struct Out { struct In i; int b; }; static struct Out o = {{7},9};",
+            "return o.i.a + o.b;",
+        ),
+        (
+            "union U { int i; unsigned char b[4]; }; static union U u = {0x01020304};",
+            "return u.b[0] + u.b[3];",
+        ),
+        (
+            "struct B { unsigned a:3, b:5; }; static struct B bb;",
+            "bb.a=5; bb.b=17; return bb.a*100+bb.b;",
+        ),
+        // Arrays: two-dimensional, and a pointer to one.
+        (
+            "static int m[3][3] = {{1,2,3},{4,5,6},{7,8,9}};",
+            "int s=0; for(int i=0;i<3;i++) s+=m[i][i]; return s;",
+        ),
+        (
+            "static int a[4] = {1,2,3,4};",
+            "int (*p)[4] = &a; return (*p)[2];",
+        ),
+        (
+            "static const char *s = \"hello\";",
+            "int n=0; while (s[n]) n++; return n;",
+        ),
+        // Control flow and storage.
+        (
+            "static int fact(int n){ return n<=1 ? 1 : n*fact(n-1); }",
+            "return fact(5);",
+        ),
+        (
+            "static int od(int); static int ev(int n){ return n==0?1:od(n-1);} \
+          static int od(int n){ return n==0?0:ev(n-1);}",
+            "return ev(10);",
+        ),
+        ("", "static int c = 0; c++; return c;"),
+        (
+            "static int vsum(int n, ...){ __builtin_va_list ap; __builtin_va_start(ap,n); \
+            int s=0; for(int i=0;i<n;i++) s+=__builtin_va_arg(ap,int); __builtin_va_end(ap); \
+            return s; }",
+            "return vsum(3,1,2,3);",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}
