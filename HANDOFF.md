@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 303) — 1474 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 304) — 1475 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -888,7 +888,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > C 6.7.2.1p4 were missing altogether — non-constant, negative, wider than the field's type, and
 > a *named* zero-width field.
 >
-> ### 🔴 Found in wave 302, recorded and **not** fixed: incomplete types are never rejected
+> ### 🟢 Wave 303 closed the incomplete-type front — and it was a false *positive* too
+>
+> Five rules, one of which **removes** a check: `extern struct I x;` with no initializer is valid
+> C 6.9.2p3 and this engine rejected it. A rule that rejects correct programs is worse than one
+> that misses incorrect ones, so that case is in the *accepted* list of the fixture and is what
+> the RED failed on first.
+>
+> | context | rule | site |
+> |---|---|---|
+> | `extern` decl, no init | **exempt** — completed in another unit | `check_complete` |
+> | `extern` decl *with* init, `static` | not exempt: both are definitions | same |
+> | array element | must be complete — no stride, no `arr[1]` | array construction, so `extern struct I arr[];` is caught |
+> | `p + n`, `p - q` | must be complete; **comparisons excluded** | binary typing |
+> | `sizeof` | checked on the resolved *type*, so `sizeof(*p)` counts | both spellings |
+>
+> **The `unwrap_or(1)` was standing in for the pointer rule, badly**: one byte is exactly a
+> `char`'s stride, so the wrong answer was indistinguishable from a right one in any code using
+> byte offsets — wave 302's rule about fallbacks whose value *means* something, again.
+>
+> **Mutation found the exemption was the weak spot**, which generalises: a check that is added can
+> only be wrong about programs it rejects, and the RED enumerates those. An exemption is wrong
+> about programs it *accepts*, and nothing enumerates those unless written on purpose.
+>
+> **Still open, and now the only piece:** `tag()` interns an incomplete tag as `Ty::Error`, so the
+> engine cannot tell "declared, not yet defined" from "never mentioned". Both are errors at every
+> site above, so the five rules are correct either way — but the diagnostics say "incomplete or
+> unknown" because the engine genuinely does not know which, `struct I;` never records the tag at
+> all, and a later definition cannot complete it. Fixing it means a real incomplete-record
+> representation, which touches every `Ty::Error` consumer. **`enum E2 e;` is the visible symptom
+> left over:** gcc rejects it, this engine accepts it, because the enum path returns a default
+> integer type rather than an incomplete one.
+>
+> ### ✅ Fixed in wave 303 — was: incomplete types are never rejected
 >
 > `size_of_ty(...).unwrap_or(1)` in `addr_of` silently scales pointer arithmetic by one byte when
 > the element type is incomplete. Two programs gcc rejects and this engine accepts without a word:
@@ -2245,6 +2277,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An exemption is the dangerous half of a rule, and no RED enumerates its failures** (wave 303).
+> Five rules went in; mutation killed seven of eight mutants immediately, and the survivor was the
+> one that *removes* a check — widening "`extern` with no initializer" to any `extern` passed
+> everything else in the fixture. The asymmetry is structural: a check can only be wrong about
+> programs it rejects, and those are exactly what the RED lists. An exemption is wrong about
+> programs it *accepts*, and nothing lists those unless someone writes them deliberately. **For
+> every exemption, write the nearest case that must still be rejected.**
+>
+> **Look for the false positive before the false negatives** (wave 303). The front was recorded as
+> "incomplete types are never rejected", and the probe that mapped it found the engine also
+> rejected `extern struct I x;`, which is valid C. Rejecting a correct program is the worse defect
+> and it was in the *existing* check, not the missing ones. **When surveying a rule, run the legal
+> cases through it too** — a survey of only the illegal ones cannot see this class at all.
 >
 > **Ask what the fallback value *means* in the domain, not just whether it is wrong** (wave 302).
 > `unwrap_or(0)` for a bit-field width is not "a wrong number"; it is a *different legal
