@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 262) — 1403 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 263) — 1403 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1710,7 +1710,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > parameter. If that count is near zero, the fix is to make the body declare and checksum such a
 > struct, not to touch values again.
 >
+> ### 🔴 Do this first: finish the grid for the other two UB kinds
+>
+> Waves 261 and 262 applied one technique to two of the four kinds the arithmetic oracle grades, and
+> it found an empty cell each time:
+>
+> ```text
+>   FloatCastOverflow   too-negative-for-signed, and NaN     wave 261
+>   Shift               the count rule for `>>`              wave 262
+>   SignedOverflow      not yet examined
+>   DivByZero           not yet examined
+> ```
+>
+> **The technique, in order.** Mutate each clause of the check in `chiero-exec` (the `push(UbKind::…)`
+> arms around line 3030). For every survivor, read the fixture list as a *grid* — signedness ×
+> direction × sign-of-operand × which operand — and look for the empty cell rather than for a new
+> idea. Both gaps so far were the mirror of a fixture already written down.
+>
+> **Two practical notes.** Keep `generated` out of the sweep's test set: it takes long enough that
+> the sweep exceeds its timeout, and a sweep killed mid-run leaves the tree mutated — every result
+> after that is measured against a corrupted baseline and they look plausible. The control is what
+> catches it, since `CONTROL KILLED` is impossible unless the baseline is wrong. Check survivors
+> against `generated` separately.
+>
 > ### Rules earned, most recent first
+>
+> **A sweep's control detects its own previous run's wreckage** (wave 262). A mutation sweep that
+> exceeds its timeout is killed between applying a mutation and restoring the file. The next sweep
+> then measures everything against a mutated baseline and the results look ordinary — three plausible
+> kills and one plausible survivor. `CONTROL KILLED` is impossible unless the baseline is wrong, and
+> that is the only reason it was caught. **Assume a timed-out sweep left the tree dirty, and never
+> run one without a control.**
 >
 > **A thin row is a question, not a diagnosis** (wave 261). `FloatCastOverflow` at 7 sites looked
 > like "not enough of this shape", and §9 recommended making more. Mutating the code the row is
