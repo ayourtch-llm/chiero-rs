@@ -2180,10 +2180,15 @@ impl Lowerer<'_> {
                 // identical `__func__` in two functions with the same name shares one object,
                 // exactly as two identical literals do.
                 //
-                // Read before the local lookup would be wrong: a program is allowed to declare
-                // its own `__func__`, and sema resolves the predefined one only when nothing
-                // else has claimed the name. The check therefore sits *after* locals, in the
-                // same fallback chain, and before the global lookup for the same reason.
+                // Read before the local lookup would be wrong: sema resolves the predefined
+                // object only when nothing else has claimed the name, so lowering must agree or
+                // the two disagree about what an identifier means. The check therefore sits
+                // *after* locals and globals, in the same fallback chain.
+                //
+                // gcc cannot arbitrate this: it reserves the spelling in its parser and rejects
+                // `int __func__ = 7;` outright, while this parser accepts it as an ordinary
+                // identifier. The ordering is pinned by chiero-only assertions in
+                // `func_is_predefined_in_every_function_body` for that reason.
                 if self.fs().locals.get(sym).is_none()
                     && !self.globals.contains_key(sym)
                     && matches!(self.names.text(*sym), Some("__func__" | "__FUNCTION__"))

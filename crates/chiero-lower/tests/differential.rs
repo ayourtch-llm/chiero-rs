@@ -5195,4 +5195,25 @@ fn func_is_predefined_in_every_function_body() {
     ] {
         agree_with(prelude, body);
     }
+
+    // **A declared `__func__` wins, and gcc cannot arbitrate this one.** gcc reserves the
+    // spelling in its *parser* and rejects `int __func__ = 7;` outright, so there is no oracle
+    // answer to compare against; chiero's parser accepts it as an ordinary identifier. The
+    // predefined object is therefore resolved at the *end* of the lookup chain on both sides —
+    // after locals and globals — and this is what says so. Without it the ordering is a claim in
+    // a comment: forcing lowering to answer `__func__` regardless of what is in scope passes
+    // every case above.
+    //
+    // `probe` is five characters, so the predefined array is six bytes and an `int` local is
+    // four. The two answers cannot be confused.
+    assert_eq!(
+        chiero_answer("", "int __func__ = 7; return (int)sizeof(__func__);"),
+        Some(4),
+        "a declared `__func__` is an ordinary object and keeps its own type"
+    );
+    assert_eq!(
+        chiero_answer("", "int __func__ = 7; return __func__;"),
+        Some(7),
+        "and its own value"
+    );
 }
