@@ -209,6 +209,12 @@ pub struct RecordLayout {
     pub align: u64,
     pub fields: Vec<FieldLayout>,
     pub is_union: bool,
+    /// **False while the tag has been named but not yet defined.** A reference to such a tag
+    /// still gets a real `RecordId`, so the definition — which may come later in the file, or be
+    /// the very definition whose members are being laid out — completes *this* record rather than
+    /// a second one. Without it, a tag referenced before its definition was frozen as `Ty::Error`
+    /// and `struct Node { struct Node *next; }` could not be walked past the first hop.
+    pub complete: bool,
     /// Index into `fields` of a flexible array member, if any.
     pub flexible_member: Option<usize>,
     pub packed: bool,
@@ -1220,7 +1226,7 @@ impl Cx<'_> {
                 // there is no stride, so `a[1]` has no address — which is why this is an error
                 // even for `extern struct I arr[];`, where the *array's* length is legitimately
                 // unknown. The two unknowns are not the same unknown.
-                if matches!(self.out.types[e.0 as usize], Ty::Error) {
+                if is_incomplete(&self.out, e) {
                     self.error(node.span, "array has an incomplete element type");
                 }
                 let l = match len {
@@ -1359,14 +1365,24 @@ impl Cx<'_> {
         if tag == chiero_ast::TagKind::Enum {
             return self.enum_ty(span, name, members);
         }
-        // A reference to an already-defined tag.
+        // A reference to a tag, defined or not.
         if members.is_none() {
             if let Some(&rid) = name.and_then(|n| self.tags.get(&n)) {
                 return self.intern(Ty::Record(rid));
             }
-            // An incomplete type. Legal in a pointer, which is the only place it can
-            // appear without a size being asked for.
-            return self.intern(Ty::Error);
+            // **A named but undefined tag still gets a `RecordId`**, marked incomplete. This is
+            // what lets the definition — later in the file, or the one currently being laid out —
+            // fill in *this* record, so that every reference written before it sees the finished
+            // type. Returning `Ty::Error` here instead froze the reference, which is why
+            // `struct Node { struct Node *next; }` could not be walked.
+            //
+            // An *anonymous* undefined tag is a different thing: there is no name for a later
+            // definition to match, so nothing can ever complete it and `Ty::Error` is honest.
+            let Some(name) = name else {
+                return self.intern(Ty::Error);
+            };
+            let rid = self.declare_tag(name, tag == chiero_ast::TagKind::Union);
+            return self.intern(Ty::Record(rid));
         }
         if let Some(name) = name {
             if self.in_progress.contains(&name) {
@@ -1376,17 +1392,46 @@ impl Cx<'_> {
             }
             self.in_progress.push(name);
         }
+        // **Reserve the record before laying out the members**, so a member that mentions this
+        // tag finds it in the table and resolves to the record being built rather than to a
+        // second, permanently incomplete one. It is still marked incomplete while the members are
+        // walked, which is exactly right: `struct S { struct S s; }` by value must fail, and it
+        // fails because an incomplete record has no size.
+        let is_union = tag == chiero_ast::TagKind::Union;
+        let rid = match name {
+            Some(name) => self.declare_tag(name, is_union),
+            None => {
+                let rid = RecordId(self.out.records.len() as u32);
+                self.out.records.push(incomplete_layout(is_union));
+                rid
+            }
+        };
         let layout = self.lay_out(node, tag == chiero_ast::TagKind::Union, &members.unwrap());
         if name.is_some() {
             self.in_progress.pop();
         }
-        let rid = RecordId(self.out.records.len() as u32);
-        self.out.records.push(layout);
+        self.out.records[rid.0 as usize] = layout;
         if let Some(name) = name {
             self.tags.insert(name, rid);
             self.out.by_tag.insert(name, rid);
         }
         self.intern(Ty::Record(rid))
+    }
+
+    /// The `RecordId` a tag name denotes, creating an incomplete one if the name is new.
+    ///
+    /// Registered in `tags` immediately, which is the whole point: everything that mentions the
+    /// name afterwards — including the members of the definition currently being laid out — must
+    /// reach the same record, so that completing it completes them all.
+    fn declare_tag(&mut self, name: Symbol, is_union: bool) -> RecordId {
+        if let Some(&rid) = self.tags.get(&name) {
+            return rid;
+        }
+        let rid = RecordId(self.out.records.len() as u32);
+        self.out.records.push(incomplete_layout(is_union));
+        self.tags.insert(name, rid);
+        self.out.by_tag.insert(name, rid);
+        rid
     }
 
     /// 014 contract 10: the underlying type is `int` unless a value requires wider.
@@ -1653,6 +1698,7 @@ impl Cx<'_> {
             is_union,
             flexible_member,
             packed,
+            complete: true,
         }
     }
 
@@ -2090,9 +2136,48 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
             ArrayLen::Flexible | ArrayLen::Zero | ArrayLen::Vla(_) => Some(0),
         },
         Ty::Func { .. } => None,
-        Ty::Record(r) => Some(a.records.get(r.0 as usize)?.size),
+        // An incomplete record has no size, which is what makes it incomplete. Callers that want
+        // to *diagnose* incompleteness ask `is_incomplete` instead: a function type and a VLA
+        // also have no size here and neither is an incomplete object type.
+        Ty::Record(r) => match a.records.get(r.0 as usize) {
+            Some(rec) if rec.complete => Some(rec.size),
+            _ => None,
+        },
         Ty::Vector { elem, lanes, .. } => Some(size_of_ty(a, t, *elem)? * (*lanes as u64)),
         Ty::Error => None,
+    }
+}
+
+/// Whether a type is incomplete in the sense C's constraints mean.
+///
+/// Deliberately **not** "has no size". A function type and a variable-length array both fail that
+/// test and neither is an incomplete object type, so phrasing the checks that way would reject
+/// `sizeof(vla)` and every function declaration. The two things that are incomplete here are a
+/// named tag whose definition has not been seen, and `Ty::Error` — which is what an *anonymous*
+/// undefined tag and a genuinely unresolvable type both become.
+fn is_incomplete(a: &Analysis, ty: TyId) -> bool {
+    match &a.types[ty.0 as usize] {
+        Ty::Error => true,
+        Ty::Record(r) => !a.records.get(r.0 as usize).is_some_and(|rec| rec.complete),
+        _ => false,
+    }
+}
+
+/// The placeholder a named tag gets before its definition is seen.
+///
+/// Zero-sized and byte-aligned so that any use which slips past a completeness check produces an
+/// obviously wrong number rather than a plausible one. `is_union` is carried because it is known
+/// from the spelling of the reference, and a union completed as a struct would be worse than
+/// either.
+fn incomplete_layout(is_union: bool) -> RecordLayout {
+    RecordLayout {
+        size: 0,
+        align: 1,
+        fields: Vec::new(),
+        is_union,
+        flexible_member: None,
+        packed: false,
+        complete: false,
     }
 }
 
@@ -2888,7 +2973,7 @@ impl Cx<'_> {
                 // as `sizeof(struct I)` — the dereference is where the size is actually asked
                 // for, and it is the spelling that appears in real code.
                 let operand_ty = self.out.typed.ty_of(node);
-                if matches!(self.out.types[operand_ty.0 as usize], Ty::Error) {
+                if is_incomplete(&self.out, operand_ty) {
                     self.error(span, "`sizeof` applied to an incomplete type");
                 }
                 let ty = self.intern(Ty::Int {
@@ -2924,7 +3009,7 @@ impl Cx<'_> {
                 // Resolving here records the node in `syntactic_types`, which is what lets a
                 // consumer holding the AST `TypeId` ask what it became.
                 let operand_ty = self.ty_of(*t);
-                if matches!(self.out.types[operand_ty.0 as usize], Ty::Error) {
+                if is_incomplete(&self.out, operand_ty) {
                     self.error(span, "`sizeof` applied to an incomplete type");
                 }
                 let ty = self.intern(Ty::Int {
@@ -3208,7 +3293,7 @@ impl Cx<'_> {
             if matches!(op, BinOp::Add | BinOp::Sub) {
                 for t in [aty, bty] {
                     if let Ty::Ptr(pointee) = self.out.types[t.0 as usize]
-                        && matches!(self.out.types[pointee.0 as usize], Ty::Error)
+                        && is_incomplete(&self.out, pointee)
                     {
                         self.error(span, "arithmetic on a pointer to an incomplete type");
                         break;
@@ -3440,7 +3525,7 @@ impl Cx<'_> {
     /// appears, which is what keeps a single missing header from burying the real problem
     /// under a hundred copies.
     fn check_complete(&mut self, id: DeclId, ty: TyId) {
-        if !matches!(self.out.types[ty.0 as usize], Ty::Error) {
+        if !is_incomplete(&self.out, ty) {
             return;
         }
         // **C 6.9.2p3: an `extern` declaration with no initializer is not a definition**, so no

@@ -169,6 +169,16 @@ fn every_corpus_record_layout_is_accepted_by_gcc() {
             }
         }
         for (i, layout) in analysis.records().iter().enumerate() {
+            // **An incomplete record has no layout to check.** Since wave 304 a tag that is
+            // named but never defined gets a `RecordId` too, so that a definition appearing
+            // later can complete it — and the glibc headers this corpus pulls in are full of
+            // deliberately opaque ones like `struct __locale_data`. Asking gcc for
+            // `sizeof(struct __locale_data)` is asking it to reject the program, which it
+            // duly did. Skipping them is not weakening the gate: there is no number to
+            // disagree about.
+            if !layout.complete {
+                continue;
+            }
             total_records += 1;
             let rid = chiero_sema::RecordId(i as u32);
             let tagged = analysis.tag_of(rid).and_then(|s| parsed.text(s)).map(|t| {
