@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 258) — 1402 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 259) — 1403 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1164,56 +1164,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > already grouping on it. The cheap middle path, if wanted, is a mapping table in the census channel
 > rather than a rename in the engine — that keeps the reports chiero's and the comparison UBSan's.
 >
-> ### 🔴 Then: three mutants still survive wave 205's init check
+> ### 🔴 Then: one mutant survives wave 205's init check — audited in wave 258
 >
-> **1. `always-base-zero` — the one that can lose a finding.** Seeding the init array with 0
-> instead of the dominant bit needs more than 256 exception stores to bite, and no fixture
-> reaches that. **The obvious fixture does not work**: a loop writing 63 of 64 bytes ends
-> `fid=Bounded` before it reaches the read, so the finding is absent for an unrelated reason.
-> Use padding instead of a loop — `struct P { char a; long b; }` is 16 bytes with 7 of padding,
-> so `struct P pa[4]` with all eight fields assigned individually gives 288 written bits against
-> 224 unwritten, which is the right side of the limit under `base = 1` and the wrong side under
-> `base = 0`. Reading it through a `char *` at a symbolic index is a real MSan class as well as
-> a mutant killer.
+> **Three of the five entries this section used to carry were stale.** They were closed by
+> `solver_gave_up.rs` (wave 204+), which the note never learned about — it still said "`Unknown` is
+> still untested" three sections above the test that tests it. Re-running them:
 >
-> **2. `expand-unbounded` — still never ran.** Two sweeps have now timed out before reaching it.
-> Run it on its own.
+> ```text
+>   unknown-is-definite       KILLED    by an_undecided_initialization_guard_is_a_maybe
+>   unknown-is-clean          KILLED    by the same
+>   always-base-zero          KILLED    by the_same_guard_is_settled_when_a_solver_is_available
+>   always-base-one           KILLED    by an_undecided_guard_weakens_the_verdict...
+>   expand-unbounded          survives
+>   expand-forgets-shadowing  survives
+> ```
 >
-> **3. `expand-forgets-shadowing`** — needs two stores at indices that may alias with
-> *different* values, which means a promotion-time `0` exception store under a later symbolic
-> `1`. `ground-true-reported` was resolved as genuinely equivalent up to solver calls (the
-> discharge drops it), and is gradeable by call count if anyone wants it pinned.
+> **`expand-unbounded` is not a correctness mutant.** §9 recorded it as "never ran, two sweeps timed
+> out". It runs now and survives, because removing the limit produces a *more* precise guard at more
+> cost — a time/precision bound, not a bug. What no test observes is the precision the limit gives
+> up, which is worth knowing and is not a defect.
 >
-> **`Unknown` is still untested.** `unknown-is-definite` and `unknown-is-clean` both survive:
-> `an_undecided_guard_stays_a_maybe` reaches a `Sat`, so the tri-state's third outcome has never
-> been exercised, and `UninitializedSymbolic`'s own message is unreachable for the same reason.
-> It needs a guard the backend gives up on, or a seam to inject one.
+> **`expand-forgets-shadowing` is the one real survivor, and it is narrower than it was.** The old
+> recipe — "two stores that may alias with different values" — is right and incomplete. Wave 248
+> established that one symbolic store rewrites **every** init bit of the object: 512 stores for 64
+> bytes, past `EXPAND_LIMIT`, so `select_expand` returns `None` and store order never matters. An
+> eight-byte object should stay inside the limit — but instrumenting shows `init_guard` is not
+> called at all for `ca[0] = 5; ca[i & 7] = 7; return ca[0];`.
 >
-> **The symbolic read genuinely does not check init** — folded into the front above, which is
-> now the live plan. Wave 202's argument, kept because the next attempt has to answer it: Adding a conjunction of `select(arr.init, off * 8 + k)` makes the
-> missing report appear — but it also reports `maybe-uninitialized-read` for a byte written at
-> the *same* symbolic offset, because the write leaves eight stores on the chain and a read of
-> bit `k` must walk past seven whose symbolic indices it cannot compare. The walk has to stop
-> there, so only the outermost store folds. Wave 202 added the necessary piece — `select` over a
-> store at the *same term* index now folds regardless of concreteness — and it is not enough on
-> its own. **The likely shape of the fix is to make the write leave one store per byte rather
-> than eight**, i.e. give `init` a byte-granular companion, or to have the read ask a single
-> question about the byte. Both are representation changes; decide which before coding.
->
-> ~~**A second promoted-object gap:** `mem-forgets-to-init` survives.~~ **Killed in wave 204**
-> (as `no-init-marking`) — the discharge made a *deleted* marking observable through a concrete
-> read. A *wrong* marking still is not, which is the front above.
->
-> **Still refusing, and each now a small increment:** `PtrAdd` on a `SymPtr` (a second
-> symbolic step), `PtrDiff`, passing one as a call argument, and the `memcpy`-family models.
->
-> ~~🔴 the *store* side of a symbolic offset.~~ **Wave 197**, and the gap was in `chiero-mem`
-> rather than the engine: `write_at_symbolic_offset` iterated `candidates` and wrote an
-> if-then-else at each, so an *empty* list — the only case that reaches it — wrote nothing and
-> **returned success**. `read_term_at` had promoted on an empty list all along and called it
-> "no pinning available"; the write did not. It now promotes and does one `store` at the
-> symbolic index, and marks the byte initialized, without which the read after the write
-> accuses the program of never storing what it just stored.
+> **The check to run next**: log whether `init_guard` fires, then find a program where it does *and*
+> the object is small. It needs a **symbolic read** — the guard is what a symbolic read asks — not a
+> symbolic write under a concrete read. `symbolic_readback_init.rs` has the shape; shrink its object
+> to eight bytes and see whether `select_expand` returns `Some`.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1714,6 +1695,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **A note that records a gap does not learn when the gap closes** (wave 258). Three of the five
+> surviving mutants §9 has carried since wave 205 were killed by a test written in wave 204's
+> aftermath. The file said "`Unknown` is still untested" three sections above the file that tests it.
+> **Re-running a recorded mutant list is cheap and should happen before the work it recommends** —
+> this one took twenty minutes and removed three items.
+>
+> **"Survives" is not always "is a bug"** (wave 258). `expand-unbounded` removes a limit and produces
+> a *better* guard at more cost; nothing observes the precision the limit gives up. A surviving
+> mutant on a performance bound is a fact about the bound. **Classify a survivor before scheduling
+> work for it**: missing fixture, real defect, dead line, unfalsifiable assertion, or — this — a
+> trade-off with no wrong side.
 >
 > **When a decision cannot change an answer, assert the artifact instead of the answer** (wave 257).
 > `widen_to_64`'s signedness is real and reachable and provably cannot alter any value a legal
