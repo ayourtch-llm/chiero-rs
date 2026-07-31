@@ -2672,7 +2672,24 @@ impl Cx<'_> {
         // without this branch the two spellings disagreed.
         let is_vec = |cx: &Cx, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Vector { .. });
         if is_vec(self, aty) || is_vec(self, bty) {
-            let ty = if is_vec(self, aty) { aty } else { bty };
+            let vty = if is_vec(self, aty) { aty } else { bty };
+            // **A comparison is the one vector operator whose result is not its operand type.**
+            // gcc gives it the same total size and lane count with the element replaced by a
+            // *signed integer of the lane's width*, so `v4sf == v4sf` is a `v4si` and
+            // `v2df == v2df` is a vector of two `long`. Every other operator returns `vty`
+            // unchanged, which is why this branch could stop at that until now.
+            //
+            // The signedness is the result's, not the comparison's: the operands are still
+            // compared at their own element type, so an `unsigned char` lane compares unsigned
+            // and *yields* a signed lane holding 0 or -1.
+            let ty = if matches!(
+                op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
+            ) {
+                self.vector_mask_ty(vty)
+            } else {
+                vty
+            };
             return self.push_typed(TypedNode::Value {
                 expr,
                 ty,
@@ -2771,6 +2788,40 @@ impl Cx<'_> {
     }
 
     /// C11 §6.3.1.8's usual arithmetic conversions.
+    /// The type a comparison on `vty` yields: the same shape with signed integer lanes.
+    ///
+    /// **The lane's *width*, not its type.** A `v4sf` compares to a vector of four 32-bit signed
+    /// integers, because the mask has to occupy the lane it describes — that is what lets
+    /// `x & (x == y)` work at all, and it is why the result of comparing two `double`s is a
+    /// `long` lane rather than an `int` one.
+    ///
+    /// The alignment travels unchanged. It is the *placement* alignment (see `Ty::Vector`), a
+    /// property of the vector's size rather than of its element, and the result has the same
+    /// size.
+    fn vector_mask_ty(&mut self, vty: TyId) -> TyId {
+        let Ty::Vector { elem, lanes, align } = self.out.types[vty.0 as usize].clone() else {
+            return vty;
+        };
+        // **The lane's storage size, not `Ty::Int`'s `bits` field.** One rule for both integer
+        // and floating elements, and it is the right one for each: the mask has to *occupy* the
+        // lane, so what matters is how many bytes the lane takes and not how many bits its type
+        // nominally has. A `_Bool` lane is not something gcc accepts anyway, and a size this
+        // cannot compute leaves the type alone rather than inventing a width — lowering's own
+        // guard then reports the gap instead of guessing.
+        let Some(bytes) = size_of_ty(&self.out, &self.target, elem) else {
+            return vty;
+        };
+        let m = self.intern(Ty::Int {
+            signed: true,
+            bits: (bytes * 8) as u32,
+        });
+        self.intern(Ty::Vector {
+            elem: m,
+            lanes,
+            align,
+        })
+    }
+
     fn common_type(&mut self, a: TyId, b: TyId) -> TyId {
         if a == b {
             return a;

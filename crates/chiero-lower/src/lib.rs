@@ -2252,7 +2252,7 @@ impl Lowerer<'_> {
                 // operator works at. A vector is an aggregate, so the generic arm below gets a
                 // `CTy::Ptr` while the expression's declared type says `Int(32)`, and the
                 // verifier rejects the function.
-                if let Some(v) = self.vec_arith(*op, *lhs, *rhs, span) {
+                if let Some(v) = self.vec_arith(e, *op, *lhs, *rhs, span) {
                     return v;
                 }
                 // **Left to right** (015 §2, normative): the left operand's side effects
@@ -3284,15 +3284,19 @@ impl Lowerer<'_> {
             // right size — which is exactly what `CopyMem` wants.
             let src = match compound {
                 Some(binop) => {
-                    match self.vec_arith_with(binop, lhs, Some(dst.clone()), rhs, span) {
+                    match self.vec_arith_with(lhs, binop, lhs, Some(dst.clone()), rhs, span) {
                         Some(v) => v,
-                        // `vector_of` said yes and `vec_arith` said no, which only the
-                        // comparison operators do. They are a declared limit, and 020 §5 says
-                        // to say so rather than emit something.
+                        // **`vector_of` said yes and `vec_arith` said no**, which now only
+                        // `&&` and `||` can cause — and C has no `&&=`, so nothing reaches
+                        // here. It was reachable when wave 273 wrote it, because comparisons
+                        // returned `None` then; this wave gave them a lowering and left the
+                        // branch as the loud form 020 §5 asks for rather than an `unwrap`.
                         None => {
                             self.diagnostics.push(LowerDiagnostic {
                                 span,
-                                message: "a compound assignment with a vector comparison".into(),
+                                message: "a compound assignment with an operator that has no \
+                                          elementwise form"
+                                    .into(),
                             });
                             return Operand::Const(Const::Undef(CTy::Ptr));
                         }
@@ -4186,12 +4190,13 @@ impl Lowerer<'_> {
     /// evaluations of one expression.
     fn vec_arith(
         &mut self,
+        e: ExprId,
         op: chiero_ast::BinOp,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Option<Operand> {
-        self.vec_arith_with(op, lhs, None, rhs, span)
+        self.vec_arith_with(e, op, lhs, None, rhs, span)
     }
 
     /// `vec_arith`, with the left operand's value supplied.
@@ -4201,18 +4206,16 @@ impl Lowerer<'_> {
     /// keeps `a[f()] += v` from calling `f` twice.
     fn vec_arith_with(
         &mut self,
+        e: ExprId,
         op: chiero_ast::BinOp,
         lhs: ExprId,
         lhs_val: Option<Operand>,
         rhs: ExprId,
         span: Span,
     ) -> Option<Operand> {
-        // Comparisons and the logical operators are not this function's business. A vector
-        // comparison yields a *signed integer* vector of the lane's width, which for a `v4sf`
-        // is not the operand type at all; it keeps refusing loudly and 015 §7 names it.
-        if cir_cmpop(op, true).is_some()
-            || matches!(op, chiero_ast::BinOp::LogAnd | chiero_ast::BinOp::LogOr)
-        {
+        // `&&` and `||` on a vector are not C; gcc rejects them, and the generic arm's refusal
+        // is the right answer for something there is nothing to lower.
+        if matches!(op, chiero_ast::BinOp::LogAnd | chiero_ast::BinOp::LogOr) {
             return None;
         }
         let lv = self.vector_of(lhs);
@@ -4244,8 +4247,40 @@ impl Lowerer<'_> {
             self.convert_for_store(b0, rhs, &ecty, esigned, span)
         };
 
-        let align = self.analysis.align_of(vty).unwrap_or(1).max(1);
-        let slot = self.alloca_for(vty, align, None, span);
+        // **The result type is the operand's for arithmetic and the mask's for a comparison**,
+        // and sema has already worked out which — `type_binary` builds the mask type, so reading
+        // it back here keeps one answer rather than two that would have to agree.
+        //
+        // **`roff` and `off` are provably equal today**, and mutation says so: swapping one for
+        // the other changes no fixture. A mask lane is a signed integer of the operand lane's
+        // *storage size*, so the two strides coincide for every element type gcc accepts. They
+        // are computed separately anyway because the thing that makes them equal is a rule in
+        // `vector_mask_ty` and not a property of this loop — one edit there and a shared
+        // variable would silently write the read's stride. Recorded rather than collapsed.
+        // **The comparison opcode, or `None` for the arithmetic operators.** Both mappers answer
+        // `None` for anything that is not one of the six relational operators, so no separate
+        // guard is needed — one was written and mutation showed it could not change an answer.
+        //
+        // The *operands* are compared at their own element type and signedness; only the result
+        // is the mask. That is what makes an `unsigned char` lane compare unsigned while
+        // yielding a signed lane.
+        let cmp = match fk {
+            Some(_) => cir_fcmpop(op),
+            None => cir_cmpop(op, esigned).map(|c| (c, false)),
+        };
+        let rty = match self.type_of(e) {
+            Some(t) if cmp.is_some() => t,
+            _ => vty,
+        };
+        let (rcty, rsz) = match self.analysis.ty(rty).clone() {
+            Ty::Vector { elem: re, .. } => (
+                self.cty(re),
+                self.analysis.size_of(re).unwrap_or(esz).max(1),
+            ),
+            _ => (ecty.clone(), esz),
+        };
+        let align = self.analysis.align_of(rty).unwrap_or(1).max(1);
+        let slot = self.alloca_for(rty, align, None, span);
         let base = self.new_value();
         self.emit(
             InstKind::Assign {
@@ -4258,6 +4293,7 @@ impl Lowerer<'_> {
 
         for i in 0..u64::from(lanes) {
             let off = i * esz;
+            let roff = i * rsz;
             let a = match lv {
                 Some(_) => self.load_lane(a0.clone(), off, &ecty, span),
                 None => a0.clone(),
@@ -4266,27 +4302,68 @@ impl Lowerer<'_> {
                 Some(_) => self.load_lane(b0.clone(), off, &ecty, span),
                 None => b0.clone(),
             };
-            let r = self.new_value();
-            self.emit(
-                InstKind::Assign {
-                    dst: r,
-                    rv: RValue::Bin {
-                        op: cir_binop(op, esigned, fk.is_some()),
-                        a,
-                        b,
-                        ty: ecty.clone(),
-                        signed: esigned,
-                    },
-                },
-                span,
-            );
-            let addr = self.lane_addr(base.clone(), off, span);
+            let r = match cmp {
+                Some((cop, swap)) => {
+                    let (a, b) = if swap { (b, a) } else { (a, b) };
+                    let bit = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst: bit,
+                            rv: RValue::Cmp {
+                                op: cop,
+                                a,
+                                b,
+                                ty: ecty.clone(),
+                            },
+                        },
+                        span,
+                    );
+                    // **`SExt`, not `ZExt`.** A vector comparison yields *all bits set* for
+                    // true, not 1, and sign-extending the one-bit result is exactly that: 1
+                    // becomes -1 and 0 stays 0. `widen_bool` is the scalar rule — C's `==`
+                    // yields an `int` 0 or 1 — and using it here would produce masks that
+                    // are wrong for the one thing masks are for.
+                    let w = (rsz * 8) as u32;
+                    let dst = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::Cast {
+                                kind: chiero_cir::CastKind::SExt,
+                                a: Operand::Value(bit),
+                                from: CTy::Int(1),
+                                to: CTy::Int(w),
+                            },
+                        },
+                        span,
+                    );
+                    dst
+                }
+                None => {
+                    let dst = self.new_value();
+                    self.emit(
+                        InstKind::Assign {
+                            dst,
+                            rv: RValue::Bin {
+                                op: cir_binop(op, esigned, fk.is_some()),
+                                a,
+                                b,
+                                ty: ecty.clone(),
+                                signed: esigned,
+                            },
+                        },
+                        span,
+                    );
+                    dst
+                }
+            };
+            let addr = self.lane_addr(base.clone(), roff, span);
             self.emit(
                 InstKind::Store {
                     addr,
                     val: Operand::Value(r),
-                    ty: ecty.clone(),
-                    align: esz.max(1),
+                    ty: rcty.clone(),
+                    align: rsz.max(1),
                     vol: chiero_cir::Volatility::Normal,
                 },
                 span,

@@ -3017,6 +3017,42 @@ fn vector_comparisons_agree_with_gcc() {
         sf,
         "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n < n); return e[0];",
     );
+    // **`>` and `>=` on floats, which the ordered set cannot spell directly.** CIR has no `FOGt`
+    // or `FOGe`, so `cir_fcmpop` expresses them by exchanging the operands — and dropping that
+    // swap survived every fixture above, because the float cases only used `==`, `<` and `!=`.
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; v4si e = (f > g); return e[1]*10 + e[2];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; v4si e = (f >= g); return e[0]*10 + e[2];",
+    );
+    agree_with(
+        sf,
+        "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n > n); return e[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n >= n); return e[0];",
+    );
+    // **The mask's own element type is signed**, and only reading a lane *through it* can see
+    // that. Every fixture above assigns the result to a declared `v4si` first, so the read takes
+    // that type and the mask's signedness never shows. Subscripting the comparison directly and
+    // then asking for its sign is what separates them: all-ones is negative as a signed lane and
+    // enormous as an unsigned one.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; return (x == y)[0] < 0;",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; return (x == y)[0] / 2;",
+    );
+    agree_with(
+        qu,
+        "v8qu c = {200,2,3,4,5,6,7,8}; v8qu d = {200,9,3,0,5,6,7,8}; return (c == d)[0] < 0;",
+    );
     agree_with(
         sf,
         "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; return (int)sizeof(f == g);",
