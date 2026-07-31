@@ -678,3 +678,79 @@ fn the_corpus_analyses_without_a_single_diagnostic() {
         complaints.join("\n  ")
     );
 }
+
+/// **Rows 4–7 of wave 307's census: four constraints about types, none of them checked.**
+///
+/// Modifying a `const` object, defining a function with a parameter of incomplete type, declaring
+/// a variable `void`, and using the value of a `void` call. gcc rejects all of them; this engine
+/// accepted every one.
+///
+/// The `const` rows need something sema does not have: the AST carries `Quals` and sema has never
+/// read them, so const-ness is invisible below the parser. That is why the accepted list here is
+/// long. `int *const p` makes *`p`* read-only and leaves `*p` writable; `const int *p` is the
+/// reverse; and `const` on a struct member is a third thing again. A check that asked "does the
+/// word `const` appear in this declaration" would reject three legal programs for each illegal one
+/// it caught.
+///
+/// The `void` rows are the cheap half and share machinery already present: a `void` object is an
+/// incomplete type like any other, and a `void`-valued call is only an error where a *value* is
+/// wanted — `v();` as a statement is how void functions are called.
+#[test]
+fn the_type_constraints_of_census_rows_four_to_seven() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Row 4: modifying a read-only object, in each of the ways C spells modification.
+        "int f(void){ const int k = 1; k = 2; return k; }",
+        "int f(void){ const int k = 1; k += 2; return k; }",
+        "int f(void){ const int k = 1; k++; return k; }",
+        "int f(void){ const int k = 1; --k; return k; }",
+        "int f(const int p){ p = 2; return p; }",
+        // The `const` is on the pointer here, so `p` is what may not be assigned.
+        "int f(void){ int x=0; int *const p = &x; p = 0; return x; }",
+        // Row 5: a *definition* may not take a parameter of incomplete type.
+        "struct T; int s(struct T t){ return 0; }",
+        // Row 6: an object may not have type void.
+        "int f(void){ void w; return 0; }",
+        // Row 7: a void call has no value to use.
+        "void v(void); int f(void){ return v(); }",
+        "void v(void); int f(void){ int x = v(); return x; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Reading a `const` is the whole point of one.
+        "int f(void){ const int k = 1; return k; }",
+        "int f(const int p){ return p + 1; }",
+        // `int *const p` leaves the pointee writable...
+        "int f(void){ int x=0; int *const p = &x; *p = 1; return x; }",
+        // ...and `const int *p` leaves the pointer assignable.
+        "int f(void){ int x=1; const int *p = &x; p = 0; return p == 0; }",
+        "int f(void){ int x=1; const int *p = &x; return *p; }",
+        // A pointer to an incomplete type is a complete type, and a *declaration* may take one.
+        "struct T; int s(struct T t);",
+        "struct T; int s(struct T *t){ return 0; }",
+        // `void *` is an object type; only `void` itself is not.
+        "void *g; int f(void){ return g == 0; }",
+        // A void call as a statement, and discarded explicitly, are both how they are used.
+        "void v(void); int f(void){ v(); return 0; }",
+        "void v(void); int f(void){ (void)v(); return 0; }",
+        "typedef void V; V h(void); int f(void){ h(); return 0; }",
+        // A function returning void, defined and called.
+        "static void s(int *p){ *p = 1; } int f(void){ int x=0; s(&x); return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
