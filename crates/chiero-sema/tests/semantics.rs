@@ -605,6 +605,22 @@ fn an_operation_its_operand_cannot_support_is_diagnosed() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 
+    // **Contract 20: a poisoned base is one diagnostic, not two.** `Ty::Error` means the base's
+    // type is already unknown and already reported, so the checks above stay quiet on it. Without
+    // these the exemption is unfalsifiable — every case below is still "diagnosed", just twice.
+    for (src, want) in [
+        ("struct I; int f(void){ struct I s; return s.m; }", 1),
+        ("struct I; int f(void){ struct I s; return s[0]; }", 1),
+        ("struct I; int f(void){ struct I s; return s(); }", 1),
+    ] {
+        assert_eq!(
+            diags(src).len(),
+            want,
+            "one bad declaration is one diagnostic: `{src}` -> {:?}",
+            diags(src)
+        );
+    }
+
     for good in [
         "struct S { int m; }; int f(void){ struct S s; s.m = 1; return s.m; }",
         "struct S { int m; }; int f(struct S *p){ return p->m; }",

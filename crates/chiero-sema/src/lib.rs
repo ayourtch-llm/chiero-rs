@@ -2962,8 +2962,8 @@ impl Cx<'_> {
                     // complaint, not from the poison: it means the base's type is already unknown
                     // and already reported, and contract 20 says one bad declaration is one
                     // diagnostic.
-                    other => {
-                        if !matches!(other, Ty::Error) {
+                    _ => {
+                        if !is_incomplete(&self.out, bty) {
                             self.error(span, "subscripted value is not an array or pointer");
                         }
                         self.intern(Ty::Error)
@@ -2993,7 +2993,7 @@ impl Cx<'_> {
                 // and a structure without that member are separate errors, and saying which is
                 // most of a useful report. `Ty::Error` stays silent for the reason above — the
                 // base's type is unknown and something else has already said so.
-                if found.is_none() && !matches!(base_ty, Ty::Error) {
+                if found.is_none() && !is_incomplete(&self.out, bty) {
                     let name = self.text(*field).unwrap_or("?").to_owned();
                     self.error(
                         span,
@@ -3031,7 +3031,8 @@ impl Cx<'_> {
                 // as `Error`, and `__builtin_isnan` and the rest of 7.12.14 *are* undeclared —
                 // nothing declares them and gcc knows them intrinsically. Complaining about the
                 // poison would reject the float corpus.
-                let callable = matches!(callee_ty, Ty::Func { .. } | Ty::Error)
+                let callable = is_incomplete(&self.out, cty)
+                    || matches!(callee_ty, Ty::Func { .. })
                     || matches!(&callee_ty, Ty::Ptr(p)
                         if matches!(self.out.types[p.0 as usize], Ty::Func { .. } | Ty::Error));
                 if !callable {
