@@ -2848,6 +2848,48 @@ fn narrow_unsigned_values_extend_the_same_way_gcc_extends_them() {
     agree("short h = -1; unsigned long v = (unsigned long)(long)h; return (int)(v >> 60);");
 }
 
+/// **A float on the *right* of `&&` or `||` refuses to lower.**
+///
+///     `probe` lowered to CIR the verifier rejects (Ne operand is Float(F64), declared Int(32))
+///
+/// `x && d` is ordinary C — 6.5.13p1 takes any scalar operand — and chiero produces nothing for
+/// it at all. Not a wrong answer: a **refusal**, which under 023 §7 is the honest outcome only if
+/// the limit is declared, and this one is not declared anywhere.
+///
+/// # Left works, right does not, which is the whole diagnosis
+///
+/// `d && 1` and `d || 0` both agree with gcc. The lhs of a short circuit goes through `truth_of`,
+/// which knows a float's truth is a comparison and not a bit test; the rhs **re-derives the same
+/// decision inline** with a hardcoded integer `Ne` against an `Int(32)` zero. One of the two
+/// copies was fixed and the other was not — the duplicate-decision-site shape this codebase keeps
+/// finding.
+///
+/// The negative zero is incidental here. `2.0` on the right refuses just as flatly, so *every*
+/// `x && <double>` in any program has been silently dropped.
+///
+/// The verifier caught it, which is the point of having one: a wrong CIR type became a refusal
+/// with a legible message instead of a wrong answer.
+#[test]
+fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
+    // The controls: the same value on the *left* is already right.
+    agree("double d = -0.0; return d && 1;");
+    agree("double d = -0.0; return d || 0;");
+    agree("double d = 2.0; return d && 1;");
+    // The defect, which has nothing to do with negative zero.
+    agree("double d = 2.0; return 1 && d;");
+    agree("double d = 0.0; return 1 && d;");
+    agree("double d = -0.0; return 1 && d;");
+    agree("double d = 0.0; return 0 || d;");
+    agree("float f = 1.5f; return 1 && f;");
+    agree("long double l = 0.0L; return 1 && l;");
+    // A pointer on the right, which re-derives the same decision a third way.
+    agree("int v; int *p = &v; return 1 && p;");
+    agree("int *p = 0; return 1 && p;");
+    // And the integer case, which must keep working.
+    agree("int x = 2; return 1 && x;");
+    agree("int x = 0; return 1 || x;");
+}
+
 /// **`!` on a negative zero says the value is non-zero.**
 ///
 /// C11 6.5.3.3p5: `!E` is `E == 0`. IEEE-754 makes `-0.0 == 0.0` true, so `!(-0.0)` is 1. Chiero
