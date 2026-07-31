@@ -4711,3 +4711,55 @@ fn multiplying_long_doubles_agrees_with_gcc() {
          return (int)(a * b == 0x1p1L);",
     );
 }
+
+/// **A constant expression is arithmetic too: the usual arithmetic conversions apply to it.**
+///
+/// `const_eval` is the engine's *third* implementation of C integer arithmetic, after the
+/// interpreter and the `#if` evaluator, and it is the one the oracle never watched: it runs at
+/// layout time, for array bounds, bit-field widths, enumeration constants and static
+/// initializers, so nothing it computes passes through the lowering the corpus compares.
+///
+/// It holds every value as a mathematical `i128` and computes the *type* of a binary operator
+/// correctly — and then compares the raw `i128`s. So `-1 < 1u` asks whether −1 is less than 1
+/// rather than whether `4294967295u` is, which is the question C 6.3.1.8 says to ask. Every
+/// relational and equality operator is affected, and the answer feeds an array's size.
+///
+/// The conditional operator has the same defect the `#if` evaluator had in wave 298, found
+/// independently in a separate implementation: the result takes the selected arm's type instead
+/// of the usual arithmetic conversions of both arms.
+///
+/// `1 ? 1 : 1/0` is here to pin what the fix must *not* do. gcc accepts it — the arm that is not
+/// taken contributes its type, and need not be evaluable at all — so reading the other arm for
+/// its type must not turn its diagnostics into the expression's.
+#[test]
+fn constant_expressions_apply_the_usual_arithmetic_conversions() {
+    for (prelude, body) in [
+        // Relational and equality operators against an unsigned operand.
+        ("enum { E = -1 < 1u };", "return E;"),
+        ("enum { E = -1 > 0u };", "return E;"),
+        ("enum { E = -1 >= 1u };", "return E;"),
+        ("enum { E = -1 == 4294967295u };", "return E;"),
+        ("enum { E = -1 != 4294967295u };", "return E;"),
+        // The same rule with a wider unsigned type, where the common type is 64 bits.
+        ("enum { E = -1 < 1ul };", "return E;"),
+        // A wider *signed* type represents every value of a narrower unsigned one, so this stays
+        // signed and the comparison is the ordinary one. The control for the case above.
+        ("enum { E = (long)-1 < 1u };", "return E;"),
+        ("enum { E = -1 < 1 };", "return E;"),
+        // The conditional operator takes both arms' types, whichever is selected.
+        ("enum { E = (0 ? 1u : -1) < 0 };", "return E;"),
+        ("enum { E = (1 ? -1 : 1u) < 0 };", "return E;"),
+        ("enum { E = (1 ? -1 : 1) < 0 };", "return E;"),
+        // The arm that is not taken need not be evaluable.
+        ("enum { E = 1 ? 7 : 1/0 };", "return E;"),
+        ("enum { E = 0 ? 1/0 : 7 };", "return E;"),
+        // The answer decides a layout, not just a value.
+        (
+            "int arr[(-1 < 1u) ? 3 : 7];",
+            "return (int)(sizeof(arr)/sizeof(arr[0]));",
+        ),
+        ("static const int g = -1 < 1u;", "return g;"),
+    ] {
+        agree_with(prelude, body);
+    }
+}
