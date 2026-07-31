@@ -1099,10 +1099,92 @@ impl Gen {
     /// can change without moving a single draw in `program` or `program_control_flow` — which is
     /// the failure mode waves 284, 285 and 286 each hit in turn.
     fn focused_body(&mut self) {
-        match self.grng.below(2) {
+        match self.grng.below(3) {
             0 => self.focused_md_array(),
-            _ => self.focused_alignment(),
+            1 => self.focused_alignment(),
+            _ => self.focused_designator(),
         }
+    }
+
+    /// **A record with an anonymous member, a designator chain into it, and `typeof` of a type.**
+    ///
+    /// Three shapes that mutation showed the corpus could not reach, in one program because they
+    /// share a record:
+    ///
+    ///   - `__builtin_offsetof(struct S, n.q)` walks into a *named* member and then through an
+    ///     *anonymous* one, which is `offsetof_step`'s chained arm resolving through
+    ///     `find_field` — the arm that survived wave 280's sweep and wave 285's.
+    ///   - `s.q` names a member of an anonymous struct, which is wave 279's field lookup.
+    ///   - `__typeof__(int)` is `TypeKind::TypeofType`, a different arm of `ty_of` from the
+    ///     expression form the shared channel emits, and wave 284's surviving mutant.
+    ///
+    /// The record is written out rather than drawn from `self.records`, because what is being
+    /// tested is a *shape* — a named member wrapping an anonymous one — and the existing record
+    /// generator has no notion of either.
+    fn focused_designator(&mut self) {
+        let ty = *self.grng.pick(&[Ty::Int, Ty::Long, Ty::UShort, Ty::UInt]);
+        let tag = format!("S{}", {
+            self.next_id += 1;
+            self.next_id
+        });
+        // `lead` puts the anonymous member at a nonzero offset: rebasing its fields onto the
+        // container adds nothing when it is first, which is how wave 279's two mutants survived
+        // fifteen fixtures.
+        let lead = self.grng.chance(2);
+        let mut def = format!("struct {tag} {{ ");
+        if lead {
+            let _ = write!(def, "{} head; ", ty.c());
+        }
+        let _ = write!(
+            def,
+            "struct {{ {} p; struct {{ {} q; }}; }} n; {} tail; }};",
+            ty.c(),
+            ty.c(),
+            ty.c()
+        );
+        // **Defined in the body, not the prelude.** A struct definition is a block item like
+        // any other, and the prelude has already been rendered by the time this runs — plumbing
+        // an extra string through would buy nothing a local definition does not.
+        let _ = writeln!(self.body, "  {def}");
+        let obj = self.fresh();
+        let _ = writeln!(self.body, "  struct {tag} {obj};");
+        let vq = self.gkonst(ty);
+        let vp = self.gkonst(ty);
+        let vt = self.gkonst(ty);
+        let _ = writeln!(self.body, "  {obj}.n.q = {vq};");
+        let _ = writeln!(self.body, "  {obj}.n.p = {vp};");
+        let _ = writeln!(self.body, "  {obj}.tail = {vt};");
+        if lead {
+            let vh = self.gkonst(ty);
+            let _ = writeln!(self.body, "  {obj}.head = {vh};");
+            self.extra_sink.push(format!("{obj}.head"));
+        }
+        // The offsets, which are what a chained designator has to get right rather than merely
+        // find. `n.q` is the chain through the anonymous member; `tail` is past all of it.
+        let o1 = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  unsigned long {o1} = (unsigned long)__builtin_offsetof(struct {tag}, n.q);"
+        );
+        let o2 = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  unsigned long {o2} = (unsigned long)__builtin_offsetof(struct {tag}, tail);"
+        );
+        // `typeof` of a *type name*, which is a different arm of `ty_of` from `typeof(expr)`.
+        let tv = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  __typeof__({}) {tv} = ({}){vt};",
+            ty.c(),
+            ty.c()
+        );
+        self.extra_sink.push(o1);
+        self.extra_sink.push(o2);
+        self.extra_sink.push(tv);
+        self.extra_sink.push(format!("{obj}.n.q"));
+        self.extra_sink.push(format!("{obj}.n.p"));
+        self.extra_sink.push(format!("{obj}.tail"));
     }
 
     /// A non-square multi-dimensional array, initialised, written, and read element by element.
@@ -2838,15 +2920,11 @@ fn the_focused_channel_reaches_the_shapes_the_others_cannot() {
                 }
             }
         }
-        // An anonymous member: a `struct {` or `union {` with no tag and no member name.
-        for l in all.lines() {
-            let t = l.trim();
-            if (t == "struct" || t == "union" || t.ends_with("struct {") || t.ends_with("union {"))
-                && !t.contains(';')
-            {
-                anon += 1;
-                break;
-            }
+        // **An anonymous member is a closing brace with no declarator before the `;`.** The
+        // definition is emitted on one line, so `struct { int q; };` shows up as the literal
+        // `; };` — a named member would read `; } n;` instead.
+        if all.contains("; };") {
+            anon += 1;
         }
         // `typeof(int)` rather than `typeof(v)`: the operand is a type keyword.
         if all.contains("__typeof__(int")
