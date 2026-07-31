@@ -1958,6 +1958,22 @@ impl Lowerer<'_> {
             // latter builds a throwaway context that sees only file-scope declarations, so
             // it cannot answer for a *local*, and the answer is a property of the operand's
             // type, which the typed AST already carries.
+            // **`_Alignof(expr)` reads the operand's *alignment*.** Same shape as the `sizeof`
+            // arm below and the same reason for it — the answer is a property of the operand's
+            // type, which the typed AST already carries — with `align_of` in place of
+            // `size_of`. Sharing a node with `SizeofExpr`, as the parser used to, meant sharing
+            // this arm and therefore sharing the answer.
+            chiero_ast::ExprKind::AlignofExpr(inner) => {
+                let bits = self.raw_width_of(e).max(1);
+                let n = self.type_of(*inner).and_then(|t| self.analysis.align_of(t));
+                match n {
+                    Some(v) => Operand::Const(Const::Int {
+                        bits,
+                        val: v as i128,
+                    }),
+                    None => Operand::Const(Const::Undef(CTy::Int(bits))),
+                }
+            }
             chiero_ast::ExprKind::SizeofExpr(inner) => {
                 let bits = self.raw_width_of(e).max(1);
                 let n = self.type_of(*inner).and_then(|t| self.analysis.size_of(t));
@@ -6485,7 +6501,21 @@ impl OrderScan<'_> {
             }
             K::Member { base, .. } => self.region(base, writing, acc),
             K::Cast { operand, .. } => self.region(operand, writing, acc),
-            K::SizeofExpr(_) | K::SizeofType(_) | K::AlignofType(_) | K::TypeName(_) => true,
+            // **Unevaluated, so they contribute no accesses.** `_Alignof(a[i++])` does not
+            // increment `i`, and counting the operand's reads and writes here would report an
+            // unsequenced conflict between an expression that runs and one that does not.
+            //
+            // **Moving `AlignofExpr` out of this group is unobservable, and that is measured
+            // rather than assumed** (wave 281). The over-reporting mutant survives, because the
+            // operand is never lowered either way: a program marked order-sensitive on account
+            // of an unevaluated `i++` still computes the same answer down every order. The
+            // grouping is right and no fixture can prove it, which is worth a sentence rather
+            // than a fixture that would assert nothing.
+            K::SizeofExpr(_)
+            | K::SizeofType(_)
+            | K::AlignofType(_)
+            | K::AlignofExpr(_)
+            | K::TypeName(_) => true,
             // **Only the selected arm has accesses.** C11 6.5.1.1 evaluates neither the
             // controlling expression nor the arms that lost, so counting their reads and
             // writes here would report a sequence-point conflict between two expressions that

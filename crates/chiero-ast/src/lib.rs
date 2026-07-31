@@ -128,6 +128,15 @@ pub enum ExprKind {
     SizeofExpr(ExprId),
     SizeofType(TypeId),
     AlignofType(TypeId),
+    /// `_Alignof(expr)` — a GNU extension, also spelled `__alignof__`.
+    ///
+    /// **Its own variant, and it has to be.** The parser used to record it as a
+    /// `SizeofExpr`, on the reasoning that a sizeof-shaped node beat inventing one nothing
+    /// else produced — and that made `_Alignof` *compute a size*. The two agree for every
+    /// scalar, which is why it stood: they differ for an array (`_Alignof(a)` is the
+    /// element's alignment, `sizeof a` the whole thing) and for any struct whose size is
+    /// rounded past its alignment.
+    AlignofExpr(ExprId),
     /// GNU statement expression `({ ... })` (013 §4, contract 7). 217 VPP files use it.
     StmtExpr(StmtId),
     /// C11 6.5.1.1's `_Generic(e, T: x, default: y)`.

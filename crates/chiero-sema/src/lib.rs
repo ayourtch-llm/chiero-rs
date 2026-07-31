@@ -2672,6 +2672,21 @@ impl Cx<'_> {
                     operands: Vec::new(),
                 })
             }
+            // **Alignment, not size.** The operand is typed and never evaluated, exactly as for
+            // `sizeof`; only the number taken from its type differs.
+            ExprKind::AlignofExpr(inner) => {
+                let inner = *inner;
+                self.type_expr(inner);
+                let ty = self.intern(Ty::Int {
+                    signed: false,
+                    bits: (self.target.sizes.long_ * 8) as u32,
+                });
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: Vec::new(),
+                })
+            }
             ExprKind::SizeofType(_) | ExprKind::AlignofType(_) => {
                 let ty = self.intern(Ty::Int {
                     signed: false,

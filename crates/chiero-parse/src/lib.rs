@@ -2346,10 +2346,11 @@ impl<'a> Parser<'a> {
             let kind = if is_sizeof {
                 ExprKind::SizeofExpr(operand)
             } else {
-                // `_Alignof` requires a type; an expression operand is a GNU extension
-                // we accept and record as a sizeof-shaped node rather than inventing a
-                // variant nothing else produces.
-                ExprKind::SizeofExpr(operand)
+                // `_Alignof` requires a type; an expression operand is a GNU extension.
+                // **It gets its own node.** Recording it as a `SizeofExpr` — which this did,
+                // to avoid a variant nothing else produced — made `_Alignof` answer a *size*,
+                // and the two agree for every scalar, so nothing noticed until an array.
+                ExprKind::AlignofExpr(operand)
             };
             return self.ast.add_expr(kind, span);
         }

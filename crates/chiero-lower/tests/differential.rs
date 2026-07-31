@@ -2890,71 +2890,71 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
-/// **An alignment requested on a variable is ignored, and the object really is misaligned.**
+/// **`_Alignof(expr)` returns the operand's *size*.**
 ///
-///     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero says 4,  gcc says 16
-///     _Alignas(16) int x = 3; return (int)((long)&x & 15);  chiero says 4,  gcc says 0
+///     int a[10]; return (int)_Alignof(a);   chiero says 40, gcc says 4
 ///
-/// The second line is the one that matters: this is not a misreported `_Alignof`, the storage is
-/// genuinely at the natural alignment. A program that aligns a buffer and then relies on it — a
-/// vector load, a cache line, a lock-free structure — gets a differently-aligned object and no
-/// warning.
+/// The parser recorded the GNU `_Alignof(expr)` form as a `SizeofExpr`, on the reasoning that a
+/// sizeof-shaped node beat inventing a variant nothing else produced. Nothing downstream could
+/// then tell them apart, so `_Alignof` computed a size.
 ///
-/// # Reach: the spelling with none, and the spelling with plenty
+/// **Size and alignment agree for every scalar**, which is why this stood: `int`, `char`,
+/// `double`, `long long` all answer the same either way. They differ for an array — `_Alignof(a)`
+/// is the element's alignment and `sizeof a` the whole object — and for any struct whose size is
+/// rounded up past its alignment. No alignment specifier is involved at all; this is ordinary C.
 ///
-/// `_Alignas` appears in **0 VPP files**, which is why waves 279 and 280 went elsewhere first.
-/// But `__attribute__((aligned(N)))` is the same defect down the same path — `_Alignof` says 4
-/// for it too — and *that* is in **16 VPP files directly, with `aligned(` in 266**, because
-/// VPP's cache-line macros expand to it. The low-reach spelling was hiding a high-reach one.
+/// # How it was found, and what the census before it said
 ///
-/// # It is only the variable path
+/// §9 named the **preprocessor** as the last unrun axis. Forty-four probes — stringification,
+/// pasting, variadic and GNU comma swallowing, blue paint, empty arguments, `#line`, `#if`
+/// arithmetic over unsigned, `char` and `long long`, nested and indirect expansion — found **no
+/// silent wrong answer**. Its three gaps are all *declared* (`__VA_OPT__ is outside chiero's v1
+/// preprocessing scope`, `#elifdef is a C23 extension accepted in C11 mode`, and `defined`
+/// produced by expansion), and all three are in 0 VPP files.
 ///
-/// `struct A { char c; _Alignas(16) int v; }` already sizes, offsets and aligns correctly, and
-/// wave 280 re-probed that to be sure. Whatever reads the specifier for a member does not run for
-/// a declaration.
+/// A clean census sent the wave back to §9's last known defect — "`_Alignas` is ignored on a
+/// variable" — and probing *that* found this underneath it: `_Alignas(16) int x` reported 4
+/// because 4 is `sizeof(int)`, not because the specifier was dropped.
 ///
-/// # Found by the preprocessor census coming back clean
+/// # What is still open, deliberately
 ///
-/// §9 named 012 as the last unrun axis. Forty-four probes — stringification, pasting, variadic
-/// and GNU comma swallowing, blue paint, empty arguments, `#line`, `#if` arithmetic over
-/// unsigned, `char` and `long long`, nested and indirect expansion — found **no silent wrong
-/// answer**. The three gaps are all *declared* with their own diagnostics (`__VA_OPT__ is
-/// outside chiero's v1 preprocessing scope`; `#elifdef is a C23 extension accepted in C11 mode`;
-/// `defined` produced by expansion), and all three are in 0 VPP files. A clean census is a
-/// result, and it sent this wave back to the last known defect.
+/// A **requested** alignment on a variable is still not honoured: `_Alignas(16) int x` reports 4
+/// and `(long)&x & 15` is 4 where gcc gives 0, for both that spelling and
+/// `__attribute__((aligned(16)))`. That needs a per-declaration alignment channel — sema's
+/// `values` map carries name→type and no `DeclId` — which is its own wave. Recorded in §9.
 #[test]
-fn a_requested_alignment_is_honoured() {
-    // The control: an unaligned local, and the *member* path, which already works.
-    agree("int x = 3; return (int)_Alignof(x);");
-    agree_with(
-        "struct A { char c; _Alignas(16) int v; };",
-        "return (int)sizeof(struct A);",
-    );
-    agree_with(
-        "struct A { char c; _Alignas(16) int v; };",
-        "struct A a; return (int)((char*)&a.v - (char*)&a);",
-    );
-    // `_Alignof` reports the requested alignment...
-    agree("_Alignas(16) int x = 3; return (int)_Alignof(x);");
-    agree("_Alignas(8) char c = 1; return (int)_Alignof(c);");
-    agree("_Alignas(double) char c = 1; return (int)_Alignof(c);");
-    // ...and the storage actually has it, which is the half that matters.
-    agree("_Alignas(16) int x = 3; return (int)((long)&x & 15);");
-    agree("_Alignas(64) char b[8]; return (int)((long)&b[0] & 63);");
-    agree("_Alignas(32) int x = 3; return (int)((long)&x & 31) + x;");
-    // Two aligned locals, so one cannot be right by accident of being first.
+fn an_alignof_expression_is_an_alignment_not_a_size() {
+    // The controls: scalars, where size and alignment coincide and the defect is invisible.
+    agree("int x; return (int)_Alignof(x);");
+    agree("char c; return (int)_Alignof(c);");
+    agree("double d; return (int)_Alignof(d);");
+    agree("long long l; return (int)_Alignof(l);");
+    // ...and the *type* form, which was always right because it is a different node.
+    agree("return (int)_Alignof(int[10]);");
+    agree("struct S { char c; int i; }; return (int)_Alignof(struct S);");
+    // **An array**, where the two answers differ by the element count.
+    agree("int a[10]; return (int)_Alignof(a);");
+    agree("char b[7]; return (int)_Alignof(b);");
+    agree("double d[3]; return (int)_Alignof(d);");
+    // **A struct whose size is rounded past its alignment.**
+    agree("struct S { char c; int i; }; struct S s; return (int)_Alignof(s);");
+    agree("struct S { char a; char b; }; struct S s; return (int)_Alignof(s);");
     agree(
-        "_Alignas(16) int x = 3; _Alignas(16) int y = 4; return (int)(((long)&x|(long)&y) & 15) + x + y;",
+        "struct S { int i; char c; }; struct S s; return (int)_Alignof(s) * 10 + (int)sizeof(s);",
     );
-    // **The `__attribute__` spelling**, which is the one VPP uses.
-    agree("int x __attribute__((aligned(16))) = 3; return (int)_Alignof(x);");
-    agree("int x __attribute__((aligned(16))) = 3; return (int)((long)&x & 15);");
-    agree("__attribute__((aligned(8))) char c = 1; return (int)_Alignof(c);");
-    agree("char b[4] __attribute__((aligned(32))); return (int)((long)&b[0] & 31);");
-    // Static storage takes the same specifier.
-    agree("static int x __attribute__((aligned(32))) = 3; return (int)((long)&x & 31);");
-    // Through a typedef, where the alignment travels with the type rather than the declarator.
-    agree("typedef int A __attribute__((aligned(16))); A x = 3; return (int)_Alignof(x);");
+    // The `__alignof__` spelling, which is the one GNU code actually writes.
+    agree("struct S { char c; int i; }; struct S s; return (int)__alignof__(s);");
+    agree("int a[10]; return (int)__alignof__(a);");
+    // A union, and a nested aggregate.
+    agree("union U { char c; double d; }; union U u; return (int)_Alignof(u);");
+    agree("struct S { double d; }; struct S a[4]; return (int)_Alignof(a);");
+    // The result is `size_t`: unsigned, and wide enough that subtracting past zero wraps up.
+    // `- 5`, not `- 1`: subtracting one from four is positive whichever signedness it has, so
+    // that shape cannot see the type at all. It takes a subtraction that *wraps*.
+    agree("int a[10]; return (int)(_Alignof(a) - 5 > 0);");
+    agree("int a[10]; return (int)sizeof(_Alignof(a));");
+    // And it is unevaluated, like `sizeof`.
+    agree("int i = 0; int a[10]; int n = (int)_Alignof(a[i++]); return n*10 + i;");
 }
 
 /// **`__builtin_offsetof` reports its member argument undeclared.**
