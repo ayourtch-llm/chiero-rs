@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 270) — 1414 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 271) — 1416 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **Wave 270 ran the `ExprKind` version of this and it paid twice.** Of twenty-one variants, three
+> appear in *no* generated program in either channel: `AlignofType`, `StmtExpr` and **`!`**. Ten
+> hand probes of each — a minute's work, before touching the generator — found `_Alignof` and
+> statement expressions already correct on every shape, and `!` **wrong on the first probe**:
+>
+> ```text
+>   int probe(void) { double d = -0.0; return !d; }   chiero says 0, gcc says 1
+> ```
+>
+> C11 6.5.3.3p5 makes `!E` mean `E == 0` and IEEE makes `-0.0 == 0.0` true. Chiero tested the
+> *bits*. Widening the probe found a second, larger one: **a float on the right of `&&` or `||`
+> refused to lower at all** (`Ne operand is Float(F64), declared Int(32)`), so every
+> `x && <double>` in every program had been dropped whole. Both were one root cause — three copies
+> of "is this scalar zero", one right — now `zero_cmp_op(ty, equal)`.
+>
+> **The corpus could not see either, and making it able to took three corrections.** All are the
+> same mistake at different depths: `x && !x` short-circuits away the `!`; `!` of a nested
+> subexpression never evaluates to a negative zero (41 sites across 2000 seeds, mutant survived all
+> 41); `-0.0` was not in the float pool. And the channel itself counted `Refused` as `Discarded`,
+> which is why a defect that produced *nothing* was free to hide. That bound is now zero. Six
+> lowering mutants that the corpus could not kill before the wave all die to it now.
+>
+> **`_Alignof` is in the grammar anyway** for its type — `size_t`, unsigned, wider than `int`,
+> `sizeof`'s class, where wave 217's defect lived. **Statement expressions are still absent** and
+> are the obvious next addition, with the caveat this wave earned: probe first, and grade the
+> addition by a mutant it kills rather than by a census that counts it.
 >
 > **Wave 217 found a real defect by widening the grammar, not by running more seeds.** Seeds
 > 800..1600 of the existing soak came back clean — 490 comparisons, zero defects — so the *shapes*
@@ -1807,6 +1834,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A refusal is a defect that costs nothing to hide behind** (wave 270). The control-flow batch
+> lumped `Verdict::Refused` in with `Discarded`, so lowering that produced *nothing at all* read
+> exactly like a program the oracle declined to compare. Every `x && <float>` in the corpus was
+> refused — the verifier rejected the CIR and the function was dropped whole — and the channel
+> counted it as ordinary for as long as the arm has existed. **A wrong answer is caught on the
+> first seed; producing no answer is free.** Grade `Refused` on its own with a bound of zero, count
+> `Gap` separately (023 §7: a declared limit is honest, an undeclared refusal never is), and floor
+> `compared` so the channel cannot pass on nothing.
+>
+> **Generating the shape is not generating the value** (wave 270, three times in one wave). The `!`
+> arm first emitted `x && !x` — and `&&` short-circuits away the right operand for exactly the zero
+> that discriminates, so the shape was built such that the one case it existed to reach could not
+> be. Corrected to an unconditional `!`, **2000 seeds put it on a float 41 times and the mutant
+> survived all 41**: the operand was a sum of small constants, which lands on a *negative* zero
+> essentially never. Then `-0.0` turned out not to be in the float pool at all. A census that counts
+> occurrences of a construct answers none of this. **The test is a surviving mutant, and only that.**
+>
+> **Ask what the AST can hold, then probe before you extend the grammar** (wave 270). Censusing
+> `ExprKind`'s twenty-one variants against what the generator emits found three absent from both
+> channels: `_Alignof`, a statement expression, and `!`. Ten hand probes each — a minute's work —
+> found `_Alignof` and statement expressions already correct and `!` **wrong on the first one**.
+> That is wave 217's technique finding two real defects *before the generator was touched*, and
+> waves 250–253's lesson applied in the other direction: adding a construct to the corpus buys
+> nothing until you know the context can discriminate.
+>
+> **One decision in three places is one right answer and two wrong ones** (wave 270). "Is this
+> scalar zero" was decided by `truth_of` (correct: `FUNe` for a float), by `!` (a hardcoded integer
+> `Eq`, so `!(-0.0)` tested the *bits*) and by the **rhs** of `&&` (a hardcoded `Ne` at the type of
+> the *result*, which has nothing to do with the operand's). The lhs of the very same short circuit
+> called `truth_of`. **When two sides of one construct are asymmetric, the asymmetry is the bug** —
+> and the fix is the shared function, not a third copy that happens to be right.
 >
 > **When a report cites something, test *which* thing it cites** (wave 269). Two fixtures asked
 > whether the clause appears; three mutants survived them, and all three were about what it points
