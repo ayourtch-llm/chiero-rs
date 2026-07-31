@@ -2815,6 +2815,29 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
              it, so this is not by itself a false positive."
         );
     }
+    // **A number that cannot be asserted to zero can still carry a ceiling** (wave 260).
+    //
+    // The paragraph above is why `extra == 0` would be wrong: gcc's silence here does not mean it
+    // checked and found nothing. But "not assertable" was taken to mean "not assertable at all",
+    // and §9 recorded `truncation-not-detected` as a survivor on exactly that basis — the
+    // trapping-fault suppression only moves `extra`, and nothing looked at `extra`.
+    //
+    // It moves it a long way. Deleting the suppression takes the count from **1 to 12**, because a
+    // program that dies on SIGFPE has every later site counted against a run gcc never performed.
+    // A ceiling catches that and still leaves room for the corpus to drift: one program in
+    // fifty-four hits the documented eliding case today, and four would be a real change worth
+    // looking at rather than noise.
+    // Two mutants on this ceiling survive and both are recognised classes rather than gaps.
+    // Forcing `truncated` *always* true suppresses every extra and passes — but `extra` is not a
+    // verdict, and the only assertion that would catch it is a *floor*, which would amount to
+    // asserting that chiero must keep reporting sites gcc does not. That is backwards. And
+    // disabling the assertion itself passes, as no assertion can observe its own removal.
+    assert!(
+        extra <= 4,
+        "chiero reports {extra} sites gcc does not, over {progs} programs. A few are expected — \
+         gcc elides arithmetic used only as a condition — but this many means either a real \
+         false-positive class or a run being compared against one that did not happen"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
