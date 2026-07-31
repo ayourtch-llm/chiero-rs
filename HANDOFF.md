@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 300) — 1469 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 301) — 1470 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -833,6 +833,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ~~**Next target: the `#if` evaluator deserves a differential channel of its own.**~~ **Built in
 > wave 298, and it found two defects on its first run** — see below.
+>
+> ### 🔑 The technique that is paying: find the *second* implementation of a rule
+>
+> Wave 298's `#if` channel worked for a reason worth naming, because it generalises. `#if` is not
+> a corner of the preprocessor — it is a **second implementation of C constant expressions**, and
+> the oracle never watched it. Wave 300 asked where the *third* one is, and the answer was
+> `chiero-sema::const_eval`: array bounds, bit-field widths, enumeration constants and static
+> initializers are evaluated at layout time, so nothing they compute passes through the lowering
+> the corpus compares. **Aiming the two rules wave 298 had just found at it took one probe.**
+>
+> | implementation | of what | watched by |
+> |---|---|---|
+> | `chiero-exec` | C arithmetic at runtime | the corpus, since wave 153 |
+> | `chiero-pp`'s `#if` evaluator | C constant expressions | `if_differential.rs`, wave 298 |
+> | `chiero-sema::const_eval` | C constant expressions | `differential.rs`, wave 300 |
+>
+> Both new-implementation waves found the **same two defects**: the usual arithmetic conversions
+> and the conditional operator's type. That is not coincidence — they are the rules where the
+> right *number* comes with the wrong *type*, so every test that compares against a positive
+> constant passes. **When a defect is found in one implementation, try it against the others
+> before looking for a new one.**
+>
+> **Still to check by this method:** integer *literal* spelling has three parsers too
+> (`chiero-lex`, `parse_if_literal`, and sema's), and string literals had three until waves 150–152
+> merged them.
 >
 > ### 🟢 The `#if` differential channel — `chiero-pp/tests/if_differential.rs`
 >
@@ -2174,6 +2199,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A defect found in one implementation is a question to ask of every other** (wave 300). The
+> usual arithmetic conversions and the conditional operator's type were wrong in `#if` (wave 298)
+> and, independently, in `const_eval`. Two teams, two files, same two rules. They share a shape:
+> the value is right and only the *type* is wrong, so every test comparing against a positive
+> constant passes, in any implementation. **Before hunting a new defect, spend one probe re-asking
+> the last one somewhere else** — it cost a single test here and found a third-implementation bug
+> that had been reachable from `enum`, array bounds and bit-field widths the whole time.
+>
+> **A sweep's disagreements are not all defects, and the difference must be checked, not assumed**
+> (wave 300). 260 generated constant expressions produced two disagreements with gcc, both signed
+> multiplication overflow — undefined behaviour, where chiero already emits a declared diagnostic
+> and wraps (`semantics.rs:107`). The right move was to *verify* that the existing behaviour was
+> the declared one rather than to file two bugs or to widen the exclusion silently.
 >
 > **Unfalsifiable-but-reached is a generator's *normal* failure mode, not an accident** (wave 299).
 > It happened three times in two waves, and each time the missing ingredient was one prelude entry
