@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 284) — 1433 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 285) — 1435 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -807,6 +807,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a wrong index space), and the third has narrowed to a single term-identity question. That is
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
+>
+> ### 🔴 The corpus lags the features again, and one addition is measured as too costly
+>
+> **Wave 277's rule keeps being broken**: ship a construct, then check the corpus can reach it, in
+> the same wave. Wave 284 added `typeof` (283) and found the corpus still emits **none** of
+> `_Generic` (275), `__label__` (276), `__builtin_offsetof` (280), the classification builtins
+> (271), alignment specifiers (282) or multi-dimensional arrays (278). All are hand-graded.
+>
+> **The multi-dimensional array is measured and deliberately absent.** It is the shape that hid
+> the dimension reversal, and adding it takes the control-flow channel from **131 comparisons to
+> 80** — no better at a tenth the rate, with the fold rewritten twice (per-element into `acc`, then
+> an `unsigned` accumulator) and the element types restricted, to rule those out. What remains is
+> inherent: a longer program carrying more adversarial values through more operations is more
+> often undefined *somewhere*, and undefined is discarded. **Anyone retrying this needs a way to
+> add a construct without lengthening the UB surface** — a separate short program per construct,
+> or a channel with its own budget, rather than more statements in the existing one.
+>
+> **The cheap ones to try next**, in rough order of expected cost: `_Generic` (one expression, no
+> new objects), `__builtin_offsetof` (one expression over a struct already in scope), the
+> classification builtins (one call on a float already in scope). Each adds a *value* rather than
+> an object, so each should cost far less than a 2-D array's six elements.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2021,6 +2042,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A separate stream is not enough; do not change state that *gates* another arm's draw**
+> (wave 284). `leaf` reads `if usable.is_empty() || self.rng.chance(3)`, so pushing one more
+> variable makes the left operand false and the `chance(3)` draw *happen* where `||` had
+> short-circuited it — every downstream draw moves. Wave 277's lesson was that a new arm needs
+> its own stream; this is the same lesson one level down. **New names go into a sink the grammar
+> never reads.**
+>
+> **A new arm must not consume the statement slot either** (wave 284). The statement budget is
+> fixed, so a slot spent on a declaration is a slot not spent on a `switch` or a `continue`:
+> wave 270's `!`-of-a-negative-zero fell to one program, then `for`-`continue` to nine. Emit and
+> **fall through**.
+>
+> **The checksum's own arithmetic can be the undefined thing** (wave 284). Folding extra values
+> the way the existing loops do — `acc = acc * 31 + …` on a `long`, per element — cut the channel
+> from 131 comparisons to 40, because signed overflow is undefined and an undefined program is
+> *discarded* rather than compared. The existing folds carry the same hazard and get away with it
+> by being fewer.
+>
+> **Decline the addition when it costs a guarantee** (wave 284). A multi-dimensional array is the
+> shape that hid wave 278's worst defect and it costs the channel a third of its comparisons, at
+> any rate, with the fold rewritten twice to rule that out. Merging it would have bought coverage
+> of one defect class by quietly weakening the floor wave 270 put on `compared`. **Record the
+> measurement and leave it out** — a corpus addition that lowers the corpus's yield is not an
+> addition.
 >
 > **The control fixture is a probe too** (wave 283). `__int128 x = 1; x = x << 70;` was written as
 > a *control* in the `TypeKind` census — an ordinary type form that was supposed to already work —
