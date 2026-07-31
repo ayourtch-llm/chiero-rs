@@ -66,6 +66,31 @@ fn a_byte_written_at_a_symbolic_index_is_initialized_when_read_back() {
             "with a concrete write in between",
             "int probe(int i){ char ca[64]; ca[i & 31] = 7; ca[0] = 5; return ca[i & 31]; }",
         ),
+        // **A concrete write *before* the symbolic one**, which is the shape §9's
+        // `expand-forgets-shadowing` mutant was said to need: promotion leaves an exception store
+        // for byte 0 — init `1` over a base of `0` — and the symbolic store layers
+        // `ite(hit, 1, prev)` on top. Two stores that may alias.
+        //
+        // **It does not kill that mutant, and measuring the chains says why it cannot.** Logging
+        // every chain `select_expand` builds for this file:
+        //
+        // ```text
+        //   16 x  len=8   distinct_values=1
+        //   16 x  len=16  distinct_values=1
+        // ```
+        //
+        // Every store in every chain carries the *same value term*. With one value,
+        // `ite(c1, v, ite(c2, v, base))` and the reversed nesting are equal whatever the
+        // conditions are — order cannot change an answer it does not distinguish. The mutant is
+        // equivalent on every chain the suite produces, and it would take a chain with two
+        // distinct values at aliasing indices to make it otherwise. §9 carries that.
+        //
+        // The fixture stays because the *shape* is real and untested either way: a concrete write
+        // under a symbolic one, read back at the symbolic offset.
+        (
+            "with a concrete write before the symbolic one",
+            "int probe(int i){ char ca[64]; ca[0] = 5; ca[i & 31] = 7; return ca[i & 31]; }",
+        ),
     ] {
         let f = findings(src);
         assert!(
