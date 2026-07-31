@@ -1836,3 +1836,57 @@ fn a_havoc_range_refusal_says_why() {
         r.faults
     );
 }
+
+/// **An uninitialized havoc after a symbolic write still uninitializes the object.**
+///
+/// Named for what it does, which is less than it was written to do. `HavocFill::Uninitialized` has
+/// two halves — clear the byte contents, and if the object was promoted to an array reset the
+/// array's `init` mask — and mutation says only the first is tested: forcing the mask to all-ones,
+/// or skipping the array branch entirely, survives every fixture including this one.
+///
+/// **The array branch is never reached with a promoted object, and that is measured.** Logging the
+/// representation at the fill across the whole suite: eight calls, every one `Repr::Bytes`. Neither
+/// `havoc_range` nor whole-object `havoc` gets there — the ranged form *refuses* a promoted object
+/// outright, its own comment listing "promoted" among the refusals, and a symbolic write at
+/// `i & 63` on a sixty-four-byte object does not promote either.
+///
+/// What the branch is for is real and was a bug once: "promotion is one-way within a state.
+/// Clearing `arr` here de-promoted a promoted object and discarded its array contents, so a read
+/// after it answered from stale bytes." Reaching it needs a shape nobody has found; §9 carries the
+/// question rather than this test claiming to answer it.
+#[test]
+fn an_uninitialized_havoc_after_a_symbolic_write_uninitializes_the_object() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 64, sp(2));
+
+    // Promote it: a store at an offset nothing can pin turns the object into an array.
+    let i = a.var(Sort::BitVec(64), "i");
+    let mask = a.bv(64, 63);
+    let off = a.and(i, mask);
+    let seven = a.bv(8, 7);
+    let mut cx = AccessCtx::new();
+    m.write_sym(&mut cx, &mut a, o, off, seven, sp(3));
+
+    // **Whole-object `havoc`, not `havoc_range`.** The ranged form *refuses* a promoted object —
+    // its own comment lists "promoted" among the refusals — so the array branch is unreachable
+    // through it, and a fixture built on it exercises the `Bytes` path while looking like it
+    // exercises this one. Instrumenting the branch is what showed that: eight calls reached it in
+    // the whole suite and every one had `repr = Bytes`.
+    let h = m.havoc(&mut a, &[o], 0, HavocFill::Uninitialized, sp(4));
+    assert!(
+        !h.objects.is_empty(),
+        "the havoc must reach the object, or this tests nothing"
+    );
+
+    let r = m.read(ptr(o, 0), 1, sp(5));
+    assert!(
+        r.faults.iter().any(|f| matches!(
+            f,
+            MemFault::Uninitialized { .. } | MemFault::MaybeUninitialized { .. }
+        )),
+        "a callee with no model may have left this byte in any state: {:#?}",
+        r.faults
+    );
+}
