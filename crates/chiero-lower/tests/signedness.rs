@@ -559,3 +559,56 @@ fn division_by_zero_is_reported_for_every_operator() {
         );
     }
 }
+
+/// **The 128-bit signed range, which the bound arithmetic could not compute** (wave 283).
+///
+/// `signed_range` replaced `(1i128 << (w - 1)) - 1` and `-(1i128 << (w - 1))`, which *panic* at
+/// `w = 128` — the shift is `i128::MIN`, so one underflows and the other negates a value with no
+/// positive counterpart. The differential fixtures for that prove the engine no longer crashes;
+/// they cannot prove the range is **right**, because a spurious or missing UB report does not
+/// change a program's value and the value oracle is all they have.
+///
+/// So the range is asserted here, where a report is the observable. A mutant returning `(0, 0)`
+/// at 128 bits survives every differential fixture and dies on the first line of this one.
+#[test]
+fn a_128_bit_signed_overflow_is_reported_and_ordinary_arithmetic_is_not() {
+    // Ordinary 128-bit arithmetic, far inside the range: no report.
+    assert_eq!(
+        ub_kinds(
+            "int probe(void) { __int128 x = 1; x = x << 100; x = x + 1; return (int)(x >> 100); }"
+        ),
+        Vec::<UbKind>::new(),
+        "a value nowhere near the boundary is not an overflow"
+    );
+    assert_eq!(
+        ub_kinds("int probe(void) { __int128 x = 3; __int128 y = 5; x = x * y; return (int)x; }"),
+        Vec::<UbKind>::new(),
+        "a small product is not an overflow"
+    );
+    // **At the boundary**: `(1 << 126) * 4` leaves the range, and only a correct upper bound
+    // says so — `i128::MAX` rather than the `0` a truncated range would give.
+    assert!(
+        ub_kinds(
+            "int probe(void) { __int128 x = 1; x = x << 126; x = x * 4; return (int)(x >> 100); }"
+        )
+        .contains(&UbKind::SignedOverflow),
+        "a 128-bit product past the range is an overflow"
+    );
+    // The lower bound, reached by negating the minimum — which is what `INT_MIN / -1` checks.
+    assert!(
+        ub_kinds("int probe(void) { __int128 x = 1; x = x << 127; __int128 y = -1; x = x / y; return (int)x; }")
+            .contains(&UbKind::SignedOverflow),
+        "the most negative 128-bit value divided by -1 has no representable result"
+    );
+    // And the ordinary widths, which must keep their existing answers.
+    assert!(
+        ub_kinds("int probe(void) { int x = 2147483647; x = x + 1; return x; }")
+            .contains(&UbKind::SignedOverflow),
+        "32-bit overflow is unaffected"
+    );
+    assert_eq!(
+        ub_kinds("int probe(void) { int x = 2147483646; x = x + 1; return x; }"),
+        Vec::<UbKind>::new(),
+        "one below the boundary is not an overflow"
+    );
+}

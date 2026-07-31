@@ -1259,12 +1259,20 @@ impl Cx<'_> {
                 })
             }
             TypeKind::Tag { tag, name, members } => self.tag(ty, tag, name, members),
-            TypeKind::TypeofExpr(_) | TypeKind::TypeofType(_) => {
-                // `typeof` needs expression typing, which is contract 11's half of 014
-                // and is not this slice. `Error` is the honest answer and it propagates
-                // rather than producing a wrong size.
-                self.intern(Ty::Error)
+            // **`typeof` is the operand's type, and the operand is not evaluated.** The arm
+            // used to return `Ty::Error` with a note that it "needs expression typing, which
+            // is contract 11's half of 014 and is not this slice" — a declared gap from
+            // before expression typing existed. It does now, so the gap is just a gap.
+            //
+            // **No decay.** `__typeof__(a)` for `int a[4]` is `int[4]`, not `int *`: gcc keeps
+            // the array type, and `sizeof` of it is 16. Every other place that reads an
+            // expression's type here reaches for `decay` first, which would be wrong in
+            // exactly the case `typeof` exists for — copying an object's type.
+            TypeKind::TypeofExpr(e) => {
+                let node = self.type_expr(e);
+                self.out.typed.ty_of(node)
             }
+            TypeKind::TypeofType(inner) => self.ty_of(inner),
             TypeKind::Error => self.intern(Ty::Error),
         }
     }
@@ -2755,7 +2763,14 @@ impl Cx<'_> {
                     operands: Vec::new(),
                 })
             }
-            ExprKind::SizeofType(_) | ExprKind::AlignofType(_) => {
+            ExprKind::SizeofType(t) | ExprKind::AlignofType(t) => {
+                // **Resolve the operand type, do not just intern the result's.** This arm used
+                // to skip `ty_of` entirely and leave the answer to `const_eval`, which rebuilds
+                // a throwaway context that sees only file-scope declarations — so
+                // `sizeof(__typeof__(x))` for a local `x` had nothing that could answer it.
+                // Resolving here records the node in `syntactic_types`, which is what lets a
+                // consumer holding the AST `TypeId` ask what it became.
+                self.ty_of(*t);
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,

@@ -3065,7 +3065,7 @@ impl<'m> Engine<'m> {
                     && xc
                         .signed()
                         .checked_shl(yc.bits() as u32)
-                        .is_none_or(|v| v > (1i128 << (w - 1)) - 1) =>
+                        .is_none_or(|v| v > signed_range(w).1) =>
             {
                 push(
                     UbKind::Shift,
@@ -3097,7 +3097,7 @@ impl<'m> Engine<'m> {
             // gives it a message of its own — "cannot be represented in type" — and groups it with
             // neither, so the choice is chiero's to make and this is the one that reads true.
             BinOp::SDiv | BinOp::SRem
-                if signed && xc.signed() == -(1i128 << (w - 1)) && yc.signed() == -1 =>
+                if signed && xc.signed() == signed_range(w).0 && yc.signed() == -1 =>
             {
                 push(
                     UbKind::SignedOverflow,
@@ -3121,8 +3121,7 @@ impl<'m> Engine<'m> {
                     BinOp::Sub => xs.checked_sub(ys),
                     _ => xs.checked_mul(ys),
                 };
-                let lo = -(1i128 << (w - 1));
-                let hi = (1i128 << (w - 1)) - 1;
+                let (lo, hi) = signed_range(w);
                 if exact.is_none_or(|v| v < lo || v > hi) {
                     push(
                         UbKind::SignedOverflow,
@@ -8103,6 +8102,24 @@ fn mask_bits(w: u32) -> u128 {
         u128::MAX
     } else {
         (1u128 << w) - 1
+    }
+}
+
+/// The inclusive range of a `w`-bit **signed** value, as `i128`.
+///
+/// **`1i128 << (w - 1)` is the bug it exists to remove.** At `w = 128` that shift *is*
+/// `i128::MIN`, so `- 1` underflows and `-(…)` negates a value with no positive counterpart —
+/// both panic. Every narrower width leaves headroom, which is why `__int128` was the only type
+/// that crashed and why the arithmetic computing the boundary had the same boundary problem it
+/// was checking for.
+///
+/// `w == 0` cannot occur for an operand — `bits_of_cty` returns it only for `void` — but it is
+/// answered rather than shifted, so a future caller gets an empty range instead of a panic.
+fn signed_range(w: u32) -> (i128, i128) {
+    match w {
+        0 => (0, 0),
+        128.. => (i128::MIN, i128::MAX),
+        _ => (-(1i128 << (w - 1)), (1i128 << (w - 1)) - 1),
     }
 }
 

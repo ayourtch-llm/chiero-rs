@@ -2010,9 +2010,23 @@ impl Lowerer<'_> {
                     None => Operand::Const(Const::Undef(CTy::Int(bits))),
                 }
             }
-            chiero_ast::ExprKind::SizeofType(_) | chiero_ast::ExprKind::AlignofType(_) => {
+            // **The resolved type first, `const_of` second.** The same reason the `SizeofExpr`
+            // arm above gives: `const_of` builds a throwaway context that sees only file-scope
+            // declarations, so it cannot answer for anything naming a *local* — and
+            // `sizeof(__typeof__(x))` names one. The typed AST already resolved the syntactic
+            // node, so asking it is both cheaper and able to answer.
+            chiero_ast::ExprKind::SizeofType(t) | chiero_ast::ExprKind::AlignofType(t) => {
                 let bits = self.raw_width_of(e).max(1);
-                match self.const_of(e) {
+                let want_align =
+                    matches!(self.ast.expr(e).kind, chiero_ast::ExprKind::AlignofType(_));
+                let n = self.analysis.ty_of_syntactic(*t).and_then(|ty| {
+                    if want_align {
+                        self.analysis.align_of(ty)
+                    } else {
+                        self.analysis.size_of(ty)
+                    }
+                });
+                match n.map(|v| v as i128).or_else(|| self.const_of(e)) {
                     Some(v) => Operand::Const(Const::Int { bits, val: v }),
                     None => Operand::Const(Const::Undef(CTy::Int(bits))),
                 }
