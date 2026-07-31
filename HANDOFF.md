@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 278) — 1425 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 279) — 1426 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -807,6 +807,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a wrong index space), and the third has narrowed to a single term-identity question. That is
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
+>
+> ### 🔴 Four declarator defects are open — the census that found them is wave 278's
+>
+> **The declarator grammar had never been censused**, and twenty-seven shapes against gcc found
+> **five wrong answers**. Wave 278 fixed the worst; these four are open, in severity order, and
+> all are *silent wrong answers* rather than refusals:
+>
+>   1. **`_Alignas` is ignored.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4, gcc says 16.
+>   2. **An anonymous struct member does not resolve.**
+>      `struct S { struct { int a; int b; }; int c; };` then `s.a` is wrong.
+>   3. **An anonymous union member returns nothing.** `union U { struct { int a; }; int b; };`
+>      with `u.b = 7; return u.a;` gives `None` where gcc gives 7.
+>   4. **Pointer-to-array indexing.** `int (*p)[3] = a; p[1][0]` gave 5 where gcc gives 4 — this
+>      *may* have been a consequence of the dimension reversal and should be re-probed first,
+>      since wave 278's fixtures now cover `p[1][0]` and `p[1][2]` and both pass.
+>
+> Anonymous members are the pair worth taking together: they are one feature and VPP uses them.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -1994,6 +2011,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The symmetric case is its own reverse, and hides the bug** (wave 278). `int a[2][3]` was typed
+> `int a[3][2]` for the whole life of the project. Every two-dimensional fixture in the suite used
+> a **square** array, which is identical under the reversal; `sizeof(a)` is 2·3·4 either way; and
+> `a[1][0]` reads the same element under both layouts. One corner read of four agreed by accident.
+> **When testing a shape with two parameters, make them differ** — and prefer the test that shows
+> the *type* (`sizeof(a[0])`) over the one that shows a *value*.
+>
+> **Fixing a type exposes the code that was never asked the right question** (wave 278). With the
+> dimensions corrected, `init_list` met array-typed slots and its scalar store rejected them: C11
+> 6.7.9p20 brace elision had never been implemented. The hole predated the fix — the reversed type
+> also had array slots — but no fixture wrote a flat initializer for a nested array, so nothing
+> rejected it. **A GREEN that uncovers a second RED is the normal case for a type-level fix.**
+>
+> **Census the shape of a declaration, not only of an expression** (wave 278). The expression,
+> statement, IR and keyword axes had all been run; the *declarator* grammar never had. Twenty-seven
+> shapes against gcc found five wrong answers in one pass — the worst defect found in twenty waves
+> was sitting behind the axis nobody had asked about.
 >
 > **Ship a construct, then check the corpus can reach it — in the same wave** (wave 277). Waves
 > 272–274 built all of `vector_size` and the generator emitted **zero** vectors, so three waves of
