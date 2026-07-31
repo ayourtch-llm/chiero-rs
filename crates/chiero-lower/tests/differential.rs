@@ -2890,6 +2890,73 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **An alignment requested on a variable is ignored, and the object really is misaligned.**
+///
+///     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero says 4,  gcc says 16
+///     _Alignas(16) int x = 3; return (int)((long)&x & 15);  chiero says 4,  gcc says 0
+///
+/// The second line is the one that matters: this is not a misreported `_Alignof`, the storage is
+/// genuinely at the natural alignment. A program that aligns a buffer and then relies on it — a
+/// vector load, a cache line, a lock-free structure — gets a differently-aligned object and no
+/// warning.
+///
+/// # Reach: the spelling with none, and the spelling with plenty
+///
+/// `_Alignas` appears in **0 VPP files**, which is why waves 279 and 280 went elsewhere first.
+/// But `__attribute__((aligned(N)))` is the same defect down the same path — `_Alignof` says 4
+/// for it too — and *that* is in **16 VPP files directly, with `aligned(` in 266**, because
+/// VPP's cache-line macros expand to it. The low-reach spelling was hiding a high-reach one.
+///
+/// # It is only the variable path
+///
+/// `struct A { char c; _Alignas(16) int v; }` already sizes, offsets and aligns correctly, and
+/// wave 280 re-probed that to be sure. Whatever reads the specifier for a member does not run for
+/// a declaration.
+///
+/// # Found by the preprocessor census coming back clean
+///
+/// §9 named 012 as the last unrun axis. Forty-four probes — stringification, pasting, variadic
+/// and GNU comma swallowing, blue paint, empty arguments, `#line`, `#if` arithmetic over
+/// unsigned, `char` and `long long`, nested and indirect expansion — found **no silent wrong
+/// answer**. The three gaps are all *declared* with their own diagnostics (`__VA_OPT__ is
+/// outside chiero's v1 preprocessing scope`; `#elifdef is a C23 extension accepted in C11 mode`;
+/// `defined` produced by expansion), and all three are in 0 VPP files. A clean census is a
+/// result, and it sent this wave back to the last known defect.
+#[test]
+fn a_requested_alignment_is_honoured() {
+    // The control: an unaligned local, and the *member* path, which already works.
+    agree("int x = 3; return (int)_Alignof(x);");
+    agree_with(
+        "struct A { char c; _Alignas(16) int v; };",
+        "return (int)sizeof(struct A);",
+    );
+    agree_with(
+        "struct A { char c; _Alignas(16) int v; };",
+        "struct A a; return (int)((char*)&a.v - (char*)&a);",
+    );
+    // `_Alignof` reports the requested alignment...
+    agree("_Alignas(16) int x = 3; return (int)_Alignof(x);");
+    agree("_Alignas(8) char c = 1; return (int)_Alignof(c);");
+    agree("_Alignas(double) char c = 1; return (int)_Alignof(c);");
+    // ...and the storage actually has it, which is the half that matters.
+    agree("_Alignas(16) int x = 3; return (int)((long)&x & 15);");
+    agree("_Alignas(64) char b[8]; return (int)((long)&b[0] & 63);");
+    agree("_Alignas(32) int x = 3; return (int)((long)&x & 31) + x;");
+    // Two aligned locals, so one cannot be right by accident of being first.
+    agree(
+        "_Alignas(16) int x = 3; _Alignas(16) int y = 4; return (int)(((long)&x|(long)&y) & 15) + x + y;",
+    );
+    // **The `__attribute__` spelling**, which is the one VPP uses.
+    agree("int x __attribute__((aligned(16))) = 3; return (int)_Alignof(x);");
+    agree("int x __attribute__((aligned(16))) = 3; return (int)((long)&x & 15);");
+    agree("__attribute__((aligned(8))) char c = 1; return (int)_Alignof(c);");
+    agree("char b[4] __attribute__((aligned(32))); return (int)((long)&b[0] & 31);");
+    // Static storage takes the same specifier.
+    agree("static int x __attribute__((aligned(32))) = 3; return (int)((long)&x & 31);");
+    // Through a typedef, where the alignment travels with the type rather than the declarator.
+    agree("typedef int A __attribute__((aligned(16))); A x = 3; return (int)_Alignof(x);");
+}
+
 /// **`__builtin_offsetof` reports its member argument undeclared.**
 ///
 ///     struct S { int a; int b; };
