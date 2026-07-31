@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 267) — 1409 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 268) — 1410 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1761,8 +1761,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > The fault *constructors* are done; the paths that decide **whether to ask** are not. Candidates, in
 > rough order of how much a defect there would cost:
 >
->   - **`report_faults`'s discharge** — wave 249 found a real defect one line from it, and its
->     `Unknown` arms were only exercised from wave 258's audit onward.
+>   - ~~**`report_faults`'s discharge**~~ **Covered — wave 267.** Five mutants across its
+>     `Unsat`/`Sat`/`Unknown` outcomes for both fault kinds, all killed. No gap.
 >   - ~~**`unusable`**~~ **Done in wave 266.** Dropping `MaybeUninitialized` from the list survived
 >     the whole suite — the definite case was pinned in wave 249 and the conditional one was not.
 >     Six of nine kinds survived removal, and **only one was a gap**: logging every discharged fault
@@ -1770,8 +1770,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     only kinds that arrive there *with a value*, so for the rest the entry cannot change an answer.
 >     That difference is invisible in the mutation table and took one instrumented run. The list is
 >     unchanged and now carries the measurement.
->   - **the havoc paths** (024 §2.1) — `HavocFill::Symbolic` versus `Uninitialized` is a documented
->     "no safe default", which usually means both arms matter and one is untested.
+>   - **the havoc paths** (024 §2.1) — swept in wave 267. Four of six mutants die; **the two that
+>     survive are one branch, and nothing in the suite reaches it**: the uninitialized fill's reset
+>     of a *promoted* object's `init` mask. Measured, not assumed — eight calls to that fill across
+>     the whole suite, every one with `Repr::Bytes`.
+>
+>     **What has been ruled out, so the next attempt starts further along.** `havoc_range` refuses a
+>     promoted object outright (its own comment lists "promoted" among the refusals), so any fixture
+>     built on it takes the `Bytes` path while looking right. A sixteen-byte object's symbolic offset
+>     enumerates and nothing promotes. A sixty-four-byte object written at `i & 63` through
+>     `write_sym` still leaves `Repr::Bytes` — so promotion needs something else again; find what
+>     actually sets `Repr::Array` and work backwards from there rather than forwards from a guess.
+>
+>     The branch fixed a real bug once (de-promoting an object discarded its array contents and a
+>     read answered from stale bytes), so "unreached" is not a case for deleting it.
 >
 > ### Rules earned, most recent first
 >
