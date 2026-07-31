@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 277) — 1424 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 278) — 1425 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **Every census axis is now run, and wave 277 ran the last one** (`StmtKind` against the
+> *generator*). It came back clean, and the clean result is the record: of the three statement
+> forms the control-flow channel never emits, `Empty` already works (the pattern I censused with
+> was a bad proxy), `Asm` is a declared gap, and `GotoIndirect` is declared **fixture-only** by
+> 020 contract 42 — "VPP contains no computed gotos, verified, zero real uses tree-wide", which I
+> re-checked: the one grep hit was the comment `/* This can only be reached via goto */`.
+>
+> **The axes and what each gave:** `ExprKind` vs the generator (270, two defects), `CmpOp` vs
+> lowering (271, seven builtins), every CIR enum vs lowering (272, the vector cluster), `UbKind`
+> (272, clean), `Kw::` vs the parser (275–276, `_Generic` and `__label__`), `StmtKind` vs the
+> generator (277, clean). **The census channel is exhausted.**
+>
+> **What wave 277 closed off the open list, all negative results:**
+>   - **`Const::FuncAddr` is a spelling question, not a gap.** Lowering uses `RValue::AddrOfFunc`
+>     in bodies and `GlobalInit::FuncAddr` for file-scope initializers; the operand form is simply
+>     the one it never reaches for. Struck from the list.
+>   - **`__builtin_convertvector` appears in 0 VPP files**, and vector casts already agree.
+>   - **`BinOp::PtrDiff`** remains dead in every crate; `bin()` gives it a *declared* lowering gap
+>     rather than a silent `Undef`, so it is dead weight with an honest failure mode rather than a
+>     hazard. Note that the spec also lists a `BinOp::PtrAdd` "reserved" that does not exist in
+>     the code at all — **fix the spec and the enum together, or leave both.**
+>
+> **With the censuses exhausted, the remaining channels are the soak and mutation.** The corpus
+> now reaches vectors, `_Generic`, `__label__`, the classification builtins and `!` — none of
+> which it could a fortnight ago — so pushing `SOAK_CF=1` past its frontier is a different search
+> than it was.
 >
 > **The keyword census is exhausted** (wave 276). All 59 `Kw::` variants now have a production;
 > `__label__` was the last, and it is implemented by *renaming* local labels in the parser so
@@ -1967,6 +1994,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Ship a construct, then check the corpus can reach it — in the same wave** (wave 277). Waves
+> 272–274 built all of `vector_size` and the generator emitted **zero** vectors, so three waves of
+> surface stayed graded by whatever a person thought to spell. Wave 270's rule cuts both ways:
+> "adding a construct to the corpus buys nothing until the context can discriminate" has a
+> converse, and the converse is the more expensive one to miss. Five mutants across the three
+> waves now die to the corpus alone.
+>
+> **A new generator arm on the shared RNG stream silently re-rolls every arm after it** (wave
+> 277). Drawing from `rng` like the other extended arms dropped wave 270's
+> `!`-of-a-negative-zero shape from three programs to **zero** — caught by the channel's own
+> adequacy guard, which is exactly why those guards are counts and not booleans. Wave 217 gated
+> new arms *before* any `rng` call to protect the other channels; **within** one channel the same
+> protection needs a **separate stream**. Swap the streams around a shared helper rather than
+> duplicating its pool.
+>
+> **A test that measures the wrong thing reads exactly like the feature being absent** (wave 277).
+> The presence test counted zero lane reads because it collected only *braced-initialized*
+> vectors while the read is of the **result** vector — indistinguishable from a generator emitting
+> no reads at all. It also keyed on a `_v0` naming convention `fresh()` does not use. **Before
+> believing a zero, check what the counter counts.**
 >
 > **A census axis is worth running even when it returns one row** (wave 276). All 59 `Kw::`
 > variants against the parser's productions left exactly one unconsumed: `Kw::Label`. One row —
