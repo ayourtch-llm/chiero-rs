@@ -47,7 +47,45 @@ impl Rng {
 /// Macros the generated expressions may ask about. `defined` is part of the `#if` grammar and is
 /// evaluated by the directive layer rather than the expression layer, so it belongs in the
 /// channel: it is the one operand whose value depends on preprocessor state.
-const PRELUDE: &str = "#define SET 1\n#define ZERO 0\n#define WIDE 0x8000000000000000\n";
+const PRELUDE: &str = concat!(
+    "#define SET 1\n",
+    "#define ZERO 0\n",
+    "#define WIDE 0x8000000000000000\n",
+    // A `#if` operand is macro-expanded *before* the expression parser sees it, so the evaluator's
+    // input is a token sequence no one wrote. These give the channel that path.
+    "#define ONE 1\n",
+    "#define NEG (-3)\n",
+    "#define CH 'A'\n",
+    "#define USUFFIX 7u\n",
+    // An object-like macro that expands to an operator, so expansion changes the *shape* of the
+    // expression and not just a leaf value.
+    "#define PLUS +\n",
+    "#define OPEN (\n",
+    "#define CLOSE )\n",
+    // Function-like macros, including one that is a no-op wrapper and one that expands through
+    // another macro — a `#if` operand can be arbitrarily many rescans deep.
+    "#define ID(x) (x)\n",
+    "#define ADD(a, b) ((a) + (b))\n",
+    "#define MUL(a, b) ((a) * (b))\n",
+    "#define WRAP(x) ID(x)\n",
+    "#define TWICE(x) ADD(x, x)\n",
+    // An object-like macro whose body *names* a function-like macro. This is the one shape that
+    // makes C11 6.10.3.4p1 observable — the replacement list is rescanned together with the
+    // tokens that follow it, so `CALL(1, 2)` becomes an invocation of `ADD` even though `CALL`
+    // took no arguments. Without it, mutating the rescan into a plain append survives the whole
+    // channel: every other macro here either expands to a complete value or is function-like
+    // already, and neither notices whether the rescan sees what comes next.
+    "#define CALL ADD\n",
+    "#define ONEARG ID\n",
+    // Self-referential and mutually recursive macros: the blue paint rule stops the rescan, and
+    // the identifier that survives it evaluates to zero like any other unknown name.
+    "#define SELF SELF\n",
+    "#define PING PONG\n",
+    "#define PONG PING\n",
+    // Expands to nothing. Legal inside a larger expression, not as the whole operand — `#if` with
+    // no tokens is an error in both compilers, so the generator only ever places it beside one.
+    "#define EMPTY\n",
+);
 
 /// A leaf operand.
 ///
@@ -55,8 +93,8 @@ const PRELUDE: &str = "#define SET 1\n#define ZERO 0\n#define WIDE 0x80000000000
 /// is separate from the lexer's and from the C parser's: decimal, octal, hex, binary, the four
 /// suffix shapes, character constants with each escape form, `defined` in both spellings, and a
 /// bare identifier — which is *not* an error in `#if`, it is zero.
-fn leaf(rng: &mut Rng) -> String {
-    match rng.below(14) {
+fn leaf(rng: &mut Rng, defined_ok: bool) -> String {
+    match rng.below(16) {
         0 => rng.below(1000).to_string(),
         1 => format!("0{:o}", rng.below(512)),
         2 => format!("0x{:x}", rng.below(4096)),
@@ -82,11 +120,13 @@ fn leaf(rng: &mut Rng) -> String {
         .to_string(),
         // A wide character constant: the prefix is part of the token, and the value is the same.
         7 => (*rng.pick(&["L'A'", "u'A'", "U'A'"])).to_string(),
-        8 => (*rng.pick(&[
+        8 if defined_ok => (*rng.pick(&[
             "defined(SET)",
             "defined ZERO",
             "defined(NOPE)",
             "defined WIDE",
+            "defined(ID)",
+            "defined(SELF)",
         ]))
         .to_string(),
         9 => (*rng.pick(&["SET", "ZERO", "WIDE", "UNKNOWN_IDENTIFIER"])).to_string(),
@@ -99,6 +139,13 @@ fn leaf(rng: &mut Rng) -> String {
             "18446744073709551615u",
         ]))
         .to_string(),
+        // Object-like macros, including the two that cannot terminate: `SELF` expands to itself
+        // and `PING`/`PONG` to each other. The blue-paint rule stops the rescan, and what survives
+        // is an ordinary identifier, which in a `#if` is zero.
+        11 => (*rng.pick(&["ONE", "NEG", "CH", "USUFFIX", "SELF", "PING", "PONG"])).to_string(),
+        // A function-like macro name with no argument list is *not* an invocation. It stays an
+        // identifier, and an identifier in a `#if` is zero — not an error, and not a call.
+        12 => (*rng.pick(&["ID", "ADD", "MUL", "WRAP", "TWICE"])).to_string(),
         _ => format!("{}", rng.below(1000)),
     }
 }
@@ -123,54 +170,96 @@ fn leaf(rng: &mut Rng) -> String {
 ///     is a program at all, this channel has no one to ask, and a construct it cannot arbitrate
 ///     does not belong in it. Multi-character constants are *not* in this category: both warn,
 ///     both compute, and both compute the same thing.
-fn expr(rng: &mut Rng, depth: u32) -> String {
+fn expr(rng: &mut Rng, depth: u32, defined_ok: bool) -> String {
     if depth == 0 {
-        return leaf(rng);
+        return leaf(rng, defined_ok);
     }
-    match rng.below(14) {
-        0 => format!("!{}", expr(rng, depth - 1)),
-        1 => format!("~{}", expr(rng, depth - 1)),
+    match rng.below(21) {
+        0 => format!("!{}", expr(rng, depth - 1, defined_ok)),
+        1 => format!("~{}", expr(rng, depth - 1, defined_ok)),
         // Unary `+` and `-` parenthesize their operand: `- -1` would otherwise be spelled `--1`,
         // which is one token, and gcc rejects `--` in a preprocessor expression. This is a
         // property of the *spelling*, not of the evaluator, so it is the generator's job to
         // avoid it rather than something for the channel to report.
-        2 => format!("-({})", expr(rng, depth - 1)),
-        3 => format!("+({})", expr(rng, depth - 1)),
-        4 => format!("({})", expr(rng, depth - 1)),
+        2 => format!("-({})", expr(rng, depth - 1, defined_ok)),
+        3 => format!("+({})", expr(rng, depth - 1, defined_ok)),
+        4 => format!("({})", expr(rng, depth - 1, defined_ok)),
         // A nonzero divisor by construction: `x | 1` is odd, hence nonzero, for every x.
         5 => format!(
             "({} / (({}) | 1))",
-            expr(rng, depth - 1),
-            expr(rng, depth - 1)
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
         ),
         6 => format!(
             "({} % (({}) | 1))",
-            expr(rng, depth - 1),
-            expr(rng, depth - 1)
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
         ),
         // Shifts are masked into a defined range. A left shift of a negative value is undefined,
         // so the left operand is masked non-negative too.
         7 => format!(
             "((({}) & 0xff) << (({}) & 7))",
-            expr(rng, depth - 1),
-            expr(rng, depth - 1)
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
         ),
         8 => format!(
             "(({}) >> (({}) & 7))",
-            expr(rng, depth - 1),
-            expr(rng, depth - 1)
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
         ),
         9 => format!(
             "({} ? {} : {})",
-            expr(rng, depth - 1),
-            expr(rng, depth - 1),
-            expr(rng, depth - 1)
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
         ),
+        // Macro invocations. The argument subtrees are generated with `defined_ok = false`:
+        // C 6.10.1 leaves it undefined what happens when `defined` results from macro expansion,
+        // and the two oracles genuinely differ there. Threading a flag down rather than filtering
+        // the finished string is what makes the exclusion airtight — `defined` can sit
+        // arbitrarily deep in an argument, and a textual filter would have to re-parse.
+        10 => format!("ID({})", expr(rng, depth - 1, false)),
+        11 => format!(
+            "ADD({}, {})",
+            expr(rng, depth - 1, false),
+            expr(rng, depth - 1, false)
+        ),
+        12 => format!(
+            "MUL({} , {})",
+            expr(rng, depth - 1, false),
+            expr(rng, depth - 1, false)
+        ),
+        // `WRAP` expands through `ID` and `TWICE` through `ADD`: a `#if` operand can be several
+        // rescans deep before the expression parser sees a single token.
+        13 => format!("WRAP({})", expr(rng, depth - 1, false)),
+        14 => format!("TWICE({})", expr(rng, depth - 1, false)),
+        // Invocations through an object-like alias: the macro name and its argument list are not
+        // written together anywhere, so only the rescan rule joins them up.
+        15 => format!(
+            "CALL({}, {})",
+            expr(rng, depth - 1, false),
+            expr(rng, depth - 1, false)
+        ),
+        16 => format!("ONEARG({})", expr(rng, depth - 1, false)),
+        // Expansion that changes the expression's *shape* rather than a leaf's value: `PLUS` is an
+        // operator, `OPEN`/`CLOSE` are brackets, `EMPTY` is nothing at all. `EMPTY` is only ever
+        // placed beside a real operand, because `#if` with no tokens is an error in both oracles.
+        17 => format!(
+            "({} PLUS EMPTY {})",
+            expr(rng, depth - 1, defined_ok),
+            expr(rng, depth - 1, defined_ok)
+        ),
+        18 => format!("OPEN EMPTY {} CLOSE", expr(rng, depth - 1, defined_ok)),
         _ => {
             let op = rng.pick(&[
                 "*", "+", "-", "<", ">", "<=", ">=", "==", "!=", "&", "^", "|", "&&", "||",
             ]);
-            format!("({} {} {})", expr(rng, depth - 1), op, expr(rng, depth - 1))
+            format!(
+                "({} {} {})",
+                expr(rng, depth - 1, defined_ok),
+                op,
+                expr(rng, depth - 1, defined_ok)
+            )
         }
     }
 }
@@ -183,13 +272,33 @@ fn expr(rng: &mut Rng, depth: u32) -> String {
 /// unsigned value is never negative, so getting the usual arithmetic conversions wrong changes
 /// this token even when every bit agrees.
 fn probe(out: &mut String, index: usize, expression: &str) {
+    // Alternate directives rather than emitting both, which keeps the file the same size while
+    // covering twice the directive surface. `#elif` is a separate path: its expression is
+    // evaluated only when no earlier group in the same conditional was taken, so a `#elif` that
+    // evaluates unconditionally, or one that never evaluates, both still *select* correctly here
+    // — only the value it computes gives it away, which is what these probes read.
+    let (open, close) = if index.is_multiple_of(2) {
+        ("#if", "#endif")
+    } else {
+        ("#if 0\n#elif", "#endif")
+    };
     for bit in 0..64 {
         let _ = writeln!(
             out,
-            "#if ((({expression})) >> {bit}) & 1\nc{index}b{bit}\n#endif"
+            "{open} ((({expression})) >> {bit}) & 1\nc{index}b{bit}\n{close}"
         );
     }
-    let _ = writeln!(out, "#if ({expression}) < 0\nc{index}neg\n#endif");
+    let _ = writeln!(out, "{open} ({expression}) < 0\nc{index}neg\n{close}");
+
+    // Exclusivity: once a group in a conditional has been taken, no later `#elif` in it may be
+    // taken, however true its expression is. Every probe above opens with `#if 0`, so `taken` is
+    // always false when the `#elif` is reached and the rule is unfalsifiable there — mutating the
+    // `!frame.taken` guard away survived the whole channel until this directive existed. The
+    // `notexclusive` token must never be emitted by anyone.
+    let _ = writeln!(
+        out,
+        "#if 1\nc{index}taken\n#elif ({expression}) == ({expression})\nc{index}notexclusive\n#endif"
+    );
 }
 
 fn compiler_tokens(compiler: &str, src: &str) -> Vec<String> {
@@ -231,7 +340,7 @@ fn generated_if_expressions_agree_with_gcc_and_clang() {
     let mut src = String::from(PRELUDE);
     for index in 0..count {
         let mut rng = Rng::new(base + index as u64);
-        let expression = expr(&mut rng, 4);
+        let expression = expr(&mut rng, 4, true);
         probe(&mut src, index, &expression);
         expressions.push(expression);
     }
