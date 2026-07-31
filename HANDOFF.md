@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 280) — 1427 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 281) — 1428 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,23 +808,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 Two declarator defects are open — the census that found them is wave 278's
+> ### 🟡 One declarator defect is open, and it is the low-reach one
 >
-> **The declarator grammar census** (wave 278) ran twenty-seven shapes against gcc and found five
-> wrong answers. Three are closed: the reversed array dimensions and brace elision (278), and
-> anonymous struct/union members (279). Two remain, plus one found while fixing them:
+> **The declarator census** (wave 278) ran twenty-seven shapes against gcc and found five wrong
+> answers. Four are closed: reversed array dimensions and brace elision (278), anonymous
+> struct/union members (279), and `__builtin_offsetof` (280). Pointer-to-array indexing was struck
+> as a symptom of the reversal. One remains:
 >
->   1. **`_Alignas` is ignored on a variable.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4,
->      gcc says 16. A *wrong answer*, but narrow: three VPP files, and it only matters to a
->      program that asks. Note `struct A { char c; _Alignas(16) int v; }` already sizes
->      correctly, so this may be the variable path alone — probe both before assuming.
->   2. **`__builtin_offsetof` parses its member argument as an ordinary identifier**, so
->      `__builtin_offsetof(struct S, b)` reports "`b` was not declared". Found in wave 279 while
->      writing offset fixtures, which use an address difference instead. `<stddef.h>`'s `offsetof`
->      is this builtin on gcc, so any TU that includes it and uses the macro is refused.
+>   - **`_Alignas` is ignored on a variable.** `_Alignas(16) int x;` gives `_Alignof(x)` = 4 and
+>     the object really is misaligned (`(long)&x & 15` is 4, gcc says 0);
+>     `int x __attribute__((aligned(16)))` is wrong the same way. **Only the variable path**: a
+>     `struct A { char c; _Alignas(16) int v; }` already sizes, offsets and aligns correctly, so
+>     the member path is done. It is a *wrong answer* and so the worse kind, but it appears in
+>     **0 VPP files** — reach is why waves 279 and 280 went elsewhere first, and it is now the
+>     last one standing.
 >
-> **Pointer-to-array indexing is struck**: re-probed at the start of wave 279 and already fixed
-> by 278's dimension work, so it was a symptom rather than a defect.
+> **The census channel found five defects in one pass and is the best yield of the last ten
+> waves.** The axis that produced them — the shape of a *declaration* — is exhausted; what has
+> never been censused is the **preprocessor**: which `#` directives and macro forms does anything
+> exercise? 012 is a whole crate with no equivalent sweep.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -2012,6 +2014,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An early `return` from a function whose tail does bookkeeping skips the bookkeeping** (wave
+> 280). `type_expr` ends with `set_top`, which every arm reaches by falling out of the match. A new
+> arm that `return`ed pushed its node and never registered it, so `type_of` could not see it.
+> Fifteen fixtures passed and **one** failed — `sizeof(x)`, the only shape that reads the
+> operand's type from exactly there. **When adding an early return, read what the function does
+> after the match.**
+>
+> **The same lookup in two arms needs a fixture that reaches the second one** (wave 280). The
+> designator walk resolves a field at the root and again at each `.` step. Every fixture put the
+> anonymous member at the root, so a mutant that made the chain step scan directly survived. It
+> takes a designator that walks into a named struct *and then* through an anonymous one. Third
+> wave running that the fixtures all landed on the same side of a two-sided rule — the square
+> array (278), the zero offset (279), and now the root step.
+>
+> **A construct can be missing a *reader*, not a grammar** (wave 280). `__builtin_offsetof`'s
+> member designator already parsed into exactly the right tree — `n.y` a `Member`, `v[2]` an
+> `Index` — and the defect was sema typing that tree as an expression. **Before adding syntax,
+> check what the parser already produces for it.**
 >
 > **The zero case is the symmetric case wearing a different hat** (wave 279). Two mutants — the
 > offset rebase and the bit-offset rebase — survived fifteen fixtures because *every* one declared
