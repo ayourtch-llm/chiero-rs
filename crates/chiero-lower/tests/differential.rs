@@ -4831,3 +4831,47 @@ fn sizeof_of_a_local_folds_in_an_array_bound_and_an_enumerator() {
         agree_with(prelude, body);
     }
 }
+
+/// **A tag referenced before its definition is the same tag.**
+///
+/// `tag()` interns a reference to a not-yet-defined tag as `Ty::Error` and does not record the
+/// name, so the reference is frozen: a definition later in the file cannot reach back and
+/// complete it. The commonest victim is a struct that mentions *itself* — inside
+/// `struct Node { struct Node *next; }` the tag is not yet in the table, so `next` is a pointer
+/// to `Ty::Error` for the rest of the program, and a linked list stops working at the first
+/// hop. `a.next->v` produced no answer at all.
+///
+/// The pointer-subtraction case is a regression from wave 303 and is the reason this is a fix
+/// rather than a feature. That wave added "arithmetic on a pointer to an incomplete type", which
+/// is a correct rule applied to an incorrect fact: `a.next` points to a *complete* type, and only
+/// the representation says otherwise. A check is only ever as right as what it asks.
+///
+/// The forward-declaration cases are the same fact from the other side — `struct A;` used through
+/// a pointer and defined afterwards, and two structs that refer to each other.
+#[test]
+fn a_tag_used_before_its_definition_is_completed_by_it() {
+    const LIST: &str = "struct Node { int v; struct Node *next; }; static struct Node b = {2,0}; \
+         static struct Node a = {1,&b};";
+    for (prelude, body) in [
+        // A struct that mentions itself: the member must point at the completed type.
+        (LIST, "return a.next->v;"),
+        (LIST, "struct Node *p = &a; return p->next->v;"),
+        (LIST, "return (int)sizeof(*a.next);"),
+        // Wave 303's check must not fire here: the pointee is complete.
+        (LIST, "return (int)(a.next - &b);"),
+        (LIST, "return (int)(a.next + 1 - a.next);"),
+        // Declared first, used through a pointer, defined afterwards.
+        (
+            "struct I; struct I *gp; struct I { int z; }; static struct I gi = {4};",
+            "gp = &gi; return gp->z;",
+        ),
+        // Two structs that refer to each other.
+        (
+            "struct A; struct B { struct A *pa; int v; }; struct A { int w; }; \
+             static struct A ga = {5}; static struct B gb = {&ga, 9};",
+            "return gb.pa->w;",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}
