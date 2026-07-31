@@ -750,13 +750,6 @@ impl AddressSpace {
             .map(|(_, a, _)| *a)
     }
 
-    fn size_of(&self, id: ObjectId) -> Option<u64> {
-        self.objs
-            .iter()
-            .find(|(i, _, _)| *i == id)
-            .map(|(_, _, s)| *s)
-    }
-
     /// 021 §7.1: yields `addr + off` **and records the provenance in the value**.
     pub fn ptr_to_int(&self, p: Pointer) -> IntVal {
         let base = self.addr_of(p.base).unwrap_or(0);
