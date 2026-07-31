@@ -2772,7 +2772,8 @@ fn a_conditional_over_function_designators_is_a_pointer() {
 ///   plain widening SExt/ZExt   KILLED   <- these fixtures do observe it
 ///   widen_to_64 signedness     SURVIVES
 ///   array index SExt/ZExt      SURVIVES
-///   integer -> float Si/Ui     SURVIVES
+///   integer -> float SiToFp    KILLED    <- wave 255
+///   integer -> float UiToFp    SURVIVES  <- needs a negative source that reaches this arm
 /// ```
 ///
 /// So this is a regression guard for **one** of the four sites and a set of valid-but-inert
@@ -2787,14 +2788,35 @@ fn a_conditional_over_function_designators_is_a_pointer() {
 ///     and the *control* fails, which is how that was caught rather than shipped.
 ///   - **`signed char i = -2` from mid-array discriminates for a `signed` index but not an
 ///     `unsigned` one**, so it kills nothing when the mutation forces `SExt`.
-///   - **`int v = -5; double d = v;` does not reach the `SiToFp`/`UiToFp` site at all**, whether
-///     `v` is a literal or read from an array. Some other path handles it, and finding which is
-///     the open question §9 carries.
+///   - ~~**`int v = -5; double d = v;` does not reach the `SiToFp`/`UiToFp` site at all.**~~
+///     **Wrong, and wave 255 found out how.** It is reached — a `double` local, a `double` member
+///     initialized by a brace, and a `double` array element all arrive there. Wave 254 concluded
+///     "never reached" from an instrumented run that logged nothing, without the control that would
+///     have shown the logging was not in the build. The site was never dead, only never *tested*:
+///     the whole suite had no int-to-float conversion through `convert_for_store`.
+///
+///     With those fixtures it now observes `UiToFp` — an `unsigned` source whose top bit is set
+///     kills the "always signed" mutant. **"Always unsigned" still survives**: six signed sources
+///     reach the arm and every one of them holds a non-negative value, where the two conversions
+///     agree. A negative source that arrives *here* rather than through `cast_kind` has not been
+///     found; §9 carries it.
 ///
 /// The fixtures stay because they are correct C with correct expectations, and because the one site
 /// they do cover is covered. What they must not be read as is coverage of the other three.
 #[test]
 fn narrow_unsigned_values_extend_the_same_way_gcc_extends_them() {
+    agree("double d = -5; return (int)d;");
+    agree("struct S { double d; }; struct S s = {-5}; return (int)s.d;");
+    agree("double a[2] = {-5, 8}; return (int)(a[0] + a[1]);");
+    agree("unsigned u = 4294967291u; double d = u; return (int)(d > 4000000000.0);");
+    agree(
+        "struct S { double d; }; unsigned u = 4294967291u; struct S s = {u}; \
+         return (int)(s.d > 4000000000.0);",
+    );
+    agree("struct S { double d; }; int i = -5; struct S s = {i}; return (int)s.d;");
+    agree("int i = -5; double a[2] = {i, 8}; return (int)a[0];");
+    agree("int i = -5; double d = i; return (int)(d < 0.0);");
+
     // A narrow unsigned reaching a 64-bit context by ordinary conversion.
     agree("unsigned char c = 200; long v = c; return (int)v;");
     agree("unsigned short h = 60000; long v = h; return (int)(v >> 8);");
