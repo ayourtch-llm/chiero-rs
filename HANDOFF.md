@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 254) — 1400 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 255) — 1401 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,6 +1572,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
+> ### 🔴 Do this first: three extension sites nothing can observe
+>
+> **Wave 254 audited `is_signed`'s twelve callers and found no defect** — the four that decide an
+> extension all take an operand already materialised at its promoted type, which is the right thing
+> to ask. Twelve differential fixtures agree with gcc.
+>
+> **But mutation says those fixtures observe one site of four.** Forcing each decision the wrong way:
+> plain-widening `SExt`/`ZExt` dies; `widen_to_64`'s signedness, the array-index extension, and
+> `SiToFp`/`UiToFp` all survive. `narrow_unsigned_values_extend_the_same_way_gcc_extends_them`
+> carries the table and the reasons.
+>
+> **The three failures are each a small, separate question.**
+>
+>   1. **The array index.** A discriminating unsigned index needs its top bit set — `i = 200` for
+>      `unsigned char` — which needs an array with an element 200. Seeding one with a loop exceeds
+>      the engine's budget and the fixture returns nothing. Try a designated initializer
+>      (`int a[256] = {[200] = 7};`) if lowering supports one, or a global array, which needs no
+>      seeding code at all.
+>   2. **`widen_to_64`.** Called from two pointer-arithmetic paths (lines ~3211 and ~4094). A fixture
+>      has to reach one of them with a narrow *unsigned* operand whose top bit is set; `p += c` with
+>      `unsigned char c = 200` is the shape, and it needs an object big enough for the result to be
+>      in bounds.
+>   3. **`SiToFp`/`UiToFp` is not reached at all** by `int v = -5; double d = v;`, whether `v` is a
+>      literal or read from an array. **This is the interesting one**: some other path handles
+>      integer-to-float, and knowing which is worth more than the fixture — a second conversion site
+>      is exactly the shape waves 151 and 152 spent two commits removing from the string decoders.
+>
 > ### ✅ Closed in wave 253 — the generator now catches the bit-field defect
 >
 > **The controlled experiment passes at last**: revert `field_signed` in `chiero-lower`, run
@@ -1690,6 +1717,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **An audit that finds nothing still has to prove it looked** (wave 254). Twelve fixtures agreeing
+> with gcc says the code is right *if* the fixtures can see the decisions they are named after.
+> Mutation said they see one of four. **The audit's result is "no defect at one site, and no
+> evidence at three"** — which is a different sentence from the one twelve green fixtures suggest,
+> and the only honest one.
+>
+> **The blind-half error recurs in your own fixtures, not just the generator's** (wave 254). I wrote
+> `unsigned char i = 2` as an index to test sign- versus zero-extension, three waves after
+> establishing that a value with its top bit clear cannot tell them apart. Knowing the rule did not
+> stop me applying it; the mutant did.
+>
+> **A fixture that exceeds the engine's budget tests nothing and looks like it passed** (wave 254).
+> Seeding a 256-element array with a loop made chiero return no value, so `agree` had nothing to
+> compare — caught only because the *control* mutant also failed, which is the signal that a test is
+> inert rather than passing.
 >
 > **A construct's *context* is part of its coverage, not a detail of it** (wave 253). The generator
 > emitted bit-fields, gave them discriminating values, routed them into scope — and read every one
