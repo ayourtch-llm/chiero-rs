@@ -305,6 +305,15 @@ struct Specs {
     is_typedef: bool,
 }
 
+/// One `[...]` or `(...)` suffix of a declarator, held until the whole run is read.
+///
+/// They are applied in reverse, so the type has to be buildable after the fact rather than as
+/// each bracket is consumed — see [`Parser::declarator_suffixes`].
+enum Suffix {
+    Arr(ArrayLen, Span),
+    Fun(Vec<DeclId>, bool, bool, Span),
+}
+
 struct Parser<'a> {
     toks: Vec<Tok>,
     pos: usize,
@@ -1564,7 +1573,42 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn declarator_suffixes(&mut self, mut ty: TypeId) -> TypeId {
+    /// The `[...]` and `(...)` suffixes of one declarator level.
+    ///
+    /// **Collected left to right and applied right to left**, which is the whole of C's rule and
+    /// was the bug. `int a[2][3]` binds as `(a[2])[3]`, so `a` is an array of **2** rows of 3 —
+    /// the *leftmost* bracket is the outermost type. Folding as the suffixes are read builds the
+    /// inverse, `int[3][2]`, and almost nothing notices: `sizeof(a)` is 2·3·4 either way, a
+    /// square array is its own reverse, and `a[1][0]` reads the same element under both layouts.
+    /// `sizeof(a[0])` is the shape that separates them.
+    ///
+    /// The suffixes are still *parsed* in source order — the length expressions have to be, for
+    /// their diagnostics and their spans — and only the type construction runs backwards. Each
+    /// node keeps the span of its own bracket, so a reversed fold does not move any of them.
+    fn declarator_suffixes(&mut self, ty: TypeId) -> TypeId {
+        let mut suffixes: Vec<Suffix> = Vec::new();
+        self.collect_declarator_suffixes(&mut suffixes);
+        let mut ty = ty;
+        for sfx in suffixes.into_iter().rev() {
+            ty = match sfx {
+                Suffix::Arr(len, span) => {
+                    self.ast.add_type(TypeKind::Array { elem: ty, len }, span)
+                }
+                Suffix::Fun(params, variadic, kr, span) => self.ast.add_type(
+                    TypeKind::Func {
+                        ret: ty,
+                        params,
+                        variadic,
+                        kr,
+                    },
+                    span,
+                ),
+            };
+        }
+        ty
+    }
+
+    fn collect_declarator_suffixes(&mut self, out: &mut Vec<Suffix>) {
         loop {
             if self.is_punct(0, Punct::LBracket) {
                 // The **token index**, not `here()`. A zero-width span at the *next,
@@ -1600,7 +1644,7 @@ impl<'a> Parser<'a> {
                 };
                 self.expect_punct(Punct::RBracket, "to close an array declarator");
                 let span = self.span_from(open);
-                ty = self.ast.add_type(TypeKind::Array { elem: ty, len }, span);
+                out.push(Suffix::Arr(len, span));
                 continue;
             }
             if self.is_punct(0, Punct::LParen) {
@@ -1609,18 +1653,10 @@ impl<'a> Parser<'a> {
                 let (params, variadic, kr) = self.parameter_list();
                 self.expect_punct(Punct::RParen, "to close a parameter list");
                 let span = self.span_from(open);
-                ty = self.ast.add_type(
-                    TypeKind::Func {
-                        ret: ty,
-                        params,
-                        variadic,
-                        kr,
-                    },
-                    span,
-                );
+                out.push(Suffix::Fun(params, variadic, kr, span));
                 continue;
             }
-            return ty;
+            return;
         }
     }
 

@@ -2951,6 +2951,17 @@ fn a_multidimensional_array_keeps_its_dimension_order() {
     agree("int a[2][3] = {1,2,3}; return a[0][2]*10 + a[1][0];");
     // Writes through the subscript, which never depended on the initializer.
     agree("int a[2][3]; a[1][2] = 6; a[0][2] = 3; return a[1][2]*10 + a[0][2];");
+    // **Elision nested inside elision.** A flat list filling a three-dimensional array makes
+    // `init_flat` meet an aggregate slot of its own and recurse; a mutant that consumed one item
+    // there instead of the four the row needs survived every two-dimensional fixture above.
+    agree("int a[2][2][2] = {1,2,3,4,5,6,7,8}; return a[1][0][1];");
+    agree("int a[2][2][2] = {1,2,3,4,5}; return a[1][0][0]*10 + a[1][1][1];");
+    agree("int a[2][2][2] = {{1,2,3,4},{5,6,7,8}}; return a[0][1][1]*10 + a[1][0][0];");
+    // The same nesting through a struct, where the subaggregate is a member rather than a row.
+    agree_with(
+        "struct S { int p[2]; int q; };",
+        "struct S s[2] = {1,2,3,4,5,6}; return s[1].p[1]*10 + s[0].q;",
+    );
     // Three dimensions, where a reversal and a rotation differ.
     agree("int a[2][3][4]; a[1][2][3] = 7; return a[1][2][3];");
     agree("int a[1][2][3] = {{{1,2,3},{4,5,6}}}; return a[0][1][2];");

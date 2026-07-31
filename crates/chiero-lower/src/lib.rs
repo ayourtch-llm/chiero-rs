@@ -223,6 +223,17 @@ struct FnState {
 /// written switch uses and far below VPP's protocol-number spans.
 const MAX_ENUMERATED_CASE_RANGE: i128 = 64;
 
+/// One member of an aggregate being initialized: byte offset, type, name, bit range.
+///
+/// **The bit range travels with the slot**, because a bit-field initializer is `StoreBits`
+/// and not a narrower `Store` (015 contract 7).
+type Slot = (
+    u64,
+    TyId,
+    Option<chiero_span::Symbol>,
+    Option<chiero_cir::BitRange>,
+);
+
 struct Lowerer<'a> {
     ast: &'a Ast,
     analysis: &'a Analysis,
@@ -5949,22 +5960,13 @@ impl Lowerer<'_> {
         }
     }
 
-    fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {
-        let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
-            return;
-        };
-        // The fields to walk, as (byte offset, type, name, bit range), in declaration
-        // order. **The bit range travels with the slot**, because a bit-field initializer
-        // is `StoreBits` and not a narrower `Store` — 015 contract 7, which `assign` obeys
-        // and this function did not. Deriving it here from `RecordLayout` is the same
-        // single source `bitfield_of` uses for the assignment path.
-        type Slot = (
-            u64,
-            TyId,
-            Option<chiero_span::Symbol>,
-            Option<chiero_cir::BitRange>,
-        );
-        let slots: Vec<Slot> = match self.analysis.ty(ty).clone() {
+    /// Where `ty`'s members live: (byte offset, type, name, bit range), in declaration order.
+    ///
+    /// **One walk, shared by `init_list` and `init_flat`.** They have to agree about a
+    /// type's layout, or a brace-elided initializer would fill different slots from a
+    /// braced one — and the two would disagree only for the nested shapes nobody writes.
+    fn slots_of(&mut self, ty: TyId, item_count: usize, span: Span) -> Vec<Slot> {
+        match self.analysis.ty(ty).clone() {
             Ty::Record(r) => {
                 let l = self.analysis.layout(r);
                 l.fields
@@ -5981,7 +5983,7 @@ impl Lowerer<'_> {
             Ty::Array { elem, len } => {
                 let n = match len {
                     chiero_sema::ArrayLen::Fixed(n) => n,
-                    _ => items.len() as u64,
+                    _ => item_count as u64,
                 };
                 let esz = self.analysis.size_of(elem).unwrap_or(1);
                 (0..n).map(|i| (i * esz, elem, None, None)).collect()
@@ -6009,12 +6011,162 @@ impl Lowerer<'_> {
                         "a braced initializer for {other:?}, which lowering cannot walk"
                     ),
                 });
-                return;
+                // No slots, so nothing is written — and the diagnostic above makes 015 §7
+                // refuse the function, which is the point. Returning an empty walk rather
+                // than bailing keeps this a *description* of the type that both callers can
+                // share.
+                Vec::new()
             }
+        }
+    }
+
+    /// `base + off`, or `base` itself when the offset is zero.
+    fn offset_addr(&mut self, base: Operand, off: u64, span: Span) -> Operand {
+        if off == 0 {
+            return base;
+        }
+        let dst = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst,
+                rv: RValue::PtrAdd {
+                    base,
+                    off: Operand::Const(Const::Int {
+                        bits: 64,
+                        val: off as i128,
+                    }),
+                },
+            },
+            span,
+        );
+        Operand::Value(dst)
+    }
+
+    /// One scalar initializer: converted, then stored plain or into a bit-field.
+    ///
+    /// **Lifted so `init_flat` uses the same store rather than a second one.** Wave 142 added
+    /// the bit-field branch in front of the conversion instead of beside it and the new path
+    /// silently skipped it; one function is one thing to get right.
+    fn store_init_scalar(
+        &mut self,
+        addr: Operand,
+        fty: TyId,
+        bits: Option<chiero_cir::BitRange>,
+        value: ExprId,
+        span: Span,
+    ) {
+        let v = self.expr(value);
+        let cty = self.cty(fty);
+        // **The initializer is converted first, whichever store follows** (C11 6.7.9p11:
+        // as if by assignment). sema inserts that conversion for an assignment
+        // *expression* and not for a braced element, so without this a `{3, 5}` into
+        // `struct S { signed char a; int b; }` stored a 32-bit `3` into a slot declared
+        // `i8`, and a `long` initializer for an `int:3` gave `StoreBits` a 64-bit value
+        // where its unit is 32.
+        //
+        // **Hoisted above the bit-field branch deliberately.** Wave 140 added it for the
+        // ordinary store and wave 142 added the bit-field branch *in front of it*, so
+        // the new path silently skipped a conversion the old one needed — the ledger
+        // caught that two waves later. One conversion for both stores is one thing to
+        // get right, and `cty` is already the correct target for each: the member's type
+        // for a plain store, the field's storage unit for a bit-field.
+        let v = self.convert_for_store(v, value, &cty, self.ty_signed(fty), span);
+        // **A bit-field member is `StoreBits`**, not a narrower `Store` (015 contract
+        // 7, whose `BitRange` came from `RecordLayout` above). A full-width store here
+        // wrote over every neighbour sharing the unit, so `{1, 2}` into
+        // `struct { int a:3; int b:5; }` put 1 across the whole unit and then 2 across
+        // it again. `assign` has obeyed this rule all along; this path never did, and a
+        // single bit-field at offset 0 hid it by having no neighbour to clobber.
+        //
+        // The value is *not* pre-truncated: `StoreBits` writes `width` bits and the
+        // reinterpretation at the field's signedness happens on the read, which is what
+        // makes 7 in a 3-bit signed field read back as −1.
+        if let Some(bits) = bits {
+            self.emit(
+                InstKind::StoreBits {
+                    addr,
+                    val: v,
+                    unit: cty,
+                    bits,
+                    align: 1,
+                },
+                span,
+            );
+            return;
+        }
+        let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
+        self.emit(
+            InstKind::Store {
+                addr,
+                val: v,
+                ty: cty,
+                align,
+                vol: Volatility::Normal,
+            },
+            span,
+        );
+    }
+
+    /// Fill `ty` from a **brace-elided** run of initializers; returns how many it used.
+    ///
+    /// C11 6.7.9p20: a subaggregate whose initializer does not begin with `{` takes as many
+    /// elements from the enclosing list as it needs. `int a[2][3] = {1,2,3,4,5,6}` is the
+    /// same object as `{{1,2,3},{4,5,6}}`, and `{1,2,3}` fills the first row and zeroes the
+    /// second.
+    ///
+    /// **Only reachable once the dimensions were the right way round.** With `int[2][3]`
+    /// typed as `int[3][2]` the outer slots were still arrays and the same hole existed —
+    /// but no fixture wrote a flat initializer for a nested array, so a store of an
+    /// `Int(32)` into a slot declared `Ptr` had nothing to reject it.
+    ///
+    /// A nested `{...}` inside the run is still honoured — `{{1,2,3},4,5,6}` is legal C — so
+    /// this recurses into `init_list` for one item when it meets one.
+    fn init_flat(
+        &mut self,
+        base: Operand,
+        ty: TyId,
+        items: &[chiero_ast::InitItem],
+        span: Span,
+    ) -> usize {
+        let slots = self.slots_of(ty, items.len(), span);
+        let mut used = 0usize;
+        for (off, fty, _, bits) in slots {
+            if used >= items.len() {
+                break;
+            }
+            let addr = self.offset_addr(base.clone(), off, span);
+            let value = items[used].value;
+            if matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::InitList(_)) {
+                self.init_list(addr, fty, value, span);
+                used += 1;
+                continue;
+            }
+            if self.is_aggregate(fty) {
+                let rest: Vec<chiero_ast::InitItem> = items[used..].to_vec();
+                // `max(1)` so an empty subaggregate still advances rather than spinning.
+                used += self.init_flat(addr, fty, &rest, span).max(1);
+                continue;
+            }
+            self.store_init_scalar(addr, fty, bits, value, span);
+            used += 1;
+        }
+        used
+    }
+
+    fn init_list(&mut self, base: Operand, ty: TyId, init: ExprId, span: Span) {
+        let chiero_ast::ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
+            return;
         };
+        let slots: Vec<Slot> = self.slots_of(ty, items.len(), span);
 
         let mut cursor = 0usize;
-        for item in items {
+        // **An index walk, not `for item in items`.** Brace elision lets one *slot* consume
+        // several items, so the item cursor has to be able to move by more than one.
+        let mut taken = 0usize;
+        while taken < items.len() {
+            let item = items[taken].clone();
+            let item = &item;
+            taken += 1;
             // A designator repositions the cursor; C11 6.7.9p17 continues from there.
             if let Some(chiero_ast::Designator::Field(name)) = item.designators.first() {
                 if let Some(i) = slots.iter().position(|(_, _, n, _)| *n == Some(*name)) {
@@ -6058,56 +6210,16 @@ impl Lowerer<'_> {
                 self.init_list(addr, fty, item.value, span);
                 continue;
             }
-            let v = self.expr(item.value);
-            let cty = self.cty(fty);
-            // **The initializer is converted first, whichever store follows** (C11 6.7.9p11:
-            // as if by assignment). sema inserts that conversion for an assignment
-            // *expression* and not for a braced element, so without this a `{3, 5}` into
-            // `struct S { signed char a; int b; }` stored a 32-bit `3` into a slot declared
-            // `i8`, and a `long` initializer for an `int:3` gave `StoreBits` a 64-bit value
-            // where its unit is 32.
-            //
-            // **Hoisted above the bit-field branch deliberately.** Wave 140 added it for the
-            // ordinary store and wave 142 added the bit-field branch *in front of it*, so
-            // the new path silently skipped a conversion the old one needed — the ledger
-            // caught that two waves later. One conversion for both stores is one thing to
-            // get right, and `cty` is already the correct target for each: the member's type
-            // for a plain store, the field's storage unit for a bit-field.
-            let v = self.convert_for_store(v, item.value, &cty, self.ty_signed(fty), span);
-            // **A bit-field member is `StoreBits`**, not a narrower `Store` (015 contract
-            // 7, whose `BitRange` came from `RecordLayout` above). A full-width store here
-            // wrote over every neighbour sharing the unit, so `{1, 2}` into
-            // `struct { int a:3; int b:5; }` put 1 across the whole unit and then 2 across
-            // it again. `assign` has obeyed this rule all along; this path never did, and a
-            // single bit-field at offset 0 hid it by having no neighbour to clobber.
-            //
-            // The value is *not* pre-truncated: `StoreBits` writes `width` bits and the
-            // reinterpretation at the field's signedness happens on the read, which is what
-            // makes 7 in a 3-bit signed field read back as −1.
-            if let Some(bits) = bits {
-                self.emit(
-                    InstKind::StoreBits {
-                        addr,
-                        val: v,
-                        unit: cty,
-                        bits,
-                        align: 1,
-                    },
-                    span,
-                );
+            // **Brace elision** (C11 6.7.9p20): a subaggregate whose initializer does not
+            // begin with `{` takes as many elements from this list as it needs. This item is
+            // the first of them, so the walk rewinds one and hands the run over.
+            if self.is_aggregate(fty) {
+                let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                let used = self.init_flat(addr, fty, &rest, span);
+                taken = taken - 1 + used.max(1);
                 continue;
             }
-            let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
-            self.emit(
-                InstKind::Store {
-                    addr,
-                    val: v,
-                    ty: cty,
-                    align,
-                    vol: Volatility::Normal,
-                },
-                span,
-            );
+            self.store_init_scalar(addr, fty, bits, item.value, span);
         }
     }
 }
