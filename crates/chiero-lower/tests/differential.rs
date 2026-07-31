@@ -2890,6 +2890,152 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **Vector comparisons are refused, and the reason is the *result* type.**
+///
+///     `probe` lowered to CIR the verifier rejects (Eq operand is Ptr, declared Int(32))
+///
+/// Wave 273 did every other operator on a vector and left these, because they are the one shape
+/// whose result type is not the operand type. gcc's rules, pinned by running it:
+///
+///   - The result has the **same total size** and the **same lane count**; only the element type
+///     changes, to a **signed integer of the lane's width**. `v4sf == v4sf` is a `v4si`;
+///     `v2df == v2df` is a vector of two `long`.
+///   - True is **all bits set**, not 1. `(x == y)[0]` is `-1`, which is what makes
+///     `x & (x == y)` the mask idiom every SIMD program in VPP is built out of.
+///   - An **unsigned** lane compares unsigned. `(v8qu){200} < (v8qu){100}` is false, and would
+///     be true if the lane's signedness came from the vector rather than its element.
+///   - NaN follows the ordered/unordered split C's scalar operators already use: `n == n` is 0,
+///     `n != n` is all ones, `n < n` is 0.
+///
+/// # Why the result type is the whole difference
+///
+/// Every other vector operator returns its operand's type, so wave 273's sema branch could say
+/// "the result is the vector" and stop. A comparison has to *build* a type: same lanes, same
+/// alignment, element replaced. For `v4sf` that element is not the operand's element and not
+/// anything already interned for the expression.
+#[test]
+fn vector_comparisons_agree_with_gcc() {
+    let si = "typedef int v4si __attribute__((vector_size(16)));";
+    let sf = "typedef float v4sf __attribute__((vector_size(16))); typedef int v4si __attribute__((vector_size(16)));";
+    let qu = "typedef unsigned char v8qu __attribute__((vector_size(8)));";
+    let df = "typedef double v2df __attribute__((vector_size(16))); typedef long v2di __attribute__((vector_size(16)));";
+    // Controls: wave 273's arithmetic, which must not move.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {10,20,30,40}; v4si z = x + y; return z[1];",
+    );
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = -x; return z[1];");
+    // **All bits set, not 1.** Two lanes summed so a `1` and a `-1` cannot be confused.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x == y); return e[0] + e[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x == y); return e[0]*10 + e[2];",
+    );
+    // Every relational, on a lane where it is true and one where it is false.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x != y); return e[0]*10 + e[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x < y); return e[1]*10 + e[3];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x > y); return e[3]*10 + e[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x <= y); return e[0]*10 + e[3];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = (x >= y); return e[0]*10 + e[1];",
+    );
+    // The result is a value like any other: subscripted directly, and used as a mask.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; return (x == y)[0];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si m = x & (x == y); return m[0]*10 + m[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; v4si e = x == y; e += x; return e[0];",
+    );
+    // Its size is the operand's, which is the claim the element-type rule rests on.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,9,3,0}; return (int)sizeof(x == y);",
+    );
+    // A broadcast scalar on one side.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si e = (x == 1); return e[0]*10 + e[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si e = (2 < x); return e[0]*10 + e[3];",
+    );
+    // **An unsigned lane compares unsigned**, which is the only thing separating the lane's
+    // signedness from the vector's.
+    agree_with(
+        qu,
+        "v8qu c = {200,2,3,4,5,6,7,8}; v8qu d = {100,9,3,0,5,6,7,8}; v8qu e = (c < d); return e[0];",
+    );
+    agree_with(
+        qu,
+        "v8qu c = {200,2,3,4,5,6,7,8}; v8qu d = {100,9,3,0,5,6,7,8}; v8qu e = (c > d); return e[0];",
+    );
+    agree_with(
+        qu,
+        "v8qu c = {200,2,3,4,5,6,7,8}; v8qu d = {200,9,3,0,5,6,7,8}; v8qu e = (c == d); return e[0];",
+    );
+    // **Float lanes yield an integer vector**, and NaN follows the ordered/unordered split.
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; v4si e = (f == g); return e[0]*10 + e[1];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; v4si e = (f < g); return e[2]*10 + e[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n == n); return e[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n != n); return e[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf n = {0.0f/0.0f,1.0f,1.0f,1.0f}; v4si e = (n < n); return e[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.5f,0.5f,9.5f,4.5f}; return (int)sizeof(f == g);",
+    );
+    // A 64-bit lane, where the result element is `long` and not `int`.
+    agree_with(
+        df,
+        "v2df p = {1.5,2.5}; v2df q = {1.5,9.5}; v2di e = (p == q); return (int)(e[0]*10 + e[1]);",
+    );
+    agree_with(
+        df,
+        "v2df p = {1.5,2.5}; v2df q = {1.5,9.5}; v2di e = (p < q); return (int)(e[1]*10 + e[0]);",
+    );
+    agree_with(
+        df,
+        "v2df p = {1.5,2.5}; v2df q = {1.5,9.5}; return (int)sizeof(p == q);",
+    );
+}
+
 /// **Elementwise vector arithmetic lowers to CIR the verifier rejects.**
 ///
 ///     `probe` lowered to CIR the verifier rejects (Add operand is Ptr, declared Int(32))
