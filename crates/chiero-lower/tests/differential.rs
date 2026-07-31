@@ -2744,6 +2744,88 @@ fn a_conditional_over_function_designators_is_a_pointer() {
     );
 }
 
+/// **Every other place lowering decides sign- versus zero-extension.**
+///
+/// Wave 249 found `LoadBits` asking `is_signed(e)` — the *promoted expression's* signedness — where
+/// the *field's* was meant. `is_signed` has a dozen other callers, and the ones that decide an
+/// extension are the ones that could hold the same confusion. Reading them says they are right by
+/// design: each takes an operand whose value is already materialised at its promoted type, so
+/// extending it as the promoted type says is correct.
+///
+/// **This set out to test that rather than assert it**, because "right by design" is what wave
+/// 249's site looked like too. Each fixture puts a narrow *unsigned* value in the half of its range where the
+/// two extensions disagree and pushes it through one extension decision:
+///
+/// ```text
+///   widen_to_64          a narrow unsigned in a 64-bit context
+///   array index          an unsigned index sign-extended to 64
+///   integer -> float     the source's signedness picks SiToFp or UiToFp
+///   plain widening       SExt versus ZExt on an ordinary conversion
+/// ```
+///
+/// # What mutation says these actually observe, which is less than they look like
+///
+/// All pass, and that is worth exactly as much as the mutants they kill. Forcing each extension
+/// decision the wrong way, one at a time:
+///
+/// ```text
+///   plain widening SExt/ZExt   KILLED   <- these fixtures do observe it
+///   widen_to_64 signedness     SURVIVES
+///   array index SExt/ZExt      SURVIVES
+///   integer -> float Si/Ui     SURVIVES
+/// ```
+///
+/// So this is a regression guard for **one** of the four sites and a set of valid-but-inert
+/// programs for the other three. Recording that is the point: a passing test named after a decision
+/// it cannot observe is worse than no test, because it reports the coverage its name claims.
+///
+/// Three attempts at the inert ones failed, and how they failed is the useful part:
+///
+///   - **`unsigned char i = 2` as an index cannot discriminate at all** — 2 extends the same way
+///     either way. The obvious repair, `i = 200`, needs an array with an element 200, and seeding
+///     one with a 256-iteration loop exceeds the engine's budget: the fixture then returns nothing
+///     and the *control* fails, which is how that was caught rather than shipped.
+///   - **`signed char i = -2` from mid-array discriminates for a `signed` index but not an
+///     `unsigned` one**, so it kills nothing when the mutation forces `SExt`.
+///   - **`int v = -5; double d = v;` does not reach the `SiToFp`/`UiToFp` site at all**, whether
+///     `v` is a literal or read from an array. Some other path handles it, and finding which is
+///     the open question §9 carries.
+///
+/// The fixtures stay because they are correct C with correct expectations, and because the one site
+/// they do cover is covered. What they must not be read as is coverage of the other three.
+#[test]
+fn narrow_unsigned_values_extend_the_same_way_gcc_extends_them() {
+    // A narrow unsigned reaching a 64-bit context by ordinary conversion.
+    agree("unsigned char c = 200; long v = c; return (int)v;");
+    agree("unsigned short h = 60000; long v = h; return (int)(v >> 8);");
+    agree("unsigned char c = 200; return (int)((long)c * 1000000000L > 0);");
+    // **A negative index from the middle of an array**, which is what separates the two
+    // extensions cheaply. `unsigned char i = 2` cannot tell them apart at all — mutation said so —
+    // and `i = 200` can, but only in an array with an element 200, and a 256-iteration seeding
+    // loop exceeds the engine's budget so the fixture returns nothing and tests nothing. Starting
+    // four elements in and stepping back two discriminates in eight elements: sign-extended `-2`
+    // reaches `a[2]`, zero-extended it is 254 and reaches nothing.
+    agree("int a[8] = {0,1,2,3,4,5,6,7}; int *p = a + 4; signed char i = -2; return p[i];");
+    agree("int a[8] = {0,1,2,3,4,5,6,7}; int *p = a + 4; unsigned char u = 2; return p[u];");
+    // **Integer to float, with a *negative* source.** `unsigned char c = 200` promotes to a
+    // positive `int` before the conversion, so `SiToFp` and `UiToFp` agree on it and the fixture
+    // proves nothing — which is what mutation said. A negative `int` separates them: `SiToFp`
+    // gives -5 and `UiToFp` gives 4294967291.
+    agree("int v = -5; double d = v; return (int)d;");
+    agree("int v = -5; float f = v; return (int)f;");
+    agree("int a[2] = {-5, 0}; double d = a[0]; return (int)d;");
+    agree("int a[2] = {-5, 0}; double d = a[0]; return (int)(d < 0.0);");
+    // And an unsigned source large enough that reading its top bit as a sign would show.
+    agree("unsigned u = 4294967291u; double d = u; return (int)(d > 4000000000.0);");
+    // A plain widening conversion, both directions of the decision.
+    agree("unsigned char c = 200; unsigned long v = c; return (int)(v == 200);");
+    agree("signed char c = -56; long v = c; return (int)(v == -56);");
+    // And the same value through a signed narrow type, which must still sign-extend — the control
+    // that stops a fix from simply never extending.
+    agree("signed char c = -56; return (int)((long)c < 0);");
+    agree("short h = -1; unsigned long v = (unsigned long)(long)h; return (int)(v >> 60);");
+}
+
 /// **An `unsigned` bit-field whose top bit is set reads back sign-extended.**
 ///
 /// Found while writing a fixture for something else entirely: `struct S { unsigned a : 3; }` with
