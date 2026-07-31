@@ -5162,3 +5162,37 @@ fn a_subscript_reads_either_operand_and_a_void_cast_discards() {
         agree_with(prelude, body);
     }
 }
+
+/// **`__func__` is declared by the language, not by the program.**
+///
+/// C99 6.4.2.2: the compiler behaves as if `static const char __func__[] = "name";` appeared at
+/// the top of every function body. Nothing declares it, so this engine reported it undeclared and
+/// then produced no state for any use of it — every case below returned nothing at all.
+///
+/// Found by installing the gate wave 307 asked for: sema's diagnostics over the VPP corpus. It
+/// was the *only* complaint across all six headers, which is what made it obviously a false
+/// positive rather than a finding about VPP.
+///
+/// The `sizeof` case is the one that makes this a type and not a string: `__func__` is an *array*
+/// of the right length, so `sizeof(__func__)` is the name's length plus one, and treating it as a
+/// `const char *` would give 8 on this target.
+#[test]
+fn func_is_predefined_in_every_function_body() {
+    for (prelude, body) in [
+        ("", "return (int)__func__[0];"),
+        ("", "return (int)sizeof(__func__);"),
+        ("", "const char *n = __func__; return (int)n[1];"),
+        (
+            "static int len(const char *s){ int n=0; while(s[n]) n++; return n; }",
+            "return len(__func__);",
+        ),
+        ("", "return __func__[0] == 'p';"),
+        // Each function gets its own, naming itself.
+        (
+            "static int who(void){ return (int)sizeof(__func__); }",
+            "return who() * 100 + (int)sizeof(__func__);",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}

@@ -643,3 +643,38 @@ fn an_operation_its_operand_cannot_support_is_diagnosed() {
         );
     }
 }
+
+/// **Correct code produces no diagnostics.** The gate wave 307 asked for and did not build.
+///
+/// Every false positive of the last three waves — contract 14's redefinition rule firing on two
+/// functions with the same local name, and `__func__` reported undeclared — would have failed
+/// this test on the day it was written. None of them failed anything, because a sema diagnostic
+/// does not stop lowering: the corpus compiled, ran, and got the right answers while sema
+/// complained, so every test that reads an *answer* stayed green.
+///
+/// The corpus is six real VPP headers, already parsed by `corpus_analyses` for the layout gate,
+/// which asserts the preprocessor and the parser are clean and then never looks at sema. This
+/// closes that gap for the cost of one assertion.
+///
+/// **A finding here is far more likely to be ours than VPP's.** This is shipped C that gcc
+/// compiles without complaint; the question the test asks is not "is VPP correct" but "does this
+/// engine think correct code is wrong".
+#[test]
+fn the_corpus_analyses_without_a_single_diagnostic() {
+    let Some(cases) = harness::corpus_analyses() else {
+        eprintln!("skipping: gcc not on PATH, so no system headers to preprocess against");
+        return;
+    };
+    let mut complaints = Vec::new();
+    for (seed, p) in &cases {
+        for d in &p.analysis.diagnostics {
+            complaints.push(format!("{seed}: {}", d.message));
+        }
+    }
+    complaints.dedup();
+    assert!(
+        complaints.is_empty(),
+        "sema complained about code gcc accepts:\n  {}",
+        complaints.join("\n  ")
+    );
+}
