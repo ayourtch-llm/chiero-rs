@@ -2890,6 +2890,66 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **GNU's `__label__` does not parse, and it is the only keyword left with no production.**
+///
+///     expected an expression / expected `;` after an expression statement / ...
+///
+/// # How it was found: a keyword with no production is an opcode with no producer
+///
+/// Wave 275 landed `_Generic` and noticed its keyword had been sitting in the lexer's table
+/// unconsumed since the lexer was written. Running that as a census over all 59 `Kw::` variants
+/// leaves exactly one: `Kw::Label`. The axis is nearly exhausted, which is itself the result —
+/// but the one it found is not obscure. `__label__` appears in `vppinfra/hash.h`, and
+/// `hash_foreach_pair` is a core VPP macro. (`_Generic` appears in *no* VPP file, so this census
+/// ordered the two waves backwards on that measure.)
+///
+/// # A local label is not a renamed one, and the difference is the whole feature
+///
+/// `__label__ d;` declares `d` local to its block. Two blocks in one function may each declare
+/// it, which is exactly why the macro uses it — two `hash_foreach_pair` loops in one function
+/// would otherwise define the same label twice. A local label may also coexist with a
+/// function-scope label of the same name.
+///
+/// Lowering keys labels by `Symbol` in one per-function map, so anything that keeps the written
+/// name makes the second declaration collide with the first. That is the case worth testing, and
+/// the naive implementation passes every other fixture here.
+#[test]
+fn a_local_label_is_local_to_its_block() {
+    // The control: the same shapes with an ordinary function-scope label already work.
+    agree(
+        "int n = 0; { for (int i=0;i<5;i++){ if(i==2) goto done; n+=1; } done: n+=100; } return n;",
+    );
+    // The basic form.
+    agree(
+        "int n = 0; { __label__ done; for (int i=0;i<5;i++){ if(i==2) goto done; n+=1; } done: n+=100; } return n;",
+    );
+    agree("int n = 0; { __label__ d; n += 1; } return n;");
+    // Several names in one declaration, and jumps in both directions.
+    agree(
+        "int n = 0; { __label__ a, b; goto b; a: n+=1; goto out; b: n+=2; goto a; out: ; } return n;",
+    );
+    // **Two sibling blocks declaring the same local label.** The case the construct exists for,
+    // and the one a per-function label map gets wrong.
+    agree(
+        "int n = 0; { __label__ d; goto d; d: n+=1; } { __label__ d; goto d; d: n+=10; } return n;",
+    );
+    agree(
+        "int n = 0; { __label__ d; goto d; d: n+=1; } { __label__ d; goto d; d: n+=10; } { __label__ d; goto d; d: n+=100; } return n;",
+    );
+    // Nested blocks: the inner declaration shadows, and the outer one is intact after it.
+    agree(
+        "int n = 0; { __label__ d; { __label__ d; goto d; d: n+=1; } goto d; d: n+=10; } return n;",
+    );
+    // A local label beside a function-scope label of the same name.
+    agree("int n = 0; { __label__ d; goto d; d: n+=1; } d: n+=10; return n;");
+    // ...and beside an unrelated function-scope label, which must still resolve outward.
+    agree("int n = 0; { __label__ d; goto d; d: n+=1; } goto e; e: n+=10; return n;");
+    // In a `do`-`while`, which is the shape `hash_foreach_pair` actually uses.
+    agree("int n = 0; do { __label__ d; if (n==0) goto d; n+=1; d: n+=2; } while (0); return n;");
+    // A jump over a declaration, so the block has more in it than the label.
+    agree("int n = 0; { __label__ d; int x = 1; goto d; x = 2; d: n += x; } return n;");
+}
+
 /// **`_Generic` does not parse at all.**
 ///
 ///     expected an expression / expected `;` after `return` / expected a statement ...
