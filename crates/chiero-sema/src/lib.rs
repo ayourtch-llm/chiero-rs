@@ -1726,10 +1726,16 @@ impl Cx<'_> {
             // typing produced, because a diagnostic about computing the operand is not about an
             // expression that never computes it.
             //
-            // The typing is reused when the main pass has already done it. `const_eval` builds a
-            // throwaway context where nothing has been typed, and typing the same expression
-            // twice would overwrite its `by_expr` entry — which `top` and `conversions_of` answer
-            // from — with a second node built in a context that cannot see local declarations.
+            // The typing is reused when the main pass has already done it, which avoids pushing a
+            // duplicate node for every `sizeof` in the program and overwriting the expression's
+            // `by_expr` entry that `top` and `conversions_of` answer from.
+            //
+            // **Measured, not assumed:** both of these choices are unfalsifiable today. Forcing
+            // the lookup to `None` so the operand is always retyped, and separately keeping the
+            // diagnostics instead of truncating them, each leave the whole 1473-test suite green.
+            // So neither is protecting a right answer — the first saves duplicate work and the
+            // second guards a report that no input currently produces. They are kept as the
+            // cheaper and quieter of two equivalent behaviours, and that is the whole claim.
             ExprKind::SizeofExpr(inner) | ExprKind::AlignofExpr(inner) => {
                 let want_size = matches!(node.kind, ExprKind::SizeofExpr(_));
                 let id = match self.out.typed.top(inner) {

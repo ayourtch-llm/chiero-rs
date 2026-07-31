@@ -4800,3 +4800,34 @@ fn sizeof_of_an_expression_folds_in_a_constant_expression() {
         agree_with(prelude, body);
     }
 }
+
+/// **`sizeof` of a *local*, in the places that need it to be a constant.**
+///
+/// The fixture above uses file-scope operands, so it says nothing about block scope — and block
+/// scope is where `int arr[sizeof(x)]` and a function-local `enum` actually appear.
+///
+/// This test was written to distinguish the *mechanism* the fix chose, reusing the typing the
+/// main pass recorded rather than typing the operand again in `const_eval`'s throwaway context.
+/// **It does not distinguish it**: forcing the reuse off leaves the whole suite green, so the
+/// choice saves duplicate work rather than a wrong answer, and the source comment now says so.
+/// What these cases *do* pin is worth keeping on its own — that a `sizeof` naming a local folds
+/// at all, in an array bound and in an enumerator — so the test stays with an honest name.
+#[test]
+fn sizeof_of_a_local_folds_in_an_array_bound_and_an_enumerator() {
+    for (prelude, body) in [
+        ("", "int x; int arr[sizeof(x)]; return (int)sizeof(arr);"),
+        ("", "long y; enum { E = (int)sizeof(y) }; return E;"),
+        ("", "int x; return (int)sizeof(x + 1L);"),
+        ("", "char c; return (int)sizeof(c + 1);"),
+        (
+            "struct S { int a; };",
+            "struct S s; int arr[sizeof s]; return (int)sizeof(arr);",
+        ),
+        (
+            "",
+            "int x; int arr[_Alignof(x) + 1]; return (int)sizeof(arr);",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}
