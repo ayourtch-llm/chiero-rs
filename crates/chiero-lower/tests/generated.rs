@@ -647,7 +647,19 @@ impl Gen {
         // bit and every such program would be discarded, testing nothing while looking
         // busy.
         if ty.is_float() {
-            let v = self.rng.below(5);
+            // **`below(6)`, and the sixth is a negative zero.** One draw either way, so the
+            // stream position is unchanged and every earlier census stays comparable.
+            //
+            // A negative zero is not a *precision* value and so does not fall under the rule
+            // above: it is exact in every format, every compiler agrees on it, and no program
+            // gets discarded for it. What it does is separate "compares equal to zero" from
+            // "has zero bits", which is the only float value that can. Wave 270 found `!`
+            // testing the bits and answering 0 for `!(-0.0)` where C says 1, and no corpus
+            // built from `0.0 .. 4.0` could ever have seen it.
+            let v = self.rng.below(6);
+            if v == 5 {
+                return if ty == Ty::F32 { "-0.0f" } else { "-0.0" }.to_string();
+            }
             return if ty == Ty::F32 {
                 format!("{v}.0f")
             } else {
@@ -701,7 +713,7 @@ impl Gen {
             self.depth += 1;
             let inner = self.expr(want);
             self.depth -= 1;
-            return match self.rng.below(4) {
+            return match self.rng.below(7) {
                 // Complement, which promotes a narrow operand to `int` before inverting.
                 0 => format!("({})(~({}){inner})", want.c(), want.c()),
                 // `sizeof` in arithmetic: unsigned, and wider than `int` on this target.
@@ -710,7 +722,36 @@ impl Gen {
                 2 => format!("({})('A' + (({}){inner} & 3))", want.c(), want.c()),
                 // A string literal indexed at a constant: an array of static storage duration,
                 // read through a subscript, with no pointer value reaching the checksum.
-                _ => format!("({})(\"abcd\"[(({}){inner} & 3)])", want.c(), want.c()),
+                3 => format!("({})(\"abcd\"[(({}){inner} & 3)])", want.c(), want.c()),
+                // **`!`, whose absence was the wave-270 census's finding.** A truth test is not
+                // the operand's bit pattern, and `!` had never once been through the oracle: it
+                // compared bits, so `!(-0.0)` answered 0 where C says 1.
+                //
+                // **Unconditional, which the first version of this arm was not.** It emitted
+                // `x && !x`, and `&&` short-circuits: when `x` is zero the `!x` is never
+                // evaluated — and zero is the *only* value that discriminates here. The shape
+                // was built so that the one case it existed to reach could not be reached. A
+                // surviving mutant is what said so; nothing about re-reading it did.
+                //
+                // **A float operand is a bare constant, not the nested subexpression.** The
+                // site alone is worth nothing: 2000 seeds put `!` on a float 41 times and the
+                // mutant survived every one, because `inner` is a sum of small constants and
+                // such a sum lands on a *negative* zero essentially never. Generating the
+                // shape is not generating the value that makes the shape discriminate — the
+                // wave-250 lesson, arriving this time one level down. Straight from `konst`,
+                // where `-0.0` is one draw in six, it lands often enough to kill the mutant.
+                4 if want.is_float() => {
+                    let k = self.konst(want);
+                    format!("({})(!({k}))", want.c())
+                }
+                4 => format!("({})(!(({}){inner}))", want.c(), want.c()),
+                // The operand on the **right** of a short circuit, which took a different path
+                // through lowering than the left: a float or a pointer there produced CIR the
+                // verifier rejects and the function was dropped whole.
+                5 => format!("({})(1 && (({}){inner}))", want.c(), want.c()),
+                // `_Alignof` in arithmetic, which is `sizeof`'s class: `size_t`, unsigned, and
+                // wider than `int`, so its unsignedness wins the usual arithmetic conversions.
+                _ => format!("({})(_Alignof(double) + ({}){inner})", want.c(), want.c()),
             };
         }
         let e = match self.rng.below(10) {
@@ -2235,21 +2276,60 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 fn control_flow_programs_agree_with_gcc() {
     let mut compared = 0usize;
     let mut discarded = 0usize;
+    let mut gaps = 0usize;
+    let mut refused: Vec<(u64, String)> = Vec::new();
     let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
     for seed in 0..200u64 {
         let (prelude, body) = program_control_flow(seed);
         match judge(&prelude, &body) {
             Verdict::Agree => compared += 1,
-            Verdict::Discarded | Verdict::Refused { .. } | Verdict::Gap { .. } => discarded += 1,
+            Verdict::Discarded => discarded += 1,
+            // A **declared** limit. 023 §7 calls this the honest outcome, so it is tolerated —
+            // but counted, because a grammar that drifted into hitting a bound on every seed
+            // would be grading nothing while every assertion here still passed.
+            Verdict::Gap { .. } => gaps += 1,
+            Verdict::Refused { stage, message } => {
+                refused.push((seed, format!("{stage}: {message}")))
+            }
             v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
         }
     }
-    eprintln!("control-flow channel: {compared} compared, {discarded} not");
+    eprintln!(
+        "control-flow channel: {compared} compared, {discarded} discarded, {gaps} declared gaps, \
+         {} refused",
+        refused.len()
+    );
     assert!(
         defects.is_empty(),
         "chiero disagreed with gcc on {} program(s): {:#?}",
         defects.len(),
         defects
+    );
+    // **A refusal is graded, not swept in with the discards.** This assertion is the wave-270
+    // finding, and it is about the channel rather than about any program in it: `Refused` used to
+    // land in the same bucket as `Discarded`, so lowering that produced *nothing at all* read
+    // exactly like a program the oracle chose not to compare.
+    //
+    // That is how `x && <float>` hid. Every one of them emitted CIR the verifier rejects, the
+    // function was dropped whole, and the channel counted it as ordinary. A wrong answer would
+    // have been caught on the first seed; producing no answer was free. Under 023 §7 an
+    // *undeclared* refusal is the one outcome that is never honest — a declared limit is a `Gap`,
+    // which is counted just above — so the bound here is zero.
+    assert!(
+        refused.is_empty(),
+        "lowering refused {} of 200 programs, and a refusal nothing declared is a defect that \
+         costs nothing to hide behind: {:#?}",
+        refused.len(),
+        refused
+    );
+    assert!(
+        gaps < 20,
+        "declared gaps are honest but they are not comparisons; {gaps} of 200 means the channel \
+         is grading far less than it appears to"
+    );
+    assert!(
+        compared >= 100,
+        "the channel has to actually compare programs to be worth running: {compared} of 200"
     );
     // **The channel has to actually run these programs**, or a grammar that quietly stopped
     // emitting `switch` would leave this test passing on nothing. Wave 216's rule: before
@@ -2298,6 +2378,51 @@ fn control_flow_programs_agree_with_gcc() {
         with_early_default >= 20,
         "a `default` before the last case is ordinary C and easy to lower wrongly: \
          {with_early_default}"
+    );
+    // **The wave-270 census's three forms, each with the *value* that makes it discriminate.**
+    //
+    // Presence of the shape is not coverage — that is this channel's most repeated lesson and it
+    // repeated again here twice in one wave. The first `!` arm emitted `x && !x`, which
+    // short-circuits away the `!` for exactly the zero operand that discriminates; the second
+    // emitted `!` of a nested subexpression, and across *2000* seeds not one of the 41 sites had
+    // an operand that evaluated to a negative zero. Both looked like coverage in a census that
+    // counted occurrences.
+    //
+    // So what is required here is `!` **applied to a float constant**, where the pool's `-0.0`
+    // can actually reach the operator. A negative zero is the only float value that separates
+    // "compares equal to zero" from "has zero bits", which is the whole of what `!` gets wrong.
+    let (mut with_not, mut with_not_float, mut with_sc_right, mut with_alignof) = (0, 0, 0, 0);
+    for seed in 0..SHAPE_SEEDS {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        if all.contains("(!(") {
+            with_not += 1;
+        }
+        if all.contains("(!(-0.0") {
+            with_not_float += 1;
+        }
+        if all.contains("(1 && (") {
+            with_sc_right += 1;
+        }
+        if all.contains("_Alignof") {
+            with_alignof += 1;
+        }
+    }
+    assert!(
+        with_not >= 10,
+        "`!` appears in no ExprKind census of this grammar before wave 270: {with_not}"
+    );
+    assert!(
+        with_not_float >= 3,
+        "`!` of a negative zero is the only shape that catches a truth test done on bits:          {with_not_float}"
+    );
+    assert!(
+        with_sc_right >= 10,
+        "a scalar on the *right* of a short circuit takes a different path through lowering          than the left, and the right one was the broken one: {with_sc_right}"
+    );
+    assert!(
+        with_alignof >= 10,
+        "`_Alignof` yields `size_t`, whose unsignedness wins the usual arithmetic conversions:          {with_alignof}"
     );
     // **Both short-circuit operators, and the witness that says whether the right operand ran.**
     // `&&` and `||` skip on *opposite* truth values, so a lowering with one branch's polarity
