@@ -784,6 +784,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         in_progress: Vec::new(),
         current_ret: None,
         current_fn: None,
+        read_only: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -821,6 +822,7 @@ pub fn const_eval(
         in_progress: Vec::new(),
         current_ret: None,
         current_fn: None,
+        read_only: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -887,6 +889,11 @@ struct Cx<'a> {
     current_ret: Option<TyId>,
     /// The function whose body is being walked, for `__func__`.
     current_fn: Option<Symbol>,
+    /// Objects declared `const` at their outermost level, so assigning to the *name* is an
+    /// error. Scoped exactly like `values`: a block may shadow a `const` with a mutable object
+    /// of the same name, which is why a non-const declaration **removes** as well as a const one
+    /// inserting.
+    read_only: indexmap::IndexSet<Symbol>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
     values: IndexMap<Symbol, TyId>,
@@ -1034,6 +1041,15 @@ impl Cx<'_> {
                     self.out.decl_aligns.insert(id, a);
                 }
                 if let Some(n) = name {
+                    // **The *outermost* qualifier is the object's.** `const int k` and
+                    // `int *const p` both make the named object read-only; `const int *p` makes
+                    // the *pointee* read-only and leaves `p` assignable, and its const sits on an
+                    // inner node where this does not see it. That asymmetry is the whole rule.
+                    if self.ast.ty(ty).quals.const_ {
+                        self.read_only.insert(n);
+                    } else {
+                        self.read_only.swap_remove(&n);
+                    }
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
@@ -1104,6 +1120,7 @@ impl Cx<'_> {
                     // An `enum` declared inside the body is local to it, exactly as a
                     // parameter is, and was leaking into the rest of the TU.
                     let saved_enums = self.enumerators.clone();
+                    let saved_ro = self.read_only.clone();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -1112,6 +1129,23 @@ impl Cx<'_> {
                         } = self.ast.decl(p).kind.clone()
                         {
                             let t = self.ty_of(pty);
+                            // **A parameter of a definition needs a size**: the function has to
+                            // receive the object. A *declaration* may name an incomplete
+                            // parameter type — `struct T; int s(struct T t);` is legal, since
+                            // nothing is passed until there is a call — so this is checked here,
+                            // in the arm that walks a body, and not where prototypes are typed.
+                            if is_incomplete(&self.out, t)
+                                || matches!(self.out.types[t.0 as usize], Ty::Void)
+                            {
+                                let n = self.text(pn).unwrap_or("?").to_owned();
+                                let span = self.ast.decl(p).span;
+                                self.error(span, format!("parameter `{n}` has an incomplete type"));
+                            }
+                            if self.ast.ty(pty).quals.const_ {
+                                self.read_only.insert(pn);
+                            } else {
+                                self.read_only.swap_remove(&pn);
+                            }
                             self.values.insert(pn, t);
                             self.out.decl_types.insert(p, t);
                         }
@@ -1132,6 +1166,7 @@ impl Cx<'_> {
                     // removing also undoes any shadowing the body introduced.
                     self.values = saved;
                     self.enumerators = saved_enums;
+                    self.read_only = saved_ro;
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -2793,6 +2828,10 @@ impl Cx<'_> {
                 )
             }
             ExprKind::Unary { op, operand } => {
+                if matches!(op, UnOp::PreInc | UnOp::PreDec) {
+                    // `++x` modifies its operand exactly as `x += 1` does.
+                    self.check_writable(*operand, "increment or decrement of");
+                }
                 let inner = self.type_expr(*operand);
                 let ity = self.out.typed.ty_of(inner);
                 let (ty, inner) = match op {
@@ -2825,6 +2864,8 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Postfix { operand, .. } => {
+                // `x++` and `x--` modify their operand exactly as `x += 1` does.
+                self.check_writable(*operand, "increment or decrement of");
                 let inner = self.type_expr(*operand);
                 let ty = self.out.typed.ty_of(inner);
                 self.push_typed(TypedNode::Value {
@@ -2834,6 +2875,7 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Assign { op, lhs, rhs } => {
+                self.check_writable(*lhs, "assignment to");
                 let l = self.type_expr(*lhs);
                 let lty = self.out.typed.ty_of(l);
                 let r = self.type_expr(*rhs);
@@ -3546,6 +3588,18 @@ impl Cx<'_> {
             } else {
                 why
             };
+        // **A `void` call has no value to convert.** This sits in `coerce` rather than at each
+        // use because `coerce` is precisely the set of places C *wants a value*: an initializer,
+        // an argument, a return, an assignment. The places that do not want one — `v();` as a
+        // statement, `(void)v();` — never call it, so they need no exemption, and adding one
+        // would have been the way to get this wrong.
+        if matches!(
+            self.out.types[self.out.typed.ty_of(node).0 as usize],
+            Ty::Void
+        ) && !matches!(self.out.types[to.0 as usize], Ty::Void)
+        {
+            self.error(span, "a `void` value is used where a value is required");
+        }
         let id = self.convert(node, to, why, span);
         self.set_top(expr, id)
     }
@@ -3698,8 +3752,31 @@ impl Cx<'_> {
     /// nothing — one bad declaration is one diagnostic no matter how many times the name
     /// appears, which is what keeps a single missing header from burying the real problem
     /// under a hundred copies.
+    /// Reject a write to an object declared `const`.
+    ///
+    /// **Only when the target is the name itself.** `*p = 1` and `a[i] = 1` are writes through a
+    /// pointer, and whether *those* are allowed depends on the qualifiers of the pointee — which
+    /// sema does not model, so it says nothing rather than guessing. `int *const p; *p = 1;` is
+    /// legal and must stay so, and it is legal precisely because the write is not to `p`.
+    fn check_writable(&mut self, target: ExprId, what: &str) {
+        let ExprKind::Ident(n) = self.ast.expr(target).kind else {
+            return;
+        };
+        if self.read_only.contains(&n) {
+            let name = self.text(n).unwrap_or("?").to_owned();
+            let span = self.ast.expr(target).span;
+            self.error(span, format!("{what} read-only object `{name}`"));
+        }
+    }
+
     fn check_complete(&mut self, id: DeclId, ty: TyId) {
-        if !is_incomplete(&self.out, ty) {
+        // **`void` is the incomplete type that can never be completed.** It is deliberately not
+        // part of `is_incomplete`: that predicate answers "may this be an object *yet*", and
+        // every other caller — array elements, pointer arithmetic, `sizeof` — has its own reason
+        // to treat `void` differently. `void *p` and `sizeof(void)` are both legal here, and
+        // making `void` incomplete in general would reject them.
+        let void_object = matches!(self.out.types[ty.0 as usize], Ty::Void);
+        if !is_incomplete(&self.out, ty) && !void_object {
             return;
         }
         // **C 6.9.2p3: an `extern` declaration with no initializer is not a definition**, so no
