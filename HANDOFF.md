@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 291) — 1449 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 292) — 1452 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,26 +808,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟡 Sweeping checkers' own rules — one done, others untouched
+> ### 🟡 Sweeping checkers' own rules — two done, two to go
 >
-> **Wave 290 swept the CIR verifier**: forty rule sites disabled one at a time against the whole
-> workspace. Thirty-three killed, six untested (now fixtured), one unreachable (now deleted). The
-> hit rate — **17% of a checker's rules unfalsifiable** — is worth remembering when choosing the
-> next target.
+> | target | sites | untested | unreachable / by construction |
+> |---|---|---|---|
+> | **CIR verifier** (290) | 40 | 6, now fixtured | 1 deleted (subsumed by `IdNotIndex`) |
+> | **`chiero-check`** (291) | 7 conditions, 14 mutants | 3, now fixtured | 2 recorded in place |
 >
-> **The same sweep has not been run on:**
->   - **`chiero-check`** — the checkers that turn a UB event into a finding. Same shape of risk:
->     a rule that never fires is a finding never reported, and 023 §9's "a report a person cannot
->     act on is not a report" cuts both ways.
->   - **`chiero-mem`'s fault rules** — waves 264–266 swept parts by hand and found real gaps, but
->     never systematically.
->   - **`chiero-pp`'s diagnostics** — wave 281 censused *behaviour* against gcc and found it
+> **Still unswept:**
+>   - **`chiero-mem`'s fault rules.** Waves 264–266 swept parts by hand and found real gaps; never
+>     systematically. The largest remaining target and the one with the most rules.
+>   - **`chiero-pp`'s diagnostics.** Wave 281 censused its *behaviour* against gcc and found it
 >     clean; the diagnostics themselves were not swept.
 >
-> **How to run it** (about twenty minutes for forty sites): enumerate the `err(`/`push`/`report`
-> call sites, comment each out in turn, build and run the owning crate's tests, escalate survivors
-> to the workspace. The script is three lines of shell around a five-line Python edit; wave 290's
-> is in its commit.
+> **The method, refined by two runs.** Enumerate the rule sites — `err(`/`push`/`report(` calls
+> for a verifier, `if`-conditions for a checker. Mutate each **both ways**: `false` asks whether
+> anything needs it to fire, `true` asks whether anything needs it not to. Build and run the
+> owning crate first (seconds), escalate survivors to the workspace (minutes). Expect roughly a
+> sixth to survive, and expect the survivors to **cluster on one missing input shape** rather than
+> scatter.
+>
+> **One shape is known and unbuilt**, left for whoever runs this next: a callee that makes a
+> nested call and *then* writes on its own behalf. It is what would catch `OrderDependence`
+> clearing its site at every depth rather than only the outermost.
 >
 > ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
@@ -2066,6 +2069,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Mutate a condition both ways, not just off** (wave 291). Forcing a rule to `false` asks "does
+> anything need this to fire?"; forcing it to `true` asks "does anything need it *not* to?" Three
+> of `chiero-check`'s five survivors were only visible in the `true` direction — they are
+> false-positive guards, and a checker's false-positive guards are exactly what no happy-path
+> fixture exercises.
+>
+> **When several guards survive together, look for the shape they share** (wave 291). All three
+> `depth == 0` guards in `OrderDependence` were unfalsifiable for one reason: every fixture in the
+> file calls **leaf** functions with no nested call and no sequence point. One missing shape, not
+> three missing tests — and finding that made three fixtures obvious instead of three puzzles.
+>
+> **A comment that states a rule is a fixture that has not been written** (wave 291). Each of the
+> three guards carried a paragraph explaining precisely what would break without it. Every one of
+> those paragraphs was true, unfalsified, and turned directly into a test.
 >
 > **Sweep a checker's own rules — it is the code most likely to be untested** (wave 290). Thirty-
 > three of the CIR verifier's forty rule sites were falsifiable; **seven were not**, and could
