@@ -326,6 +326,37 @@ fn bit_field_width_constraints_are_checked() {
         assert!(diags(bad) > 0, "must be diagnosed: `struct S {{ {bad} }}`");
     }
 
+    // **The recovery keeps the member.** A rejected width falls back to one bit rather than
+    // zero, because zero is the value that deletes the field and pushes everything after it to a
+    // unit boundary — which is how these violations went unnoticed in the first place. A reader
+    // whose width is wrong should get one diagnostic about the width, not a second about a field
+    // that disappeared because of it. The sizes below are the two outcomes: with the member kept
+    // the struct is laid out as `int, bits, int`; with it dropped, `b` joins `a`'s unit.
+    let size_of_struct = |members: &str| {
+        let src = format!("int notconst; struct S {{ {members} }}; struct S s;");
+        let p = harness::parse_allowing_diagnostics(&src, TargetConfig::x86_64_linux());
+        p.decl_ty("s").and_then(|t| p.analysis.size_of(t))
+    };
+    for bad in [
+        "int a; int f : notconst; int b;",
+        "int a; int f : -1; int b;",
+        "int a; int f : 0; int b;",
+        // An oversized width recovers to the field type's full width rather than to one bit,
+        // which is the nearest legal declaration to what was written; either way the member has
+        // to survive, and falling back to zero here would delete it exactly as above.
+        "int a; int f : 33; int b;",
+    ] {
+        assert_eq!(
+            size_of_struct(bad),
+            Some(12),
+            "the member survives a rejected width: `struct S {{ {bad} }}`"
+        );
+    }
+    // The discriminator: an *unnamed* zero-width field really does declare no member, so the
+    // same shape without the name is eight bytes. If the fallback were zero, every case above
+    // would look like this one.
+    assert_eq!(size_of_struct("int a; int : 0; int b;"), Some(8));
+
     for good in [
         "int a; int f : 3; int b;",
         "int a; int f : 32; int b;",
