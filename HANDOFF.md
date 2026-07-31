@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 292) — 1452 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 293) — 1453 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,29 +808,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟡 Sweeping checkers' own rules — two done, two to go
+> ### 🟡 Sweeping checkers' own rules — three done, one to go
 >
-> | target | sites | untested | unreachable / by construction |
+> | target | mutants | survived | acted on |
 > |---|---|---|---|
-> | **CIR verifier** (290) | 40 | 6, now fixtured | 1 deleted (subsumed by `IdNotIndex`) |
-> | **`chiero-check`** (291) | 7 conditions, 14 mutants | 3, now fixtured | 2 recorded in place |
+> | **CIR verifier** (290) | 40 (one way) | 7 | 6 fixtured, 1 deleted as subsumed |
+> | **`chiero-check`** (291) | 14 (both ways) | 5 | 3 fixtured, 2 recorded in place |
+> | **`chiero-mem`** (292) | 144 (both ways) | 42 → **6 both-ways** | 1 fixtured, rest below |
 >
-> **Still unswept:**
->   - **`chiero-mem`'s fault rules.** Waves 264–266 swept parts by hand and found real gaps; never
->     systematically. The largest remaining target and the one with the most rules.
->   - **`chiero-pp`'s diagnostics.** Wave 281 censused its *behaviour* against gcc and found it
->     clean; the diagnostics themselves were not swept.
+> **Still unswept: `chiero-pp`'s diagnostics.** Wave 281 censused its *behaviour* against gcc and
+> found it clean; the diagnostics themselves were never swept.
 >
-> **The method, refined by two runs.** Enumerate the rule sites — `err(`/`push`/`report(` calls
-> for a verifier, `if`-conditions for a checker. Mutate each **both ways**: `false` asks whether
-> anything needs it to fire, `true` asks whether anything needs it not to. Build and run the
-> owning crate first (seconds), escalate survivors to the workspace (minutes). Expect roughly a
-> sixth to survive, and expect the survivors to **cluster on one missing input shape** rather than
-> scatter.
+> **`chiero-mem`'s five remaining both-ways survivors**, for whoever picks this up:
 >
-> **One shape is known and unbuilt**, left for whoever runs this next: a callee that makes a
-> nested call and *then* writes on its own behalf. It is what would catch `OrderDependence`
-> clearing its site at every depth rather than only the outermost.
+> ```
+> L366, L371  write_raw_uninit's guards — a `_for_test` helper, expected
+> L2662       e.repr == Repr::Array          — a representation branch
+> L3266       !r.faults.is_empty()           — a fault-propagation early-out
+> L3284       a.width(off) > arr.idx_bits    — an index-width guard
+> ```
+>
+> The 36 one-way survivors are in the sweep's output and were not triaged; the both-ways set is
+> the one worth reading first.
+>
+> **The method, after three runs.** Enumerate conditions; mutate each **both ways**; run the
+> owning crate (seconds) then its main consumer (tens of seconds); **sort survivors by whether
+> both directions survived**. Expect the survivors to cluster on one missing input shape — leaf
+> callees in `chiero-check`, in-bounds writes in `chiero-mem` — and expect at least one fixture
+> to pass for the wrong reason before it passes for the right one.
 >
 > ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
@@ -2069,6 +2074,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A both-ways survivor is worth ten one-way survivors** (wave 292). 's sweep left 42
+> survivors after escalation — too many to chase — but only **six** where *neither* direction was
+> observed. A condition whose truth value nothing notices is doing no work for anybody, and that
+> set is small enough to read. Sorting by "survived both" turned an unusable list into a
+> six-item one in a single `uniq -c`.
 >
 > **Mutate a condition both ways, not just off** (wave 291). Forcing a rule to `false` asks "does
 > anything need this to fire?"; forcing it to `true` asks "does anything need it *not* to?" Three
