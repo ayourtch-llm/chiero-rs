@@ -283,6 +283,46 @@ fn a_byte_written_before_a_symbolic_store_stays_initialized() {
     );
 }
 
+/// **An undischarged `maybe` must not hand back a value either.**
+///
+/// The companion to `an_uninitialized_read_invents_its_value_rather_than_using_one`, and the gap
+/// mutation found: dropping `MaybeUninitialized` from `yields_unknown_value` — so a byte that
+/// *might* be uninitialized answers with whatever the memory model holds — survived the whole
+/// suite. The definite case was pinned and the conditional one was not.
+///
+/// **Measuring which faults reach a load with a value is what identified it.** Logging every
+/// discharged fault at the load, across the workspace: `uninitialized-read` arrives with a value 47
+/// times and `maybe-uninitialized-read` 6 times, and every other kind — out-of-bounds, null
+/// dereference, use-after-free, use-after-scope — arrives with *no* value at all. So `unusable`'s
+/// list only decides anything for those two, and only one of them was tested.
+///
+/// Here byte 0 is written iff `i & 31` is zero, in an object big enough that the offset does not
+/// enumerate — at eight bytes it does, every path gets a concrete offset, and the fault is the
+/// *definite* kind instead. Neither the path nor the term can settle the sixty-four-byte case, so
+/// wave 204's discharge leaves the `maybe` standing — and a `maybe` the engine could not discharge
+/// is exactly the case where using the value would claim knowledge it does not have.
+#[test]
+fn an_undischarged_maybe_invents_its_value_rather_than_using_one() {
+    let m = harness::lower("int probe(int i){ char ca[64]; ca[i & 31] = 7; return ca[0]; }");
+    let mut arena = TermArena::new();
+    let r = Engine::new(&m).with_entry("probe").run(&mut arena);
+    let f = r.findings();
+    assert!(
+        f.iter().any(|s| s.starts_with("maybe-uninitialized-read")),
+        "byte 0 is written only when `i & 31` is zero, which nothing here settles: {f:?}"
+    );
+    let gaps: Vec<String> = r
+        .states()
+        .iter()
+        .flat_map(|s| s.assumptions())
+        .map(|x| x.detail.clone())
+        .collect();
+    assert!(
+        gaps.iter().any(|g| g.contains("invented")),
+        "an undischarged `maybe` is not a value the engine may hand back: {gaps:?}"
+    );
+}
+
 /// **A multi-byte element, stored and read back at the same symbolic offset.**
 ///
 /// Mutation found no fixture needed more than one byte: every store fixture above used a

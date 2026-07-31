@@ -1136,6 +1136,27 @@ impl MemFault {
     /// the product, and degrading would say chiero was unsure when it was not. A read of
     /// uninitialized memory is the opposite: the report is right *and* whatever came back
     /// was invented, so anything computed from it is unsound.
+    /// **What mutation says about this list, measured rather than argued** (wave 266).
+    ///
+    /// Removing a kind means a read carrying that fault hands its value back instead of having one
+    /// invented. Only two kinds ever reach a scalar load *with* a value at all — logging every
+    /// discharged fault there, across the workspace suite:
+    ///
+    /// ```text
+    ///   uninitialized-read         47   value present
+    ///   maybe-uninitialized-read    6   value present
+    ///   out-of-bounds              37   no value
+    ///   null-dereference           26   no value
+    ///   use-after-free / -scope    20   no value
+    /// ```
+    ///
+    /// So for most of this list the entry cannot change an answer at that site: there is nothing to
+    /// discard. Both kinds that *can* are pinned — `an_uninitialized_read_invents_its_value...` and
+    /// `an_undischarged_maybe_invents_its_value...` in `symbolic_offset_store.rs`.
+    ///
+    /// The entries stay. They are a statement about what a fault *means*, and `PointerOutsideObject`
+    /// is observable through a different path already — so "no fixture reaches it at the scalar
+    /// load" is not evidence that removing it would be safe.
     pub fn yields_unknown_value(&self) -> bool {
         matches!(
             self,
