@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 253) — 1399 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 254) — 1400 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,7 +1572,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
-> ### 🔴 Do this first: characterise *which context* makes the bit-field defect fire
+> ### ✅ Closed in wave 253 — the generator now catches the bit-field defect
+>
+> **The controlled experiment passes at last**: revert `field_signed` in `chiero-lower`, run
+> `generated_programs_agree_with_gcc`, and seed 49 fails. That is the same program wave 252 held up
+> as the counterexample.
+>
+> **The fifth condition was the read's *context*, and the fix was deleting a cast.** A bit-field read
+> that is the operand of an explicit cast has `top(e)` equal to the field's own type, so a wrong
+> signedness answer is masked. The checksum wrote `acc = acc * 31 + (long)(x.f);` for every field of
+> every struct, so every observation the generator could make went through the shape that hides the
+> bug. Dropping the cast changes no value — `acc` is a `long` and `+` promotes anyway — it changes
+> which conversion the *typed AST* records, which is invisible in the emitted C. A `float` member
+> keeps its cast, because there `(long)` is a real conversion.
+>
+> **What the arc cost, recorded because the shape will recur.** Waves 250 and 252 each raised a proxy
+> five-fold and caught nothing: bit-field values that span their width, then records steered into
+> scope. Both were real improvements to a shape that could never discriminate. Wave 251's four-factor
+> model was not imprecise, it was missing the factor that mattered — and the way out was not a better
+> model but a single counterexample (seed 49) run through `judge()`.
+>
+> The guards left behind: `the_generator_reads_a_field_without_a_cast`,
+> `the_fixed_batch_can_discriminate_an_extension_defect`, `a_bitfield_struct_reaches_the_checksum`,
+> and the four-fixture boundary in `an_unsigned_bitfield_zero_extends` that pins which contexts fire.
+>
+> ### ~~🔴 characterise which context makes the bit-field defect fire~~ — answered
 >
 > **Wave 252 raised the rate five-fold and the batch still does not catch it.** That result is worth
 > more than the rate, and it comes with a concrete counterexample rather than a theory. Seed 49
@@ -1666,6 +1690,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **A construct's *context* is part of its coverage, not a detail of it** (wave 253). The generator
+> emitted bit-fields, gave them discriminating values, routed them into scope — and read every one
+> through `(long)(x.f)`, which is exactly the context where the defect cannot be seen. **Ask what the
+> read looks like, not only whether the construct appears.** Three waves of frequency work missed it
+> because frequency was never the variable.
+>
+> **A count tells you a classifier ran, never that it was right** (wave 253). Inverting the scan's
+> bare/cast arms survived every threshold, because success had made both counts large; before the
+> fix one of them was zero and the error would have shown. The kill needed an assertion on the
+> *direction* — bare must outnumber cast, since only floats keep one — plus the classifier asserted
+> on literals. **A metric gets harder to test as the thing it measures gets better.**
 >
 > **A proxy metric earns its keep by predicting the goal, and must be checked against it** (wave
 > 252). The discriminating-shape count went from 1 to 5 and the defect stayed invisible. The proxy
