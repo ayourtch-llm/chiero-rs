@@ -856,3 +856,39 @@ fn the_if_nesting_limit_is_diagnosed_once_per_directive() {
         tu.diagnostics
     );
 }
+
+/// **A conditional operator's type comes from both arms, not from the one selected.**
+///
+/// C 6.5.15: the result type of `a ? b : c` is the usual arithmetic conversions applied to `b`
+/// and `c`. Both, always — the arm that is *not* taken still decides the type of the arm that is.
+/// So `0 ? 1u : -1` has value -1 and type `uintmax_t`, which is a very large positive number, and
+/// `#if (0 ? 1u : -1) < 0` is false.
+///
+/// Found by wave 298's `#if` differential channel, which reported an expression where all
+/// sixty-four value bits matched gcc and only the sign probe differed. The signedness is not
+/// cosmetic: cases below show it changing the result of a later division and a later shift, since
+/// an unsigned quotient truncates differently and an unsigned right shift does not sign-extend.
+///
+/// The last case is the one that keeps the fix honest — the type has to propagate out of a nested
+/// conditional, not just be read off the two immediate operands.
+#[test]
+fn a_conditional_operators_type_comes_from_both_arms() {
+    for (expr, expected) in [
+        ("(0 ? 1u : -1) < 0", "no"),
+        ("(1 ? -1 : 1u) < 0", "no"),
+        ("(1 ? -1 : 1) < 0", "yes"),
+        ("(0 ? 1 : -1) < 0", "yes"),
+        ("(1 ? -1 : 0u) > 0", "yes"),
+        ("(0 ? 0u : -1) > 0", "yes"),
+        ("(1 ? -1 : 1u) == -1", "yes"),
+        // Not just the comparison: the unsigned type changes the arithmetic that follows.
+        ("(1 ? -2 : 1u) / 2 == -1", "no"),
+        ("(1 ? -2 : 0u) / 2 > 0", "yes"),
+        ("(0 ? 1u : -8) >> 1 > 0", "yes"),
+        ("(1 ? 1 : 2) < 0", "no"),
+        // Unsignedness propagates out of a nested conditional.
+        ("(1 ? -1 : (0 ? 1u : 1)) < 0", "no"),
+    ] {
+        assert_eq!(selected(expr), expected, "`#if {expr}`");
+    }
+}
