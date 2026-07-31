@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 302) — 1473 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 303) — 1474 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -870,9 +870,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > none**, and it is why the missing arm could only ever be found by accident. Both are fixed; the
 > fallback is kept (an enumeration that stopped resolving would cascade) but announced.
 >
-> **Where else does `.unwrap_or` swallow a fold failure?** That pattern, not the missing `sizeof`
-> arm, is the reusable finding. Grep `const_eval` and `eval(` call sites for a default that is
-> indistinguishable from a computed answer.
+> ~~**Where else does `.unwrap_or` swallow a fold failure?**~~ **Censused in wave 302 — seven
+> sites, and the pattern paid immediately.**
+>
+> | site | fallback | verdict |
+> |---|---|---|
+> | bit-field width (`lib.rs:1498`) | `0`, then `.max(0)` | **four defects, fixed in wave 302** |
+> | array element size in `addr_of` (3529, 3570) | `1` | **real gap, not fixed** — see below |
+> | bit-field unit size / align (1499, 1500) | `4` | unreached: a bit-field's type must be integral |
+> | member size (1538), elem size (1179) | `0` | unreached by the same argument |
+>
+> **The bit-field width was the worst possible place for a fallback**, because `0` is not a
+> neutral value there — it is C's *legal* unnamed zero-width field, handled on the very next line.
+> So a width that could not be folded, and a negative width, produced a valid but different
+> declaration: member deleted, next field bumped to a unit boundary, nothing reported.
+> `int f : notconst;` laid out byte-for-byte identically to `int f : 0;`. Four constraints from
+> C 6.7.2.1p4 were missing altogether — non-constant, negative, wider than the field's type, and
+> a *named* zero-width field.
+>
+> ### 🔴 Found in wave 302, recorded and **not** fixed: incomplete types are never rejected
+>
+> `size_of_ty(...).unwrap_or(1)` in `addr_of` silently scales pointer arithmetic by one byte when
+> the element type is incomplete. Two programs gcc rejects and this engine accepts without a word:
+>
+> ```c
+> struct I; extern struct I arr[]; void *q = &arr[1];   // gcc: incomplete element type
+> struct I; extern struct I *p;    void *q = p + 1;     // gcc: invalid use of undefined type
+> ```
+>
+> This is **not** a fold-guard fix like the bit-field one. The `unwrap_or(1)` is downstream of a
+> missing rule — nothing anywhere asks whether a type is complete where C requires it to be — and
+> that rule has a wide blast radius: array declarations, pointer arithmetic, `sizeof`, member
+> access, and assignment all need it. It was left out deliberately rather than bolted on at the
+> end of a wave, and it is the obvious next front.
+>
 >
 > ### 🟢 The `#if` differential channel — `chiero-pp/tests/if_differential.rs`
 >
@@ -2214,6 +2245,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Ask what the fallback value *means* in the domain, not just whether it is wrong** (wave 302).
+> `unwrap_or(0)` for a bit-field width is not "a wrong number"; it is a *different legal
+> declaration*, handled by the branch immediately below it. That is why it hid four missing
+> constraint checks at once. The census that found it sorted candidates by exactly this question,
+> and the sites whose fallback is merely wrong (`unwrap_or(4)` for a unit size) turned out to be
+> unreachable, while the one whose fallback is meaningful was four defects deep.
+>
+> **A recovery value needs its own fixture, per arm** (wave 302). Counting diagnostics proves a
+> violation is reported; it says nothing about what the engine then does. The claim that the
+> fallback keeps the member alive survived ten mutants and died only when the fixture asserted the
+> struct's *size*. And the oversized arm needed its own case — a fallback is a per-arm decision,
+> so one arm's mutant says nothing about another's, however similar the code reads.
 >
 > **A fallback that equals the ordinary answer makes its own gap invisible** (wave 301). The
 > enumeration walk used `self.eval(e).map(|v| v.v).unwrap_or(next)` — so an initializer the engine
