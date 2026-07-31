@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 293) — 1453 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 294) — 1454 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,34 +808,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟡 Sweeping checkers' own rules — three done, one to go
+> ### 🟢 The checker sweeps are done — four targets, eleven fixtures, two deletions
 >
 > | target | mutants | survived | acted on |
 > |---|---|---|---|
 > | **CIR verifier** (290) | 40 (one way) | 7 | 6 fixtured, 1 deleted as subsumed |
 > | **`chiero-check`** (291) | 14 (both ways) | 5 | 3 fixtured, 2 recorded in place |
-> | **`chiero-mem`** (292) | 144 (both ways) | 42 → **6 both-ways** | 1 fixtured, rest below |
+> | **`chiero-mem`** (292) | 144 (both ways) | 42 → 6 both-ways | 1 fixtured, 5 listed |
+> | **`chiero-pp`** (293) | 138 of 166 (both ways) | 28 → 6 both-ways | 1 fixtured, 5 listed |
 >
-> **Still unswept: `chiero-pp`'s diagnostics.** Wave 281 censused its *behaviour* against gcc and
-> found it clean; the diagnostics themselves were never swept.
+> **`chiero-pp` was swept to 85% and stopped**, at conditions up to line 1890 of 2211. Each mutant
+> rebuilds the test binaries, so the cost is minutes rather than the 8s the suite takes; finishing
+> it is a detached run of the script in wave 293's commit with `psites.txt` sliced past 1890.
 >
-> **`chiero-mem`'s five remaining both-ways survivors**, for whoever picks this up:
+> **Both-ways survivors still on the table**, for whoever picks this up:
 >
 > ```
-> L366, L371  write_raw_uninit's guards — a `_for_test` helper, expected
-> L2662       e.repr == Repr::Array          — a representation branch
-> L3266       !r.faults.is_empty()           — a fault-propagation early-out
-> L3284       a.width(off) > arr.idx_bits    — an index-width guard
+> chiero-mem   L2662  e.repr == Repr::Array        — a representation branch
+>              L3266  !r.faults.is_empty()         — a fault-propagation early-out
+>              L3284  a.width(off) > arr.idx_bits  — an index-width guard
+> chiero-pp    L561   candidates.is_empty()        — include-path resolution
+>              L641   quoted                       — `"..."` vs `<...>` include form
+>              L652   directories.is_empty()
+>              L1634  __VA_OPT__ group skipping    — cosmetic: the diagnostic already refused it
+>              L1642  __VA_OPT__ paren depth       — likewise
 > ```
 >
-> The 36 one-way survivors are in the sweep's output and were not triaged; the both-ways set is
-> the one worth reading first.
+> **The three include-path ones are the most interesting**: `quoted` deciding `"..."` from `<...>`
+> is real behaviour with a real difference, and neither direction is observed.
 >
-> **The method, after three runs.** Enumerate conditions; mutate each **both ways**; run the
-> owning crate (seconds) then its main consumer (tens of seconds); **sort survivors by whether
-> both directions survived**. Expect the survivors to cluster on one missing input shape — leaf
-> callees in `chiero-check`, in-bounds writes in `chiero-mem` — and expect at least one fixture
-> to pass for the wrong reason before it passes for the right one.
+> **What the four sweeps taught, in one line each.** Mutate both ways — `true` finds the
+> false-positive guards. Sort by both-ways survival — it turns forty survivors into six. Expect the
+> survivors to cluster on one missing input shape. Expect at least one fixture to pass for the
+> wrong reason first.
 >
 > ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
@@ -2074,6 +2079,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Two representations of one fact, and only one of them live** (wave 293). A macro's variadic
+> kind is recorded in a public enum *and* in a `std_variadic`/`variadic_name` pair; expansion
+> reads only the pair, so the enum could hold anything. The test that looked like it covered this
+> — `#define V(...) [__VA_ARGS__]` expanding correctly — consults the other representation
+> entirely. **A test can name the right construct, assert the right answer, and still never reach
+> the code you think it does.**
+>
+> **Budget a sweep by rebuild cost, not by suite runtime** (wave 293). `chiero-pp`'s suite runs in
+> 8s, which suggested twenty minutes for 166 mutants; each mutant also rebuilds the test binaries,
+> and the real figure was hours. Two foreground attempts timed out before this was obvious.
+> **Time one full mutant cycle before sizing the sweep**, and run it detached.
 >
 > **A both-ways survivor is worth ten one-way survivors** (wave 292). 's sweep left 42
 > survivors after escalation — too many to chase — but only **six** where *neither* direction was
