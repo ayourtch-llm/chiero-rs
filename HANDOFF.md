@@ -487,14 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 310) — 1484 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 311) — 1484 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next, and cheap: extend the no-diagnostics gate past the six VPP headers.** Wave 309 built it
-> and it found a defect on its first run. The differential fixtures, the canonical-use net and the
-> generated corpus are all C that gcc accepts, and *none* of them is checked for spurious
-> diagnostics — the gate covers six headers out of everything the project already compiles.
->
-> **Then: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
+> **Next: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
 > incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
 > remaining rows that are about *types* rather than about statements, so they sit in the same part
 > of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
@@ -866,9 +861,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `sizeof(__func__)` is the name's length plus one and two functions of the same name share one
 > interned string. `__FUNCTION__` is the same object.
 >
-> **This gate is the cheapest one in the project and should be extended, not admired.** The corpus
-> is six headers; the differential fixtures, the canonical-use net and the generated corpus are all
-> C that gcc accepts, and none of them is checked for spurious diagnostics.
+> **Widened in wave 310, and the premise above was half wrong.** The differential fixtures *are*
+> already gated: `harness::lower` asserts sema is clean before lowering, so every `agree_with` case
+> and the whole generated corpus already require silence. What was narrow was the corpus itself —
+> six of twenty-eight headers.
+>
+> Asking the corpus rather than guessing gives **twenty** usable seeds, all silent. The eight
+> absentees are named in the constant with gcc's own verdict beside them:
+>   - `bitops.h`, `vec_bootstrap.h`, and the five `vector_*.h` are **not standalone** — each uses a
+>     type an earlier header defines, and gcc rejects them alone exactly as this parser does. They
+>     are still analysed through the seeds that include them.
+>   - `memcpy.h` calls `clib_memcpy_fast` without including its declaration. `gcc -Wall` warns
+>     "implicit declaration of function", so **sema is right and the header is not clean**.
+>
+> **A gate is only as good as the argument for what it leaves out**, and "gcc says the same thing"
+> is the only kind of argument that does not rot. A gate with one permitted diagnostic in it will
+> acquire more.
+>
+> **The layout gate had its own copy of the seed list**, so widening the harness moved nothing. It
+> is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
+> **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
+> because the copy stopped tracking — `size_of_cty` is the other, still open below.
 >
 > ### 🔴 Wave 307's constraint census — one false positive fixed, sixteen gaps recorded
 >
@@ -2437,6 +2450,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Ask the corpus which inputs it can take; do not curate the list by hand** (wave 310). The gate
+> named six headers because six were once tried. Enumerating the directory and running all
+> twenty-eight found twenty usable, and the eight failures each had a reason gcc confirms. **A
+> hand-written list of inputs records what somebody got round to, not what the code can do** — and
+> it never grows on its own.
+>
+> **Justify every exclusion with the oracle, not with judgement** (wave 310). One header really is
+> unclean — `memcpy.h` calls a function it never declares, which `gcc -Wall` reports too — and
+> seven are not standalone, which gcc also refuses. Every absence is therefore checkable by
+> re-running gcc, rather than resting on a note somebody wrote. **A gate with one permitted
+> diagnostic will acquire more**, so the right move was to exclude the header rather than
+> whitelist the message.
 >
 > **Assert the absence, not just the presence** (wave 309). Three waves running produced false
 > positives that no test could see, because every test asked "does the engine get the right
