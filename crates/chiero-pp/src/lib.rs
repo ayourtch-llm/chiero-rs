@@ -1809,6 +1809,11 @@ impl ExprParser<'_> {
             return yes;
         }
         let no = self.conditional(live && !condition.truth());
+        // C 6.5.15: the result type is the usual arithmetic conversions of *both* arms, so the
+        // arm that was not selected still decides whether the result is unsigned. `0 ? 1u : -1`
+        // has value -1 and type `uintmax_t`, and so is not less than zero. `usual` only moves the
+        // signedness — the bit pattern of a negative value is already its unsigned conversion.
+        let (yes, no, _) = yes.usual(no);
         if condition.truth() { yes } else { no }
     }
 

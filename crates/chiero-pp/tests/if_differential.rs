@@ -56,18 +56,43 @@ const PRELUDE: &str = "#define SET 1\n#define ZERO 0\n#define WIDE 0x80000000000
 /// suffix shapes, character constants with each escape form, `defined` in both spellings, and a
 /// bare identifier — which is *not* an error in `#if`, it is zero.
 fn leaf(rng: &mut Rng) -> String {
-    match rng.below(12) {
+    match rng.below(14) {
         0 => rng.below(1000).to_string(),
         1 => format!("0{:o}", rng.below(512)),
         2 => format!("0x{:x}", rng.below(4096)),
-        3 => format!("{}u", rng.below(1000)),
-        4 => format!("{}U", rng.below(1000)),
-        5 => format!("{}L", rng.below(1000)),
-        6 => format!("{}uL", rng.below(1000)),
-        7 => (*rng.pick(&["'A'", "'\\n'", "'\\0'", "'\\x41'", "'\\101'", "'\\\\'"])).to_string(),
-        8 => (*rng.pick(&["defined(SET)", "defined ZERO", "defined(NOPE)"])).to_string(),
+        3 => format!("0X{:X}", rng.below(4096)),
+        // `0b` is a GNU extension both this preprocessor and gcc accept in `#if`. It is generated
+        // because `parse_if_literal` has a branch for it; a spelling with a branch and no
+        // generator arm is exactly what wave 297's sweep kept finding.
+        4 => format!("0b{:b}", rng.below(256)),
+        5 => format!(
+            "{}{}",
+            rng.below(1000),
+            rng.pick(&["u", "U", "L", "uL", "ll", "ULL"])
+        ),
+        6 => (*rng.pick(&[
+            "'A'", "'\\n'", "'\\0'", "'\\x41'", "'\\101'", "'\\\\'", "'\\t'", "'\\''",
+        ]))
+        .to_string(),
+        // A wide character constant: the prefix is part of the token, and the value is the same.
+        7 => (*rng.pick(&["L'A'", "u'A'", "U'A'"])).to_string(),
+        8 => (*rng.pick(&[
+            "defined(SET)",
+            "defined ZERO",
+            "defined(NOPE)",
+            "defined WIDE",
+        ]))
+        .to_string(),
         9 => (*rng.pick(&["SET", "ZERO", "WIDE", "UNKNOWN_IDENTIFIER"])).to_string(),
-        10 => (*rng.pick(&["0", "1", "-1", "0x7fffffffffffffff"])).to_string(),
+        10 => (*rng.pick(&[
+            "0",
+            "1",
+            "-1",
+            "0x7fffffffffffffff",
+            "0xffffffffffffffff",
+            "18446744073709551615u",
+        ]))
+        .to_string(),
         _ => format!("{}", rng.below(1000)),
     }
 }

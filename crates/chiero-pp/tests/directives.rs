@@ -892,3 +892,45 @@ fn a_conditional_operators_type_comes_from_both_arms() {
         assert_eq!(selected(expr), expected, "`#if {expr}`");
     }
 }
+
+/// **A character constant's prefix decides its signedness, not just its value.**
+///
+/// All four spellings evaluate to 65 for `'A'`, which is why this went unnoticed: every existing
+/// test compared a character constant against a positive number. The types differ, though —
+/// `u'A'` is `char16_t` and `U'A'` is `char32_t`, both *unsigned* integer types, while `'A'` is
+/// `int` and `L'A'` is `wchar_t`, which is a signed `int` on this target. So `~u'A'` is a large
+/// positive number and `~'A'` is negative, from the same 64 value bits.
+///
+/// Found by wave 298's `#if` differential channel once wide character constants were added to its
+/// leaf grammar — again through the sign probe, with every value bit in agreement.
+///
+/// `L'A'` being signed is a *target* property: `wchar_t` is `int` under the System V ABI and an
+/// unsigned 16-bit type on Windows. It is asserted here as the target this engine models, so that
+/// porting trips a test rather than silently changing every `#if` that uses one.
+#[test]
+fn a_character_constants_prefix_decides_its_signedness() {
+    for (expr, expected) in [
+        // Same value, four spellings.
+        ("'A' == 65", "yes"),
+        ("L'A' == 65", "yes"),
+        ("u'A' == 65", "yes"),
+        ("U'A' == 65", "yes"),
+        // Different types. `~x` is negative exactly when x is signed.
+        ("(~'A') < 0", "yes"),
+        ("(~L'A') < 0", "yes"),
+        ("(~u'A') < 0", "no"),
+        ("(~U'A') < 0", "no"),
+        // The type governs the arithmetic around it: unsigned subtraction wraps upward.
+        ("('A' - 1000) < 0", "yes"),
+        ("(L'A' - 1000) < 0", "yes"),
+        ("(u'A' - 1000) < 0", "no"),
+        ("(U'A' - 1000) < 0", "no"),
+        // And negation.
+        ("(-'A') > 0", "no"),
+        ("(-L'A') > 0", "no"),
+        ("(-u'A') > 0", "yes"),
+        ("(-U'A') > 0", "yes"),
+    ] {
+        assert_eq!(selected(expr), expected, "`#if {expr}`");
+    }
+}
