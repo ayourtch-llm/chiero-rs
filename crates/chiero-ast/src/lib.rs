@@ -130,6 +130,19 @@ pub enum ExprKind {
     AlignofType(TypeId),
     /// GNU statement expression `({ ... })` (013 §4, contract 7). 217 VPP files use it.
     StmtExpr(StmtId),
+    /// C11 6.5.1.1's `_Generic(e, T: x, default: y)`.
+    ///
+    /// **Every association is kept, and the selection is not made here.** Which one wins
+    /// depends on the controlling expression's *type*, which the parser does not know — 013
+    /// §2 puts type questions in sema. Storing the whole list means the choice is made once,
+    /// where the types are, and lowering reads that answer rather than recomputing it.
+    ///
+    /// `ty` is `None` for the `default` association. C11 allows at most one, and allows it
+    /// anywhere in the list rather than only at the end.
+    Generic {
+        controlling: ExprId,
+        assocs: Vec<GenericAssoc>,
+    },
     /// A braced initializer list. Syntactic: `{ .a = 1, [3] = 4 }` keeps its designators
     /// and its order, because 014 needs both to place the values.
     InitList(Vec<InitItem>),
@@ -145,6 +158,13 @@ pub enum ExprKind {
 pub struct StrFragment {
     pub spelling: Symbol,
     pub span: Span,
+}
+
+/// One `T: expr` arm of a `_Generic` selection, or `default: expr` when `ty` is `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenericAssoc {
+    pub ty: Option<TypeId>,
+    pub value: ExprId,
 }
 
 /// One element of a braced initializer, with its designator chain (contract 11).

@@ -191,3 +191,60 @@ fn integer_constant_expressions_fold() {
         assert!(diags.is_empty(), "`{src}` should be silent: {diags:?}");
     }
 }
+
+/// **C11 6.5.1.1p2's two constraints on a `_Generic` association list.**
+///
+/// At most one `default`, and no two associations naming compatible types. gcc rejects both, so
+/// the differential oracle can never see them — a program it refuses to compile produces no
+/// answer to disagree with.
+///
+/// # Why these exist as fixtures at all
+///
+/// Mutation. `chosen.or(...)` versus a plain assignment, and `fallback.or(...)` versus a plain
+/// assignment, both survived the whole differential suite: with a *valid* program there is
+/// exactly one match and exactly one `default`, so "first wins" and "last wins" are the same
+/// function. The only way to tell them apart is a program C forbids — at which point the
+/// interesting question is not which arm is picked but whether the program is reported at all.
+#[test]
+fn a_generic_selection_reports_its_constraint_violations() {
+    let dup_default = harness::parse_allowing_diagnostics(
+        "int probe(void) { return _Generic(1, int: 1, default: 2, default: 3); }",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        dup_default
+            .analysis
+            .diagnostics
+            .iter()
+            .any(|d: &SemaDiagnostic| d.message.contains("two `default`s")),
+        "two `default`s is a constraint violation: {:?}",
+        dup_default.analysis.diagnostics
+    );
+
+    let dup_type = harness::parse_allowing_diagnostics(
+        "int probe(void) { return _Generic(1, int: 1, int: 2); }",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        dup_type
+            .analysis
+            .diagnostics
+            .iter()
+            .any(|d: &SemaDiagnostic| d.message.contains("two `_Generic` associations match")),
+        "two matching associations is a constraint violation: {:?}",
+        dup_type.analysis.diagnostics
+    );
+
+    // **The control, and it is the point.** A well-formed selection with one `default` and one
+    // matching arm must stay silent, or the two assertions above would pass on a rule that
+    // fires for every program.
+    let ok = parse(
+        "int probe(void) { return _Generic(1, long: 1, int: 2, default: 3); }",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        ok.analysis.diagnostics.is_empty(),
+        "a well-formed `_Generic` is not a diagnostic: {:?}",
+        ok.analysis.diagnostics
+    );
+}

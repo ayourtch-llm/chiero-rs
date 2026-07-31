@@ -9,8 +9,8 @@
 
 use chiero_ast::{
     ArrayLen, AsmOperand, AsmStmt, Ast, Attr, BinOp, Builtin, DeclId, DeclKind, Designator, ExprId,
-    ExprKind, FloatFmt, ForInit, InitItem, PostfixOp, Quals, StmtId, StmtKind, Storage,
-    StrFragment, TagKind, TypeId, TypeKind, UnOp,
+    ExprKind, FloatFmt, ForInit, GenericAssoc, InitItem, PostfixOp, Quals, StmtId, StmtKind,
+    Storage, StrFragment, TagKind, TypeId, TypeKind, UnOp,
 };
 use chiero_lex::{PpTokenKind, Punct};
 use chiero_pp::PreprocessedTu;
@@ -2431,6 +2431,40 @@ impl<'a> Parser<'a> {
                 }
                 let span = self.span_from(start);
                 self.ast.add_expr(ExprKind::Str { fragments }, span)
+            }
+            // **C11 6.5.1.1.** The keyword has been in the table since the lexer was written
+            // and nothing consumed it, so `_Generic` fell out of here as an unexpected token
+            // and took the rest of the statement with it.
+            //
+            // No selection happens here. Which association wins is a question about the
+            // controlling expression's *type*, and 013 §2 puts type questions in sema — so the
+            // parser keeps every arm and lets one answer be computed once, where the types are.
+            Some(TokKind::Kw(Kw::Generic)) => {
+                self.pos += 1;
+                self.expect_punct(Punct::LParen, "to open a `_Generic` selection");
+                let controlling = self.assignment_expr();
+                let mut assocs: Vec<GenericAssoc> = Vec::new();
+                while self.eat_punct(Punct::Comma) {
+                    // `default` is a keyword, so it cannot be mistaken for a type name.
+                    let ty = if self.is_kw(0, Kw::Default) {
+                        self.pos += 1;
+                        None
+                    } else {
+                        Some(self.type_name())
+                    };
+                    self.expect_punct(Punct::Colon, "after a `_Generic` association's type");
+                    let value = self.assignment_expr();
+                    assocs.push(GenericAssoc { ty, value });
+                }
+                self.expect_punct(Punct::RParen, "to close a `_Generic` selection");
+                let span = self.span_from(start);
+                self.ast.add_expr(
+                    ExprKind::Generic {
+                        controlling,
+                        assocs,
+                    },
+                    span,
+                )
             }
             Some(TokKind::Punct(Punct::LParen)) => {
                 self.pos += 1;

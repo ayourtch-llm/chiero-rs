@@ -1012,7 +1012,7 @@ impl Lowerer<'_> {
             id: fid,
             sret: None,
             access_paths: IndexMap::new(),
-            order_sensitive: order_sensitive_body(self.ast, body),
+            order_sensitive: order_sensitive_body(self.ast, self.analysis, body),
             name: cir_name.clone(),
             params: Vec::new(),
             ret: ret.clone(),
@@ -2641,6 +2641,16 @@ impl Lowerer<'_> {
             // 015 §2.4: the block's statements lower into the enclosing block sequence and
             // the value is the last expression statement's. No CIR construct is needed —
             // it falls out of the unstructured CFG, which is why §2.4 is three sentences.
+            // **The selected arm, and nothing else.** C11 6.5.1.1 does not evaluate the
+            // controlling expression or the arms that lost, and sema recorded which one won —
+            // so lowering emits one expression and never sees the others. That is what makes
+            // `_Generic(i++, ...)` leave `i` alone without a rule about it here.
+            chiero_ast::ExprKind::Generic { .. } => match self.analysis.generic_selection(e) {
+                Some(sel) => self.expr(sel),
+                // Sema reports the no-match case, so reaching here means it refused already
+                // and 015 §7 has the function. 020 §5: say so rather than answer.
+                None => Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))),
+            },
             chiero_ast::ExprKind::StmtExpr(body) => {
                 let saved = self.last_stmt_value.take();
                 // **An aggregate result is copied out before the block ends.** The value of
@@ -6144,14 +6154,24 @@ fn va_builtin(name: &str) -> Option<VaBuiltin> {
 ///
 /// That last distinction is the whole reason the assignment's write is tracked separately
 /// from the writes inside its operands.
-fn order_sensitive_body(ast: &Ast, body: chiero_ast::StmtId) -> bool {
-    let mut cx = OrderScan { ast, found: false };
+fn order_sensitive_body(ast: &Ast, analysis: &Analysis, body: chiero_ast::StmtId) -> bool {
+    let mut cx = OrderScan {
+        ast,
+        analysis,
+        found: false,
+    };
     cx.stmt(body);
     cx.found
 }
 
 struct OrderScan<'a> {
     ast: &'a Ast,
+    /// **Only for `_Generic`.** The scan is otherwise purely syntactic, and it needs the
+    /// analysis for exactly one question: which arm a selection took. Answering it any other
+    /// way means either ignoring the selected arm's accesses — a silently missed conflict —
+    /// or scanning every arm, which reports a conflict between two expressions that never
+    /// both run. 023 §9: a report a person cannot act on is not a report.
+    analysis: &'a Analysis,
     found: bool,
 }
 
@@ -6329,6 +6349,15 @@ impl OrderScan<'_> {
             K::Member { base, .. } => self.region(base, writing, acc),
             K::Cast { operand, .. } => self.region(operand, writing, acc),
             K::SizeofExpr(_) | K::SizeofType(_) | K::AlignofType(_) | K::TypeName(_) => true,
+            // **Only the selected arm has accesses.** C11 6.5.1.1 evaluates neither the
+            // controlling expression nor the arms that lost, so counting their reads and
+            // writes here would report a sequence-point conflict between two expressions that
+            // never both run. `sizeof` above is unevaluated for the same reason and answers
+            // the same way.
+            K::Generic { .. } => match self.analysis.generic_selection(e) {
+                Some(sel) => self.region(sel, writing, acc),
+                None => true,
+            },
             // A statement expression contains statements, each its own full expression.
             K::StmtExpr(s) => {
                 self.stmt(s);

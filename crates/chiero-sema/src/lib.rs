@@ -436,6 +436,15 @@ pub struct Analysis {
     /// hands the file-scope use the inner value. Scope is resolved here, while it is
     /// known; lowering asks what *this* reference is worth and needs no scope of its own.
     pub(crate) enum_refs: IndexMap<ExprId, (i128, TyId)>,
+    /// Each `_Generic` expression → the association's value expression that its controlling
+    /// type selected.
+    ///
+    /// **Keyed by the expression, like `enum_refs` above and for the same reason.** The
+    /// choice is a question about types, so it is answered here, once, where the types are;
+    /// lowering asks which arm *this* selection took rather than repeating the rule. C11
+    /// 6.5.1.1 also says the unselected arms are not evaluated, and a recorded answer makes
+    /// that automatic — lowering never sees them.
+    pub(crate) generic_selections: IndexMap<ExprId, ExprId>,
     pub diagnostics: Vec<SemaDiagnostic>,
 }
 
@@ -467,6 +476,11 @@ impl Analysis {
     /// The value of one enumerator *reference*, resolved in its own scope.
     pub fn enum_ref(&self, e: ExprId) -> Option<(i128, TyId)> {
         self.enum_refs.get(&e).copied()
+    }
+
+    /// The association a `_Generic` selected, as the expression to lower in its place.
+    pub fn generic_selection(&self, e: ExprId) -> Option<ExprId> {
+        self.generic_selections.get(&e).copied()
     }
 
     /// The type an enumeration constant has.
@@ -2565,6 +2579,104 @@ impl Cx<'_> {
                     expr,
                     ty,
                     operands: Vec::new(),
+                })
+            }
+            // **C11 6.5.1.1.** The controlling expression is typed and never evaluated; the
+            // selection is by type and is recorded for lowering.
+            ExprKind::Generic {
+                controlling,
+                assocs,
+            } => {
+                let (controlling, assocs) = (*controlling, assocs.clone());
+                // **Decayed, and that is the whole of "lvalue conversion" here.** C11 says
+                // the controlling expression's type is taken as if it had undergone lvalue
+                // conversion, so an array selects `int *` and a string literal `char *`.
+                // Qualifiers need no work at all: `Ty` does not carry them, so `const int`
+                // and `int` are already one interned id — which is why `const` matching
+                // `int` is free and not a rule implemented anywhere.
+                //
+                // **And no promotion.** Every other context here would call `promote_node`;
+                // doing so would make `(unsigned char)1` select `int`, which is the single
+                // easiest thing to get wrong in this construct.
+                let c = self.type_expr(controlling);
+                let c = self.decay(c, controlling);
+                let cty = self.out.typed.ty_of(c);
+
+                let mut chosen: Option<(ExprId, TyId)> = None;
+                let mut fallback: Option<(ExprId, TyId)> = None;
+                let mut ops = vec![c];
+                for a in &assocs {
+                    // **Every arm is typed, selected or not.** They are not evaluated, but
+                    // they must be valid expressions and gcc says so; typing them is what
+                    // reports a nonsense arm that this selection happens to skip.
+                    let node = self.type_expr(a.value);
+                    let node = self.decay(node, a.value);
+                    ops.push(node);
+                    let vty = self.out.typed.ty_of(node);
+                    match a.ty {
+                        None => {
+                            // C11 6.5.1.1p2: at most one `default`. Two is a constraint
+                            // violation, and reporting it is the difference between refusing
+                            // the program and quietly preferring one of the two.
+                            if fallback.is_some() {
+                                self.error(span, "a `_Generic` selection has two `default`s");
+                            } else {
+                                fallback = Some((a.value, vty));
+                            }
+                        }
+                        Some(t) => {
+                            let at = self.ty_of(t);
+                            // Interned types compare by id, so this *is* the compatibility
+                            // test for everything `_Generic` can name.
+                            if at == cty {
+                                // **Also 6.5.1.1p2: no two associations may name compatible
+                                // types.** Both of these guards survived mutation until they
+                                // were made to report, because only an *invalid* program can
+                                // tell "first match wins" from "last match wins" — gcc
+                                // rejects it, so the differential oracle can never grade it.
+                                // The choice is between silently picking one and saying the
+                                // program is wrong, and 020 §5 settles that.
+                                //
+                                // **Which arm the `else` keeps is still unobservable, and now
+                                // permanently so**: the diagnostic makes 015 §7 refuse the
+                                // function, so no answer is produced for either choice.
+                                // Keeping the first is written as an `else` rather than an
+                                // `.or()` so the code states a rule it cannot be tested on,
+                                // instead of implying one that mutation would contradict.
+                                if chosen.is_some() {
+                                    self.error(
+                                        span,
+                                        "two `_Generic` associations match the controlling \
+                                         expression's type",
+                                    );
+                                } else {
+                                    chosen = Some((a.value, vty));
+                                }
+                            }
+                        }
+                    }
+                }
+                // `default` only when nothing else matched, wherever it was written — so a
+                // `default` first in the list cannot shadow a later exact match.
+                let sel = chosen.or(fallback);
+                let ty = match sel {
+                    Some((value, vty)) => {
+                        self.out.generic_selections.insert(expr, value);
+                        vty
+                    }
+                    None => {
+                        self.error(
+                            span,
+                            "no `_Generic` association matches the controlling expression, and \
+                             there is no `default`",
+                        );
+                        self.intern(Ty::Error)
+                    }
+                };
+                self.push_typed(TypedNode::Value {
+                    expr,
+                    ty,
+                    operands: ops,
                 })
             }
             ExprKind::TypeName(_) | ExprKind::Error => {
