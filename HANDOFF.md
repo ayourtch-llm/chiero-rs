@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 266) — 1408 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 267) — 1409 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1763,12 +1763,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   - **`report_faults`'s discharge** — wave 249 found a real defect one line from it, and its
 >     `Unknown` arms were only exercised from wave 258's audit onward.
->   - **`unusable`** — wave 249 gave it a fixture; nothing has mutated the *list* of fault kinds it
->     names, and adding or removing one is exactly the kind of edit that looks harmless.
+>   - ~~**`unusable`**~~ **Done in wave 266.** Dropping `MaybeUninitialized` from the list survived
+>     the whole suite — the definite case was pinned in wave 249 and the conditional one was not.
+>     Six of nine kinds survived removal, and **only one was a gap**: logging every discharged fault
+>     at the scalar load shows `uninitialized-read` (47) and `maybe-uninitialized-read` (6) are the
+>     only kinds that arrive there *with a value*, so for the rest the entry cannot change an answer.
+>     That difference is invisible in the mutation table and took one instrumented run. The list is
+>     unchanged and now carries the measurement.
 >   - **the havoc paths** (024 §2.1) — `HavocFill::Symbolic` versus `Uninitialized` is a documented
 >     "no safe default", which usually means both arms matter and one is untested.
 >
 > ### Rules earned, most recent first
+>
+> **Survivors that look alike can differ in kind, and one measurement separates them** (wave 266).
+> Six entries in `unusable`'s list survived removal and read identically in the table. Instrumenting
+> what actually reaches the site showed five of them can never change an answer — the faults arrive
+> with no value to discard — and one was a real gap. **Before writing six fixtures, ask what the
+> site receives**; the mutation table says a mutant was not observed, never why.
 >
 > **A sweep's verdict is only as good as the test set it runs** (wave 265). `null-not-reported`
 > survived until four files covering null dereferences were added to the sweep — none of which I had
