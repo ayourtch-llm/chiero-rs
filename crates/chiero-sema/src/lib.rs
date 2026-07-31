@@ -1408,7 +1408,24 @@ impl Cx<'_> {
                 continue;
             };
             let v = match init {
-                Some(e) => self.eval(e).map(|v| v.v).unwrap_or(next),
+                Some(e) => match self.eval(e) {
+                    Some(v) => v.v,
+                    // **020 §5: a gap is a diagnostic rather than a licence.** Falling back to
+                    // `next` silently gave the enumerator exactly the value it would have had
+                    // with no initializer written, so a constant expression this engine cannot
+                    // fold was indistinguishable from one it folded correctly. That is how a
+                    // missing `sizeof` arm survived to be found by accident rather than by the
+                    // suite. The fallback is kept — an enumeration that stopped resolving would
+                    // cascade into every use of its type, exactly as for an array bound — but it
+                    // is now announced.
+                    None => {
+                        self.error(
+                            self.ast.expr(e).span,
+                            "enumerator value is not an integer constant expression",
+                        );
+                        next
+                    }
+                },
                 None => next,
             };
             next = v.wrapping_add(1);
@@ -1697,6 +1714,39 @@ impl Cx<'_> {
             ExprKind::AlignofType(ty) => {
                 let t = self.ty_of(ty);
                 let n = align_of_ty(&self.out, &self.target, t)?;
+                Some(self.size_t(n as i128))
+            }
+            // **`sizeof` and `_Alignof` of an *expression* are constant expressions too**
+            // (C 6.5.3.4), whenever the operand is not a variable-length array. Only the
+            // `…Type` spellings had arms here, so `sizeof(int)` folded and `sizeof(1)` did not,
+            // which made `enum { N = sizeof buf };` — ordinary C — silently wrong.
+            //
+            // **The operand is not evaluated**, only typed: `sizeof(1 / 0)` is a size, not a
+            // division. So this asks `type_expr` rather than `eval`, and discards any complaint
+            // typing produced, because a diagnostic about computing the operand is not about an
+            // expression that never computes it.
+            //
+            // The typing is reused when the main pass has already done it. `const_eval` builds a
+            // throwaway context where nothing has been typed, and typing the same expression
+            // twice would overwrite its `by_expr` entry — which `top` and `conversions_of` answer
+            // from — with a second node built in a context that cannot see local declarations.
+            ExprKind::SizeofExpr(inner) | ExprKind::AlignofExpr(inner) => {
+                let want_size = matches!(node.kind, ExprKind::SizeofExpr(_));
+                let id = match self.out.typed.top(inner) {
+                    Some(id) => id,
+                    None => {
+                        let before = self.out.diagnostics.len();
+                        let id = self.type_expr(inner);
+                        self.out.diagnostics.truncate(before);
+                        id
+                    }
+                };
+                let t = self.out.typed.ty_of(id);
+                let n = if want_size {
+                    size_of_ty(&self.out, &self.target, t)?
+                } else {
+                    align_of_ty(&self.out, &self.target, t)?
+                };
                 Some(self.size_t(n as i128))
             }
             ExprKind::Unary { op, operand } => {
