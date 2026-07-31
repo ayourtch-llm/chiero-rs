@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 273) — 1419 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 274) — 1420 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **Wave 273 finished the arithmetic half of `vector_size`.** Every arithmetic, bitwise and shift
+> operator, both operand orders of the scalar broadcast, unary `-`/`~`, and compound assignment
+> now agree with gcc for `int`, `unsigned char`, `long`, `float` and `double` lanes. Combined with
+> wave 272's initializer and subscript, the extension VPP is written in now works for storage and
+> arithmetic.
+>
+> **Lowered lane by lane through memory, on purpose.** A vector is an aggregate here — `cty` says
+> `CTy::Ptr`, `alloca_for` gives it storage — so `Splat`, `Shuffle`, `InsertLane` and
+> `ExtractLane` are still unproduced and *should* be until someone wants an SSA vector
+> representation. Two representations of one type would put "which am I holding?" into every
+> load, store, copy, member and cast. That is a decision, not an omission.
+>
+> **What the census still has open:**
+>   - **Vector comparisons.** `x == y` and `x < y` are ordinary C and still refuse, loudly and by
+>     name. They need a *result* type that differs from the operand type — a signed integer vector
+>     of the lane's width, which for a `v4sf` is not the operand type at all — so it is a sema
+>     change of a different kind from wave 273's. This is the next vector wave.
+>   - **`_Generic` is not in the parser at all.** C11, loud parse diagnostic, declared gap.
+>   - **`BinOp::PtrDiff` is dead in every crate** and `p - q` works without it. Delete or produce.
+>   - **`Const::FuncAddr` has no producer** although `GlobalInit::FuncAddr` does; function
+>     pointers work, so confirm it is a spelling question before writing it down as a gap.
 >
 > **Wave 272 ran the census over every CIR enum and it found a whole half-built feature.** The
 > unproduced variants were `CTy::Vector`, `RValue::Splat`/`Shuffle`/`InsertLane`/`ExtractLane`,
@@ -1884,6 +1906,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A well-typed instruction can mean the wrong thing, and the verifier will pass it** (wave 273).
+> `x += y` on a vector stored a `CTy::Ptr` value into a `CTy::Ptr` slot. Types agree, verifier
+> happy, one lane written and three left stale — a wrong answer where every neighbouring bug in
+> the same wave was a loud refusal. **The verifier catches contradictions, not mistakes**, so the
+> shapes it cannot see are exactly where a differential oracle earns its keep.
+>
+> **When two spellings of one operation disagree, the difference is the diagnosis** (wave 273).
+> `x << 1` lowered correctly and `x + 1` did not, on the same operand. Shifts return from
+> `type_binary` before it ever asks for a common type — so the bug was the common type, and the
+> asymmetry named it in one step. Same shape as wave 270's `d && 1` versus `1 && d`.
+>
+> **The same mistake in a function that already documents it twice** (wave 273). `type_binary`
+> and `ExprKind::Assign` each carry a comment explaining why a *pointer* operand must not be
+> coerced to the lvalue's type, and `Assign` carries a second for `_Bool`. A vector is the third,
+> and it broke the same way. **When a fix's comment could have been written by copying a comment
+> already there, check whether the list has more members** — the tell is an lvalue whose type the
+> other operand must not be dragged to.
+>
+> **A surviving mutant is usually a missing fixture, and the fixture is usually specific** (wave
+> 273). Two of ten survived. The lvalue was evaluated twice and every fixture had a bare
+> identifier on the left, where that cannot be seen — only `a[i++] += y` can. The scalar's
+> conversion to the element type was unobservable because every broadcast fixture used a scalar
+> already at the lane's type — only `10 - f` on a `v4sf` needs a real `SiToFp`. **Both were real
+> defects the suite would have shipped**, and neither was found by reading.
 >
 > **A half-supported type is worse than a missing one** (wave 272). `sizeof(v4si)` was 16,
 > `sizeof x` was 16, and `x[0] = 7; return x[0]` gave 7 — every smoke test a person would write.
