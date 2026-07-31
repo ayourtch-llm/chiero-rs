@@ -96,6 +96,60 @@ fn a_check_after_the_dereference_does_not_save_it() {
     );
 }
 
+/// **The report says the program checks this pointer, when it does.**
+///
+/// `int v = *p; if (p) …` is the shape a reader most wants explained. Chiero reports it — the null
+/// state reaches the dereference before the guard can prune it — and the sentence it produces
+/// explains *chiero's* reasoning:
+///
+/// ```text
+///   null-dereference: access at offset 0 of NULL, where %1 is a pointer parameter assumed to be
+///   possibly null
+/// ```
+///
+/// "Assumed" is the weakest thing that could be said. The function tests `p` against null four
+/// tokens later, so the author's own code says the pointer can be null — and that is evidence a
+/// reader cannot argue with, where an assumption invites "but my callers never pass null".
+///
+/// 023 §9: a report a person cannot act on is not a report. This is the same idea one step further
+/// — a report a person can *dismiss* is barely one, and the difference is which evidence it cites.
+#[test]
+fn a_null_dereference_cites_the_program_s_own_check() {
+    let src = "int probe(int *p){ int v = *p; if (p) return v; return 0; }";
+    let f = findings(src);
+    let d = f
+        .iter()
+        .find(|x| x.contains("null-dereference"))
+        .unwrap_or_else(|| panic!("the dereference must still be reported: {f:?}"));
+    assert!(
+        d.contains("tests it"),
+        "the function checks `p` for null below the dereference, and saying so is stronger \
+         evidence than the assumption chiero made: {d:?}"
+    );
+    assert!(
+        d.contains("t.c:1:"),
+        "and the check has a location, so a reader can go and look at it: {d:?}"
+    );
+}
+
+/// A function that never tests the pointer gets no such clause. **The control.**
+///
+/// Without it, a fix that appended the sentence unconditionally would satisfy the test above and
+/// claim the program checks a pointer it never mentions again — which is worse than the assumption
+/// it replaced, because it is false rather than weak.
+#[test]
+fn a_null_dereference_claims_no_check_that_is_not_there() {
+    let f = findings("int probe(int *p){ return *p; }");
+    let d = f
+        .iter()
+        .find(|x| x.contains("null-dereference"))
+        .unwrap_or_else(|| panic!("the dereference must be reported: {f:?}"));
+    assert!(
+        !d.contains("tests it"),
+        "nothing in this function tests `p`, so the report must not say it does: {d:?}"
+    );
+}
+
 /// A pointer the program never dereferences is not a finding.
 ///
 /// The control against the cheapest wrong fix — reporting nullability at entry rather than
