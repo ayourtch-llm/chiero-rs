@@ -2890,6 +2890,76 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **`typeof` resolves to nothing: every declaration using it has an unknown type.**
+///
+///     int x = 3; __typeof__(x) y = x + 1; return y;
+///     SemaDiagnostic: "`y` has an incomplete or unknown type; its uses are not checked"
+///
+/// The parser has had `TypeKind::TypeofExpr` and `TypeKind::TypeofType` since it was written —
+/// `typeof` *parses* — and sema's `ty_of` never resolved either, so the declared object gets
+/// `Ty::Error` and everything downstream is unchecked or refused.
+///
+/// # Reach
+///
+/// **37 VPP files.** `typeof` is how VPP's container macros stay type-generic; it is also how
+/// `__builtin_types_compatible_p (__typeof__ (x), void)` is written, which 013 already calls out
+/// as appearing "in every TU that includes `<string.h>`".
+///
+/// # Found by censusing `TypeKind`
+///
+/// The last grammar-shaped enum with no census (§9, wave 282). Twenty-two probes over its nine
+/// variants: `Builtin` in every width including `__int128` and `_Float16`, `Named`, `Tag` for
+/// both `struct` and `union` and `enum`, `Ptr`, `Array`, `Func` — all correct. **Both `typeof`
+/// variants fail, and nothing else does.** One enum, one hole, and it is the one VPP leans on.
+///
+/// # `typeof` does not evaluate its operand
+///
+/// Like `sizeof`, and for the same reason: the answer is the operand's *type*. `__typeof__(a[i++])`
+/// leaves `i` alone, which is the fixture that separates "resolved the type" from "lowered the
+/// expression".
+#[test]
+fn typeof_resolves_to_its_operands_type() {
+    // Controls: the other `TypeKind` forms the census probed, which already work.
+    agree("return (int)sizeof(long long) * 10 + (int)sizeof(short);");
+    agree("__int128 x = 1; x = x << 70; return (int)(x >> 70);");
+    agree_with(
+        "enum E { A, B };",
+        "enum E e = B; return (int)sizeof(e) + (int)e;",
+    );
+    // The expression form, both spellings.
+    agree("int x = 3; __typeof__(x) y = x + 1; return y;");
+    agree("int x = 3; typeof(x) y = x + 1; return y;");
+    agree("int x = 3; __typeof(x) y = x + 1; return y;");
+    // The type form.
+    agree("return (int)sizeof(__typeof__(int));");
+    agree("__typeof__(long) l = 7; return (int)sizeof(l) * 10 + (int)l;");
+    // It is a *type*, so `sizeof` of it is the operand's size and not the operand's value.
+    agree("int x = 3; return (int)sizeof(__typeof__(x));");
+    agree("double d = 1.5; return (int)sizeof(__typeof__(d));");
+    // The operand's type is taken exactly: signedness and width survive.
+    agree("unsigned char c = 200; __typeof__(c) d = c; return d;");
+    agree("unsigned char c = 200; __typeof__(c) d = c + 1; return d;");
+    agree("short s = 1; return (int)sizeof(__typeof__(s));");
+    // ...including the type an *expression* has after its own conversions.
+    agree("int x = 3; __typeof__(x + 1L) y = 5; return (int)sizeof(y);");
+    agree("char a = 1; char b = 2; return (int)sizeof(__typeof__(a + b));");
+    // Aggregates and pointers.
+    agree("int a[4] = {1,2,3,4}; __typeof__(a) b = {5,6,7,8}; return b[2] + (int)sizeof(b);");
+    agree("int x = 3; __typeof__(&x) p = &x; return *p;");
+    agree_with(
+        "struct S { int a; };",
+        "struct S s = {7}; __typeof__(s) t = s; return t.a;",
+    );
+    agree("double d = 1.5; __typeof__(d) e = d * 2; return (int)e;");
+    agree("int a[3][2]; return (int)sizeof(__typeof__(a[0]));");
+    // A qualifier applied to a `typeof`.
+    agree("int x = 3; const __typeof__(x) y = x; return y;");
+    // **Unevaluated**, like `sizeof`.
+    agree("int i = 0; int a[4] = {1,2,3,4}; __typeof__(a[i++]) v = 9; return v*10 + i;");
+    // Nested, and a `typeof` of a `typeof`.
+    agree("int x = 3; __typeof__(__typeof__(x)) y = 4; return y;");
+}
+
 /// **A requested alignment on a variable is ignored, and the storage really is misaligned.**
 ///
 ///     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero 4,  gcc 16
