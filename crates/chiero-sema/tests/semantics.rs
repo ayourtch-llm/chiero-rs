@@ -248,3 +248,40 @@ fn a_generic_selection_reports_its_constraint_violations() {
         ok.analysis.diagnostics
     );
 }
+
+/// **An enumerator whose initializer cannot be evaluated is a diagnostic, not a zero.**
+///
+/// 020 §5: a gap is a diagnostic rather than a licence. The enumeration walk folded each
+/// initializer with `self.eval(e).map(|v| v.v).unwrap_or(next)`, so anything `const_eval` could
+/// not answer silently became the *implicit* next value — the same number the enumerator would
+/// have had with no initializer at all. That is the worst possible failure: indistinguishable
+/// from a correct answer, and it makes every future gap in `const_eval` invisible.
+///
+/// It was found through one: `sizeof` of an expression had no arm, so `enum { E = sizeof(1) };`
+/// was 0 rather than 4, and nothing said so. Fixing that arm removes this instance, so the test
+/// uses an initializer that is genuinely not constant and must stay that way.
+///
+/// The second enumerator checks the *counting* is not disturbed: after a rejected initializer the
+/// implicit sequence still has to continue from somewhere, and the value chosen must not silently
+/// masquerade as computed.
+#[test]
+fn an_enumerator_that_cannot_be_folded_is_diagnosed() {
+    let p = harness::parse_allowing_diagnostics(
+        "int notconst; enum E { A = notconst, B };",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        !p.analysis.diagnostics.is_empty(),
+        "a non-constant enumerator initializer must be diagnosed, not quietly taken as the \
+         implicit next value"
+    );
+
+    // The discriminator: the same shape with a foldable initializer says nothing.
+    let ok =
+        harness::parse_allowing_diagnostics("enum F { C = 3, D };", TargetConfig::x86_64_linux());
+    assert!(
+        ok.analysis.diagnostics.is_empty(),
+        "a constant initializer is not a complaint: {:?}",
+        ok.analysis.diagnostics
+    );
+}

@@ -4763,3 +4763,40 @@ fn constant_expressions_apply_the_usual_arithmetic_conversions() {
         agree_with(prelude, body);
     }
 }
+
+/// **`sizeof` of an *expression* is a constant expression too.**
+///
+/// `const_eval` has an arm for `SizeofType` and none for `SizeofExpr`, so `sizeof(int)` folds
+/// and `sizeof(1)` does not. C 6.5.3.4 makes both constant expressions whenever the operand is
+/// not a variable-length array, and `sizeof buf` in an array bound or an enumerator is ordinary
+/// C — `enum { N = sizeof header };` is how a great deal of real code states a buffer's size.
+///
+/// The operand is *not evaluated*: `sizeof` asks about a type, so it needs the operand's type
+/// and nothing else. That is why the cases below include one with a side effect that must not
+/// happen and one whose value could not be computed at all.
+#[test]
+fn sizeof_of_an_expression_folds_in_a_constant_expression() {
+    for (prelude, body) in [
+        ("enum { E = (int)sizeof(1) };", "return E;"),
+        ("enum { E = (int)sizeof 1 };", "return E;"),
+        ("enum { E = (int)sizeof(1L) };", "return E;"),
+        ("enum { E = (int)sizeof('a') };", "return E;"),
+        ("enum { E = (int)sizeof(1 + 1L) };", "return E;"),
+        ("enum { E = (int)sizeof((char)1) };", "return E;"),
+        // The operand is unevaluated, so a division by zero inside it is not a division at all.
+        ("enum { E = (int)sizeof(1 / 0) };", "return E;"),
+        // An array bound is the everyday use, and it decides a layout rather than a value.
+        (
+            "static long buf[7]; int arr[sizeof(buf) / sizeof(buf[0])];",
+            "return (int)(sizeof(arr) / sizeof(arr[0]));",
+        ),
+        (
+            "struct S { int a; char b; }; struct S s; int arr[sizeof s];",
+            "return (int)(sizeof(arr) / sizeof(arr[0]));",
+        ),
+        // `_Alignof` of a type already worked; this is its neighbour in the same match.
+        ("enum { E = (int)_Alignof(long) };", "return E;"),
+    ] {
+        agree_with(prelude, body);
+    }
+}
