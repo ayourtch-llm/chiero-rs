@@ -1742,12 +1742,18 @@ impl Cx<'_> {
                     // Shifts take the *left* operand's type, not the usual conversions.
                     BinOp::Shl => (a.v.checked_shl(b.v.try_into().ok()?)?, a),
                     BinOp::Shr => (a.v.checked_shr(b.v.try_into().ok()?)?, a),
-                    BinOp::Lt => ((a.v < b.v) as i128, bool_),
-                    BinOp::Gt => ((a.v > b.v) as i128, bool_),
-                    BinOp::Le => ((a.v <= b.v) as i128, bool_),
-                    BinOp::Ge => ((a.v >= b.v) as i128, bool_),
-                    BinOp::Eq => ((a.v == b.v) as i128, bool_),
-                    BinOp::Ne => ((a.v != b.v) as i128, bool_),
+                    // **Comparisons ask about the converted operands, not the written ones.**
+                    // Values are carried as mathematical `i128`, so `-1` stays −1 even once the
+                    // usual arithmetic conversions have made the common type unsigned. C 6.3.1.8
+                    // converts both operands to that type first, which turns `-1 < 1u` into
+                    // `4294967295u < 1u`. `truncate` rather than `wrap`, because this conversion
+                    // is defined and silent — `wrap` would report it as a signed overflow.
+                    BinOp::Lt => ((cmp(a, r) < cmp(b, r)) as i128, bool_),
+                    BinOp::Gt => ((cmp(a, r) > cmp(b, r)) as i128, bool_),
+                    BinOp::Le => ((cmp(a, r) <= cmp(b, r)) as i128, bool_),
+                    BinOp::Ge => ((cmp(a, r) >= cmp(b, r)) as i128, bool_),
+                    BinOp::Eq => ((cmp(a, r) == cmp(b, r)) as i128, bool_),
+                    BinOp::Ne => ((cmp(a, r) != cmp(b, r)) as i128, bool_),
                     BinOp::BitAnd => (a.v & b.v, r),
                     BinOp::BitXor => (a.v ^ b.v, r),
                     BinOp::BitOr => (a.v | b.v, r),
@@ -1758,14 +1764,43 @@ impl Cx<'_> {
             }
             ExprKind::Cond { cond, then, els } => {
                 let c = self.eval(cond)?;
-                if c.v != 0 {
+                let taken = c.v != 0;
+                let value = if taken {
+                    match then {
+                        // GNU `a ?: b` reuses the condition as the second operand.
+                        Some(t) => self.eval(t)?,
+                        None => c,
+                    }
+                } else {
+                    self.eval(els)?
+                };
+                // **C 6.5.15p5: the result type is the usual arithmetic conversions of *both*
+                // arms**, so the arm that was not taken still decides whether the result is
+                // unsigned. It is evaluated only for its type.
+                //
+                // Two things that evaluation must not do. It must not contribute diagnostics —
+                // `1 ? 7 : 1/0` is a constant expression gcc accepts, and the dead arm's division
+                // by zero is not the expression's problem. And it must not be *required* to
+                // succeed: when it cannot be evaluated, the taken arm's type is kept, which is no
+                // worse than the answer given before this rule existed.
+                let mark = self.out.diagnostics.len();
+                let other = if taken {
+                    self.eval(els)
+                } else {
                     match then {
                         Some(t) => self.eval(t),
                         None => Some(c),
                     }
-                } else {
-                    self.eval(els)
-                }
+                };
+                self.out.diagnostics.truncate(mark);
+                Some(match other {
+                    Some(other) => {
+                        let ty =
+                            usual_arithmetic(promote(value, int_bits), promote(other, int_bits));
+                        truncate(value.v, ty.bits, ty.signed)
+                    }
+                    None => value,
+                })
             }
             ExprKind::Comma { rhs, .. } => self.eval(rhs),
             // **`__builtin_constant_p`** (contract 18). The answer is 1 exactly when the
@@ -1877,6 +1912,14 @@ fn promote(v: IntVal, int_bits: u32) -> IntVal {
         bits: int_bits,
         signed: true,
     }
+}
+
+/// An operand as the common type represents it, for comparison.
+///
+/// Separate from `wrap` because this conversion is defined and silent: converting `-1` to an
+/// unsigned type is C 6.3.1.3p2 arithmetic, not the signed overflow `wrap` would report.
+fn cmp(v: IntVal, common: IntVal) -> i128 {
+    truncate(v.v, common.bits, common.signed).v
 }
 
 /// C's usual arithmetic conversions for the integer cases.
