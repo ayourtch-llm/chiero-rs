@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 264) — 1406 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 265) — 1407 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1739,7 +1739,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > result is measured against a corrupted baseline and looks ordinary. `CONTROL KILLED` is the only
 > thing that catches it. And do not leave a one-line clause pinned solely by a twenty-second channel.
 >
+> ### 🔴 Do this first: the rest of the memory faults
+>
+> Wave 264 took the arithmetic technique to the memory checks and it worked on the first try. The
+> concrete bounds check is `off < 0 || end > size`, and **nothing tested the low half** — every
+> fixture ran off the end of an object and none started before its beginning. ASan names that
+> direction separately (`Memory access at offset 60 underflows this variable`), so it is worth
+> distinguishing in a report as well as in a check.
+>
+> **What is left, in the same style.** The other fault classes have their own predicates and none has
+> been swept: use-after-free and use-after-scope (the state check), the wild-pointer path,
+> `AllocationTooLarge`, and the alignment recording. `chiero-mem`'s `MemFault` enum is the list of
+> kinds; each arm that constructs one is a clause worth mutating, and the fixture files are
+> `chiero-mem/tests/{bounds,access,objects}.rs` plus `chiero-lower/tests/first_fault.rs`.
+>
+> **Expect dead code as well as gaps.** Three of wave 264's six survivors were not coverage holes at
+> all: `AddressSpace::in_bounds` had no production caller, so no fixture could observe it. Deleting
+> it then orphaned `AddressSpace::size_of`, which had exactly one caller — **dead code hides dead
+> code**, so re-run the lints after a deletion rather than assuming it was self-contained.
+>
 > ### Rules earned, most recent first
+>
+> **A surviving mutant on a `pub fn` may mean nothing calls it** (wave 264). Three mutants against
+> `in_bounds` survived every fixture, and the cause was not a missing test — the function had no
+> production caller anywhere in the workspace. **Before writing a fixture for a stubborn predicate,
+> grep for its callers**; testing it would have pinned a function no answer depends on, and a passing
+> test implies something is watched.
+>
+> **Dead code hides dead code** (wave 264). `size_of` did not look dead while `in_bounds` still
+> called it, and `in_bounds` did not look dead until someone grepped. One deletion exposed the next
+> immediately — clippy caught it in the same run — so treat a removal as the first step rather than
+> the whole of it.
 >
 > **A clause with a two-part condition has four cells, and half of them demand silence** (wave 263).
 > The `INT_MIN / -1` check fires on one pair of operands. Dropping *either* half of the condition —
