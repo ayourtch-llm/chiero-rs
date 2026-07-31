@@ -2890,6 +2890,104 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A member of an anonymous struct or union does not resolve.**
+///
+///     struct S { struct { int a; int b; }; int c; };
+///     struct S s; s.a = 1; return s.a;   chiero says None, gcc says 1
+///
+/// C11 6.7.2.1p13: an unnamed member whose type is a struct or union has *its* members treated as
+/// members of the containing type. Chiero lays the member out — `sizeof` is right and the named
+/// sibling `s.c` works — and cannot name anything inside it.
+///
+/// # Why this one and not `_Alignas`
+///
+/// The declarator census (wave 278) left four defects. `_Alignas` is the worse *kind* — a wrong
+/// answer where this is a refusal — but wave 276's rule is to check the target rather than
+/// intuition: anonymous members appear in **34 VPP files including `vnet/buffer.h`**, whose
+/// `vnet_buffer()` macro is on nearly every data path in the tree, and `_Alignas` appears in
+/// three. This makes a central header usable; that one changes an answer few programs ask for.
+///
+/// Pointer-to-array indexing, the fourth, is **struck**: re-probing shows wave 278 fixed it, so
+/// it was a symptom of the dimension reversal rather than its own defect.
+///
+/// # The shape that matters is the nested one
+///
+/// `buffer.h` nests an anonymous struct inside an anonymous union inside a struct. A lookup that
+/// searches one level down passes every flat fixture and fails there, so the nesting is here.
+#[test]
+fn an_anonymous_member_resolves_through_its_container() {
+    // Controls: a *named* nested member, and a named sibling of an anonymous one, both work.
+    agree_with(
+        "struct S { struct { int a; } n; int c; };",
+        "struct S s; s.n.a = 4; s.c = 5; return s.n.a*10 + s.c;",
+    );
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s; s.c = 3; return s.c;",
+    );
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "return (int)sizeof(struct S);",
+    );
+    // An anonymous struct in a struct: read, write, and every member.
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s; s.a = 1; s.b = 2; s.c = 3; return s.a*100 + s.b*10 + s.c;",
+    );
+    // Its offsets, which is what a name lookup has to get right rather than merely find.
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s; return (int)__builtin_offsetof(struct S, b);",
+    );
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s; return (int)__builtin_offsetof(struct S, c);",
+    );
+    // A braced initializer fills through the anonymous member.
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s = {1,2,3}; return s.a*100 + s.b*10 + s.c;",
+    );
+    agree_with(
+        "struct S { struct { int a; int b; }; int c; };",
+        "struct S s = {1,2,3}; struct S t = s; return t.b;",
+    );
+    // **An anonymous union in a struct**, where two names share one offset.
+    agree_with(
+        "struct S { union { int a; int b; }; int c; };",
+        "struct S s; s.a = 5; s.c = 3; return s.b*10 + s.c;",
+    );
+    agree_with(
+        "struct S { union { int a; int b; }; int c; };",
+        "return (int)sizeof(struct S);",
+    );
+    // An anonymous struct in a *union*, which is the aliasing direction.
+    agree_with(
+        "union U { struct { int a; int b; }; long l; };",
+        "union U u; u.l = 0; u.a = 1; u.b = 2; return u.a*10 + u.b;",
+    );
+    // **The nesting `vnet/buffer.h` actually uses**: an anonymous struct inside an anonymous
+    // union inside a struct. One level of search is not enough.
+    agree_with(
+        "struct S { union { struct { int x; int y; }; long q; }; int t; };",
+        "struct S s; s.x = 1; s.y = 2; s.t = 3; return s.x*100 + s.y*10 + s.t;",
+    );
+    agree_with(
+        "struct S { union { struct { int x; int y; }; long q; }; int t; };",
+        "struct S s; return (int)__builtin_offsetof(struct S, y);",
+    );
+    // A bit-field inside an anonymous struct, whose `BitRange` has to travel with the offset.
+    agree_with(
+        "struct S { struct { int a:3; int b:5; }; int c; };",
+        "struct S s; s.a = 1; s.b = 2; s.c = 3; return s.a*100 + s.b*10 + s.c;",
+    );
+    // A single anonymous member and nothing else.
+    agree_with(
+        "struct S { struct { int a; }; };",
+        "struct S s; s.a = 9; return s.a;",
+    );
+}
+
 /// **A multi-dimensional array has its dimensions reversed.**
 ///
 ///     int a[2][3] = {{1,2,3},{4,5,6}}; return a[1][2];   chiero says 0, gcc says 6
