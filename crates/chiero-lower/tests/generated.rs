@@ -748,7 +748,15 @@ impl Gen {
         // both are *conversion* shapes: `~` promotes its operand and `sizeof` yields `size_t`,
         // whose unsignedness wins the usual arithmetic conversions and turns `- 5` into a very
         // large number. That class is where wave 217's defect lived.
-        if self.extended && self.rng.chance(8) {
+        // **Wave 285's forms, on their own stream and before the wave-220 gate.**
+        //
+        // Each of these is a *value*, not an object: it replaces a subexpression and adds no
+        // statement, no storage and no operand to the checksum. Wave 284 measured what an
+        // object costs — a multi-dimensional array took this channel from 131 comparisons to
+        // 80 — and this is the shape that avoids it.
+        //
+        let wave_220 = self.extended && self.rng.chance(8);
+        if wave_220 {
             self.depth += 1;
             let inner = self.expr(want);
             self.depth -= 1;
@@ -860,7 +868,92 @@ impl Gen {
             }
         };
         self.depth -= 1;
+        // **Wave 285's forms wrap the expression that was just built.**
+        //
+        // Every earlier shape drew from `rng` — either by gating on it, or by calling `expr`
+        // for a fresh operand — and *any* extra or skipped draw shifts every draw after it in
+        // that program. Wave 270's `!`-of-a-negative-zero shape sat at three programs in six
+        // hundred and went to zero, then one, whatever the rate; it is not a rate problem, it
+        // is that a displaced stream scrambles which programs contain a rare shape at all.
+        //
+        // Wrapping `e` after the fact costs **no `rng` draw**: the gate and the choice come from
+        // `grng`, and the operand is the one the ordinary path already produced. The stream is
+        // byte-identical to before this wave, which the channel's adequacy guards check.
+        let e = if self.extended && self.grng.chance(14) {
+            self.recent_form(want, e)
+        } else {
+            e
+        };
         format!("({e})")
+    }
+
+    /// `_Generic`, `__builtin_offsetof` and a floating classification builtin, as expressions.
+    ///
+    /// **All three yield a value of a type the surrounding expression already wanted**, so each
+    /// wraps `inner` and hands back something the grammar can keep using. That is why they are
+    /// affordable where a multi-dimensional array was not.
+    ///
+    ///   - `_Generic` (wave 275) selects on the *controlling expression's type*, so the arm
+    ///     names the type it is generating for and a wrong selection changes the value. The
+    ///     `default` arm is written **first**, since a `default` that shadows a later exact
+    ///     match is precisely what wave 275's mutation found.
+    ///   - `__builtin_offsetof` (wave 280) needs a record, so it only fires when one is in
+    ///     scope, and it asks for a member other than the first where it can — the first is at
+    ///     offset 0 whatever the layout does.
+    ///
+    /// **They *select*, they do not combine.** The first version added each builtin's value to
+    /// `inner`, and that addition is itself undefined once a narrow signed type is near its
+    /// range: discards went from 69 programs to 100 and the channel fell to exactly its floor.
+    /// A conditional keeps both operands in play and adds no arithmetic the program did not
+    /// already have.
+    ///   - A classification builtin (wave 271) needs a floating operand, so the value is cast to
+    ///     `double` first; `isnan` of an ordinary number is 0, and `islessequal` against itself
+    ///     is 1, so both answers appear.
+    fn recent_form(&mut self, want: Ty, inner: String) -> String {
+        let pick = self.grng.below(3);
+        // A record with at least two members, so `offsetof` can name one that is not at 0.
+        let rec = (0..self.records.len()).find(|&r| self.records[r].readable() >= 2);
+        match (pick, rec) {
+            (1, Some(r)) => {
+                let kw = self.records[r].kw();
+                let tag = self.records[r].tag.clone();
+                let f = self.records[r].field(1);
+                format!(
+                    "({})(__builtin_offsetof({kw} {tag}, {f}) > 0 ? ({}){inner} : ({})0)",
+                    want.c(),
+                    want.c(),
+                    want.c()
+                )
+            }
+            (2, _) => {
+                // **Only the ones wave 271 implemented.** `isinf` and `isfinite` are declared
+                // limits that refuse loudly, and a corpus emitting them would grade the refusal
+                // rather than the feature.
+                let b = *self.grng.pick(&[
+                    "__builtin_isnan",
+                    "__builtin_isunordered",
+                    "__builtin_islessequal",
+                ]);
+                let d = format!("(double)({inner})");
+                let call = if b == "__builtin_isnan" {
+                    format!("{b}({d})")
+                } else {
+                    format!("{b}({d}, {d})")
+                };
+                format!(
+                    "({})({call} ? ({}){inner} : ({})0)",
+                    want.c(),
+                    want.c(),
+                    want.c()
+                )
+            }
+            _ => format!(
+                "({})(_Generic(({}){inner}, default: 0, {}: {inner}))",
+                want.c(),
+                want.c(),
+                want.c()
+            ),
+        }
     }
 
     /// **One access, spelled every way C spells it.**
