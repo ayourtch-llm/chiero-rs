@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 294) — 1454 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 295) — 1457 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,39 +808,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟢 The checker sweeps are done — four targets, eleven fixtures, two deletions
+> ### 🟢 The checker sweeps are done — four targets, fifteen fixtures, two deletions
 >
 > | target | mutants | survived | acted on |
 > |---|---|---|---|
 > | **CIR verifier** (290) | 40 (one way) | 7 | 6 fixtured, 1 deleted as subsumed |
 > | **`chiero-check`** (291) | 14 (both ways) | 5 | 3 fixtured, 2 recorded in place |
-> | **`chiero-mem`** (292) | 144 (both ways) | 42 → 6 both-ways | 1 fixtured, 5 listed |
-> | **`chiero-pp`** (293) | 138 of 166 (both ways) | 28 → 6 both-ways | 1 fixtured, 5 listed |
+> | **`chiero-mem`** (292) | 144 (both ways) | 42 → 6 both-ways | 1 fixtured, 3 listed |
+> | **`chiero-pp`** (293–294) | 138 of 166 (both ways) | 28 → 6 both-ways | 4 fixtured, 2 cosmetic |
 >
-> **`chiero-pp` was swept to 85% and stopped**, at conditions up to line 1890 of 2211. Each mutant
-> rebuilds the test binaries, so the cost is minutes rather than the 8s the suite takes; finishing
-> it is a detached run of the script in wave 293's commit with `psites.txt` sliced past 1890.
+> **Still open, and small:**
+>   - **`chiero-pp` was swept to 85%** — conditions past line 1890 of 2211 were never reached.
+>     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890.
+>     Budget by *rebuild* cost: minutes per mutant, not the 8s the suite takes.
+>   - **Three `chiero-mem` both-ways survivors** remain: `e.repr == Repr::Array` (L2662), a
+>     fault-propagation early-out (L3266), an index-width guard (L3284).
+>   - Two `chiero-pp` survivors are inside the `__VA_OPT__` refusal path, where how much of the
+>     group gets skipped after a declared-limit diagnostic is cosmetic by construction.
 >
-> **Both-ways survivors still on the table**, for whoever picks this up:
->
-> ```
-> chiero-mem   L2662  e.repr == Repr::Array        — a representation branch
->              L3266  !r.faults.is_empty()         — a fault-propagation early-out
->              L3284  a.width(off) > arr.idx_bits  — an index-width guard
-> chiero-pp    L561   candidates.is_empty()        — include-path resolution
->              L641   quoted                       — `"..."` vs `<...>` include form
->              L652   directories.is_empty()
->              L1634  __VA_OPT__ group skipping    — cosmetic: the diagnostic already refused it
->              L1642  __VA_OPT__ paren depth       — likewise
-> ```
->
-> **The three include-path ones are the most interesting**: `quoted` deciding `"..."` from `<...>`
-> is real behaviour with a real difference, and neither direction is observed.
->
-> **What the four sweeps taught, in one line each.** Mutate both ways — `true` finds the
-> false-positive guards. Sort by both-ways survival — it turns forty survivors into six. Expect the
-> survivors to cluster on one missing input shape. Expect at least one fixture to pass for the
-> wrong reason first.
+> **What the sweeps taught, one line each.** Mutate both ways — `true` finds the false-positive
+> guards. Sort by both-ways survival — it turns forty survivors into six. Expect survivors to
+> cluster on **one missing input shape**: leaf callees in `chiero-check`, in-bounds writes in
+> `chiero-mem`, root-level fixtures in `chiero-pp`. Expect at least one fixture to pass for the
+> wrong reason first — it happened in every one of the four.
 >
 > ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
@@ -2079,6 +2069,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Every fixture at the root is a fixture that cannot see a path rule** (wave 294). `"..."`
+> versus `<...>` was unfalsifiable in both directions because every existing test put the
+> including file at the top level, where its parent directory is `""` and the two searches
+> coincide. Moving the includer into `src/` was the entire fix. **When a rule is about
+> *location*, at least one fixture has to be somewhere.**
+>
+> **Two guards that look like the same guard may protect different things** (wave 294).
+> `probe_include` falls back when its *directories* are empty; `include()` falls back when its
+> *candidates* are. The first fixture I wrote for "no paths configured" killed one and left the
+> other alive, and the shape that reaches the second is `#include_next` from the last search
+> directory — nothing like the first. **Check which of a pair a fixture actually reached.**
+>
+> **A choice nothing records is a choice nobody made** (wave 294). Both include fallbacks resolve
+> against the working directory where gcc would find nothing, because chiero's default config has
+> no system paths. That is defensible and undocumented — pinned now, so the next person changing
+> it knows they are changing something.
 >
 > **Two representations of one fact, and only one of them live** (wave 293). A macro's variadic
 > kind is recorded in a public enum *and* in a `std_variadic`/`variadic_name` pair; expansion
