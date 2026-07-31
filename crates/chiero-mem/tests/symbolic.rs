@@ -1970,3 +1970,42 @@ fn an_uninitialized_havoc_after_a_symbolic_write_uninitializes_the_object() {
         r.faults
     );
 }
+
+/// **A symbolic index wider than the array's is truncated, not handed to `store` as-is.**
+///
+/// A promoted object's array is indexed at `idx_bits`, which is 64 at its only assignment. An
+/// index term can be any width the caller built — a `__int128` computation used as a subscript
+/// arrives at 128 — and `fit` narrows it before the `store`.
+///
+/// **`fit`'s widening arm is covered and its narrowing arm was not** (waves 292 and 295). Every
+/// fixture passed a 64-bit or narrower index, so `Ordering::Greater` never ran, and a mutant
+/// returning the term unchanged passed all 190 tests. The two arms are not symmetric in how
+/// easily they arise: a narrow index comes from an `unsigned char` subscript, which is
+/// commonplace, and a wide one from 128-bit arithmetic, which is not — but "rare" is not "never",
+/// and the failure mode is a `store` whose index width disagrees with its array.
+///
+/// This is also the fixture that justifies wave 295 replacing a hand-inlined copy of `fit` in
+/// `write_at_symbolic_offset` with a call to it: three call sites, one adjustment, one test.
+#[test]
+fn a_symbolic_index_wider_than_the_arrays_is_narrowed() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.promote_to_array(&mut a, o);
+    // **128 bits wide**, where the array indexes at 64.
+    let off = a.var(Sort::BitVec(128), "wide");
+    let val = a.bv(8, 0x3C);
+    // No candidates: the empty-candidate path is the one that stores at the symbolic index
+    // itself rather than enumerating offsets.
+    let r = m.write_at_symbolic_offset(&mut a, o, off, &[], val, sp(2));
+    assert!(
+        r.faults.is_empty(),
+        "a wide index is narrowed, not refused: {:#?}",
+        r.faults
+    );
+    // And the narrow direction still works, which is what keeps the two arms honest about
+    // being one decision.
+    let narrow = a.var(Sort::BitVec(8), "narrow");
+    let r = m.write_at_symbolic_offset(&mut a, o, narrow, &[], val, sp(3));
+    assert!(r.faults.is_empty(), "{:#?}", r.faults);
+}

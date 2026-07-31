@@ -3279,13 +3279,12 @@ impl Memory {
                     at,
                 });
             };
-            let idx = if a.width(off) == arr.idx_bits {
-                off
-            } else if a.width(off) > arr.idx_bits {
-                a.extract(off, arr.idx_bits - 1, 0)
-            } else {
-                a.zext(off, arr.idx_bits)
-            };
+            // **`fit`, not a fourth copy of it.** This was the same three-way width adjustment
+            // written out inline, next to two call sites that use the helper. Wave 292's sweep
+            // could not kill either of its non-equal branches — `idx_bits` is 64 at its only
+            // assignment, and every fixture passed a 64-bit index, so only the `Equal` arm ever
+            // ran. One decision in one place is one thing to get right.
+            let idx = fit(a, off, arr.idx_bits);
             arr.data = a.store(arr.data, idx, val);
             // **And the byte becomes initialized**, which 021 §3.1 requires of any write —
             // a write that does not record having happened is indistinguishable from no
