@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 276) — 1423 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 277) — 1424 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **The keyword census is exhausted** (wave 276). All 59 `Kw::` variants now have a production;
+> `__label__` was the last, and it is implemented by *renaming* local labels in the parser so
+> lowering's per-function label map never sees a collision. The AST, sema and lowering were not
+> touched.
+>
+> **The census axes run so far, and what each gave:** `ExprKind` against the generator (wave 270,
+> two defects), `CmpOp` against lowering (271, seven builtins), every CIR enum against lowering
+> (272, the vector cluster), `UbKind` (272, clean), `Kw::` against the parser (275–276, two
+> features). The IR and keyword axes are done. **What has not been censused: `StmtKind` against
+> the *generator*** — wave 217 did it against lowering and found `switch`/`do`-`while`, but the
+> question "which statement forms does the corpus never emit" has not been asked since.
+>
+> **What is left from earlier censuses:**
+>   - **`__builtin_convertvector`**, the only vector gap; casts and `?:` already agree.
+>   - **`BinOp::PtrDiff` is dead in every crate** and `p - q` works without it. Delete or produce.
+>   - **`Const::FuncAddr` has no producer** although `GlobalInit::FuncAddr` does. Confirm it is a
+>     spelling question before writing it down as a gap.
 >
 > **`_Generic` is in** (wave 275) — parser production, AST node, sema selection recorded in
 > `Analysis::generic_selections`, lowering, and the two 6.5.1.1p2 constraint violations reported.
@@ -1949,6 +1967,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A census axis is worth running even when it returns one row** (wave 276). All 59 `Kw::`
+> variants against the parser's productions left exactly one unconsumed: `Kw::Label`. One row —
+> and it was `__label__`, which `vppinfra/hash.h` uses and `hash_foreach_pair` is built on, while
+> `_Generic` (wave 275, the same axis) appears in **no** VPP file. **The census found the more
+> important gap second.** Ordering by how obscure a construct *sounds* would have got both wrong.
+>
+> **Ask which pass owns the problem before choosing where to fix it** (wave 276). `__label__` is
+> a *naming* construct, so renaming in the parser left the AST, sema and lowering untouched. The
+> alternative — teaching lowering's per-function label map about block scopes — would have
+> touched three crates to express the same thing. **A construct that only affects which name a
+> reference resolves to belongs where names are resolved.**
+>
+> **Check the target codebase, not intuition, for what matters** (wave 276). Two greps over
+> `/home/ubuntu/vpp` settled the priority of two features in ten seconds, and reversed the order
+> that reading the C standard would have suggested.
 >
 > **A test that aborts looks like a test that passed** (wave 275). A mutant that replaced the
 > lowered arm with the `_Generic` node itself read as a *survivor*: it stack-overflows, and a
