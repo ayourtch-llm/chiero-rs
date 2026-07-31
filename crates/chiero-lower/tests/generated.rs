@@ -3634,20 +3634,34 @@ fn the_generator_reads_a_field_without_a_cast() {
             if !rest.contains('.') {
                 continue;
             }
-            // `(long)(x.f);` is the cast form and `(x.f);` is the bare one, so the tell is the
-            // `)(` between them. The first version of this test asked whether the text began with
-            // `(` followed by a letter, which is true of *both* — and the control assertion below
-            // caught it by reporting zero casts in a batch that is entirely casts.
-            if rest.contains(")(") {
+            if is_cast_read(rest) {
                 cast += 1;
             } else {
                 bare += 1;
             }
         }
     }
+    // **The discriminator is tested on literals, not only through the counts.** Mutation: swapping
+    // the two arms survived, because after the fix both counts are large and each assertion is
+    // satisfied by either. A count can only tell you a classifier ran, never that it was right.
+    assert!(
+        is_cast_read("(long)(v8.f2);"),
+        "a cast read is the cast form"
+    );
+    assert!(!is_cast_read("(v8.f2);"), "a bare read is not");
     assert!(
         cast > 0,
         "the scan must see the cast form it is contrasting against, or it is measuring nothing"
+    );
+    // **Bare reads must outnumber cast ones**, which is the assertion that tells the two counts
+    // apart. Mutation: swapping which arm increments which survived every check above, because
+    // after the fix both counts are large and each threshold is met by either. Only `float` and
+    // `double` members keep a cast and they are a minority of field types — 96 bare against 22 cast
+    // — so the direction of the inequality is what carries the information.
+    assert!(
+        bare > cast,
+        "integer fields are read bare and only floats keep a cast, so bare reads must dominate: \
+         {bare} bare, {cast} cast"
     );
     assert!(
         bare >= 20,
@@ -3655,4 +3669,13 @@ fn the_generator_reads_a_field_without_a_cast() {
          a cast operand is exactly the context wave 253 showed a bit-field extension defect hides \
          in, so the channel cannot observe one however often it emits the construct"
     );
+}
+
+/// `(long)(x.f)` versus `(x.f)`: the tell is the `)(` between a cast and its operand.
+///
+/// A free function so the classification can be asserted on literals. The first version of the
+/// caller asked whether the text began with `(` followed by a letter, which is true of *both*
+/// forms — caught by a control that reported zero casts in a batch made entirely of them.
+fn is_cast_read(rest: &str) -> bool {
+    rest.contains(")(")
 }
