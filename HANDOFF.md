@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 299) — 1469 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 300) — 1469 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -858,8 +858,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > are wrapped `(x | 1)`, odd hence nonzero for every value, so the operator is still exercised on
 > arbitrary operands rather than constants.
 >
-> **Tuning:** `CHIERO_IF_DIFF_COUNT` (default 400) and `CHIERO_IF_DIFF_SEED` (default 0). 8000
-> expressions across four seed bases currently agree.
+> **Wave 299 gave it macro expansion and `#elif`.** A `#if` operand is expanded before the
+> expression parser sees a token, so the evaluator's real input is a sequence nobody wrote. The
+> prelude now carries object-like and function-like macros, aliases, macros expanding to operators
+> and brackets rather than values, `EMPTY`, and the two that cannot terminate (`SELF`, `PING`/
+> `PONG`). Half the probes run through `#elif`, alternating by index so the file stays the same
+> size while covering twice the directive surface. **No product defect: 6000 expressions across
+> four seed bases agree.** What it found was two rules it reached constantly and could not
+> falsify — see the rule below.
+>
+> **Macro arguments are generated with `defined` disabled**, threaded as a flag rather than
+> filtered from the finished string: C 6.10.1 leaves `defined` arising from macro expansion
+> undefined, the two oracles differ there, and `defined` can sit arbitrarily deep in an argument.
+>
+> **Two rules are outside this channel by construction**, and belong to fixtures instead: a
+> wrong-arity macro call (gcc rejects the program, so the oracle cannot answer — fixtured at
+> `macro_expansion.rs:195`), and dropping the hide set from a replacement list, which makes
+> `PING`/`PONG` expand forever and so shows up as a hang rather than a wrong answer.
+>
+> **Tuning:** `CHIERO_IF_DIFF_COUNT` (default 400) and `CHIERO_IF_DIFF_SEED` (default 0).
 >
 
 > ### 🛑 The sweep harness scored hangs as survivors — read this before trusting a survivor list
@@ -2157,6 +2174,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Unfalsifiable-but-reached is a generator's *normal* failure mode, not an accident** (wave 299).
+> It happened three times in two waves, and each time the missing ingredient was one prelude entry
+> or one extra directive, never more seeds. The pattern: a rule about **how two things combine**
+> stays invisible while every generated case supplies only one of them. The rescan rule needs a
+> macro whose body *names* another macro — every other macro expands to a complete value, and a
+> complete value never notices what follows it. `#elif` exclusivity needs an earlier group that
+> was *taken* — every probe opened with `#if 0`, so the guard was never asked. **After adding a
+> generator arm, mutate the rule it was added for**; the arm running is not evidence.
 >
 > **Reaching a rule is not falsifying it, and corpus size does not fix that** (wave 298). The new
 > `#if` channel generated `'\101'` freely, so it *reached* the octal escape decoder constantly —
