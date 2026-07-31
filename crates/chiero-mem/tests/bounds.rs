@@ -414,3 +414,67 @@ fn an_access_below_an_object_is_out_of_bounds() {
         );
     }
 }
+
+/// **A symbolic write past a *promoted* object's end is out of bounds.**
+///
+/// `write_term` bounds-checks byte by byte, but only in the branch it takes for an object whose
+/// representation is `Array` — a promoted one. Every other store path has its own check, and
+/// those are covered; this branch's was not.
+///
+/// **Both directions of the guard were unfalsifiable** (wave 292's sweep of `chiero-mem`):
+/// forcing `off < 0 || off as u64 >= obj_size` to `false` reported nothing and forcing it to
+/// `true` reported on every byte of every legal write, and 189 tests in this crate plus the
+/// engine's passed either way. Every existing fixture writes symbolically *inside* the object,
+/// because that is what a correct program does — which is exactly why the out-of-bounds arm had
+/// nothing to observe it.
+///
+/// The negative half is the reason the `true` direction survived and is asserted here too: a
+/// legal symbolic write to a promoted object must stay silent, or the guard could be deleted
+/// outright and replaced with "always fault".
+#[test]
+fn a_symbolic_write_past_a_promoted_objects_end_is_out_of_bounds() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    // Promote it: a write at a symbolic offset is what changes the representation to `Array`,
+    // and the branch under test only runs for that representation.
+    // **`promote_to_array` explicitly.** A symbolic-offset write does not change the
+    // representation on its own — the first version of this fixture assumed it did, and the test
+    // passed while both directions of the guard were mutated, because the branch was never
+    // entered at all.
+    m.promote_to_array(&mut a, o);
+
+    let v = a.bv(32, 0x1234_5678);
+    // Four bytes starting at offset 6 of an 8-byte object: bytes 6 and 7 are inside, 8 and 9
+    // are not. A whole-access check that only looked at the start offset would miss this.
+    let r = m.write_term(
+        &mut a,
+        Pointer { base: o, off: 6 },
+        v,
+        4,
+        Endian::Little,
+        sp(3),
+    );
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::OutOfBounds { .. })),
+        "a four-byte symbolic write at offset 6 of an 8-byte object runs off the end: {:#?}",
+        r.faults
+    );
+
+    // The control: the same write entirely inside the object must be silent.
+    let r = m.write_term(
+        &mut a,
+        Pointer { base: o, off: 4 },
+        v,
+        4,
+        Endian::Little,
+        sp(4),
+    );
+    assert!(
+        r.faults.is_empty(),
+        "the last four bytes of an eight-byte object are in bounds: {:#?}",
+        r.faults
+    );
+}
