@@ -2689,6 +2689,14 @@ fn arithmetic_ub_agrees_with_gcc_site_for_site() {
                 "FloatCastOverflow"
             } else if l.contains("division by zero") {
                 "DivByZero"
+            } else if l.contains("cannot be represented in type") {
+                // **`INT_MIN / -1`, which UBSan gives a message of its own** (wave 263). It says
+                // neither "signed integer overflow" nor "division by zero", so before this arm it
+                // classified as `"?"` — a kind chiero never emits, scoring a *miss* and failing
+                // loudly. That is the right default and it is why this had to be added alongside
+                // the check rather than after it: the corpus does not produce the shape today, and
+                // the day it does the oracle would have blamed chiero for gcc's wording.
+                "SignedOverflow"
             } else {
                 "?"
             };

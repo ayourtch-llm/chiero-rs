@@ -3079,6 +3079,34 @@ impl<'m> Engine<'m> {
             BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem if yc.bits() == 0 => {
                 push(UbKind::DivByZero, format!("{op:?} by zero"));
             }
+            // **C11 6.5.5p6: a division whose quotient is not representable.** On two's complement
+            // that is exactly one pair per signed width — the most negative value over `-1`, whose
+            // quotient is one past the top — and the hardware agrees loudly, raising SIGFPE just as
+            // division by zero does.
+            //
+            // **It fell between the two arms it sits between** (wave 263). `DivByZero` tests
+            // `y == 0` and the overflow arm below covers `Add`, `Sub` and `Mul`; a division that
+            // overflows is neither, so the event was absent rather than misclassified.
+            //
+            // `SRem` is the same pair for the same reason: `INT_MIN % -1` is the remainder of a
+            // division that cannot be performed. C11 6.5.5p6 covers `/` and `%` in one sentence and
+            // so does this arm.
+            //
+            // **Reported as `SignedOverflow`, not `DivByZero`.** The divisor is fine; what does not
+            // fit is the result, which is what the other overflow arm means by the name. UBSan
+            // gives it a message of its own — "cannot be represented in type" — and groups it with
+            // neither, so the choice is chiero's to make and this is the one that reads true.
+            BinOp::SDiv | BinOp::SRem
+                if signed && xc.signed() == -(1i128 << (w - 1)) && yc.signed() == -1 =>
+            {
+                push(
+                    UbKind::SignedOverflow,
+                    format!(
+                        "{op:?} of {} by -1 has no representable result in {w} signed bits",
+                        xc.signed()
+                    ),
+                );
+            }
             // Signed overflow is a statement about the *mathematical* result, so it is
             // computed at full width and compared against the range — recomputing it in
             // the operand's width is exactly the wrap being tested for.
