@@ -4980,3 +4980,133 @@ fn the_canonical_uses_of_c_agree_with_gcc() {
         agree_with(prelude, body);
     }
 }
+
+/// **The fourth implementation: the same C operation computed concretely and symbolically.**
+///
+/// §9's technique — find the *second* implementation of a rule — applied to the pair at the
+/// centre of the engine. `chiero-exec` evaluates an operation on concrete bits with native
+/// arithmetic; when an operand is symbolic it instead builds a `chiero-solver` term. Those are
+/// two implementations of C's semantics, and nothing compared them: the corpus runs everything
+/// concretely, and the symbolic tests assert *reachability* rather than *values*.
+///
+/// The comparison pins a symbolic input back to a known value and asks the solver to prove the
+/// expression equals what gcc computed for it. The three outcomes are distinguishable, which is
+/// the point of the shape:
+///
+///   - `[1]` — the solver **proved** the identity: the two implementations agree.
+///   - `[2]` — the symbolic result is provably *different*: a soundness defect.
+///   - `[1, 2]` — the branch was undecidable, so the engine took both edges. That is solver
+///     incompleteness, not a wrong answer, and it is counted separately so a rise in it cannot
+///     be mistaken for agreement.
+///
+/// Both zero today, across 390 pairs. The assertion on `undecided` is therefore a coverage
+/// guard: a case that stops being provable stops testing anything, and would otherwise go quiet.
+#[test]
+fn symbolic_arithmetic_agrees_with_concrete_arithmetic() {
+    const DECL: &str = "void chiero_make_symbolic(void *, unsigned long, const char *); \
+                        void chiero_assume(int);";
+    let states = |body: &str| -> Vec<u128> {
+        let src = format!("{DECL}\nint probe(void) {{ {body} }}");
+        let m = harness::lower(&src);
+        let mut a = TermArena::new();
+        let r = chiero_exec::Engine::new(&m).with_entry("probe").run(&mut a);
+        let mut v: Vec<u128> = r
+            .states()
+            .iter()
+            .filter_map(|s| s.return_value_bits(&mut a))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+
+    // Chosen where the two implementations most plausibly diverge: signed division and modulo
+    // truncating toward zero with a negative operand, arithmetic versus logical shift, narrowing
+    // casts and sign extension, and unsigned wraparound. Nothing here is undefined behaviour —
+    // `x / -1` at `INT_MIN` and signed overflow are excluded, because gcc's answer for those is
+    // not a specification of anything.
+    let exprs = [
+        "x + 7",
+        "x - 7",
+        "x * 3",
+        "x / 5",
+        "x % 5",
+        "x / -5",
+        "x % -5",
+        "-x",
+        "x >> 3",
+        "x >> 31",
+        "(unsigned)x >> 3",
+        "(unsigned)x >> 31",
+        "x << 1",
+        "x & 0x0f0f",
+        "x | 0x1234",
+        "x ^ -1",
+        "~x",
+        "(short)x",
+        "(char)x",
+        "(unsigned char)x",
+        "(unsigned short)x",
+        "(int)(unsigned)x",
+        "(int)((unsigned)x + 1u)",
+        "(int)((unsigned)x * 3u)",
+        "(int)((unsigned)x - 1u)",
+        "(long)x * 3",
+        "(int)((long)x >> 1)",
+        "x < 0",
+        "x <= 0",
+        "x == 0",
+        "x != 0",
+        "(unsigned)x < 10u",
+        "(unsigned)x > 0u",
+        "x < 0 ? -x : x",
+        "x / 7 * 7 + x % 7",
+        "(x >> 31) & 1",
+        "x > 0 && x < 100",
+        "x < 0 || x > 50",
+        "!x",
+    ];
+
+    let (mut proved, mut wrong, mut undecided) = (0, 0, Vec::new());
+    for v in [
+        "42",
+        "-42",
+        "0",
+        "1",
+        "-1",
+        "2147483647",
+        "-2147483647",
+        "255",
+        "-255",
+        "65536",
+    ] {
+        for e in exprs {
+            let want = match gcc_answer("", &format!("int x = {v}; return (int)({e});")) {
+                Ok(w) => w,
+                Err(Oracle::NoGcc) => return,
+                Err(Oracle::Broken(why)) => panic!("the oracle is broken, not absent: {why}"),
+            };
+            let body = format!(
+                "int x = {v}; chiero_make_symbolic(&x, 4, \"x\"); chiero_assume(x == {v}); \
+                 if ((int)({e}) == {want}) return 1; return 2;"
+            );
+            match states(&body).as_slice() {
+                [1] => proved += 1,
+                [2] => {
+                    wrong += 1;
+                    eprintln!("symbolic disagrees: x={v}, `{e}`, gcc says {want}");
+                }
+                other => undecided.push(format!("x={v} `{e}` -> {other:?}")),
+            }
+        }
+    }
+    assert_eq!(
+        wrong, 0,
+        "the symbolic path computed a different value than the concrete one"
+    );
+    assert!(
+        undecided.is_empty(),
+        "these pairs stopped being provable, so they stopped testing anything: {undecided:?}"
+    );
+    assert!(proved > 300, "only {proved} pairs proved; the sweep shrank");
+}
