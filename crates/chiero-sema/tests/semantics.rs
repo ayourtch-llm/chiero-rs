@@ -561,3 +561,69 @@ fn a_block_scope_declaration_redefines_nothing() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 }
+
+/// **An operation whose operand's type cannot support it.**
+///
+/// Rows 1–3 of wave 307's constraint census, which form one family: subscripting something that
+/// is not an array or pointer, taking a member of something that is not a structure, naming a
+/// member that does not exist, and calling something that is not a function. All four fell to
+/// `Ty::Error` without a word.
+///
+/// The subscript is the one that does real damage. `int x = 5; return x[0];` **returned 5** —
+/// lowering reads an `Error` type as a 32-bit integer, so the engine computed an answer for a
+/// program gcc refuses, from an operation that means nothing. The other three produce no state at
+/// all, which is a silent refusal rather than a wrong answer: bad, but not the same kind of bad.
+///
+/// **The accepted list carries the whole difficulty of this rule.** `Ty::Error` means *unknown*,
+/// not *wrong*: an undeclared callee types as `Error` and `__builtin_isnan` is exactly that, since
+/// nothing declares it and gcc knows it intrinsically. So the check cannot key on the poison — it
+/// has to key on a type that is concretely known to be unusable here. A version that rejected
+/// every `Error` would satisfy all five rejections and break the builtins, which are used
+/// throughout the float corpus.
+#[test]
+fn an_operation_its_operand_cannot_support_is_diagnosed() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A member that does not exist, by value and through a pointer.
+        "struct S { int m; }; int f(void){ struct S s; return s.nope; }",
+        "struct S { int m; }; int f(struct S *p){ return p->nope; }",
+        // A member of something that is not a structure at all.
+        "int f(void){ int x = 5; return x.m; }",
+        // Subscripting a non-array. This one returned a value.
+        "int f(void){ int x = 5; return x[0]; }",
+        // Calling something that is not a function.
+        "int f(void){ int q = 5; return q(); }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        "struct S { int m; }; int f(void){ struct S s; s.m = 1; return s.m; }",
+        "struct S { int m; }; int f(struct S *p){ return p->m; }",
+        "int f(int *p){ return p[0]; }",
+        "int f(void){ int a[3]; a[0] = 1; return a[0]; }",
+        "int f(int *p){ return 0[p]; }",
+        "int g(void); int f(void){ return g(); }",
+        "int f(int (*fp)(void)){ return fp(); }",
+        // The discriminator: `Ty::Error` is *unknown*, not *wrong*. Nothing declares these and
+        // gcc knows them intrinsically, so their callee types as `Error` and must stay silent.
+        "int f(double x){ return __builtin_isnan(x); }",
+        "int f(double x, double y){ return __builtin_isless(x, y); }",
+        // A vector subscripts without decaying, which is why the `Index` arm has a second arm.
+        "typedef int v4 __attribute__((vector_size(16))); int f(v4 v){ return v[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
