@@ -2890,6 +2890,138 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **Elementwise vector arithmetic lowers to CIR the verifier rejects.**
+///
+///     `probe` lowered to CIR the verifier rejects (Add operand is Ptr, declared Int(32))
+///
+/// Every arithmetic, bitwise and shift operator on a vector, both operand orders of the
+/// scalar-broadcast form, unary `-` and `~`, and compound assignment. All refused.
+///
+/// # Why this is the top of the census's list
+///
+/// A vector is an aggregate, so lowering hands the generic binary arm a `CTy::Ptr` while the
+/// expression's declared type says `Int(32)`. The verifier catches the contradiction and 015 §7
+/// refuses the function — loud and honest, and completely useless to anyone reading VPP, which is
+/// written in this extension. Wave 272 made the *storage* work; this is the arithmetic on it.
+///
+/// # The shape is `ptr_arith`'s
+///
+/// `p + n` is not an `Add` either, and the binary arm already intercepts it before the generic
+/// path for exactly this reason. A vector needs the same treatment for the same cause: the
+/// operand's CIR type is not the type the operator works at.
+///
+/// # What is deliberately absent
+///
+/// **Comparisons.** `x == y` and `x < y` are accepted by gcc and yield a vector of 0/-1 whose
+/// element type is a *signed integer of the lane's width* — for `v4sf` that is not the operand
+/// type at all. That is a sema change of a different kind from this one, so comparisons keep
+/// refusing loudly and 015 §7 keeps naming them. A declared limit, per 023 §7.
+#[test]
+fn elementwise_vector_arithmetic_agrees_with_gcc() {
+    let si = "typedef int v4si __attribute__((vector_size(16)));";
+    let sf = "typedef float v4sf __attribute__((vector_size(16)));";
+    let qi = "typedef unsigned char v8qi __attribute__((vector_size(8)));";
+    // Controls: what wave 272 made work, which must not move.
+    agree_with(si, "v4si x = {1,2,3,4}; return x[2];");
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = x; y[0] = 9; return x[0]*10 + y[0];",
+    );
+    // Vector op vector, every arithmetic operator, read from a lane the operator changed.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {10,20,30,40}; v4si z = x + y; return z[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {10,20,30,40}; v4si z = y - x; return z[2];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {4,3,2,1}; v4si z = x * y; return z[0]*100 + z[3];",
+    );
+    agree_with(
+        si,
+        "v4si x = {10,20,30,40}; v4si y = {2,3,4,5}; v4si z = x / y; return z[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {10,20,30,40}; v4si y = {3,3,7,7}; v4si z = x % y; return z[3];",
+    );
+    // Bitwise and shifts, including a per-lane shift count.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {3,3,3,3}; v4si z = x & y; return z[1];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {8,8,8,8}; v4si z = x | y; return z[2];",
+    );
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {5,5,5,5}; v4si z = x ^ y; return z[0];",
+    );
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = x << 1; return z[2];");
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,2,1,2}; v4si z = x << y; return z[2];",
+    );
+    agree_with(
+        si,
+        "v4si x = {64,64,64,64}; v4si y = {1,2,3,4}; v4si z = x >> y; return z[3];",
+    );
+    // **The scalar broadcasts, both ways round.** gcc converts the scalar to the vector type,
+    // so `1 + x` is not a different operation from `x + 1` and both have to work.
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = x + 1; return z[1];");
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = 1 + x; return z[1];");
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = 10 - x; return z[2];");
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = x * 3; return z[3];");
+    // Unary.
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = -x; return z[1];");
+    agree_with(si, "v4si x = {1,2,3,4}; v4si z = ~x; return z[1];");
+    // Compound assignment, which reads and writes the same object.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {10,20,30,40}; x += y; return x[1];",
+    );
+    agree_with(si, "v4si x = {1,2,3,4}; x *= 2; return x[2];");
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {1,1,1,1}; x -= y; return x[0];",
+    );
+    // A narrower, unsigned lane, where the operator's width is the lane's and not `int`'s.
+    agree_with(
+        qi,
+        "v8qi c = {200,2,3,4,5,6,7,8}; v8qi d = {100,0,0,0,0,0,0,0}; v8qi e = c + d; return e[0];",
+    );
+    agree_with(
+        qi,
+        "v8qi c = {1,2,3,4,5,6,7,8}; v8qi e = c * 3; return e[7];",
+    );
+    // Floating lanes.
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {1.0f,1.0f,1.0f,1.0f}; v4sf h = f + g; return (int)h[1];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf h = f * 2.0f; return (int)h[3];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf g = {0.5f,0.5f,0.5f,0.5f}; v4sf h = f / g; return (int)h[0];",
+    );
+    agree_with(
+        sf,
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; v4sf h = -f; return (int)(h[1] * 2);",
+    );
+    // Chained, so a result vector is itself an operand.
+    agree_with(
+        si,
+        "v4si x = {1,2,3,4}; v4si y = {5,6,7,8}; v4si z = (x + y) * 2; return z[2];",
+    );
+}
+
 /// **A vector subscript is typed `Ty::Error`, so every lane is read as a 32-bit integer.**
 ///
 ///     v4sf f; f[1] = 2.5f; return (int)(f[1] + 0.5f);   chiero says 2, gcc says 3
