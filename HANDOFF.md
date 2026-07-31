@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 255) — 1401 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 256) — 1401 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1594,10 +1594,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      has to reach one of them with a narrow *unsigned* operand whose top bit is set; `p += c` with
 >      `unsigned char c = 200` is the shape, and it needs an object big enough for the result to be
 >      in bounds.
->   3. **`SiToFp`/`UiToFp` is not reached at all** by `int v = -5; double d = v;`, whether `v` is a
->      literal or read from an array. **This is the interesting one**: some other path handles
->      integer-to-float, and knowing which is worth more than the fixture — a second conversion site
->      is exactly the shape waves 151 and 152 spent two commits removing from the string decoders.
+>   3. ~~**`SiToFp`/`UiToFp` is not reached at all.**~~ **Wrong — wave 255 found it is reached, and
+>      how the mistake happened.** Wave 254's instrumented run logged nothing and that was read as
+>      "unreachable"; it had no control line, so it could equally have meant the logging was not in
+>      the build. With a control the function runs 1086 times, and three shapes reach the float arm
+>      at once: `double d = -5;`, a `double` member initialized by a brace, a `double` array element.
+>      **The site was never dead, only never tested** — the whole suite had no int-to-float
+>      conversion through `convert_for_store`.
+>
+>      One mutant now dies: an `unsigned` source with its top bit set kills "always signed". **The
+>      remaining question is narrow**: "always unsigned" survives because all six signed sources
+>      reaching the arm hold non-negative values. Find a *negative* int that arrives here rather than
+>      through `cast_kind`, or establish that none can — instrument the arm and print the value, do
+>      not reason about which spellings ought to reach it.
+>
+>      The duplication is still worth a look on its own terms. `cast_kind` and this arm both decide
+>      `SiToFp` versus `UiToFp` and they agree today; two places computing one thing is the shape
+>      waves 151 and 152 spent two commits removing from the string decoders.
 >
 > ### ✅ Closed in wave 253 — the generator now catches the bit-field defect
 >
@@ -1717,6 +1730,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **Instrumentation that logs nothing needs a control every single time** (wave 255). Wave 254
+> concluded a conversion site was unreachable from an empty log. The rule was already in this list —
+> earned in wave 222 and again in 247 — and it was applied in the same wave to a *different* scan
+> while this one went unchecked. **"I know this rule" is not the same as "I ran the control", and the
+> control costs one line.**
+>
+> **Instrument the value, not only the reach** (wave 255). Three fixtures reached the int-to-float
+> arm and none could discriminate, because all three carried non-negative sources. Printing the
+> *kind chosen* took one run and answered in seconds what four fixture attempts had not. When a
+> mutant survives at a site you know is reached, ask what value arrives, not which spelling to try
+> next.
+>
+> **The blind-half error has now recurred three waves running** (250, 254, 255), each time after the
+> rule was written down. Remembering it does not work; measuring does. **Treat "pick a
+> discriminating value" as a step that must be *verified*, like any other.**
 >
 > **An audit that finds nothing still has to prove it looked** (wave 254). Twelve fixtures agreeing
 > with gcc says the code is right *if* the fixtures can see the decisions they are named after.
