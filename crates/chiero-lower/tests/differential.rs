@@ -2890,6 +2890,83 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **C's floating classification macros are refused, and CIR has had the opcodes all along.**
+///
+///     `probe` contains a construct lowering cannot represent, so it was skipped
+///
+/// `isnan`, `isunordered`, `isless` and the rest of 7.12.14 are `<math.h>` macros over
+/// `__builtin_*`, and every numeric C program in the world uses them. Lowering refuses all seven.
+///
+/// # How they were found, which is a census with a direction
+///
+/// Wave 270 censused `ExprKind` — what the AST can hold against what the generator emits. This is
+/// the same question asked of **CIR**: which `CmpOp` variants can lowering ever emit? Twelve of
+/// twenty can. The six that cannot are `FONe`, `FUEq`, `FULt`, `FULe`, `FOrd` and `FUno` — and
+/// they are not junk, they are exactly the ordered/unordered distinctions C's *macros* make and
+/// C's *operators* do not. The dead opcodes were the fingerprint of the missing feature.
+///
+/// `chiero-exec` implements all twenty. So six comparison semantics have been sitting in the
+/// engine, untested and unreachable, waiting for a producer.
+///
+/// # This is a refusal, not a wrong answer
+///
+/// 015 §7 refuses the function and says so, which is the honest outcome and is why no oracle ever
+/// flagged it. Wave 270's lesson was that a refusal costs nothing to hide behind; this is the
+/// other half — a refusal that is *correct* still marks a capability that is simply absent.
+///
+/// # The controls matter more than usual here
+///
+/// C's own operators must keep their NaN behaviour exactly: `a != a` is **true** for NaN
+/// (unordered), `a == a` is false, and every relational is false. Those five already agree with
+/// gcc, and they are what the new opcodes must not disturb — `!=` is `FUNe` and `islessgreater`
+/// is `FONe`, which differ *only* when an operand is NaN.
+#[test]
+fn the_floating_classification_builtins_agree_with_gcc() {
+    // The controls: C's operators, whose NaN semantics are already right.
+    agree("double a = 0.0/0.0; return a != a;");
+    agree("double a = 0.0/0.0; return a == a;");
+    agree("double a = 0.0/0.0, b = 1.0; return a < b;");
+    agree("double a = 0.0/0.0, b = 1.0; return a >= b;");
+    agree("double a = 0.0/0.0, b = 1.0; return !(a < b);");
+    // `isnan`, on both answers.
+    agree("double a = 0.0/0.0; return __builtin_isnan(a);");
+    agree("double a = 1.0; return __builtin_isnan(a);");
+    agree("double a = 0.0; return __builtin_isnan(a) + 2;");
+    // Unorderedness itself.
+    agree("double a = 1.0, b = 2.0; return __builtin_isunordered(a, b);");
+    agree("double a = 0.0/0.0, b = 2.0; return __builtin_isunordered(a, b);");
+    agree("double a = 1.0, b = 0.0/0.0; return __builtin_isunordered(a, b);");
+    // The four relational macros, each on a true case, a false case and a NaN case.
+    agree("double a = 1.0, b = 2.0; return __builtin_isless(a, b);");
+    agree("double a = 2.0, b = 1.0; return __builtin_isless(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return __builtin_isless(a, b);");
+    agree("double a = 1.0, b = 2.0; return __builtin_islessequal(a, b);");
+    agree("double a = 2.0, b = 2.0; return __builtin_islessequal(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return __builtin_islessequal(a, b);");
+    agree("double a = 2.0, b = 1.0; return __builtin_isgreater(a, b);");
+    agree("double a = 1.0, b = 2.0; return __builtin_isgreater(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return __builtin_isgreater(a, b);");
+    agree("double a = 2.0, b = 2.0; return __builtin_isgreaterequal(a, b);");
+    agree("double a = 1.0, b = 2.0; return __builtin_isgreaterequal(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return __builtin_isgreaterequal(a, b);");
+    // **`islessgreater` is the one that is not `!=`.** They differ exactly on NaN, which is the
+    // whole reason `FONe` exists beside `FUNe`.
+    agree("double a = 1.0, b = 2.0; return __builtin_islessgreater(a, b);");
+    agree("double a = 2.0, b = 2.0; return __builtin_islessgreater(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return __builtin_islessgreater(a, b);");
+    agree("double a = 0.0/0.0, b = 1.0; return (a != b) - __builtin_islessgreater(a, b);");
+    // The operands take the usual arithmetic conversions, so a mixed pair must agree too.
+    agree("float f = 1.5f; double d = 2.0; return __builtin_isless(f, d);");
+    agree("long double l = 1.0L; double d = 2.0; return __builtin_isless(l, d);");
+    agree("float f = 0.0f/0.0f; return __builtin_isnan(f);");
+    agree("long double l = 0.0L/0.0L; return __builtin_isnan(l);");
+    // A negative zero is ordered and equal to zero, for all of them.
+    agree("double a = -0.0, b = 0.0; return __builtin_isless(a, b);");
+    agree("double a = -0.0, b = 0.0; return __builtin_islessequal(a, b);");
+    agree("double a = -0.0, b = 0.0; return __builtin_islessgreater(a, b);");
+    agree("double a = -0.0, b = 0.0; return __builtin_isunordered(a, b);");
+}
+
 /// **`!` on a negative zero says the value is non-zero.**
 ///
 /// C11 6.5.3.3p5: `!E` is `E == 0`. IEEE-754 makes `-0.0 == 0.0` true, so `!(-0.0)` is 1. Chiero
