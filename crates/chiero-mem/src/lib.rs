@@ -3263,6 +3263,15 @@ impl Memory {
         // and I do not know where".
         if candidates.is_empty() {
             let r = self.promote_to_array(a, id);
+            // **Unreachable today, and kept deliberately** (measured, wave 296). Promotion
+            // faults only through `state_fault`, and every caller of this path — this function
+            // included — calls `state_fault` at its head, so by here the state is already known
+            // good. Both directions of this guard survive the suite.
+            //
+            // It stays because it is *propagation*, not a rule: if `promote_to_array` ever grows
+            // a fault the callers do not pre-check — the `MAX_MATERIALIZED_BYTES` limit is the
+            // obvious candidate — deleting this would swallow it silently. Wave 290 deleted a
+            // subsumed *rule*; a subsumed propagation is a different bet.
             if !r.faults.is_empty() {
                 return AccessResult {
                     value: Some(()),

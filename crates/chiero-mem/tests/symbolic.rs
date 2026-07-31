@@ -2009,3 +2009,84 @@ fn a_symbolic_index_wider_than_the_arrays_is_narrowed() {
     let r = m.write_at_symbolic_offset(&mut a, o, narrow, &[], val, sp(3));
     assert!(r.faults.is_empty(), "{:#?}", r.faults);
 }
+
+/// **An uninitialized havoc of a *promoted* object resets its array's init, not just its bytes.**
+///
+/// 021 §3 makes promotion one-way within a state, so the havoc cannot simply drop the array and
+/// go back to bytes — the guard's own comment says clearing `arr` there "de-promoted a promoted
+/// object and discarded its array contents, so a read after it answered from stale bytes".
+/// Instead it overwrites the array's `init` with all-zero.
+///
+/// **Both directions of that guard survived wave 292's sweep.** The `Uninitialized` havoc is
+/// tested — `an_uninitialized_havoc_makes_the_next_read_a_finding`, right above — but only on an
+/// object in `Bytes` representation, which is the one shape where the promoted branch cannot run.
+/// A promoted object havocked this way kept every init bit it had.
+///
+/// The observable is `init_bit_via` rather than a read's faults: 021 contract 6 makes a concrete
+/// read of a promoted object report `SymbolicByte` whatever its init state, which is wave 268's
+/// finding and would mask this entirely.
+#[test]
+fn an_uninitialized_havoc_of_a_promoted_object_resets_its_array_init() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 8, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 8, sp(2));
+    m.promote_to_array(&mut a, o);
+    let before: Vec<InitBit> = (0..8 * 8).map(|b| m.init_bit_via(&mut a, o, b)).collect();
+    assert!(
+        before.iter().all(|b| matches!(b, InitBit::Yes)),
+        "every bit of a fully written object is initialized before the havoc"
+    );
+
+    m.havoc_object(&mut a, o, HavocFill::Uninitialized, sp(3));
+
+    let after: Vec<InitBit> = (0..8 * 8).map(|b| m.init_bit_via(&mut a, o, b)).collect();
+    assert!(
+        after.iter().all(|b| matches!(b, InitBit::No)),
+        "an uninitialized havoc leaves nothing initialized, promoted or not: {:?}",
+        after.iter().take(8).collect::<Vec<_>>()
+    );
+    // **And it is still promoted.** The fix this guard records was that clearing the array sent
+    // the object back to bytes and a later read answered from the stale ones.
+    assert!(
+        !m.is_bytes(o),
+        "promotion is one-way within a state (021 §3); the havoc must not undo it"
+    );
+}
+
+/// **A symbolic write to a freed object names the free, not the representation.**
+///
+/// `write_at_symbolic_offset` checks object state before anything else, so a use-after-free is
+/// reported as such rather than falling through to "this byte is symbolic" — 023 §9's report a
+/// person cannot act on.
+///
+/// **This fixture was written to reach a different line and does not** (wave 296). The target was
+/// the early-out that propagates a *promotion* fault further down the same function, which wave
+/// 292's sweep could not kill. It is unreachable: `promote_to_array` faults only via
+/// `state_fault`, and this function calls `state_fault` at its head, so promotion can no longer
+/// fail by the time it runs. Two guards, one of them subsumed — the shape wave 290 found in the
+/// CIR verifier. The measurement is recorded at the early-out itself.
+///
+/// The fixture is kept because the property it *does* pin was also untested.
+#[test]
+fn a_symbolic_write_to_a_freed_object_reports_the_free_not_a_symbolic_byte() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.free(o, sp(2));
+    let off = a.var(Sort::BitVec(64), "i");
+    let val = a.bv(8, 0x11);
+    let r = m.write_at_symbolic_offset(&mut a, o, off, &[], val, sp(3));
+    assert!(
+        !r.faults.is_empty(),
+        "writing to a freed object is a fault: {:#?}",
+        r.faults
+    );
+    assert!(
+        !r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::SymbolicByte { .. })),
+        "the fault names the free, not the representation it never got: {:#?}",
+        r.faults
+    );
+}
