@@ -2890,6 +2890,106 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **`__builtin_offsetof` reports its member argument undeclared.**
+///
+///     struct S { int a; int b; };
+///     return (int)__builtin_offsetof(struct S, b);
+///     SemaDiagnostic: "`b` was not declared"
+///
+/// `call_argument` already backtracks a type name, so `struct S` arrives as a `TypeName` — that
+/// half works. The second argument is then typed as an ordinary expression, and a member name is
+/// not a name in scope, so sema reports it undeclared and 015 §7 refuses the function.
+///
+/// # Reach, which is why this one and not `_Alignas`
+///
+/// **`offsetof` is in 27 VPP files; `_Alignas` is in 0.** On gcc `<stddef.h>`'s `offsetof` *is*
+/// `__builtin_offsetof`, so every TU that includes it and uses the macro is refused whole — not a
+/// wrong number in one expression, a function that never runs. `_Alignas` is a wrong answer and
+/// so the worse *kind*, but it is broken only on the variable path (`struct A { char c;
+/// _Alignas(16) int v; }` already sizes, offsets and aligns correctly) and nothing in the target
+/// uses it. Wave 279's rule: severity orders defects of comparable reach, it does not override
+/// reach.
+///
+/// # The second argument is a *member designator*, not an expression
+///
+/// C11 7.19 allows a member, a `.` chain and `[...]` subscripts. The parser already produces
+/// exactly the right shape for all three — `n.y` is a `Member`, `v[2]` an `Index`, both rooted at
+/// an `Ident` that happens not to resolve — so what is missing is a reader for that shape, not a
+/// new grammar.
+#[test]
+fn builtin_offsetof_computes_a_member_offset() {
+    // A member at a nonzero offset, and the first member, which must be 0.
+    agree_with(
+        "struct S { int a; int b; };",
+        "return (int)__builtin_offsetof(struct S, b);",
+    );
+    agree_with(
+        "struct S { int a; int b; };",
+        "return (int)__builtin_offsetof(struct S, a);",
+    );
+    // Padding, so the answer is not just the sum of the sizes before it.
+    agree_with(
+        "struct S { char c; double d; };",
+        "return (int)__builtin_offsetof(struct S, d);",
+    );
+    agree_with(
+        "struct S { char c; int i; char d; long l; };",
+        "return (int)__builtin_offsetof(struct S, l)*10 + (int)__builtin_offsetof(struct S, i);",
+    );
+    // A `.` chain into a named nested struct.
+    agree_with(
+        "struct S { int a; struct { int x; int y; } n; };",
+        "return (int)__builtin_offsetof(struct S, n.y);",
+    );
+    // A subscript, and a subscript after a chain.
+    agree_with(
+        "struct S { int a; int v[4]; };",
+        "return (int)__builtin_offsetof(struct S, v[2]);",
+    );
+    agree_with(
+        "struct S { int a; struct { int v[3]; } n; };",
+        "return (int)__builtin_offsetof(struct S, n.v[2]);",
+    );
+    // **Through an anonymous member**, which wave 279 taught the field lookup to walk. The
+    // designator reader has to use that lookup rather than a scan of its own.
+    agree_with(
+        "struct S { int a; struct { int p; int q; }; };",
+        "return (int)__builtin_offsetof(struct S, q);",
+    );
+    agree_with(
+        "struct S { long g; union { struct { int x; int y; }; long z; }; };",
+        "return (int)__builtin_offsetof(struct S, y);",
+    );
+    // A union, where every member is at 0.
+    agree_with(
+        "union U { int a; double d; };",
+        "return (int)__builtin_offsetof(union U, d);",
+    );
+    // A typedef'd tagless struct, which is how most VPP types are spelled.
+    agree_with(
+        "typedef struct { int a; long b; } T;",
+        "return (int)__builtin_offsetof(T, b);",
+    );
+    // **Its type is `size_t`**, not `int`: unsigned and the width of a pointer.
+    agree_with(
+        "struct S { int a; int b; };",
+        "return (int)sizeof(__builtin_offsetof(struct S, b));",
+    );
+    agree_with(
+        "struct S { int a; int b; };",
+        "return (int)(__builtin_offsetof(struct S, a) - 1 > 0);",
+    );
+    // Used as an ordinary value.
+    agree_with(
+        "struct S { int a; int b; };",
+        "int k = __builtin_offsetof(struct S, b); return k;",
+    );
+    agree_with(
+        "struct S { int a; int b; };",
+        "char buf[16]; struct S *p = (struct S*)buf; p->b = 7; return *(int*)(buf + __builtin_offsetof(struct S, b));",
+    );
+}
+
 /// **A member of an anonymous struct or union does not resolve.**
 ///
 ///     struct S { struct { int a; int b; }; int c; };
