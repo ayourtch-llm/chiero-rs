@@ -827,15 +827,6 @@ impl AddressSpace {
             off: a as i64,
         }
     }
-
-    /// Whether a pointer is within its own object — the check that stays meaningful
-    /// precisely because provenance was not laundered.
-    pub fn in_bounds(&self, p: Pointer, size: u64) -> bool {
-        match self.size_of(p.base) {
-            Some(s) => p.off >= 0 && p.off as u64 + size <= s,
-            None => false,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

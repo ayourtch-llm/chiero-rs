@@ -366,3 +366,51 @@ fn a_concrete_offset_is_honoured_under_an_undecidable_path_condition() {
         "byte 9 holds 10 regardless of what the solver can say about the path"
     );
 }
+
+/// **An access *below* an object is out of bounds, and nothing tested that.**
+///
+/// The concrete check is `off < 0 || end > size`, and mutation says only the second half was
+/// observed: deleting `off < 0` — so that a read at offset `-4` is treated as ordinary — survived
+/// the whole suite. Every bounds fixture reached past the *end* of an object and none reached
+/// before its start.
+///
+/// That is the same empty cell waves 261–263 found three times in the arithmetic checks: a two-part
+/// condition tested in one direction. ASan calls it by its own name — `Memory access at offset 60
+/// underflows this variable` — so the direction is worth distinguishing in a report as well as in a
+/// check.
+///
+/// **`AddressSpace::in_bounds` carried the same condition and is deleted rather than asserted.**
+/// Three mutants against it survived — dropping its low-end test, moving its boundary by one, and
+/// making an unknown-size object answer *true* — and the reason is that nothing called it. A second
+/// predicate deciding bounds is the drift risk waves 256 and 257 removed from the cast-kind
+/// decisions, and this one had already drifted out of use entirely.
+#[test]
+fn an_access_below_an_object_is_out_of_bounds() {
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 64, 8, sp(1));
+    m.set(Pointer { base: o, off: 0 }, 0, 64, sp(2));
+
+    for (what, off) in [("one byte before", -1i64), ("one element before", -4)] {
+        let r = m.read(Pointer { base: o, off }, 4, sp(3));
+        assert!(
+            r.faults
+                .iter()
+                .any(|f| matches!(f, MemFault::OutOfBounds { .. })),
+            "`{what}` starts before the object and is as out of bounds as running off the end: \
+             {:#?}",
+            r.faults
+        );
+    }
+
+    // The controls: the first and last legal accesses, which a fix that simply rejected more
+    // would break. The last one ends *exactly* at the object's end, which is the off-by-one
+    // mutation's cell.
+    for (what, off) in [("the first byte", 0i64), ("the last four bytes", 60)] {
+        let r = m.read(Pointer { base: o, off }, 4, sp(3));
+        assert!(
+            r.faults.is_empty(),
+            "`{what}` is inside a 64-byte object: {:#?}",
+            r.faults
+        );
+    }
+}
