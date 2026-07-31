@@ -447,3 +447,75 @@ fn deep_macro_chain_does_not_abort_the_process() {
         .unwrap();
     assert!(status.success(), "deep expansion child aborted: {status}");
 }
+
+/// **The recorded `Variadic` kind, which nothing inside this crate reads.**
+///
+/// `MacroKind::FunctionLike { variadic }` is part of `PreprocessedTu::macro_defs` and therefore
+/// public API. Expansion does **not** use it: it reads a separate `std_variadic` /
+/// `variadic_name` pair on the same definition, so the enum is written and never matched except
+/// for its `Named` arm, which only feeds symbol interning.
+///
+/// **Both directions of the branch that chooses it were unfalsifiable** (wave 293's sweep of
+/// `chiero-pp`): forcing `std_variadic` to `false` records `No` for every `...` macro and forcing
+/// it to `true` records `Std` for every fixed-arity one, and all 67 tests passed either way —
+/// including the one that expands `#define V(...) [__VA_ARGS__]`, because that expansion consults
+/// the other representation entirely.
+///
+/// Two representations of one fact, one of them unread, is the shape this project keeps paying
+/// for. This pins them together so they cannot drift apart silently.
+#[test]
+fn a_macros_recorded_variadic_kind_matches_how_it_was_written() {
+    use chiero_pp::{MacroKind, Variadic};
+
+    let tu = preprocess_str(
+        "fixture.c",
+        "#define FIXED(a,b) a\n#define STD(...) __VA_ARGS__\n#define GNU(x, rest...) rest\n\
+         #define OBJ 1\n",
+        Config::default(),
+    );
+    assert!(
+        tu.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        tu.diagnostics
+    );
+
+    let kind_of = |name: &str| {
+        tu.macro_defs
+            .iter()
+            .find(|d| tu.symbol_text(d.name) == Some(name))
+            .map(|d| d.kind.clone())
+            .unwrap_or_else(|| panic!("no macro `{name}` in {:?}", tu.macro_defs.len()))
+    };
+
+    match kind_of("FIXED") {
+        MacroKind::FunctionLike { variadic, params } => {
+            assert_eq!(params.len(), 2, "`FIXED(a,b)` has two parameters");
+            assert_eq!(
+                variadic,
+                Variadic::No,
+                "a fixed-arity macro is not variadic — the direction a mutant forcing `Std` takes"
+            );
+        }
+        other => panic!("`FIXED` is function-like: {other:?}"),
+    }
+    match kind_of("STD") {
+        MacroKind::FunctionLike { variadic, .. } => assert_eq!(
+            variadic,
+            Variadic::Std,
+            "`...` is C99 variadic — the direction a mutant forcing `No` takes"
+        ),
+        other => panic!("`STD` is function-like: {other:?}"),
+    }
+    match kind_of("GNU") {
+        MacroKind::FunctionLike { variadic, .. } => assert!(
+            matches!(variadic, Variadic::Named(_)),
+            "`rest...` is GNU named-variadic, and its name is what symbol interning needs: \
+             {variadic:?}"
+        ),
+        other => panic!("`GNU` is function-like: {other:?}"),
+    }
+    assert!(
+        matches!(kind_of("OBJ"), MacroKind::ObjectLike),
+        "an object-like macro has no parameter list at all"
+    );
+}
