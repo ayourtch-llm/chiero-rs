@@ -502,3 +502,62 @@ fn an_explained_fold_failure_is_not_reported_twice() {
         "{silent:?}"
     );
 }
+
+/// **A name declared inside a block collides with nothing.**
+///
+/// Contract 14's redefinition rule — a second *initialized* definition of the same name is an
+/// error — was applied with a whole-translation-unit symbol set and no notion of scope, because
+/// `item()` handles file-scope items and block-scope declarations through the same path. So any
+/// two initialized declarations sharing a name anywhere in the file collided.
+///
+/// That is not an exotic collision. Two functions that each say `int a = 0;` collide. Two
+/// `for (int i = 0; ...)` loops in one function collide. A local that shadows a file-scope
+/// variable collides. This is ordinary C, and the report says the program is broken when it is
+/// not — 023 §9's "a report a person cannot act on is not a report", in its worst form, since a
+/// reader who acts on this one makes their program worse.
+///
+/// It went unnoticed because a sema diagnostic does not stop lowering: the corpus compiled and
+/// ran these programs correctly while complaining about them, so every test that checks *answers*
+/// stayed green. Only a test that reads the diagnostics can see it.
+///
+/// The rejected cases are the rule the check was written for and must keep: at file scope, two
+/// initialized definitions of one name really are an error, whatever their linkage.
+#[test]
+fn a_block_scope_declaration_redefines_nothing() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // Two functions, each with a local of the same name. Not even shadowing.
+        "int f(void){ int a = 0; return a; } int g(void){ int a = 1; return a; }",
+        // A nested block shadowing an enclosing local.
+        "int f(void){ int n = 0; { int n = 1; (void)n; } return n; }",
+        // The everyday one: two counted loops in one function.
+        "int f(void){ for(int i=0;i<2;i++){} for(int i=0;i<2;i++){} return 0; }",
+        // A local shadowing a file-scope object.
+        "static int s = 1; int f(void){ int s = 2; return s; }",
+        // Static locals are distinct objects even with the same name.
+        "int f(void){ static int c = 0; return ++c; } int g(void){ static int c = 0; return ++c; }",
+        // A shadowing declaration of a different type is still a different object.
+        "int f(void){ int x = 1; { long x = 2; return (int)x; } }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for bad in [
+        "int x = 1; int x = 2;",
+        "static int y = 1; static int y = 2;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+}
