@@ -2950,14 +2950,37 @@ fn a_requested_alignment_is_honoured() {
     agree("char b[4] __attribute__((aligned(32))); return (int)((long)&b[0] & 31);");
     // Static and file-scope storage take the same specifier.
     agree("static int x __attribute__((aligned(32))) = 3; return (int)((long)&x & 31) + x;");
+    // **A file-scope object's *recorded* alignment, not just its address.** The address fixture
+    // below cannot see this: the engine already places globals generously, so `&g & 63` is 0
+    // whether or not the request was honoured, and a mutant that dropped it survived. `_Alignof`
+    // reads the number the global actually carries.
+    agree_with(
+        "int g __attribute__((aligned(64))) = 5;",
+        "return (int)_Alignof(g) + g;",
+    );
+    agree_with(
+        "static int gs __attribute__((aligned(128))) = 6;",
+        "return (int)_Alignof(gs) + gs;",
+    );
+    agree_with(
+        "char gb[3] __attribute__((aligned(32)));",
+        "return (int)_Alignof(gb);",
+    );
     agree_with(
         "int g __attribute__((aligned(64))) = 5;",
         "return (int)((long)&g & 63) + g;",
     );
     // Through a typedef, where the alignment travels with the type rather than the declarator.
     agree("typedef int A __attribute__((aligned(16))); A x = 3; return (int)_Alignof(x);");
-    // A request *below* the natural alignment does not lower it.
-    agree("_Alignas(1) int x = 3; return (int)_Alignof(x);");
+    // A request *equal* to the natural alignment changes nothing.
+    agree("_Alignas(4) int x = 3; return (int)_Alignof(x);");
+    // **Below the natural alignment is where the two spellings part**, and this fixture used to
+    // assert the wrong thing. gcc *rejects* `_Alignas(1) int x` — "specifiers cannot reduce
+    // alignment" — while `__attribute__((aligned(1)))` is accepted and really does reduce it, to
+    // 1. Both spellings arrive here as one `aligned` attribute, so telling them apart needs the
+    // parser to record which was written. Left undone: it is a packing feature, the reducing
+    // direction appears nowhere in the target, and `max` is right for every raising use.
+    // Recorded in §9.
 }
 
 /// **`_Alignof(expr)` returns the operand's *size*.**

@@ -622,7 +622,12 @@ impl Lowerer<'_> {
         };
         let span = self.ast.decl(id).span;
         let size = self.analysis.size_of(sty).unwrap_or(0);
-        let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
+        let align = self
+            .analysis
+            .align_of(sty)
+            .unwrap_or(1)
+            .max(self.analysis.decl_align(id).unwrap_or(1))
+            .max(1);
         let text = self.sym(name).unwrap_or_else(|| std::sync::Arc::from("?"));
         let gid = chiero_cir::GlobalId(self.module.globals.len() as u32);
         // **The slot is reserved before the initializer is computed.** 020 §3 indexes
@@ -1728,7 +1733,16 @@ impl Lowerer<'_> {
             return;
         };
         let cty = self.cty(sty);
-        let align = self.analysis.align_of(sty).unwrap_or(1).max(1);
+        // **The declarator's request raises the alignment; it never lowers it.** C11 6.7.5p3
+        // makes an alignment specifier weaker than the type's own a constraint violation, and
+        // gcc's `aligned` attribute is documented as a minimum — so `_Alignas(1) int x` is
+        // still four-aligned. `max` says both.
+        let align = self
+            .analysis
+            .align_of(sty)
+            .unwrap_or(1)
+            .max(self.analysis.decl_align(d).unwrap_or(1))
+            .max(1);
         let text = name.and_then(|n| self.sym(n));
 
         // **A VLA allocates where it is declared** (015 contract 14, 020 §3). The size is
@@ -1965,7 +1979,18 @@ impl Lowerer<'_> {
             // this arm and therefore sharing the answer.
             chiero_ast::ExprKind::AlignofExpr(inner) => {
                 let bits = self.raw_width_of(e).max(1);
-                let n = self.type_of(*inner).and_then(|t| self.analysis.align_of(t));
+                // **An object's alignment, not its type's, when the operand names one.** C
+                // attaches an alignment specifier to the *declaration*, so `_Alignas(16) int x`
+                // leaves `x` an ordinary `int` whose object is 16-aligned — reading `align_of`
+                // of the type gives 4 and is right for every operand that is not a declared
+                // object.
+                //
+                // Read back off the slot rather than from a second table: the alloca is where
+                // the number was actually used, so the answer cannot drift from the storage it
+                // describes.
+                let n = self
+                    .object_align_of(*inner)
+                    .or_else(|| self.type_of(*inner).and_then(|t| self.analysis.align_of(t)));
                 match n {
                     Some(v) => Operand::Const(Const::Int {
                         bits,
@@ -4192,6 +4217,26 @@ impl Lowerer<'_> {
         // members of the container, and it returns them rebased onto `rec`.
         let f = self.analysis.find_field(rec, field)?;
         Some((f.offset, f))
+    }
+
+    /// The alignment of the *object* `e` names, when it names a declared one.
+    ///
+    /// `None` for anything else — a subscript, a member, a call — where the type's alignment is
+    /// the right answer and the caller falls back to it.
+    fn object_align_of(&mut self, e: ExprId) -> Option<u64> {
+        let chiero_ast::ExprKind::Ident(name) = self.ast.expr(e).kind else {
+            return None;
+        };
+        if let Some((slot, _)) = self.fs().locals.get(&name).cloned() {
+            return self
+                .fs()
+                .allocas
+                .iter()
+                .find(|a| a.id == slot)
+                .map(|a| a.align);
+        }
+        let g = *self.globals.get(&name)?;
+        self.module.globals.get(g.0 as usize).map(|g| g.align)
     }
 
     /// The element size of whatever `base` indexes.

@@ -1047,7 +1047,20 @@ impl<'a> Parser<'a> {
                     let asp = self.here();
                     let mut args = Vec::new();
                     if self.eat_punct(Punct::LParen) {
-                        args.push(self.assignment_expr());
+                        // **`_Alignas` takes a type name as well as a constant** (C11
+                        // 6.7.5p1): `_Alignas(double)` means "align me like a `double`". The
+                        // expression parser cannot read a type name, so this used to be a
+                        // parse error on entirely ordinary C. It becomes `_Alignof(T)`, which
+                        // 014 already folds, so the attribute still carries one constant
+                        // expression whichever spelling was written.
+                        if self.starts_type_name() {
+                            let tstart = self.pos;
+                            let ty = self.type_name();
+                            let span = self.span_from(tstart);
+                            args.push(self.ast.add_expr(ExprKind::AlignofType(ty), span));
+                        } else {
+                            args.push(self.assignment_expr());
+                        }
                         self.expect_punct(Punct::RParen, "to close `_Alignas`");
                     }
                     attrs.push(Attr {

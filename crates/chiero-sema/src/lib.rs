@@ -445,6 +445,25 @@ pub struct Analysis {
     /// 6.5.1.1 also says the unselected arms are not evaluated, and a recorded answer makes
     /// that automatic — lowering never sees them.
     pub(crate) generic_selections: IndexMap<ExprId, ExprId>,
+    /// Each declaration → the alignment its declarator asked for, when it asked for more than
+    /// the type's own.
+    ///
+    /// **Per *declaration*, not per type, because that is where C puts it.** `_Alignas(16) int
+    /// x;` does not make a new type — `x` is still an `int` and still compatible with every
+    /// other `int` — it makes *this object* over-aligned. `Ty` carries no alignment for a
+    /// scalar and should not grow one: two `int`s that differ only in a declarator's request
+    /// would become incompatible types.
+    ///
+    /// Keyed by `DeclId` like `decl_types` beside it, so lowering asks the same question of the
+    /// same key when it sizes the slot.
+    pub(crate) decl_aligns: IndexMap<DeclId, u64>,
+    /// Each typedef name → the alignment it carries, for `typedef int A __attribute__((aligned
+    /// (16)))`.
+    ///
+    /// A typedef *does* attach the alignment to the name, so `A x;` is over-aligned although
+    /// `x`'s own declarator asks for nothing. Kept by name rather than by `TyId` because the
+    /// interned type is plain `int` and must stay that way.
+    pub(crate) typedef_aligns: IndexMap<Symbol, u64>,
     pub diagnostics: Vec<SemaDiagnostic>,
 }
 
@@ -516,6 +535,11 @@ impl Analysis {
     /// The value of one enumerator *reference*, resolved in its own scope.
     pub fn enum_ref(&self, e: ExprId) -> Option<(i128, TyId)> {
         self.enum_refs.get(&e).copied()
+    }
+
+    /// The alignment `d`'s declarator asked for, if it asked for more than its type's own.
+    pub fn decl_align(&self, d: DeclId) -> Option<u64> {
+        self.decl_aligns.get(&d).copied()
     }
 
     /// The association a `_Generic` selected, as the expression to lower in its place.
@@ -975,6 +999,9 @@ impl Cx<'_> {
             DeclKind::Var { name, ty, init, .. } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                if let Some(a) = self.declared_align(ty) {
+                    self.out.decl_aligns.insert(id, a);
+                }
                 if let Some(n) = name {
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
@@ -1002,6 +1029,9 @@ impl Cx<'_> {
                 let t = self.ty_of(ty);
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
+                if let Some(a) = self.declared_align(ty) {
+                    self.out.typedef_aligns.insert(name, a);
+                }
             }
             DeclKind::Func { name, ty, body, .. } => {
                 let t = self.ty_of(ty);
@@ -1553,6 +1583,44 @@ impl Cx<'_> {
             flexible_member,
             packed,
         }
+    }
+
+    /// The alignment a *declarator* asks for: its own `aligned` attribute, or the one a typedef
+    /// it names carries.
+    ///
+    /// **Both spellings arrive as the same attribute.** The parser rewrites `_Alignas(N)` into
+    /// `aligned(N)`, so `aligned_attr` sees them alike — which is why the two spellings had
+    /// identical symptoms and why one fix covers both.
+    ///
+    /// The typedef case is why this is not just `aligned_attr`: in `typedef int A
+    /// __attribute__((aligned(16))); A x;` the *declarator* `A x` carries no attribute at all,
+    /// and the alignment has to come from the name it uses.
+    fn declared_align(&mut self, ty: TypeId) -> Option<u64> {
+        // **Walk down the array wrappers.** An alignment specifier sits in the declaration
+        // *specifiers*, so for `_Alignas(32) int a[4]` the attribute is on the `int` node while
+        // the declaration's type node is the array `declarator_suffixes` built around it.
+        // Asking only the outermost node found nothing and left the array at 4.
+        //
+        // Arrays only: an array of over-aligned elements is itself over-aligned, and its
+        // element type is the same declaration. A pointer is not — `int *p` is a pointer
+        // whatever `int`'s alignment is — so the walk stops at anything else.
+        let mut best: Option<u64> = None;
+        let mut node = ty;
+        loop {
+            if let Some(a) = self.aligned_attr(node) {
+                best = Some(best.unwrap_or(0).max(a));
+            }
+            if let TypeKind::Named(sym) = self.ast.ty(node).kind
+                && let Some(&a) = self.out.typedef_aligns.get(&sym)
+            {
+                best = Some(best.unwrap_or(0).max(a));
+            }
+            match self.ast.ty(node).kind {
+                TypeKind::Array { elem, .. } => node = elem,
+                _ => break,
+            }
+        }
+        best
     }
 
     /// The `n` of `__attribute__((aligned(n)))` on a syntactic type node.
