@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 275) — 1421 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 276) — 1423 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **`_Generic` is in** (wave 275) — parser production, AST node, sema selection recorded in
+> `Analysis::generic_selections`, lowering, and the two 6.5.1.1p2 constraint violations reported.
+> That was the last C11 *expression* form missing. The keyword had been in the lexer's table
+> since the lexer was written with nothing consuming it, which is worth remembering as a census
+> axis of its own: **a keyword with no production is the same fingerprint as an opcode with no
+> producer.**
+>
+> **The vector census came back nearly clean** (wave 275, probed before choosing this wave's
+> work). Vector→vector casts, including gcc's bit *reinterpretation* for same-size casts, a
+> vector in a `?:`, and `sizeof` of a cast all already agree. Only `__builtin_convertvector` — the
+> value-converting form — is absent, and it refuses loudly.
+>
+> **What is left on the census, in the order it looks worth taking:**
+>   - **Every `Kw::` with no production**, the axis this wave stumbled into. `_Generic` was one;
+>     run the whole list before assuming it was the only one.
+>   - **`__builtin_convertvector`**, now the only vector gap.
+>   - **`BinOp::PtrDiff` is dead in every crate** and `p - q` works without it. Delete or produce;
+>     do not leave it.
+>   - **`Const::FuncAddr` has no producer** although `GlobalInit::FuncAddr` does. Function
+>     pointers work, so confirm it is a spelling question before writing it down as a gap.
 >
 > **`vector_size` is done for storage, arithmetic and comparison** — waves 272, 273 and 274. The
 > extension VPP is written in now initializes, subscripts, computes elementwise, broadcasts a
@@ -1928,6 +1949,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A test that aborts looks like a test that passed** (wave 275). A mutant that replaced the
+> lowered arm with the `_Generic` node itself read as a *survivor*: it stack-overflows, and a
+> crashed test binary prints no `failures:` section for a grep to find. Wave 254's rule met from
+> a third direction — check the runner's exit status, not only its output.
+>
+> **Some behaviour can only be told apart by a program the reference rejects** (wave 275).
+> "First matching association wins" and "last wins" are the same function for every *valid*
+> `_Generic`, because C11 6.5.1.1p2 forbids two matches. The mutant survived the whole
+> differential suite and always would have. **When a survivor is only distinguishable by an
+> invalid program, the question is not which behaviour to pick — it is whether the program is
+> reported at all.** Two constraint violations became diagnostics, with a sema fixture and a
+> well-formed control, and the remaining choice is documented as untestable rather than implied
+> to be a rule.
+>
+> **A construct that is unevaluated has to be unevaluated everywhere, not just in lowering**
+> (wave 275). `_Generic` does not evaluate its controlling expression or its losing arms. Getting
+> that right in `expr` was free — lowering emits only the recorded arm — and `OrderScan`, the
+> unsequenced-access checker, would still have scanned all of them. **Ask which other passes walk
+> the AST**; the one that does not know about a new node reports conflicts between expressions
+> that never both run.
 >
 > **Four survivors, four different kinds — sort them before fixing any** (wave 274). One sweep
 > left a missing fixture for an operator pair the tests never used (`>`/`>=` on floats), a missing
