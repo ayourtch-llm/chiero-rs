@@ -1525,7 +1525,26 @@ impl Gen {
         let recs = self.recs_in_scope.clone();
         for (name, r) in &recs {
             for fi in 0..self.records[*r].readable() {
-                let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}.f{fi});");
+                // **An integer field is read *bare*; only a float keeps the cast** (wave 253).
+                //
+                // `(long)(x.f)` makes the member an operand of an explicit cast, and wave 253 showed
+                // that is precisely the context where a bit-field's extension bug cannot be seen:
+                // `top(e)` becomes the field's own type, so a wrong signedness answer is masked.
+                // Every field of every struct went through that shape, which is why raising the
+                // frequency of bit-fields twice caught nothing.
+                //
+                // Dropping the cast changes no value. `acc` is a `long` and `+` promotes its right
+                // operand anyway, so the arithmetic is identical — what changes is which conversion
+                // the *typed AST* records against the member, and that is the whole question.
+                //
+                // A `float` or `double` member keeps the cast, because there `(long)` is a real
+                // conversion and removing it would change the checksum rather than the AST.
+                let ft = self.records[*r].fields[fi];
+                if ft.is_float() {
+                    let _ = writeln!(self.body, "  acc = acc * 31 + (long)({name}.f{fi});");
+                } else {
+                    let _ = writeln!(self.body, "  acc = acc * 31 + ({name}.f{fi});");
+                }
             }
         }
         // Every element of every array, for the same reason as every field: a write that
