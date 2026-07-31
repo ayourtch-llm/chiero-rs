@@ -2890,6 +2890,61 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A vector subscript is typed `Ty::Error`, so every lane is read as a 32-bit integer.**
+///
+///     v4sf f; f[1] = 2.5f; return (int)(f[1] + 0.5f);   chiero says 2, gcc says 3
+///
+/// Nothing to do with initializers — this shape has none. Sema's `Index` arm decays the base and
+/// expects a `Ty::Ptr`; C has no vector-to-pointer conversion, so a vector arrives undecayed and
+/// falls to `_ => Ty::Error`. Lowering reads an `Error` as `Int(32)`.
+///
+/// # Why it hid behind the *other* defect, and behind arithmetic
+///
+/// Every lane read back zero until the initializer was fixed, so no fixture could see the type at
+/// all. And once it could, the width is only wrong for some element types:
+///
+///   - `int` lanes — `Int(32)` is the right type. Correct by accident.
+///   - `long` lanes — reads the low four bytes. `{7,8}` gives 8 either way; the coincidence
+///     needs a value above 2^32 to break, which no plausible fixture uses.
+///   - `char` lanes — reads four bytes from a scaled offset. Wrong.
+///   - `float`/`double` lanes — returns the **bit pattern**. `2.5f` came back as 1075838976.
+///
+/// A store followed by a load of the same lane also round-trips: `f[1] = 2.5f; return (int)f[1]`
+/// converts 2.5 to `int` on the way in and reads it back, giving gcc's answer by a different
+/// route. It takes arithmetic *on the loaded lane* to separate them, which is why the second
+/// fixture below carries a `+ 0.5f` that looks pointless and is not.
+#[test]
+fn a_vector_lane_is_read_at_its_element_type() {
+    let sf = "typedef float v4sf __attribute__((vector_size(16)));";
+    let qi = "typedef char v8qi __attribute__((vector_size(8)));";
+    let di = "typedef long v2di __attribute__((vector_size(16)));";
+    // **The shape that round-trips and proves nothing.** Kept as a control: it agreed with gcc
+    // before the fix and after it.
+    agree_with(sf, "v4sf f; f[1] = 2.5f; return (int)f[1];");
+    // The same store, with arithmetic on the loaded lane.
+    agree_with(sf, "v4sf f; f[1] = 2.5f; return (int)(f[1] + 0.5f);");
+    agree_with(
+        sf,
+        "v4sf f; f[0] = 1.25f; f[3] = 4.5f; return (int)((f[0] + f[3]) * 4);",
+    );
+    // A `char` lane, where the *width* is wrong rather than the interpretation.
+    agree_with(qi, "v8qi c; c[5] = 6; c[6] = 7; return c[5];");
+    agree_with(qi, "v8qi c; c[0] = -1; return c[0];");
+    // A `long` lane above 2^32, which is what the accidental agreement needs to break.
+    agree_with(
+        di,
+        "v2di l; l[1] = 4294967296L + 5L; return (int)(l[1] >> 32);",
+    );
+    agree_with(di, "v2di l; l[0] = -1L; return (int)(l[0] >> 40);");
+    // **`_Generic` would say the lane's type directly and the parser does not have it.** That is
+    // a separate, loud gap — a parse diagnostic, so 015 §7 refuses the function rather than
+    // guessing — and it is recorded in §9 rather than worked around here.
+    // `sizeof` on a lane reads the type and nothing else, which is the next best witness.
+    agree_with(sf, "v4sf f; return (int)sizeof(f[0]);");
+    agree_with(qi, "v8qi c; return (int)sizeof(c[0]);");
+    agree_with(di, "v2di l; return (int)sizeof(l[0]);");
+}
+
 /// **A vector's braced initializer is silently dropped, and every lane reads back zero.**
 ///
 ///     v4si x = {1,2,3,4}; return x[2];   chiero says 0, gcc says 3
@@ -2940,14 +2995,18 @@ fn a_vector_s_braced_initializer_is_stored() {
     // The bytes really are not there, not merely unreadable through a subscript.
     agree_with(si, "v4si x = {1,2,3,4}; return ((int*)&x)[2];");
     agree_with(si, "v4si x = {1,2,3,4}; int *p = (int*)&x; return p[2];");
-    // A short initializer zero-fills the rest, and a designator repositions — the two rules
-    // `init_list` already implements for arrays and never got to apply here.
+    // A short initializer zero-fills the rest — one of the two array rules `init_list` already
+    // implements, and which never got to apply here.
+    //
+    // **The other one does not transfer, and gcc said so.** This fixture first carried
+    // `v4si x = {[2] = 5}` and gcc rejected it outright: *array index in non-array initializer*.
+    // A vector takes an array's *walk* but not its designators, and the probe that suggested
+    // otherwise was reading gcc's compile error as a chiero disagreement.
     agree_with(
         si,
         "v4si x = {1,2}; return x[0] + x[1]*10 + x[2]*100 + x[3]*1000;",
     );
-    agree_with(si, "v4si x = {[2] = 5}; return x[2];");
-    agree_with(si, "v4si x = {[1] = 3, 4}; return x[1]*10 + x[2];");
+    agree_with(si, "v4si x = {1}; return x[0]*1000 + x[3];");
     // A copy of an initialized vector.
     agree_with(si, "v4si x = {1,2,3,4}; v4si y = x; return y[2];");
     // **Static and file-scope storage take a different path**, and it is broken too.

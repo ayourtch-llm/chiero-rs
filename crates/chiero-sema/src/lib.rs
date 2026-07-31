@@ -2395,6 +2395,14 @@ impl Cx<'_> {
                 let bty = self.out.typed.ty_of(b);
                 let ty = match self.out.types[bty.0 as usize].clone() {
                     Ty::Ptr(p) => p,
+                    // **A vector subscripts like an array without decaying like one.** gcc's
+                    // `vector_size` allows `v[i]` on the vector itself, and C has no
+                    // vector-to-pointer conversion, so `decay` above leaves it alone and this
+                    // match fell to `Ty::Error`. Lowering reads an `Error` as a 32-bit integer,
+                    // which is why the defect was invisible for `int` lanes and *nearly*
+                    // invisible for `long` ones — a small `long` and its low four bytes are the
+                    // same number. A `float` lane came back as its bit pattern.
+                    Ty::Vector { elem, .. } => elem,
                     _ => self.intern(Ty::Error),
                 };
                 self.push_typed(TypedNode::Value {
@@ -3016,6 +3024,14 @@ impl Cx<'_> {
             }
             ExprKind::Index { base, index } => {
                 let (name, off, ty) = self.designator(*base).or_else(|| self.addr_of(*base))?;
+                // **No vector arm here, and that is not an oversight.** The obvious symmetry
+                // with the `Index` typing above is wrong: this walk folds *constant addresses*,
+                // and C does not allow a vector subscript in one. `v4si g = {1,2,3,4};
+                // int *gp = &g[2];` at file scope is `error: initializer element is not
+                // constant` in gcc, where the same line over an array is fine. So a vector
+                // cannot reach this match, and an arm for it would be unreachable code that
+                // reads like coverage. Measured, wave 272: adding one changed no fixture's
+                // answer either way.
                 let elem = match self.out.types[ty.0 as usize].clone() {
                     Ty::Array { elem, .. } | Ty::Ptr(elem) => elem,
                     _ => ty,

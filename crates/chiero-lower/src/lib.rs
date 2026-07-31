@@ -792,7 +792,18 @@ impl Lowerer<'_> {
                 return Some(());
             }
         }
-        match self.analysis.ty(ty).clone() {
+        // **A vector encodes as an array of its lanes**, the same equivalence `init_list`
+        // makes for automatic storage. Normalising here rather than adding a third arm keeps
+        // one walk: the designator rule, the short-list zero fill and the extent bound are
+        // written once and a vector gets all three by construction.
+        let shape = match self.analysis.ty(ty).clone() {
+            Ty::Vector { elem, lanes, .. } => Ty::Array {
+                elem,
+                len: chiero_sema::ArrayLen::Fixed(u64::from(lanes)),
+            },
+            other => other,
+        };
+        match shape {
             Ty::Array { elem, len } => {
                 let esz = self.analysis.size_of(elem)?;
                 match self.ast.expr(e).kind.clone() {
@@ -5593,7 +5604,31 @@ impl Lowerer<'_> {
                 let esz = self.analysis.size_of(elem).unwrap_or(1);
                 (0..n).map(|i| (i * esz, elem, None, None)).collect()
             }
-            _ => return,
+            // **A vector initializes exactly like an array**, which is what gcc's
+            // `vector_size` specifies: lane by lane, a short list zero-fills the rest, and
+            // `[i] =` designators reposition. The only difference from `Ty::Array` is that
+            // the extent is always fixed, so there is no `items.len()` fallback.
+            Ty::Vector { elem, lanes, .. } => {
+                let esz = self.analysis.size_of(elem).unwrap_or(1);
+                (0..u64::from(lanes))
+                    .map(|i| (i * esz, elem, None, None))
+                    .collect()
+            }
+            // **A gap here is a diagnostic, not a licence** (020 §5). This used to be a bare
+            // `return`: it declined to initialize and said nothing, so 015 §7 never refused
+            // the function and the oracle got a confident wrong number instead of a skip.
+            // That is how a vector's initializer was dropped for as long as the type has
+            // existed — `sizeof` was right and a subscript store round-tripped, so nothing
+            // announced that the type was only half there.
+            other => {
+                self.diagnostics.push(LowerDiagnostic {
+                    span,
+                    message: format!(
+                        "a braced initializer for {other:?}, which lowering cannot walk"
+                    ),
+                });
+                return;
+            }
         };
 
         let mut cursor = 0usize;
