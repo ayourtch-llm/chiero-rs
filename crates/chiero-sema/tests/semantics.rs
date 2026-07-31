@@ -285,3 +285,57 @@ fn an_enumerator_that_cannot_be_folded_is_diagnosed() {
         ok.analysis.diagnostics
     );
 }
+
+/// **A bit-field width has constraints, and none of them were checked.**
+///
+/// Found by following wave 301's lead — fold sites whose fallback cannot be told apart from a
+/// computed answer. The width was folded with `.unwrap_or(0).max(0)`, and the very next line
+/// treats a width of zero as C's *legal* unnamed zero-width bit-field. So a width that could not
+/// be folded, and a width that folded to a negative number, both silently became a valid but
+/// entirely different declaration: the member vanished and the next field was pushed to a unit
+/// boundary. Nothing was reported.
+///
+/// Four constraint violations, each of which gcc rejects and this engine accepted (C 6.7.2.1p4):
+///
+///   - a width that is not an integer constant expression;
+///   - a negative width;
+///   - a width exceeding the field type's own width — chiero allocated a *wider unit* for
+///     `int f : 33`, giving the struct a size gcc will not produce for any program;
+///   - a **named** zero-width field. Zero width is legal only without a name, because its whole
+///     purpose is to force alignment rather than to store anything.
+///
+/// The legal cases below are the discriminators, and the widths that sit exactly on a boundary
+/// are there on purpose: `int f : 32` and `long f : 33` are both fine, so a check written as
+/// "wider than `int`" rather than "wider than the field's type" would pass the violations above
+/// and fail here.
+#[test]
+fn bit_field_width_constraints_are_checked() {
+    let diags = |members: &str| {
+        let src = format!("int notconst; struct S {{ {members} }}; struct S s;");
+        let p = harness::parse_allowing_diagnostics(&src, TargetConfig::x86_64_linux());
+        p.analysis.diagnostics.len()
+    };
+
+    for bad in [
+        "int a; int f : notconst; int b;",
+        "int a; int f : -1; int b;",
+        "int a; int f : 33; int b;",
+        "int a; unsigned f : 33; int b;",
+        "int a; int f : 0; int b;",
+    ] {
+        assert!(diags(bad) > 0, "must be diagnosed: `struct S {{ {bad} }}`");
+    }
+
+    for good in [
+        "int a; int f : 3; int b;",
+        "int a; int f : 32; int b;",
+        "int a; unsigned f : 32; int b;",
+        "int a; long f : 33; int b;",
+        "int a; int f : sizeof(int); int b;",
+        // Zero width is legal precisely when the field has no name.
+        "int a; int : 0; int b;",
+        "int a; int : 3; int b;",
+    ] {
+        assert_eq!(diags(good), 0, "must be accepted: `struct S {{ {good} }}`");
+    }
+}
