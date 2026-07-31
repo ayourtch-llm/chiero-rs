@@ -331,6 +331,12 @@ struct Gen {
     /// So these names never enter the grammar's view. They are folded into the checksum at
     /// `finish`, after every draw has been made.
     extra_sink: Vec<String>,
+    /// The one over-aligned local this program declared, and what it asked for.
+    ///
+    /// **Both halves or neither.** `_Alignas(32)` changes no value on its own; `_Alignof` of the
+    /// object is the only observable. Remembering the pair is what lets the expression wrapper
+    /// ask about *this* object rather than about a type.
+    aligned_local: Option<(String, u64)>,
     /// How deep inside a loop or `switch` body the generator currently is.
     ///
     /// The `if` arm has recursed through `nested` since it was written, and bounding *loop* bodies
@@ -382,6 +388,7 @@ impl Gen {
             typeofs: 0,
             typeof_arrays: 0,
             extra_sink: Vec::new(),
+            aligned_local: None,
             nest: 0,
             div_zero: false,
             heaps: Vec::new(),
@@ -879,7 +886,19 @@ impl Gen {
         // Wrapping `e` after the fact costs **no `rng` draw**: the gate and the choice come from
         // `grng`, and the operand is the one the ordinary path already produced. The stream is
         // byte-identical to before this wave, which the channel's adequacy guards check.
-        let e = if self.extended && self.grng.chance(14) {
+        // **A higher rate when this program has an over-aligned local**, and the exact number is
+        // a measured trade rather than a preference. The alignment form is the only wrapper whose
+        // discrimination depends on a *declaration* elsewhere in the program, so it has to fire
+        // often enough to land in a program that is also compared.
+        //
+        // At **4** it kills wave 282's mutants and the channel falls to 98 comparisons; at **7**
+        // the channel holds its floor of 100 and the mutants survive. The floor is a wave-270
+        // guarantee, so 7 it is — the pairing is emitted and graded against gcc, and the
+        // discrimination is one rate-step away and out of reach. That step is what §9 records:
+        // this channel's comparison budget is spent, and more coverage needs a channel with its
+        // own budget rather than a larger share of this one.
+        let rate = if self.aligned_local.is_some() { 7 } else { 14 };
+        let e = if self.extended && self.grng.chance(rate) {
             self.recent_form(want, e)
         } else {
             e
@@ -910,6 +929,20 @@ impl Gen {
     ///     `double` first; `isnan` of an ordinary number is 0, and `islessequal` against itself
     ///     is 1, so both answers appear.
     fn recent_form(&mut self, want: Ty, inner: String) -> String {
+        // **The alignment selector, when this program has an over-aligned local.** It reads back
+        // what the declaration asked for: if the specifier was dropped, `_Alignof` answers the
+        // type's natural alignment, the branch flips and the value changes. A comparison rather
+        // than arithmetic, per wave 285 — nothing here can overflow.
+        if let Some((name, n)) = self.aligned_local.clone()
+            && self.grng.chance(2)
+        {
+            return format!(
+                "({})(_Alignof({name}) == {n} ? ({}){inner} : ({})0)",
+                want.c(),
+                want.c(),
+                want.c()
+            );
+        }
         let pick = self.grng.below(3);
         // A record with at least two members, so `offsetof` can name one that is not at 0.
         let rec = (0..self.records.len()).find(|&r| self.records[r].readable() >= 2);
@@ -1449,7 +1482,22 @@ impl Gen {
                 let ty = *self.rng.pick(&Ty::ALL);
                 let name = self.fresh();
                 let init = self.expr(ty);
-                let _ = writeln!(self.body, "  {} {name} = {init};", ty.c());
+                // **One over-aligned local per program, chosen on `grng`.** Attaching the
+                // specifier costs no statement and no storage the checksum reads; what makes it
+                // worth anything is the wrapper in `recent_form` that asks `_Alignof` about
+                // *this* name.
+                //
+                // 16 and 32 only: C11 6.7.5p3 makes a specifier *weaker* than the type's own
+                // alignment a constraint violation, and gcc rejects it. Every type in `Ty::ALL`
+                // aligns to at most 8, so both values are always legal.
+                let aligned = self.aligned_local.is_none() && self.grng.chance(2);
+                if aligned {
+                    let n = *self.grng.pick(&[16u64, 32]);
+                    let _ = writeln!(self.body, "  _Alignas({n}) {} {name} = {init};", ty.c());
+                    self.aligned_local = Some((name.clone(), n));
+                } else {
+                    let _ = writeln!(self.body, "  {} {name} = {init};", ty.c());
+                }
                 self.vars.push(Var { name, ty });
             }
             4..=5 => {
