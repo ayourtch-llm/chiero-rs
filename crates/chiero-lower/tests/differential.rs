@@ -2890,6 +2890,71 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **`_Generic` does not parse at all.**
+///
+///     expected an expression / expected `;` after `return` / expected a statement ...
+///
+/// C11 6.5.1.1, and `_Generic` is already a keyword in the lexer — `Kw::Generic` exists and is
+/// mapped, and nothing consumes it. So the token is recognised and then falls out of the primary
+/// expression as an unexpected one, taking the rest of the statement with it.
+///
+/// This is a loud gap: parse diagnostics, so 015 §7 refuses the function and no wrong answer is
+/// produced. It is also the last C11 expression form missing, and the one most likely to be met
+/// second-hand — `<tgmath.h>` is built out of it and so is most modern type-generic C.
+///
+/// # gcc's rules, pinned by running it
+///
+///   - **The controlling expression is not evaluated.** `_Generic(i++, ...)` leaves `i` alone.
+///   - Its type is taken **after lvalue conversion**: `const int` matches `int`, an array
+///     matches `int *`, a string literal matches `char *`, and a function designator matches a
+///     function pointer.
+///   - **No integer promotion.** `(unsigned char)1` selects `unsigned char`, not `int` — which
+///     is the opposite of what every other context does to a narrow operand, and the single
+///     easiest thing to get wrong here.
+///   - The result **is** the selected expression: its type, its value, its `sizeof`. Selecting
+///     `(char)1` gives something of size 1.
+///   - `default` is used only when nothing else matches, wherever it appears in the list.
+#[test]
+fn generic_selection_agrees_with_gcc() {
+    // The basic selection, on each of the two answers.
+    agree("return _Generic(1, int: 7, default: 8);");
+    agree("return _Generic(1.0, int: 7, default: 8);");
+    agree("return _Generic(1, long: 5, int: 6);");
+    agree("double d = 1.0; return _Generic(d, float: 1, double: 2, default: 3);");
+    agree("float f = 1.0f; return _Generic(f, float: 1, double: 2, default: 3);");
+    // **The controlling expression is not evaluated**, which is the rule with a side effect
+    // attached and so the only one a value can witness.
+    agree("int i = 0; int r = _Generic(i++, int: 7, default: 8); return r*10 + i;");
+    agree("int i = 5; int r = _Generic(i = 9, int: 1, default: 2); return r*10 + i;");
+    // Lvalue conversion: qualifiers dropped, array and function designators decayed.
+    agree("const int c = 1; return _Generic(c, int: 1, default: 2);");
+    agree("volatile int v = 1; return _Generic(v, int: 1, default: 2);");
+    agree("int a[3]; return _Generic(a, int *: 1, default: 3);");
+    agree("return _Generic(\"s\", char *: 1, default: 3);");
+    // **No promotion of the controlling expression.** A narrow type stays narrow.
+    agree("unsigned char u = 1; return _Generic(u, unsigned char: 1, int: 2, default: 3);");
+    agree("signed char sc = 1; return _Generic(sc, signed char: 1, int: 2, default: 3);");
+    agree("short sh = 1; return _Generic(sh, short: 1, int: 2, default: 3);");
+    // ...but the *expression's own* type is what is asked about, so an addition of two `char`s
+    // is an `int` because the addition promoted them, not because `_Generic` did.
+    agree("char a = 1; char b = 1; return _Generic(a + b, int: 1, char: 2, default: 3);");
+    // Pointers, including the one that is not `void *`.
+    agree("int v; int *p = &v; return _Generic(p, int *: 1, void *: 2, default: 3);");
+    agree("int v; void *q = &v; return _Generic(q, int *: 1, void *: 2, default: 3);");
+    // `default` first in the list, which must not shadow a later exact match.
+    agree("return _Generic(1, default: 8, int: 7);");
+    agree("return _Generic(1.0f, default: 8, int: 7);");
+    // The result is an expression, with its own type and value.
+    agree("return _Generic(1, int: 2 + 3, default: 0) * 10;");
+    agree("return (int)sizeof(_Generic(1, int: (char)1, default: 0));");
+    agree("return (int)(_Generic(1, int: 1.5, default: 0.0) * 4);");
+    // Nested, and used as an ordinary operand.
+    agree("return _Generic(1, int: _Generic(1.0, double: 4, default: 5), default: 6);");
+    agree("int i = 3; return _Generic(i, int: i, default: 0) + 1;");
+    // A single association with no `default`, which must still select.
+    agree("return _Generic(1, int: 42);");
+}
+
 /// **Vector comparisons are refused, and the reason is the *result* type.**
 ///
 ///     `probe` lowered to CIR the verifier rejects (Eq operand is Ptr, declared Int(32))
