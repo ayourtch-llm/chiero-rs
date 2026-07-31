@@ -2890,6 +2890,76 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A requested alignment on a variable is ignored, and the storage really is misaligned.**
+///
+///     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero 4,  gcc 16
+///     _Alignas(16) int x = 3; return (int)((long)&x & 15);  chiero 4,  gcc 0
+///
+/// The second line is the substantive one: this is not a misreported `_Alignof`, the object is at
+/// its natural alignment. A program that aligns a buffer and then relies on it — a vector load, a
+/// cache line, a lock-free structure — gets a differently-aligned object and no warning.
+///
+/// # Reach lives in the other spelling
+///
+/// `_Alignas` is in **0 VPP files**. `__attribute__((aligned(N)))` is the same defect down the
+/// same path, and it is in **16 VPP files directly, with `aligned(` in 266**, because the
+/// cache-line macros expand to it. §9 had this item filed under the spelling with no reach.
+///
+/// # Only the variable path
+///
+/// `struct A { char c; _Alignas(16) int v; }` already sizes, offsets and aligns correctly:
+/// `Cx::aligned_attr` reads the attribute for *record layout* and nothing reads it for a
+/// declaration. Wave 281 fixed the half of this that needed no specifier at all — `_Alignof(expr)`
+/// was returning a size — and left this half, which needs somewhere to put a declaration's
+/// alignment.
+#[test]
+fn a_requested_alignment_is_honoured() {
+    // Controls: no specifier, and the member path, which already works.
+    agree("int x = 3; return (int)_Alignof(x);");
+    agree("int a[10]; return (int)_Alignof(a);");
+    agree_with(
+        "struct A { char c; _Alignas(16) int v; };",
+        "return (int)sizeof(struct A);",
+    );
+    agree_with(
+        "struct A { char c; _Alignas(16) int v; };",
+        "struct A a; return (int)((char*)&a.v - (char*)&a);",
+    );
+    // `_Alignof` reports what was asked for...
+    agree("_Alignas(16) int x = 3; return (int)_Alignof(x);");
+    agree("_Alignas(8) char c = 1; return (int)_Alignof(c);");
+    agree("_Alignas(double) char c = 1; return (int)_Alignof(c);");
+    agree("_Alignas(32) int a[4]; return (int)_Alignof(a);");
+    // ...and the storage actually has it, which is the half that matters.
+    agree("_Alignas(16) int x = 3; return (int)((long)&x & 15) + x;");
+    agree("_Alignas(64) char b[8]; return (int)((long)&b[0] & 63);");
+    agree("_Alignas(32) int x = 3; return (int)((long)&x & 31) + x;");
+    // **Two aligned locals**, so one cannot be right by accident of being first in the frame.
+    agree(
+        "_Alignas(16) int x = 3; _Alignas(16) int y = 4; return (int)(((long)&x | (long)&y) & 15) + x + y;",
+    );
+    // An unaligned local between two aligned ones, which is where a frame layout that only
+    // rounds once goes wrong.
+    agree(
+        "_Alignas(16) int x = 1; char pad = 2; _Alignas(16) int y = 3; return (int)(((long)&x | (long)&y) & 15) + x + y + pad;",
+    );
+    // **The `__attribute__` spelling**, which is the one VPP uses.
+    agree("int x __attribute__((aligned(16))) = 3; return (int)_Alignof(x);");
+    agree("int x __attribute__((aligned(16))) = 3; return (int)((long)&x & 15) + x;");
+    agree("__attribute__((aligned(8))) char c = 1; return (int)_Alignof(c);");
+    agree("char b[4] __attribute__((aligned(32))); return (int)((long)&b[0] & 31);");
+    // Static and file-scope storage take the same specifier.
+    agree("static int x __attribute__((aligned(32))) = 3; return (int)((long)&x & 31) + x;");
+    agree_with(
+        "int g __attribute__((aligned(64))) = 5;",
+        "return (int)((long)&g & 63) + g;",
+    );
+    // Through a typedef, where the alignment travels with the type rather than the declarator.
+    agree("typedef int A __attribute__((aligned(16))); A x = 3; return (int)_Alignof(x);");
+    // A request *below* the natural alignment does not lower it.
+    agree("_Alignas(1) int x = 3; return (int)_Alignof(x);");
+}
+
 /// **`_Alignof(expr)` returns the operand's *size*.**
 ///
 ///     int a[10]; return (int)_Alignof(a);   chiero says 40, gcc says 4
