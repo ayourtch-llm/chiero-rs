@@ -2492,6 +2492,47 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **The corpus emits none of `_Generic`, `__builtin_offsetof` or the classification builtins.**
+///
+/// §9's three cheapest remaining candidates, and cheap for one reason: each adds a **value**
+/// rather than an object. Wave 284 measured what an object costs — a multi-dimensional array
+/// took the control-flow channel from 131 comparisons to 80, because a longer program carrying
+/// more adversarial values through more operations is more often undefined somewhere, and
+/// undefined is discarded. A value that replaces a subexpression adds no statement, no storage
+/// and no new operand to the checksum.
+///
+/// Each is one wave old or less and each is graded only by hand fixtures: `_Generic` (275),
+/// `__builtin_offsetof` (280), the classification builtins (271).
+///
+/// Presence is not discrimination; the justification is the mutation sweep in the commit that
+/// satisfies this.
+#[test]
+fn the_corpus_reaches_recent_expression_forms() {
+    let (mut generic, mut offsetof, mut classify) = (0usize, 0usize, 0usize);
+    for seed in 0..600u64 {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        if all.contains("_Generic") {
+            generic += 1;
+        }
+        if all.contains("__builtin_offsetof") {
+            offsetof += 1;
+        }
+        if all.contains("__builtin_isnan")
+            || all.contains("__builtin_isless")
+            || all.contains("__builtin_isunordered")
+        {
+            classify += 1;
+        }
+    }
+    assert!(generic >= 20, "`_Generic` is used: {generic}");
+    assert!(offsetof >= 20, "`__builtin_offsetof` is used: {offsetof}");
+    assert!(
+        classify >= 20,
+        "a floating classification builtin is used: {classify}"
+    );
+}
+
 #[test]
 fn the_corpus_reaches_recent_constructs() {
     let (mut tyof, mut tyof_arr) = (0usize, 0usize);
