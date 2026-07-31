@@ -893,6 +893,14 @@ struct Cx<'a> {
     defined_with_init: indexmap::IndexSet<Symbol>,
 }
 
+/// Where a declaration appears. Contract 14's redefinition rule is a *file-scope* rule, and the
+/// two scopes reach the same handler, so the distinction has to be carried rather than deduced.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Scope {
+    File,
+    Block,
+}
+
 impl Cx<'_> {
     fn intern(&mut self, ty: Ty) -> TyId {
         if let Some(&id) = self.out.interned.get(&ty) {
@@ -1000,7 +1008,20 @@ impl Cx<'_> {
         )
     }
 
+    /// A declaration at **file scope**. Contract 14's redefinition rule applies here and only
+    /// here, which is why the scope is a parameter rather than something inferred.
     fn item(&mut self, id: DeclId) {
+        self.decl(id, Scope::File);
+    }
+
+    /// A declaration inside a block. Nothing it names can redefine anything: a block-scope
+    /// identifier has no linkage, so it is a different object from every other declaration of
+    /// that name, in an enclosing scope or in another function.
+    fn block_decl(&mut self, id: DeclId) {
+        self.decl(id, Scope::Block);
+    }
+
+    fn decl(&mut self, id: DeclId, scope: Scope) {
         match self.ast.decl(id).kind.clone() {
             DeclKind::Var { name, ty, init, .. } => {
                 let t = self.ty_of(ty);
@@ -1014,7 +1035,13 @@ impl Cx<'_> {
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
                     // second *initialized* definition is an error, so the thing tracked
                     // is "has an initializer", not "has been seen".
-                    if init.is_some() && !self.ast.decl(id).span.ctx.is_root() {
+                    if scope == Scope::Block {
+                        // **A block-scope name redefines nothing.** It has no linkage, so it is a
+                        // distinct object from every other declaration of that name — in an
+                        // enclosing block, in another function, or at file scope. Applying the
+                        // file-scope rule here made `int a = 0;` in two different functions a
+                        // redefinition, which is most of C.
+                    } else if init.is_some() && !self.ast.decl(id).span.ctx.is_root() {
                         // Macro-produced definitions are not compared: a header expanded
                         // twice is the preprocessor's business, not a redefinition.
                     } else if init.is_some() && !self.defined_with_init.insert(n) {
@@ -3619,7 +3646,7 @@ impl Cx<'_> {
             }
             StmtKind::Decl(ds) => {
                 for d in ds {
-                    self.item(d);
+                    self.block_decl(d);
                 }
             }
             StmtKind::Compound(ss) => {
@@ -3654,7 +3681,7 @@ impl Cx<'_> {
                 match init {
                     Some(ForInit::Decl(ds)) => {
                         for d in ds {
-                            self.item(d);
+                            self.block_decl(d);
                         }
                     }
                     Some(ForInit::Expr(e)) => {
