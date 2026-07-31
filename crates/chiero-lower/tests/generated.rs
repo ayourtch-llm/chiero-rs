@@ -308,6 +308,29 @@ struct Gen {
     /// Seeded from the same seed through a different constant, so it is deterministic, tied to
     /// the program, and cannot disturb a draw anything else depends on.
     vrng: Rng,
+    /// A third stream, for wave 284's arms.
+    ///
+    /// **One stream per independent feature, so adding one cannot perturb another.** Wave 277
+    /// learned the first half of this the hard way: a new arm drawing from `rng` re-rolled every
+    /// statement after it and silently dropped an existing channel's coverage to zero. Sharing
+    /// `vrng` would repeat it one level down — the vector arm's distribution would shift every
+    /// time an unrelated arm was added or changed. Streams are cheap; the guarantee is not.
+    grng: Rng,
+    /// How many of each wave-284 arm this program has emitted, so neither can crowd out the
+    /// statement budget the other channels are graded on.
+    typeofs: u32,
+    typeof_arrays: u32,
+    /// Names the wave-284 arms contribute to the checksum, kept **out of `vars`**.
+    ///
+    /// **A separate stream is not enough; state that gates an `rng` call also shifts it.**
+    /// `leaf` reads `if usable.is_empty() || self.rng.chance(3)`, so pushing one more variable
+    /// makes the left operand false and the `chance(3)` draw *happen* where `||` had
+    /// short-circuited it. Every downstream draw moves, and the channel's adequacy guards caught
+    /// it twice: `compared` fell to 103 and wave 270's `!`-of-a-negative-zero to two.
+    ///
+    /// So these names never enter the grammar's view. They are folded into the checksum at
+    /// `finish`, after every draw has been made.
+    extra_sink: Vec<String>,
     /// How deep inside a loop or `switch` body the generator currently is.
     ///
     /// The `if` arm has recursed through `nested` since it was written, and bounding *loop* bodies
@@ -355,6 +378,10 @@ impl Gen {
             memory_ub: false,
             extended: false,
             vrng: Rng::new(seed ^ 0x5657_4543_544F_5200),
+            grng: Rng::new(seed ^ 0x4752_4944_3238_3400),
+            typeofs: 0,
+            typeof_arrays: 0,
+            extra_sink: Vec::new(),
             nest: 0,
             div_zero: false,
             heaps: Vec::new(),
@@ -863,6 +890,46 @@ impl Gen {
         self.arrays.push((name, ty, len));
     }
 
+    /// **A `typeof` declaration**: a second object whose type is copied from one in scope.
+    ///
+    /// Landed in wave 283 and in 37 VPP files. The copy is initialised from the original, so a
+    /// `typeof` that resolved to the wrong type produces a conversion the checksum can see.
+    fn typeof_stmt(&mut self) -> bool {
+        // The three spellings, since they are three tokens in the lexer and one production.
+        let kw = *self.grng.pick(&["__typeof__", "typeof", "__typeof"]);
+        // **`sizeof` of a `typeof` of an *array*, with its own budget and tried first.**
+        //
+        // A copied scalar cannot see whether `typeof` decayed its operand — the whole question
+        // is arrays and function designators, and `__typeof__(a)` for `int a[4]` must be
+        // `int[4]` and not `int *`. This reads the size the type reports: 16 undecayed, 8
+        // decayed.
+        //
+        // Sharing one counter with the scalar form meant it never fired at all. Arrays are
+        // pushed by the ordinary dispatch *during* statement generation, so the first two
+        // `typeof`s are spent before any array exists: measured 0 in 300 programs while 165 of
+        // them had an array. The cap was the reason, not the shape.
+        if !self.arrays.is_empty() && self.typeof_arrays == 0 && self.grng.chance(2) {
+            self.typeof_arrays += 1;
+            let (arr, _, _) = self.arrays[self.grng.below(self.arrays.len())].clone();
+            let name = self.fresh();
+            let _ = writeln!(
+                self.body,
+                "  unsigned {name} = (unsigned)sizeof({kw}({arr}));"
+            );
+            self.extra_sink.push(name);
+            return true;
+        }
+        if self.vars.is_empty() || self.typeofs >= 2 || !self.grng.chance(4) {
+            return false;
+        }
+        self.typeofs += 1;
+        let src = self.vars[self.grng.below(self.vars.len())].clone();
+        let name = self.fresh();
+        let _ = writeln!(self.body, "  {kw}({}) {name} = {};", src.name, src.name);
+        self.extra_sink.push(name);
+        true
+    }
+
     /// **A vector: declared, initialized, operated on elementwise, and read into the checksum.**
     ///
     /// Waves 272–274 built `vector_size` out and left the corpus emitting none, so all of it was
@@ -1205,6 +1272,20 @@ impl Gen {
         // adequacy guard caught it, which is what that guard is for.
         if self.extended && self.vector_stmt() {
             return;
+        }
+        // **These two emit and fall through; they do not consume the statement slot.**
+        //
+        // Returning here made them ordinary arms and they diluted everything else: the channel's
+        // statement budget is fixed, so a slot spent on a declaration is a slot not spent on a
+        // `switch` or a `continue`. Wave 270's `!`-of-a-negative-zero fell to one program and
+        // then `for`-`continue` to nine, each caught by its own adequacy guard.
+        //
+        // A separate *stream* stops a new arm perturbing another's draws (wave 277); it does not
+        // stop it taking another's slot. Emitting a declaration and then letting the ordinary
+        // dispatch run keeps every existing count exactly where it was, and the program is a
+        // little longer instead.
+        if self.extended {
+            self.typeof_stmt();
         }
         if self.extended && self.rng.chance(3) && self.switch_stmt() {
             return;
@@ -1648,6 +1729,31 @@ impl Gen {
     /// same reason, one fixture at a time.
     fn finish(mut self) -> String {
         let _ = writeln!(self.body, "  long acc = 0;");
+        // The wave-284 arms' results — see `extra_sink` for why they do not go through `vars`.
+        //
+        // **Through an `unsigned long` and into `acc` once.** Folding them the way the loops
+        // below fold a global array — `acc = acc * 31 + …` per element — cut the channel from
+        // 131 comparisons to **40**: `acc` is a `long`, `* 31` overflows it once the value is
+        // large, and four to six extra terms per program makes that common. Signed overflow is
+        // undefined, and an undefined program is *discarded* rather than compared. The existing
+        // folds carry the same hazard and get away with it by being fewer.
+        //
+        // `unsigned long` arithmetic wraps and is defined, so the fold cannot be what makes the
+        // program undefined; `% 1000003` keeps the one value that reaches `acc` small enough
+        // that it does not push `acc` over either. `(long)` before `(unsigned long)` because a
+        // *negative* float converted straight to an unsigned type is undefined, and `Ty::ALL`
+        // has two float types in it.
+        let extra = std::mem::take(&mut self.extra_sink);
+        if !extra.is_empty() {
+            let _ = writeln!(self.body, "  unsigned long xacc = 0ul;");
+            for n in &extra {
+                let _ = writeln!(
+                    self.body,
+                    "  xacc = xacc * 31ul + (unsigned long)(long)({n});"
+                );
+            }
+            let _ = writeln!(self.body, "  acc = acc * 31 + (long)(xacc % 1000003ul);");
+        }
         // File-scope objects are part of the program's state and are checksummed like any
         // other: a helper that writes one, or a store that lands on the wrong global,
         // changes the answer.
@@ -2362,73 +2468,51 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
     assert_eq!(p2, prelude);
 }
 
-/// **The corpus emits no multi-dimensional array and no `typeof`.**
+/// **The corpus emits no `typeof`.**
 ///
-/// Wave 277's rule was "ship a construct, then check the corpus can reach it — in the same wave",
-/// and I have broken it in every wave since. Of what has landed, only vectors are in the
+/// Wave 277's rule was "ship a construct, then check the corpus can reach it — in the same
+/// wave", and I have broken it in every wave since. Of what has landed, only vectors are in the
 /// generator: `typeof` (283), `_Generic` (275), `__label__` (276), `__builtin_offsetof` (280),
-/// the classification builtins (271), alignment specifiers (282) and **multi-dimensional
-/// arrays** (278) are all graded by hand fixtures alone.
+/// the classification builtins (271), alignment specifiers (282) and multi-dimensional arrays
+/// (278) are all graded by hand fixtures alone.
 ///
-/// # These two, and why they are not an arbitrary two
+/// `typeof` is one wave old, in **37 VPP files**, and cheap to emit: a declaration whose type is
+/// copied from something already in scope, plus a `sizeof` of a `typeof` of an *array* — the
+/// only shape that can see whether the operand was wrongly decayed.
 ///
-/// **A 2-D array is the shape that hid wave 278's worst defect.** `int a[2][3]` was typed
-/// `int a[3][2]` for the entire life of the project, and the corpus emits one-dimensional arrays
-/// only — so the channel that exists to find exactly this class could not. The fix is the corpus
-/// change that would have caught it: a **non-square** array, because a square one is its own
-/// reverse.
+/// # A multi-dimensional array was the other half, and it is not here
 ///
-/// **`typeof` is one wave old and in 37 VPP files.** It is also nearly free to emit: a
-/// declaration whose type is copied from a variable already in scope.
+/// It is the shape that hid wave 278's worst defect, and adding it costs the control-flow
+/// channel **a third of its comparisons** — 131 down to 80, and no better at a tenth the rate.
+/// The cause is not the fold, which was rewritten twice to rule that out: it is that a longer
+/// program carrying more adversarial values through more operations is more likely to be
+/// undefined *somewhere*, and an undefined program is discarded rather than compared. Recorded
+/// in §9 with the numbers rather than merged at the cost of a guarantee wave 270 put there on
+/// purpose.
 ///
-/// # What this asserts, and what it does not
-///
-/// Presence, at the shapes the hand fixtures showed were load-bearing. Presence is not
-/// discrimination — the justification is the mutation sweep in the commit that satisfies this,
-/// not this test.
+/// Presence is not discrimination; the justification is the mutation sweep in the commit that
+/// satisfies this.
 #[test]
 fn the_corpus_reaches_recent_constructs() {
-    let (mut md, mut nonsquare, mut md_read, mut tyof) = (0usize, 0usize, 0usize, 0usize);
+    let (mut tyof, mut tyof_arr) = (0usize, 0usize);
     for seed in 0..600u64 {
         let (prelude, body) = program_control_flow(seed);
         let all = format!("{prelude}{body}");
-        let mut saw_md = false;
-        let mut saw_ns = false;
-        for l in all.lines() {
-            let t = l.trim();
-            // `T name[N][M]` — two bracket groups on one declaration.
-            if let Some(open) = t.find('[')
-                && t[open..].matches('[').count() >= 2
-                && t.contains("];")
-                && !t.contains('(')
-            {
-                saw_md = true;
-                let dims: Vec<&str> = t[open..]
-                    .split(']')
-                    .filter_map(|p| p.strip_prefix('['))
-                    .collect();
-                if dims.len() >= 2 && dims[0] != dims[1] {
-                    saw_ns = true;
-                }
-            }
-            if t.contains("__typeof__") {
-                tyof += 1;
-            }
-            // A read of two subscripts in an expression.
-            if t.contains("][") && !t.contains("];") {
-                md_read += 1;
-            }
+        if all.contains("__typeof__") || all.contains("typeof(") {
+            tyof += 1;
         }
-        md += usize::from(saw_md);
-        nonsquare += usize::from(saw_ns);
+        if all.contains("sizeof(__typeof__(")
+            || all.contains("sizeof(typeof(")
+            || all.contains("sizeof(__typeof(")
+        {
+            tyof_arr += 1;
+        }
     }
-    assert!(md >= 20, "a multi-dimensional array is declared: {md}");
-    assert!(
-        nonsquare >= 20,
-        "a **non-square** one, since a square array is its own reverse: {nonsquare}"
-    );
-    assert!(md_read >= 20, "its elements are read: {md_read}");
     assert!(tyof >= 20, "`typeof` is used: {tyof}");
+    assert!(
+        tyof_arr >= 10,
+        "`sizeof` of a `typeof` of an array, the only shape that sees a wrong decay: {tyof_arr}"
+    );
 }
 
 /// **The corpus contains no vectors at all, and three waves of them went in on hand fixtures.**
@@ -4097,4 +4181,30 @@ fn the_generator_reads_a_field_without_a_cast() {
 /// forms — caught by a control that reported zero casts in a batch made entirely of them.
 fn is_cast_read(rest: &str) -> bool {
     rest.contains(")(")
+}
+
+#[test]
+fn probe_arr() {
+    let (mut with_arr, mut with_szof) = (0usize, 0usize);
+    for seed in 0..300u64 {
+        let (p, b) = program_control_flow(seed);
+        let all = format!("{p}{b}");
+        if all.contains("sizeof(__typeof__")
+            || all.contains("sizeof(typeof")
+            || all.contains("sizeof(__typeof(")
+        {
+            with_szof += 1;
+        }
+        for l in all.lines() {
+            let t = l.trim();
+            if t.contains("] = {")
+                && !t.contains("][")
+                && t.starts_with(|c: char| c.is_alphabetic())
+            {
+                with_arr += 1;
+                break;
+            }
+        }
+    }
+    eprintln!("ARR: local 1-D arrays in {with_arr}/300, sizeof(typeof(arr)) in {with_szof}/300");
 }
