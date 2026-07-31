@@ -487,12 +487,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 308) — 1480 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 309) — 1482 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next: rows 1–3 of the constraint census below** (member that does not exist, subscripting a
-> non-array, calling a non-function). They are one family — an expression whose *type* cannot
-> support the operation applied to it — and unlike the other thirteen they let execution proceed
-> on a value computed from nothing, which is this engine's whole subject.
+> **Next: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
+> incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
+> remaining rows that are about *types* rather than about statements, so they sit in the same part
+> of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
+> context (loop nesting, switch tables, label sets) that sema does not currently carry.
+>
+> **Before that, consider the cheaper thing wave 307 recorded:** there is still no test anywhere
+> that asserts ordinary correct code produces *no* sema diagnostics. Both of the last two waves'
+> false positives would have been caught on day one by one such test over the existing corpus.
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -857,9 +862,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > | | constraint (C11) | example |
 > |---|---|---|
-> | 1 | member that does not exist | `struct S { int m; }; s.nope` |
-> | 2 | subscripting a non-array | `int r(int x){ return x[0]; }` |
-> | 3 | calling a non-function | `int q; q()` |
+> | ~~1~~ | ~~member that does not exist~~ | **fixed, wave 308** |
+> | ~~2~~ | ~~subscripting a non-array~~ | **fixed, wave 308** — `int x = 5; x[0]` returned 5 |
+> | ~~3~~ | ~~calling a non-function~~ | **fixed, wave 308** |
 > | 4 | assigning to a `const` object | `const int k = 1; k = 2;` |
 > | 5 | parameter of incomplete type | `struct T; int s(struct T t)` |
 > | 6 | variable declared `void` | `void w;` |
@@ -876,6 +881,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Rows 1–3 are the ones that matter most for this engine: they are type errors that let execution
 > proceed on a value computed from nothing. The rest are diagnostics a compiler owes its user.
+>
+> **Rows 1–3 closed in wave 308**, and the fix cannot key on `Ty::Error`: that means *unknown*, not
+> *wrong*, and an undeclared callee types as `Error` — `__builtin_isnan` and the rest of 7.12.14
+> are undeclared, since gcc knows them intrinsically. Each check asks whether the type is
+> *concretely known* to be unusable, and stays quiet on anything incomplete.
+>
+> **The wave's two best finds came from the fixture's accepted list, not from the census.**
+>   - `0[p]` was written only to stop the subscript check being too broad. `a[b]` is `*(a + b)`,
+>     so the pointer may be on either side — and once sema typed it correctly it *still* produced
+>     no answer, because lowering assumed the base was the aggregate at all three `Index` sites.
+>   - `(void)p;` was a throwaway line silencing an unused variable in a probe. `(void)0; return 1;`
+>     returned **no state at all**: `cast_kind` has no conversion *to* void, so the module it built
+>     was rejected. One of the most ordinary idioms in C, and nothing had ever exercised it.
 >
 > ### 🔑 The technique that is paying: find the *second* implementation of a rule
 >
@@ -2393,6 +2411,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The discriminators find more than the rule does** (wave 308). Both of this wave's deeper
+> defects came from the *accepted* list — cases written only to stop a new check being too broad.
+> `0[p]`, written because `a[b]` is `*(a + b)`, exposed that lowering assumed the base was the
+> aggregate at all three of its `Index` sites; `(void)p;`, written to silence an unused variable
+> in a probe, exposed that a cast to void produced no state at all. **Writing down what must keep
+> working is a better search than writing down what must break**, because the first list is drawn
+> from the language and the second only from what you already suspect.
+>
+> **A new representation does not announce itself to code that tested the old one** (wave 308).
+> The "one diagnostic per bad declaration" exemption tested `matches!(.., Ty::Error)`, correct
+> when written and quietly narrower than its comment from wave 304 onward, once an undefined tag
+> became an incomplete *record*. It kept compiling and kept passing. **Grep for the old shape when
+> a representation changes** — and note that only an assertion on the diagnostic *count* could
+> falsify it, since every affected case was still "diagnosed", just twice.
 >
 > **A diagnostic nothing consumes is a diagnostic nothing tests** (wave 307). Sema's complaint that
 > `int a = 0;` in two different functions was a redefinition survived every test in the project,
