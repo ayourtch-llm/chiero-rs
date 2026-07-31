@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 296) — 1458 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 297) — 1460 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -821,12 +821,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   - **`chiero-pp` was swept to 85%** — conditions past line 1890 of 2211 were never reached.
 >     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890.
 >     Budget by *rebuild* cost: minutes per mutant, not the 8s the suite takes.
->   - **Two `chiero-mem` both-ways survivors** remain: `e.repr == Repr::Array` in the
->     havoc-uninitialize path (L2662 — its comment says clearing `arr` there would de-promote a
->     promoted object and answer a later read from stale bytes), and a fault-propagation early-out
->     after `promote_to_array` (L3266 — reachable only when promotion itself faults, which needs
->     an object past `MAX_MATERIALIZED_BYTES`). The index-width guard is closed: it was a
->     duplicate of `fit` and is now a call to it, with `fit`'s narrowing arm fixtured (wave 295).
+>   - **`chiero-mem` is closed** (waves 295–296). The index-width guard was a duplicate of `fit`
+>     and is now a call to it, with `fit`'s narrowing arm fixtured; the havoc-uninitialize
+>     promotion guard has a fixture; the fault-propagation early-out is *unreachable* — promotion
+>     faults only through `state_fault` and every caller pre-checks it — and is kept deliberately
+>     as forwarding rather than deleted as a rule, with the measurement recorded at the site.
 >   - Two `chiero-pp` survivors are inside the `__VA_OPT__` refusal path, where how much of the
 >     group gets skipped after a declared-limit diagnostic is cosmetic by construction.
 >
@@ -2073,6 +2072,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A subsumed *rule* is dead weight; a subsumed *propagation* is a bet** (wave 296). Wave 290
+> deleted a verifier check that a neighbouring rule already made — a claim about the input that
+> could never be the only thing wrong. This wave kept an unreachable early-out that forwards
+> another function's faults, because the day that function grows a fault its callers do not
+> pre-check, deleting it would swallow the fault silently. **Ask whether the unreachable code
+> asserts something or forwards something.**
+>
+> **When a fixture misses its target, say so in the fixture** (wave 296). The one written for the
+> promotion early-out lands on a state check thirty lines earlier. It is kept — the property it
+> *does* pin was untested too — and its docstring now records what it reaches rather than what it
+> was aimed at. A test whose comment describes a line it never executes is worse than no comment.
 >
 > **An unfalsifiable branch is sometimes a duplicated one** (wave 295). The index-width guard the
 > sweep could not kill turned out to be a hand-inlined copy of `fit`, which lives in the same file
