@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 290) — 1442 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 291) — 1449 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -807,6 +807,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a wrong index space), and the third has narrowed to a single term-identity question. That is
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
+>
+> ### 🟡 Sweeping checkers' own rules — one done, others untouched
+>
+> **Wave 290 swept the CIR verifier**: forty rule sites disabled one at a time against the whole
+> workspace. Thirty-three killed, six untested (now fixtured), one unreachable (now deleted). The
+> hit rate — **17% of a checker's rules unfalsifiable** — is worth remembering when choosing the
+> next target.
+>
+> **The same sweep has not been run on:**
+>   - **`chiero-check`** — the checkers that turn a UB event into a finding. Same shape of risk:
+>     a rule that never fires is a finding never reported, and 023 §9's "a report a person cannot
+>     act on is not a report" cuts both ways.
+>   - **`chiero-mem`'s fault rules** — waves 264–266 swept parts by hand and found real gaps, but
+>     never systematically.
+>   - **`chiero-pp`'s diagnostics** — wave 281 censused *behaviour* against gcc and found it
+>     clean; the diagnostics themselves were not swept.
+>
+> **How to run it** (about twenty minutes for forty sites): enumerate the `err(`/`push`/`report`
+> call sites, comment each out in turn, build and run the owning crate's tests, escalate survivors
+> to the workspace. The script is three lines of shell around a five-line Python edit; wave 290's
+> is in its commit.
 >
 > ### 🟢 The corpus work is done — and the focused channel is now the place to add shapes
 >
@@ -2045,6 +2066,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Sweep a checker's own rules — it is the code most likely to be untested** (wave 290). Thirty-
+> three of the CIR verifier's forty rule sites were falsifiable; **seven were not**, and could
+> have been deleted silently. They shared a cause: each rejects a *malformed module* that lowering
+> never produces, so only a hand-built one reaches them. **Code that only fires on inputs your
+> front end cannot emit has no natural test**, and a checker is made almost entirely of it.
+>
+> **A rule that cannot be the only thing wrong with an input is a rule no fixture can isolate**
+> (wave 290). The verifier checked for a duplicate function id while a neighbouring rule required
+> `funcs[i].id == FuncId(i)` — so a duplicate always came with an index error, and a
+> one-defect-one-kind assertion could never be satisfied. Unkillable, not untested. Deleted.
+>
+> **A fixture that passes is not evidence until the thing it names can fail** (wave 290). Two
+> versions of one fixture passed while the rule under test was *disabled*: a bare `Const::Null`
+> has no resolved type so the rule never saw it, and a pointer shift count is caught by a
+> different rule with the same error kind. Both were found by disabling the rule and re-running —
+> never by reading.
 >
 > **"Out of reach" is a statement about the corpus, not about the defect** (wave 289). Three
 > mutants were recorded as surviving because no channel emitted their shape — a chained `offsetof`
