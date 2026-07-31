@@ -252,6 +252,37 @@ fn an_uninitialized_read_invents_its_value_rather_than_using_one() {
     );
 }
 
+/// **A byte written before a symbolic store that may overwrite it is still initialized.**
+///
+/// Byte 0 is written concretely and then a symbolic store may or may not land on it. Either way it
+/// is initialized — written before, and conditionally written again — so nothing is reported.
+///
+/// **It is named after what it checks, which is less than it was written to check.** It was meant
+/// to kill §9's `expand-forgets-shadowing` mutant, on the reasoning that eight bytes keeps the init
+/// chain inside `EXPAND_LIMIT` where store order still decides the answer — 64 bits against the
+/// 512 a 64-byte object needs (wave 248). The mutant survived it, and instrumenting says why:
+/// **`init_guard` is never called for this program at all**, so `select_expand` is never reached
+/// and the ordering cannot matter. Reaching it needs a *symbolic* read, not a symbolic write under
+/// a concrete one.
+///
+/// The fixture stays under the name it earns. Renaming it was the alternative to deleting it, and
+/// wave 254's rule says a test named after a decision it cannot observe is worse than no test.
+#[test]
+fn a_byte_written_before_a_symbolic_store_stays_initialized() {
+    let m =
+        harness::lower("int probe(int i){ char ca[8]; ca[0] = 5; ca[i & 7] = 7; return ca[0]; }");
+    let mut arena = TermArena::new();
+    let f = Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena)
+        .findings();
+    assert!(
+        f.iter().all(|m| !m.contains("uninitialized-read")),
+        "byte 0 was written before the symbolic store and possibly again by it, so it is \
+         initialized on every path: {f:?}"
+    );
+}
+
 /// **A multi-byte element, stored and read back at the same symbolic offset.**
 ///
 /// Mutation found no fixture needed more than one byte: every store fixture above used a
