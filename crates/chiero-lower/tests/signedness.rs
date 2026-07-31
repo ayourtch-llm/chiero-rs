@@ -155,7 +155,16 @@ fn an_unsigned_left_shift_out_of_signed_range_is_ordinary_code() {
     }
 }
 
-/// The count rule (C11 6.5.7p3) is signedness-independent and must stay that way.
+/// The count rule (C11 6.5.7p3) is signedness-independent **and direction-independent**.
+///
+/// The direction half was missing until wave 262 and mutation is what said so: restricting the
+/// clause to `Shl` — so `x >> 32` on a 32-bit type reports nothing — survived the whole suite. Both
+/// fixtures here were left shifts, which is the same empty-cell shape wave 261 found in the
+/// float-cast list one wave earlier: the grid had two signednesses and one direction.
+///
+/// C11 6.5.7p3 puts the count rule on the *shift-expression*, not on `<<`, and UBSan agrees in all
+/// four cells — `shift exponent 32 is too large for 32-bit type` fires for `int` and `unsigned`,
+/// `<<` and `>>` alike.
 #[test]
 fn the_shift_count_rule_applies_to_both_signednesses() {
     for (what, src) in [
@@ -166,6 +175,14 @@ fn the_shift_count_rule_applies_to_both_signednesses() {
         (
             "unsigned",
             "int probe(void) { unsigned a = 1u; unsigned b = a << 32; return (int)b; }",
+        ),
+        (
+            "signed, right",
+            "int probe(void) { int a = 1; int b = a >> 32; return b; }",
+        ),
+        (
+            "unsigned, right",
+            "int probe(void) { unsigned a = 1u; unsigned b = a >> 32; return (int)b; }",
         ),
     ] {
         let kinds = ub_kinds(src);
