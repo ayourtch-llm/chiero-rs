@@ -1495,9 +1495,48 @@ impl Cx<'_> {
 
             let bw = self.ast.bitfield(m);
             if let Some(bw) = bw {
-                let w = self.eval(bw).map(|v| v.v).unwrap_or(0).max(0) as u64;
                 let unit_bits = size_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
                 let unit_align_bits = align_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
+                let span = self.ast.expr(bw).span;
+
+                // **C 6.7.2.1p4's constraints on a bit-field width.** Every one of them used to be
+                // absorbed by `.unwrap_or(0).max(0)`, which is the worst possible place for a
+                // fallback: zero is not a neutral value here, it is the *legal* unnamed
+                // zero-width field handled immediately below. A width that could not be folded
+                // and a negative width therefore produced a valid but different declaration —
+                // member gone, next field bumped to a unit boundary — and said nothing.
+                //
+                // The fallback of one bit is chosen so the member still exists. Dropping it would
+                // cascade into every `s.f` that references it, which is the same reason wave 301
+                // kept the enumerator's fallback; the program is rejected either way, and a
+                // reader is better served by one diagnostic about the width than by a second
+                // about a field that vanished because of it.
+                let w = match self.eval(bw) {
+                    None => {
+                        self.error(
+                            span,
+                            "bit-field width is not an integer constant expression",
+                        );
+                        1
+                    }
+                    Some(v) if v.v < 0 => {
+                        self.error(span, "negative width in a bit-field");
+                        1
+                    }
+                    // The comparison is against the field's *own* type, not against `int`:
+                    // `int f : 32` and `long f : 33` are both legal, and a check phrased the
+                    // other way would accept every violation here and reject those.
+                    Some(v) if (v.v as u64) > unit_bits => {
+                        self.error(span, "bit-field width exceeds the width of its type");
+                        unit_bits
+                    }
+                    // Zero width declares no member, so there is nothing for a name to name.
+                    Some(v) if v.v == 0 && name.is_some() => {
+                        self.error(span, "a named bit-field cannot have zero width");
+                        1
+                    }
+                    Some(v) => v.v as u64,
+                };
 
                 if w == 0 {
                     // Contract 4: declares no member, and forces the next allocation to
