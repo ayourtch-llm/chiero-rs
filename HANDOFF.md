@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 272) — 1417 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 273) — 1419 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **Wave 272 ran the census over every CIR enum and it found a whole half-built feature.** The
+> unproduced variants were `CTy::Vector`, `RValue::Splat`/`Shuffle`/`InsertLane`/`ExtractLane`,
+> `Const::Wide`, `InstKind::Opaque`/`Phi`, `RValue::Select`/`Fresh`, `Const::FuncAddr` and
+> `BinOp::PtrDiff`. The vector cluster is gcc's `vector_size` — the extension **VPP is written
+> in** — and it turned out to be half-supported rather than absent: `sizeof` right, subscript
+> store/load right, **initializer silently dropped and every lane read as `Int(32)`**. Two
+> defects, both fixed.
+>
+> **What the census still has open, in the order it looks worth taking:**
+>   - **Vector *arithmetic*.** `x + y` on two vectors still lowers to CIR the verifier rejects
+>     (`Add operand is Ptr, declared Int(32)`) — a loud refusal, so it is honest, but it is the
+>     next thing anyone reading VPP hits. `Splat`, `Shuffle`, `InsertLane`, `ExtractLane` are all
+>     still unproduced and this is what they are for.
+>   - **`_Generic` is not in the parser at all** — a C11 feature, found while writing a fixture
+>     that wanted to witness a lane's type without arithmetic in the way. Loud parse diagnostic,
+>     so a declared gap.
+>   - **`BinOp::PtrDiff` is dead in every crate** — enum, printer, parser, and nowhere else;
+>     `bin`'s catch-all returns `None` for it and the comment says "pointer differences remain
+>     unmodelled". C's `p - q` works, lowered as a subtract and a divide, so this variant has a
+>     working alternative and no producer. Delete it or produce it; do not leave it.
+>   - **`Const::FuncAddr` has no producer in lowering** although `GlobalInit::FuncAddr` does.
+>     Function pointers work, so this is a *spelling* question rather than a gap — worth ten
+>     minutes to confirm before it is written down as one.
+>
+> **`UbKind` came back clean** — all five kinds have producers and tests. Note the trap: the first
+> census said `MaybeSignedOverflow` had none, because the tests match on the display string
+> `may-signed-overflow` and not the variant name. **A name-based census produces false gaps.**
 >
 > **Wave 271 closed the two forms wave 270 left, and neither closed the way it looked.** Statement
 > expressions probed **clean** — twenty-four hard shapes, controlled by two engine mutants — and
@@ -1856,6 +1884,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A half-supported type is worse than a missing one** (wave 272). `sizeof(v4si)` was 16,
+> `sizeof x` was 16, and `x[0] = 7; return x[0]` gave 7 — every smoke test a person would write.
+> Meanwhile `v4si x = {1,2,3,4}` dropped its initializer entirely and every lane read zero. **The
+> parts that work are what stop anyone looking at the parts that do not.**
+>
+> **One defect can make another invisible, so re-probe after every fix** (wave 272). The dropped
+> initializer meant every lane read zero, which hid a second, independent defect: a vector
+> subscript typed `Ty::Error`, so lanes were read as `Int(32)`. Fixing the first turned
+> `chiero says 0` into `chiero says 1075838976` — the bit pattern of `2.5f`. The RED named one
+> defect and there were two.
+>
+> **Accidental agreement is the normal case, not the exception** (wave 272). For that second
+> defect: `int` lanes were correct by accident, `long` lanes read their low four bytes so `{7,8}`
+> gives 8 either way, and a store-then-load of one lane round-trips because the value converts on
+> the way in. Separating them needs arithmetic *on the loaded lane*, a value above 2^32, or a
+> `char` lane. **When a fixture agrees, ask which of the two answers it would have distinguished.**
+>
+> **A gcc rejection is not a chiero disagreement** (wave 272). Three probe rows read as defects and
+> were gcc refusing to compile the fixture: `{[2] = 5}` on a vector is *array index in non-array
+> initializer*, and `&g[2]` at file scope is *initializer element is not constant*. Both went into
+> a RED before the harness caught them. **Read the failure text, not the failure count** — wave
+> 270's rule arriving from the other side.
+>
+> **Symmetry is not a reason** (wave 272). A vector arm in sema's constant-address walk mirrors the
+> one in its `Index` typing exactly, and is unreachable: C forbids a vector subscript in a constant
+> initializer. Adding it changed no answer either way, so it was reverted and the reason left in
+> its place. Wave 271's rule, applied to a change that *looked* obviously right.
 >
 > **Census the IR, not just the AST — a dead opcode is the fingerprint of a missing feature**
 > (wave 271). Wave 270 asked what `ExprKind` can hold against what the generator emits. Asking the
