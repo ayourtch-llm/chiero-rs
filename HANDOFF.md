@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 297) — 1460 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 298) — 1461 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -817,10 +817,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | **`chiero-mem`** (292) | 144 (both ways) | 42 → 6 both-ways | 1 fixtured, 3 listed |
 > | **`chiero-pp`** (293–294) | 138 of 166 (both ways) | 28 → 6 both-ways | 4 fixtured, 2 cosmetic |
 >
+> ### 🛑 The sweep harness scored hangs as survivors — read this before trusting a survivor list
+>
+> Wave 297 found `#if`'s `>` and `<=` branches reported as both-ways survivors. They were not.
+> Those branches sit inside the `#if` evaluator's `loop`; forcing one true means its operator
+> token is never consumed, so the loop spins, `timeout` kills `cargo test`, **no
+> `test result: FAILED` line is ever printed**, and a harness that greps for exactly that line
+> reads the timeout as a pass. Re-running with the new fixture *removed* proved it: the mutant
+> hangs either way, so committed tests were already killing it.
+>
+> This is wave 290's lesson — *a test that aborts looks like a test that passed* — recurring for
+> **hangs** rather than aborts, and it is the more dangerous form, because a hang also costs the
+> full timeout and so silently dominates the sweep's runtime. Reading the remaining sites made a
+> third mode obvious before it cost anything: the `#if` evaluator's *unary* operators sit in a
+> recursive descent, so forcing one true recurses until the process aborts, and an aborted test
+> binary prints no result line either. Counting lines catches it — but only against the pristine
+> count, because `cargo test -p CRATE` runs several binaries and the survivors still print `ok`.
+>
+> **The scoring rule is four-way, and every future sweep must use it.** `BASE` is the number of
+> `test result:` lines a clean run prints (9 for `chiero-pp`) — measure it, do not assume it:
+>
+> ```sh
+> out=$(timeout 90 cargo test -p CRATE 2>&1); rc=$?
+> lines=$(echo "$out" | grep -cE "^test result:")
+> if   [ $rc -eq 124 ];                              then v="KILLED(hang)"          # NOT survived
+> elif echo "$out" | grep -qE "^test result: FAILED"; then v=KILLED
+> elif [ "$lines" -ne "$BASE" ];                      then v="KILLED(crash)"         # NOT survived
+> else                                                    v=SURVIVED; fi
+> ```
+>
+> **What this retracts.** Every *unactioned* `chiero-pp` survivor below is now suspect — it may be
+> a hang, not a gap. Every *actioned* one stands, because a fixture moved it from SURVIVED to
+> killed-by-assertion, and a hang cannot do that. The verifier, `chiero-check` and `chiero-mem`
+> sweeps are *probably* unaffected — their mutation sites are guards in straight-line checking
+> code, not conditions that consume input inside a loop, so there is nothing for a mutant to spin
+> on — but that is an argument, not a measurement, and those runs were not re-scored.
+>
 > **Still open, and small:**
 >   - **`chiero-pp` was swept to 85%** — conditions past line 1890 of 2211 were never reached.
->     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890.
->     Budget by *rebuild* cost: minutes per mutant, not the 8s the suite takes.
+>     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890,
+>     using the four-way scoring above. Budget by **hangs**, not rebuilds: a clean `-p chiero-pp`
+>     run is 9s, so a 90s cap is a 10× margin, and the cost of the sweep is however many mutants
+>     spin. Wave 293's "budget by rebuild cost" note was the wrong diagnosis of the same symptom.
 >   - **`chiero-mem` is closed** (waves 295–296). The index-width guard was a duplicate of `fit`
 >     and is now a call to it, with `fit`'s narrowing arm fixtured; the havoc-uninitialize
 >     promotion guard has a fixture; the fault-propagation early-out is *unreachable* — promotion
@@ -2073,6 +2111,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 > ### Rules earned, most recent first
 >
+> **A mutation harness must score three outcomes, not two** (wave 297). Grepping for
+> `test result: FAILED` answers "did a test fail?", but the interesting third answer is "did the
+> runner finish at all?". A mutant that hangs prints nothing and reads as a survivor. Worse, it is
+> self-concealing: the same hang that fakes the survival also burns the whole timeout, so the
+> sweep looks slow for an unrelated reason and the real cause never gets diagnosed. **Score the
+> exit code, not the output**, and treat 124 as a kill.
+>
+> **A survivor you never acted on is weaker evidence than one you did** (wave 297). A fixture that
+> moves a mutant from SURVIVED to killed-by-assertion proves the survival was real, because no
+> harness bug can produce that transition. A survivor left on a list proves only that the harness
+> printed the word. **When a harness defect is found, the actioned findings survive it and the
+> unactioned ones do not** — retract by that line, not by wave number.
+>
+> **The cheapest way to test a fixture's worth is to delete it** (wave 297). Before crediting the
+> `#if` relational fixture with a kill, removing it and re-running the mutant showed the mutant
+> died anyway. The fixture is still worth committing as coverage — nothing exercised `>` or `<=`
+> in a `#if` — but it kills nothing, and claiming otherwise would have hidden the harness bug that
+> was the actual finding. **Ask what the suite does *without* the new test, not just with it.**
+>
 > **A subsumed *rule* is dead weight; a subsumed *propagation* is a bet** (wave 296). Wave 290
 > deleted a verifier check that a neighbouring rule already made — a claim about the input that
 > could never be the only thing wrong. This wave kept an unreachable early-out that forwards
@@ -2125,10 +2182,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > entirely. **A test can name the right construct, assert the right answer, and still never reach
 > the code you think it does.**
 >
-> **Budget a sweep by rebuild cost, not by suite runtime** (wave 293). `chiero-pp`'s suite runs in
-> 8s, which suggested twenty minutes for 166 mutants; each mutant also rebuilds the test binaries,
-> and the real figure was hours. Two foreground attempts timed out before this was obvious.
-> **Time one full mutant cycle before sizing the sweep**, and run it detached.
+> **Budget a sweep by rebuild cost, not by suite runtime** (wave 293) — ***superseded by wave
+> 297***. `chiero-pp`'s suite runs in 8s, which suggested twenty minutes for 166 mutants; the real
+> figure was hours, and this was blamed on rebuilding the test binaries. It was measured wrong:
+> an isolated cycle is ~10s end to end, rebuild included. The hours come from **mutants that
+> hang** — see the harness rule above. The surviving half of this rule is the procedural half:
+> **time one full mutant cycle before sizing the sweep**, run it detached, and log every mutant
+> rather than only the survivors (wave 294 read progress off a survivors-only file and misjudged
+> it). Machine load matters too: a concurrent workspace build in another checkout tripled the
+> per-mutant time, so check `/proc/loadavg` before concluding the sweep itself is slow.
 >
 > **A both-ways survivor is worth ten one-way survivors** (wave 292). 's sweep left 42
 > survivors after escalation — too many to chase — but only **six** where *neither* direction was
