@@ -2428,11 +2428,14 @@ impl Lowerer<'_> {
                         // condition. `compare_ty` is the same answer `if (p)` gets.
                         let cty = self.compare_ty(*operand);
                         let zero = self.zero_at(&cty);
+                        // `zero_cmp_op`, not a hardcoded `Eq`: `!` is `x == 0` and a float's
+                        // equality is not its bit pattern's.
+                        let op = zero_cmp_op(&cty, true);
                         self.emit(
                             InstKind::Assign {
                                 dst,
                                 rv: RValue::Cmp {
-                                    op: chiero_cir::CmpOp::Eq,
+                                    op,
                                     a,
                                     b: zero,
                                     ty: cty,
@@ -2724,21 +2727,16 @@ impl Lowerer<'_> {
         self.set_term(Terminator::Br { cond: a, t, f });
 
         // The rhs block: evaluate `b` and store `b != 0`.
+        //
+        // **`truth_of`, the same call the lhs makes.** This used to re-derive the
+        // comparison inline against an `Int(32)` zero at `slot_ty`, which is the type of
+        // the *result* and has nothing to do with the type of `b`. A float or a pointer on
+        // the right produced `Ne` on operands the verifier rejects, and the whole function
+        // was dropped — so every `x && <double>` in every program lowered to nothing.
         self.switch_to(rhs_b);
         let b = self.expr(rhs);
-        let nz = self.new_value();
-        self.emit(
-            InstKind::Assign {
-                dst: nz,
-                rv: RValue::Cmp {
-                    op: chiero_cir::CmpOp::Ne,
-                    a: b,
-                    b: Operand::Const(Const::Int { bits: 32, val: 0 }),
-                    ty: slot_ty.clone(),
-                },
-            },
-            span,
-        );
+        let t = self.compare_ty(rhs);
+        let nz = self.truth_of(b, t, span);
         // 015 §2.1 stores `(b != 0)` as the expression's `int`, so the one-bit comparison
         // is widened here. This is **lowering's own bookkeeping**, not an inferred C
         // conversion: the C expression has no `_Bool` in it at all, and §2's rule that
@@ -2755,7 +2753,7 @@ impl Lowerer<'_> {
                 dst: wide,
                 rv: RValue::Cast {
                     kind: chiero_cir::CastKind::ZExt,
-                    a: Operand::Value(nz),
+                    a: nz,
                     from: CTy::Int(1),
                     to: slot_ty.clone(),
                 },
@@ -2895,15 +2893,7 @@ impl Lowerer<'_> {
     fn truth_of(&mut self, v: Operand, ty: CTy, span: Span) -> Operand {
         let zero = self.zero_at(&ty);
         let dst = self.new_value();
-        // **A float's truth is a comparison, not a bit test.** Integer `Ne` on two float
-        // patterns is right for almost every value and wrong for `-0.0`, whose bits differ
-        // from `+0.0` while C says it is false. `FUNe` is also what makes `(_Bool)NaN` true,
-        // which the ordered form would not.
-        let op = if matches!(ty, CTy::Float(_)) {
-            chiero_cir::CmpOp::FUNe
-        } else {
-            chiero_cir::CmpOp::Ne
-        };
+        let op = zero_cmp_op(&ty, false);
         self.emit(
             InstKind::Assign {
                 dst,
@@ -4525,6 +4515,25 @@ fn cir_binop(op: chiero_ast::BinOp, signed: bool, float: bool) -> CBinOp {
         // Comparisons go through `cir_cmpop`; `&&`/`||` are control flow (015 §2.1) and
         // never reach here.
         _ => CBinOp::And,
+    }
+}
+
+/// The comparison of `ty` against zero — "is zero" when `equal`, "is nonzero" otherwise.
+///
+/// **A float's truth is a comparison, not a bit test.** Integer `Ne` on two float patterns is
+/// right for almost every value and wrong for `-0.0`, whose bits differ from `+0.0` while C says
+/// it is false. `FUNe` is also what makes `(_Bool)NaN` true, which the ordered form would not; its
+/// complement `FOEq` is false for NaN, which is what `!NaN` means.
+///
+/// One function because there were three copies of this decision and only one of them was right:
+/// `truth_of` had it, `!` compared bits, and the rhs of `&&` compared at the *result's* type.
+fn zero_cmp_op(ty: &CTy, equal: bool) -> chiero_cir::CmpOp {
+    use chiero_cir::CmpOp as C;
+    match (matches!(ty, CTy::Float(_)), equal) {
+        (true, true) => C::FOEq,
+        (true, false) => C::FUNe,
+        (false, true) => C::Eq,
+        (false, false) => C::Ne,
     }
 }
 
