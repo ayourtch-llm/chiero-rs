@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 285) — 1435 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 286) — 1436 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,26 +808,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The corpus lags the features again, and one addition is measured as too costly
+> ### 🟡 The corpus lags the features — three closed, three left, one measured out
 >
-> **Wave 277's rule keeps being broken**: ship a construct, then check the corpus can reach it, in
-> the same wave. Wave 284 added `typeof` (283) and found the corpus still emits **none** of
-> `_Generic` (275), `__label__` (276), `__builtin_offsetof` (280), the classification builtins
-> (271), alignment specifiers (282) or multi-dimensional arrays (278). All are hand-graded.
+> **Wave 277's rule** — ship a construct, then check the corpus can reach it, in the same wave —
+> was broken for six constructs. Three are now closed: `typeof` (wave 284), and `_Generic`,
+> `__builtin_offsetof` and the classification builtins (285, as expression wrappers, buying four
+> mutant kills for 131 → 102 comparisons).
 >
-> **The multi-dimensional array is measured and deliberately absent.** It is the shape that hid
-> the dimension reversal, and adding it takes the control-flow channel from **131 comparisons to
-> 80** — no better at a tenth the rate, with the fold rewritten twice (per-element into `acc`, then
-> an `unsigned` accumulator) and the element types restricted, to rule those out. What remains is
-> inherent: a longer program carrying more adversarial values through more operations is more
-> often undefined *somewhere*, and undefined is discarded. **Anyone retrying this needs a way to
-> add a construct without lengthening the UB surface** — a separate short program per construct,
-> or a channel with its own budget, rather than more statements in the existing one.
+> **Still hand-graded only:**
+>   - **`__label__`** (276). A *statement* form, so it will cost what a statement costs; it also
+>     needs a `goto`, which the cf channel already emits.
+>   - **Alignment specifiers** (282). A declarator form, cheap to attach to an existing local —
+>     but `_Alignof` of it is the only observable, so it needs the value to reach the checksum.
+>   - **Multi-dimensional arrays** (278) — **measured out**. The shape that hid the dimension
+>     reversal, and it takes the channel from 131 comparisons to 80 at any rate, with two folds
+>     and restricted element types tried. A longer program carrying more adversarial values
+>     through more operations is more often undefined, and undefined is discarded. Anyone
+>     retrying needs a way to add a construct **without lengthening the UB surface** — a separate
+>     short program per construct, or a channel with its own budget.
 >
-> **The cheap ones to try next**, in rough order of expected cost: `_Generic` (one expression, no
-> new objects), `__builtin_offsetof` (one expression over a struct already in scope), the
-> classification builtins (one call on a float already in scope). Each adds a *value* rather than
-> an object, so each should cost far less than a 2-D array's six elements.
+> **The lever wave 285 found**: an *expression wrapper* costs far less than a statement or an
+> object, because it adds no storage, no statement and no `rng` draw. `__label__` and the
+> alignment specifiers do not fit that shape, which is why they are still open.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2042,6 +2044,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Add nothing to the stream: wrap what the grammar already built** (wave 285). Three shapes
+> failed before this one. Gating on a private stream *before* an existing gate skips that gate's
+> draw; taking only the turns it declines still calls `expr` for a fresh operand. Both shift every
+> draw after them, and wave 270's `!`-of-a-negative-zero — three programs in six hundred — went to
+> zero and then one. **Lowering the rate did not help and was not monotonic**: a displaced stream
+> scrambles *which* programs contain a rare shape, so a shape with no margin is lost at any rate.
+> Wrapping the finished expression adds and skips nothing.
+>
+> **A corpus form should select, not combine** (wave 285). Adding a builtin's value to the operand
+> is itself undefined once a narrow signed type is near its range: discards went 69 → 100 and the
+> channel fell to exactly its floor. `cond ? operand : 0` keeps both in play and adds no
+> arithmetic the program did not already have.
+>
+> **Merge a costly corpus addition only if it buys kills** (wave 285). This one costs 131
+> comparisons → 102 and buys four mutant kills across three waves' features, so it is in. Wave
+> 284's multi-dimensional array cost more and bought none, so it is out. **The comparison count
+> is the price and the mutation sweep is the receipt** — quote both.
 >
 > **A separate stream is not enough; do not change state that *gates* another arm's draw**
 > (wave 284). `leaf` reads `if usable.is_empty() || self.rng.chance(3)`, so pushing one more
