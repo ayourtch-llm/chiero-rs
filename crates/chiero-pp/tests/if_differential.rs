@@ -70,8 +70,14 @@ fn leaf(rng: &mut Rng) -> String {
             rng.below(1000),
             rng.pick(&["u", "U", "L", "uL", "ll", "ULL"])
         ),
+        // The multi-character constants are here for a specific reason: mutating the octal
+        // escape's three-digit bound to four survived this channel while `'\101'` was the only
+        // octal spelling in it, because a fourth digit is never available before the closing
+        // quote. `'\1011'` is where the bound is observable — and a channel that cannot see a
+        // bound is not covering it, however many expressions it generates.
         6 => (*rng.pick(&[
-            "'A'", "'\\n'", "'\\0'", "'\\x41'", "'\\101'", "'\\\\'", "'\\t'", "'\\''",
+            "'A'", "'\\n'", "'\\0'", "'\\x41'", "'\\101'", "'\\\\'", "'\\t'", "'\\''", "'\\1011'",
+            "'ab'", "'\\0101'",
         ]))
         .to_string(),
         // A wide character constant: the prefix is part of the token, and the value is the same.
@@ -112,6 +118,11 @@ fn leaf(rng: &mut Rng) -> String {
 ///     it is the interesting half anyway, since it is where the usual arithmetic conversions bite.
 ///   - **The comma operator.** Not permitted in a constant expression; gcc accepts it silently but
 ///     the standard does not, so it is fixtured rather than generated.
+///   - **An out-of-range hex escape**, such as `'\x4142'`. gcc makes it a warning and computes a
+///     value; clang makes it a hard error. Where the two oracles disagree about whether a program
+///     is a program at all, this channel has no one to ask, and a construct it cannot arbitrate
+///     does not belong in it. Multi-character constants are *not* in this category: both warn,
+///     both compute, and both compute the same thing.
 fn expr(rng: &mut Rng, depth: u32) -> String {
     if depth == 0 {
         return leaf(rng);
