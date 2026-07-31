@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 295) — 1457 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 296) — 1458 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -821,8 +821,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   - **`chiero-pp` was swept to 85%** — conditions past line 1890 of 2211 were never reached.
 >     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890.
 >     Budget by *rebuild* cost: minutes per mutant, not the 8s the suite takes.
->   - **Three `chiero-mem` both-ways survivors** remain: `e.repr == Repr::Array` (L2662), a
->     fault-propagation early-out (L3266), an index-width guard (L3284).
+>   - **Two `chiero-mem` both-ways survivors** remain: `e.repr == Repr::Array` in the
+>     havoc-uninitialize path (L2662 — its comment says clearing `arr` there would de-promote a
+>     promoted object and answer a later read from stale bytes), and a fault-propagation early-out
+>     after `promote_to_array` (L3266 — reachable only when promotion itself faults, which needs
+>     an object past `MAX_MATERIALIZED_BYTES`). The index-width guard is closed: it was a
+>     duplicate of `fit` and is now a call to it, with `fit`'s narrowing arm fixtured (wave 295).
 >   - Two `chiero-pp` survivors are inside the `__VA_OPT__` refusal path, where how much of the
 >     group gets skipped after a declared-limit diagnostic is cosmetic by construction.
 >
@@ -2069,6 +2073,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An unfalsifiable branch is sometimes a duplicated one** (wave 295). The index-width guard the
+> sweep could not kill turned out to be a hand-inlined copy of `fit`, which lives in the same file
+> and is called from two other places. The right fix was a deletion, not a fixture — and then
+> `fit`'s own arms had to be swept, where one *was* uncovered. **Before writing a test for a
+> survivor, check whether the code it guards already exists elsewhere.**
+>
+> **Two arms of one adjustment are not equally likely to arise** (wave 295). `fit`'s widening arm
+> is exercised by ordinary fixtures — a narrow index comes from an `unsigned char` subscript. Its
+> narrowing arm needs 128-bit arithmetic and had never run. **Symmetric code does not get
+> symmetric coverage**, and the rarer side is the one to write down.
+>
+> **Not every survivor is a gap: check for the equivalent mutant** (wave 295). `Ordering::Equal`
+> returning `zext(t, w)` rather than `t` survives because zero-extending a term to its own width
+> *is* that term. Recording that costs a sentence and stops the next person hunting a fixture
+> that cannot exist.
 >
 > **Every fixture at the root is a fixture that cannot see a path rule** (wave 294). `"..."`
 > versus `<...>` was unfalsifiable in both directions because every existing test put the
