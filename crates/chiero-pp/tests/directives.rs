@@ -517,3 +517,143 @@ fn every_vpp_compile_command_preprocesses_without_panicking() {
     let text = std::fs::read_to_string(compile_commands).unwrap();
     assert!(text.contains("\"file\""));
 }
+
+/// **`"..."` searches the including file's own directory; `<...>` does not.**
+///
+/// C11 6.10.2p2 and p3: a quoted include is searched for "in an implementation-defined manner"
+/// first — for every real compiler, starting beside the file doing the including — and only then
+/// falls back to the bracket search. An angled include skips that step entirely.
+///
+/// **Neither direction of that branch was observed** (wave 293's sweep of `chiero-pp`). Forcing
+/// `quoted` to `false` makes `"x.h"` skip the sibling directory; forcing it to `true` makes
+/// `<x.h>` search it; all 67 tests passed either way, because **every existing fixture puts the
+/// including file at the root**, where its parent directory is `""` and the two searches
+/// coincide. The bug that would have escaped is not exotic: a header found beside a source file
+/// in `src/` and nowhere on the include path.
+///
+/// The negative half is the whole point — a test that only checked `"x.h"` finds it would pass
+/// with the distinction deleted.
+#[test]
+fn a_quoted_include_searches_beside_the_including_file_and_an_angled_one_does_not() {
+    let with_sibling = |directive: &str| {
+        let mut files = MemoryFiles::default();
+        files
+            .files
+            .insert(PathBuf::from("src/sibling.h"), "from_sibling\n".into());
+        let src = format!("#if {directive}\nyes\n#else\nno\n#endif\n");
+        // **The including file lives in `src/`**, so its own directory is a real place that is
+        // on no configured search path. At the root the two forms cannot be told apart.
+        let tu = preprocess_with_loader("src/main.c", &src, Config::default(), &mut files);
+        assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+        tu.token_texts().map(str::to_owned).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        with_sibling("__has_include(\"sibling.h\")"),
+        ["yes".to_string()],
+        "a quoted include finds a header beside the file that includes it"
+    );
+    assert_eq!(
+        with_sibling("__has_include(<sibling.h>)"),
+        ["no".to_string()],
+        "an angled include does not — it searches only the configured paths"
+    );
+
+    // And the same asymmetry for a real `#include`, not just the probe.
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("src/sibling.h"), "from_sibling\n".into());
+    let tu = preprocess_with_loader(
+        "src/main.c",
+        "#include \"sibling.h\"\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["from_sibling"]);
+
+    // A header that is only on the configured path is found by **both** forms: quoted search
+    // falls back to the bracket search, so the asymmetry runs one way only.
+    let both = |directive: &str| {
+        let mut files = MemoryFiles::default();
+        files
+            .files
+            .insert(PathBuf::from("inc/onpath.h"), "on_path\n".into());
+        let config = Config {
+            include_paths: vec![PathBuf::from("inc")],
+            ..Config::default()
+        };
+        let src = format!("#if {directive}\nyes\n#else\nno\n#endif\n");
+        let tu = preprocess_with_loader("src/main.c", &src, config, &mut files);
+        assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+        tu.token_texts().map(str::to_owned).collect::<Vec<_>>()
+    };
+    assert_eq!(both("__has_include(\"onpath.h\")"), ["yes".to_string()]);
+    assert_eq!(both("__has_include(<onpath.h>)"), ["yes".to_string()]);
+}
+
+/// **With no search paths configured at all, a header resolves relative to the working
+/// directory.**
+///
+/// `Config::default()` has no include paths and no system paths, so an *angled* include has
+/// nowhere to look — the quoted form would still have the including file's directory. Rather
+/// than fail, resolution falls back to the bare name, which is what makes a one-file fixture
+/// with `<x.h>` work at all.
+///
+/// **Untested until wave 294**: every other fixture either configures a path or uses the quoted
+/// form, so the fallback never ran. It is chiero's own choice — gcc would have system paths here
+/// — which is exactly the kind of behaviour that should be written down rather than inferred
+/// from whichever test happens to exercise it.
+#[test]
+fn an_angled_include_with_no_configured_paths_falls_back_to_the_bare_name() {
+    let mut files = MemoryFiles::default();
+    files
+        .files
+        .insert(PathBuf::from("bare.h"), "from_bare\n".into());
+    let tu = preprocess_with_loader(
+        "main.c",
+        "#if __has_include(<bare.h>)\nyes\n#else\nno\n#endif\n",
+        Config::default(),
+        &mut files,
+    );
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(tu.token_texts().collect::<Vec<_>>(), ["yes"]);
+}
+
+/// **`#include_next` from the last search directory falls back to the bare name.**
+///
+/// `include_next` drops every search directory up to and including the one holding the current
+/// file, so a header in the *last* directory leaves nothing to search. `include()` then has an
+/// empty candidate list and falls back to the name as written, resolved relative to the working
+/// directory.
+///
+/// **The only shape that reaches that fallback**, and nothing built it: the sibling test above
+/// covers `probe_include`'s empty-*directories* guard, but `include()` has no such guard — it
+/// checks the *candidates* instead, and candidates are only empty when the drain emptied the
+/// directories. Both directions of it survived wave 293's sweep.
+///
+/// This pins chiero's behaviour rather than gcc's: gcc would find nothing here, because its
+/// search list does not fall back to the working directory. Written down because it is a choice,
+/// and a choice nothing recorded is a choice nobody made.
+#[test]
+fn include_next_past_the_last_directory_falls_back_to_the_bare_name() {
+    let mut files = MemoryFiles::default();
+    files.files.insert(
+        PathBuf::from("inc/a.h"),
+        "first\n#include_next <a.h>\n".into(),
+    );
+    files
+        .files
+        .insert(PathBuf::from("a.h"), "fallback\n".into());
+    let config = Config {
+        include_paths: vec![PathBuf::from("inc")],
+        ..Config::default()
+    };
+    let tu = preprocess_with_loader("main.c", "#include <a.h>\n", config, &mut files);
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    assert_eq!(
+        tu.token_texts().collect::<Vec<_>>(),
+        ["first", "fallback"],
+        "the drain empties the search list, and the bare name is what is left to try"
+    );
+}
