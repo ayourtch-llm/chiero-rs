@@ -297,6 +297,17 @@ struct Gen {
     /// the old streams, and a second flag would double the combinations without covering a shape
     /// the union does not.
     extended: bool,
+    /// **A second stream, for the vector arm only.**
+    ///
+    /// Every other extended arm draws from `rng`, so adding one more re-rolls every statement
+    /// after it — and it did: wave 270's `!`-of-a-negative-zero shape dropped from three
+    /// programs to *zero*, caught by that channel's own adequacy guard. Wave 217 gated the
+    /// control-flow arms before any `rng` call to keep the other channels byte-for-byte
+    /// identical; within one channel the same protection needs a separate stream.
+    ///
+    /// Seeded from the same seed through a different constant, so it is deterministic, tied to
+    /// the program, and cannot disturb a draw anything else depends on.
+    vrng: Rng,
     /// How deep inside a loop or `switch` body the generator currently is.
     ///
     /// The `if` arm has recursed through `nested` since it was written, and bounding *loop* bodies
@@ -343,6 +354,7 @@ impl Gen {
             global_ptrs: Vec::new(),
             memory_ub: false,
             extended: false,
+            vrng: Rng::new(seed ^ 0x5657_4543_544F_5200),
             nest: 0,
             div_zero: false,
             heaps: Vec::new(),
@@ -851,6 +863,100 @@ impl Gen {
         self.arrays.push((name, ty, len));
     }
 
+    /// **A vector: declared, initialized, operated on elementwise, and read into the checksum.**
+    ///
+    /// Waves 272–274 built `vector_size` out and left the corpus emitting none, so all of it was
+    /// graded by hand-written fixtures. Every shape those fixtures found load-bearing is here:
+    ///
+    ///   - A **braced initializer**, which wave 272 found was dropped entirely — and note the
+    ///     lanes come from `konst`, so `-0.0` and the adversarial integer pool reach them.
+    ///   - A **lane read**, which wave 272 found was typed `Ty::Error` and read as `Int(32)`.
+    ///     The read is what reaches the checksum, so every operator here is graded through it.
+    ///   - **Narrow and 64-bit lanes.** An `int` lane cannot see either defect: `Int(32)` is
+    ///     accidentally right for it. `unsigned char` and `long` lanes are the discriminating
+    ///     ones, so they are two of the four element types.
+    ///   - **Elementwise arithmetic and a comparison**, waves 273 and 274.
+    ///
+    /// **Comparisons only on integer lanes.** A float vector's comparison yields a *signed
+    /// integer* vector of the lane's width, which is not the operand type — declaring the result
+    /// with the operand's typedef would be wrong C rather than a test of anything. That shape is
+    /// covered by hand fixtures, which can name the mask type directly.
+    ///
+    /// **No `/` or `%`.** A zero lane is UB for integers, and the initializer pool contains zero;
+    /// the arithmetic-UB channel is where division belongs and it has its own zero knob.
+    /// `konst` drawn from the vector stream.
+    ///
+    /// **The pool is the point, so borrow the stream rather than duplicate it.** `konst` carries
+    /// the adversarial integers and the `-0.0` wave 270 added, which is exactly what a lane
+    /// wants — and it draws from `rng`, which would put the disturbance straight back. Swapping
+    /// the two streams around the call keeps one pool and one guarantee.
+    fn vkonst(&mut self, ty: Ty) -> String {
+        std::mem::swap(&mut self.rng, &mut self.vrng);
+        let k = self.konst(ty);
+        std::mem::swap(&mut self.rng, &mut self.vrng);
+        k
+    }
+
+    fn vector_stmt(&mut self) -> bool {
+        if !self.vrng.chance(3) {
+            return false;
+        }
+        // Element type and lane count, sized so the vector is 8 or 16 bytes.
+        let (ety, lanes) = *self.vrng.pick(&[
+            (Ty::Int, 4usize),
+            (Ty::UChar, 8),
+            (Ty::Long, 2),
+            (Ty::F32, 4),
+        ]);
+        let bytes = (ety.bits() as usize / 8) * lanes;
+        let vty = format!("{} __attribute__((vector_size({bytes})))", ety.c());
+        let a = self.fresh();
+        let b = self.fresh();
+        let r = self.fresh();
+        let out = self.fresh();
+        let init = |g: &mut Self| {
+            (0..lanes)
+                .map(|_| g.vkonst(ety))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let ia = init(self);
+        let _ = writeln!(self.body, "  {vty} {a} = {{{ia}}};");
+        let ib = init(self);
+        let _ = writeln!(self.body, "  {vty} {b} = {{{ib}}};");
+        let float = ety == Ty::F32;
+        // A comparison, a scalar broadcast, or vector-on-vector arithmetic.
+        let rhs = match self.vrng.below(4) {
+            0 if !float => format!("({a} == {b})"),
+            1 if !float => format!("({a} < {b})"),
+            2 => {
+                let op = if float {
+                    *self.vrng.pick(&["+", "-", "*"])
+                } else {
+                    *self.vrng.pick(&["+", "-", "*", "&", "|", "^"])
+                };
+                let k = self.vkonst(ety);
+                format!("({a} {op} {k})")
+            }
+            _ => {
+                let op = if float {
+                    *self.vrng.pick(&["+", "-", "*"])
+                } else {
+                    *self.vrng.pick(&["+", "-", "*", "&", "|", "^"])
+                };
+                format!("({a} {op} {b})")
+            }
+        };
+        let _ = writeln!(self.body, "  {vty} {r} = {rhs};");
+        let lane = self.vrng.below(lanes);
+        let _ = writeln!(self.body, "  {} {out} = {r}[{lane}];", ety.c());
+        // **Into `vars`, so the lane reaches the checksum.** A vector the program computes and
+        // never reads is a statement the oracle cannot grade — wave 253's rule about the
+        // short-circuit witness, in a new place.
+        self.vars.push(Var { name: out, ty: ety });
+        true
+    }
+
     /// Make sure the program has a **local** array to walk off the end of.
     ///
     /// Every program gets file-scope arrays from `prelude`, and a local one only from the
@@ -1097,6 +1203,9 @@ impl Gen {
         // program, and the first version of this shifted the memory-UB corpus until
         // `stack-buffer-overflow` appeared in two programs instead of enough to grade on. The
         // adequacy guard caught it, which is what that guard is for.
+        if self.extended && self.vector_stmt() {
+            return;
+        }
         if self.extended && self.rng.chance(3) && self.switch_stmt() {
             return;
         }
@@ -2282,37 +2391,60 @@ fn the_corpus_contains_vectors() {
     for seed in 0..600u64 {
         let (prelude, body) = program_control_flow(seed);
         let all = format!("{prelude}{body}");
-        if all.contains("vector_size") {
-            decl += 1;
-        }
+        // The vector locals this program declared, by name, so the later checks key on the
+        // generator's actual output rather than on a naming convention it does not have.
+        let mut names: Vec<String> = Vec::new();
+        let (mut d, mut i, mut s, mut a, mut c, mut n) = (0, 0, 0, 0, 0, 0);
         for l in all.lines() {
             let t = l.trim();
-            if t.contains("__attribute__((vector_size") && t.contains('=') && t.contains('{') {
-                init += 1;
+            if !t.contains("__attribute__((vector_size(") {
+                continue;
+            }
+            d += 1;
+            if t.contains("vector_size(8)") {
+                n += 1;
+            }
+            let Some(eq) = t.find(" = ") else { continue };
+            let name = t[..eq].split_whitespace().last().unwrap_or("").to_string();
+            let rhs = &t[eq + 3..];
+            // **Every vector local, not only the initialized ones.** The lane read is of the
+            // *result* vector, which is assigned an expression — collecting only the braced
+            // ones made this count zero and read exactly like a generator that emits no reads.
+            names.push(name);
+            if rhs.starts_with('{') {
+                i += 1;
+            } else if rhs.contains("==") || rhs.contains('<') {
+                c += 1;
+            } else {
+                a += 1;
             }
         }
-        if all.contains("_v") && all.contains('[') {
-            subscript += 1;
+        // A lane read of a vector this program declared.
+        for l in all.lines() {
+            let t = l.trim();
+            if t.contains("__attribute__") {
+                continue;
+            }
+            if names.iter().any(|v| t.contains(&format!("{v}["))) {
+                s += 1;
+            }
         }
-        if all.contains("_v0 +") || all.contains("_v0 *") || all.contains("_v0 &") {
-            arith += 1;
-        }
-        if all.contains("_v0 ==") || all.contains("_v0 <") {
-            cmp += 1;
-        }
-        if all.contains("vector_size(8)") {
-            narrow += 1;
-        }
+        decl += usize::from(d > 0);
+        init += usize::from(i > 0);
+        subscript += usize::from(s > 0);
+        arith += usize::from(a > 0);
+        cmp += usize::from(c > 0);
+        narrow += usize::from(n > 0);
     }
     assert!(decl >= 20, "a vector type is declared: {decl}");
     assert!(init >= 20, "a vector is braced-initialized: {init}");
-    assert!(subscript >= 20, "a vector lane is read: {subscript}");
     assert!(arith >= 10, "elementwise arithmetic happens: {arith}");
     assert!(cmp >= 10, "a vector comparison happens: {cmp}");
     assert!(
         narrow >= 10,
         "a narrow lane, where the operator's width is not `int`'s: {narrow}"
     );
+    assert!(subscript >= 20, "a vector lane is read: {subscript}");
 }
 
 /// **`switch` and `do`-`while` compute what gcc computes.**
