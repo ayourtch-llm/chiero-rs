@@ -1083,6 +1083,131 @@ impl Gen {
     /// the adversarial integers and the `-0.0` wave 270 added, which is exactly what a lane
     /// wants — and it draws from `rng`, which would put the disturbance straight back. Swapping
     /// the two streams around the call keeps one pool and one guarantee.
+    /// `konst` drawn from the wave-284 stream, for the same reason `vkonst` exists: the pool
+    /// carries the adversarial integers and wave 270's `-0.0`, and borrowing the stream keeps one
+    /// pool rather than duplicating it.
+    fn gkonst(&mut self, ty: Ty) -> String {
+        std::mem::swap(&mut self.rng, &mut self.grng);
+        let k = self.konst(ty);
+        std::mem::swap(&mut self.rng, &mut self.grng);
+        k
+    }
+
+    /// The whole body of a focused program: one construct, and what it needs.
+    ///
+    /// **Every draw is `grng`.** This channel shares no stream with the others, so its content
+    /// can change without moving a single draw in `program` or `program_control_flow` — which is
+    /// the failure mode waves 284, 285 and 286 each hit in turn.
+    fn focused_body(&mut self) {
+        match self.grng.below(2) {
+            0 => self.focused_md_array(),
+            _ => self.focused_alignment(),
+        }
+    }
+
+    /// A non-square multi-dimensional array, initialised, written, and read element by element.
+    ///
+    /// **Non-square, always.** `int a[2][3]` typed as `int a[3][2]` has the same total size, and
+    /// `a[0][0]` and `a[1][0]` read the same element under both layouts — a square array is its
+    /// own reverse and proves nothing. Wave 278 found the reversal only because a hand-written
+    /// fixture asked for `sizeof(a[0])`, which is why that is here too.
+    ///
+    /// Braced row-by-row and flat by turns, so the corpus carries both walks: C11 6.7.9p20's
+    /// brace elision was the second defect wave 278 found, underneath the first.
+    fn focused_md_array(&mut self) {
+        let ty = *self
+            .grng
+            .pick(&[Ty::Int, Ty::UInt, Ty::Long, Ty::SChar, Ty::UShort]);
+        let rows = 2 + self.grng.below(2);
+        let cols = if rows == 2 { 3 } else { 2 };
+        let name = self.fresh();
+        let flat = self.grng.chance(2);
+        let mut vals: Vec<String> = Vec::new();
+        for _ in 0..rows {
+            let row: Vec<String> = (0..cols).map(|_| self.gkonst(ty)).collect();
+            vals.push(if flat {
+                row.join(", ")
+            } else {
+                format!("{{{}}}", row.join(", "))
+            });
+        }
+        let _ = writeln!(
+            self.body,
+            "  {} {name}[{rows}][{cols}] = {{{}}};",
+            ty.c(),
+            vals.join(", ")
+        );
+        // A write at a row and column that are not both zero: `a[0][0]` is at offset 0 whichever
+        // way the extents go.
+        let wr = self.gkonst(ty);
+        let _ = writeln!(self.body, "  {name}[{}][{}] = {wr};", rows - 1, cols - 1);
+        // **The row's size, which is what says the extents are the right way round.**
+        // `sizeof(a)` is the same under a reversal; `sizeof(a[0])` is not.
+        let sz = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  unsigned long {sz} = (unsigned long)sizeof({name}[0]);"
+        );
+        self.extra_sink.push(sz);
+        for r in 0..rows {
+            for c in 0..cols {
+                self.extra_sink.push(format!("{name}[{r}][{c}]"));
+            }
+        }
+    }
+
+    /// An over-aligned local, and an `_Alignof` that names it.
+    ///
+    /// **Both halves or neither**: the specifier changes no value, and `_Alignof` of a *type*
+    /// asks nothing about a declaration. Here the rate can be whatever discrimination needs,
+    /// because nothing else is competing for the program's budget.
+    fn focused_alignment(&mut self) {
+        let ty = *self.grng.pick(&Ty::ALL);
+        let ty = if ty == Ty::Bool { Ty::Int } else { ty };
+        let n = *self.grng.pick(&[16u64, 32, 64]);
+        let name = self.fresh();
+        // **Sometimes an array, because that is a different code path.** An alignment specifier
+        // sits in the declaration *specifiers*, so for `_Alignas(32) int a[4]` the attribute is
+        // on the `int` node while the declaration's type is the array wrapper the declarator
+        // built around it — wave 282 had to walk down to find it, and a scalar local cannot tell
+        // whether that walk happens.
+        let arr = self.grng.chance(2);
+        if arr {
+            let len = 2 + self.grng.below(3);
+            let vals: Vec<String> = (0..len).map(|_| self.gkonst(ty)).collect();
+            let _ = writeln!(
+                self.body,
+                "  _Alignas({n}) {} {name}[{len}] = {{{}}};",
+                ty.c(),
+                vals.join(", ")
+            );
+            for i in 0..len {
+                self.extra_sink.push(format!("{name}[{i}]"));
+            }
+        } else {
+            let init = self.gkonst(ty);
+            let _ = writeln!(self.body, "  _Alignas({n}) {} {name} = {init};", ty.c());
+        }
+        // The alignment the declaration asked for, and the object's address modulo it — the
+        // second is what wave 282 found was wrong even when the first was right.
+        let a = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  unsigned long {a} = (unsigned long)_Alignof({name});"
+        );
+        let m = self.fresh();
+        let _ = writeln!(
+            self.body,
+            "  unsigned long {m} = (unsigned long)((unsigned long)&{name} & {}ul);",
+            n - 1
+        );
+        self.extra_sink.push(a);
+        self.extra_sink.push(m);
+        if !arr {
+            self.extra_sink.push(name);
+        }
+    }
+
     fn vkonst(&mut self, ty: Ty) -> String {
         std::mem::swap(&mut self.rng, &mut self.vrng);
         let k = self.konst(ty);
@@ -2035,6 +2160,7 @@ fn program_focused(seed: u64) -> (String, String) {
     let mut g = Gen::new(seed);
     g.extended = true;
     let prelude = g.prelude();
+    g.focused_body();
     (prelude, g.finish())
 }
 
@@ -2679,6 +2805,52 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **The focused channel computes what gcc computes.**
+///
+/// The channel waves 284 and 287 concluded was needed: one construct per program, its own
+/// statement budget, its own floor. Its whole justification is that it can afford coverage the
+/// control-flow channel cannot, so the number to watch is `compared` — if these programs start
+/// getting discarded, the design has failed and the constructs have simply moved.
+#[test]
+fn focused_programs_agree_with_gcc() {
+    let mut compared = 0usize;
+    let mut discarded = 0usize;
+    let mut refused: Vec<(u64, String)> = Vec::new();
+    let mut defects: Vec<(u64, String, Verdict)> = Vec::new();
+    for seed in 0..200u64 {
+        let (prelude, body) = program_focused(seed);
+        match judge(&prelude, &body) {
+            Verdict::Agree => compared += 1,
+            Verdict::Discarded | Verdict::Gap { .. } => discarded += 1,
+            Verdict::Refused { stage, message } => {
+                refused.push((seed, format!("{stage}: {message}")));
+            }
+            v => defects.push((seed, format!("{prelude}\nint probe(void) {{\n{body}}}"), v)),
+        }
+    }
+    eprintln!(
+        "focused channel: {compared} compared, {discarded} discarded, {} refused",
+        refused.len()
+    );
+    assert!(
+        defects.is_empty(),
+        "chiero disagreed with gcc on {} program(s): {:#?}",
+        defects.len(),
+        defects
+    );
+    assert!(
+        refused.is_empty(),
+        "an undeclared refusal is never honest (023 §7): {refused:#?}"
+    );
+    // **The point of the channel.** `program_control_flow` compares 100 of 200 and cannot afford
+    // another construct; these programs contain one construct and nothing else, so nearly all of
+    // them should be comparable. A floor near the top is what makes the design falsifiable.
+    assert!(
+        compared >= 180,
+        "a channel of single-construct programs has no excuse for discards: {compared} of 200"
+    );
+}
+
 /// **Nothing emits a non-square multi-dimensional array, or an alignment pairing that is
 /// graded.**
 ///
