@@ -2652,6 +2652,17 @@ impl Lowerer<'_> {
                 };
                 // The body's statements are lowered here rather than through `stmt`,
                 // because `stmt` would exit the scope before the copy could run.
+                // **The second arm is unreachable, and is kept because it would be right.**
+                // `StmtExpr` has exactly one construction site — `chiero-parse`'s
+                // `({` branch — and it passes `compound_statement`, whose single
+                // `add_stmt` is always a `Compound`. Mutating this arm to `vec![]`
+                // survives the whole suite, and that is not a missing fixture: no C text
+                // can produce a statement expression over a non-compound body.
+                //
+                // Unlike wave 223's unreachable *guard*, which protected nothing and became
+                // a `debug_assert!`, a single statement here would lower correctly. So it
+                // stays, measured rather than tested, and the next reader does not spend a
+                // wave trying to reach it.
                 let items = match self.ast.stmt(*body).kind.clone() {
                     chiero_ast::StmtKind::Compound(ss) => ss,
                     _ => vec![*body],
@@ -2680,8 +2691,26 @@ impl Lowerer<'_> {
                     _ => v,
                 };
                 self.exit_scope(span);
-                // Restore, so a statement expression nested inside another does not
-                // consume the outer one's value.
+                // Restore, so a statement expression nested inside another does not consume
+                // the outer one's value.
+                //
+                // **Reachable, and unobservable — both halves measured.** `saved` is `Some`
+                // whenever any expression statement precedes the one holding the `({...})`,
+                // which no test in the suite did: eighteen statement expressions lowered and
+                // all eighteen had `saved == None` until a fixture was written for it. Even
+                // then, dropping the restore changes no answer, and neither does taking a
+                // copy instead of the value.
+                //
+                // The reason is structural. A statement expression *has* a value only when
+                // its last block item is an expression statement, and lowering that statement
+                // assigns `last_stmt_value` unconditionally — so whatever was restored is
+                // overwritten before anything can read it. The one reader that could see it
+                // is an enclosing statement expression whose own last item is **not** an
+                // expression statement, and that is exactly the case gcc gives no value at
+                // all and rejects in a value context.
+                //
+                // So this is a trade-off with no wrong side. It stays because it makes the
+                // invariant local instead of resting on the overwrite.
                 self.last_stmt_value = saved;
                 out.unwrap_or(Operand::Const(Const::Undef(CTy::Int(self.raw_width_of(e)))))
             }
