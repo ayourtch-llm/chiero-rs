@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 263) — 1403 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 264) — 1406 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1710,30 +1710,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > parameter. If that count is near zero, the fix is to make the body declare and checksum such a
 > struct, not to touch values again.
 >
-> ### 🔴 Do this first: finish the grid for the other two UB kinds
+> ### ✅ All four arithmetic-UB grids are filled — waves 261–263
 >
-> Waves 261 and 262 applied one technique to two of the four kinds the arithmetic oracle grades, and
-> it found an empty cell each time:
+> One technique, four kinds, four findings:
 >
 > ```text
->   FloatCastOverflow   too-negative-for-signed, and NaN     wave 261
->   Shift               the count rule for `>>`              wave 262
->   SignedOverflow      not yet examined
->   DivByZero           not yet examined
+>   FloatCastOverflow   too-negative-for-signed, and NaN          261
+>   Shift               the count rule for `>>`                   262
+>   SignedOverflow      below the range; and INT_MIN / -1 was     263
+>                       missing entirely — a real defect
+>   DivByZero           only `UDiv` was observed by a fast test   263
 > ```
 >
-> **The technique, in order.** Mutate each clause of the check in `chiero-exec` (the `push(UbKind::…)`
-> arms around line 3030). For every survivor, read the fixture list as a *grid* — signedness ×
-> direction × sign-of-operand × which operand — and look for the empty cell rather than for a new
-> idea. Both gaps so far were the mirror of a fixture already written down.
+> **The one real defect: `INT_MIN / -1` was not reported at all.** It fell between the `DivByZero`
+> clause (`y == 0`) and the overflow clause (`Add`/`Sub`/`Mul`), so the event was absent rather than
+> misclassified. It reports `SignedOverflow` now, with `SRem` beside it, and the oracle's classifier
+> gained an arm — UBSan words it "cannot be represented in type", which matched none of the existing
+> arms and would have scored a *miss* the first time the corpus produced one.
 >
-> **Two practical notes.** Keep `generated` out of the sweep's test set: it takes long enough that
-> the sweep exceeds its timeout, and a sweep killed mid-run leaves the tree mutated — every result
-> after that is measured against a corrupted baseline and they look plausible. The control is what
-> catches it, since `CONTROL KILLED` is impossible unless the baseline is wrong. Check survivors
-> against `generated` separately.
+> **The technique, if it is wanted for another check.** Mutate every clause; for each survivor read
+> the fixture list as a grid and look for the empty cell. The axes that mattered here were operator,
+> direction, signedness, and — twice — *which operand*. Wave 263 added a fifth: a clause with a
+> two-part condition has four cells, and the two that demand *silence* are as reachable as the two
+> that demand a report.
+>
+> **Two operational notes.** Keep `generated` out of a sweep's test set — it is slow enough that the
+> sweep exceeds its timeout, and a sweep killed mid-run leaves the tree mutated, so every later
+> result is measured against a corrupted baseline and looks ordinary. `CONTROL KILLED` is the only
+> thing that catches it. And do not leave a one-line clause pinned solely by a twenty-second channel.
 >
 > ### Rules earned, most recent first
+>
+> **A clause with a two-part condition has four cells, and half of them demand silence** (wave 263).
+> The `INT_MIN / -1` check fires on one pair of operands. Dropping *either* half of the condition —
+> so any `INT_MIN / x` reports, or any `x / -1` does — survived every fixture, because none asked
+> chiero to stay *quiet* about those. **Reading a fixture list as a grid finds the missing reports;
+> the missing non-reports need asking for separately.**
+>
+> **Reading a grid's *operator* axis found a real defect where its value axes found only gaps**
+> (wave 263). Three waves of this technique produced three coverage holes and one genuine missed
+> event — and the missed event was on the axis that lists what the clause *matches*, not what the
+> operands hold. `Add`, `Sub`, `Mul` were there; `SDiv` was not, and C gives signed overflow four
+> ways.
 >
 > **A sweep's control detects its own previous run's wreckage** (wave 262). A mutation sweep that
 > exceeds its timeout is killed between applying a mutation and restoring the file. The next sweep
