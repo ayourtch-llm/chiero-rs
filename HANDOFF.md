@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 259) — 1403 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 260) — 1403 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1164,37 +1164,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > already grouping on it. The cheap middle path, if wanted, is a mapping table in the census channel
 > rather than a rename in the engine — that keeps the reports chiero's and the comparison UBSan's.
 >
-> ### 🔴 Then: one mutant survives wave 205's init check — audited in wave 258
+> ### ✅ Wave 205's init-check mutant list is closed — audited in 258, finished in 259
 >
-> **Three of the five entries this section used to carry were stale.** They were closed by
-> `solver_gave_up.rs` (wave 204+), which the note never learned about — it still said "`Unknown` is
-> still untested" three sections above the test that tests it. Re-running them:
+> **Three entries were stale**, killed by `solver_gave_up.rs` and never noticed:
+> `unknown-is-definite`, `unknown-is-clean`, `always-base-zero` (and `always-base-one` with it).
+>
+> **`expand-unbounded` is a time/precision bound, not a defect.** Removing the limit gives a *more*
+> precise guard at more cost. Nothing observes the precision the limit gives up; that is a fact about
+> the bound.
+>
+> **`expand-forgets-shadowing` is equivalent, and the chains prove it.** Logging every chain
+> `select_expand` builds for `symbolic_readback_init.rs`:
 >
 > ```text
->   unknown-is-definite       KILLED    by an_undecided_initialization_guard_is_a_maybe
->   unknown-is-clean          KILLED    by the same
->   always-base-zero          KILLED    by the_same_guard_is_settled_when_a_solver_is_available
->   always-base-one           KILLED    by an_undecided_guard_weakens_the_verdict...
->   expand-unbounded          survives
->   expand-forgets-shadowing  survives
+>   16 x  len=8   distinct_values=1
+>   16 x  len=16  distinct_values=1
 > ```
 >
-> **`expand-unbounded` is not a correctness mutant.** §9 recorded it as "never ran, two sweeps timed
-> out". It runs now and survives, because removing the limit produces a *more* precise guard at more
-> cost — a time/precision bound, not a bug. What no test observes is the precision the limit gives
-> up, which is worth knowing and is not a defect.
+> Every store in every chain carries the **same value term**, and with one value the nesting order
+> cannot change the result whatever the conditions are. §9's old recipe — "two stores that may alias
+> with different values" — was sound; the shape simply does not occur. It would take an init chain
+> carrying two distinct values at aliasing indices, and none does.
 >
-> **`expand-forgets-shadowing` is the one real survivor, and it is narrower than it was.** The old
-> recipe — "two stores that may alias with different values" — is right and incomplete. Wave 248
-> established that one symbolic store rewrites **every** init bit of the object: 512 stores for 64
-> bytes, past `EXPAND_LIMIT`, so `select_expand` returns `None` and store order never matters. An
-> eight-byte object should stay inside the limit — but instrumenting shows `init_guard` is not
-> called at all for `ca[0] = 5; ca[i & 7] = 7; return ca[0];`.
->
-> **The check to run next**: log whether `init_guard` fires, then find a program where it does *and*
-> the object is small. It needs a **symbolic read** — the guard is what a symbolic read asks — not a
-> symbolic write under a concrete read. `symbolic_readback_init.rs` has the shape; shrink its object
-> to eight bytes and see whether `select_expand` returns `Some`.
+> **Two beliefs this audit overturned, both plausible and both wrong.** Wave 248 concluded the
+> 64-byte fixtures always exceed `EXPAND_LIMIT`; instrumenting shows expansion *succeeds* twenty-four
+> times. And shrinking the object to eight bytes — the fix §9 recommended — stops `init_guard` being
+> called at all, because a narrow mask enumerates and the symbolic guard is never asked.
 >
 > ### 🔴 Then: a guard *below* a dereference needs no checker after all
 >
@@ -1695,6 +1690,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **Measure the data the code operates on, not just whether the code ran** (wave 259). Four fixture
+> attempts failed to kill a mutant on store-chain ordering. Logging the chains answered it in one
+> run: every chain carries a single distinct value, so ordering cannot matter and the mutant is
+> equivalent. **"Which input would reach this?" is a slower question than "what do the inputs that
+> reach it look like?"** — and the second one also tells you when the answer is "none can".
+>
+> **Shrinking a fixture can move it out of the path you are testing** (wave 259). §9 suggested an
+> eight-byte object to keep the init chain inside `EXPAND_LIMIT`; at eight bytes the offset
+> enumerates and `init_guard` is never called at all. **A smaller input is a different input**, and
+> whether it still exercises the path has to be checked rather than assumed.
 >
 > **A note that records a gap does not learn when the gap closes** (wave 258). Three of the five
 > surviving mutants §9 has carried since wave 205 were killed by a test written in wave 204's
