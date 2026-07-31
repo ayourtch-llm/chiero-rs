@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 286) — 1436 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 287) — 1438 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,28 +808,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟡 The corpus lags the features — three closed, three left, one measured out
+> ### 🟢 The corpus lag is closed, except for one construct measured out
 >
 > **Wave 277's rule** — ship a construct, then check the corpus can reach it, in the same wave —
-> was broken for six constructs. Three are now closed: `typeof` (wave 284), and `_Generic`,
-> `__builtin_offsetof` and the classification builtins (285, as expression wrappers, buying four
-> mutant kills for 131 → 102 comparisons).
+> was broken for six constructs. Five are now closed: `typeof` (wave 284), `_Generic`,
+> `__builtin_offsetof` and the classification builtins (285, as expression wrappers),
+> and `__label__` (286). Between them they buy **ten mutant kills** the corpus could not make
+> before, across waves 271, 275, 276, 280 and 283.
 >
-> **Still hand-graded only:**
->   - **`__label__`** (276). A *statement* form, so it will cost what a statement costs; it also
->     needs a `goto`, which the cf channel already emits.
->   - **Alignment specifiers** (282). A declarator form, cheap to attach to an existing local —
->     but `_Alignof` of it is the only observable, so it needs the value to reach the checksum.
->   - **Multi-dimensional arrays** (278) — **measured out**. The shape that hid the dimension
->     reversal, and it takes the channel from 131 comparisons to 80 at any rate, with two folds
->     and restricted element types tried. A longer program carrying more adversarial values
->     through more operations is more often undefined, and undefined is discarded. Anyone
->     retrying needs a way to add a construct **without lengthening the UB surface** — a separate
->     short program per construct, or a channel with its own budget.
+> **What each cost, because the numbers are the point:**
+>   - an *expression wrapper* — 131 comparisons → 102, and worth it for four kills
+>   - `__label__`, a *statement* — 102 → **103**: a pure naming construct adds no storage, no
+>     value and no UB surface, so its grammatical category did not matter
+>   - a *multi-dimensional array* — 131 → 80 at any rate, buying nothing. **Still out.**
 >
-> **The lever wave 285 found**: an *expression wrapper* costs far less than a statement or an
-> object, because it adds no storage, no statement and no `rng` draw. `__label__` and the
-> alignment specifiers do not fit that shape, which is why they are still open.
+> **The two still hand-graded only:**
+>   - **Multi-dimensional arrays** (278), measured out above. A retry needs a way to add a
+>     construct without lengthening the UB surface — a separate short program per construct, or a
+>     channel with its own statement budget.
+>   - **Alignment specifiers** (282). A declarator form with no cheap observable: `_Alignof` of
+>     the declared object is the only thing that shows the specifier took, so the value has to
+>     reach the checksum. Probably an expression wrapper over an existing local — untried.
+>
+> **The soak is clean over the enriched corpus**: `SOAK_CF=1`, seeds 0..1500, 794 compared, 0
+> defects (wave 286). It now carries vectors, `typeof`, `_Generic`, `offsetof`, the classification
+> builtins and `__label__`, none of which it did six waves ago.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2044,6 +2047,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A guard behind other guards is untestable** (wave 286). The backward-`goto` check sat inline
+> after half a dozen assertions, every one of which fires first on a corpus that jumps backward —
+> the comparison floor, then the jump-over-nothing guard, then the floor again. Nothing could show
+> the check itself still worked after I changed it. **Extract a guard you have just weakened and
+> test it on hand-written inputs**; four fixtures took minutes and cover the case its own channel
+> cannot reach.
+>
+> **Relaxing a check to admit a construct is a change to a safety property** (wave 286). Reusing
+> one label name broke a guard that matched names across the whole body. The obvious repair —
+> search forward from the jump — is *worse* in the direction that matters: it finds a later
+> block's label and calls a genuinely backward jump forward. **Ask which way the guard is allowed
+> to be wrong** before loosening it; here the answer bounded the search to the jump's own block.
+>
+> **What makes a corpus addition cheap is what it adds, not what it is** (wave 286). `__label__`
+> is a *statement* form, so wave 285's expression-wrapper lever did not apply — and it cost one
+> comparison, 102 → 103, because it declares no object, computes no value and adds nothing to the
+> checksum or the UB surface. **The cost follows the storage and the arithmetic**, not the
+> grammatical category.
 >
 > **Add nothing to the stream: wrap what the grammar already built** (wave 285). Three shapes
 > failed before this one. Gating on a private stream *before* an existing gate skips that gate's
