@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 274) — 1420 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 275) — 1421 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -809,6 +809,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > turn out to match.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
+>
+> **`vector_size` is done for storage, arithmetic and comparison** — waves 272, 273 and 274. The
+> extension VPP is written in now initializes, subscripts, computes elementwise, broadcasts a
+> scalar, compound-assigns and compares, for `int`, `unsigned char`, `long`, `float` and `double`
+> lanes, with NaN handled by the same ordered/unordered split the scalar operators use.
+>
+> **Still lowered through memory, still on purpose.** `Splat`, `Shuffle`, `InsertLane` and
+> `ExtractLane` remain unproduced and should stay that way until someone wants a vector as an SSA
+> *value*. Two representations of one type would put "which am I holding?" into every load,
+> store, copy, member and cast. A comparison's result is a *different vector type* from its
+> operands, which is the first place that would have bitten.
+>
+> **What the census still has open:**
+>   - **`_Generic` is not in the parser at all.** C11, loud parse diagnostic, declared gap. The
+>     cheapest remaining item and the one most likely to appear in real headers.
+>   - **`BinOp::PtrDiff` is dead in every crate** and `p - q` works without it. Delete or produce;
+>     do not leave it.
+>   - **`Const::FuncAddr` has no producer** although `GlobalInit::FuncAddr` does. Function
+>     pointers work, so confirm it is a spelling question before writing it down as a gap.
+>   - **Vector conversions and casts** — `(v4si)f` between vector types, and a vector in a
+>     `?:` — are not probed at all. The three waves above covered operators; conversions are the
+>     obvious next census on the same type.
 >
 > **Wave 273 finished the arithmetic half of `vector_size`.** Every arithmetic, bitwise and shift
 > operator, both operand orders of the scalar broadcast, unary `-`/`~`, and compound assignment
@@ -1906,6 +1928,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Four survivors, four different kinds — sort them before fixing any** (wave 274). One sweep
+> left a missing fixture for an operator pair the tests never used (`>`/`>=` on floats), a missing
+> fixture for a property no test could observe (the mask element's signedness, hidden because
+> every fixture assigned the result to a declared type first), a redundant guard that could not
+> change an answer, and a pair of expressions that are provably equal. **Only two wanted a test;
+> one wanted deleting and one wanted a comment.** Treating a survivor list as a to-write-tests
+> list produces two tests that assert nothing.
+>
+> **A value assigned to a declared type is read at that type, not its own** (wave 274). Every
+> comparison fixture wrote `v4si e = (x == y);` and then read `e`, so the *comparison's* element
+> type was never consulted and its signedness was unobservable. `(x == y)[0] < 0` reads the lane
+> through the expression's own type. **When testing a property of an expression's type, do not let
+> a declaration stand between the expression and the assertion.**
+>
+> **Pin the reference by running it, not by recalling it** (wave 274). gcc's vector comparison
+> rules — same total size, lane width preserved, element becomes *signed* whatever the operand's
+> signedness, true is all-bits-set, unsigned lanes compare unsigned, NaN follows the
+> ordered/unordered split — were established with one twenty-line program before a line of the
+> RED was written. Four of them would have been guessed wrong.
 >
 > **A well-typed instruction can mean the wrong thing, and the verifier will pass it** (wave 273).
 > `x += y` on a vector stored a `CTy::Ptr` value into a `CTy::Ptr` slot. Types agree, verifier
