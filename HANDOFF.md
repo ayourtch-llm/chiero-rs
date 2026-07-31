@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 265) — 1407 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 266) — 1408 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1739,26 +1739,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > result is measured against a corrupted baseline and looks ordinary. `CONTROL KILLED` is the only
 > thing that catches it. And do not leave a one-line clause pinned solely by a twenty-second channel.
 >
-> ### 🔴 Do this first: the rest of the memory faults
+> ### ✅ The memory-fault clauses are swept — waves 264–265
 >
-> Wave 264 took the arithmetic technique to the memory checks and it worked on the first try. The
-> concrete bounds check is `off < 0 || end > size`, and **nothing tested the low half** — every
-> fixture ran off the end of an object and none started before its beginning. ASan names that
-> direction separately (`Memory access at offset 60 underflows this variable`), so it is worth
-> distinguishing in a report as well as in a check.
+> Every predicate that constructs a `MemFault` has now been mutated. Eighteen mutants across three
+> sweeps; **two gaps, one dead function, and the rest already covered**:
 >
-> **What is left, in the same style.** The other fault classes have their own predicates and none has
-> been swept: use-after-free and use-after-scope (the state check), the wild-pointer path,
-> `AllocationTooLarge`, and the alignment recording. `chiero-mem`'s `MemFault` enum is the list of
-> kinds; each arm that constructs one is a clause worth mutating, and the fixture files are
-> `chiero-mem/tests/{bounds,access,objects}.rs` plus `chiero-lower/tests/first_fault.rs`.
+> ```text
+>   bounds `off < 0`            nothing accessed *below* an object          264
+>   AddressSpace::in_bounds     no production caller at all — deleted       264
+>   align `effective < want`    nothing used an under-aligned *object*      265
+>   state check (5 mutants)     covered                                     265
+>   too_large (2 mutants)       covered                                     265
+>   align offset half           covered                                     265
+> ```
 >
-> **Expect dead code as well as gaps.** Three of wave 264's six survivors were not coverage holes at
-> all: `AddressSpace::in_bounds` had no production caller, so no fixture could observe it. Deleting
-> it then orphaned `AddressSpace::size_of`, which had exactly one caller — **dead code hides dead
-> code**, so re-run the lints after a deletion rather than assuming it was self-contained.
+> **Both gaps were the same shape**: a two-part condition tested in one direction. That is now four
+> waves running (261–265), across arithmetic and memory alike, and it is the first thing to look for.
+>
+> ### Where the technique has not been pointed yet
+>
+> The fault *constructors* are done; the paths that decide **whether to ask** are not. Candidates, in
+> rough order of how much a defect there would cost:
+>
+>   - **`report_faults`'s discharge** — wave 249 found a real defect one line from it, and its
+>     `Unknown` arms were only exercised from wave 258's audit onward.
+>   - **`unusable`** — wave 249 gave it a fixture; nothing has mutated the *list* of fault kinds it
+>     names, and adding or removing one is exactly the kind of edit that looks harmless.
+>   - **the havoc paths** (024 §2.1) — `HavocFill::Symbolic` versus `Uninitialized` is a documented
+>     "no safe default", which usually means both arms matter and one is untested.
 >
 > ### Rules earned, most recent first
+>
+> **A sweep's verdict is only as good as the test set it runs** (wave 265). `null-not-reported`
+> survived until four files covering null dereferences were added to the sweep — none of which I had
+> included. **"SURVIVED" from an incomplete set reads exactly like a coverage gap**, and the fix is
+> to grep for the fault's name across `tests/` before believing a survivor. §9 warned about this and
+> I still did it.
 >
 > **A surviving mutant on a `pub fn` may mean nothing calls it** (wave 264). Three mutants against
 > `in_bounds` survived every fixture, and the cause was not a missing test — the function had no
