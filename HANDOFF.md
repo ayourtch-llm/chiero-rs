@@ -487,7 +487,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 307) — 1479 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 308) — 1480 tests, 4 ignored, M1 165/165 by contract
+>
+> **Next: rows 1–3 of the constraint census below** (member that does not exist, subscripting a
+> non-array, calling a non-function). They are one family — an expression whose *type* cannot
+> support the operation applied to it — and unlike the other thirteen they let execution proceed
+> on a value computed from nothing, which is this engine's whole subject.
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -833,6 +838,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ~~**Next target: the `#if` evaluator deserves a differential channel of its own.**~~ **Built in
 > wave 298, and it found two defects on its first run** — see below.
+>
+> ### 🔴 Wave 307's constraint census — one false positive fixed, sixteen gaps recorded
+>
+> Thirty C programs, half legal and half not, run through sema and through gcc. **The false
+> positive was the find**, and only running the *legal* half could have seen it (wave 303's rule):
+> contract 14's redefinition check used a whole-TU symbol set with no notion of scope, so two
+> functions each saying `int a = 0;` were a redefinition. So were two `for (int i = 0; ...)` loops
+> in one function, and a local shadowing a file-scope name. Fixed.
+>
+> **Why it survived everything:** a sema diagnostic does not stop lowering. The corpus compiled
+> and ran these programs, got the right answers, and never looked at the complaint. Every test
+> that checks an *answer* was green. **There is no test anywhere that reads sema's diagnostics on
+> ordinary correct code** — that absence is the reusable finding, larger than the bug.
+>
+> **Sixteen constraints gcc rejects and this engine accepts silently**, none fixed, in rough
+> descending order of how wrong the resulting execution is:
+>
+> | | constraint (C11) | example |
+> |---|---|---|
+> | 1 | member that does not exist | `struct S { int m; }; s.nope` |
+> | 2 | subscripting a non-array | `int r(int x){ return x[0]; }` |
+> | 3 | calling a non-function | `int q; q()` |
+> | 4 | assigning to a `const` object | `const int k = 1; k = 2;` |
+> | 5 | parameter of incomplete type | `struct T; int s(struct T t)` |
+> | 6 | variable declared `void` | `void w;` |
+> | 7 | using a `void`-valued call | `void v(void); return v();` |
+> | 8 | duplicate `case` value | `case 1: case 1:` |
+> | 9 | multiple `default` labels | `default: default:` |
+> | 10 | `break` outside loop or switch | |
+> | 11 | `continue` outside a loop | |
+> | 12 | label used but never defined | `goto nowhere;` |
+> | 13 | function redefinition | `int f(void){} int f(void){}` |
+> | 14 | conflicting declaration types | `int h(int); int h(long){}` |
+> | 15 | `static` after non-`static` | `extern int n; static int n;` |
+> | 16 | function returning an array | `int f(void)[3];` |
+>
+> Rows 1–3 are the ones that matter most for this engine: they are type errors that let execution
+> proceed on a value computed from nothing. The rest are diagnostics a compiler owes its user.
 >
 > ### 🔑 The technique that is paying: find the *second* implementation of a rule
 >
@@ -2350,6 +2393,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A diagnostic nothing consumes is a diagnostic nothing tests** (wave 307). Sema's complaint that
+> `int a = 0;` in two different functions was a redefinition survived every test in the project,
+> because a sema diagnostic does not stop lowering: the corpus compiled those programs, ran them,
+> got the right answers, and never read the complaint. **Wherever an output is advisory, the suite
+> will drift on it silently** — and the fix is not more fixtures for that one rule but *one* test
+> that asserts ordinary correct code produces no diagnostics at all.
+>
+> **Census the legal half, or the whole class of false positives is invisible** (wave 307,
+> confirming wave 303). Thirty programs, half of them valid. Every one of the sixteen *missing*
+> checks costs the user a diagnostic they should have had; the single *spurious* check told them
+> their correct program was broken. Both waves that ran a legal half found a false positive in the
+> existing code, and neither would have found it otherwise.
 >
 > **A channel must distinguish "agrees" from "could not tell"** (wave 306). The symbolic channel
 > has three outcomes, not two, because the engine can take *both* branch edges when the solver
