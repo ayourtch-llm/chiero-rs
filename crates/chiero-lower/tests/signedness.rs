@@ -327,6 +327,30 @@ fn a_float_conversion_out_of_the_destinations_range_is_still_reported() {
             "int, 1e20",
             "int probe(void){ double d=1e20; int i=(int)d; return i; }",
         ),
+        // **The two below were the whole of wave 261**, and they were found by mutation rather
+        // than by reading. The list above covers a float too *large* for a signed destination and a
+        // *negative* one for an unsigned destination — so deleting either of those checks in
+        // `out_of_range` fails here. Deleting the remaining two did not:
+        //
+        //   `t < -hi.exp2()`   a float too negative for a *signed* destination   SURVIVED
+        //   the `is_nan` guard  a NaN converted to any integer type              SURVIVED
+        //
+        // Both are C11 6.3.1.4 undefined and both are what UBSan calls "outside the range of
+        // representable values". The generated corpus produced neither in fifty-four programs,
+        // which is what made `FloatCastOverflow` the thin row §9 flagged — thin in two nameable
+        // directions rather than merely small.
+        (
+            "int, -1e20",
+            "int probe(void){ double d=-1e20; int i=(int)d; return i; }",
+        ),
+        (
+            "int, NaN",
+            "int probe(void){ double z=0.0; double n=z/z; int i=(int)n; return i; }",
+        ),
+        (
+            "unsigned, NaN",
+            "int probe(void){ double z=0.0; double n=z/z; unsigned u=(unsigned)n; return (int)u; }",
+        ),
     ] {
         let (kinds, _) = ub_and_value(src);
         assert!(
