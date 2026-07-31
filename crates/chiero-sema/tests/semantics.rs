@@ -406,6 +406,14 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         // A pointer to an incomplete type is the opaque-handle idiom.
         "struct I; struct I *p;",
         "struct I; struct S { struct I *m; };",
+        // The enum cases that must stay legal: a pointer to one, an external declaration, a
+        // function declaration, and any use once the enumerators have been seen. The last is a
+        // redeclaration *after* the definition, which is legal and must not undo it.
+        "enum E; enum E *p;",
+        "enum E; extern enum E e;",
+        "enum E; enum E f(void);",
+        "enum E { A }; enum E e;",
+        "enum E { A }; enum E; enum E e;",
         // The same tag by pointer, from inside its own definition: the case the whole
         // representation change exists for.
         "struct Node { int v; struct Node *next; };",
@@ -441,6 +449,13 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         "struct I; struct S { struct I m; };",
         "struct I; union V { struct I m; int x; };",
         "struct S { struct S s; };",
+        // An undefined `enum` tag is incomplete too, and was answering as a plain `int` — so
+        // every one of these was accepted with a size of four. Forward-declaring an enum is a GNU
+        // extension rather than standard C, which is exactly why it needs saying: gcc accepts the
+        // *declaration* and then rejects every use that needs a size.
+        "enum E; enum E e;",
+        "enum E; struct S { enum E m; };",
+        "enum E; int a[sizeof(enum E)];",
         // An array needs its element's size, for the stride if nothing else.
         "struct I; struct I arr[10];",
         "struct I; extern struct I arr[];",
