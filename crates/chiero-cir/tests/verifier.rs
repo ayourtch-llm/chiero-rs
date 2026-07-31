@@ -1861,3 +1861,140 @@ fn a_bitfield_unit_must_be_an_integer() {
         );
     }
 }
+
+/// **Seven rules that no test could observe** (wave 290).
+///
+/// A sweep disabled each of the verifier's forty rule sites in turn and ran the whole workspace.
+/// Thirty-three were caught. These seven were not: every one could have been deleted and nothing
+/// would have failed. They share a cause — each rejects a *malformed module* that lowering never
+/// produces, so only a hand-built one reaches them, and the fixtures here are the only thing that
+/// ever will.
+///
+/// A verifier that misses a rule lets malformed IR reach the engine, where the symptom is a
+/// confusing wrong answer rather than a clear error — which is what this file's own header says
+/// it exists to prevent.
+#[test]
+fn a_global_name_declared_twice_is_rejected() {
+    let mut m = valid_module();
+    let g = Global {
+        id: GlobalId(0),
+        name: "g".into(),
+        size: 4,
+        align: 4,
+        is_const: false,
+        init: GlobalInit::Zero,
+        linkage: chiero_cir::Linkage::External,
+        span: Span::DUMMY,
+    };
+    let mut g2 = g.clone();
+    g2.id = GlobalId(1);
+    m.globals = vec![g, g2];
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+}
+
+/// **A duplicate function id is rejected — as `IdNotIndex`, not as `DuplicateId`.**
+///
+/// The verifier used to check both, and the duplicate-id check was one of the seven the sweep
+/// could not kill. Writing this fixture is what showed why it was unkillable rather than merely
+/// untested: `funcs[i].id == FuncId(i)` makes ids unique by construction, so a module with two
+/// `FuncId(0)` also has one at the wrong index, and `assert_rejects` — which requires one defect
+/// to yield one kind — could never be satisfied. The redundant check is gone; this pins the
+/// behaviour that remains.
+#[test]
+fn a_function_id_declared_twice_is_rejected() {
+    let mut m = valid_module();
+    let mut f2 = m.funcs[0].clone();
+    f2.name = "g".into();
+    m.funcs.push(f2);
+    assert_rejects(&m, VerifyErrorKind::IdNotIndex);
+}
+
+#[test]
+fn an_alloca_id_declared_twice_is_rejected() {
+    let mut m = valid_module();
+    let a = AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: 1,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    };
+    m.funcs[0].allocas = vec![a.clone(), a];
+    assert_rejects(&m, VerifyErrorKind::DuplicateId);
+}
+
+#[test]
+fn taking_the_address_of_an_unknown_function_is_rejected() {
+    let mut m = valid_module();
+    m.funcs[0].blocks[0].insts.push(inst(InstKind::Assign {
+        dst: ValueId(9),
+        rv: RValue::AddrOfFunc(FuncId(42)),
+    }));
+    assert_rejects(&m, VerifyErrorKind::UnknownId);
+}
+
+#[test]
+fn an_entry_block_that_does_not_exist_is_rejected() {
+    let mut m = valid_module();
+    m.funcs[0].entry = BlockId(7);
+    assert_rejects(&m, VerifyErrorKind::UnknownBlock);
+}
+
+#[test]
+fn an_operand_naming_a_value_that_is_never_defined_is_rejected() {
+    let mut m = valid_module();
+    // The `add` reads a value no instruction assigns. **Not the same as `UseNotDominated`'s
+    // other arm**, which is about a definition that exists in a block that does not dominate
+    // the use; here there is no definition anywhere.
+    m.funcs[0].blocks[0].insts[0] = inst(InstKind::Assign {
+        dst: ValueId(0),
+        rv: RValue::Bin {
+            op: BinOp::Add,
+            a: Operand::Value(ValueId(88)),
+            b: i32c(3),
+            ty: CTy::Int(32),
+            signed: true,
+        },
+    });
+    assert_rejects(&m, VerifyErrorKind::UseNotDominated);
+}
+
+#[test]
+fn a_non_integer_size_operand_is_rejected() {
+    let mut m = valid_module();
+    make_void(&mut m);
+    // **A `CopyMem` whose *size* is a pointer.** `require_int` guards size operands — a copy,
+    // a memset, an opaque write — and nothing else; the first version of this fixture used a
+    // shift count, which is checked by the generic operand-type rule instead and left this one
+    // alive. `resolve` reads a type from the value table, so the operand must be a *value* with
+    // a recorded type rather than a bare `Const::Null`, which has none.
+    m.funcs[0].allocas = vec![AllocaDecl {
+        id: AllocaId(0),
+        ty: CTy::Int(32),
+        count: 1,
+        align: 4,
+        scope: ScopeId(0),
+        lifetime: Lifetime::Scope,
+        name: None,
+        span: Span::DUMMY,
+    }];
+    m.funcs[0].blocks[0].insts = vec![
+        inst(InstKind::Assign {
+            dst: ValueId(1),
+            rv: RValue::AddrOfLocal {
+                alloca: AllocaId(0),
+            },
+        }),
+        inst(InstKind::CopyMem {
+            dst: Operand::Value(ValueId(1)),
+            src: Operand::Value(ValueId(1)),
+            size: Operand::Value(ValueId(1)),
+            align: 4,
+        }),
+    ];
+    m.funcs[0].blocks[0].term = Terminator::Return(None);
+    assert_rejects(&m, VerifyErrorKind::WidthMismatch);
+}

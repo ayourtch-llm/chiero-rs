@@ -146,20 +146,20 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         // Rule 7 applies to globals too.
         check_align(&anon, g.align, g.span, out);
     }
-    let mut fids: Vec<FuncId> = Vec::new();
     let mut fnames: Vec<&str> = Vec::new();
     for f in &m.funcs {
-        if fids.contains(&f.id) {
-            err(
-                out,
-                f,
-                VerifyErrorKind::DuplicateId,
-                f.span,
-                format!("{:?} is declared more than once", f.id),
-            );
-        }
-        // A duplicate *name* is the quietest failure: name resolution takes the first,
-        // so a `.cir` file naming the other simply calls something else.
+        // **No duplicate-*id* check here, and that is not an omission.** The rule above requires
+        // `funcs[i].id == FuncId(i)`, so two functions can only share an id if one of them also
+        // sits at the wrong index — `IdNotIndex` rejects every such module already, and the
+        // duplicate check could never fire alone.
+        //
+        // Found by a sweep (wave 290) that disabled each of the verifier's forty rule sites in
+        // turn: this one survived the whole workspace, and writing the fixture for it is what
+        // showed why. A rule that cannot be the *only* thing wrong with a module is a rule no
+        // fixture can isolate.
+        //
+        // A duplicate *name* is a different matter and is checked: name resolution takes the
+        // first, so a `.cir` file naming the other simply calls something else.
         if fnames.contains(&&*f.name) {
             err(
                 out,
@@ -169,7 +169,6 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
                 format!("function `{}` is declared more than once", f.name),
             );
         }
-        fids.push(f.id);
         fnames.push(&f.name);
     }
 }
