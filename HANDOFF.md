@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 287) — 1438 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 288) — 1439 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,31 +808,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟢 The corpus lag is closed, except for one construct measured out
+> ### 🔴 The control-flow channel's comparison budget is spent — the next corpus work is structural
 >
-> **Wave 277's rule** — ship a construct, then check the corpus can reach it, in the same wave —
-> was broken for six constructs. Five are now closed: `typeof` (wave 284), `_Generic`,
-> `__builtin_offsetof` and the classification builtins (285, as expression wrappers),
-> and `__label__` (286). Between them they buy **ten mutant kills** the corpus could not make
-> before, across waves 271, 275, 276, 280 and 283.
+> **Wave 277's rule is discharged**: all six lagging constructs have been through the corpus.
+> `typeof` (284), `_Generic`/`__builtin_offsetof`/the classification builtins (285), `__label__`
+> (286) and the alignment specifier (287) are emitted; the multi-dimensional array (284) is
+> measured out. Between them they buy **eleven mutant kills** the corpus could not make before,
+> across waves 271, 275, 276, 280, 281 and 283.
 >
-> **What each cost, because the numbers are the point:**
->   - an *expression wrapper* — 131 comparisons → 102, and worth it for four kills
->   - `__label__`, a *statement* — 102 → **103**: a pure naming construct adds no storage, no
->     value and no UB surface, so its grammatical category did not matter
->   - a *multi-dimensional array* — 131 → 80 at any rate, buying nothing. **Still out.**
+> **And the channel is full.** Comparisons of 200 seeds: **131** before wave 285 → 102 (expression
+> wrappers) → 103 (`__label__`) → **100** (alignment). The floor is 100.
 >
-> **The two still hand-graded only:**
->   - **Multi-dimensional arrays** (278), measured out above. A retry needs a way to add a
->     construct without lengthening the UB surface — a separate short program per construct, or a
->     channel with its own statement budget.
->   - **Alignment specifiers** (282). A declarator form with no cheap observable: `_Alignof` of
->     the declared object is the only thing that shows the specifier took, so the value has to
->     reach the checksum. Probably an expression wrapper over an existing local — untried.
+> | construct | cost | bought |
+> |---|---|---|
+> | expression wrappers (285) | 131 → 102 | four kills |
+> | `__label__` (286) | 102 → 103 | four kills |
+> | alignment specifier (287) | 103 → 100 | one kill; two more need rate 4, which costs 98 |
+> | multi-dimensional array (284) | 131 → 80 | nothing — **not merged** |
 >
-> **The soak is clean over the enriched corpus**: `SOAK_CF=1`, seeds 0..1500, 794 compared, 0
-> defects (wave 286). It now carries vectors, `typeof`, `_Generic`, `offsetof`, the classification
-> builtins and `__label__`, none of which it did six waves ago.
+> **What the next attempt needs.** Both wave 284's array and wave 287's alignment form hit the
+> same wall from opposite directions: coverage in this channel is paid for in *comparisons*,
+> because a longer program carrying more adversarial values through more operations is more often
+> undefined, and undefined is discarded. The fix is not a better fold or a lower rate — both were
+> tried and measured. It is **a channel whose programs are short and single-purpose**: one
+> construct per program, its own statement budget, its own adequacy floor. `program_control_flow`
+> would then keep the coverage it has instead of trading it away construct by construct.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2047,6 +2047,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A shared budget runs out, and the last addition is where you find out** (wave 287). The
+> control-flow channel compared 131 programs of 200 before wave 285; the expression wrappers took
+> it to 102, `__label__` to 103, the alignment specifier to 100. Every construct since has been
+> paid for out of the same 200 seeds. The alignment form needs a firing rate of 4 to discriminate
+> and that costs 98 — two below a wave-270 floor — so it shipped at 7, present but not
+> discriminating. **When each addition costs the next one's headroom, the answer is a channel
+> with its own budget, not a bigger share of this one.**
+>
+> **Some constructs are only observable in pairs** (wave 287). `_Alignas` changes no value;
+> `_Alignof` of a *type* asks nothing about a declaration. Either alone is decoration that
+> parses. **Assert the pairing** — the test requires that the `_Alignof` names the object the
+> specifier is on — because the version that counts tokens passes on decoration.
 >
 > **A guard behind other guards is untestable** (wave 286). The backward-`goto` check sat inline
 > after half a dozen assertions, every one of which fires first on a corpus that jumps backward —
