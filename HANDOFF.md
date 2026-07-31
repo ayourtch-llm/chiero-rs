@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 288) — 1439 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 289) — 1441 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,31 +808,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 The control-flow channel's comparison budget is spent — the next corpus work is structural
+> ### 🟢 The corpus work is done — a focused channel carries what the shared one cannot
 >
-> **Wave 277's rule is discharged**: all six lagging constructs have been through the corpus.
-> `typeof` (284), `_Generic`/`__builtin_offsetof`/the classification builtins (285), `__label__`
-> (286) and the alignment specifier (287) are emitted; the multi-dimensional array (284) is
-> measured out. Between them they buy **eleven mutant kills** the corpus could not make before,
-> across waves 271, 275, 276, 280, 281 and 283.
+> **Wave 277's rule is discharged and its overflow is housed.** All six lagging constructs went
+> through the corpus (waves 284–287), and the two that the control-flow channel could not
+> afford now live in `program_focused` (288): **one construct per program, its own budget, its own
+> floor.**
 >
-> **And the channel is full.** Comparisons of 200 seeds: **131** before wave 285 → 102 (expression
-> wrappers) → 103 (`__label__`) → **100** (alignment). The floor is 100.
->
-> | construct | cost | bought |
+> | channel | compares | carries |
 > |---|---|---|
-> | expression wrappers (285) | 131 → 102 | four kills |
-> | `__label__` (286) | 102 → 103 | four kills |
-> | alignment specifier (287) | 103 → 100 | one kill; two more need rate 4, which costs 98 |
-> | multi-dimensional array (284) | 131 → 80 | nothing — **not merged** |
+> | `program_control_flow` | 100 / 200 | vectors, `typeof`, `_Generic`, `offsetof`, classification builtins, `__label__`, alignment (present, not discriminating) |
+> | `program_focused` | **200 / 200** | non-square multi-dimensional arrays, alignment specifiers at a discriminating rate |
 >
-> **What the next attempt needs.** Both wave 284's array and wave 287's alignment form hit the
-> same wall from opposite directions: coverage in this channel is paid for in *comparisons*,
-> because a longer program carrying more adversarial values through more operations is more often
-> undefined, and undefined is discarded. The fix is not a better fold or a lower rate — both were
-> tried and measured. It is **a channel whose programs are short and single-purpose**: one
-> construct per program, its own statement budget, its own adequacy floor. `program_control_flow`
-> would then keep the coverage it has instead of trading it away construct by construct.
+> Between them the corpus now makes **seventeen mutant kills** it could not a fortnight ago,
+> across waves 271, 275, 276, 278, 280, 281, 282 and 283.
+>
+> **Where to add the next construct.** If it needs an object, a statement, or values flowing
+> through arithmetic, it belongs in `program_focused` — the shared channel has no headroom and
+> every addition there is now paid for by an existing shape losing coverage. If it is an
+> *expression wrapper* (wave 285) or a pure naming construct (wave 286, `__label__`), the shared
+> channel still absorbs it for roughly nothing.
+>
+> **What `program_focused` does not do yet**, in case it is wanted: it emits one construct from a
+> set of two. Adding a third is a `match` arm and a fixture, not a design change — that was the
+> point of building it.
 >
 > ### 🟢 Every named census axis is now run
 >
@@ -2047,6 +2046,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When coverage costs comparisons, build a channel instead of tuning a rate** (wave 288). Waves
+> 284 and 287 each spent a wave tuning — a better fold, restricted element types, four different
+> firing rates — and both concluded the same thing from opposite directions. A channel of
+> single-construct programs compares **200 of 200** where the shared one manages 100, and kills
+> six mutants that survived there. **Two waves of tuning is the signal that the container is
+> wrong, not the setting.**
+>
+> **A new channel needs a floor near the top, not near the bottom** (wave 288). `compared >= 180`
+> of 200 is what makes "these programs are dull and therefore comparable" a claim that can fail.
+> A floor of 50 would have described the design instead of testing it.
 >
 > **A shared budget runs out, and the last addition is where you find out** (wave 287). The
 > control-flow channel compared 131 programs of 200 before wave 285; the expression wrappers took
