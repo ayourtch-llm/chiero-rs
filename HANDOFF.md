@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 260) — 1403 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 261) — 1403 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1212,9 +1212,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      30 / 30   SignedOverflow
 > ```
 >
-> - **`FloatCastOverflow` at 7 is the thin row now** — the same shape as
->   `stack-buffer-overflow` at 1 in wave 180, and the same fix: make the shape more common
->   in the corpus rather than lower the floor.
+> - **`FloatCastOverflow` at 7 is the thin row, and is now the front here** — the same shape as
+>   `stack-buffer-overflow` at 1 in wave 180, and the same fix: make the shape more common in the
+>   corpus rather than lower the floor. **Read waves 250–253 before starting**: raising a shape's
+>   frequency three times failed to catch a known defect there, because the *context* of the
+>   construct was what mattered and not its count. Ask first what a `FloatCastOverflow` site looks
+>   like in the corpus and whether that shape can discriminate at all.
 > - **The substring classification is sound and that was checked, not assumed.** An
 >   unclassified gcc message becomes kind `"?"`, which chiero never emits, so it scores as a
 >   *miss* and fails loudly. §9 predicted this front would be about the substrings; they were
@@ -1223,10 +1226,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Mutation on wave 185: `div-zero-knob-never-fires`, `engine-drops-div-by-zero` and
 > `float-divisor-also-zeroed` all die (the last confirms the float exclusion is
 > load-bearing — C99 Annex F makes float division by zero *defined*, so emitting one would
-> manufacture a site gcc never reports). **`truncation-not-detected` survives, and honestly
-> so**: the trapping-fault suppression only changes the `extra` count, and `extra` is
-> printed rather than asserted, so nothing can observe its accuracy. It is correctness for a
-> number a human reads, not for a verdict.
+> manufacture a site gcc never reports).
+>
+> ~~`truncation-not-detected` survives, and honestly so.~~ **Closed in wave 260.** The reasoning
+> was right that `extra == 0` cannot be asserted — gcc's silence here is not evidence of a false
+> positive — and wrong to conclude `extra` cannot be asserted *at all*. Deleting the suppression
+> takes it from **1 to 12**, so a ceiling of four kills the mutant and still leaves room for drift.
+>
+> **Two survivors remain on that assertion and both are named classes.** Forcing the suppression
+> always on passes, and the only thing that would catch it is a *floor* — which would require
+> chiero to keep reporting sites gcc does not, and that is backwards. Disabling the assertion itself
+> passes, which no assertion can observe about itself.
 >
 > ~~🔴 the substring matching / `zz_census`'s fate.~~ **Wave 185: the substrings were sound,
 > and `zz_census` is deleted** — per-run where the new test is per-site, `#[ignore]`d where
@@ -1690,6 +1700,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **"Cannot be asserted to zero" is not "cannot be asserted"** (wave 260). `extra` counts sites
+> chiero reports and gcc does not, and it genuinely cannot be required to be zero — gcc elides
+> arithmetic used only as a condition, so its silence is not evidence. That correct observation was
+> carried as a reason to assert *nothing*, and a mutant lived there for seventy-five waves. A
+> ceiling caught it: the mutant moves the number from 1 to 12. **When a quantity resists an exact
+> assertion, try a bound before concluding it is unassertable.**
 >
 > **Measure the data the code operates on, not just whether the code ran** (wave 259). Four fixture
 > attempts failed to kill a mutant on store-chain ordering. Logging the chains answered it in one
