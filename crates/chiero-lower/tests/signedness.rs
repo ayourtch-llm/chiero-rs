@@ -425,3 +425,42 @@ fn a_braced_initializer_converts_to_the_members_signedness() {
         }
     }
 }
+
+/// **`INT_MIN / -1` is undefined, and it is neither a division by zero nor an `Add`/`Sub`/`Mul`.**
+///
+/// C11 6.5.5p6: if the quotient is not representable, the behaviour is undefined. On a
+/// two's-complement machine that is exactly one pair of operands per signed width, and the hardware
+/// agrees loudly — x86-64 raises SIGFPE, the same trap as division by zero. UBSan calls it
+/// "division of -2147483648 by -1 cannot be represented in type 'int'".
+///
+/// It falls between chiero's two arms: the `DivByZero` clause tests `y == 0`, and the
+/// `SignedOverflow` clause covers `Add`, `Sub` and `Mul`. Found by asking what the `SignedOverflow`
+/// grid's *operator* axis contains, which is the wave 261–262 technique pointed at its third kind.
+///
+/// `SRem` is the same pair for the same reason — `INT_MIN % -1` is the remainder of a division that
+/// cannot be performed — and gcc reports it too.
+#[test]
+fn a_signed_division_whose_quotient_does_not_fit_is_reported() {
+    for (what, src) in [
+        (
+            "int div",
+            "int probe(void) { int a = -2147483647 - 1; int b = -1; return a / b; }",
+        ),
+        (
+            "int rem",
+            "int probe(void) { int a = -2147483647 - 1; int b = -1; return a % b; }",
+        ),
+        (
+            "long div",
+            "int probe(void) { long a = -9223372036854775807L - 1; long b = -1; \
+             return (int)(a / b); }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::SignedOverflow) || kinds.contains(&UbKind::DivByZero),
+            "`{what}` has no representable quotient, which C11 6.5.5p6 makes undefined and the \
+             hardware makes a trap: {kinds:?}"
+        );
+    }
+}
