@@ -2018,6 +2018,26 @@ fn program_control_flow(seed: u64) -> (String, String) {
     (prelude, g.finish())
 }
 
+/// **One construct per program, with its own budget.**
+///
+/// Waves 284 and 287 hit the same wall from opposite directions: coverage in
+/// `program_control_flow` is paid for in *comparisons*, because a longer program carrying more
+/// adversarial values through more operations is more often undefined somewhere, and undefined
+/// is discarded rather than compared. A multi-dimensional array cost 131 comparisons → 80 and
+/// bought nothing; the alignment specifier needed a firing rate that cost two below the floor.
+/// Neither a better fold nor a lower rate helped — both were tried and measured.
+///
+/// So this channel does not share that budget. Each program declares what one construct needs
+/// and nothing else: no random statements, no adversarial expression tree, no second chance to
+/// be undefined. The programs are dull, which is the point — the construct is the only thing in
+/// them that can be wrong.
+fn program_focused(seed: u64) -> (String, String) {
+    let mut g = Gen::new(seed);
+    g.extended = true;
+    let prelude = g.prelude();
+    (prelude, g.finish())
+}
+
 fn program_memory_ub(seed: u64) -> (String, String) {
     program_with(seed, true)
 }
@@ -2659,6 +2679,64 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **Nothing emits a non-square multi-dimensional array, or an alignment pairing that is
+/// graded.**
+///
+/// The two constructs waves 284 and 287 could not afford in `program_control_flow`. The
+/// multi-dimensional array is the shape that hid wave 278's worst defect — `int a[2][3]` typed
+/// as `int a[3][2]` for the life of the project — and a *square* one is its own reverse, so the
+/// extents must differ. The alignment specifier is emitted there but at a rate too low to
+/// discriminate: rate 4 kills wave 282's mutants and costs two comparisons below the floor.
+///
+/// `program_focused` is the channel with its own budget. This asserts it carries both, and that
+/// its programs are **short** — the property the whole design rests on, and the one that will
+/// erode first if someone adds statements to it.
+#[test]
+fn the_focused_channel_carries_what_the_others_cannot() {
+    let (mut md, mut nonsquare, mut aligned_pair) = (0usize, 0usize, 0usize);
+    let mut longest = 0usize;
+    for seed in 0..400u64 {
+        let (prelude, body) = program_focused(seed);
+        let all = format!("{prelude}{body}");
+        longest = longest.max(body.lines().count());
+        for l in all.lines() {
+            let t = l.trim();
+            if t.contains(" = {") && t.matches('[').count() >= 2 && !t.contains('(') {
+                md += 1;
+                let dims: Vec<&str> = t[t.find('[').expect("checked")..]
+                    .split(']')
+                    .filter_map(|p| p.strip_prefix('['))
+                    .collect();
+                if dims.len() >= 2 && dims[0] != dims[1] {
+                    nonsquare += 1;
+                }
+            }
+            if t.starts_with("_Alignas(")
+                && let Some((decl, _)) = t.split_once(" = ")
+                && let Some(name) = decl.split_whitespace().last()
+                && all.contains(&format!("_Alignof({name})"))
+            {
+                aligned_pair += 1;
+            }
+        }
+    }
+    assert!(md >= 40, "a multi-dimensional array is emitted: {md}");
+    assert!(
+        nonsquare >= 40,
+        "a **non-square** one, since a square array is its own reverse: {nonsquare}"
+    );
+    assert!(
+        aligned_pair >= 40,
+        "an alignment specifier with an `_Alignof` that names it: {aligned_pair}"
+    );
+    // **Short is the design.** These programs exist to be comparable, not interesting; the
+    // moment they grow they start paying the same price the control-flow channel pays.
+    assert!(
+        longest <= 30,
+        "a focused program stays short, or it is just another crowded channel: {longest} lines"
+    );
+}
+
 /// **The corpus emits no alignment specifier.**
 ///
 /// The last of wave 277's six lagging constructs, and the only one left untried — the
