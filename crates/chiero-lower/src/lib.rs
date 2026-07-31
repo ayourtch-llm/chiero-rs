@@ -5199,14 +5199,28 @@ impl Lowerer<'_> {
             return self.emit_fcast(v, kind, CTy::Float(fk), CTy::Float(tk), span);
         }
         if let CTy::Float(tk) = to.clone() {
-            // Integer to float. The *source's* signedness decides which conversion, since
-            // it is what says whether the top bit is a sign or a magnitude.
+            // Integer to float. The *source's* signedness decides which conversion, since it is
+            // what says whether the top bit is a sign or a magnitude.
+            //
+            // **Asked of `cast_kind` rather than decided here** (wave 256). This arm spelled the
+            // same `SiToFp`/`UiToFp` choice out a second time, and two places computing one
+            // decision is what waves 151 and 152 spent two commits removing from the string
+            // decoders. They agreed — the dedup is not a fix — but the copy was also the one no
+            // test could observe: mutating it survived every fixture while the same mutation
+            // inside `cast_kind` dies. One site cannot drift from itself, and it inherits the
+            // coverage the other already has.
             let have = self.width_of(from);
-            let kind = if self.is_signed(from) {
-                chiero_cir::CastKind::SiToFp
-            } else {
-                chiero_cir::CastKind::UiToFp
-            };
+            // `to_signed` is passed for completeness and `cast_kind`'s `Int -> Float` arm ignores
+            // it — only the *source's* signedness can say whether the top bit is a sign. Mutation
+            // records the consequence: swapping the two arguments survives, because for every
+            // input that reaches here they hold the same value. Kept as the honest wiring rather
+            // than a constant, since the argument means something at the other arms.
+            let kind = cast_kind(
+                &CTy::Int(have),
+                &CTy::Float(tk),
+                self.is_signed(from),
+                to_signed,
+            );
             return self.emit_fcast(v, kind, CTy::Int(have), CTy::Float(tk), span);
         }
         if let (Some(CTy::Float(fk)), CTy::Int(want)) = (have_ty, to.clone()) {
