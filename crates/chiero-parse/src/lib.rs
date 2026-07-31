@@ -320,6 +320,19 @@ struct Parser<'a> {
     /// so the label is parked here for the few lines between. Cleared on read, so a label
     /// can never attach to a later declaration that had none.
     pending_asm_label: Option<Symbol>,
+    /// GNU local labels (`__label__ d;`), innermost block last.
+    ///
+    /// **Renaming, not a scope check.** Lowering keys labels by `Symbol` in one map per
+    /// *function*, so two blocks each declaring `d` would collide there however carefully the
+    /// parser tracked scopes — and two `hash_foreach_pair` loops in one function is precisely
+    /// what the construct exists for. Giving each declaration its own minted symbol makes the
+    /// blocks independent without lowering needing to know local labels exist at all.
+    ///
+    /// The minted spelling contains a `$`, which no C identifier can, so a renamed label can
+    /// never collide with a written one.
+    local_labels: Vec<Vec<(Symbol, Symbol)>>,
+    /// Distinguishes two declarations of the same name; only ever increments.
+    local_label_seq: u32,
     /// Guards the declarator double-scan (see [`Parser::declarator`]) and ordinary
     /// recursion. A 1M-line codebase contains generated files; a stack overflow is a
     /// `SIGABRT` that `catch_unwind` cannot contain, so depth is a diagnostic, never a
@@ -341,6 +354,8 @@ impl<'a> Parser<'a> {
             spellings: Vec::new(),
             oracle,
             pending_asm_label: None,
+            local_labels: Vec::new(),
+            local_label_seq: 0,
             depth: 0,
         };
         for (i, t) in tu.tokens.iter().enumerate() {
@@ -375,6 +390,53 @@ impl<'a> Parser<'a> {
             truncated: self.truncated,
             spellings: self.spellings,
         }
+    }
+
+    /// The symbol a label name refers to here: a local label's minted one, or the name itself.
+    ///
+    /// Innermost first, so an inner `__label__ d;` shadows an outer one, and a name no block
+    /// declared falls through to function scope unchanged — which is what lets a `goto` inside a
+    /// local-label block still reach an ordinary label outside it.
+    fn label_symbol(&self, name: Symbol) -> Symbol {
+        for frame in self.local_labels.iter().rev() {
+            if let Some(&(_, renamed)) = frame.iter().find(|(orig, _)| *orig == name) {
+                return renamed;
+            }
+        }
+        name
+    }
+
+    /// `__label__ a, b;` — GNU local label declarations, which may only open a block.
+    fn local_label_decl(&mut self, start: usize) -> StmtId {
+        loop {
+            match self.peek().map(|t| t.kind) {
+                Some(TokKind::Ident(name)) => {
+                    self.pos += 1;
+                    let text = self.spellings[name.0 as usize].to_string();
+                    self.local_label_seq += 1;
+                    // `$` is not an identifier character in C, so this cannot collide with a
+                    // label the program wrote.
+                    let renamed = self.intern(&format!("{text}${}", self.local_label_seq));
+                    if let Some(frame) = self.local_labels.last_mut() {
+                        frame.push((name, renamed));
+                    }
+                }
+                _ => {
+                    let here = self.here();
+                    self.error(here, "expected a label name after `__label__`");
+                    break;
+                }
+            }
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_punct(Punct::Semi, "after `__label__`");
+        let span = self.span_from(start);
+        // **The declaration itself lowers to nothing.** It introduces a name, and the name has
+        // already been substituted into every `goto` and label in the block by the time anyone
+        // reads the tree — so there is no node for lowering to handle and no new `StmtKind`.
+        self.ast.add_stmt(StmtKind::Compound(Vec::new()), span)
     }
 
     fn intern(&mut self, text: &str) -> Symbol {
@@ -1705,6 +1767,10 @@ impl<'a> Parser<'a> {
             self.oracle.enter_scope();
         }
         self.expect_punct(Punct::LBrace, "to open a block");
+        // A frame for this block's local labels, whatever the typedef scope is doing —
+        // `__label__` is scoped to the *block*, and `own_scope` is false for a function body
+        // whose parameters were already scoped by the declarator.
+        self.local_labels.push(Vec::new());
         let mut stmts = Vec::new();
         while !self.at_end() && !self.is_punct(0, Punct::RBrace) {
             let before = self.pos;
@@ -1724,11 +1790,17 @@ impl<'a> Parser<'a> {
         if own_scope {
             self.oracle.exit_scope();
         }
+        self.local_labels.pop();
         let span = self.span_from(start);
         self.ast.add_stmt(StmtKind::Compound(stmts), span)
     }
 
     fn block_item(&mut self) -> StmtId {
+        if self.is_kw(0, Kw::Label) {
+            let start = self.pos;
+            self.pos += 1;
+            return self.local_label_decl(start);
+        }
         if self.is_kw(0, Kw::StaticAssert) {
             let start = self.pos;
             let d = self.static_assert();
@@ -1980,7 +2052,7 @@ impl<'a> Parser<'a> {
                 match self.peek().map(|t| t.kind) {
                     Some(TokKind::Ident(s)) => {
                         self.pos += 1;
-                        StmtKind::Goto(s)
+                        StmtKind::Goto(self.label_symbol(s))
                     }
                     _ => {
                         let here = self.here();
@@ -2104,6 +2176,7 @@ impl<'a> Parser<'a> {
             (self.peek().map(|t| t.kind), self.is_punct(1, Punct::Colon))
         {
             self.pos += 2;
+            let name = self.label_symbol(name);
             let body = self.statement();
             let span = self.span_from(start);
             return self.ast.add_stmt(StmtKind::Label { name, body }, span);
