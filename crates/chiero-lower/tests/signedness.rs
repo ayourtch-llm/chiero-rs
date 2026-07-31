@@ -463,4 +463,99 @@ fn a_signed_division_whose_quotient_does_not_fit_is_reported() {
              hardware makes a trap: {kinds:?}"
         );
     }
+
+    // **Both halves of the condition need a control, and mutation is what said so.** The clause
+    // fires on one pair of operands; dropping *either* half — so that any `INT_MIN / x` reports, or
+    // any `x / -1` does — survived every fixture above, because none of them divides the most
+    // negative value by anything ordinary or an ordinary value by `-1`. gcc runs both clean.
+    for (what, src) in [
+        (
+            "INT_MIN by an ordinary divisor",
+            "int probe(void) { int a = -2147483647 - 1; int b = 5; return a / b; }",
+        ),
+        (
+            "an ordinary dividend by -1",
+            "int probe(void) { int a = 5; int b = -1; return a / b; }",
+        ),
+        (
+            "INT_MIN by -1 in unsigned arithmetic",
+            "int probe(void) { unsigned a = 2147483648u; unsigned b = 4294967295u; \
+             return (int)(a / b); }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            !kinds.contains(&UbKind::SignedOverflow),
+            "`{what}` is ordinary arithmetic and reporting it is a false positive: {kinds:?}"
+        );
+    }
+}
+
+/// **Signed overflow at the *bottom* of the range, which nothing reached.**
+///
+/// The overflow clause tests `v < lo || v > hi`, and dropping the `v < lo` half survived every
+/// fixture — the grid had three operators and one direction. `INT_MIN - 1` is the plainest case
+/// there is, and gcc says exactly that: "signed integer overflow: -2147483648 - 1 cannot be
+/// represented in type 'int'".
+#[test]
+fn signed_overflow_below_the_range_is_reported() {
+    for (what, src) in [
+        (
+            "subtraction below INT_MIN",
+            "int probe(void) { int a = -2147483647 - 1; int b = 1; return a - b; }",
+        ),
+        (
+            "addition below INT_MIN",
+            "int probe(void) { int a = -2147483647 - 1; int b = -1; return a + b; }",
+        ),
+        (
+            "multiplication below INT_MIN",
+            "int probe(void) { int a = -2147483647 - 1; int b = 2; return a * b; }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::SignedOverflow),
+            "`{what}` leaves the signed range at the bottom, which is as undefined as leaving it \
+             at the top: {kinds:?}"
+        );
+    }
+}
+
+/// **Division by zero, on all four operators.**
+///
+/// The clause names `UDiv`, `SDiv`, `URem` and `SRem`, and mutation says only the first was
+/// observed by any fast fixture: restricting it to `UDiv`, or dropping the remainders, survived.
+/// The generated corpus grades `DivByZero` at 30/30 and presumably covers them, but a channel that
+/// takes twenty seconds is not where a one-line clause should be pinned — and "presumably" is the
+/// word this project keeps paying for.
+///
+/// C11 6.5.5p5 makes both `/` and `%` undefined when the second operand is zero, whatever the
+/// signedness, and UBSan says "division by zero" for all four.
+#[test]
+fn division_by_zero_is_reported_for_every_operator() {
+    for (what, src) in [
+        (
+            "signed /",
+            "int probe(void) { int a = 7; int b = 0; return a / b; }",
+        ),
+        (
+            "signed %",
+            "int probe(void) { int a = 7; int b = 0; return a % b; }",
+        ),
+        (
+            "unsigned /",
+            "int probe(void) { unsigned a = 7u; unsigned b = 0u; return (int)(a / b); }",
+        ),
+        (
+            "unsigned %",
+            "int probe(void) { unsigned a = 7u; unsigned b = 0u; return (int)(a % b); }",
+        ),
+    ] {
+        let kinds = ub_kinds(src);
+        assert!(
+            kinds.contains(&UbKind::DivByZero),
+            "`{what}` by zero is undefined under C11 6.5.5p5 whatever the signedness: {kinds:?}"
+        );
+    }
 }
