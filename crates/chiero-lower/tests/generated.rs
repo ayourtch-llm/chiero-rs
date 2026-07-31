@@ -2362,6 +2362,75 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
     assert_eq!(p2, prelude);
 }
 
+/// **The corpus emits no multi-dimensional array and no `typeof`.**
+///
+/// Wave 277's rule was "ship a construct, then check the corpus can reach it — in the same wave",
+/// and I have broken it in every wave since. Of what has landed, only vectors are in the
+/// generator: `typeof` (283), `_Generic` (275), `__label__` (276), `__builtin_offsetof` (280),
+/// the classification builtins (271), alignment specifiers (282) and **multi-dimensional
+/// arrays** (278) are all graded by hand fixtures alone.
+///
+/// # These two, and why they are not an arbitrary two
+///
+/// **A 2-D array is the shape that hid wave 278's worst defect.** `int a[2][3]` was typed
+/// `int a[3][2]` for the entire life of the project, and the corpus emits one-dimensional arrays
+/// only — so the channel that exists to find exactly this class could not. The fix is the corpus
+/// change that would have caught it: a **non-square** array, because a square one is its own
+/// reverse.
+///
+/// **`typeof` is one wave old and in 37 VPP files.** It is also nearly free to emit: a
+/// declaration whose type is copied from a variable already in scope.
+///
+/// # What this asserts, and what it does not
+///
+/// Presence, at the shapes the hand fixtures showed were load-bearing. Presence is not
+/// discrimination — the justification is the mutation sweep in the commit that satisfies this,
+/// not this test.
+#[test]
+fn the_corpus_reaches_recent_constructs() {
+    let (mut md, mut nonsquare, mut md_read, mut tyof) = (0usize, 0usize, 0usize, 0usize);
+    for seed in 0..600u64 {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        let mut saw_md = false;
+        let mut saw_ns = false;
+        for l in all.lines() {
+            let t = l.trim();
+            // `T name[N][M]` — two bracket groups on one declaration.
+            if let Some(open) = t.find('[')
+                && t[open..].matches('[').count() >= 2
+                && t.contains("];")
+                && !t.contains('(')
+            {
+                saw_md = true;
+                let dims: Vec<&str> = t[open..]
+                    .split(']')
+                    .filter_map(|p| p.strip_prefix('['))
+                    .collect();
+                if dims.len() >= 2 && dims[0] != dims[1] {
+                    saw_ns = true;
+                }
+            }
+            if t.contains("__typeof__") {
+                tyof += 1;
+            }
+            // A read of two subscripts in an expression.
+            if t.contains("][") && !t.contains("];") {
+                md_read += 1;
+            }
+        }
+        md += usize::from(saw_md);
+        nonsquare += usize::from(saw_ns);
+    }
+    assert!(md >= 20, "a multi-dimensional array is declared: {md}");
+    assert!(
+        nonsquare >= 20,
+        "a **non-square** one, since a square array is its own reverse: {nonsquare}"
+    );
+    assert!(md_read >= 20, "its elements are read: {md_read}");
+    assert!(tyof >= 20, "`typeof` is used: {tyof}");
+}
+
 /// **The corpus contains no vectors at all, and three waves of them went in on hand fixtures.**
 ///
 /// Waves 272, 273 and 274 built `vector_size` out — initializers, subscripts, elementwise
