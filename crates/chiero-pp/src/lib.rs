@@ -2112,8 +2112,17 @@ fn divide(left: IfValue, right: IfValue, remainder: bool) -> IfValue {
 }
 
 fn parse_if_literal(token: &Tok) -> IfValue {
-    if matches!(token.token.kind, PpTokenKind::CharLit { .. }) {
-        return IfValue::signed(parse_char_constant(&token.text));
+    if let PpTokenKind::CharLit { prefix } = token.token.kind {
+        // The prefix is the type. `u'x'` is `char16_t` and `U'x'` is `char32_t`, both unsigned
+        // integer types; `'x'` is `int`, `u8'x'` is `unsigned char` and promotes to `int`, and
+        // `L'x'` is `wchar_t` — signed under the System V ABI this engine models, though unsigned
+        // on some targets. All of them spell the same value, so only the signedness distinguishes
+        // them, and only in the arithmetic that follows.
+        let unsigned = matches!(prefix, EncPrefix::Utf16 | EncPrefix::Utf32);
+        return IfValue {
+            bits: parse_char_constant(&token.text) as u64,
+            unsigned,
+        };
     }
     let explicit_unsigned = token.text.bytes().any(|byte| matches!(byte, b'u' | b'U'));
     let digits = token.text.trim_end_matches(['u', 'U', 'l', 'L']);
