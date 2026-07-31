@@ -2611,6 +2611,57 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **The corpus emits no alignment specifier.**
+///
+/// The last of wave 277's six lagging constructs, and the only one left untried — the
+/// multi-dimensional array is measured out (wave 284).
+///
+/// # It needs two halves, and neither alone is worth anything
+///
+/// `_Alignas(32)` on a declaration is invisible: it changes no value the checksum reads. The
+/// only observable is `_Alignof` **of that object**, which is why wave 282 needed both a
+/// per-declaration channel and a way to read it back. So the corpus has to emit the specifier
+/// *and* an expression that asks about it, and the expression has to name the object that
+/// carries it.
+///
+/// # Which makes it an expression wrapper after all
+///
+/// `_Alignof(v) == 32 ? e : 0` is a **selector**, the shape wave 285 established: no arithmetic
+/// that can overflow, no storage, no statement. If the specifier is dropped, `_Alignof` answers
+/// the type's natural alignment, the branch flips and the value changes — which is exactly the
+/// wave-282 defect, and exactly what a corpus is for.
+#[test]
+fn the_corpus_reaches_alignment_specifiers() {
+    let (mut spec, mut observed) = (0usize, 0usize);
+    for seed in 0..600u64 {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        if !all.contains("_Alignas(") {
+            continue;
+        }
+        spec += 1;
+        // The specifier is worth nothing unless something asks about the object that carries it.
+        for l in all.lines() {
+            let t = l.trim();
+            // `_Alignas(32) unsigned long v7 = …;` — the name is the token before the `=`,
+            // since the type can be two or three words.
+            if t.starts_with("_Alignas(")
+                && let Some((decl, _)) = t.split_once(" = ")
+                && let Some(name) = decl.split_whitespace().last()
+                && all.contains(&format!("_Alignof({name})"))
+            {
+                observed += 1;
+                break;
+            }
+        }
+    }
+    assert!(spec >= 20, "an alignment specifier is emitted: {spec}");
+    assert!(
+        observed >= 20,
+        "and `_Alignof` asks about the object that carries it: {observed}"
+    );
+}
+
 /// **The corpus emits no `__label__`.**
 ///
 /// The last of wave 277's six lagging constructs that is worth adding — the multi-dimensional
