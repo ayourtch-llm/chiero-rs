@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 282) — 1429 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 283) — 1430 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,31 +808,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🔴 A requested alignment on a variable is still not honoured
+> ### 🟢 The declarator census is closed — five defects, five waves, all fixed
 >
-> Wave 281 split §9's old "`_Alignas` is ignored" item in two and fixed the half that needs no
-> specifier (`_Alignof(expr)` was returning a *size*). What remains, with its observed failure:
+> Wave 278's census of the **declarator grammar** ran twenty-seven shapes against gcc and found
+> five wrong answers. All are now closed:
 >
->     _Alignas(16) int x = 3; return (int)_Alignof(x);      chiero 4,  gcc 16
->     _Alignas(16) int x = 3; return (int)((long)&x & 15);  chiero 4,  gcc 0
->     int x __attribute__((aligned(16))) = 3;  — wrong the same way, both lines
+>   - reversed array dimensions, and C11 6.7.9p20 brace elision underneath it (278)
+>   - anonymous struct/union members (279)
+>   - `__builtin_offsetof`, so `<stddef.h>`'s `offsetof` works (280)
+>   - `_Alignof(expr)` returning a *size* (281)
+>   - a declarator's requested alignment never reaching the storage (282)
 >
-> The second line is the substantive one: the storage really is at the natural alignment, so a
-> program that aligns a buffer and relies on it gets a differently-aligned object silently.
+> Pointer-to-array indexing was struck as a symptom of the first. **That one census was the best
+> yield of the last fifteen waves**, and the axis it worked — the shape of a *declaration* — had
+> never been asked about before.
 >
-> **Reach is real**: `__attribute__((aligned(N)))` is in **16 VPP files directly and `aligned(`
-> in 266** — the cache-line macros expand to it. Only `_Alignas` spelled literally is absent.
+> **One limit is left undone deliberately.** `__attribute__((aligned(1)))` should *reduce* an
+> object's alignment to 1, and gcc accepts it; `_Alignas(1)` is a constraint violation gcc
+> rejects. Both arrive in chiero as one `aligned` attribute, so telling them apart needs the
+> parser to record which spelling was written. `max` is right for every raising use and the
+> reducing direction appears nowhere in the target.
 >
-> **Why it is its own wave.** Both spellings already land in the syntactic type's attrs — the
-> parser translates `_Alignas(N)` into an `aligned` attribute — and `Cx::aligned_attr` already
-> reads them for *record layout*. What is missing is a per-**declaration** channel: sema's
-> `values` map is name→`TyId` with no `DeclId`, so nothing can get from an identifier back to the
-> alignment its declaration asked for, and `alloca_for` is handed `align_of(ty)`. A
-> `decl_aligns: IndexMap<DeclId, u64>` on `Analysis` is the shape the `enum_refs` and
-> `generic_selections` precedents suggest.
->
-> **Only the variable path is broken**: `struct A { char c; _Alignas(16) int v; }` already sizes,
-> offsets and aligns correctly.
+> **Where to look next, now that every named axis is run.** `ExprKind`, `StmtKind`, the CIR
+> enums, `UbKind`, `Kw::`, the declarator grammar and the preprocessor have all been censused.
+> What has not: **`TypeKind`** — which type forms can the AST hold, and which does anything
+> exercise? It is the one grammar-shaped enum left, and the declarator census's yield came from
+> exactly that neighbourhood.
 >
 > ### 🔴 The generator's grammar is the frontier again — ask what the AST can hold
 >
@@ -2020,6 +2021,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A specifier is attached where the *parser* put it, not where the feature lives** (wave 282).
+> `_Alignas(32) int a[4]` puts the attribute on the `int` node while the declaration's type is the
+> array wrapper `declarator_suffixes` built around it, so reading the outermost node found
+> nothing. **Before reading an attribute off a type node, ask which node the declarator left it
+> on** — and whether a typedef can be carrying it instead, which is a second place entirely.
+>
+> **A fixture that checks an address cannot see an alignment the runtime already gives you** (wave
+> 282). The file-scope mutant survived because the engine places globals generously: `&g & 63` is
+> 0 whether or not the request was honoured. `_Alignof(g)` reads the number the object actually
+> carries. **When testing that a request was recorded, read the record, not a consequence that
+> something else also produces.**
+>
+> **Two spellings of one feature can disagree in one direction only** (wave 282). `_Alignas` and
+> `__attribute__((aligned))` are identical for raising an alignment — the parser rewrites the
+> first into the second — and differ for lowering it: gcc *rejects* `_Alignas(1) int x` and
+> accepts `aligned(1)`, which really does reduce. A RED asserted the wrong thing there until gcc
+> refused to compile it. **Check both spellings at the boundary, not only in the middle.**
 >
 > **A clean census is a result, and it hands the wave back** (wave 281). The preprocessor was §9's
 > last unrun axis: forty-four probes found **no silent wrong answer**, and all three gaps are
