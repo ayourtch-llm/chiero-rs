@@ -1837,6 +1837,86 @@ fn a_havoc_range_refusal_says_why() {
     );
 }
 
+/// **An uninitialized havoc of a promoted object resets its array's `init` mask.**
+///
+/// The branch wave 267 could not reach, reached. `HavocFill::Uninitialized` has two halves — clear
+/// the byte contents, and if the object is a `Repr::Array` reset the array's mask — and only the
+/// first was tested. Forcing the mask to all-ones or skipping the branch survived every fixture.
+///
+/// **`promote_to_array` is called directly, and that is the point rather than a shortcut.** Wave
+/// 267 spent itself trying to reach this state through an operation: `havoc_range` *refuses* a
+/// promoted object outright, a sixteen-byte object's symbolic offset enumerates so nothing
+/// promotes, and a sixty-four-byte `write_sym` still left `Repr::Bytes`. Promotion is a public
+/// operation on the memory model and this is a unit test of that model, so the honest way to test
+/// a state is to put the model in it. With this, the branch runs — instrumenting it prints
+/// `Repr::Array` where every previous attempt printed `Bytes`.
+///
+/// # And the mask reset is still not independently observable
+///
+/// Reaching the branch is not the same as seeing what it does, and the two mutants against it
+/// survive this fixture too. A read of a promoted object reports `SymbolicByte` — its contents are
+/// an SMT array, so there is no concrete byte to hand back — and it reports that *identically*
+/// whether the mask says initialized or not. Both faults are in `yields_unknown_value`, so the
+/// engine discards the value either way and the outcome a caller sees is the same.
+///
+/// So the reset changes which *kind* is reported, not whether the value is trusted, and no read can
+/// tell the two apart. The assertion below is therefore about the property that is real — the value
+/// must not be believed — rather than about a fault kind the branch does not decide. §9 carries the
+/// rest: making the kind observable would need the mask exposed, and that is an API question rather
+/// than a missing fixture.
+///
+/// What the branch is for was a bug once, in the other direction: "promotion is one-way within a
+/// state. Clearing `arr` here de-promoted a promoted object and discarded its array contents, so a
+/// read after it answered from stale bytes." Without the mask reset the same shape returns —
+/// contents cleared, mask still claiming every bit is initialized, and a read after an unmodelled
+/// call answering confidently from memory the callee may have left in any state.
+///
+/// **Read through `read_sym`, because the concrete `read` cannot see the mask.** A byte-wise read of
+/// a promoted object reports `SymbolicByte` — the contents live in an SMT array and there are no
+/// concrete bytes to return — and it reports that identically before and after the havoc. The
+/// symbolic path is the one that consults `arr.init`, so it is the only one that can observe this
+/// branch at all.
+#[test]
+fn an_uninitialized_havoc_of_a_promoted_object_resets_its_init_mask() {
+    let mut a = TermArena::new();
+    let mut m = Memory::new();
+    let o = m.alloc(ObjKind::Heap, 16, 8, sp(1));
+    m.set(ptr(o, 0), 0xAB, 16, sp(2));
+    m.promote_to_array(&mut a, o);
+
+    // The control: promoted and fully written, nothing says *uninitialized*. Without it a fix that
+    // reported everything after a promotion would satisfy the assertion below.
+    //
+    // It asks about the initialization faults rather than about silence, because a concrete `read`
+    // of a promoted object legitimately reports `SymbolicByte`: the contents now live in an SMT
+    // array and there are no concrete bytes to hand back. That is 021 contract 6 holding — the
+    // *value and its initialization status* survive promotion, the representation does not — and
+    // asserting `faults.is_empty()` here fails on correct behaviour, which is how the first version
+    // of this test went red.
+    let zero = a.bv(64, 0);
+    let mut cx = AccessCtx::new();
+    let r = m.read_sym(&mut cx, &mut a, o, zero, 1, sp(3));
+    assert!(
+        !r.faults.iter().any(|f| matches!(
+            f,
+            MemFault::Uninitialized { .. } | MemFault::MaybeUninitialized { .. }
+        )),
+        "the object is fully written, and promotion changes only how it is stored: {:#?}",
+        r.faults
+    );
+
+    let h = m.havoc(&mut a, &[o], 0, HavocFill::Uninitialized, sp(4));
+    assert!(!h.objects.is_empty(), "the havoc must reach the object");
+
+    let r = m.read_sym(&mut cx, &mut a, o, zero, 1, sp(5));
+    assert!(
+        r.faults.iter().any(|f| f.yields_unknown_value()),
+        "a callee with no model may have left this byte in any state, so the read must not hand \
+         back a value the caller would believe: {:#?}",
+        r.faults
+    );
+}
+
 /// **An uninitialized havoc after a symbolic write still uninitializes the object.**
 ///
 /// Named for what it does, which is less than it was written to do. `HavocFill::Uninitialized` has
