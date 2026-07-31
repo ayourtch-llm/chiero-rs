@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 257) — 1401 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 258) — 1402 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1572,44 +1572,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   *silent* fallback in a module whose entire point is not having one — if a front end ever
 >   accepts such a literal, that arm should push a diagnostic instead.
 >
-> ### 🔴 Do this first: three extension sites nothing can observe
+> ### ✅ Closed in waves 256–257 — the four unobservable extension sites
 >
-> **Wave 254 audited `is_signed`'s twelve callers and found no defect** — the four that decide an
-> extension all take an operand already materialised at its promoted type, which is the right thing
-> to ask. Twelve differential fixtures agree with gcc.
+> Wave 254 audited `is_signed`'s extension callers, found no defect, and found that its twelve
+> fixtures observed **one** of the four decisions. Waves 256 and 257 closed the other three, and not
+> one of them needed a better fixture.
 >
-> **But mutation says those fixtures observe one site of four.** Forcing each decision the wrong way:
-> plain-widening `SExt`/`ZExt` dies; `widen_to_64`'s signedness, the array-index extension, and
-> `SiToFp`/`UiToFp` all survive. `narrow_unsigned_values_extend_the_same_way_gcc_extends_them`
-> carries the table and the reasons.
+> **Three were duplicates.** `convert_for_store`'s inline `SiToFp`/`UiToFp` (256), the array-index
+> `SExt`/`ZExt`, and `widen_to_64`'s own choice (both 257) each spelled out a decision `cast_kind`
+> already made. They agreed, so nothing was fixed — but in every case the copy nothing could observe
+> *was* the duplicate, and the mutation that survived at the copy dies at the shared site. There is
+> now one place in `chiero-lower` that decides a cast kind.
 >
-> **The three failures are each a small, separate question.**
+> **The fourth needed a different oracle.** `widen_to_64` forced to sign-extend survives every value
+> comparison, and structurally must: an index is promoted to `int` first, so the only narrow
+> unsigned source is a 32-bit `unsigned`, and its top bit being set means an index of at least
+> `2^31` — never in bounds. Sign- and zero-extension cannot disagree about an index a program can
+> legally form. `an_index_widens_by_its_own_signedness` in `shapes.rs` asserts the *emitted
+> instruction* instead, and the mutant dies.
 >
->   1. **The array index.** A discriminating unsigned index needs its top bit set — `i = 200` for
->      `unsigned char` — which needs an array with an element 200. Seeding one with a loop exceeds
->      the engine's budget and the fixture returns nothing. Try a designated initializer
->      (`int a[256] = {[200] = 7};`) if lowering supports one, or a global array, which needs no
->      seeding code at all.
->   2. **`widen_to_64`.** Called from two pointer-arithmetic paths (lines ~3211 and ~4094). A fixture
->      has to reach one of them with a narrow *unsigned* operand whose top bit is set; `p += c` with
->      `unsigned char c = 200` is the shape, and it needs an object big enough for the result to be
->      in bounds.
->   3. ~~**`SiToFp`/`UiToFp`**~~ **Closed in wave 256, by deletion.** The inline copy in
->      `convert_for_store` is gone; it asks `cast_kind`, which already decided this for every other
->      conversion. They agreed, so nothing was fixed — **the reason to do it is the coverage**:
->      mutating the inline arm survived every fixture, and the identical mutation inside `cast_kind`
->      dies both ways round. Wave 255 spent itself trying to build a fixture that could see the
->      inline arm; deleting it answered the question instead.
->
->      One survivor is recorded beside the call: swapping `is_signed(from)` for `to_signed` in the
->      argument list survives, because the two hold the same value for every input that reaches
->      there and `cast_kind`'s `Int -> Float` arm ignores the destination anyway.
->
->      **The other two items above are unchanged and are now the front.** Both are still unobserved:
->      `widen_to_64`'s signedness and the array-index `SExt`/`ZExt`. The lesson from item 3 applies
->      to both — before building more fixtures, ask whether the site can be *deduped into* one that
->      is already watched. `widen_to_64` in particular emits a cast whose kind `cast_kind` could
->      decide.
+> **The transferable rule, which cost waves 254 and 255 to find:** when a mutant survives, ask in
+> order — is this site a duplicate of one already watched? can the decision change an answer at all?
+> — before writing another fixture. Wave 255 spent an entire wave on fixtures for a site that
+> should not have existed.
 >
 > ### ✅ Closed in wave 253 — the generator now catches the bit-field defect
 >
@@ -1729,6 +1714,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > struct, not to touch values again.
 >
 > ### Rules earned, most recent first
+>
+> **When a decision cannot change an answer, assert the artifact instead of the answer** (wave 257).
+> `widen_to_64`'s signedness is real and reachable and provably cannot alter any value a legal
+> program produces — the discriminating index is always out of bounds. No differential fixture can
+> ever see it; a `shapes.rs` assertion on the emitted `sext`/`zext` sees it immediately. **A
+> surviving mutant is not always a missing fixture; sometimes it is the wrong oracle.**
+>
+> **Ask "should this site exist" before "what fixture would reach it"** (waves 256–257). Four
+> extension decisions were unobservable. Three were duplicates and went away; one needed a different
+> oracle. **Zero needed a better fixture** — and wave 255 spent itself writing them.
 >
 > **Deleting an untestable site is a legitimate way to close a coverage gap** (wave 256). Wave 255
 > spent itself trying to build a fixture that could observe `convert_for_store`'s inline
