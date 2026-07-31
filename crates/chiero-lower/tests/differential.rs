@@ -2890,6 +2890,94 @@ fn a_float_on_the_right_of_a_short_circuit_agrees_with_gcc() {
     agree("int x = 0; return 1 || x;");
 }
 
+/// **A vector's braced initializer is silently dropped, and every lane reads back zero.**
+///
+///     v4si x = {1,2,3,4}; return x[2];   chiero says 0, gcc says 3
+///
+/// A **wrong answer**, which is the worst outcome there is — not a refusal, not a declared gap.
+/// `lower::init_list` builds its slot list from `Ty::Record` and `Ty::Array` and lets everything
+/// else fall out of a bare `_ => return`. A vector goes down that path, the initializer is
+/// discarded, and the object keeps whatever it had.
+///
+/// # How it was found
+///
+/// Wave 271 censused `CmpOp` and found dead opcodes were the fingerprint of a missing feature.
+/// Running the same census over every CIR enum: `CTy::Vector`, `RValue::Splat`, `Shuffle`,
+/// `InsertLane`, `ExtractLane` and `Const::Wide` all have executor arms, CIR tests and a text
+/// format — and **no producer in lowering at all**. GCC's `vector_size` is the C-level feature
+/// they were built for, and it is not decoration: VPP, this project's stated target, is written
+/// in it.
+///
+/// The census predicted a *missing* feature. What the probe found is worse than missing — the
+/// type is half-supported. `sizeof` is right, and a subscript store followed by a load is right,
+/// so nothing announces that the type is not really there.
+///
+/// # 020 §5, which this is the exact counter-example to
+///
+/// "A gap is a diagnostic rather than a licence." The `_ => return` is a licence: it declines to
+/// initialize and says nothing, so 015 §7 never refuses the function and the differential oracle
+/// gets a confident wrong number instead of a skip.
+///
+/// # `{0}` is the control that says why this went unnoticed
+///
+/// It is the one shape that agrees, because a dropped initializer leaves zeroes and `{0}` wanted
+/// zeroes. Any fixture written with the obvious smoke-test initializer would have passed.
+#[test]
+fn a_vector_s_braced_initializer_is_stored() {
+    let si = "typedef int v4si __attribute__((vector_size(16)));";
+    // The controls: everything about the type that already works.
+    agree_with(si, "return (int)sizeof(v4si);");
+    agree_with(si, "v4si x; return (int)sizeof(x);");
+    agree_with(si, "v4si x; x[0] = 7; x[3] = 9; return x[0] + x[3];");
+    agree_with(si, "int a[4] = {1,2,3,4}; return a[2];");
+    // **The accidental pass.** A dropped initializer leaves zeroes, and this one wanted zeroes.
+    agree_with(si, "v4si x = {0}; return x[1];");
+    // The defect, on every lane.
+    agree_with(si, "v4si x = {1,2,3,4}; return x[0];");
+    agree_with(si, "v4si x = {1,2,3,4}; return x[1];");
+    agree_with(si, "v4si x = {1,2,3,4}; return x[2];");
+    agree_with(si, "v4si x = {1,2,3,4}; return x[3];");
+    // The bytes really are not there, not merely unreadable through a subscript.
+    agree_with(si, "v4si x = {1,2,3,4}; return ((int*)&x)[2];");
+    agree_with(si, "v4si x = {1,2,3,4}; int *p = (int*)&x; return p[2];");
+    // A short initializer zero-fills the rest, and a designator repositions — the two rules
+    // `init_list` already implements for arrays and never got to apply here.
+    agree_with(
+        si,
+        "v4si x = {1,2}; return x[0] + x[1]*10 + x[2]*100 + x[3]*1000;",
+    );
+    agree_with(si, "v4si x = {[2] = 5}; return x[2];");
+    agree_with(si, "v4si x = {[1] = 3, 4}; return x[1]*10 + x[2];");
+    // A copy of an initialized vector.
+    agree_with(si, "v4si x = {1,2,3,4}; v4si y = x; return y[2];");
+    // **Static and file-scope storage take a different path**, and it is broken too.
+    agree_with(
+        "typedef int v4si __attribute__((vector_size(16))); static v4si g = {1,2,3,4};",
+        "return g[2];",
+    );
+    agree_with(
+        "typedef int v4si __attribute__((vector_size(16))); v4si g = {5,6,7,8};",
+        "return g[3];",
+    );
+    // Every element type, since the lane size is what the slot walk has to get right.
+    agree_with(
+        "typedef float v4sf __attribute__((vector_size(16)));",
+        "v4sf f = {1.5f,2.5f,3.5f,4.5f}; return (int)f[1];",
+    );
+    agree_with(
+        "typedef char v8qi __attribute__((vector_size(8)));",
+        "v8qi c = {1,2,3,4,5,6,7,8}; return c[5];",
+    );
+    agree_with(
+        "typedef double v2df __attribute__((vector_size(16)));",
+        "v2df d = {1.5,2.5}; return (int)(d[0] + d[1]);",
+    );
+    agree_with(
+        "typedef long v2di __attribute__((vector_size(16)));",
+        "v2di l = {7,8}; return (int)l[1];",
+    );
+}
+
 /// **C's floating classification macros are refused, and CIR has had the opcodes all along.**
 ///
 ///     `probe` contains a construct lowering cannot represent, so it was skipped
