@@ -1216,6 +1216,13 @@ impl Cx<'_> {
             }
             TypeKind::Array { elem, len } => {
                 let e = self.ty_of(elem);
+                // **An array needs its element's size, whatever its own length is.** Without one
+                // there is no stride, so `a[1]` has no address — which is why this is an error
+                // even for `extern struct I arr[];`, where the *array's* length is legitimately
+                // unknown. The two unknowns are not the same unknown.
+                if matches!(self.out.types[e.0 as usize], Ty::Error) {
+                    self.error(node.span, "array has an incomplete element type");
+                }
                 let l = match len {
                     chiero_ast::ArrayLen::Zero => ArrayLen::Zero,
                     chiero_ast::ArrayLen::Unspecified | chiero_ast::ArrayLen::Star => {
@@ -2875,7 +2882,15 @@ impl Cx<'_> {
             // corpus handed the intrinsic an unknown byte count.
             ExprKind::SizeofExpr(inner) => {
                 let inner = *inner;
-                self.type_expr(inner);
+                let node = self.type_expr(inner);
+                // **`sizeof` of an incomplete type has no answer** (C 6.5.3.4p1). Checked on the
+                // operand's type rather than on its spelling, so `sizeof(*p)` is caught as well
+                // as `sizeof(struct I)` — the dereference is where the size is actually asked
+                // for, and it is the spelling that appears in real code.
+                let operand_ty = self.out.typed.ty_of(node);
+                if matches!(self.out.types[operand_ty.0 as usize], Ty::Error) {
+                    self.error(span, "`sizeof` applied to an incomplete type");
+                }
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -2908,7 +2923,10 @@ impl Cx<'_> {
                 // `sizeof(__typeof__(x))` for a local `x` had nothing that could answer it.
                 // Resolving here records the node in `syntactic_types`, which is what lets a
                 // consumer holding the AST `TypeId` ask what it became.
-                self.ty_of(*t);
+                let operand_ty = self.ty_of(*t);
+                if matches!(self.out.types[operand_ty.0 as usize], Ty::Error) {
+                    self.error(span, "`sizeof` applied to an incomplete type");
+                }
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -3181,6 +3199,22 @@ impl Cx<'_> {
         // no common type, and forcing one would turn a pointer into an integer.
         let is_ptr = |cx: &Cx, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Ptr(_));
         if is_ptr(self, aty) || is_ptr(self, bty) {
+            // **Arithmetic on a pointer scales by the pointee's size, so the pointee must have
+            // one.** Comparisons are excluded deliberately: `p == q` and `p < q` need no stride,
+            // and two opaque handles are compared all the time. This is the check the
+            // `size_of_ty(..).unwrap_or(1)` in `addr_of` was standing in for — badly, since one
+            // byte is exactly the stride of a `char` and so the wrong answer looked like a right
+            // one for any code that happened to use byte offsets.
+            if matches!(op, BinOp::Add | BinOp::Sub) {
+                for t in [aty, bty] {
+                    if let Ty::Ptr(pointee) = self.out.types[t.0 as usize]
+                        && matches!(self.out.types[pointee.0 as usize], Ty::Error)
+                    {
+                        self.error(span, "arithmetic on a pointer to an incomplete type");
+                        break;
+                    }
+                }
+            }
             let ty = match op {
                 BinOp::Sub if is_ptr(self, aty) && is_ptr(self, bty) => self.intern(Ty::Int {
                     signed: true,
@@ -3407,6 +3441,19 @@ impl Cx<'_> {
     /// under a hundred copies.
     fn check_complete(&mut self, id: DeclId, ty: TyId) {
         if !matches!(self.out.types[ty.0 as usize], Ty::Error) {
+            return;
+        }
+        // **C 6.9.2p3: an `extern` declaration with no initializer is not a definition**, so no
+        // size is needed here — the object is defined in another translation unit, and that is
+        // where its type is completed. This is the opaque-handle idiom one indirection down, and
+        // rejecting it turns a correct program into a broken one.
+        if let DeclKind::Var {
+            ref storage,
+            init: None,
+            ..
+        } = self.ast.decl(id).kind
+            && storage.extern_
+        {
             return;
         }
         let span = self.ast.decl(id).span;
