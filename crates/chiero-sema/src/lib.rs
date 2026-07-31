@@ -459,6 +459,46 @@ impl Analysis {
         &self.records[id.0 as usize]
     }
 
+    /// A member by name, **searching through anonymous members** (C11 6.7.2.1p13).
+    ///
+    /// An unnamed member whose type is a struct or union has *its* members treated as members
+    /// of the containing type, so `s.a` may name something several records down. The returned
+    /// `FieldLayout` is rebased onto `rec`: its `offset` is from the start of `rec`, not of the
+    /// record that declared it, which is what makes it usable exactly like a direct member.
+    ///
+    /// **`bits.bit_offset` is rebased too, and that is the part worth stating.** It is
+    /// documented as absolute — bits from the start of *the record* — so promoting a bit-field
+    /// out of an anonymous struct has to add the anonymous member's byte offset in bits.
+    /// Adjusting `offset` alone leaves a `BitRange` pointing into the wrong storage unit, and
+    /// only a bit-field inside an anonymous struct that is not at offset zero can see it.
+    ///
+    /// **Named members win over anonymous ones**, and the search is depth-first in declaration
+    /// order. C forbids the ambiguity that would make the order matter — two members of the same
+    /// name reachable at one level — so this does not have to detect it to be right about every
+    /// program C accepts.
+    pub fn find_field(&self, rec: RecordId, name: Symbol) -> Option<FieldLayout> {
+        let l = self.records.get(rec.0 as usize)?;
+        if let Some(f) = l.fields.iter().find(|f| f.name == Some(name)) {
+            return Some(f.clone());
+        }
+        for f in &l.fields {
+            if f.name.is_some() {
+                continue;
+            }
+            let Some(Ty::Record(inner)) = self.types.get(f.ty.0 as usize) else {
+                continue;
+            };
+            if let Some(mut got) = self.find_field(*inner, name) {
+                got.offset += f.offset;
+                if let Some(b) = got.bits.as_mut() {
+                    b.bit_offset += f.offset * 8;
+                }
+                return Some(got);
+            }
+        }
+        None
+    }
+
     /// The record defined with this tag, if the TU defined one.
     pub fn record_by_tag(&self, tag: Symbol) -> Option<RecordId> {
         self.by_tag.get(&tag).copied()
@@ -2452,14 +2492,7 @@ impl Cx<'_> {
                     _ => None,
                 };
                 let ty = rec
-                    .and_then(|r| {
-                        self.out.records.get(r.0 as usize).and_then(|l| {
-                            l.fields
-                                .iter()
-                                .find(|f| f.name == Some(*field))
-                                .map(|f| f.ty)
-                        })
-                    })
+                    .and_then(|r| self.out.find_field(r, *field).map(|f| f.ty))
                     .unwrap_or_else(|| self.intern(Ty::Error));
                 self.push_typed(TypedNode::Value {
                     expr,
@@ -3251,13 +3284,7 @@ impl Cx<'_> {
                     Ty::Record(r) => r,
                     _ => return None,
                 };
-                let f = self
-                    .out
-                    .records
-                    .get(rec.0 as usize)?
-                    .fields
-                    .iter()
-                    .find(|f| f.name == Some(*field))?;
+                let f = self.out.find_field(rec, *field)?;
                 Some((name, off.checked_add(f.offset as i64)?, f.ty))
             }
             _ => None,

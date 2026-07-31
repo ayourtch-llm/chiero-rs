@@ -4148,9 +4148,10 @@ impl Lowerer<'_> {
             },
             _ => return None,
         };
-        let l = self.analysis.layout(rec);
-        let f = l.fields.iter().find(|f| f.name == Some(field))?;
-        Some((f.offset, f.clone()))
+        // `find_field`, not a direct scan: C11 6.7.2.1p13 makes an anonymous member's members
+        // members of the container, and it returns them rebased onto `rec`.
+        let f = self.analysis.find_field(rec, field)?;
+        Some((f.offset, f))
     }
 
     /// The element size of whatever `base` indexes.

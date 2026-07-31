@@ -2934,14 +2934,16 @@ fn an_anonymous_member_resolves_through_its_container() {
         "struct S { struct { int a; int b; }; int c; };",
         "struct S s; s.a = 1; s.b = 2; s.c = 3; return s.a*100 + s.b*10 + s.c;",
     );
-    // Its offsets, which is what a name lookup has to get right rather than merely find.
+    // **Its offsets**, which is what a name lookup has to get right rather than merely find.
+    // Written as an address difference because `__builtin_offsetof` parses its member argument as
+    // an ordinary identifier and reports "`b` was not declared" — a separate gap, recorded in §9.
     agree_with(
         "struct S { struct { int a; int b; }; int c; };",
-        "struct S s; return (int)__builtin_offsetof(struct S, b);",
+        "struct S s; return (int)((char*)&s.b - (char*)&s);",
     );
     agree_with(
         "struct S { struct { int a; int b; }; int c; };",
-        "struct S s; return (int)__builtin_offsetof(struct S, c);",
+        "struct S s; return (int)((char*)&s.c - (char*)&s);",
     );
     // A braced initializer fills through the anonymous member.
     agree_with(
@@ -2974,12 +2976,40 @@ fn an_anonymous_member_resolves_through_its_container() {
     );
     agree_with(
         "struct S { union { struct { int x; int y; }; long q; }; int t; };",
-        "struct S s; return (int)__builtin_offsetof(struct S, y);",
+        "struct S s; return (int)((char*)&s.y - (char*)&s);",
     );
     // A bit-field inside an anonymous struct, whose `BitRange` has to travel with the offset.
     agree_with(
         "struct S { struct { int a:3; int b:5; }; int c; };",
         "struct S s; s.a = 1; s.b = 2; s.c = 3; return s.a*100 + s.b*10 + s.c;",
+    );
+    // **The anonymous member is not at offset 0.** Every fixture above declares it first, so
+    // rebasing its members onto the container adds *zero* and a mutant that skipped the rebase
+    // survived them all — wave 278's square array in a new costume. Putting a named member ahead
+    // of it is the whole difference.
+    agree_with(
+        "struct S { int c; struct { int a; int b; }; };",
+        "struct S s; s.c = 3; s.a = 1; s.b = 2; return s.a*100 + s.b*10 + s.c;",
+    );
+    agree_with(
+        "struct S { int c; struct { int a; int b; }; };",
+        "struct S s; return (int)((char*)&s.b - (char*)&s);",
+    );
+    agree_with(
+        "struct S { char pad[6]; struct { int a; }; };",
+        "struct S s; s.a = 7; return s.a + (int)((char*)&s.a - (char*)&s);",
+    );
+    // **A bit-field in an anonymous member that is not at offset 0.** `BitField::bit_offset` is
+    // documented as absolute — bits from the start of *the record* — so promoting one has to add
+    // the anonymous member's byte offset in bits. Nothing else can see that adjustment.
+    agree_with(
+        "struct S { int c; struct { int a:3; int b:5; }; };",
+        "struct S s; s.c = 9; s.a = 1; s.b = 2; return s.a*100 + s.b*10 + s.c;",
+    );
+    // The `buffer.h` nesting, again with something in front of it.
+    agree_with(
+        "struct S { long g; union { struct { int x; int y; }; long q; }; int t; };",
+        "struct S s; s.x = 1; s.y = 2; s.t = 3; s.g = 4; return s.x*1000 + s.y*100 + s.t*10 + (int)s.g;",
     );
     // A single anonymous member and nothing else.
     agree_with(
