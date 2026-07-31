@@ -487,9 +487,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 309) — 1482 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 310) — 1484 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
+> **Next, and cheap: extend the no-diagnostics gate past the six VPP headers.** Wave 309 built it
+> and it found a defect on its first run. The differential fixtures, the canonical-use net and the
+> generated corpus are all C that gcc accepts, and *none* of them is checked for spurious
+> diagnostics — the gate covers six headers out of everything the project already compiles.
+>
+> **Then: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
 > incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
 > remaining rows that are about *types* rather than about statements, so they sit in the same part
 > of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
@@ -843,6 +848,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ~~**Next target: the `#if` evaluator deserves a differential channel of its own.**~~ **Built in
 > wave 298, and it found two defects on its first run** — see below.
+>
+> ### 🟢 The no-diagnostics gate — `semantics.rs::the_corpus_analyses_without_a_single_diagnostic`
+>
+> Wave 307 recorded that nothing asserted *correct* code produces no sema diagnostics. Wave 309
+> built it, in one assertion over machinery that already existed: `corpus_analyses` parses six real
+> VPP headers for the layout gate and already required the preprocessor and parser to be clean —
+> it simply never looked at sema.
+>
+> **It caught a false positive on its first run**, and that diagnostic was the *only* thing sema
+> said about the entire corpus, which is what made it obviously ours rather than a finding about
+> VPP: this is shipped C that gcc compiles in silence. `__func__` was reported undeclared and
+> every use of it produced no state at all.
+>
+> **`__func__` is now the object C99 6.4.2.2 says it is** — `static const char __func__[] = "name";`
+> at the top of every function body — implemented as that object rather than as a magic value, so
+> `sizeof(__func__)` is the name's length plus one and two functions of the same name share one
+> interned string. `__FUNCTION__` is the same object.
+>
+> **This gate is the cheapest one in the project and should be extended, not admired.** The corpus
+> is six headers; the differential fixtures, the canonical-use net and the generated corpus are all
+> C that gcc accepts, and none of them is checked for spurious diagnostics.
 >
 > ### 🔴 Wave 307's constraint census — one false positive fixed, sixteen gaps recorded
 >
@@ -2411,6 +2437,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Assert the absence, not just the presence** (wave 309). Three waves running produced false
+> positives that no test could see, because every test asked "does the engine get the right
+> *answer*" and none asked "does it also say something untrue on the way". One assertion over a
+> corpus that was already being parsed closed the whole class, and caught a defect on its first
+> run. **For every output an engine produces, there should be one test that it stays quiet when
+> it should** — and that test is usually far cheaper than the ones checking it speaks correctly.
+>
+> **When the oracle rejects the input, saying so beats skipping the case** (wave 309). gcc reserves
+> `__func__` in its parser, so no differential fixture could pin what a *declared* `__func__`
+> means — and that is exactly why the guard for it survived eight mutants. Using chiero as its own
+> oracle is right here only because the alternative is no test at all, and the site says so, so a
+> reader does not have to wonder why one assertion in a differential file compares against nothing.
 >
 > **The discriminators find more than the rule does** (wave 308). Both of this wave's deeper
 > defects came from the *accepted* list — cases written only to stop a new check being too broad.
