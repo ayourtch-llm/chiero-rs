@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 268) — 1410 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 269) — 1411 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -1770,22 +1770,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     only kinds that arrive there *with a value*, so for the rest the entry cannot change an answer.
 >     That difference is invisible in the mutation table and took one instrumented run. The list is
 >     unchanged and now carries the measurement.
->   - **the havoc paths** (024 §2.1) — swept in wave 267. Four of six mutants die; **the two that
->     survive are one branch, and nothing in the suite reaches it**: the uninitialized fill's reset
->     of a *promoted* object's `init` mask. Measured, not assumed — eight calls to that fill across
->     the whole suite, every one with `Repr::Bytes`.
+>   - **the havoc paths** (024 §2.1) — swept in 267, finished in 268. Four of six mutants die. The
+>     two that survive are the uninitialized fill's reset of a *promoted* object's `init` mask, and
+>     wave 268 established the whole story:
 >
->     **What has been ruled out, so the next attempt starts further along.** `havoc_range` refuses a
->     promoted object outright (its own comment lists "promoted" among the refusals), so any fixture
->     built on it takes the `Bytes` path while looking right. A sixteen-byte object's symbolic offset
->     enumerates and nothing promotes. A sixty-four-byte object written at `i & 63` through
->     `write_sym` still leaves `Repr::Bytes` — so promotion needs something else again; find what
->     actually sets `Repr::Array` and work backwards from there rather than forwards from a guess.
+>     **The branch is reachable** — `promote_to_array` is public, so a unit test puts the model in
+>     that state directly, and the branch then runs with `Repr::Array` where every attempt through an
+>     operation printed `Bytes`. (Ruled out on the way: `havoc_range` refuses promoted objects
+>     outright; a sixteen-byte object's symbolic offset enumerates; a sixty-four-byte `write_sym`
+>     still leaves `Bytes`.)
 >
->     The branch fixed a real bug once (de-promoting an object discarded its array contents and a
->     read answered from stale bytes), so "unreached" is not a case for deleting it.
+>     **Its effect is still not observable, and that is not a fixture problem.** A read of a promoted
+>     object reports `SymbolicByte` — the contents are an SMT array, there is no concrete byte —
+>     *identically* whether the mask says initialized or not. Both kinds are in
+>     `yields_unknown_value`, so the value is discarded either way. The reset changes which **kind**
+>     is reported, never whether the value is trusted.
 >
+>     **So this is an API question, not a missing test.** Observing it needs the init mask exposed —
+>     an accessor on `Memory`, or a fault kind that distinguishes "symbolic because promoted" from
+>     "symbolic because havocked". Worth doing only if the report-quality difference is worth an API;
+>     that judgement has not been made and should be made before more fixtures are attempted.
+
 > ### Rules earned, most recent first
+>
+> **Reaching a branch is not observing it** (wave 268). Two waves went into getting an object into
+> the state a havoc branch needs; the branch then ran, and the mutants survived anyway — because two
+> different fault kinds lead to the same outcome, and no read can tell them apart. **A mutant can
+> survive at a reachable, executing site**, and the next question is not "what fixture" but "what
+> could possibly differ downstream".
+>
+> **A control that fails may be asserting the wrong thing** (wave 268). The control here asserted
+> silence after promotion and went red; a concrete read of a promoted object reports `SymbolicByte`,
+> which is 021 contract 6 *holding* — the value and its initialization status survive, the
+> representation does not. **Check whether a failing control is a defect or a wrong expectation
+> before treating the code as broken.**
 >
 > **Survivors that look alike can differ in kind, and one measurement separates them** (wave 266).
 > Six entries in `unusable`'s list survived removal and read identically in the table. Instrumenting
