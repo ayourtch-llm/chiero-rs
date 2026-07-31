@@ -1440,9 +1440,20 @@ impl Cx<'_> {
             if let Some(&t) = name.and_then(|n| self.enums.get(&n)) {
                 return t;
             }
+            // **An enum tag whose enumerators have not been seen is incomplete**, and answering
+            // `int` made it indistinguishable from a complete one — so an object of that type,
+            // and a struct member of it, were accepted at four bytes.
+            //
+            // The lookup above is what keeps a *re*declaration after the definition legal:
+            // `enum E { A }; enum E; enum E e;` finds `E` in `enums` and never reaches here. Only
+            // a tag that has genuinely never been defined does.
+            //
+            // Unlike a struct tag this does not get a completable placeholder. An enum's complete
+            // form is `Ty::Int`, so there is no record to fill in later, and a reference written
+            // before the definition stays poisoned. That is a real limit, recorded in §9 — it
+            // costs nothing in standard C, where an enum cannot be forward-declared at all.
             let _ = span;
-            let bits = (self.target.sizes.int_ * 8) as u32;
-            return self.intern(Ty::Int { signed: true, bits });
+            return self.intern(Ty::Error);
         };
         let mut next = 0i128;
         let mut lo = 0i128;
@@ -1460,24 +1471,36 @@ impl Cx<'_> {
                 continue;
             };
             let v = match init {
-                Some(e) => match self.eval(e) {
-                    Some(v) => v.v,
-                    // **020 §5: a gap is a diagnostic rather than a licence.** Falling back to
-                    // `next` silently gave the enumerator exactly the value it would have had
-                    // with no initializer written, so a constant expression this engine cannot
-                    // fold was indistinguishable from one it folded correctly. That is how a
-                    // missing `sizeof` arm survived to be found by accident rather than by the
-                    // suite. The fallback is kept — an enumeration that stopped resolving would
-                    // cascade into every use of its type, exactly as for an array bound — but it
-                    // is now announced.
-                    None => {
-                        self.error(
-                            self.ast.expr(e).span,
-                            "enumerator value is not an integer constant expression",
-                        );
-                        next
+                Some(e) => {
+                    let before = self.out.diagnostics.len();
+                    let folded = self.eval(e);
+                    // **If the fold already explained itself, do not add a second sentence.**
+                    // `enum { X = sizeof(struct I) }` has one cause and had two messages: the
+                    // `sizeof` complaint and this one. The second tells a reader nothing the
+                    // first did not, and 023 §9 asks for reports a person can act on rather than
+                    // every true sentence about a program.
+                    let explained = self.out.diagnostics.len() > before;
+                    match folded {
+                        Some(v) => v.v,
+                        // **020 §5: a gap is a diagnostic rather than a licence.** Falling back
+                        // to `next` silently gave the enumerator exactly the value it would have
+                        // had with no initializer written, so a constant expression this engine
+                        // cannot fold was indistinguishable from one it folded correctly. That is
+                        // how a missing `sizeof` arm survived to be found by accident rather than
+                        // by the suite. The fallback is kept — an enumeration that stopped
+                        // resolving would cascade into every use of its type, exactly as for an
+                        // array bound — but it is now announced, unless something already has.
+                        None => {
+                            if !explained {
+                                self.error(
+                                    self.ast.expr(e).span,
+                                    "enumerator value is not an integer constant expression",
+                                );
+                            }
+                            next
+                        }
                     }
-                },
+                }
                 None => next,
             };
             next = v.wrapping_add(1);
@@ -1813,6 +1836,16 @@ impl Cx<'_> {
             }),
             ExprKind::SizeofType(ty) => {
                 let t = self.ty_of(ty);
+                // **The constant-folding path needs its own check**, because an array bound never
+                // reaches `type_expr`: `ty_of` folds the length by calling `eval` directly. So
+                // `int a[sizeof(enum E)]` returned `None` here and the length became
+                // `ArrayLen::Vla` — a file-scope VLA, silently, from an expression that is not
+                // variable at all. Diagnosing at the incompleteness rather than at the missing
+                // size keeps the message about the cause.
+                if is_incomplete(&self.out, t) {
+                    self.error(span, "`sizeof` applied to an incomplete type");
+                    return None;
+                }
                 let n = size_of_ty(&self.out, &self.target, t)?;
                 Some(self.size_t(n as i128))
             }

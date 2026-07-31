@@ -471,3 +471,34 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         assert!(diags(bad) > 0, "must be diagnosed: `{bad}`");
     }
 }
+
+/// **One cause, one report.** `enum { X = sizeof(struct I) }` produced two diagnostics: that
+/// `sizeof` was applied to an incomplete type, and that the enumerator was therefore not a
+/// constant expression. The second tells a reader nothing the first did not, and 023 §9 asks for
+/// reports a person can act on rather than every true sentence about a program.
+///
+/// The enumerator message is *kept* for the case it was written for in wave 301 — an initializer
+/// the engine cannot fold and has said nothing else about — which is the discriminator here.
+#[test]
+fn an_explained_fold_failure_is_not_reported_twice() {
+    let messages = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let both = messages("struct I; enum { X = (int)sizeof(struct I) };");
+    assert_eq!(both.len(), 1, "one cause, one report: {both:?}");
+    assert!(both[0].contains("incomplete"), "{both:?}");
+
+    // The discriminator: nothing explains *this* failure, so the enumerator must speak.
+    let silent = messages("int notconst; enum E { A = notconst, B };");
+    assert_eq!(silent.len(), 1, "{silent:?}");
+    assert!(
+        silent[0].contains("not an integer constant expression"),
+        "{silent:?}"
+    );
+}
