@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 305) — 1476 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 306) — 1478 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -940,10 +940,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     `struct __locale_data` have `RecordId`s now, and asking gcc for their size is asking it to
 >     reject the program.
 >
-> **Still open:** `enum E2 e;` is accepted (gcc rejects it) because the enum path returns a default
-> integer type rather than an incomplete one. `enum_ty` needs the same treatment `tag()` just got,
-> and it is smaller: an enum is completed only by its member list, and nothing may reference one
-> by value before that.
+> **Closed in wave 305.** `enum_ty` returns `Ty::Error` for a tag whose enumerators have not been
+> seen, so the five checks reach it through `is_incomplete`. Two things fell out:
+>   - **The folding path needed its own check.** An array bound never reaches `type_expr` —
+>     `ty_of` folds the length by calling `eval` directly — so `int a[sizeof(enum E)]` returned
+>     `None` and the length silently became `ArrayLen::Vla`: a *file-scope VLA*, from an
+>     expression that is not variable at all. Another fallback whose value means something.
+>   - **One cause, one report.** With both checks live, `enum { X = sizeof(struct I) }` said the
+>     `sizeof` was incomplete *and* that the enumerator was not constant. The second is suppressed
+>     when the fold has already explained itself; wave 301's message survives for the case it was
+>     written for.
+>
+> **Declared limit, deliberately:** an enum tag gets *no* completable placeholder, because an
+> enum's complete form is `Ty::Int` and there is no record to fill in later. A reference written
+> before the definition stays poisoned. This costs nothing in standard C, where an enum cannot be
+> forward-declared at all — it is a GNU extension — but it is the one asymmetry with `tag()`.
+>
+> ### 🟢 The canonical-use net — `differential.rs::the_canonical_uses_of_c_agree_with_gcc`
+>
+> Wave 304's rule applied before wave 305's recorded front, and the result is worth knowing:
+> **eighteen textbook shapes were swept and seventeen already passed.** Trees, list traversal,
+> dispatch tables, a qsort-style callback, aggregates by value and by array, nested structs, union
+> punning, bit-field read-modify-write, 2-D arrays, a pointer to an array, string walking,
+> recursion and mutual recursion, a static local, varargs. The one failure was the linked list
+> wave 304 had just fixed. **The canonical-use gap was one gap, not a class of them** — so the net
+> is kept for what it will catch when a representation moves under these shapes again, not as an
+> open seam to keep mining.
+>
+> One trap it nearly set: the varargs case first used `<stdarg.h>`, which this harness cannot
+> resolve, and `catch_unwind` turned the preprocessing failure into "chiero says None". **A probe
+> that cannot build its own input reports a defect in the engine.** It uses `__builtin_va_list`
+> now.
 >
 > ### ✅ Fixed in wave 303 — was: incomplete types are never rejected
 >
@@ -2302,6 +2329,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Delete the fix that was aimed at the wrong problem, do not leave it in** (wave 305). Two
+> diagnostics for one cause looked like duplicates, so `error()` gained exact-duplicate
+> suppression. Printing them showed they differ in both span and text — the suppression could
+> never have fired. It was removed rather than kept as code that looks like it does something,
+> and the real fix (suppress the *consequence* when the cause has spoken) went in instead.
+> **When a hypothesis about a symptom turns out wrong, the code written for it is not neutral.**
+>
+> **Two true sentences about one cause is one report too many** (wave 305). 023 §9 asks for reports
+> a person can act on, and "the enumerator is not constant" adds nothing beside "`sizeof` was
+> applied to an incomplete type". The rule that keeps this honest is to suppress the *consequence*
+> only when something was actually said — measured by the diagnostic count moving — so the
+> consequence still speaks when it is the only witness.
 >
 > **A check is exactly as right as what it asks** (wave 304). Wave 303's pointer-arithmetic rule
 > is correct C and it broke a working program, because the fact it consulted — "is this pointee
