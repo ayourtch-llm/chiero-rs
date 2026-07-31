@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 298) — 1466 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 299) — 1469 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -831,10 +831,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > are the same quote. The bound that survived mutation and the crash were the same fact — nothing
 > could reach the bound without crashing first, so the untested guard *was* the bug's hiding place.
 >
-> **Next target, if this technique is continued: the `#if` evaluator deserves a differential
-> channel of its own.** Every gap above is a gap in the same subsystem, and it is the one place in
-> the engine where a second C-expression implementation runs unwatched by the oracle.
+> ~~**Next target: the `#if` evaluator deserves a differential channel of its own.**~~ **Built in
+> wave 298, and it found two defects on its first run** — see below.
 >
+> ### 🟢 The `#if` differential channel — `chiero-pp/tests/if_differential.rs`
+>
+> The corpus compares chiero against gcc on translation units; this compares them on *directives*.
+> It generates `#if` expressions from a bounded grammar and checks them against **both** gcc and
+> clang, which must agree with each other before either may judge us.
+>
+> **It compares values, not branches.** A `#if` yields one bit, and a channel that only checks
+> which branch was taken cannot see `7 / 2` give 4. Each expression is emitted as 64 directives —
+> `#if ((E) >> b) & 1` for each bit — plus a `#if (E) < 0` sign probe. The bit tests recover the
+> exact 64-bit pattern for signed and unsigned alike; the sign probe recovers what no bit pattern
+> can show. **Both defects it found were sign-only: every one of the 64 value bits agreed.**
+>
+> | defect | rule |
+> |---|---|
+> | `conditional` returned the selected arm verbatim | C 6.5.15: `a ? b : c` takes the usual arithmetic conversions of *both* arms, so the arm not taken still decides signedness |
+> | every character constant was typed signed | `u'x'` is `char16_t` and `U'x'` is `char32_t`, both unsigned; `'x'`, `L'x'`, `u8'x'` are signed |
+>
+> **What it deliberately does not generate**, each omission being a claim about what it can prove:
+> division by zero (gcc refuses the program), signed overflow (undefined, so a disagreement would
+> be a gap not a defect), the comma operator (not permitted in a constant expression), and
+> out-of-range hex escapes like `'\x4142'` — a warning in gcc, a hard **error** in clang. Divisors
+> are wrapped `(x | 1)`, odd hence nonzero for every value, so the operator is still exercised on
+> arbitrary operands rather than constants.
+>
+> **Tuning:** `CHIERO_IF_DIFF_COUNT` (default 400) and `CHIERO_IF_DIFF_SEED` (default 0). 8000
+> expressions across four seed bases currently agree.
+>
+
 > ### 🛑 The sweep harness scored hangs as survivors — read this before trusting a survivor list
 >
 > Wave 297 found `#if`'s `>` and `<=` branches reported as both-ways survivors. They were not.
@@ -2130,6 +2157,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Reaching a rule is not falsifying it, and corpus size does not fix that** (wave 298). The new
+> `#if` channel generated `'\101'` freely, so it *reached* the octal escape decoder constantly —
+> and mutating that decoder's three-digit bound to four survived 8000 expressions, because a
+> fourth digit is never available before the closing quote. Only `'\1011'` can see it. **Mutate
+> the code a new generator claims to cover**; a channel that has never been falsified is a channel
+> whose power is unmeasured, and more seeds buy none of it.
+>
+> **When the oracles disagree about whether a program is a program, there is nobody to ask**
+> (wave 298). `'\x4142'` is a warning in gcc and a hard error in clang. A differential channel that
+> asserts its two references agree first cannot include such a construct — not because it is
+> uninteresting, but because a disagreement there says nothing about us. **Removing it is a
+> statement of what the channel proves**, and belongs in its docstring next to the other
+> exclusions, not in a silent filter.
+>
+> **A defect can be invisible in every value bit** (wave 298). Both defects the `#if` channel found
+> were signedness, with all 64 bits of the value agreeing — a wrong *type* on a right *number*.
+> Every existing test missed them because they all compared a `#if` expression against a positive
+> constant, where signed and unsigned answer alike. **When a value carries a type, probe the type
+> separately**; here that is one extra directive, `#if (E) < 0`, and it is what found both.
 >
 > **An unfalsifiable guard can be the bug's hiding place** (wave 297). The escape decoder's
 > `index >= bytes.len()` bound survived mutation because no test had ever handed it a malformed
