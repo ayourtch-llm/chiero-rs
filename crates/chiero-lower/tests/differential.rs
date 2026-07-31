@@ -5110,3 +5110,55 @@ fn symbolic_arithmetic_agrees_with_concrete_arithmetic() {
     );
     assert!(proved > 300, "only {proved} pairs proved; the sweep shrank");
 }
+
+/// **`a[b]` is `*(a + b)`, and `(void)x` discards a value.** Two shapes found by the
+/// discriminators of wave 308's type-error fixture rather than by aiming at them.
+///
+/// The commutative subscript came from a case written only to stop the new "subscripted value is
+/// not an array or pointer" check from being too broad: `0[p]` is legal C, so the check had to
+/// look at both operands. Sema then typed it correctly and it still produced no answer, because
+/// *lowering* assumed the base was the aggregate at all three of its `Index` sites.
+///
+/// The cast to void came from a throwaway `(void)p;` written to silence an unused variable in a
+/// probe. `(void)0; return 1;` returned nothing: `cast_kind` has no conversion *to* void, so the
+/// module it built was rejected and the function produced no state. It is hard to overstate how
+/// ordinary that idiom is.
+///
+/// Neither was reachable from the census that started the wave. Both were reachable from writing
+/// down what must keep working.
+#[test]
+fn a_subscript_reads_either_operand_and_a_void_cast_discards() {
+    for (prelude, body) in [
+        // The pointer may be written on either side, for every element type.
+        ("static long a[4] = {10,20,30,40};", "return (int)1[a];"),
+        ("static long a[4] = {10,20,30,40};", "return (int)a[1];"),
+        (
+            "static double d[3] = {1.5,2.5,3.5};",
+            "return (int)(2[d] * 2);",
+        ),
+        (
+            "struct P { int x, y; }; static struct P ps[2] = {{1,2},{3,4}};",
+            "return 1[ps].y;",
+        ),
+        (
+            "",
+            "int a[4]; a[0]=10;a[1]=20;a[2]=30;a[3]=40; return 2[a];",
+        ),
+        (
+            "static int a[4] = {10,20,30,40};",
+            "int *p = a; return 3[p];",
+        ),
+        // A cast to void evaluates its operand and yields nothing.
+        ("", "(void)0; return 1;"),
+        ("", "int x = 0; (void)x; return 1;"),
+        ("", "long *p = 0; (void)p; return p == 0;"),
+        // The side effects still happen: the operand is evaluated, only the value is dropped.
+        ("", "int x = 0; (void)(x = 7); return x;"),
+        (
+            "static int c = 0; static int bump(void){ return ++c; }",
+            "(void)bump(); (void)bump(); return c;",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}

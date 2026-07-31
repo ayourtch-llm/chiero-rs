@@ -2697,6 +2697,15 @@ impl Lowerer<'_> {
                     None => CTy::Int(self.width_of(*operand)),
                 };
                 let to = self.cty_of_syntactic(*ty);
+                // **`(void)x` discards the value.** C 6.3.2.2: the operand is evaluated for its
+                // side effects and the result is not a value at all. `self.expr` above has
+                // already emitted those side effects, so there is nothing left to do — and there
+                // is no cast to emit, because `cast_kind` has no conversion *to* void and the
+                // verifier rejected whatever it produced, which is why `(void)0; return 1;`
+                // returned no state.
+                if matches!(to, CTy::Void) {
+                    return Operand::Const(Const::Undef(CTy::Void));
+                }
                 if from == to || matches!((&from, &to), (CTy::Ptr, CTy::Ptr)) {
                     return a;
                 }
@@ -3933,6 +3942,7 @@ impl Lowerer<'_> {
                 Some(p)
             }
             chiero_ast::ExprKind::Index { base, index } => {
+                let (base, index) = self.subscript_operands(base, index);
                 let mut p = self.path_of(base)?;
                 // The index as written when it is a constant; a symbolic one renders as
                 // its value id, which is still better than nothing.
@@ -4019,6 +4029,30 @@ impl Lowerer<'_> {
     fn is_address_only(&self, e: ExprId) -> bool {
         self.type_of(e)
             .is_some_and(|t| self.is_aggregate(t) || matches!(self.analysis.ty(t), Ty::Func { .. }))
+    }
+
+    /// **`a[b]` is `*(a + b)`, so the pointer may be written on either side.** `1[a]` is legal C
+    /// and means exactly `a[1]`. Every consumer below wants "the aggregate" and "the offset", not
+    /// "the left one" and "the right one", so the swap happens once here rather than three times
+    /// in three different shapes.
+    ///
+    /// The test is on the *operand that could be the aggregate*: an array, a pointer, or a
+    /// vector. When neither is — which sema now diagnoses — the pair is returned unchanged and
+    /// the existing paths fail as they always did.
+    fn subscript_operands(&self, base: ExprId, index: ExprId) -> (ExprId, ExprId) {
+        let aggregate = |e: ExprId| {
+            self.type_of(e).is_some_and(|t| {
+                matches!(
+                    self.analysis.ty(t),
+                    Ty::Ptr(_) | Ty::Array { .. } | Ty::Vector { .. }
+                )
+            })
+        };
+        if !aggregate(base) && aggregate(index) {
+            (index, base)
+        } else {
+            (base, index)
+        }
     }
 
     fn lvalue_addr(&mut self, e: ExprId, span: Span) -> Option<Operand> {
@@ -4119,6 +4153,7 @@ impl Lowerer<'_> {
                 Some(Operand::Value(dst))
             }
             chiero_ast::ExprKind::Index { base, index } => {
+                let (base, index) = self.subscript_operands(base, index);
                 // **An array and a pointer index differently.** `a[i]` starts from the
                 // *address of* `a`; `p[i]` starts from the *value of* `p`. Taking the
                 // address in both cases indexes off the pointer variable's own storage,
@@ -6051,6 +6086,7 @@ impl Lowerer<'_> {
             }
             // `&ga[k]` for a constant `k`.
             chiero_ast::ExprKind::Index { base, index } => {
+                let (base, index) = self.subscript_operands(base, index);
                 let (g, off) = self.global_addr_of(base)?;
                 let k = self.const_of(index)?;
                 let esz = self.elem_size_of(base)? as i64;

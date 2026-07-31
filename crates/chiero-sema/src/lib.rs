@@ -2929,6 +2929,23 @@ impl Cx<'_> {
                 let i = self.type_expr(*index);
                 let i = self.promote_node(i, *index, span);
                 let bty = self.out.typed.ty_of(b);
+                let ity = self.out.typed.ty_of(i);
+                // **`a[b]` is `*(a + b)`, so either operand may be the pointer.** `0[p]` is
+                // legal C and is written on purpose often enough to matter; a check that looked
+                // only at the base rejected it.
+                let elem_of = |cx: &Cx, t: TyId| match cx.out.types[t.0 as usize].clone() {
+                    Ty::Ptr(p) => Some(p),
+                    Ty::Vector { elem, .. } => Some(elem),
+                    _ => None,
+                };
+                if let Some(elem) = elem_of(self, bty).or_else(|| elem_of(self, ity)) {
+                    let id = self.push_typed(TypedNode::Value {
+                        expr,
+                        ty: elem,
+                        operands: vec![b, i],
+                    });
+                    return self.set_top(expr, id);
+                }
                 let ty = match self.out.types[bty.0 as usize].clone() {
                     Ty::Ptr(p) => p,
                     // **A vector subscripts like an array without decaying like one.** gcc's
@@ -2939,7 +2956,18 @@ impl Cx<'_> {
                     // invisible for `long` ones — a small `long` and its low four bytes are the
                     // same number. A `float` lane came back as its bit pattern.
                     Ty::Vector { elem, .. } => elem,
-                    _ => self.intern(Ty::Error),
+                    // **Subscripting something that is neither.** `int x = 5; x[0]` returned 5,
+                    // because lowering reads an `Error` type as a 32-bit integer — so the engine
+                    // answered a question that has no meaning. `Ty::Error` is excluded from the
+                    // complaint, not from the poison: it means the base's type is already unknown
+                    // and already reported, and contract 20 says one bad declaration is one
+                    // diagnostic.
+                    other => {
+                        if !matches!(other, Ty::Error) {
+                            self.error(span, "subscripted value is not an array or pointer");
+                        }
+                        self.intern(Ty::Error)
+                    }
                 };
                 self.push_typed(TypedNode::Value {
                     expr,
@@ -2951,17 +2979,34 @@ impl Cx<'_> {
                 let b = self.type_expr(*base);
                 let b = self.decay(b, *base);
                 let bty = self.out.typed.ty_of(b);
-                let rec = match self.out.types[bty.0 as usize].clone() {
-                    Ty::Record(r) => Some(r),
+                let base_ty = self.out.types[bty.0 as usize].clone();
+                let rec = match &base_ty {
+                    Ty::Record(r) => Some(*r),
                     Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
                         Ty::Record(r) => Some(r),
                         _ => None,
                     },
                     _ => None,
                 };
-                let ty = rec
-                    .and_then(|r| self.out.find_field(r, *field).map(|f| f.ty))
-                    .unwrap_or_else(|| self.intern(Ty::Error));
+                let found = rec.and_then(|r| self.out.find_field(r, *field).map(|f| f.ty));
+                // **Two different mistakes, told apart.** A base that is not a structure at all
+                // and a structure without that member are separate errors, and saying which is
+                // most of a useful report. `Ty::Error` stays silent for the reason above — the
+                // base's type is unknown and something else has already said so.
+                if found.is_none() && !matches!(base_ty, Ty::Error) {
+                    let name = self.text(*field).unwrap_or("?").to_owned();
+                    self.error(
+                        span,
+                        match rec {
+                            Some(_) => format!("no member named `{name}`"),
+                            None => format!(
+                                "request for member `{name}` in something that is not a \
+                                 structure or union"
+                            ),
+                        },
+                    );
+                }
+                let ty = found.unwrap_or_else(|| self.intern(Ty::Error));
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty,
@@ -2972,7 +3017,8 @@ impl Cx<'_> {
                 let c = self.type_expr(*callee);
                 let c = self.decay(c, *callee);
                 let cty = self.out.typed.ty_of(c);
-                let (ret, params) = match self.out.types[cty.0 as usize].clone() {
+                let callee_ty = self.out.types[cty.0 as usize].clone();
+                let (ret, params) = match callee_ty.clone() {
                     Ty::Func { ret, params, .. } => (ret, params),
                     Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
                         Ty::Func { ret, params, .. } => (ret, params),
@@ -2980,6 +3026,17 @@ impl Cx<'_> {
                     },
                     _ => (self.intern(Ty::Error), Vec::new()),
                 };
+                // **Only a callee whose type is concretely known to be uncallable.** This is the
+                // arm where keying on `Ty::Error` would be a disaster: an undeclared callee types
+                // as `Error`, and `__builtin_isnan` and the rest of 7.12.14 *are* undeclared —
+                // nothing declares them and gcc knows them intrinsically. Complaining about the
+                // poison would reject the float corpus.
+                let callable = matches!(callee_ty, Ty::Func { .. } | Ty::Error)
+                    || matches!(&callee_ty, Ty::Ptr(p)
+                        if matches!(self.out.types[p.0 as usize], Ty::Func { .. } | Ty::Error));
+                if !callable {
+                    self.error(span, "called object is not a function or function pointer");
+                }
                 // **A floating classification macro returns `int`.** 7.12.14's `isless`,
                 // `isunordered` and the rest are macros over `__builtin_*`, which nothing
                 // declares — gcc knows them intrinsically — so the generic path above types
