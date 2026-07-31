@@ -2585,6 +2585,51 @@ fn the_shrinker_refuses_to_reduce_what_does_not_fail() {
 ///
 /// Presence is not discrimination; the justification is the mutation sweep in the commit that
 /// satisfies this.
+/// **The corpus emits no `__label__`.**
+///
+/// The last of wave 277's six lagging constructs that is worth adding — the multi-dimensional
+/// array is measured out (wave 284) and the alignment specifiers have no cheap observable.
+///
+/// # Why this one should be nearly free
+///
+/// Wave 285's lever was that an *expression wrapper* costs far less than a statement or an
+/// object, because it adds no storage, no statement and no `rng` draw. `__label__` is a
+/// *statement* form and so does not fit that shape — but it is a **pure naming construct**: it
+/// declares no object, computes no value, and adds nothing to the checksum or to the program's
+/// UB surface. It should cost close to nothing for the same underlying reason.
+///
+/// # It has to open a block
+///
+/// C puts label declarations at the start of a compound statement, before any other
+/// declaration — gcc rejects `{ int x; __label__ d; }`. So the natural host is the `goto` arm
+/// this channel already has: wrapping its jump and its label in a block whose first line is the
+/// declaration is exactly what the construct is for, and needs no new statement of its own.
+#[test]
+fn the_corpus_reaches_local_labels() {
+    let (mut decl, mut used) = (0usize, 0usize);
+    for seed in 0..600u64 {
+        let (prelude, body) = program_control_flow(seed);
+        let all = format!("{prelude}{body}");
+        if !all.contains("__label__") {
+            continue;
+        }
+        decl += 1;
+        // The declared name has to be the one jumped to, or the construct is decoration.
+        for l in all.lines() {
+            let t = l.trim();
+            if let Some(rest) = t.strip_prefix("__label__ ")
+                && let Some(name) = rest.strip_suffix(';')
+                && all.contains(&format!("goto {name};"))
+            {
+                used += 1;
+                break;
+            }
+        }
+    }
+    assert!(decl >= 20, "`__label__` is declared: {decl}");
+    assert!(used >= 20, "and the label it declares is jumped to: {used}");
+}
+
 /// **The corpus emits none of `_Generic`, `__builtin_offsetof` or the classification builtins.**
 ///
 /// §9's three cheapest remaining candidates, and cheap for one reason: each adds a **value**
