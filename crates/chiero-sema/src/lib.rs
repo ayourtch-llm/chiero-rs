@@ -1532,6 +1532,19 @@ impl Cx<'_> {
                 continue;
             };
             let fty = self.ty_of(ty);
+            // **A member must have a size, because the record has to place it.** This is the
+            // check that makes reserving the record before laying out its members safe: the
+            // reservation means `struct S { struct S s; }` now finds `S` in the tag table, and
+            // what stops it is that the record it finds is still marked incomplete. A pointer to
+            // the same tag is fine and is the whole point of the reservation.
+            if is_incomplete(&self.out, fty) {
+                let what = match name {
+                    Some(n) => format!("`{}`", self.text(n).unwrap_or("?")),
+                    None => "an unnamed field".to_owned(),
+                };
+                let span = self.ast.decl(m).span;
+                self.error(span, format!("field {what} has an incomplete type"));
+            }
             let member_packed = packed
                 || self
                     .ast
@@ -2139,6 +2152,12 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         // An incomplete record has no size, which is what makes it incomplete. Callers that want
         // to *diagnose* incompleteness ask `is_incomplete` instead: a function type and a VLA
         // also have no size here and neither is an incomplete object type.
+        //
+        // **Also measured unobserved:** letting this answer `Some(0)` for an incomplete record
+        // leaves the whole suite green, because every diagnostic is raised through
+        // `is_incomplete` before a size is ever asked for. It is kept for the same reason as the
+        // `Ty::Error` arm there — refusing to invent a number costs nothing and a placeholder's
+        // zero would otherwise look like a real answer to a future caller that forgets to check.
         Ty::Record(r) => match a.records.get(r.0 as usize) {
             Some(rec) if rec.complete => Some(rec.size),
             _ => None,
@@ -2157,6 +2176,12 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
 /// undefined tag and a genuinely unresolvable type both become.
 fn is_incomplete(a: &Analysis, ty: TyId) -> bool {
     match &a.types[ty.0 as usize] {
+        // **Measured unreachable, and kept anyway.** Since a named undefined tag became a record,
+        // nothing in the suite produces a `Ty::Error` that reaches a completeness check — forcing
+        // this arm to `false` leaves all 1476 tests green. It stays because it *forwards* rather
+        // than asserts: a poisoned type has no size either, and if one ever arrives here the cost
+        // of this arm being absent is a missing diagnostic, which is the failure mode this whole
+        // wave was about.
         Ty::Error => true,
         Ty::Record(r) => !a.records.get(r.0 as usize).is_some_and(|rec| rec.complete),
         _ => false,

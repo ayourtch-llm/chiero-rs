@@ -405,6 +405,10 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         "struct I; extern struct I x;",
         // A pointer to an incomplete type is the opaque-handle idiom.
         "struct I; struct I *p;",
+        "struct I; struct S { struct I *m; };",
+        // The same tag by pointer, from inside its own definition: the case the whole
+        // representation change exists for.
+        "struct Node { int v; struct Node *next; };",
         "struct I; typedef struct I T; T *tp; int f(void) { return tp != 0; }",
         "struct I; struct I *p; struct I *q; int f(void) { return p == q; }",
         // Declaring — not defining, and not calling — is legal.
@@ -430,6 +434,13 @@ fn a_complete_type_is_required_exactly_where_c_requires_one() {
         // or not, passed every other case in this test.
         "struct I; extern struct I x = {0};",
         "struct I; static struct I x;",
+        // A member must have a size: the record has to place it. `struct S { struct S s; }` is
+        // here because reserving the record before laying out its members — what makes a
+        // self-referential *pointer* work — also makes the tag findable by value. What stops it
+        // is that the record it finds is still marked incomplete while its own members are walked.
+        "struct I; struct S { struct I m; };",
+        "struct I; union V { struct I m; int x; };",
+        "struct S { struct S s; };",
         // An array needs its element's size, for the stride if nothing else.
         "struct I; struct I arr[10];",
         "struct I; extern struct I arr[];",
