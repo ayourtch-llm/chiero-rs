@@ -112,6 +112,50 @@ fn a_misaligned_access_is_recorded_and_still_succeeds() {
     );
 }
 
+/// **A weakly aligned object makes an access misaligned even at offset zero.**
+///
+/// `align_fault` has a two-part condition: the *offset* must be a multiple of what the access
+/// wants, **and** the object's own base must be able to guarantee it. Only the first half was
+/// tested — every alignment fixture used a well-aligned object and a bad offset — so deleting the
+/// second survived the suite.
+///
+/// The second half is the one that matters for the code this models. The comment at the check says
+/// so directly: the old `min(object_align, size)` "made misalignment unrecordable inside an align-1
+/// object, which is every VPP packet buffer". Offset 0 is a multiple of everything, so without the
+/// object's own alignment in the condition a four-byte read of a byte-aligned buffer looks fine.
+///
+/// The control below is the same access on a well-aligned object, which must stay silent — the two
+/// together are what stop a fix from simply reporting more.
+#[test]
+fn an_access_wider_than_its_object_s_alignment_is_misaligned() {
+    let mut m = Memory::new();
+    let weak = m.alloc(ObjKind::Heap, 16, 1, sp(10));
+    m.write(ptr(weak, 0), &[1, 2, 3, 4, 5, 6, 7, 8], sp(15));
+    let r = m.read(ptr(weak, 0), 4, sp(20));
+    assert_eq!(
+        r.value.unwrap(),
+        vec![1, 2, 3, 4],
+        "the access still succeeds; only the alignment is noted"
+    );
+    assert!(
+        r.faults
+            .iter()
+            .any(|f| matches!(f, MemFault::Misaligned { .. })),
+        "offset 0 is a multiple of 4, but a byte-aligned object cannot promise four-byte \
+         alignment: {:#?}",
+        r.faults
+    );
+
+    let strong = m.alloc(ObjKind::Heap, 16, 8, sp(11));
+    m.write(ptr(strong, 0), &[1, 2, 3, 4, 5, 6, 7, 8], sp(16));
+    let r = m.read(ptr(strong, 0), 4, sp(21));
+    assert!(
+        r.faults.is_empty(),
+        "the same access on an eight-aligned object is ordinary: {:#?}",
+        r.faults
+    );
+}
+
 /// **021 contract 2: a concrete must-OOB access terminates.** It is out of bounds under
 /// every model, so there is no in-bounds branch to continue on — "continue with the
 /// in-bounds constraint" would continue a state whose path condition is unsatisfiable,
