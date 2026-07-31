@@ -1697,6 +1697,29 @@ impl Gen {
         }
         self.next_id += 1;
         let label = format!("L{}", self.next_id);
+        // **Sometimes a GNU local label** (wave 286). `__label__` declares a label local to its
+        // block, which is what lets two expansions of one macro coexist in a function —
+        // `vppinfra/hash.h` is built on it. It has to be the *first* thing in a compound
+        // statement, before any other declaration, so the jump and its label are wrapped in a
+        // block rather than emitted into the enclosing one.
+        //
+        // **A pure naming construct**: no object, no value, nothing added to the checksum or to
+        // the program's UB surface. That is why it costs what wave 285's expression wrappers
+        // cost rather than what wave 284's array cost, although it is a statement form.
+        //
+        // The choice comes from `grng`, so the draws every other arm depends on are untouched.
+        let local = self.grng.chance(2);
+        // **A local label reuses one fixed name, and that is the entire point.** Every other
+        // label this generator emits is unique (`L{next_id}`), so a `__label__` that was never
+        // renamed, or a scope frame that was never popped, could not collide with anything —
+        // both mutants survived until this line. Two blocks in one function each declaring
+        // `Ldone` is legal exactly because the declaration makes it block-local, and it is the
+        // shape `vppinfra/hash.h` relies on when two `hash_foreach_pair` loops sit in one
+        // function.
+        let label = if local { "Ldone".to_string() } else { label };
+        if local {
+            let _ = writeln!(self.body, "  {{ __label__ {label};");
+        }
         let cond = self.expr(v.ty);
         let _ = writeln!(self.body, "  if (({cond}) != 0) goto {label};");
         let e = self.expr(v.ty);
@@ -1704,6 +1727,9 @@ impl Gen {
         // **A label needs a statement after it** (6.8.1), and an empty one is the only choice that
         // does not change what the program computes.
         let _ = writeln!(self.body, "  {label}: ;");
+        if local {
+            let _ = writeln!(self.body, "  }}");
+        }
         true
     }
 
@@ -2617,6 +2643,8 @@ fn the_corpus_reaches_local_labels() {
         // The declared name has to be the one jumped to, or the construct is decoration.
         for l in all.lines() {
             let t = l.trim();
+            // The declaration opens the block, so the line reads `{ __label__ L7;`.
+            let t = t.trim_start_matches(['{', ' ']);
             if let Some(rest) = t.strip_prefix("__label__ ")
                 && let Some(name) = rest.strip_suffix(';')
                 && all.contains(&format!("goto {name};"))
@@ -3142,20 +3170,8 @@ fn control_flow_programs_agree_with_gcc() {
     // corpus, not the construct.
     for seed in 0..SHAPE_SEEDS {
         let body = program_control_flow(seed).1;
-        for (i, _) in body.match_indices("goto L") {
-            let label = body[i + 5..]
-                .split(';')
-                .next()
-                .expect("the arm emits a terminated statement")
-                .trim()
-                .to_string();
-            let target = body
-                .find(&format!("{label}: ;"))
-                .unwrap_or_else(|| panic!("seed {seed}: `{label}` has no label"));
-            assert!(
-                target > i,
-                "seed {seed}: `goto {label}` jumps backward, which this corpus must never do"
-            );
+        if let Err(why) = backward_goto(&body) {
+            panic!("seed {seed}: {why}");
         }
     }
     assert!(
@@ -4386,4 +4402,87 @@ fn probe_arr() {
         }
     }
     eprintln!("ARR: local 1-D arrays in {with_arr}/300, sizeof(typeof(arr)) in {with_szof}/300");
+}
+
+/// The first backward `goto` in `body`, or `Ok(())`.
+///
+/// **Extracted so it can be tested directly** (wave 286). Inline in the channel it sat behind
+/// half a dozen other assertions, every one of which fires first on a corpus that jumps
+/// backward — so nothing could show that this check itself still worked.
+///
+/// **Scoped, because a GNU local label deliberately reuses one name.** Two blocks in one
+/// function each declaring `Ldone` is the shape the construct exists for, and a name-keyed
+/// search of the whole body is wrong twice over: it finds an earlier block's label and calls a
+/// forward jump backward, and searching forward instead would find a *later* block's label and
+/// call a backward jump **forward**. The second is the dangerous direction and this is a safety
+/// property, so the search is bounded to the jump's own block.
+///
+/// A local-label block opens with `{ __label__ NAME;`; without one the label is unique and the
+/// whole body is the right scope.
+fn backward_goto(body: &str) -> Result<(), String> {
+    for (i, _) in body.match_indices("goto L") {
+        let label = body[i + 5..]
+            .split(';')
+            .next()
+            .expect("the arm emits a terminated statement")
+            .trim()
+            .to_string();
+        let scope_end = body[..i]
+            .rfind(&format!("{{ __label__ {label};"))
+            .map(|open| {
+                let mut depth = 0i32;
+                for (k, c) in body[open..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return open + k;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                body.len()
+            })
+            .unwrap_or(body.len());
+        match body[i..scope_end].find(&format!("{label}: ;")) {
+            Some(0) => return Err(format!("`goto {label}` targets itself")),
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "`goto {label}` has no label after it in its own block"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// **The backward-`goto` guard catches what it names.**
+///
+/// The channel applies it to every generated program, where it is unreachable behind earlier
+/// assertions — every one of them fires first on a corpus that jumps backward. These are the
+/// three shapes that matter, written out.
+#[test]
+fn the_backward_goto_guard_is_effective() {
+    // Forward, unique label.
+    assert!(backward_goto("  if (x) goto L1;\n  y += 1;\n  L1: ;\n").is_ok());
+    // Forward, with the *same* name declared in two blocks — the local-label shape. A search
+    // keyed on the name alone finds the first block's label and calls this backward.
+    let two = "  { __label__ Ldone;\n  if (x) goto Ldone;\n  Ldone: ;\n  }\n\
+               { __label__ Ldone;\n  if (y) goto Ldone;\n  Ldone: ;\n  }\n";
+    assert!(backward_goto(two).is_ok(), "two blocks, both forward");
+    // **Backward, with a later block defining the same name.** A search that merely went forward
+    // from the jump would find the *second* block's label and call this forward — the direction
+    // that matters, because a backward jump can loop forever.
+    let back = "  { __label__ Ldone;\n  Ldone: ;\n  if (x) goto Ldone;\n  }\n\
+                { __label__ Ldone;\n  if (y) goto Ldone;\n  Ldone: ;\n  }\n";
+    assert!(
+        backward_goto(back).is_err(),
+        "a backward jump inside a local-label block must be caught even though a later block \
+         defines the same name"
+    );
+    // Backward with a unique label, which has no later definition at all.
+    assert!(backward_goto("  L1: ;\n  if (x) goto L1;\n").is_err());
 }
