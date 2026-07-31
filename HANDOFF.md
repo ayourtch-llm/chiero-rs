@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 298) — 1461 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 298) — 1466 tests, 4 ignored, M1 165/165 by contract
 >
 > *The working tree is clean, every wave is committed, and all gates pass: `cargo fmt`,
 > clippy, `check-deps`, `check-vpp-leak`, `check-proof-surface`. Wave 132 closed the sret
@@ -808,7 +808,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > a bug, not a design flaw — so fix it, and only revisit the design question if the term ids
 > turn out to match.
 >
-> ### 🟢 The checker sweeps are done — four targets, fifteen fixtures, two deletions
+> ### 🟢 The checker sweeps are done — four targets, every survivor now killed
 >
 > | target | mutants | survived | acted on |
 > |---|---|---|---|
@@ -816,6 +816,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | **`chiero-check`** (291) | 14 (both ways) | 5 | 3 fixtured, 2 recorded in place |
 > | **`chiero-mem`** (292) | 144 (both ways) | 42 → 6 both-ways | 1 fixtured, 3 listed |
 > | **`chiero-pp`** (293–294) | 138 of 166 (both ways) | 28 → 6 both-ways | 4 fixtured, 2 cosmetic |
+> | **`chiero-pp` tail** (297) | 46 of 60 (split, see below) | 17 | **17 fixtured, 1 defect fixed** |
+>
+> **The tail was the richest slice of the four**, and the reason is worth keeping: everything past
+> line 1890 is the `#if` expression evaluator, which is a *second* implementation of C expressions
+> that no differential test ever reaches. The corpus compares chiero against gcc on translation
+> units; nothing compares them on directives. So `#if` could compare (tested) but not calculate:
+> `divide` survived mutation in **all four arms** — signed and unsigned, quotient and remainder —
+> because the only committed test using `/` divided by zero, which short-circuits before `divide`
+> is called. `*`, `%` and unary `+` were unfalsifiable outright.
+>
+> Probing the last two survivors found a **real defect**: `#if '\` at end of file panicked, because
+> `parse_char_constant` sliced between the first and last `'` and for an unterminated literal those
+> are the same quote. The bound that survived mutation and the crash were the same fact — nothing
+> could reach the bound without crashing first, so the untested guard *was* the bug's hiding place.
+>
+> **Next target, if this technique is continued: the `#if` evaluator deserves a differential
+> channel of its own.** Every gap above is a gap in the same subsystem, and it is the one place in
+> the engine where a second C-expression implementation runs unwatched by the oracle.
 >
 > ### 🛑 The sweep harness scored hangs as survivors — read this before trusting a survivor list
 >
@@ -854,11 +872,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > on — but that is an argument, not a measurement, and those runs were not re-scored.
 >
 > **Still open, and small:**
->   - **`chiero-pp` was swept to 85%** — conditions past line 1890 of 2211 were never reached.
->     Finishing it is a detached run of wave 293's script with `psites.txt` sliced past 1890,
->     using the four-way scoring above. Budget by **hangs**, not rebuilds: a clean `-p chiero-pp`
->     run is 9s, so a 90s cap is a 10× margin, and the cost of the sweep is however many mutants
->     spin. Wave 293's "budget by rebuild cost" note was the wrong diagnosis of the same symptom.
+>   - ~~**`chiero-pp` was swept to 85%**~~ **Closed in wave 297.** The 30 remaining sites were run
+>     as 46 mutants, not 60: the 14 whose condition *consumes a token* got only the `false`
+>     direction, because forcing such a condition true means the token is never consumed and the
+>     parser spins or recurses until it dies — a "kill" that proves nothing (rule below). That
+>     split, plus the four-way scoring, took the run from "hours, mostly timeouts" to about twenty
+>     minutes. Budget by **hangs**, not rebuilds: a clean `-p chiero-pp` run is 9s, so a 90s cap is
+>     a 10× margin. Wave 293's "budget by rebuild cost" note was the wrong diagnosis.
 >   - **`chiero-mem` is closed** (waves 295–296). The index-width guard was a duplicate of `fit`
 >     and is now a call to it, with `fit`'s narrowing arm fixtured; the havoc-uninitialize
 >     promotion guard has a fixture; the fault-propagation early-out is *unreachable* — promotion
@@ -2110,6 +2130,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An unfalsifiable guard can be the bug's hiding place** (wave 297). The escape decoder's
+> `index >= bytes.len()` bound survived mutation because no test had ever handed it a malformed
+> character literal — and the reason none had is that doing so *panicked* two functions earlier.
+> The dead guard and the crash were one fact seen from two sides. **When a guard cannot be
+> falsified, ask what input would reach it and then actually try that input**; if the attempt
+> fails before arriving, the failure is the finding.
+>
+> **A line splice can silently defuse a fixture** (wave 297). `#if '\` followed by a newline does
+> *not* end in a backslash — the backslash is a line continuation, removed before lexing. The test
+> passed, and still did not reach the bound it named; only `#if '\` at end of file with no newline
+> does. **In preprocessor fixtures, remember the input is transformed before the code under test
+> sees it**, and verify by mutation rather than by reading.
 >
 > **Never run a mutation sweep in the tree you commit from** (wave 297). A sweep edits *tracked
 > source* continuously. A `git add -A` landed mid-mutation and committed a preprocessor whose
