@@ -657,3 +657,46 @@ fn include_next_past_the_last_directory_falls_back_to_the_bare_name() {
         "the drain empties the search list, and the bare name is what is left to try"
     );
 }
+
+/// **Every relational operator in `#if`, on both answers.**
+///
+/// `#if` has its own expression evaluator — it is not the C parser — so each operator is a
+/// separate branch that consumes its own token. Wave 297's sweep found `>` and `<=` unfalsifiable:
+/// forcing either branch to run without consuming its operator passed the whole suite, because no
+/// committed test used them in a `#if` at all. `<` was covered; the rest were not.
+///
+/// Both answers for each, because a branch that always yields true satisfies half of them.
+/// Version guards are the everyday use — `#if __STDC_VERSION__ >= 201112L` is in most real
+/// headers — and getting one backwards silently compiles the wrong half of a file.
+#[test]
+fn every_relational_operator_in_an_if_directive_works() {
+    let yes = |expr: &str| {
+        let src = format!("#if {expr}\nyes\n#else\nno\n#endif\n");
+        let tu = preprocess_str("rel.c", &src, Config::default());
+        assert!(tu.diagnostics.is_empty(), "{expr}: {:?}", tu.diagnostics);
+        tu.token_texts().map(str::to_owned).collect::<Vec<_>>()
+    };
+    for (expr, want) in [
+        ("2 < 3", "yes"),
+        ("3 < 2", "no"),
+        ("3 > 2", "yes"),
+        ("2 > 3", "no"),
+        ("2 <= 2", "yes"),
+        ("3 <= 2", "no"),
+        ("2 >= 2", "yes"),
+        ("2 >= 3", "no"),
+        ("2 == 2", "yes"),
+        ("2 == 3", "no"),
+        ("2 != 3", "yes"),
+        ("2 != 2", "no"),
+        // The version-guard shape itself, both sides of the boundary.
+        ("201112L >= 201112L", "yes"),
+        ("199901L >= 201112L", "no"),
+        // **`<=` and `<` must not be confused for one another**, which is what a branch that
+        // takes the wrong token does: `2 < 2` is false where `2 <= 2` is true.
+        ("2 < 2", "no"),
+        ("2 > 2", "no"),
+    ] {
+        assert_eq!(yes(expr), [want.to_string()], "`#if {expr}`");
+    }
+}
