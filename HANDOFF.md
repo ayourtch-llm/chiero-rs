@@ -487,21 +487,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 325) — 1497 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 326) — 1499 tests, 4 ignored, M1 165/165 by contract
+>
+> **The queue is now measured, not guessed.** `generated_rejection.rs` names the six constraint
+> violations sema still accepts, and its floor (57) fails if any is lost.
 >
 > **Next, in descending order of what they buy:**
->   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
->      what makes wave 316's pointee rule semantic rather than syntactic. Budget for auditing
->      **436 `Ty::` match sites across four crates**; do not start by adding the variant. This is
->      the largest known-unfinished item in the project and the only census follow-on left.
->   2. **Widen `generated_silence.rs`.** It is aimed at eight historical rejections; every new
->      diagnostic rule should add its neighbourhood to `historically_awkward`, which makes the
->      channel grow with the rules instead of ageing against them.
->   3. **The other half of the same channel.** This one asserts silence on legal programs. The
->      mirror — *a program gcc rejects should produce a diagnostic* — is what the four censuses did
->      by hand, and would find missing checks rather than false positives. It cannot be a passing
->      assertion yet (many rules are still absent), so it wants to be a **reported count** with a
->      ratchet, not a pass/fail gate.
+>   1. **Five of the six, which need no new machinery**: assignment to an array, a duplicate struct
+>      member, a duplicate parameter name, a `goto` into a VLA's scope, the address of a `register`
+>      object. Each is a check at a site sema already visits; raise `FLOOR` with each.
+>   2. **Qualified types**, which is the sixth (`discard const`) and the largest unfinished item in
+>      the project. Budget for auditing **436 `Ty::` match sites across four crates**; do not start
+>      by adding the variant.
+>   3. **Widen both generated channels.** Every new rule should add its neighbourhood to
+>      `historically_awkward` (silence) and its violation to `VIOLATIONS` (rejection), so the two
+>      grow with the rules instead of ageing against them.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -898,6 +898,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 📊 Wave 325 — a ratchet on how much of C's constraint surface sema rejects
+>
+> `generated_rejection.rs` is the mirror of wave 324's channel: of the programs gcc *rejects*, how
+> many does sema reject? It **cannot** be a pass/fail gate — plenty of C's constraints are
+> genuinely unchecked — so it is a ratchet, and the failure names the misses rather than printing
+> a percentage. A count gives the next wave a number; a list gives it a queue.
+>
+> **It measured 54 of 63, and the wave closed three, so the floor is 57.** Raising `FLOOR` is the
+> deliberate act a wave performs when it adds a rule.
+>
+> **The six still below the line — this is the queue:**
+>   - `discard const` — needs qualified types (436 `Ty::` sites; see the front list)
+>   - assignment to an array
+>   - a duplicate struct member
+>   - a duplicate parameter name
+>   - a `goto` into a VLA's scope
+>   - taking the address of a `register` object
+>
+> **gcc validates the list, not the other way round.** A program the list believes illegal and gcc
+> accepts is asserted on separately, so it can never be mistaken for a missing check — and that
+> assertion fired on the first run: "modifying a string literal" is runtime UB, not a constraint
+> violation.
+>
+> **A deliberate divergence was settled here.** `return v();` from a `void` function is a C 6.8.6.4
+> constraint violation that gcc accepts *by default*. Wave 311 had put it in the accepted list
+> having checked the default; wave 314 established that this project calibrates to
+> `-pedantic-errors`. The rule now rejects it, and chiero therefore rejects a program plain `gcc`
+> compiles. That is the calibration working, not an oversight.
 >
 > ### 🟢 Wave 324 — a generated channel for sema's diagnostics
 >
@@ -2758,6 +2787,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A coverage number nobody can act on is not a report** (wave 325). The rejection ratchet prints
+> the *names* of what it missed, not the count, because "57 of 63" tells the next wave nothing to
+> do. 023 §9's rule about reports applies to a test's own output, and a work queue is the form
+> that makes a measurement worth keeping.
+>
+> **Two fixtures can contradict each other, and the older one can be the wrong one** (wave 325).
+> Wave 311 accepted `return v();` from a `void` function after checking gcc's default; wave 314
+> then established `-pedantic-errors` as this project's calibration, which makes the same program
+> a violation. The conflict surfaced only when a *new* rule made both fixtures run against the
+> same behaviour. **When calibration changes, the fixtures written before it do not update
+> themselves.**
 >
 > **Aim a generator at where the rules are dense** (wave 324). Twelve hundred randomly-assembled
 > legal programs produced no complaint; the same channel aimed at shapes drawn from rejections the
