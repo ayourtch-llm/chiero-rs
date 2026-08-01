@@ -487,19 +487,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 313) — 1486 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 314) — 1487 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next: rows 13–16, the last of the census** — function redefinition, conflicting declaration
-> types, `static` after non-`static`, and a function returning an array. All four are about a
-> *declaration compared with an earlier one*, so unlike rows 8–12 they need no statement context;
-> what they need is the linkage-and-prototype comparison sema does not do today. Rows 1–12 are
-> closed.
+> **The constraint census is exhausted: all sixteen rows closed** (waves 308, 311, 312, 313).
 >
-> After that the census is exhausted. The natural successor is a **second** census in the same
-> shape — thirty programs, half legal — aimed somewhere sema has never been graded: initializers
-> (too many elements, a scalar braced twice, a designator out of range) are the obvious candidate,
-> since wave 307's census touched them once and found `int arr[3] = {1,2,3,4}` accepted by gcc as
-> a warning, which means the interesting cases were never reached. — assigning to a `const`, a parameter of
+> **Next: a second census in the same shape**, thirty programs with half of them legal, aimed at
+> **initializers** — too many elements for an array or struct, a scalar wrapped in braces twice,
+> a designator out of range, a string initialiser too long for its array, an initialiser that is
+> not a constant expression at file scope. Wave 307's census touched this ground once and stopped:
+> `int arr[3] = {1,2,3,4}` is a *warning* in gcc, not an error, so the one case it tried proved
+> nothing and the interesting ones were never reached. Use `-pedantic-errors` when the default
+> verdict is a warning, and record which it was.
+>
+> **The census method itself is the asset**, and it has now paid four waves running. Its two
+> non-obvious rules, both learned the hard way: run the **legal** half (it found three false
+> positives that no other test could see), and take the verdict from **gcc**, not from judgement. — assigning to a `const`, a parameter of
 > incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
 > remaining rows that are about *types* rather than about statements, so they sit in the same part
 > of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
@@ -923,10 +925,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | ~~10~~ | ~~`break` outside loop or switch~~ | **fixed, wave 312** |
 > | ~~11~~ | ~~`continue` outside a loop~~ | **fixed, wave 312** |
 > | ~~12~~ | ~~label used but never defined~~ | **fixed, wave 312** |
-> | 13 | function redefinition | `int f(void){} int f(void){}` |
-> | 14 | conflicting declaration types | `int h(int); int h(long){}` |
-> | 15 | `static` after non-`static` | `extern int n; static int n;` |
-> | 16 | function returning an array | `int f(void)[3];` |
+> | ~~13~~ | ~~function redefinition~~ | **fixed, wave 313** |
+> | ~~14~~ | ~~conflicting declaration types~~ | **fixed, wave 313** — see the limit below |
+> | ~~15~~ | ~~`static` after non-`static`~~ | **fixed, wave 313** |
+> | ~~16~~ | ~~function returning an array~~ | **fixed, wave 313** |
+>
+> **✅ The census is exhausted — all sixteen rows closed, waves 308 and 311–313.**
+>
+> **Rows 13–16 closed in wave 313**, and two models were wrong on the first attempt, both about
+> the *legal* cases:
+>   - **`extern` adopts linkage, it does not defer.** The natural first model — "an `extern`
+>     declaration never conflicts" — accepts both orderings. C 6.2.2p4 makes it take the prior
+>     declaration's linkage, which is why `static int n; extern int n;` is legal and
+>     `extern int n; static int n;` is not.
+>   - **The parser cannot tell `f()` from `f(void)`**: `parameter_list` returns the same empty
+>     vector for both. So parameter lists are compared only when *both* are non-empty, and return
+>     types always. **Declared limit:** `int f(void); int f(int);` is a conflict this misses. It is
+>     the right way round — rejecting a correct program is worse — and the alternative rejects
+>     every K&R declaration in the corpus.
+>
+> A separate old-style guard was written, then **deleted as subsumed**: mutation could not falsify
+> it because the empty-list rule already covers the K&R declaration, and a K&R definition has its
+> parameter types filled in and is legitimately comparable.
 >
 > Rows 1–3 are the ones that matter most for this engine: they are type errors that let execution
 > proceed on a value computed from nothing. The rest are diagnostics a compiler owes its user.
