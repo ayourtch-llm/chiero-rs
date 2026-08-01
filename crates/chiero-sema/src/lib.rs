@@ -1056,6 +1056,21 @@ struct Cx<'a> {
     defined_with_init: indexmap::IndexSet<Symbol>,
 }
 
+/// Whether a type has no size — **including `void`**, which [`is_incomplete`] deliberately
+/// excludes.
+///
+/// That exclusion is right for the callers it was written for: `void *p` is an ordinary pointer,
+/// `void f(void)` an ordinary function, and this engine defines `sizeof(void)` as 1 the way GNU C
+/// does. But three contexts need a size and do not care *why* one is missing — an array's element,
+/// a record's member, and a definition's return type — and each of those had to decide about
+/// `void` separately. Two of them had not, so `struct I a[3];` was caught and `void a[3];` was not.
+///
+/// One predicate for "needs a size", so a fourth such context inherits the answer instead of
+/// repeating the omission.
+fn has_no_size(out: &Analysis, ty: TyId) -> bool {
+    is_incomplete(out, ty) || matches!(out.types[ty.0 as usize], Ty::Void)
+}
+
 /// The linkage a redeclaration resolves to, given the one already established.
 ///
 /// C 6.2.2p4: `static` is internal; a plain file-scope declaration is external; and `extern`
@@ -1494,6 +1509,22 @@ impl Cx<'_> {
                 // violation there for the same reason. `inline` is not counted, which is what
                 // keeps `static inline` — the most common spelling in the corpus — legal.
                 self.check_storage_classes(storage, self.ast.decl(id).span);
+                // **A *definition* returns a complete type** (C 6.9.1p3); a declaration need not.
+                // `struct I f(void);` is legal — the type may be completed before anything calls
+                // it — so this asks about `body` rather than about the type alone, and it is the
+                // reason the check cannot live in `ty_of` beside the array and member ones.
+                //
+                // `void` is a return type and not a size question here, so `is_incomplete` is
+                // the right predicate rather than `has_no_size`.
+                if body.is_some()
+                    && let Ty::Func { ret, .. } = self.out.types[t.0 as usize].clone()
+                    && is_incomplete(&self.out, ret)
+                {
+                    self.error(
+                        self.ast.decl(id).span,
+                        "a function definition returns an incomplete type",
+                    );
+                }
                 if scope == Scope::File {
                     let now = Prior {
                         ty: t,
@@ -1835,7 +1866,7 @@ impl Cx<'_> {
                 // there is no stride, so `a[1]` has no address — which is why this is an error
                 // even for `extern struct I arr[];`, where the *array's* length is legitimately
                 // unknown. The two unknowns are not the same unknown.
-                if is_incomplete(&self.out, e) {
+                if has_no_size(&self.out, e) {
                     self.error(node.span, "array has an incomplete element type");
                 }
                 let l = match len {
@@ -2278,7 +2309,7 @@ impl Cx<'_> {
             // reservation means `struct S { struct S s; }` now finds `S` in the tag table, and
             // what stops it is that the record it finds is still marked incomplete. A pointer to
             // the same tag is fine and is the whole point of the reservation.
-            if is_incomplete(&self.out, fty) {
+            if has_no_size(&self.out, fty) {
                 let what = match name {
                     Some(n) => format!("`{}`", self.text(n).unwrap_or("?")),
                     None => "an unnamed field".to_owned(),
