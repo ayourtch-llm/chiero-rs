@@ -3336,3 +3336,84 @@ fn comparing_a_pointer_with_an_integer_is_constrained() {
         );
     }
 }
+
+/// **`is_null_constant`, the last predicate on §9's sweep** — and the one whose exception was too
+/// narrow rather than too wide.
+///
+/// C 6.3.2.3p3: a null pointer constant is **an integer constant expression with the value 0**, or
+/// such an expression cast to `void *`. The predicate matched only a `Number` or a `Cast`, on the
+/// stated grounds that it must judge the *written* expression rather than a variable that happens
+/// to hold zero. The second half of that is right and the first is not: `1 - 1`, `'\0'`,
+/// `(1 ? 0 : 0)`, `sizeof(int) - 4` and an enumerator worth zero are all integer constant
+/// expressions, and all were refused.
+///
+/// **`eval` is already exactly the right question.** It folds constant expressions and answers
+/// `None` for anything else — a variable, a `const int` (which C does not call a constant
+/// expression), `i - i` on a parameter — so the kind guard was a second, coarser implementation of
+/// what `eval` decides. The rejected half of this fixture is what proves the widening does not
+/// swallow those.
+///
+/// **Three of these were introduced by wave 348 and are regressions of my own.** Before it, the
+/// comparison rule required both operands to be pointers, so `p == 1 - 1` was never examined and
+/// passed by accident; tightening the guard inherited this predicate's narrowness. The corpus did
+/// not catch them and the ratchet could not — only the sweep did.
+#[test]
+fn a_null_pointer_constant_is_any_zero_constant_expression() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // **Every spelling of zero**, in each of the three contexts the predicate serves:
+    // initialization, comparison, and argument or return.
+    for zero in [
+        "0",
+        "(void*)0",
+        "(int)0",
+        "1 - 1",
+        "0 * 5",
+        "'\\0'",
+        "(1 ? 0 : 0)",
+        "(1 == 2)",
+    ] {
+        for src in [
+            format!("int *g = {zero};"),
+            format!("int f(int *p){{ return p == {zero}; }}"),
+            format!("int f(int *p){{ return p != {zero}; }}"),
+            format!("void g(int *); int f(void){{ g({zero}); return 0; }}"),
+            format!("int *h(void){{ return {zero}; }}"),
+        ] {
+            assert!(
+                diags(&src).is_empty(),
+                "must be accepted: `{src}` -> {:?}",
+                diags(&src)
+            );
+        }
+    }
+
+    // An enumeration constant worth zero is an integer constant expression like any other.
+    assert!(diags("enum { Z = 0 }; int *g = Z;").is_empty());
+    assert!(diags("enum { Z = 0 }; int f(int *p){ return p == Z; }").is_empty());
+    assert!(diags("int *g = sizeof(int) - 4;").is_empty());
+
+    // **What `eval` refuses, and must keep refusing.** A variable holding zero is not a constant
+    // expression, and neither is a `const int` — C is explicit about the second, and it is the
+    // case the predicate's comment was written to protect.
+    for bad in [
+        "int x; int *g = x;",
+        "int f(int x){ int *p = x; return p != 0; }",
+        "int f(void){ const int k = 0; int *p = k; return p != 0; }",
+        "int f(int *p, int i){ return p == i - i; }",
+        // ...and a constant expression that is not zero is not a null pointer constant.
+        "int *g = 1;",
+        "int *g = 2 - 1;",
+        "enum { NZ = 1 }; int *g = NZ;",
+        "int f(int *p){ return p == 2 - 1; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+}
