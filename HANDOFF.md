@@ -487,36 +487,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 331) — 1504 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 332) — 1506 tests, 4 ignored, M1 165/165 by contract
 >
-> **`FLOOR = 89` of 89: the ratchet's queue is empty again.** Waves 329 and 330 ran a census and
-> closed everything it found. A diagnostic-side wave must refill it first.
+> **`FLOOR = 95` of 95.** Three censuses have now closed everything they found.
 >
 > **Next, in descending order of what they buy:**
->   1. **Run the census again.** Two runs have now cost two waves and produced twelve rules, the
->      best ratio of any method here. Untouched neighbourhoods: **C 6.7.9's initializer
->      constraints** beyond what wave 314 covered, **6.9's external-definition rules**, and
->      **6.5.2.2's function-call constraints** (argument count and type against a prototype — the
->      ratchet has carried "too few arguments" and "too many arguments" as *caught* since an
->      earlier wave, so check what those actually reject before assuming the neighbourhood is
->      done). Method unchanged: 30 programs, half legal, verdicts from gcc under
->      `-pedantic-errors`.
->   2. **`typedef static int T;` needs a parser change.** `DeclKind::Typedef` carries no `Storage`,
->      so the multiple-storage-class rule cannot see it. Small, and it is the only violation
->      wave 330 knowingly left — worth doing when something else is already in the parser.
->   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
->      pointee would tell 021 that a store through it is UB. A checker question — cost it against
->      023 §7 first.
->   4. **Widen both generated channels with every new rule.** Waves 327–330 added five, eleven,
->      eleven and nine.
+>   1. **The prototype flag** — the only *costed* item on this list, and it unblocks three things
+>      at once. The parser returns the same empty list for `f()` and `f(void)`
+>      (`parameter_list` returns `(vec![], false, false)` for both), so sema cannot see:
+>      `int g(void); g(1);` — calling a prototyped no-argument function with an argument;
+>      `int f(void); int f(int);` — the limit `types_conflict` documents in its own comment; and
+>      `typedef static int T;`, which needs `Storage` on `DeclKind::Typedef` in the same
+>      neighbourhood. **Measured: 7 `Ty::Func` construction sites, 11 `TypeKind::Func` matches,
+>      and `TypeKind::Func` already carries a `kr` flag to sit beside.** Note that adding a field
+>      to `Ty::Func` changes the interning key, so `int f()` and `int f(void)` become distinct
+>      types — check `types_conflict`'s empty-list rule still holds.
+>   2. **Run the census again**, on neighbourhoods none of the three have touched: C 6.5.3.2's
+>      address-of and indirection constraints, 6.8's statement constraints beyond wave 312's, and
+>      6.10's preprocessor constraints (which no census has looked at at all — `chiero-pp` has its
+>      own differential channel but no constraint list).
+>   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A checker
+>      question — cost it against 023 §7 first.
 >
-> **What wave 330 is really about is the shadowing case nobody writes.** Two of its four rules
-> needed a scoped name set, and mutation showed the fixture could not observe the set's *removal* —
-> because the case I had written was two **sibling** scopes, and a sibling never reads a stale
-> entry: its mark already starts past them. The shape that reads them is declaring in the
-> **enclosing** scope after an inner one has closed. Wave 326 recorded that a scoped set's removal
-> is unfalsifiable until something reuses the name; wave 330 adds *which* reuse, because the
-> obvious one does not work.
+> **Wave 331's finding is about what a constraint is for.** The "a declaration declares something"
+> rule was worth little on its own — nobody writes `int;`. What it did was report
+> `typedef __builtin_va_list __gnuc_va_list;`, because the lexer had mapped `__gnuc_va_list` to the
+> **same keyword** as the builtin. That alias made the type come out right, so no test of a
+> *value* could ever have seen it; what it broke was the declaration, silently, in every TU that
+> includes `<stdarg.h>`. **A constraint check earns its keep by what it finds in code nobody
+> suspected, not by the programs it was written for.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2822,6 +2821,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A constraint check pays for itself on code nobody suspected** (wave 331). "A declaration
+> declares something" is a rule against `int;`, which nobody writes. It reported
+> `typedef __builtin_va_list __gnuc_va_list;` in gcc's own `stdarg.h`, where the lexer had aliased
+> the typedef name to the builtin keyword — a defect that made the *type* come out right, so no
+> test of a value could have found it. **Add the constraint even when its own examples look
+> pointless.**
+>
+> **A fixture can assert the bug** (wave 331). `the_gnuc_spelling_is_the_same_type` declared
+> `__gnuc_va_list ap;` with no typedef and passed — gcc rejects that outright. When a change breaks
+> a test, ask gcc what the fixture claims *before* assuming the change is wrong; this is the second
+> time (wave 325 was the first) that a passing fixture turned out to encode a wrong answer.
+>
+> **A new rule needs the poison list checked, not just the happy path** (wave 331). The record rule
+> turned one diagnostic into eight because an incomplete record is a well-formed `Ty::Record`, not
+> `Ty::Error`, so contract 20's escape did not cover it. **When adding a type rule, ask which
+> already-reported states reach it** — `Ty::Error` is not the only one.
 >
 > **The shadowing case that tests a scoped set is inner-then-*outer*, not sibling-then-sibling**
 > (wave 330). A sibling scope's mark already starts past the previous scope's leftovers, so it
