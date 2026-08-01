@@ -306,6 +306,28 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "duplicate enumerator",
         "enum E { A = 1, A = 2 }; int f(void){ return A; }",
     ),
+    (
+        "multiple storage classes on a function",
+        "static extern int g(void);",
+    ),
+    (
+        "variably modified with static storage",
+        "const int k = 1; int f(void){ static int a[k]; return a[0]; }",
+    ),
+    (
+        "variably modified member",
+        "const int k = 1; struct S { int a[k]; };",
+    ),
+    (
+        "enumerator shared by two enums",
+        "enum E { A = 1 }; enum F { A = 2 }; int f(void){ return A; }",
+    ),
+    // Wave 330 found these while probing the three above: nothing checked them.
+    (
+        "struct redefined",
+        "struct S { int m; }; struct S { int m; };",
+    ),
+    ("union redefined", "union U { int m; }; union U { int m; };"),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -338,7 +360,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 329. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 330. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -350,11 +372,15 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     ///     variably-modified scopes are open at each label and at each `goto` and requiring the
     ///     first set to be contained in the second.
     ///
-    /// Wave 328 emptied the queue; **wave 329's census refilled it.** Eight new rows, five closed
-    /// in the same wave and three left open — `static extern`, a variably-modified array at file
-    /// scope, and a duplicate enumerator. Those three are the next wave's work list, and the
-    /// failure message prints them by name.
-    const FLOOR: usize = 80;
+    /// Wave 329's census refilled the queue with eight rows and left three open; **wave 330
+    /// closed all three**, plus a fourth it found while probing their boundaries — a `struct` tag
+    /// could be defined twice with nothing said.
+    ///
+    /// One violation is knowingly absent rather than missed: `typedef static int T;` is also a
+    /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
+    /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
+    /// rather than a sema one.
+    const FLOOR: usize = 89;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

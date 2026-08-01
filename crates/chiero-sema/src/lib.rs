@@ -853,6 +853,8 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        defined_tags: Default::default(),
+        declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
         next_vla_scope: 0,
         label_scopes: Default::default(),
@@ -902,6 +904,8 @@ pub fn const_eval(
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        defined_tags: Default::default(),
+        declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
         next_vla_scope: 0,
         label_scopes: Default::default(),
@@ -1008,6 +1012,13 @@ struct Cx<'a> {
     /// stack truncated on the way out of a compound statement rather than a set: C 6.8.6.1 is
     /// about whether a jump *crosses* a declaration, and the same block can open one after a
     /// label and not before it.
+    /// Tags *defined* — not merely declared — in each open scope. `struct S;` after a definition
+    /// is how a forward declaration is written, so only a definition registers here.
+    defined_tags: ScopedNames,
+    /// Enumeration constants declared in each open scope. **Not per enum**: C 6.7.2.2 makes an
+    /// enumerator an ordinary identifier, so two *different* enums in one scope may not share a
+    /// name any more than one enum may repeat one.
+    declared_enumerators: ScopedNames,
     open_vla_scopes: Vec<u32>,
     next_vla_scope: u32,
     /// The scopes open where each label sits. A `goto` is illegal when this is not contained in
@@ -1058,6 +1069,41 @@ struct Prior {
 enum Scope {
     File,
     Block,
+}
+
+/// Names declared in the scope being walked, for the rules that ask "again, *here*?".
+///
+/// **A stack with marks, not a depth counter.** Two sibling blocks are two different scopes at the
+/// same depth — `{ struct S {int a;}; } { struct S {int b;}; }` is legal C — so a rule keyed on
+/// depth reports a redefinition for code gcc accepts. The mark is where the current scope's names
+/// begin; leaving the scope truncates back to it, which is what makes a sibling start empty.
+///
+/// Wave 326's rule applies and was written into the fixture in the same edit: a scoped set's
+/// *removal* is unfalsifiable until something reuses the name, so the sibling case exists here
+/// before the code did.
+#[derive(Default)]
+struct ScopedNames {
+    names: Vec<Symbol>,
+    marks: Vec<usize>,
+}
+
+impl ScopedNames {
+    fn enter(&mut self) {
+        self.marks.push(self.names.len());
+    }
+
+    fn leave(&mut self) {
+        let mark = self.marks.pop().unwrap_or(0);
+        self.names.truncate(mark);
+    }
+
+    /// Whether `name` is already declared **in the innermost scope**, and record it either way.
+    fn redeclares(&mut self, name: Symbol) -> bool {
+        let start = self.marks.last().copied().unwrap_or(0);
+        let again = self.names[start..].contains(&name);
+        self.names.push(name);
+        again
+    }
 }
 
 impl Cx<'_> {
@@ -1232,6 +1278,34 @@ impl Cx<'_> {
             } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                let span = self.ast.decl(id).span;
+                self.check_storage_classes(storage, span);
+                // **A variably-modified declarator needs automatic storage duration**
+                // (C 6.7.6.2p2). Not a rule about *where* the declaration is: `int a[k]` with a
+                // `const int k` is a VLA in a function body and at file scope alike — `const`
+                // does not make a constant expression in C — and what decides it is the storage
+                // duration. So file scope, `static` and `extern` are all illegal and a plain
+                // block-scope local is not.
+                //
+                // A **parameter** never reaches here as an array: `int f(int a[k])` adjusts to a
+                // pointer, so the length is evaluated and discarded and there is no object of
+                // variably-modified type to place. That is why the rule needs no exemption for
+                // one.
+                if matches!(
+                    self.out.types[t.0 as usize],
+                    Ty::Array {
+                        len: ArrayLen::Vla(_),
+                        ..
+                    }
+                ) && (scope == Scope::File || storage.static_ || storage.extern_)
+                {
+                    let where_ = if scope == Scope::File {
+                        "at file scope"
+                    } else {
+                        "with static storage duration"
+                    };
+                    self.error(span, format!("variably modified type {where_}"));
+                }
                 if let Some(a) = self.declared_align(ty) {
                     self.out.decl_aligns.insert(id, a);
                 }
@@ -1375,6 +1449,10 @@ impl Cx<'_> {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
                 self.values.insert(name, t);
+                // A function declaration carries storage classes too, and `static extern` is a
+                // violation there for the same reason. `inline` is not counted, which is what
+                // keeps `static inline` — the most common spelling in the corpus — legal.
+                self.check_storage_classes(storage, self.ast.decl(id).span);
                 if scope == Scope::File {
                     let now = Prior {
                         ty: t,
@@ -1874,6 +1952,16 @@ impl Cx<'_> {
                 rid
             }
         };
+        // **A tag is defined once per scope** (C 6.7.2.3p1). Registered on the *definition*
+        // only: `struct S;` after `struct S { ... };` is how a forward declaration is written, so
+        // a rule keyed on "seen this tag before" rejects the idiom it exists to permit.
+        if let Some(name) = name
+            && self.defined_tags.redeclares(name)
+        {
+            let n = self.text(name).unwrap_or("?").to_owned();
+            let kw = if is_union { "union" } else { "struct" };
+            self.error(span, format!("redefinition of `{kw} {n}`"));
+        }
         let layout = self.lay_out(node, tag == chiero_ast::TagKind::Union, &members.unwrap());
         if name.is_some() {
             self.in_progress.pop();
@@ -1974,6 +2062,18 @@ impl Cx<'_> {
             next = v.wrapping_add(1);
             lo = lo.min(v);
             hi = hi.max(v);
+            // **An enumerator is an ordinary identifier in its scope** (C 6.7.2.2p3), not a
+            // member of its enumeration. So two *different* enums in one scope may not share a
+            // constant's name any more than one enum may repeat one, and shadowing in an inner
+            // scope stays legal — which is why this is a scoped set rather than a check against
+            // the flat `enumerators` table, whose second write simply wins.
+            if self.declared_enumerators.redeclares(en) {
+                let n = self.text(en).unwrap_or("?").to_owned();
+                self.error(
+                    self.ast.decl(*m).span,
+                    format!("redeclaration of enumerator `{n}`"),
+                );
+            }
             self.enumerators.insert(en, v);
             pending.push((en, v));
         }
@@ -2023,6 +2123,25 @@ impl Cx<'_> {
                 continue;
             };
             let fty = self.ty_of(ty);
+            // **A member is never variably modified** (C 6.7.2.1p9), anywhere — not only at file
+            // scope, which is merely where gcc's message says so. A record has one layout, and a
+            // length that is not known until the declaration is reached has nowhere in it to
+            // live. `struct S { int a[n]; }` inside a function with a runtime `n` is rejected for
+            // the same reason as one at file scope.
+            //
+            // Distinct from the *flexible* array member `int a[]`, which is `ArrayLen::Unknown`
+            // and legal in the last position: that has no length at all rather than a length
+            // computed at run time.
+            if matches!(
+                self.out.types[fty.0 as usize],
+                Ty::Array {
+                    len: ArrayLen::Vla(_),
+                    ..
+                }
+            ) {
+                let span = self.ast.decl(m).span;
+                self.error(span, "a member cannot have a variably modified type");
+            }
             // **A member name is unique within its record** (C 6.7.2.1p2), and only within it:
             // two structs may each have an `m`, so the set is built per `lay_out` call rather
             // than kept across them.
@@ -5049,6 +5168,33 @@ impl Cx<'_> {
         self.ast.ty(inner).quals.const_
     }
 
+    /// **At most one of `extern`, `static`, `auto`, `register`** (C 6.7.1p2).
+    ///
+    /// Three things are deliberately *not* counted:
+    ///
+    ///   - **`_Thread_local`**, which 6.7.1p2 exempts by name — it may accompany `static` or
+    ///     `extern`, in either order, and both spellings appear in real code.
+    ///   - **`inline` and `_Noreturn`**, which are *function* specifiers (6.7.4) and combine with
+    ///     anything. They share this struct only because the parser collects them together.
+    ///   - **`typedef`**, which C does count as a storage-class specifier — so
+    ///     `typedef static int T;` is a violation this cannot see. `DeclKind::Typedef` carries no
+    ///     `Storage` in this AST, so the `static` is gone before sema looks. A declared limit,
+    ///     and a parser change rather than an oversight.
+    fn check_storage_classes(&mut self, storage: chiero_ast::Storage, span: Span) {
+        let n = [
+            storage.extern_,
+            storage.static_,
+            storage.auto,
+            storage.register,
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        if n > 1 {
+            self.error(span, "multiple storage classes in one declaration");
+        }
+    }
+
     fn check_complete(&mut self, id: DeclId, ty: TyId) {
         // **`void` is the incomplete type that can never be completed.** It is deliberately not
         // part of `is_incomplete`: that predicate answers "may this be an object *yet*", and
@@ -5099,9 +5245,13 @@ impl Cx<'_> {
                 // Scopes opened inside this block end with it. Truncating rather than popping one
                 // per declaration keeps the two in step even when a block opens several.
                 let outer = self.open_vla_scopes.len();
+                self.defined_tags.enter();
+                self.declared_enumerators.enter();
                 for s in ss {
                     self.type_stmt(s);
                 }
+                self.declared_enumerators.leave();
+                self.defined_tags.leave();
                 self.open_vla_scopes.truncate(outer);
             }
             StmtKind::If { cond, then, els } => {

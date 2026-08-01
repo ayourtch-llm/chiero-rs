@@ -1977,6 +1977,14 @@ fn the_declaration_constraints_of_c_6_7() {
         "enum E { A = 1, B = 2 }; int f(void){ return A + B; }",
         "enum E { A, B, C }; int f(void){ return C; }",
         "enum E { A = 1 }; int f(void){ enum F { A = 2 }; return A; }",
+        // **A name freed by leaving a scope is available again in the enclosing one.** Mutation
+        // found this missing: a *sibling* pair does not exercise the removal at all, because the
+        // second sibling's mark already starts past the first's leftovers. Only declaring in the
+        // enclosing scope *after* an inner one has closed reads the stale entries. Wave 326's
+        // rule, and the second time this project has written the wrong shadowing case first.
+        "int f(void){ { enum E1 { A }; } enum E2 { A = 2 }; return A; }",
+        "int f(void){ { struct S { int a; }; } struct S { int b; } s = {1}; return s.b; }",
+        "int f(void){ if (1) { enum E1 { A }; } enum E2 { A = 3 }; return A; }",
         "enum E { A = 1 }; enum E2 { B = A }; int f(void){ return B; }",
         // A tag declared repeatedly, defined once — which is what a forward declaration is.
         "struct S; struct S { int m; }; struct S; int f(struct S *p){ return p->m; }",

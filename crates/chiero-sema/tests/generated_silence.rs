@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(21) {
+    match rng.below(24) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -194,6 +194,19 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         ),
         20 => format!(
             "static void v{n}(void){{}}\nstatic int f{n}(void){{ void *p = 0; *p; (void)*p; v{n}(); return p != 0; }}"
+        ),
+        // Wave 330: the legal half of the C 6.7 declaration census. `_Thread_local` beside a
+        // storage class in both orders, `static inline`, a VLA with automatic storage duration
+        // and one as a parameter, sibling scopes reusing a tag and an enumerator name, and a tag
+        // declared repeatedly but defined once.
+        21 => format!(
+            "_Thread_local static int t{n}; static _Thread_local int u{n};\nstatic inline int f{n}(void){{ register const int r = 1; return t{n} + u{n} + r; }}"
+        ),
+        22 => format!(
+            "static const int k{n} = 4;\nstatic int f{n}(int a[k{n}]){{ int v[k{n}]; v[0] = a[0]; return v[0]; }}"
+        ),
+        23 => format!(
+            "struct T{n}; struct T{n} {{ int m; }}; struct T{n};\nstatic int f{n}(struct T{n} *p){{ {{ struct Q{n} {{ int a; }} x = {{1}}; (void)x; }} {{ struct Q{n} {{ int b; }} y = {{2}}; (void)y; }} struct Q{n} {{ int c; }} z = {{3}}; return p->m + z.c; }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),
