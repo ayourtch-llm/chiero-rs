@@ -487,29 +487,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 333) — 1507 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 334) — 1512 tests, 4 ignored, M1 165/165 by contract
 >
-> **`FLOOR = 101` of 101.** Four censuses have now closed everything they found.
+> **Two ratchets now.** `chiero-sema` at `FLOOR = 104` of 104, and `chiero-pp` at **18 of 21** —
+> new in wave 333, in `crates/chiero-pp/tests/constraints.rs`, and the only one with a non-empty
+> queue.
 >
 > **Next, in descending order of what they buy:**
->   1. **`typedef static int T;`** — the last item wave 331 named and wave 332 did not reach.
->      `DeclKind::Typedef` carries no `Storage`, so the multiple-storage-class rule cannot see it.
->      Small, and the parser is now warm: wave 332 added a field to `TypeKind::Func` and threaded
->      it through in one wave, so the same shape applies.
->   2. **Run the census on neighbourhoods none of the four have touched**: C 6.5.3.2's address-of
->      and indirection constraints, 6.8's statement constraints beyond wave 312's, and **6.10's
->      preprocessor constraints — which no census has looked at at all.** `chiero-pp` has a
->      differential channel but no constraint list, and it is the only crate with none.
+>   1. **The three extra-token rules**, named in the pp ratchet and printed when it fails: tokens
+>      after `#endif`, `#else` and `#undef`. They are `-pedantic-errors` diagnostics that **old
+>      headers genuinely trip over** — `#endif FOO` was the idiom before comments were reliable —
+>      so **grep the VPP and glibc corpus first** and be ready to declare the rule rather than ship
+>      a false positive on real headers. That check is the work; the rules themselves are three
+>      lines each.
+>   2. **Run the census on what remains**: C 6.5.3.2's address-of and indirection constraints, and
+>      6.8's statement constraints beyond wave 312's. Both sema-side. Four runs have now produced
+>      thirty-odd rules for four waves.
 >   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
 >      pointee would tell 021 a store through it is UB. A checker question — cost it against
 >      023 §7 first.
 >
-> **Wave 332 is the estimate §9 got right**, and worth reading beside wave 328's, which it did not.
-> Both were "add a field to a type". Qualified types was costed at 436 match sites and came in at
-> four, because the sites that *mention* a type are not the sites that depend on its identity. The
-> prototype flag was costed at 7 construction sites and 11 matches and came in at two and two —
-> because that count had already been made the right way. **The difference was not luck: wave 328's
-> rule is to audit what changes meaning, and wave 331's estimate applied it.**
+> **What wave 333 says about where to look next:** the preprocessor had a differential channel and
+> no constraint list, and the census found **eleven** missing rules — more than any sema run,
+> against a crate with three hundred waves of work behind it. A differential channel grades what a
+> program *computes*; it cannot see a program that should have been refused. **When a component has
+> one kind of channel and not the other, the missing kind is where the findings are.** By that test
+> the remaining candidates are `chiero-lex` and `chiero-parse`, neither of which has a constraint
+> list either.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2819,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A component with only one kind of channel is where the findings are** (wave 333). `chiero-pp`
+> had a differential channel and no constraint list, and the first census against it found eleven
+> missing rules — more than any run against sema, which has had both for ten waves. A differential
+> channel grades what a program *computes* and is structurally blind to a program that should have
+> been *refused*. **Check which crates have which channel, and go to the gap.** `chiero-lex` and
+> `chiero-parse` are the two left.
+>
+> **Two rules from one paragraph can need opposite guards** (wave 333). `#` and `##` are both
+> C 6.10.3.2–3 operator constraints and read as a pair, but `#` applies only in a function-like
+> macro and `##` applies in both. Mutation kills the mistake in each direction. **When two rules
+> arrive together, test each one's guard separately** — a shared paragraph number is not a shared
+> condition.
 >
 > **A guard standing in for a missing fact names the fact it is missing** (wave 332). Two rules were
 > keyed on `params.is_empty()`, and both comments said outright that "unspecified" was the only
