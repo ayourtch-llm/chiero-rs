@@ -4820,6 +4820,27 @@ impl Cx<'_> {
                     self.error(span, "comparison between incompatible pointer types");
                 }
             }
+            // **A pointer against a *non*-pointer** (C 6.5.9p2, 6.5.8p2). The guard above needs
+            // both operands to be pointers, so this half was never examined at all: `p == i`,
+            // `p == 1` and `p == c` were silent, and `p == b` on a `_Bool` was the entry that
+            // made it visible — `assignable` exempts `_Bool` because a *conversion* to it is a
+            // test against zero, and a comparison converts nothing.
+            //
+            // **Equality admits a null pointer constant and a relational operator does not.**
+            // `p == 0` is legal, `p > 0` is not; that pair is the whole difference between the
+            // two paragraphs, which is why `equality` is asked separately rather than folded into
+            // `comparison`.
+            if comparison && is_ptr(self, aty) != is_ptr(self, bty) {
+                let equality = matches!(op, BinOp::Eq | BinOp::Ne);
+                let null = if is_ptr(self, aty) {
+                    self.is_null_constant(be)
+                } else {
+                    self.is_null_constant(ae)
+                };
+                if !(equality && null) {
+                    self.error(span, "comparison between a pointer and an integer");
+                }
+            }
             let (a, b) = if !comparison {
                 (a, b)
             } else if is_ptr(self, aty) && !is_ptr(self, bty) && self.is_null_constant(be) {
