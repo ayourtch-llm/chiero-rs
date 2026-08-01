@@ -487,21 +487,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 320) — 1492 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 321) — 1493 tests, 4 ignored, M1 165/165 by contract
 >
-> **Four censuses done** — constraints (16 rows), initializers (7), conversions (8), `switch` (7).
-> Every one found its rows unchecked except `_Generic`, which was already correct.
+> **Four censuses done and their follow-ons closed.** Constraints (16 rows), initializers (7),
+> conversions (8), `switch` (7), plus the deref-completeness rule wave 319 wrote down and wave 320
+> closed.
 >
 > **Next, in descending order of what they buy:**
->   1. **Completeness of a dereference.** Nothing checks `*p` where `p` points at an incomplete
->      type — wave 319 hit it through `switch(*p)` and declined to report it from there, because
->      the fault is the dereference. It is small, it has a natural home beside wave 303's rules,
->      and it closes a case already written down.
->   2. **Qualified types.** The last conversion-census row (`int *p = cp;`) and what would make
->      wave 316's pointee rule semantic rather than syntactic. Budget for auditing **436 `Ty::`
->      match sites across four crates**; do not start by adding the variant.
->   3. **A fifth census.** Prefer a construct whose implementation arrived in pieces —
->      `restrict`/`volatile`, or compound literals, rather than something written as a unit.
+>   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
+>      what would make wave 316's pointee rule semantic rather than syntactic. Budget for auditing
+>      **436 `Ty::` match sites across four crates**; do not start by adding the variant. This is
+>      now the only item left from the census programme.
+>   2. **A fifth census**, preferring a construct whose implementation arrived in pieces (wave
+>      319's rule): `restrict`/`volatile`, compound literals, or bit-field access rules.
+>   3. **Return to the engine.** Five waves have been spent in sema. The last differential finding
+>      was wave 306's, and the corpus channels — `if_differential`, the canonical-use net, the
+>      symbolic/concrete channel — have not been widened since. A wave spent asking what *those*
+>      cannot yet see may be worth more than a fifth census.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -898,6 +900,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 320 — dereferencing an incomplete pointee
+>
+> Closes the case wave 319 wrote down. Nothing checked a `Deref` for completeness, so `*p` on an
+> opaque pointer was accepted everywhere — including `*p = *q`, which copies an object of unknown
+> size.
+>
+> **Checked on the pointee, not the pointer.** Copying, comparing and converting an opaque handle
+> never touches what it points at, and that is what the type is for. `struct I **p` falls out for
+> free: its pointee is a pointer, and a pointer is complete.
+>
+> **`void *` is untouched, and two rules divide the work.** `(*p);` on a `void *` is legal (GNU),
+> while `return *p;` is rejected by wave 311's *void-value* rule. Same expression, different
+> faults. This is why `Ty::Void` sits outside `is_incomplete` — folding it in would make the deref
+> rule reject a legal program and leave the void-value rule with nothing to say.
+>
+> **A diagnostic stopped naming the wrong thing.** `p->m` on an incomplete `p` used to report "no
+> member named `m`", because the lookup searched a record with no members and failed — true and
+> useless. It now reports the dereference.
 >
 > ### 🟢 Wave 319's `switch` census — and `_Generic` came back clean
 >
@@ -2643,6 +2664,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Report the fault, not its consequence** (wave 320). `p->m` on a pointer to an incomplete type
+> used to say "no member named `m`" — the lookup searched a record with no members and truthfully
+> failed. The message was accurate and useless, and it pointed a reader at the member rather than
+> at the missing definition. **When a check fires because an earlier one is absent, the message
+> names the wrong thing**; wave 319 spotted the same shape from `switch(*p)` and declined to
+> report it there for exactly this reason.
+>
+> **Two rules that overlap on an expression are not redundant if they name different faults**
+> (wave 320). `(*p)` on a `void *` is legal and `return *p` is not — the same expression, caught
+> by the void-*value* rule rather than the deref rule. That is why `Ty::Void` stays outside
+> `is_incomplete`: folding it in would have made one rule reject a legal program and left the
+> other with nothing to say. **Before widening a predicate, check which of its callers wanted the
+> narrow meaning.**
 >
 > **A construct built in one go carries its rules; one that grew in layers does not** (wave 319).
 > The fourth census found `switch` missing all seven of its rules and `_Generic` missing none —
