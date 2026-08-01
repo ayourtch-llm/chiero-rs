@@ -941,3 +941,87 @@ fn the_declaration_constraints_of_census_rows_thirteen_to_sixteen() {
         );
     }
 }
+
+/// **The initializer census: is what is written compatible with what it initializes?**
+///
+/// The second census in wave 307's shape, aimed where sema had never been graded. `InitList`
+/// types to `Ty::Error` and is never compared against the declared type at all, so none of the
+/// seven constraints below was checked.
+///
+/// **Four of the seven are only errors under `-pedantic-errors`** — excess elements for an array,
+/// a struct, or a scalar, and an over-long string — and gcc accepts them with a warning by
+/// default. They are constraint violations either way (C 6.7.9p2), and wave 307's census stopped
+/// at this boundary having tried exactly one of them and read "gcc:ok". Taking the verdict at
+/// both strictness levels is what makes the difference visible; the other three are hard errors.
+///
+/// The accepted list is nineteen cases because this is where C is generous, and three of them
+/// decide the shape of the rules:
+///
+///   - **`char s[3] = "abc";` is legal.** The terminator is dropped when it is the only thing
+///     that does not fit — so the string rule is "more than `n` characters *before* the NUL",
+///     not "longer than the array".
+///   - **`int a[2][2] = {1,2,3,4};` is legal**: braces may be elided and the flat list is
+///     distributed across the rows. So counting top-level items against the outer dimension is
+///     wrong, and a check written that way rejects it.
+///   - **`int a[3] = {[0] = 1, [2] = 3};` is legal**, and its highest index is 2 while it has two
+///     items. Counting items cannot answer the range question; the *positions* have to be
+///     tracked, and a designator moves the cursor.
+#[test]
+fn the_initializer_census() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Excess elements. gcc warns by default and errors under `-pedantic-errors`.
+        "int a[3] = {1,2,3,4};",
+        "struct S { int x, y; }; struct S s = {1,2,3};",
+        "int x = {1,2};",
+        "char s[3] = \"abcd\";",
+        // Hard errors in gcc by default.
+        "int a[3] = {[5] = 1};",
+        "struct S { int x, y; }; struct S s = {.nope = 1};",
+        "int f(void); int g = f();",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Exactly full, inferred length, and partial.
+        "int a[3] = {1,2,3};",
+        "int a[] = {1,2,3};",
+        "int a[5] = {1,2};",
+        "int h[2] = {0};",
+        "struct S { int x, y; }; struct S s = {1};",
+        // A scalar may be braced once.
+        "int x = {1};",
+        // Strings: room for the NUL, exactly no room for it, and inferred.
+        "char s[4] = \"abc\";",
+        "char s[3] = \"abc\";",
+        "char s[] = \"abc\";",
+        // Designators, in range and out of order.
+        "int a[3] = {[1] = 5};",
+        "int a[3] = {[0] = 1, [2] = 3};",
+        "struct S { int x, y; }; struct S s = {.y = 2, .x = 1};",
+        // Nested aggregates, with braces and with them elided.
+        "int a[2][2] = {{1,2},{3,4}};",
+        "int a[2][2] = {1,2,3,4};",
+        "struct S { int m[2]; }; struct S s = {{1,2}};",
+        "struct S { int x; }; struct S a[2] = {{1},{2}};",
+        "union U { int i; float f; }; union U u = {1};",
+        // Constant expressions at file scope, including an address constant.
+        "int g = 1 + 2;",
+        "int y; int *p = &y;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
