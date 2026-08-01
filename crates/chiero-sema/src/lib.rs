@@ -785,6 +785,11 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         current_ret: None,
         current_fn: None,
         read_only: Default::default(),
+        loop_depth: 0,
+        breakable_depth: 0,
+        switches: Vec::new(),
+        labels_defined: Default::default(),
+        labels_used: Vec::new(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -823,6 +828,11 @@ pub fn const_eval(
         current_ret: None,
         current_fn: None,
         read_only: Default::default(),
+        loop_depth: 0,
+        breakable_depth: 0,
+        switches: Vec::new(),
+        labels_defined: Default::default(),
+        labels_used: Vec::new(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -894,6 +904,23 @@ struct Cx<'a> {
     /// of the same name, which is why a non-const declaration **removes** as well as a const one
     /// inserting.
     read_only: indexmap::IndexSet<Symbol>,
+    /// How many *loops* enclose the statement being walked, and how many loops-or-switches.
+    ///
+    /// Two counters rather than one, because `break` and `continue` do not agree about what a
+    /// `switch` is: `break` leaves it, `continue` looks past it to the enclosing loop. A single
+    /// depth would accept `continue` in a switch that no loop encloses, and there is no way to
+    /// recover the distinction afterwards.
+    loop_depth: usize,
+    breakable_depth: usize,
+    /// One frame per `switch` currently open: the case values seen, and whether a `default` has
+    /// been. A stack rather than a set, because a nested switch starts a fresh set and a sibling
+    /// switch may legally repeat every value of the one before it.
+    switches: Vec<(indexmap::IndexSet<i128>, bool)>,
+    /// The labels this function defines, and the `goto`s that named one. Collected for the whole
+    /// function and checked at the end: a forward `goto` names a label declared later, so nothing
+    /// can be decided at the point of use.
+    labels_defined: indexmap::IndexSet<Symbol>,
+    labels_used: Vec<(Symbol, Span)>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
     values: IndexMap<Symbol, TyId>,
@@ -1159,7 +1186,23 @@ impl Cx<'_> {
                         Ty::Func { ret, .. } => Some(ret),
                         _ => None,
                     };
+                    let saved_defined = std::mem::take(&mut self.labels_defined);
+                    let saved_used = std::mem::take(&mut self.labels_used);
                     self.type_stmt(body);
+                    // **Checked here, once the whole body has been walked.** A `goto` may name a
+                    // label declared later — that is what a forward jump is — so nothing can be
+                    // decided at the point of use. Labels are function-scoped in C, so the sets
+                    // are per function and are swapped out around the body rather than cleared:
+                    // a nested function definition is not legal C, but a stale set would be a
+                    // silent wrong answer if one ever arrived.
+                    for (name, span) in std::mem::take(&mut self.labels_used) {
+                        if !self.labels_defined.contains(&name) {
+                            let n = self.text(name).unwrap_or("?").to_owned();
+                            self.error(span, format!("label `{n}` used but not defined"));
+                        }
+                    }
+                    self.labels_defined = saved_defined;
+                    self.labels_used = saved_used;
                     self.current_ret = saved_ret;
                     self.current_fn = saved_fn;
                     // A parameter does not outlive its function; restoring rather than
@@ -3758,6 +3801,15 @@ impl Cx<'_> {
     /// pointer, and whether *those* are allowed depends on the qualifiers of the pointee — which
     /// sema does not model, so it says nothing rather than guessing. `int *const p; *p = 1;` is
     /// legal and must stay so, and it is legal precisely because the write is not to `p`.
+    /// Walk `body` with one more enclosing loop, which is also one more breakable statement.
+    fn in_loop(&mut self, body: impl FnOnce(&mut Self)) {
+        self.loop_depth += 1;
+        self.breakable_depth += 1;
+        body(self);
+        self.breakable_depth -= 1;
+        self.loop_depth -= 1;
+    }
+
     fn check_writable(&mut self, target: ExprId, what: &str) {
         let ExprKind::Ident(n) = self.ast.expr(target).kind else {
             return;
@@ -3831,10 +3883,10 @@ impl Cx<'_> {
             StmtKind::While { cond, body } => {
                 let c = self.type_expr(cond);
                 self.condition(c, cond);
-                self.type_stmt(body);
+                self.in_loop(|cx| cx.type_stmt(body));
             }
             StmtKind::DoWhile { body, cond } => {
-                self.type_stmt(body);
+                self.in_loop(|cx| cx.type_stmt(body));
                 let c = self.type_expr(cond);
                 self.condition(c, cond);
             }
@@ -3862,21 +3914,57 @@ impl Cx<'_> {
                 if let Some(s) = step {
                     self.type_expr(s);
                 }
-                self.type_stmt(body);
+                self.in_loop(|cx| cx.type_stmt(body));
             }
             StmtKind::Switch { cond, body } => {
                 let c = self.type_expr(cond);
                 self.promote_node(c, cond, self.ast.expr(cond).span);
+                self.switches.push((Default::default(), false));
+                self.breakable_depth += 1;
                 self.type_stmt(body);
+                self.breakable_depth -= 1;
+                self.switches.pop();
             }
             StmtKind::Case { lo, hi, body } => {
                 self.type_expr(lo);
                 if let Some(h) = hi {
                     self.type_expr(h);
                 }
+                // **The folded value, not the written expression.** `case 2-1` and `case 1` are
+                // the same label. A case whose value will not fold is left alone: something else
+                // has already complained, and inventing a value here would invent a duplicate.
+                let folded = if hi.is_none() {
+                    self.eval(lo).map(|v| v.v)
+                } else {
+                    None
+                };
+                if let Some(v) = folded {
+                    let duplicate = self
+                        .switches
+                        .last_mut()
+                        .is_some_and(|(seen, _)| !seen.insert(v));
+                    if duplicate {
+                        let span = self.ast.expr(lo).span;
+                        self.error(span, format!("duplicate case value `{v}`"));
+                    }
+                }
                 self.type_stmt(body);
             }
-            StmtKind::Default { body } | StmtKind::Label { body, .. } => self.type_stmt(body),
+            StmtKind::Default { body } => {
+                let repeated = match self.switches.last_mut() {
+                    Some((_, seen)) => std::mem::replace(seen, true),
+                    None => false,
+                };
+                if repeated {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, "multiple `default` labels in one switch");
+                }
+                self.type_stmt(body);
+            }
+            StmtKind::Label { name, body } => {
+                self.labels_defined.insert(name);
+                self.type_stmt(body);
+            }
             StmtKind::Return(Some(e)) => {
                 let node = self.type_expr(e);
                 // **A returned value is converted to the function's return type.**
@@ -3896,12 +3984,24 @@ impl Cx<'_> {
                     self.type_expr(op.expr);
                 }
             }
-            StmtKind::Return(None)
-            | StmtKind::Goto(_)
-            | StmtKind::Break
-            | StmtKind::Continue
-            | StmtKind::Empty
-            | StmtKind::Error => {}
+            StmtKind::Goto(name) => {
+                self.labels_used.push((name, self.ast.stmt(stmt).span));
+            }
+            StmtKind::Break => {
+                if self.breakable_depth == 0 {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, "`break` outside a loop or switch");
+                }
+            }
+            StmtKind::Continue => {
+                // **Loops only.** A `switch` is breakable but not continuable, so `continue`
+                // inside a switch inside a loop continues the loop and is legal.
+                if self.loop_depth == 0 {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, "`continue` outside a loop");
+                }
+            }
+            StmtKind::Return(None) | StmtKind::Empty | StmtKind::Error => {}
         }
     }
 
