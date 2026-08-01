@@ -2041,6 +2041,9 @@ fn a_declaration_declares_something_and_a_record_is_not_a_scalar() {
         // own type — not by a scalar.
         "struct S { int a; }; struct S s = 1;",
         "struct S { int a; }; int f(void){ struct S s = 1; return s.a; }",
+        // C 6.7.2.1p18: a flexible array member is the last member (wave 338's census).
+        "struct S { int a[]; int b; };",
+        "struct S { int n; int a[]; int b; };",
         "union U { int a; }; union U u = 1;",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
@@ -2057,6 +2060,9 @@ fn a_declaration_declares_something_and_a_record_is_not_a_scalar() {
         "struct S { int a; union { int b; float c; }; }; int f(struct S *s){ return s->b; }",
         // A record initialized from a braced list, and from a value of its own type.
         "struct S { int a; }; struct S s = {1}; int f(void){ return s.a; }",
+        // ...and one that *is* last stays legal, alone or after other members.
+        "struct S { int n; int a[]; }; int f(struct S *s){ return s->n; }",
+        "struct S { int n; char c; int a[]; }; int f(struct S *s){ return s->n; }",
         "struct S { int a; }; int f(void){ struct S s2 = {1}; struct S s = s2; return s.a; }",
         "struct S { int a; }; struct S g(void); int f(void){ struct S s = g(); return s.a; }",
         "union U { int a; char b; }; union U u = {1}; int f(void){ return u.a; }",

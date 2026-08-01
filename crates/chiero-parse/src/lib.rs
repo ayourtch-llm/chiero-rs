@@ -1000,6 +1000,8 @@ impl<'a> Parser<'a> {
         let mut sign: Option<bool> = None;
         let mut long_count = 0u32;
         let mut short_seen = false;
+        let mut two_types = false;
+        let mut two_signs = false;
         let mut base: Option<Kw> = None;
         let mut tag_ty: Option<TypeId> = None;
 
@@ -1087,10 +1089,14 @@ impl<'a> Parser<'a> {
                     });
                 }
                 TokKind::Kw(Kw::Signed) => {
+                    // `signed signed` is a repeat; `signed unsigned` is a contradiction. Both are
+                    // violations, and only the second changes what the type would have been.
+                    two_signs |= sign.is_some();
                     sign = Some(true);
                     self.pos += 1;
                 }
                 TokKind::Kw(Kw::Unsigned) => {
+                    two_signs |= sign.is_some();
                     sign = Some(false);
                     self.pos += 1;
                 }
@@ -1105,6 +1111,12 @@ impl<'a> Parser<'a> {
                 TokKind::Kw(
                     k @ (Kw::Void | Kw::Char | Kw::Int | Kw::Bool | Kw::Int128 | Kw::VaList),
                 ) => {
+                    // **A second data type is a violation, not a replacement** (C 6.7.2p2).
+                    // Overwriting `base` is what made `int int` and `void int` name a type at
+                    // all: the last specifier won and the earlier one vanished.
+                    if base.is_some() {
+                        two_types = true;
+                    }
                     base = Some(k);
                     self.pos += 1;
                 }
@@ -1121,6 +1133,9 @@ impl<'a> Parser<'a> {
                     | Kw::F128x
                     | Kw::Ibm128),
                 ) => {
+                    if base.is_some() {
+                        two_types = true;
+                    }
                     base = Some(k);
                     self.pos += 1;
                 }
@@ -1158,6 +1173,9 @@ impl<'a> Parser<'a> {
         let ty = match tag_ty {
             Some(t) => t,
             None => {
+                self.check_specifier_set(
+                    base, sign, long_count, short_seen, two_types, two_signs, span,
+                );
                 let b = builtin_of(base, sign, long_count, short_seen);
                 match b {
                     Some(b) => self.ast.add_type(TypeKind::Builtin(b), span),
@@ -1249,7 +1267,15 @@ impl<'a> Parser<'a> {
             }
             return;
         }
-        if self.eat_punct(Punct::Semi) {
+        // **A member declaration declares a member** (C 6.7.2.1p1). A bare `;` inside a struct
+        // declares nothing at all — distinct from an unnamed *bit-field*, `int : 5;`, which does
+        // declare a member and merely gives it no name, and from an anonymous struct or union
+        // member, which declares its own members into the enclosing one. Both of those go through
+        // the specifier path below.
+        if self.is_punct(0, Punct::Semi) {
+            let here = self.here();
+            self.error(here, "a member declaration must declare a member");
+            self.pos += 1;
             return;
         }
         let start = self.pos;
@@ -1704,6 +1730,86 @@ impl<'a> Parser<'a> {
     /// The last is not `params.is_empty()`: `f()` and `f(void)` both yield an empty list and mean
     /// opposite things. A K&R identifier list is not a prototype either — it names parameters
     /// without typing them — which is why `static int g(){...}` still accepts `g(1)`.
+    /// **The type specifiers name one of C 6.7.2p2's sets** — checked as a multiset, because that
+    /// is what C specifies and because the parser has already reduced the *order* away.
+    ///
+    /// This cannot be "at most one of each": `long long int` and `unsigned long int` are three
+    /// specifiers naming one type, and C fixes no order, so `int long unsigned` is the same
+    /// declaration written backwards. What the standard actually lists is a set of legal
+    /// multisets, and the four questions below are what distinguish them.
+    ///
+    /// **`builtin_of` cannot report this itself**, which is why the check is here rather than
+    /// there: it answers for every combination it is given — that is what made `int int` a type —
+    /// and it is called from abstract declarators and type names where a second diagnostic would
+    /// be a duplicate.
+    #[allow(clippy::too_many_arguments)]
+    fn check_specifier_set(
+        &mut self,
+        base: Option<Kw>,
+        sign: Option<bool>,
+        long_count: u32,
+        short_seen: bool,
+        two_types: bool,
+        two_signs: bool,
+        span: Span,
+    ) {
+        if two_types {
+            self.error(span, "two or more data types in one declaration");
+            return;
+        }
+        if two_signs {
+            self.error(span, "both `signed` and `unsigned` in one declaration");
+            return;
+        }
+        // **`long` counts, `short` does not.** C has `long long` and no `short short`, so the two
+        // modifiers need different questions rather than one shared counter.
+        if long_count > 2 {
+            self.error(span, "`long long long` is too long");
+            return;
+        }
+        if short_seen && long_count > 0 {
+            self.error(span, "both `long` and `short` in one declaration");
+            return;
+        }
+        // **Which bases take which modifiers.** `long double` is the one floating combination C
+        // allows; every other float takes neither a length nor a signedness, and `void`, `_Bool`
+        // and the extended floats take nothing at all.
+        let modified = long_count > 0 || short_seen || sign.is_some();
+        match base {
+            Some(Kw::Double) => {
+                if short_seen || sign.is_some() || long_count > 1 {
+                    self.error(span, "`double` takes only `long`");
+                }
+            }
+            Some(Kw::Char) => {
+                if long_count > 0 || short_seen {
+                    self.error(span, "`char` takes only a signedness");
+                }
+            }
+            Some(Kw::Void | Kw::Bool | Kw::VaList) if modified => {
+                self.error(span, "this type takes no length or signedness specifier");
+            }
+            Some(Kw::Float) if modified => {
+                self.error(span, "`float` takes no length or signedness specifier");
+            }
+            // The extended floating types, which take nothing either.
+            Some(
+                Kw::F16
+                | Kw::BF16
+                | Kw::F32
+                | Kw::F32x
+                | Kw::F64
+                | Kw::F64x
+                | Kw::F128
+                | Kw::F128x
+                | Kw::Ibm128,
+            ) if modified => {
+                self.error(span, "this type takes no length or signedness specifier");
+            }
+            _ => {}
+        }
+    }
+
     fn parameter_list(&mut self) -> (Vec<DeclId>, bool, bool, bool) {
         let mut params = Vec::new();
         let mut variadic = false;

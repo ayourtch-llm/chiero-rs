@@ -2189,6 +2189,23 @@ impl Cx<'_> {
                 continue;
             };
             let fty = self.ty_of(ty);
+            // **A flexible array member is the last one** (C 6.7.2.1p18). Checked by looking
+            // *back*: an `ArrayLen::Flexible` already in `fields` means a member follows one, and
+            // that is the violation. Asking "is this the last member" instead would need the
+            // count up front, and this way the diagnostic lands on the member that should not be
+            // there rather than on the array.
+            if fields.iter().any(|f: &FieldLayout| {
+                matches!(
+                    self.out.types[f.ty.0 as usize],
+                    Ty::Array {
+                        len: ArrayLen::Flexible,
+                        ..
+                    }
+                )
+            }) {
+                let span = self.ast.decl(m).span;
+                self.error(span, "a flexible array member must be the last member");
+            }
             // **A member is never variably modified** (C 6.7.2.1p9), anywhere — not only at file
             // scope, which is merely where gcc's message says so. A record has one layout, and a
             // length that is not known until the declaration is reached has nowhere in it to
