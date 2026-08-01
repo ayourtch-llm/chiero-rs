@@ -213,8 +213,12 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("object of incomplete type", "struct I; struct I x;"),
     ("array of incomplete element", "struct I; struct I arr[10];"),
     (
+        // **In a function, not a file-scope initializer.** Written the second way this row
+        // exercised *two* constraints — the arithmetic and a non-constant initializer — and both
+        // sentences were true, so it reported twice and the contract-20 channel below flagged it.
+        // A row that tests one rule has to contain one mistake.
         "arithmetic on incomplete pointee",
-        "struct I; struct I *p; void *q = p + 1;",
+        "struct I; int f(struct I *p){ return (int)(long)(p + 1); }",
     ),
     (
         "sizeof incomplete",
@@ -538,7 +542,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 352. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 353. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -558,7 +562,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 154;
+    const FLOOR: usize = 156;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
@@ -624,6 +628,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
 #[test]
 fn one_mistake_produces_one_diagnostic() {
     let mut noisy = Vec::new();
+    let mut examined = 0usize;
     for (name, src) in VIOLATIONS {
         // A parse rejection is a rejection; the parser has its own diagnostics and its own
         // contract, and counting them here would measure two engines at once.
@@ -637,10 +642,20 @@ fn one_mistake_produces_one_diagnostic() {
         }) else {
             continue;
         };
+        examined += 1;
         if d.len() > 1 {
             noisy.push(format!("{name}: {d:?}"));
         }
     }
+    // **A gate that quantifies over an empty set passes vacuously**, and this one skips every row
+    // the parser rejects — so if a change made the parser refuse most of the list, the assertion
+    // below would go on passing while measuring almost nothing. The seventh such floor here.
+    assert!(
+        examined * 2 > VIOLATIONS.len(),
+        "only {examined} of {} rows reached sema; the rest were rejected by the parser and this \
+         test is measuring almost nothing",
+        VIOLATIONS.len()
+    );
     assert!(
         noisy.is_empty(),
         "{} row(s) report a single mistake more than once:\n  {}",
