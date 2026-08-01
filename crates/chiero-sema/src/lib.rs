@@ -4256,7 +4256,13 @@ impl Cx<'_> {
                 // as `sizeof(struct I)` — the dereference is where the size is actually asked
                 // for, and it is the spelling that appears in real code.
                 let operand_ty = self.out.typed.ty_of(node);
-                if is_incomplete(&self.out, operand_ty) {
+                // **Poison is not an incomplete type** (contract 20). `sizeof(nope)` on an
+                // undeclared name reported the name *and* claimed its type was incomplete — two
+                // sentences for one mistake, and the second about a type this code invented. The
+                // same guard wave 339 put on `*`; this was the last site with it missing.
+                if !matches!(self.out.types[operand_ty.0 as usize], Ty::Error)
+                    && is_incomplete(&self.out, operand_ty)
+                {
                     self.error(span, "`sizeof` applied to an incomplete type");
                 }
                 // **A function type has no size** (C 6.5.3.4p1), and this is a separate rule from
@@ -4303,7 +4309,13 @@ impl Cx<'_> {
                 // Resolving here records the node in `syntactic_types`, which is what lets a
                 // consumer holding the AST `TypeId` ask what it became.
                 let operand_ty = self.ty_of(*t);
-                if is_incomplete(&self.out, operand_ty) {
+                // **Poison is not an incomplete type** (contract 20). `sizeof(nope)` on an
+                // undeclared name reported the name *and* claimed its type was incomplete — two
+                // sentences for one mistake, and the second about a type this code invented. The
+                // same guard wave 339 put on `*`; this was the last site with it missing.
+                if !matches!(self.out.types[operand_ty.0 as usize], Ty::Error)
+                    && is_incomplete(&self.out, operand_ty)
+                {
                     self.error(span, "`sizeof` applied to an incomplete type");
                 }
                 let ty = self.intern(Ty::Int {
@@ -4725,7 +4737,8 @@ impl Cx<'_> {
         let from = self.out.typed.ty_of(node);
         let null_constant = self.is_null_constant(expr);
         if !self.assignable(from, to, null_constant) {
-            self.error(span, "incompatible types in this conversion");
+            let why = self.conversion_defect(from, to, why);
+            self.error(span, why);
         }
         let id = self.convert(node, to, why, span);
         self.set_top(expr, id)
@@ -4739,6 +4752,67 @@ impl Cx<'_> {
             self.ast.expr(expr).kind,
             ExprKind::Number(_) | ExprKind::Cast { .. }
         ) && self.eval(expr).map(|v| v.v) == Some(0)
+    }
+
+    /// **Which mistake this conversion is**, in gcc's terms rather than one sentence for all of
+    /// them (023 §9).
+    ///
+    /// `assignable` has already said *no*; this says *why*, and the five answers are genuinely
+    /// different things to fix. A discarded qualifier is the one worth separating hardest: the
+    /// pointee types are compatible, so "incompatible types" sends a reader looking for a mismatch
+    /// that is not there.
+    ///
+    /// **The context comes from `Conversion`, which `coerce` already carries.** Naming it costs
+    /// nothing and is what tells a reader *which* of four things in a line is wrong — a call with
+    /// three bad arguments used to produce three identical sentences.
+    fn conversion_defect(&self, from: TyId, to: TyId, why: Conversion) -> String {
+        let ctx = match why {
+            Conversion::Argument => "passing an argument",
+            Conversion::Return => "returning a value",
+            Conversion::Condition => "using a condition",
+            _ => "initializing or assigning",
+        };
+        let f = self.out.types[from.0 as usize].clone();
+        let t = self.out.types[to.0 as usize].clone();
+        let pointee = |x: &Ty| match x {
+            Ty::Ptr(p) => Some(*p),
+            Ty::Array { elem, .. } => Some(*elem),
+            _ => None,
+        };
+        let ptr_like = |x: &Ty| matches!(x, Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. });
+        let arith = |x: &Ty| matches!(x, Ty::Int { .. } | Ty::Float(_));
+
+        // **The qualifier case first**, because it is the one the generic sentence describes
+        // worst: everything about the types agrees except a `const` or a `volatile`.
+        if let (Some(a), Some(b)) = (pointee(&f), pointee(&t))
+            && self.bare(a) == self.bare(b)
+        {
+            let (qa, qb) = (self.qual_of(a), self.qual_of(b));
+            let lost = if qa.const_ && !qb.const_ {
+                "const"
+            } else if qa.volatile_ && !qb.volatile_ {
+                "volatile"
+            } else {
+                ""
+            };
+            if !lost.is_empty() {
+                return format!("{ctx} discards the `{lost}` qualifier from the pointer's target");
+            }
+        }
+        if matches!(f, Ty::Record(_)) || matches!(t, Ty::Record(_)) {
+            return "invalid initializer: a structure or union is copied only from its own type"
+                .into();
+        }
+        if ptr_like(&t) && arith(&f) {
+            return format!("{ctx} makes a pointer from an integer without a cast");
+        }
+        if arith(&t) && ptr_like(&f) {
+            return format!("{ctx} makes an integer from a pointer without a cast");
+        }
+        if ptr_like(&f) && ptr_like(&t) {
+            return format!("{ctx} from an incompatible pointer type");
+        }
+        format!("{ctx} from an incompatible type")
     }
 
     /// C11 §6.3.1.8's usual arithmetic conversions.

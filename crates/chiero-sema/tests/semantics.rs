@@ -2598,14 +2598,16 @@ fn a_conversion_diagnostic_names_the_mistake() {
         &["const", "return"],
     );
 
-    // **A pointer and an integer, in both directions.**
+    // **A pointer and an integer, in both directions** — asserted as the whole *phrase*, because
+    // "pointer" and "integer" both appear whichever way round the message has them. Mutation
+    // found that: swapping the two arms passed a fixture that only looked for the two words.
     says(
         "int f(void){ int *p = 1; return *p; }",
-        &["pointer", "integer"],
+        &["makes a pointer from an integer"],
     );
     says(
         "int f(int *p){ int x = p; return x; }",
-        &["integer", "pointer"],
+        &["makes an integer from a pointer"],
     );
 
     // **Two pointers that do not match** — a different sentence from either of the above.
