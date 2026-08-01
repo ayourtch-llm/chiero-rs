@@ -487,19 +487,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 315) — 1488 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 316) — 1489 tests, 4 ignored, M1 165/165 by contract
 >
-> **Two censuses are done — constraints (16 rows) and initializers (7 rows).** Both are closed.
+> **Three censuses are done** — constraints (16 rows), initializers (7), conversions (8). Each
+> found every one of its rows unchecked, and the last two each found two *over*-rejections that
+> only the corpus could reveal.
 >
-> **Next, pick one:**
->   - **A third census**, same shape, aimed at *conversions and comparisons*: assigning a pointer
->     to an integer without a cast, comparing pointers of different types, passing the wrong
->     pointer type to a prototype, returning a pointer from an `int` function. Wave 307's census
->     touched three of these (`int *p = 1;`, `return p;`) and found gcc **warns** rather than
->     errors, so they need `-pedantic-errors` — the same trap wave 314 documented.
->   - **Close wave 314's two declared misses**, both of which need real work rather than a check:
->     brace-elision distribution (`int a[2][2] = {1,2,3,4,5}`), and a general constant-expression
->     predicate so the file-scope initializer rule is not narrowed to "contains a call".
+> **Next, in descending order of what they buy:**
+>   1. **Pointee qualifiers.** `const int *cp; int *p = cp;` is the one conversion row left, and
+>      `*p = 1` through a pointer-to-const is a *write to a read-only object* — which matters to
+>      this engine rather than only to a diagnostic. Wave 311 put `const` on objects; this is the
+>      type-system half, and it unblocks both.
+>   2. **Wave 314's two declared misses**: brace-elision distribution
+>      (`int a[2][2] = {1,2,3,4,5}`), and a general constant-expression predicate so the
+>      file-scope initializer rule is not narrowed to "contains a call".
+>   3. **A fourth census**, if a fresh area is wanted: `switch`/`case` type rules, `_Generic`
+>      selection, or the `restrict`/`volatile` qualifiers.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -896,6 +899,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 315's conversion census — pointers and integers were interchangeable
+>
+> The third census. Sema converted operands but never asked whether the conversion is one C
+> permits, so a pointer could be assigned to an `int`, passed as a `char *`, returned from an
+> `int` function or compared with an unrelated pointer. **All nine violations are gcc *warnings*
+> by default** — which is why wave 307's census tried two of them, read "gcc:ok" and moved on.
+>
+> `assignable` is consulted in **one** place, `coerce`, because assignment, argument passing,
+> `return` and initialization all arrive there and C states one constraint for all four
+> (6.5.16.1). Pointer comparison is the fifth site and does not pass through it — pointer operands
+> keep their own types — so it asks the same question directly.
+>
+> **Only pointer mixing is judged.** Arithmetic conversions are unrestricted in C, so a rule based
+> on type identity rejects `long`→`int` and every other narrowing.
+>
+> **Both false positives came from the corpus again, and both were about spelling:**
+>   - **`_Bool` takes any scalar** (C 6.3.1.2) — `_Bool b = p;` is a test against zero.
+>   - **A parameter declared `int a[2][3]` keeps its array type** while the argument passed to it
+>     has decayed to a pointer, so one legal call arrives with its two sides spelled differently.
+>     Compare *pointees* through a normalising accessor, not `Ptr` against `Array`.
+>
+> **Out of scope, deliberately:** `const int *cp; int *p = cp;` — the ninth violation gcc reports.
+> Sema has no pointee qualifiers; wave 311 put `const` on *objects* only. That is a type-system
+> change, not a check, and a rule written without it fires on the wrong thing.
 >
 > ### 🟢 Wave 314's initializer census — seven checks, and two false positives the suite found
 >
@@ -2546,6 +2574,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A census cannot enumerate the legal shapes nobody thought to write** (wave 315, confirming
+> 314). Two censuses running, the over-rejections were found by the *corpus* rather than by the
+> census: a vector initialiser and a function designator in wave 314, `_Bool b = p` and an array
+> parameter in wave 315. A census asks what gcc refuses, and gcc refusing nothing is not a list.
+> **After adding a check, the full suite is the other half of the census** — and both times it
+> failed within one run, so the cost of finding out is small.
+>
+> **A fixture aimed at a guard must reach the guard** (wave 315). The first three cases written for
+> the poison exemption used an incomplete struct, which has been a *record* rather than `Ty::Error`
+> since wave 304 — and the check only runs when one side is pointer-like, so they left through the
+> arithmetic door before the exemption was consulted. All three produced the expected diagnostic
+> count and proved nothing. **"It reported what I expected" is not evidence the code under test
+> ran.**
 >
 > **A fix that arrives as a false-positive repair lands only in the accepted list** (wave 314).
 > The vector arm was written because the vector corpus broke, so `v4 v = {1,2,3,4}` went into the
