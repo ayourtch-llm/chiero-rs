@@ -5217,3 +5217,57 @@ fn func_is_predefined_in_every_function_body() {
         "and its own value"
     );
 }
+
+/// **An array whose length comes from its initializer.**
+///
+/// C 6.7.9p22: `int a[] = {1,2,3}` is an array of three, and `char s[] = "hi"` is an array of
+/// three including the terminator. Sema turns an unspecified length into `ArrayLen::Flexible` and
+/// never completes it from the initializer, so **every one of these has size zero**: `sizeof` is
+/// 0 where gcc says 12 or 3, and reading any element degrades the run to `Unknown` rather than
+/// returning a value.
+///
+/// Found by asking §9's question — what can the differential channels not see — and writing a
+/// second tier of canonical shapes for the answer. `static char buf[] = "…"` appeared in a
+/// *helper* line of one of them, not as the thing under test, which is why eighteen canonical
+/// programs in wave 305 and a hundred-odd corpus fixtures had never touched it: every fixture
+/// that needed an array wrote its length, because a fixture author picks the length to make the
+/// test's arithmetic obvious.
+///
+/// The explicit-length cases are here to show the fault is the *inference* and not arrays: they
+/// worked before this and must keep working.
+#[test]
+fn an_array_takes_its_length_from_its_initializer() {
+    for (prelude, body) in [
+        // Braced initializers, at file scope and in a block.
+        ("static int a[] = {1,2,3};", "return a[2];"),
+        ("static int a[] = {1,2,3};", "return (int)sizeof(a);"),
+        ("", "int a[] = {1,2,3}; return a[2];"),
+        ("", "int a[] = {1,2,3}; return (int)sizeof(a);"),
+        // String initializers, whose length includes the terminator.
+        ("static char s[] = \"hi\";", "return s[0];"),
+        ("static char s[] = \"hi\";", "return (int)sizeof(s);"),
+        ("", "char s[] = \"hello\"; return (int)sizeof(s);"),
+        ("", "char s[] = \"hello\"; return s[4];"),
+        // The inner dimension is written, the outer inferred.
+        ("static int a[][2] = {{1,2},{3,4}};", "return a[1][1];"),
+        (
+            "static int a[][2] = {{1,2},{3,4}};",
+            "return (int)(sizeof(a)/sizeof(a[0]));",
+        ),
+        // A loop over an inferred array, which is how such an array is normally used.
+        (
+            "static char s[] = \"hello\";",
+            "int n=0; while (s[n]) n++; return n;",
+        ),
+        (
+            "static int a[] = {5,7,9};",
+            "int t=0; for (int i=0;i<3;i++) t+=a[i]; return t;",
+        ),
+        // **Explicit lengths, which already worked** — the fault is the inference, not arrays.
+        ("static int a[3] = {1,2,3};", "return a[2];"),
+        ("static char s[4] = \"hi\";", "return s[0];"),
+        ("static int a[2][2] = {{1,2},{3,4}};", "return a[1][1];"),
+    ] {
+        agree_with(prelude, body);
+    }
+}
