@@ -487,37 +487,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 337) — 1516 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 338) — 1517 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema's ratchet is 113 of 113, `chiero-pp`'s 27 of 27**, and wave 335's literal-typing defect is
-> closed. Both queues empty.
+> **Sema 119 of 119, `chiero-pp` 27 of 27.** Both queues empty, and wave 335's census is fully
+> discharged — there is no named constraint work outstanding.
 >
 > **Next, in descending order of what they buy:**
->   1. **The four C 6.4 rows wave 335 left**: an empty character constant, `\q`, `\x` with no hex
->      digits, and an octal escape out of range. All four live in `strlit.rs`, which **has no
->      diagnostic channel** — it returns values and cannot report. Thread a `&mut Vec<…>` or return
->      a result; the rules themselves are a line each. This is the only *named* outstanding
->      constraint work.
->   2. **Census `chiero-parse`** — the last crate with a corpus channel and no constraint list.
->      C 6.7.6's declarator syntax and 6.8's statement syntax. Wave 333's rule has now paid twice
->      (eleven rules from the preprocessor, thirteen from the lexer).
->   3. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`.
->      gcc's `_Generic` distinguishes them and this engine does not; wave 336's fixture marks
->      exactly where the missing rows would go. **Predates the literal work** — a *declared*
->      `_Float32` has mapped to `FloatKind::F32` since the type existed. Costing it: a new variant
->      reaches `chiero-cir`, `chiero-lower` and `chiero-exec`, and per wave 328's rule the number
->      to measure is not `FloatKind::` mentions but the places that *depend on kind identity*.
->      Sizes and alignments are already right, so this buys `_Generic` fidelity and little else —
->      rank it accordingly.
->   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
+>   1. **Census `chiero-parse`** — the last crate with a corpus channel and no constraint list, and
+>      the rule from wave 333 has now paid three times over (eleven rules from the preprocessor,
+>      thirteen from the lexer's constants, ten from its escapes). Neighbourhoods: **C 6.7.6's
+>      declarator syntax** (`int f(void)[3]`-shaped nonsense the parser may accept, a declarator
+>      with no direct-declarator, `[]` and `()` combinations) and **6.8's statement syntax**.
+>      Expect the same shape of finding: the parser has a VPP corpus gate that says what it
+>      *accepts* and nothing that says what it must refuse.
+>   2. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
+>      (wave 336). Buys `_Generic` fidelity and little else — sizes and alignments are already
+>      right — so rank it below a census. Per wave 328's rule, cost it by the sites that depend on
+>      *kind identity*, not by `FloatKind::` mentions.
+>   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
+>      pointee would tell 021 a store through it is UB. A checker question — cost against 023 §7.
 >
-> **Wave 336's mutation is the lesson.** Three of seven mutants survived every *type*-shaped test —
-> `sizeof`, `_Alignof`, and `_Generic` against the three standard types — because two-byte kinds
-> are two bytes whatever you call them. Killing them needed associations naming the exact extended
-> types, and for `_Float64x` it needed **arithmetic on a value**, since nothing about a type can
-> separate x87's 80-bit format from IEEE quad at the same width. **When a rule maps spellings onto
-> representations, the mutants that survive are the ones two representations share — and the test
-> that kills them is a value, not a type.**
+> **Wave 337's finding is that a type is not a width.** A plain `'x'` has type `int`, so
+> `char_element` answers 32 — correctly — while the constant is a sequence of *bytes* and `'\400'`
+> is a constraint violation. The first version asked the type and accepted it. **When a rule is
+> about how much fits, ask what the thing is made of, not what it is.** The same distinction is
+> why `"\x1FF"` is illegal and `L"\x1FF"` is not.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2823,6 +2817,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A type is not a width** (wave 337). A plain character constant has type `int` and elements of
+> one byte; `char_element` answers 32 and is right about the type, while `'\400'` is still a
+> violation. **When a rule is about how much fits, ask what the thing is made of.** The same
+> distinction makes `"\x1FF"` illegal and `L"\x1FF"` legal, and a rule written against
+> `unsigned char` would reject every correct wide string.
+>
+> **A blocker in §9 is a design constraint, not just a delay** (wave 337). "`strlit.rs` has no
+> diagnostic channel" is what produced the right shape: the defect information exists only
+> *during* the decode — once `\q` is a `StrUnit::Char('q')` it is a literal `q` — so the channel
+> had to go into the existing walk rather than beside it. **Read the recorded blocker before
+> designing; it usually names the constraint the design has to satisfy.**
 >
 > **When a rule maps spellings onto representations, only a value separates equal-width kinds**
 > (wave 336). Three mutants survived `sizeof`, `_Alignof` and `_Generic`-against-the-standard-types
