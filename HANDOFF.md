@@ -487,17 +487,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 312) — 1485 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 313) — 1486 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next: rows 8–12 of the constraint census below** — duplicate `case` values, multiple `default`
-> labels, `break` outside a loop or switch, `continue` outside a loop, and a label used but never
-> defined. They are one family too: all five need *statement* context sema does not carry today
-> (loop and switch nesting, the set of case values in the innermost switch, the labels a function
-> defines). Expect the wave's work to be that context, with five cheap checks on top of it — the
-> reverse of wave 311, where the rules were the easy part and their placement was not.
+> **Next: rows 13–16, the last of the census** — function redefinition, conflicting declaration
+> types, `static` after non-`static`, and a function returning an array. All four are about a
+> *declaration compared with an earlier one*, so unlike rows 8–12 they need no statement context;
+> what they need is the linkage-and-prototype comparison sema does not do today. Rows 1–12 are
+> closed.
 >
-> Rows 13–16 (function redefinition, conflicting declaration types, `static` after non-`static`,
-> function returning an array) are independent of that context and can be taken in any order. — assigning to a `const`, a parameter of
+> After that the census is exhausted. The natural successor is a **second** census in the same
+> shape — thirty programs, half legal — aimed somewhere sema has never been graded: initializers
+> (too many elements, a scalar braced twice, a designator out of range) are the obvious candidate,
+> since wave 307's census touched them once and found `int arr[3] = {1,2,3,4}` accepted by gcc as
+> a warning, which means the interesting cases were never reached. — assigning to a `const`, a parameter of
 > incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
 > remaining rows that are about *types* rather than about statements, so they sit in the same part
 > of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
@@ -916,11 +918,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | ~~5~~ | ~~parameter of incomplete type~~ | **fixed, wave 311** — definitions only |
 > | ~~6~~ | ~~variable declared `void`~~ | **fixed, wave 311** |
 > | ~~7~~ | ~~using a `void`-valued call~~ | **fixed, wave 311** |
-> | 8 | duplicate `case` value | `case 1: case 1:` |
-> | 9 | multiple `default` labels | `default: default:` |
-> | 10 | `break` outside loop or switch | |
-> | 11 | `continue` outside a loop | |
-> | 12 | label used but never defined | `goto nowhere;` |
+> | ~~8~~ | ~~duplicate `case` value~~ | **fixed, wave 312** — folded values; ranges excluded |
+> | ~~9~~ | ~~multiple `default` labels~~ | **fixed, wave 312** |
+> | ~~10~~ | ~~`break` outside loop or switch~~ | **fixed, wave 312** |
+> | ~~11~~ | ~~`continue` outside a loop~~ | **fixed, wave 312** |
+> | ~~12~~ | ~~label used but never defined~~ | **fixed, wave 312** |
 > | 13 | function redefinition | `int f(void){} int f(void){}` |
 > | 14 | conflicting declaration types | `int h(int); int h(long){}` |
 > | 15 | `static` after non-`static` | `extern int n; static int n;` |
@@ -928,6 +930,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Rows 1–3 are the ones that matter most for this engine: they are type errors that let execution
 > proceed on a value computed from nothing. The rest are diagnostics a compiler owes its user.
+>
+> **Rows 8–12 closed in wave 312**, and §9's prediction held: the checks are three lines each and
+> the *context* was the work. Sema now carries, per function body, two depth counters and a stack:
+>   - **`loop_depth` and `breakable_depth` separately.** `break` and `continue` disagree about what
+>     a `switch` is — `break` leaves it, `continue` looks past it to the enclosing loop. One
+>     counter accepts `continue` in a switch no loop encloses, and the distinction cannot be
+>     recovered afterwards.
+>   - **A stack of switch frames**, not a set per function: a nested switch starts a fresh case set
+>     and a sibling may legally repeat every value of the one before it.
+>   - **Label sets checked after the body is walked**, because a forward `goto` names a label
+>     declared later. The *restore* is what scopes them per function.
+>
+> **Declared limit:** a `case` range (`case 1 ... 3`, a GNU extension) is skipped rather than
+> approximated by its lower bound. `case 1 ... 3:` beside `case 2:` is a duplicate gcc rejects and
+> this does not; comparing lower bounds would catch that one and miss `case 5 ... 7:` beside
+> `case 6:`, trading a missed report for a wrong one.
 >
 > **Rows 4–7 closed in wave 311.** The `const` rule needed machinery sema did not have — it had
 > never read the AST's `Quals` at all — and the shape of it is worth keeping: a scoped set of
@@ -2477,13 +2495,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 > ### Rules earned, most recent first
 >
-> **Three waves running, the surviving mutant has been an exemption** (wave 311, confirming 303
-> and 308). The arithmetic is structural, not luck: a RED enumerates the programs a check must
+> **Four waves running, the surviving mutant has been an exemption** (wave 312, confirming 303,
+> 308 and 311). The arithmetic is structural, not luck: a RED enumerates the programs a check must
 > *reject*, so every rejection is falsifiable the moment the check exists. What a check must
 > **accept** is enumerated by nobody unless someone writes it down, and that is where the
 > unfalsifiable claims collect. In wave 311 both survivors were legal programs — `return v();`
 > from a void function, and a block shadowing a `const` — and both were described as load-bearing
-> in prose before anything loaded them. **Budget mutation effort on the accepted list.**
+> in prose before anything loaded them. Wave 312 made it four: `break` in a bare `switch` — the
+> most ordinary use of `break` there is — was in no fixture, so the counter that exists to allow
+> it was unfalsifiable. **Budget mutation effort on the accepted list**, and when a rule has an
+> exception, write the *plainest* example of it, not only the tricky one: every `break` case in
+> that fixture sat inside a loop because loops are what the rule is about.
 >
 > **Ask the corpus which inputs it can take; do not curate the list by hand** (wave 310). The gate
 > named six headers because six were once tried. Enumerating the directory and running all
