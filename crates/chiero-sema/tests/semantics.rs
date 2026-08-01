@@ -1567,3 +1567,80 @@ fn a_call_and_a_return_match_the_functions_type() {
         );
     }
 }
+
+/// **Four of the six violations wave 325's ratchet left unchecked.**
+///
+/// An array assigned to, a struct member declared twice, a parameter named twice, and the address
+/// of a `register` object. Each is a check at a site sema already visits, which is why they were
+/// grouped: none needs machinery that does not exist.
+///
+/// **The fifth, a `goto` into a VLA's scope, is not here** — and the discriminator that shows why
+/// is: jumping into a block that declares a *non-VLA* is perfectly legal, so the rule is not about
+/// jumping into scopes but about which declarations a jump skips. That needs sema to record, per
+/// label, whether a variably-modified declaration precedes it in the same block, which nothing
+/// tracks today. It stays on the ratchet's queue rather than being approximated.
+///
+/// The accepted list is where each rule stops:
+///
+///   - **`a[0] = b[0]` is fine and `a = b` is not.** The rule is about the *array* being assigned,
+///     not about arrays appearing in an assignment — and a `struct` containing an array assigns
+///     whole, which is how one copies an array in C.
+///   - **The same member name in two different structs** is two members, not a duplicate, so the
+///     check is per record rather than per translation unit.
+///   - **An unnamed parameter is not a name**, so `int g(int, int)` has no duplicate — a check
+///     comparing what it finds without excluding absent names would reject every prototype
+///     written that way.
+///   - **`register` without `&`** is ordinary, and `*&x` on a non-`register` local is too; only
+///     the pair is an error.
+#[test]
+fn four_more_constraint_violations_are_rejected() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(void){ int a[2], b[2]; a = b; return a[0]; }",
+        "struct S { int m; int m; };",
+        "static int g(int a, int a){ return a; }",
+        "int f(void){ register int x = 0; return *&x; }",
+        // The same rules in their other spellings.
+        "int f(void){ int a[2]; a += 1; return a[0]; }",
+        "union U { int m; long m; };",
+        "int f(void){ register int x = 0; int *p = &x; return *p; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // An array *element* is assignable; an array is not.
+        "int f(void){ int a[2], b[2]; a[0] = b[0]; return a[0]; }",
+        // A struct assigns whole, which is how an array is copied in C.
+        "struct P { int x, y; }; int f(void){ struct P a = {1,2}, b; b = a; return b.x; }",
+        "struct A { int v[2]; }; int f(void){ struct A a = {{1,2}}, b; b = a; return b.v[1]; }",
+        // Members are per record, not per translation unit.
+        "struct S { int m; }; struct T { int m; };",
+        "struct S { int a; int b; };",
+        // An anonymous member contributes its own names, and they are distinct.
+        "struct S { struct { int a; int b; }; int c; };",
+        // Parameters: distinct, unnamed, and variadic.
+        "static int g(int a, int b){ return a+b; }",
+        "static int g(int, int);",
+        "static int g(int a, ...){ return a; }",
+        // Two functions may each have a parameter named `a`.
+        "static int g(int a){ return a; } static int h(int a){ return a; }",
+        // `register` without an address, and an address without `register`.
+        "int f(void){ register int x = 0; return x; }",
+        "int f(void){ int x = 0; return *&x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
