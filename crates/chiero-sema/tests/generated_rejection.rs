@@ -414,6 +414,18 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "struct S { int a[]; int b; };",
     ),
     ("member declaring nothing", "struct S { ; };"),
+    // Wave 339's census — C 6.5.3.2, 6.8.6.4 and 6.9.1.
+    ("address of an rvalue", "int f(void){ return *&(1+2); }"),
+    (
+        "address of a bit-field",
+        "struct S { int b : 3; }; int f(struct S *s){ int *p = &s->b; return *p; }",
+    ),
+    (
+        "dereference of a non-pointer",
+        "int f(void){ int x = 1; return *x; }",
+    ),
+    ("return with no value", "int f(void){ return; }"),
+    ("initialized function", "int x(void) = 1;"),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -446,7 +458,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 338. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 339. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -466,7 +478,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 127;
+    const FLOOR: usize = 132;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

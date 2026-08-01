@@ -139,3 +139,30 @@ fn a_structure_member_list_is_constrained() {
 //
 // Zero uses of the short form appear in the VPP tree; the ones in `/usr/include` are C++. So the
 // divergence costs nothing today and is kept because reverting it would reject C23 headers later.
+
+/// **A function is not initialized** — C 6.9.1p2, from wave 339's census.
+///
+/// `DeclKind::Func` has no field for an initializer, so `int x(void) = 1;` was parsed and the
+/// `= 1` **silently discarded** — the program became an ordinary declaration of `x` and compiled.
+/// That is why the check is here and not in sema: by the time sema sees the declaration the
+/// initializer is gone.
+#[test]
+fn a_function_is_not_initialized() {
+    for bad in ["int x(void) = 1;", "static int g(int) = 0;"] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+    for good in [
+        "int x(void);",
+        "int y = 1;",
+        "int f(void){ return 0; }",
+        // A function *pointer* is an object and takes one.
+        "int g(void); int (*p)(void) = g;",
+        "int (*a[2])(void) = {0, 0};",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

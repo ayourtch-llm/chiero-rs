@@ -2446,6 +2446,10 @@ fn an_escape_sequence_is_constrained() {
 ///   - **`&g` on a function is legal**, and a function is not an object.
 ///   - **`return;` is legal in a `void` function** and nowhere else, which is the mirror of the
 ///     rule wave 311 added for a value in a `void` function.
+///
+/// The census's sixth row — `int x(void) = 1;` — is in `chiero-parse`'s fixture instead. The
+/// parser's `DeclKind::Func` has no room for an initializer, so it was parsing the `= 1` and
+/// **discarding it**; the check has to be where the initializer still exists.
 #[test]
 fn taking_an_address_and_dereferencing_are_constrained() {
     let diags = |src: &str| {
@@ -2469,8 +2473,6 @@ fn taking_an_address_and_dereferencing_are_constrained() {
         "int f(void){ int x = 1; return *x; }",
         "int f(void){ double d = 1; return *d; }",
         "struct S { int m; }; int f(struct S s){ return (*s).m; }",
-        // 6.9.1p2: a function definition is not initialized.
-        "int x(void) = 1;",
         // 6.8.6.4p1: `return;` needs a `void` function.
         "int f(void){ return; }",
         "double g(void){ return; }",
@@ -2492,6 +2494,20 @@ fn taking_an_address_and_dereferencing_are_constrained() {
             d.iter().any(|m| m.contains("not a pointer")),
             "`{src}` should say the operand is not a pointer, not blame an incomplete type \
              (operand is a {want}): {d:?}"
+        );
+    }
+
+    // **Contract 20: a poisoned operand is one report, not two.** `*nope` used to name the
+    // undeclared identifier *and* claim its pointee was incomplete — a second sentence about a
+    // type this code invented. Mutation found the `Ty::Error` arm unobserved without this.
+    for src in [
+        "int f(void){ return *nope; }",
+        "int f(void){ return *nope + *nope2; }",
+    ] {
+        let d = diags(src);
+        assert!(
+            d.iter().all(|m| m.contains("not declared")),
+            "`{src}` should report only the undeclared name: {d:?}"
         );
     }
 

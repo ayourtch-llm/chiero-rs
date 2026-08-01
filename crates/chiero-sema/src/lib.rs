@@ -3737,14 +3737,40 @@ impl Cx<'_> {
                             let text = self.text(n).unwrap_or("?").to_owned();
                             self.error(span, format!("address of `register` object `{text}`"));
                         }
+                        // **`&` needs an lvalue, a function, or a `*`/`[]` result** (C 6.5.3.2p1).
+                        // `not_an_lvalue` is wave 329's predicate, asked as a disqualification,
+                        // and it already answers this: `*p` and `a[i]` are lvalues there, and a
+                        // function designator is an `Ident`. Writing a second predicate is what
+                        // wave 336 earned a rule against.
+                        if self.not_an_lvalue(*operand) {
+                            self.error(span, "cannot take the address of a value");
+                        }
+                        // **...and not of a bit-field**, which has no address to take: it shares
+                        // a storage unit with its neighbours. Asked of the *member*, so a named
+                        // member beside a bit-field stays addressable.
+                        if let ExprKind::Member { base, field, .. } = self.ast.expr(*operand).kind
+                            && self.is_bit_field(base, field)
+                        {
+                            let n = self.text(field).unwrap_or("?").to_owned();
+                            self.error(span, format!("cannot take the address of bit-field `{n}`"));
+                        }
                         (self.intern(Ty::Ptr(ity)), inner)
                     }
                     UnOp::Deref => {
                         let decayed = self.decay(inner, *operand);
                         let dty = self.out.typed.ty_of(decayed);
+                        // **Say which mistake it is.** A non-pointer operand used to be given a
+                        // poisoned pointee and then reported by the incompleteness check below as
+                        // "dereference of a pointer to an incomplete type" — true of the pointee
+                        // this code invented, false of the program, and it sends a reader looking
+                        // for a missing `struct` definition. `Error` stays silent, per contract 20.
                         let pointee = match self.out.types[dty.0 as usize].clone() {
                             Ty::Ptr(p) => p,
-                            _ => self.intern(Ty::Error),
+                            Ty::Error => self.intern(Ty::Error),
+                            _ => {
+                                self.error(span, "the operand of `*` is not a pointer");
+                                self.intern(Ty::Error)
+                            }
                         };
                         // **`*p` needs the pointee to be a complete object type** (C 6.5.3.2p4):
                         // the result designates an object, and an object of unknown size is not
@@ -3760,7 +3786,13 @@ impl Cx<'_> {
                         // A `void *` deref is left to the arm above: `Ty::Void` is not incomplete
                         // by `is_incomplete`'s reckoning, deliberately, since `void *p` and
                         // `sizeof(void)` are both legal and that predicate has other callers.
-                        if is_incomplete(&self.out, pointee) {
+                        // **Poison is not an incomplete type**, and saying so was a cascade:
+                        // `*nope` on an undeclared name reported the undeclared name *and*
+                        // "dereference of a pointer to an incomplete type", which is contract 20's
+                        // one-bad-thing-one-report broken by a message that was wrong anyway.
+                        if !matches!(self.out.types[pointee.0 as usize], Ty::Error)
+                            && is_incomplete(&self.out, pointee)
+                        {
                             self.error(span, "dereference of a pointer to an incomplete type");
                         }
                         (pointee, decayed)
@@ -5603,6 +5635,25 @@ impl Cx<'_> {
         }
     }
 
+    /// Whether `base.field` names a **bit-field** (C 6.5.3.2p1).
+    ///
+    /// The base's type is read after decay, so `s->b` and `s.b` reach the same record — the two
+    /// spellings differ only in whether a pointer is in the way, and the rule is about the member.
+    fn is_bit_field(&mut self, base: ExprId, field: Symbol) -> bool {
+        let node = self.type_expr(base);
+        let bty = self.out.typed.ty_of(node);
+        let rec = match self.out.types[bty.0 as usize].clone() {
+            Ty::Record(r) => Some(r),
+            Ty::Ptr(p) => match self.out.types[p.0 as usize] {
+                Ty::Record(r) => Some(r),
+                _ => None,
+            },
+            _ => None,
+        };
+        rec.and_then(|r| self.out.find_field(r, field))
+            .is_some_and(|f| f.bits.is_some())
+    }
+
     /// Report what is wrong with a literal's escapes (C 6.4.4.4), shape first and range second.
     ///
     /// At most **one diagnostic per literal**: three bad escapes in one string are one mistake
@@ -5822,6 +5873,20 @@ impl Cx<'_> {
                 self.label_scopes.insert(name, self.open_vla_scopes.clone());
                 self.type_stmt(body);
             }
+            StmtKind::Return(None) => {
+                // **`return;` needs a `void` function** (C 6.8.6.4p1) — the mirror of the rule
+                // beside it, and the reason both live in one paragraph. `current_ret` is `None`
+                // outside a function body, where the parser has already reported.
+                if let Some(ret) = self.current_ret
+                    && !matches!(self.out.types[ret.0 as usize], Ty::Void | Ty::Error)
+                {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(
+                        span,
+                        "`return` with no value in a function returning non-`void`",
+                    );
+                }
+            }
             StmtKind::Return(Some(e)) => {
                 let node = self.type_expr(e);
                 // **A `return` with a value in a `void` function** (C 6.8.6.4p1). Checked here
@@ -5872,7 +5937,7 @@ impl Cx<'_> {
                     self.error(span, "`continue` outside a loop");
                 }
             }
-            StmtKind::Return(None) | StmtKind::Empty | StmtKind::Error => {}
+            StmtKind::Empty | StmtKind::Error => {}
         }
     }
 

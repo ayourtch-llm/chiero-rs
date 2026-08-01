@@ -870,6 +870,13 @@ impl<'a> Parser<'a> {
                     self.oracle.declare(n, false);
                 }
                 if matches!(self.ast.ty(ty).kind, TypeKind::Func { .. }) {
+                    // **A function is not initialized** (C 6.9.1p2). `DeclKind::Func` has no room
+                    // for an initializer, so without this the `= 1` was parsed and then silently
+                    // discarded — a wrong answer rather than a missing diagnostic, since the
+                    // program compiled as an ordinary declaration of `x`.
+                    if init.is_some() {
+                        self.error(span, "a function cannot be initialized");
+                    }
                     match name {
                         Some(name) => self.ast.add_decl(
                             DeclKind::Func {
