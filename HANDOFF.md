@@ -487,20 +487,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 322) — 1494 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 323) — 1495 tests, 4 ignored, M1 165/165 by contract
 >
-> **Wave 321's method is the front, not a finished job.** Asking "what do the channels use as
-> *scenery*" found a length-zero array in twenty programs. The second tier that found it had
-> twenty shapes and two failures; the rest of that tier is committed as
-> `an_array_takes_its_length_from_its_initializer`'s neighbours but the *method* has more in it:
+> **The tier method has now paid twice** — wave 321 (length-zero arrays), wave 322 (static locals,
+> block-scope `extern`, shadowing). Both waves found their defect in the first twenty programs, so
+> **keep going before switching fronts**:
 >
->   1. **Keep going with tier-3 canonical shapes**, chosen the same way — constructs that appear
->      in fixtures as setup rather than as subject. Candidates not yet exercised: `static` locals
->      with initializers, arrays of arrays passed by pointer, `union` members read after writing a
->      different one, functions returning structs by value into an array element.
->   2. **Qualified types** — the last conversion-census row, and what makes wave 316's pointee
->      rule semantic. Budget for auditing **436 `Ty::` match sites**; do not start by adding the
->      variant.
+>   1. **Tier-4 shapes.** Two selection rules have earned their keep: constructs used as *scenery*,
+>      and constructs whose behaviour differs only on the *second* visit. Candidates on both:
+>      `static` aggregates mutated across calls, a function's address compared across calls,
+>      string literals with identical contents (are they one object?), `const` globals written
+>      through a cast, a `goto` backwards over a declaration, recursion depth past the loop bound.
+>   2. **Qualified types** — the last conversion-census row, and what makes wave 316's pointee rule
+>      semantic. Budget for auditing **436 `Ty::` match sites**; do not start by adding the variant.
 >   3. **A fifth census**, preferring a construct whose implementation arrived in pieces.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
@@ -898,6 +897,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🔑 Wave 322 — the same method, three more defects
+>
+> Tier-3 shapes, chosen by wave 321's rule: constructs that appear in fixtures as *setup* rather
+> than as subject. Twenty programs, one failure, and chasing it found three defects.
+>
+> **A `static` local had automatic storage.** C 6.2.4p3 gives it one object for the whole program,
+> initialized once; this engine reinitialized it on every entry, so a counter in a loop stayed at
+> 1 and one with no initializer produced no answer. **`static int c = 0;` at the top of a
+> once-called function was already in the canonical net and passed** — a variable initialized once
+> and read once behaves the same under either storage, and only *re-entry* separates them.
+>
+> **A block-scope `extern` allocated a fresh local**, so `{ extern int v; return v; }` returned
+> nothing. Pre-existing; found because it reaches the same branch.
+>
+> **A `static` local shadowing a file-scope name was never created.** `declare_global` returns
+> early when the name is already bound — the guard against a header's `extern int x;` and a later
+> `int x;` becoming two objects — so the object was skipped and the name resolved outward.
+>
+> **The object is module-wide; the name is not.** That split is the design: the binding stays in
+> the file-scope table for the body, so reads, writes and addresses all resolve it with no new
+> case, and what it displaced is restored at *both* function exits — including the one lowering
+> takes when it refuses a function, since the statics are declared by then.
+>
+> **Both name defects were invisible to the fixture as written**, because every case used a name
+> appearing once in the program. Two objects with one name is the subject of those rules, and a
+> fixture that names things distinctly — as fixtures do, for readability — cannot reach it.
 >
 > ### 🔑 Wave 321 — the channels' blind spot, found by asking what they cannot see
 >
@@ -2688,6 +2714,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A fixture that names things distinctly cannot test name resolution** (wave 322). Two defects —
+> a `static` local shadowing a file-scope object, and the binding not being restored afterwards —
+> were invisible because every case in the fixture used a name that appeared once in the program.
+> Fixtures name things distinctly for readability, which is right; it also means **the whole
+> subject of a scoping rule is a shape a fixture author will not write by habit.** When a rule is
+> about *which* object a name means, reuse the name on purpose.
+>
+> **Re-entry is what a fixture avoids** (wave 322). `static int c = 0;` at the top of a
+> once-called function passed for waves, because a variable initialized once and read once
+> behaves identically under either storage. Only a second entry separates them, and a test that
+> runs its subject twice has to explain why — so it does not get written. **For anything with
+> state, ask what the second visit sees.**
 >
 > **A construct used *incidentally* is tested by nobody** (wave 321). `int a[] = {1,2,3}` had
 > length zero and survived eighteen canonical programs, a hundred corpus fixtures and four
