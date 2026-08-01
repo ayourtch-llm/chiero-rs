@@ -487,30 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 339) — 1519 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 340) — 1521 tests, 4 ignored, M1 165/165 by contract
 >
-> **Every crate now has a constraint list.** `chiero-sema` 127 of 127, `chiero-pp` 27 of 27,
-> `chiero-parse` new in wave 338. The three-crate programme wave 333 opened is finished, and there
-> is **no named constraint work outstanding**.
+> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** No named constraint work
+> outstanding.
 >
 > **Next, in descending order of what they buy:**
->   1. **A census of a *neighbourhood*, not a crate.** The crate-shaped gaps are closed, so the
->      next run has to be chosen by subject. Untouched: **C 6.5.3.2's address-of and indirection
->      constraints**, **6.8's statement constraints beyond wave 312's**, and **6.9's external
->      definitions**. Sema-side, all three.
->   2. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
->      (wave 336). Buys `_Generic` fidelity and little else — sizes and alignments are right — so
->      rank it below a census. Cost it by the sites depending on *kind identity*, per wave 328.
->   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
->      pointee would tell 021 a store through it is UB. A checker question — cost against 023 §7.
+>   1. **Audit the diagnostics that already exist**, rather than adding more. Wave 339's most
+>      useful finding was not a missing rule but **three wrong sentences and a cascade**: `*x` on
+>      an `int` blamed an incomplete type, and `*nope` reported twice. Neither is visible to a
+>      ratchet, which only asks *whether* something was rejected. **A sweep that asks "does this
+>      diagnostic name the actual mistake" has never been run**, and there are now ~130 of them.
+>      Method: for each `self.error(` site, construct the smallest program reaching it and read the
+>      message against gcc's.
+>   2. **Census the remaining neighbourhoods**: C 6.8's statement constraints beyond wave 312's,
+>      and 6.9's external definitions — wave 339 touched both only glancingly.
+>   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
+>   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Wave 338 is the census that mostly found nothing, and that is worth reading.** Fourteen
-> malformed programs — one per parser recovery path — were all already reported. The eleven
-> findings were in one place, the declaration specifiers, and the reason is structural: **a parser
-> that *folds* several tokens into one value cannot reject a combination it has already collapsed.**
-> `builtin_of` answered for every (base, sign, longs, short) tuple it was handed. **When looking for
-> gaps, ask where the code reduces several inputs to one — the check that should have happened is
-> the one the reduction skipped.**
+> **The ratchet has a blind spot, and wave 339 is where it showed.** `dereference of a pointer to
+> an incomplete type` on `*x` counts as a *catch* — the program was rejected, the row is green —
+> while telling the reader something false. 023 §9 says a report a person cannot act on is not a
+> report; a ratchet cannot see that, because it measures rejection and not explanation. **When a
+> census finds a row already caught, read the message before crediting it.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2815,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A ratchet measures rejection, not explanation** (wave 339). `*x` on an `int` was rejected —
+> green row — with "dereference of a pointer to an incomplete type", which is false about the
+> program and sends the reader after a missing `struct`. **When a census reports a row as already
+> caught, read the message before crediting it**; three of wave 339's findings were wrong
+> sentences rather than missing rules, and no ratchet can see those.
+>
+> **A poisoned operand must not be described** (wave 339). Giving `*nope` an `Error` pointee and
+> then reporting it as *incomplete* produced two diagnostics for one mistake. Contract 20's escape
+> has to be taken **before** the code invents a type to talk about, not after. Wave 331 learned the
+> same lesson for records; this is the pointer form of it.
 >
 > **A reduction is where a constraint goes missing** (wave 338). `builtin_of` folds a base, a sign,
 > a long count and a short flag into one builtin and answers for every tuple — so `int int`,
