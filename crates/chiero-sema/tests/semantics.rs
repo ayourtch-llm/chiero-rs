@@ -3501,3 +3501,76 @@ fn a_case_range_occupies_every_value_in_it() {
         );
     }
 }
+
+/// **The speculative-fold sweep** (§9's front) — `eval` reports as it folds, so every caller has
+/// to decide whether it is asking a *question* or making a *judgement*, and both directions were
+/// wrong somewhere.
+///
+///   - **A question that reports.** Wave 349 found `is_null_constant` refusing a generated program
+///     for an overflow no constant context contained, and fixed it by discarding.
+///   - **A judgement that stays silent.** `int g = 1/0;` is accepted outright. The initializer
+///     asks "is this constant?", `eval` says no *and explains why*, and the explanation is thrown
+///     away with the rest — then `reads_an_object` finds nothing to complain about, so the whole
+///     program passes.
+///
+/// The discarding is right and the unconditional part is not: when the fold **fails**, its
+/// diagnostics are the reason, and the caller has nothing better to say.
+///
+/// **`1/0` inside a function stays legal**, which is the discriminator: it is runtime undefined
+/// behaviour rather than a constraint violation, and only a context that *requires* a constant
+/// expression makes it an error. So the fix cannot be "report division by zero wherever it folds".
+#[test]
+fn a_failed_constant_fold_keeps_its_explanation() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // **The silent half.** A malformed constant expression where one is required.
+    for bad in [
+        "int g = 1/0;",
+        "int g = 1%0;",
+        "int *g = 1/0;",
+        "struct S { int m; } s = { 1/0 };",
+    ] {
+        let d = diags(bad);
+        assert!(!d.is_empty(), "must be diagnosed: `{bad}`");
+        assert!(
+            d.iter().any(|m| m.contains("division")),
+            "`{bad}` should say why the fold failed: {d:?}"
+        );
+    }
+
+    // **One bad thing, one report** (contract 20). `case 1/0:` folded three times and said so
+    // three times — twice for the division and once for "not an integer constant expression".
+    for src in [
+        "int f(int n){ switch(n){ case 1/0: return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 1 ... 1/0: return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 2147483647 + 1: return 1; } return 0; }",
+        "int a[1/0];",
+        "struct S { int b : 1/0; };",
+        "enum { X = 1/0 };",
+    ] {
+        let d = diags(src);
+        assert_eq!(d.len(), 1, "one mistake, one report: `{src}` -> {d:?}");
+    }
+
+    // **Runtime division by zero is not a constraint violation**, so a context that does not
+    // require a constant expression must stay silent.
+    for good in [
+        "int f(void){ return 1/0; }",
+        "int f(int n){ return n/0; }",
+        "int f(void){ int x = 1/0; return x; }",
+        "int f(void){ return 1 ? 0 : 1/0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
