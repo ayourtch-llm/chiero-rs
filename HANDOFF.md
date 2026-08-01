@@ -487,35 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 332) — 1506 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 333) — 1507 tests, 4 ignored, M1 165/165 by contract
 >
-> **`FLOOR = 95` of 95.** Three censuses have now closed everything they found.
+> **`FLOOR = 101` of 101.** Four censuses have now closed everything they found.
 >
 > **Next, in descending order of what they buy:**
->   1. **The prototype flag** — the only *costed* item on this list, and it unblocks three things
->      at once. The parser returns the same empty list for `f()` and `f(void)`
->      (`parameter_list` returns `(vec![], false, false)` for both), so sema cannot see:
->      `int g(void); g(1);` — calling a prototyped no-argument function with an argument;
->      `int f(void); int f(int);` — the limit `types_conflict` documents in its own comment; and
->      `typedef static int T;`, which needs `Storage` on `DeclKind::Typedef` in the same
->      neighbourhood. **Measured: 7 `Ty::Func` construction sites, 11 `TypeKind::Func` matches,
->      and `TypeKind::Func` already carries a `kr` flag to sit beside.** Note that adding a field
->      to `Ty::Func` changes the interning key, so `int f()` and `int f(void)` become distinct
->      types — check `types_conflict`'s empty-list rule still holds.
->   2. **Run the census again**, on neighbourhoods none of the three have touched: C 6.5.3.2's
->      address-of and indirection constraints, 6.8's statement constraints beyond wave 312's, and
->      6.10's preprocessor constraints (which no census has looked at at all — `chiero-pp` has its
->      own differential channel but no constraint list).
->   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A checker
->      question — cost it against 023 §7 first.
+>   1. **`typedef static int T;`** — the last item wave 331 named and wave 332 did not reach.
+>      `DeclKind::Typedef` carries no `Storage`, so the multiple-storage-class rule cannot see it.
+>      Small, and the parser is now warm: wave 332 added a field to `TypeKind::Func` and threaded
+>      it through in one wave, so the same shape applies.
+>   2. **Run the census on neighbourhoods none of the four have touched**: C 6.5.3.2's address-of
+>      and indirection constraints, 6.8's statement constraints beyond wave 312's, and **6.10's
+>      preprocessor constraints — which no census has looked at at all.** `chiero-pp` has a
+>      differential channel but no constraint list, and it is the only crate with none.
+>   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
+>      pointee would tell 021 a store through it is UB. A checker question — cost it against
+>      023 §7 first.
 >
-> **Wave 331's finding is about what a constraint is for.** The "a declaration declares something"
-> rule was worth little on its own — nobody writes `int;`. What it did was report
-> `typedef __builtin_va_list __gnuc_va_list;`, because the lexer had mapped `__gnuc_va_list` to the
-> **same keyword** as the builtin. That alias made the type come out right, so no test of a
-> *value* could ever have seen it; what it broke was the declaration, silently, in every TU that
-> includes `<stdarg.h>`. **A constraint check earns its keep by what it finds in code nobody
-> suspected, not by the programs it was written for.**
+> **Wave 332 is the estimate §9 got right**, and worth reading beside wave 328's, which it did not.
+> Both were "add a field to a type". Qualified types was costed at 436 match sites and came in at
+> four, because the sites that *mention* a type are not the sites that depend on its identity. The
+> prototype flag was costed at 7 construction sites and 11 matches and came in at two and two —
+> because that count had already been made the right way. **The difference was not luck: wave 328's
+> rule is to audit what changes meaning, and wave 331's estimate applied it.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2821,6 +2815,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A guard standing in for a missing fact names the fact it is missing** (wave 332). Two rules were
+> keyed on `params.is_empty()`, and both comments said outright that "unspecified" was the only
+> safe reading because the parser could not distinguish `f()` from `f(void)`. Adding the flag
+> turned both guards into what they meant. **When a guard's comment explains what it cannot know,
+> that is a costed feature request** — go and look at whether the missing fact is cheap.
+>
+> **Two branches that look like one case are not one case** (wave 332). `static int g(){...}` and
+> `int g(a) int a; {...}` are both "old-style", and the fixture had the first. It takes the
+> *empty-list* branch; only a named identifier list reaches the K&R branch, which stayed unobserved
+> until mutation said so. **Check which branch a fixture actually executes**, not which rule it is
+> about.
 >
 > **A constraint check pays for itself on code nobody suspected** (wave 331). "A declaration
 > declares something" is a rule against `int;`, which nobody writes. It reported
