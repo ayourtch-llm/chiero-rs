@@ -3928,6 +3928,15 @@ impl Cx<'_> {
     ///
     /// `None` when the answer is not a fixed number — a flexible or unsized array, an incomplete
     /// record — in which case nothing is counted rather than something being guessed.
+    ///
+    /// **Three of its arms are measured unfalsifiable**, and are recorded rather than defended:
+    /// the union branch (largest member rather than the sum), the unsized-array `None`, and the
+    /// `AddrOf` short-circuit in `reads_an_object` beside it. Each was mutated and the whole
+    /// fixture stayed green. The reason is the same in every case: another check answers first —
+    /// a union in an over-long list trips the array *range* rule before capacity is consulted,
+    /// and a bare `&y` is folded by `addr_of` before the read walk runs. They are kept because
+    /// they are what the C rules say, but no test currently depends on them, and a reader
+    /// changing them should not expect to be caught.
     fn scalar_capacity(&self, ty: TyId) -> Option<u64> {
         match self.out.types[ty.0 as usize].clone() {
             Ty::Array {
@@ -4032,6 +4041,11 @@ impl Cx<'_> {
                     // Only when the list is *entirely* flat. `{{1,2},3,4}` is legal and a scalar
                     // count cannot see where the braced item stops, so a mixed list is left
                     // unchecked — a narrower limit than wave 314's, not a different one.
+                    // **Measured equivalent, and kept for what it says.** Every item fills at
+                    // least one scalar, so a *legal* mixed list can never have more items than
+                    // capacity — forcing this to `true` changes no answer. It is written because
+                    // the count means something only for a flat list, and a reader should not
+                    // have to rediscover that.
                     let flat = items
                         .iter()
                         .all(|i| !matches!(self.ast.expr(i.value).kind, ExprKind::InitList(_)));
@@ -4201,22 +4215,6 @@ impl Cx<'_> {
         }
     }
 
-    /// An address constant the folder cannot answer for: an array or function name, or a string,
-    /// standing where a pointer is wanted.
-    fn is_address_constant(&self, e: ExprId) -> bool {
-        match self.ast.expr(e).kind.clone() {
-            ExprKind::Str { .. } => true,
-            ExprKind::Cast { operand, .. } => self.is_address_constant(operand),
-            ExprKind::Ident(n) => self.values.get(&n).is_some_and(|t| {
-                matches!(
-                    self.out.types[t.0 as usize],
-                    Ty::Array { .. } | Ty::Func { .. }
-                )
-            }),
-            _ => false,
-        }
-    }
-
     /// Whether an expression is a constant expression, for a file-scope initializer (C 6.7.9p4).
     ///
     /// Asked of the *whole* initializer including its list elements, because `{f()}` is as
@@ -4232,9 +4230,7 @@ impl Cx<'_> {
             ExprKind::Str { .. } => {}
             _ => {
                 let before = self.out.diagnostics.len();
-                let constant = self.eval(init).is_some()
-                    || self.addr_of(init).is_some()
-                    || self.is_address_constant(init);
+                let constant = self.eval(init).is_some() || self.addr_of(init).is_some();
                 self.out.diagnostics.truncate(before);
                 // **Not constant is not the same as "we could not fold it".** `eval` answers about
                 // arithmetic and `addr_of` about object addresses, and between them they miss

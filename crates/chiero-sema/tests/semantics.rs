@@ -1290,6 +1290,14 @@ fn wave_314s_two_declared_misses() {
         // by accident and the new one has to name.
         "int a[4]; int *p = a;",
         "int a[4]; int *p = &a[1];",
+        // **An array name inside a larger expression is still an address.** The plain `int *p = a`
+        // case is answered by the folder before the read rule is consulted, so only this shape
+        // exercises the array exemption.
+        "int a[4]; int *p = a + 1;",
+        // **`&x` stops the walk.** A bare `&y` is answered by the folder; behind a cast it is not,
+        // and then only the `AddrOf` arm keeps `y` from counting as a read.
+        "int y; int *p = (int *)&y;",
+        "int x; int *p = (int *)&x + 1;",
         "int f(void); int (*fp)(void) = f;",
         "int y; int *p = &y;",
         "char *s = \"abc\";",
