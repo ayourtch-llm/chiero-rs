@@ -1160,6 +1160,34 @@ impl Cx<'_> {
                     }
                 }
                 self.check_complete(id, t);
+                // **C 6.7.9p22: an array declared without a length takes its initializer's.**
+                // The length is not knowable where the *type* is built — `ty_of` sees the
+                // declarator and not the initializer — so the type is rebuilt here, at the one
+                // place that has both. Doing it by re-interning rather than by mutating keeps
+                // types immutable, which every other consumer relies on.
+                let t = match (init, self.out.types[t.0 as usize].clone()) {
+                    (
+                        Some(init),
+                        Ty::Array {
+                            elem,
+                            len: ArrayLen::Flexible,
+                        },
+                    ) => match self.inferred_len(init) {
+                        Some(n) => {
+                            let t = self.intern(Ty::Array {
+                                elem,
+                                len: ArrayLen::Fixed(n),
+                            });
+                            self.out.decl_types.insert(id, t);
+                            if let Some(n) = name {
+                                self.values.insert(n, t);
+                            }
+                            t
+                        }
+                        None => t,
+                    },
+                    _ => t,
+                };
                 if let Some(init) = init {
                     self.check_init(t, init);
                     // **File scope only.** A local initializer may be any expression; only a
@@ -3983,6 +4011,50 @@ impl Cx<'_> {
             Ty::Vector { lanes, .. } => Some(lanes as u64),
             Ty::Void | Ty::Func { .. } | Ty::Error => None,
             _ => Some(1),
+        }
+    }
+
+    /// The length C 6.7.9p22 gives an array declared without one, from its initializer.
+    ///
+    /// **A string initializer counts its elements plus the terminator**, so `char s[] = "hi"` is
+    /// three; a braced list counts its items, and a designator can push the length past the item
+    /// count — `int a[] = {[4] = 1}` is five long, not one.
+    ///
+    /// `None` when the initializer says nothing about the length, which leaves the array flexible
+    /// exactly as before rather than guessing a size.
+    fn inferred_len(&mut self, init: ExprId) -> Option<u64> {
+        match self.ast.expr(init).kind.clone() {
+            ExprKind::Str { fragments } => {
+                let n: usize = fragments
+                    .iter()
+                    .filter_map(|f| self.text(f.spelling).map(str::to_owned))
+                    .map(|t| {
+                        let (_, bits) = strlit::string_element(&t);
+                        strlit::string_elements(&t, bits).len()
+                    })
+                    .sum();
+                Some(n as u64 + 1)
+            }
+            ExprKind::InitList(items) => {
+                // **The cursor, not the count.** A designator moves it, so the length is one past
+                // the highest position written rather than the number of items — the same
+                // distinction the excess-element rule needed in wave 314.
+                let mut at = 0u64;
+                let mut high = 0u64;
+                for item in &items {
+                    for d in &item.designators {
+                        if let chiero_ast::Designator::Index(e) = d
+                            && let Some(v) = self.eval(*e).map(|v| v.v)
+                        {
+                            at = v.max(0) as u64;
+                        }
+                    }
+                    at += 1;
+                    high = high.max(at);
+                }
+                Some(high)
+            }
+            _ => None,
         }
     }
 
