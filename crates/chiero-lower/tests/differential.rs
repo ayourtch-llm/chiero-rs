@@ -5332,6 +5332,23 @@ fn a_static_local_persists_across_entries() {
             "",
             "int t=0; for(int i=0;i<3;i++){ static int a[2]; a[i%2]=i; t=a[0]; } return t;",
         ),
+        // **`extern` inside a body names an object defined elsewhere**, and must not create a
+        // new one. It reaches the same branch as `static` and has to be excluded from it.
+        (
+            "static int v = 5; static int g(void){ extern int v; return v; }",
+            "return g();",
+        ),
+        // **The binding is scoped to the function that declared it.** A `static int c` inside
+        // `f1` must not still be what `c` means afterwards — which is why the displaced
+        // file-scope binding is remembered and put back.
+        (
+            "static int c = 9; static int f1(void){ static int c = 1; return c; }",
+            "f1(); return c;",
+        ),
+        (
+            "static int c = 9; static int f1(void){ static int c = 1; return c; }",
+            "return f1() * 10 + c;",
+        ),
         // **The controls.** An automatic local *is* reinitialized each time, which is the
         // difference the fix must preserve rather than erase.
         (

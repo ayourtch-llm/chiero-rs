@@ -1776,9 +1776,24 @@ impl Lowerer<'_> {
         // `declare_global` registers the name in the module-wide table, which is right for the
         // object and wrong for the name: it is scoped to this function. So the entry is moved
         // into the frame's own map, restoring whatever file-scope binding it displaced.
-        if storage.static_ && !storage.extern_ {
+        // **`extern` inside a body names an object defined elsewhere**, so it allocates nothing
+        // and binds nothing new: the file-scope object of that name is already in the table, and
+        // the declaration's only effect is to make it visible here. Treating it as an ordinary
+        // local gave it a fresh uninitialised slot, and reading it produced no value at all.
+        if storage.extern_ {
+            return;
+        }
+        if storage.static_ {
             let Some(n) = name else { return };
-            let shadowed = self.globals.get(&n).copied();
+            // **The file-scope binding is removed *before* the object is built.**
+            // `declare_global` returns early when the name is already in the table — the guard
+            // that stops a header's `extern int x;` and a later `int x;` becoming two objects —
+            // and a `static` local shadowing a file-scope name of its own trips it, so the
+            // object was never created and the name kept resolving to the outer one.
+            //
+            // `shift_remove` rather than `swap_remove`: 001 §5 makes iteration order a hard
+            // requirement, and the cheaper removal reorders the map.
+            let shadowed = self.globals.shift_remove(&n);
             self.declare_global(d);
             let Some(gid) = self.globals.get(&n).copied() else {
                 return;
