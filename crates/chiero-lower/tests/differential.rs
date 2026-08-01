@@ -5604,3 +5604,51 @@ fn scenery_and_second_visit_shapes_agree_with_gcc() {
         );
     }
 }
+
+/// **An extended floating suffix names a type, and until wave 336 it named `double`.**
+///
+/// Wave 335's census made `number_defect` *accept* gcc's extended suffixes, because every VPP
+/// header reaches a `0.0f16` and a rule with C11's two would have been a false positive on all
+/// twenty corpus seeds. Accepting a spelling is not reading it: `float_literal` knew only `f` and
+/// `l`, so every one of these came out `FloatKind::F64`.
+///
+/// `sizeof` is what makes it observable without demanding arithmetic on any of these types — the
+/// literal is never evaluated, so this asks exactly the question that was wrong.
+///
+/// The mapping is gcc's, probed rather than assumed, and two entries are not what the name
+/// suggests: **`_Float32x` is 8 bytes, not 4** — the `x` forms are "at least this wide, and wider
+/// than the unsuffixed one" — and **`_Float64x` is 16**, distinct from `long double` even though
+/// both occupy sixteen bytes here.
+#[test]
+fn an_extended_floating_suffix_names_its_type() {
+    // C11's own, for contrast: these were always right and must stay so.
+    agree("return (int)sizeof(0.0);");
+    agree("return (int)sizeof(0.0f);");
+    agree("return (int)sizeof(0.0l);");
+    // gcc's, in both cases where a case exists.
+    agree("return (int)sizeof(0.0f16);");
+    agree("return (int)sizeof(0.0F16);");
+    agree("return (int)sizeof(0.0bf16);");
+    agree("return (int)sizeof(0.0f32);");
+    agree("return (int)sizeof(0.0f64);");
+    agree("return (int)sizeof(0.0f128);");
+    agree("return (int)sizeof(0.0f32x);");
+    agree("return (int)sizeof(0.0f64x);");
+    agree("return (int)sizeof(0.0q);");
+    agree("return (int)sizeof(0.0Q);");
+    agree("return (int)sizeof(0.0w);");
+    // **`_Alignof` too**, because a 16-byte type that aligns to 8 and one that aligns to 16 are
+    // different answers and `sizeof` alone cannot tell them apart.
+    agree("return (int)_Alignof(0.0f128);");
+    agree("return (int)_Alignof(0.0f64x);");
+    agree("return (int)_Alignof(0.0f16);");
+    // **A suffixed literal is not one of the three standard types**, which is the half `sizeof`
+    // cannot see: `_Float32` and `float` are both four bytes and are still different types.
+    agree("return _Generic(0.0f16, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f32, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f64, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f128, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0l, float:1, double:2, long double:3, default:9);");
+}
