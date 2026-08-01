@@ -487,30 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 351) — 1532 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 352) — 1533 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.** Every named audit category is
-> done: the conversion family (340), initializer overflow (341), widths (342), pointer arithmetic
-> (343), constant expressions (344), linkage (345), address constants (346), incomplete types
-> (347), and now `switch`/`case` (350). The predicate sweep is finished too (348, 349).
+> **Sema 148 of 148, `chiero-pp` 27 of 27, `chiero-parse` clean.** The message audit, the predicate
+> sweep and the speculative-fold sweep are all finished.
 >
 > **Next, in descending order of what they buy:**
->   1. **Sweep the speculative folds** — the target wave 349 promoted and 350 did not reach.
->      `self.out.diagnostics.truncate(before)` appears at **five** sites; each is a fold used as a
->      *question*. Check both directions: a fold that reports when it should not (wave 349's bug),
->      and one that stays silent when it should report. `grep` for `eval(` with no surrounding
->      save-and-truncate and ask which context each is in.
->   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions —
->      the last two neighbourhoods no census has touched.
+>   1. **Census C 6.8's statement constraints beyond wave 312's**, and **6.9's external
+>      definitions** — the last two neighbourhoods no census has touched. Method unchanged: 30
+>      programs, half legal, verdicts from gcc under `-pedantic-errors`.
+>   2. **A contract-20 sweep of its own.** Wave 351 found three cascades by asking one question —
+>      *does this program produce exactly one diagnostic?* — and none of them was visible to any
+>      other channel. **Generate malformed programs with exactly one mistake and assert
+>      `diagnostics.len() == 1`.** The ratchet counts rejections, the silence channel counts false
+>      positives, and neither counts *duplicates*; wave 351 checked six contexts by hand and found
+>      three bad.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
->   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A checker question —
->      cost it against 023 §7 first.
+>   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328).
 >
-> **A ratchet row must be confirmable for the reason under test.** Wave 350's case-range rules
-> cannot go in `VIOLATIONS`: gcc refuses `case 1 ... 3` under `-pedantic-errors` because ISO C has
-> no ranges, so the row would be green for the extension rather than for the overlap. **When a rule
-> is about a GNU extension, the ratchet cannot hold it** — the GNU-calibrated fixture must, and the
-> ratchet should carry a comment where the row would have been so nobody adds it later.
+> **A diagnostic that a later rule renders redundant is a cascade in waiting.** Every one of wave
+> 351's three had the same shape: a *specific* sentence ("division by zero") followed by a
+> *generic* one about the consequence ("not an integer constant expression", "variably modified at
+> file scope", "width is not constant"). **When adding a rule that fires on an unfoldable value,
+> ask what already reported** — the fold usually did, and better.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2815,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A fold can report *and* succeed** (wave 351). `2147483647 + 1` yields a wrapped value and
+> complains on the way, so a rescue keyed on "the fold failed" still threw the complaint away and
+> accepted the program. **Key on whether anything was *said*, not on whether the fold returned
+> `None`** — mutation found this, not the fixture.
+>
+> **A specific diagnostic followed by a generic one is a cascade** (wave 351). Three of them, all
+> the same shape: "division by zero" then "not an integer constant expression", "variably modified
+> at file scope", "width is not constant". **When a rule fires on an unfoldable value, ask what
+> already reported** — and note that no channel here counts *duplicates*: the ratchet counts
+> rejections and the silence channel counts false positives.
 >
 > **A ratchet row must be confirmable for the reason under test** (wave 350). gcc rejects
 > `case 1 ... 3` under `-pedantic-errors` because ISO C has no case ranges, so a row about
