@@ -1905,3 +1905,87 @@ fn the_operator_constraints_of_c_6_5() {
         );
     }
 }
+
+/// **Four of C 6.7's declaration constraints**, three named by wave 329's census as the queue it
+/// left open and a fourth found while probing their boundaries: a `struct` tag may be defined
+/// twice with nothing said.
+///
+/// The accepted half is where the work is. Each of these four rules has a legal neighbour that a
+/// rule written one word too broadly rejects:
+///
+///   - **`_Thread_local static` is legal** (C 6.7.1p2 exempts it by name), so "at most one storage
+///     class" is false as written — it is "at most one of `extern`, `static`, `auto`, `register`".
+///     `inline` is a *function* specifier and combines with anything.
+///   - **`int a[k]` with a `const int k` is legal inside a function and illegal at file scope.**
+///     `const` does not make a constant expression in C, so this is a VLA either way; what changes
+///     is the storage duration. A `static` local is illegal for the same reason a file-scope one
+///     is, and a *parameter* is legal because its array is a pointer.
+///   - **An enumerator may be shadowed in an inner scope** but not redeclared in its own — and
+///     "its own" spans two different enums, because enumerators are ordinary identifiers.
+///   - **A tag may be *declared* repeatedly** (`struct S;` after `struct S { ... };` is how
+///     forward declarations work) but **defined** only once.
+#[test]
+fn the_declaration_constraints_of_c_6_7() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // C 6.7.1p2: at most one of `extern`, `static`, `auto`, `register`.
+        "int f(void){ static extern int x; return x; }",
+        "int f(void){ static register int x = 1; return x; }",
+        "int f(void){ auto static int x = 1; return x; }",
+        "static extern int g(void);",
+        // C 6.7.6.2p2: a variably-modified declarator needs automatic storage duration.
+        "const int k = 1; int a[k];",
+        "const int k = 1; int f(void){ static int a[k]; return a[0]; }",
+        "const int k = 1; struct S { int a[k]; };",
+        // C 6.7.2.2: an enumerator is an ordinary identifier in its scope.
+        "enum E { A = 1, A = 2 }; int f(void){ return A; }",
+        "enum E { A = 1 }; enum F { A = 2 }; int f(void){ return A; }",
+        "int f(void){ enum E { A = 1, A = 2 }; return A; }",
+        // C 6.7.2.3p1: a tag is defined once.
+        "struct S { int m; }; struct S { int m; };",
+        "union U { int m; }; union U { int m; };",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // One storage class, with qualifiers and function specifiers alongside.
+        "static int x = 1; int f(void){ return x; }",
+        "int f(void){ static const int x = 1; return x; }",
+        "int f(void){ register const int x = 1; return x; }",
+        "int f(void){ extern int x; return x; }",
+        "static inline int g(void){ return 1; } int f(void){ return g(); }",
+        // **`_Thread_local` is exempt**, in both orders.
+        "_Thread_local static int x; int f(void){ return x; }",
+        "static _Thread_local int x; int f(void){ return x; }",
+        // A variably-modified declarator with automatic storage duration, and as a parameter.
+        "const int k = 1; int f(void){ int a[k]; a[0]=1; return a[0]; }",
+        "const int k = 1; int f(int a[k]){ return a[0]; }",
+        // ...and the array lengths that are *not* variably modified.
+        "enum { K = 3 }; int a[K];",
+        "int a[3];",
+        "int a[sizeof(int)];",
+        // Enumerators: distinct names, a shadowing inner scope, and one enum defined from another.
+        "enum E { A = 1, B = 2 }; int f(void){ return A + B; }",
+        "enum E { A, B, C }; int f(void){ return C; }",
+        "enum E { A = 1 }; int f(void){ enum F { A = 2 }; return A; }",
+        "enum E { A = 1 }; enum E2 { B = A }; int f(void){ return B; }",
+        // A tag declared repeatedly, defined once — which is what a forward declaration is.
+        "struct S; struct S { int m; }; struct S; int f(struct S *p){ return p->m; }",
+        "struct S { int m; }; int f(void){ struct S { int q; } s = {1}; return s.q; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
