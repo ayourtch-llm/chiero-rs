@@ -1012,6 +1012,10 @@ fn the_initializer_census() {
         "struct S { int x, y; }; struct S s = {.y = 2, .x = 1};",
         // Nested aggregates, with braces and with them elided.
         "int a[2][2] = {{1,2},{3,4}};",
+        "union U { int a; int b; }; union U u[2] = {1,2};",
+        // **An array with no length has no capacity to exceed.** Giving an unsized array a
+        // capacity of one turns every inferred-length aggregate into an excess report.
+        "int a[][2] = {1,2,3,4,5};",
         "int a[2][2] = {1,2,3,4};",
         "struct S { int m[2]; }; struct S s = {{1,2}};",
         "struct S { int x; }; struct S a[2] = {{1},{2}};",
@@ -1267,6 +1271,11 @@ fn wave_314s_two_declared_misses() {
         // One scalar too many for a flat, brace-elided list.
         "int a[2][2] = {1,2,3,4,5};",
         "struct S { int p[2]; int q; }; struct S s[2] = {1,2,3,4,5,6,7};",
+        // A union holds one member at a time, so an array of two holds two scalars, not four.
+        // Summing its members instead of taking the largest doubles the capacity and lets this
+        // through — and this is the shape that reaches the capacity rule rather than the array
+        // range rule, which answers first for anything with more items than elements.
+        "union U { int a; int b; }; union U u[2] = {1,2,3};",
         // Reading a non-`const` object is not a constant expression.
         "int x; int g = x;",
         "int x; int *p; int *q = p;",
@@ -1297,6 +1306,11 @@ fn wave_314s_two_declared_misses() {
         // **`&x` stops the walk.** A bare `&y` is answered by the folder; behind a cast it is not,
         // and then only the `AddrOf` arm keeps `y` from counting as a read.
         "int y; int *p = (int *)&y;",
+        // **Cast to an integer, where the folder has no answer.** `(int *)&y` is still folded by
+        // `addr_of`; `(long)&y` is not, so this is the shape where the `AddrOf` short-circuit is
+        // the only thing keeping `y` from counting as a read.
+        "int y; long v = (long)&y;",
+        "int y; long v = (long)&y + 8;",
         "int x; int *p = (int *)&x + 1;",
         "int f(void); int (*fp)(void) = f;",
         "int y; int *p = &y;",

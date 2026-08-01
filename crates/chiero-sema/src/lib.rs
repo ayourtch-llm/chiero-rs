@@ -3929,14 +3929,16 @@ impl Cx<'_> {
     /// `None` when the answer is not a fixed number — a flexible or unsized array, an incomplete
     /// record — in which case nothing is counted rather than something being guessed.
     ///
-    /// **Three of its arms are measured unfalsifiable**, and are recorded rather than defended:
-    /// the union branch (largest member rather than the sum), the unsized-array `None`, and the
-    /// `AddrOf` short-circuit in `reads_an_object` beside it. Each was mutated and the whole
-    /// fixture stayed green. The reason is the same in every case: another check answers first —
-    /// a union in an over-long list trips the array *range* rule before capacity is consulted,
-    /// and a bare `&y` is folded by `addr_of` before the read walk runs. They are kept because
-    /// they are what the C rules say, but no test currently depends on them, and a reader
-    /// changing them should not expect to be caught.
+    /// **The unsized-array arm is measured unreachable**, and is kept rather than deleted. An
+    /// array written `[]` *with* an initializer has its length inferred before this runs, so the
+    /// target is always `Fixed` here; the arm exists for the shapes that reach `scalar_capacity`
+    /// by recursion — a flexible array member — and those are caught by the record rule before
+    /// capacity is consulted. Mutating it to `Some(1)` leaves the fixture green, so a reader
+    /// changing it will not be caught.
+    ///
+    /// The **union** arm is not in that category, though wave 317 said it was: the case written
+    /// for it never reached the file, and once it did the mutant died. Summing a union's members
+    /// instead of taking the largest doubles its capacity.
     fn scalar_capacity(&self, ty: TyId) -> Option<u64> {
         match self.out.types[ty.0 as usize].clone() {
             Ty::Array {
@@ -4190,6 +4192,11 @@ impl Cx<'_> {
             }
             // **`&x` is an address, whatever `x` is** — the operand is not read, so the walk stops
             // rather than descending into it.
+            //
+            // **Measured unreachable**: every address constant that gets this far has already
+            // been answered by `addr_of`, including `(long)&y`, so removing this arm changes no
+            // answer. It is kept because it states the rule the walk depends on — a reader adding
+            // a case `addr_of` cannot fold would otherwise find `&x` counting as a read.
             ExprKind::Unary {
                 op: UnOp::AddrOf, ..
             } => false,
