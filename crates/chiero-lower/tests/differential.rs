@@ -5364,3 +5364,237 @@ fn a_static_local_persists_across_entries() {
         agree_with(prelude, body);
     }
 }
+
+/// **Constructs used as scenery, and behaviour that differs on the second visit.**
+///
+/// The two selection rules waves 321 and 322 earned, applied as a net. Each of those waves found
+/// a defect in its first twenty programs — a length-zero array, then `static` locals with
+/// automatic storage — and **these thirty-eight found none.** That result is the point of
+/// recording them: the seam is thinner than it was two waves ago.
+///
+/// The rules, restated so a later tier is chosen the same way:
+///
+///   - **Scenery.** A construct that appears in fixtures to *set up* a test rather than as its
+///     subject is tested by nobody. `static char buf[] = "…"` was the source of a copy loop in a
+///     dozen probes before anyone read its `sizeof`.
+///   - **The second visit.** A test that runs its subject twice has to explain why, so it does not
+///     get written — and static storage, address identity and accumulated state are all invisible
+///     on the first entry.
+///
+/// Every case here does one or both: a static aggregate mutated across calls, a function's
+/// address compared across calls, the address of a static local surviving its return, a bit-field
+/// accumulating, an `alloca` reused across iterations, a static array in a recursive function.
+///
+/// **Kept for what it will catch, not for what it caught**, and measured rather than assumed:
+/// re-injecting wave 321's length-zero array and wave 322's frame-slot `static` locals both make
+/// this fail. Two other recent defects it *cannot* see, and the reasons are worth knowing —
+/// wave 322's name-restore rule needs a file-scope object shadowed and then read, which its own
+/// fixture covers, and wave 320's deref-completeness rule is a **diagnostic** on a program gcc
+/// rejects, which a net comparing values on programs gcc accepts can never reach.
+#[test]
+fn scenery_and_second_visit_shapes_agree_with_gcc() {
+    let cases: [(&str, &str, &str); 38] = [
+        (
+            "static agg across calls",
+            "static int bump(void){ static int a[2] = {1,2}; a[0]++; return a[0]; }",
+            "bump(); return bump();",
+        ),
+        (
+            "static struct across calls",
+            "struct S { int v; }; static int bump(void){ static struct S s = {5}; s.v++; return s.v; }",
+            "bump(); return bump();",
+        ),
+        (
+            "global mutated by callee",
+            "static int g = 1; static void set(void){ g = 7; }",
+            "set(); return g;",
+        ),
+        (
+            "fn address stable",
+            "static int f1(void){ return 1; }",
+            "int (*a)(void) = f1; int (*b)(void) = f1; return a == b;",
+        ),
+        (
+            "array identity across calls",
+            "static int a[2]; static int *get(void){ return a; }",
+            "return get() == get();",
+        ),
+        (
+            "identical string literals",
+            "",
+            "const char *a = \"xy\"; const char *b = \"xy\"; return a[0]==b[0];",
+        ),
+        (
+            "const global via cast",
+            "static const int c = 3;",
+            "int *p = (int *)&c; return *p;",
+        ),
+        (
+            "goto back over decl",
+            "",
+            "int n=0; again: { int x = 5; n += x; } if (n < 10) goto again; return n;",
+        ),
+        (
+            "recursion depth 6",
+            "static int fac(int n){ return n<=1?1:n*fac(n-1); }",
+            "return fac(6);",
+        ),
+        (
+            "param reused two calls",
+            "static int sq(int n){ return n*n; }",
+            "return sq(3) + sq(4);",
+        ),
+        (
+            "struct by value twice",
+            "struct P { int x; }; static struct P mk(int v){ struct P p={v}; return p; }",
+            "struct P a=mk(1), b=mk(2); return a.x*10+b.x;",
+        ),
+        (
+            "alloca reuse in loop",
+            "",
+            "int t=0; for(int i=0;i<3;i++){ int a[2]; a[0]=i; t+=a[0]; } return t;",
+        ),
+        (
+            "compound lit in loop",
+            "struct P { int x; }; static int gx(struct P p){ return p.x; }",
+            "int t=0; for(int i=0;i<3;i++) t += gx((struct P){i}); return t;",
+        ),
+        (
+            "static ptr chain",
+            "static int v=4; static int *p=&v; static int **pp=&p;",
+            "**pp = 9; return v;",
+        ),
+        (
+            "nested call mutates",
+            "static int g=0; static void a(void){ g++; } static void b(void){ a(); a(); }",
+            "b(); return g;",
+        ),
+        (
+            "write then read global arr",
+            "static int a[3];",
+            "for(int i=0;i<3;i++) a[i]=i+1; int s=0; for(int i=0;i<3;i++) s+=a[i]; return s;",
+        ),
+        (
+            "static in recursive fn",
+            "static int depth(int n){ static int max=0; if(n>max) max=n; return n?depth(n-1):max; }",
+            "return depth(3);",
+        ),
+        (
+            "two statics same fn",
+            "static int f2(void){ static int a=1, b=10; a++; b++; return a*100+b; }",
+            "f2(); return f2();",
+        ),
+        (
+            "global init order",
+            "static int a = 1; static int *pa = &a; static int b = 2;",
+            "return *pa + b;",
+        ),
+        (
+            "string literal write-adj",
+            "",
+            "char b[4] = \"abc\"; b[0]='z'; return b[0];",
+        ),
+        (
+            "addr of static local",
+            "static int *get(void){ static int c = 7; return &c; }",
+            "int *p = get(); *p = 9; return *get();",
+        ),
+        (
+            "static local array str",
+            "static char *name(void){ static char n[] = \"hi\"; return n; }",
+            "return name()[1];",
+        ),
+        (
+            "static local arr persists",
+            "static int step(void){ static int a[3]; static int i=0; a[i]=i; i++; return a[0]+i; }",
+            "step(); return step();",
+        ),
+        (
+            "bitfield across calls",
+            "struct B { unsigned a:3, b:5; }; static int bump(void){ static struct B x; x.a++; return x.a; }",
+            "bump(); return bump();",
+        ),
+        (
+            "union across calls",
+            "union U { int i; char c; }; static int bump(void){ static union U u = {0}; u.i++; return u.i; }",
+            "bump(); return bump();",
+        ),
+        (
+            "struct arr in loop",
+            "struct P { int x; }; static struct P a[3];",
+            "for(int i=0;i<3;i++) a[i].x=i+1; int s=0; for(int i=0;i<3;i++) s+=a[i].x; return s;",
+        ),
+        (
+            "self assignment",
+            "struct P { int x, y; }; static struct P s = {1,2};",
+            "s = s; return s.x*10+s.y;",
+        ),
+        (
+            "overlapping copy",
+            "struct P { int a[3]; }; static struct P p = {{1,2,3}}; static struct P q;",
+            "q = p; return q.a[2];",
+        ),
+        (
+            "fnptr table in loop",
+            "static int i1(int x){return x+1;} static int i2(int x){return x*2;} static int (*t[2])(int)={i1,i2};",
+            "int v=3; for(int i=0;i<2;i++) v=t[i](v); return v;",
+        ),
+        (
+            "varargs twice",
+            "static int s(int n, ...){ __builtin_va_list ap; __builtin_va_start(ap,n); int r=0; for(int i=0;i<n;i++) r+=__builtin_va_arg(ap,int); __builtin_va_end(ap); return r; }",
+            "return s(2,1,2) + s(3,1,2,3);",
+        ),
+        (
+            "nested struct copy",
+            "struct A{int v;}; struct B{struct A a; int w;}; static struct B x={{1},2}; static struct B y;",
+            "y = x; return y.a.v*10+y.w;",
+        ),
+        (
+            "static const arr loop",
+            "static const int t[4]={1,2,3,4};",
+            "int s=0; for(int i=0;i<4;i++) s+=t[i]; return s;",
+        ),
+        (
+            "ptr into struct arith",
+            "struct P{int a,b,c;}; static struct P p={1,2,3};",
+            "int *q=&p.a; return q[2];",
+        ),
+        (
+            "addr of static in two calls",
+            "static int *get(void){ static int c; return &c; }",
+            "return get() == get();",
+        ),
+        (
+            "global addr chain write",
+            "static int v=1; static int *p=&v;",
+            "*p = 5; return v;",
+        ),
+        (
+            "static local in two fns",
+            "static int f1(void){ static int c=1; c++; return c; } static int f2(void){ static int c=10; c++; return c; }",
+            "f1(); f2(); return f1()*100 + f2();",
+        ),
+        (
+            "array param decay twice",
+            "static int sum(int *a, int n){ int s=0; for(int i=0;i<n;i++) s+=a[i]; return s; } static int m[3]={1,2,3};",
+            "return sum(m,3) + sum(m,2);",
+        ),
+        (
+            "recursive static array",
+            "static int f3(int n){ static int seen[4]; seen[n]=n; return n ? f3(n-1) : seen[3]; }",
+            "return f3(3);",
+        ),
+    ];
+    for (name, prelude, body) in cases {
+        let theirs = match gcc_answer(prelude, body) {
+            Ok(v) => v,
+            Err(Oracle::NoGcc) => return,
+            Err(Oracle::Broken(why)) => panic!("the oracle is broken, not absent: {why}"),
+        };
+        assert_eq!(
+            chiero_answer(prelude, body),
+            Some(theirs),
+            "`{name}`: `{prelude}` / `{body}`"
+        );
+    }
+}
