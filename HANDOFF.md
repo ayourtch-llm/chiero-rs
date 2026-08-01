@@ -487,29 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 348) — 1529 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 349) — 1530 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 142 of 142, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly forty `self.error(` sites in sema still unread. Six waves,
->      six kinds of finding. Still unread and category-shaped: the **`switch`/`case` family**
->      beyond wave 319 (a `case` in a block nested inside the switch, a `default` among ranges,
->      duplicate detection across `case 1 ... 3`), and the **conversion family**'s remaining half
->      (`_Bool` against every scalar, vectors, `void *` against function pointers).
->   2. **A predicate with a documented exclusion is a checklist too.** `is_incomplete` excludes
->      `void` on purpose, and wave 347 found two callers that needed the exclusion reversed. The
->      other predicates carrying a stated exception are `not_an_lvalue` (wave 329, excludes the
->      `Cast`-of-`InitList` case), `reads_an_object` (excludes `&`), and `assignable`'s `_Bool`
->      arm. **Enumerate each predicate's callers and ask whether the exception is right for each.**
+>   1. **Finish the predicate sweep** — wave 348 did `assignable`'s `_Bool` arm and found four
+>      rows. Still unswept, each with a documented exception and more than one caller:
+>      **`not_an_lvalue`** (excludes a `Cast` of an `InitList`, i.e. a compound literal; callers
+>      are `&` and `check_writable`, and C treats those differently — `&f` on a function is legal
+>      where `f = 1` is not, `&a` on an array is legal where `a = b` is not), and
+>      **`is_null_constant`** (matches `Number` or `Cast`; used by `assignable`, by the comparison
+>      rule and by the conversion arm, and `(void*)0` versus `(int)0` versus `0` are three
+>      different things to three of them).
+>   2. **Finish the message audit** — about forty sites unread. The `switch`/`case` family beyond
+>      wave 319 is the last named category.
 >   3. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   4. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336); **qualifiers reach sema but
 >      not `chiero-lower`** (wave 328).
 >
-> **Run a category against two members of it, not one.** Seventeen contexts asked only of
-> `struct I` would have confirmed everything; asking the same seventeen of `void` found three
-> defects, because `void` is the incomplete type the shared predicate deliberately omits. **When a
-> predicate has a documented exception, the exception is the second member to test with.**
+> **A guard can be wrong in a way its own tests cannot reach.** The comparison rule required *both*
+> operands to be pointers, so every pointer-against-integer case fell outside it — no fixture for
+> that rule could fail, because the rule never ran. **When a check is guarded, write one case that
+> the guard excludes** and confirm something else catches it; wave 348 found four rows behind one
+> such guard, and the `_Bool` exception was merely the entry that made it visible.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2816,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A guard can be wrong in a way its own tests cannot reach** (wave 348). The pointer-comparison
+> rule required *both* operands to be pointers, so `p == i` fell outside it entirely — and no
+> fixture for that rule could have failed, because the rule never ran on the case. **When a check
+> is guarded, write one case the guard excludes** and confirm something else catches it.
+>
+> **An exception belongs to a caller, not to a predicate** (wave 348). `assignable` exempts `_Bool`
+> because a *conversion* to it is a test against zero; its second caller compares and converts
+> nothing, so the same exemption is wrong there. **Before reusing a predicate, check that its
+> stated exception describes the new caller's question too** — the comment will usually name the
+> context it was written for.
 >
 > **Run a category against two members, and make the second one the documented exception**
 > (wave 347). Seventeen incomplete-type contexts asked of `struct I` confirm everything; the same
