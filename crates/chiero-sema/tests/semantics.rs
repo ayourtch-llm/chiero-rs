@@ -2080,3 +2080,76 @@ fn a_declaration_declares_something_and_a_record_is_not_a_scalar() {
         );
     }
 }
+
+/// **`f()` and `f(void)` are different declarations**, and sema has never been able to tell them
+/// apart — `parameter_list` returns the same empty list for both, which `types_conflict` records
+/// as a limit in its own comment.
+///
+/// That one gap hides three rules at once, and the accepted half shows why none of them can be
+/// approximated by "an empty parameter list means no parameters":
+///
+///   - **`int g(); g(1,2,3);` is legal.** An empty list in a *declaration* means the parameters
+///     are unspecified, so no call can be wrong. Only `(void)` promises there are none.
+///   - **`int f(); int f(void);` is legal in both orders.** An unprototyped declaration composes
+///     with a prototyped one rather than conflicting with it — which is why the conflict rule
+///     cannot simply compare parameter lists.
+///   - **`static int g(){ return 1; } g(1);` is legal**, though `static int g(void){...}` makes
+///     the same call an error. An old-style *definition* with an empty identifier list still
+///     specifies nothing.
+///
+/// The fourth rule here needs no flag and came from the same probe: `void` may be a parameter list
+/// but not a parameter.
+#[test]
+fn a_prototype_promises_what_an_empty_list_does_not() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // C 6.5.2.2p2: a call to a prototyped function has as many arguments as parameters.
+        "int g(void); int f(void){ return g(1); }",
+        "static int g(void){ return 1; } int f(void){ return g(1); }",
+        // C 6.7.6.3p15: `(void)` and `(int)` are not compatible, in either order.
+        "int f(void); int f(int);",
+        "int f(int); int f(void);",
+        // C 6.7.6.3p10: `void` may be the whole parameter list, or a parameter, but not one of
+        // several.
+        "int g(void, int);",
+        "int g(int, void);",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // A prototyped call with the right number of arguments, and an unprototyped one with any.
+        "int g(void); int f(void){ return g(); }",
+        "int g(); int f(void){ return g(1,2,3); }",
+        "int g(); int f(void){ return g(); }",
+        "static int g(){ return 1; } int f(void){ return g(1); }",
+        "void g(void); int f(void){ g(); return 0; }",
+        // An empty list composes with a prototype rather than conflicting with it.
+        "int f(); int f(int x){ return x; }",
+        "int f(); int f(void);",
+        "int f(void); int f();",
+        "int f(void); int f(void){ return 1; }",
+        "int f(int); int f(int x){ return x; }",
+        // A function *pointer* takes either spelling, and a call through one is not this rule.
+        "int g(void); int f(void){ int (*p)(void) = g; return p(); }",
+        "int g(void); int f(void){ int (*p)() = g; return p(); }",
+        "int g(); int f(void){ int (*p)(void) = g; return p(); }",
+        "int g(void); int f(void){ return (*g)(); }",
+        // A function type reached through a typedef keeps its prototype.
+        "typedef int T(void); T g; int f(void){ return g(); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
