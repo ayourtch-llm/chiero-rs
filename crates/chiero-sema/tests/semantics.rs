@@ -1653,3 +1653,63 @@ fn four_more_constraint_violations_are_rejected() {
         );
     }
 }
+
+/// **A `goto` may not jump into the scope of a variably-modified identifier** (C 6.8.6.1p1).
+///
+/// The last violation on wave 325's ratchet that does not need qualified types, and it is not the
+/// rule its name suggests. The accepted list is what pins that down:
+///
+///   - **`goto skip; { int a[2]; skip: … }` is legal** — a non-VLA declaration is not
+///     variably-modified, so jumping into its block is fine. The rule is about the *declaration*,
+///     not the block.
+///   - **`goto skip; int a[n]; skip: …` is illegal with no block at all**, in one flat function
+///     body. So it is not about nesting either.
+///   - **A jump from *after* the declaration is legal**, in the same block or a nested one,
+///     because the jump does not cross it.
+///
+/// What remains, once those three are accounted for, is a rule about *position*: the label is in
+/// the identifier's scope — from its declaration to the end of its block — and the `goto` is not.
+/// That is what the fix models, with a stack of open variably-modified scopes: a label records
+/// which are active where it sits, a `goto` records the same, and the jump is illegal when the
+/// label's set is not contained in the `goto`'s.
+#[test]
+fn a_goto_may_not_jump_into_a_variably_modified_scope() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(int n){ goto skip; { int a[n]; skip: return 0; } }",
+        "int f(int n){ goto skip; { int a[n]; skip: return a[0]; } }",
+        // No block at all: the jump crosses the declaration in one flat body.
+        "int f(int n){ goto skip; int a[n]; skip: return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // A fixed-length array is not variably modified.
+        "int f(int n){ goto skip; { int a[2]; skip: return 0; } }",
+        // Jumping from after the declaration does not cross it.
+        "int f(int n){ { int a[n]; a[0]=1; goto skip; skip: return a[0]; } }",
+        "int f(int n){ { int a[n]; skip: a[0]=1; if(n) goto skip; return a[0]; } }",
+        "int f(int n){ int a[n]; goto skip; skip: return a[0]; }",
+        // The label precedes the declaration, so it is not in its scope.
+        "int f(int n){ goto skip; { skip: ; int a[n]; return a[0]; } }",
+        // The label is outside the block entirely; the scope has ended by then.
+        "int f(int n){ if(n) goto out; { int a[n]; a[0]=1; } out: return 0; }",
+        // An ordinary backward jump, with no variably-modified anything.
+        "int f(void){ int i=0; again: i++; if(i<3) goto again; return i; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
