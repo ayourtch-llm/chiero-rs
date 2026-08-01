@@ -2429,3 +2429,97 @@ fn an_escape_sequence_is_constrained() {
         );
     }
 }
+
+/// **C 6.5.3.2's address-of and indirection constraints, and two neighbours** — wave 339's census,
+/// the first chosen by *subject* rather than by crate now that every crate has a constraint list.
+///
+/// Twelve legal shapes, all already silent; five misses, and **three cases that are caught with
+/// the wrong sentence**. `*x` on an `int` reports "dereference of a pointer to an incomplete
+/// type", which is a true statement about a poisoned pointee and a false one about the program:
+/// the operand is not a pointer at all. 023 §9 asks for a report a person can act on, and that one
+/// sends them looking for a missing struct definition.
+///
+/// The accepted half is what keeps each rule narrow:
+///
+///   - **`&*p` and `&a[1]` are legal** — C 6.5.3.2p1 names the result of `*` and of `[]`
+///     explicitly, so a rule about "lvalues" has to admit them.
+///   - **`&g` on a function is legal**, and a function is not an object.
+///   - **`return;` is legal in a `void` function** and nowhere else, which is the mirror of the
+///     rule wave 311 added for a value in a `void` function.
+#[test]
+fn taking_an_address_and_dereferencing_are_constrained() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // 6.5.3.2p1: the operand of `&` is an lvalue, a function designator, or a `[]`/`*` result.
+        "int f(void){ return *&(1+2); }",
+        "int f(void){ return *&5; }",
+        "int f(void){ int x = 1; return *&(x + 0); }",
+        // 6.5.3.2p1: ...and not a bit-field.
+        "struct S { int b : 3; }; int f(struct S *s){ int *p = &s->b; return *p; }",
+        "struct S { int b : 3; }; int f(void){ struct S s = {1}; int *p = &s.b; return *p; }",
+        // 6.5.3.2p2: the operand of `*` has pointer type.
+        "int f(void){ int x = 1; return *x; }",
+        "int f(void){ double d = 1; return *d; }",
+        "struct S { int m; }; int f(struct S s){ return (*s).m; }",
+        // 6.9.1p2: a function definition is not initialized.
+        "int x(void) = 1;",
+        // 6.8.6.4p1: `return;` needs a `void` function.
+        "int f(void){ return; }",
+        "double g(void){ return; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    // **The three wrong sentences.** Catching these was never the problem; saying why was.
+    for (src, want) in [
+        ("int f(void){ int x = 1; return *x; }", "int"),
+        ("int f(void){ double d = 1; return *d; }", "double"),
+        (
+            "struct S { int m; }; int f(struct S s){ return (*s).m; }",
+            "struct",
+        ),
+    ] {
+        let d = diags(src);
+        assert!(
+            d.iter().any(|m| m.contains("not a pointer")),
+            "`{src}` should say the operand is not a pointer, not blame an incomplete type \
+             (operand is a {want}): {d:?}"
+        );
+    }
+
+    for good in [
+        // Every operand `&` explicitly accepts.
+        "int f(void){ int x = 1; int *p = &x; return *p; }",
+        "int f(void){ int a[2] = {1,2}; int *p = &a[1]; return *p; }",
+        "struct S { int m; }; int f(struct S *s){ int *p = &s->m; return *p; }",
+        "int g(void); int f(void){ int (*p)(void) = &g; return p != 0; }",
+        "int f(int *p){ int *q = &*p; return q != 0; }",
+        "int f(void){ const int k = 1; const int *p = &k; return *p; }",
+        "int f(void){ static int s = 1; int *p = &s; return *p; }",
+        // A *named* member beside a bit-field is still addressable.
+        "struct S { int b : 3; int m; }; int f(struct S *s){ int *p = &s->m; return *p; }",
+        // Indirection through everything that is a pointer, including a decayed array.
+        "int f(int *p){ return *p; }",
+        "int f(void){ int a[2] = {1,2}; return *a; }",
+        "int f(int **pp){ return **pp; }",
+        "int f(void){ int x = 1; int *p = &x; return *(p + 0); }",
+        // `return;` where it belongs, and a value where that belongs.
+        "void g(void){ return; } int f(void){ g(); return 0; }",
+        "void g(void){ if (1) return; } int f(void){ g(); return 0; }",
+        "int f(void){ return 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
