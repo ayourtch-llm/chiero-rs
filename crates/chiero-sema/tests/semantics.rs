@@ -1330,3 +1330,79 @@ fn wave_314s_two_declared_misses() {
         );
     }
 }
+
+/// **The fourth census: `switch` and its labels.**
+///
+/// Seven rules, none of them checked. A `switch` controlled by something that is not an integer,
+/// a `case` label that is not an integer constant expression, and a `case` or `default` outside
+/// any switch at all.
+///
+/// **`_Generic` was censused alongside and came back clean** — a selector matching no association
+/// with no `default`, and two associations naming one type, are both already diagnosed. That is
+/// worth recording: it is the first area a census has found already covered, and the reason
+/// appears to be that `_Generic` was implemented as a unit with its constraints, where `switch`
+/// grew its statement handling and its type rules separately.
+///
+/// The last two rules cost almost nothing because wave 312 already built what they need: the
+/// stack of open switches that `break` and `continue` consult. A `case` outside a switch is the
+/// same question as a `break` outside a loop, asked of a different stack.
+///
+/// Two accepted cases carry the shape of the rest:
+///
+///   - **`switch(c)` on a `char` is legal**, and so is `switch(u)` on an `unsigned` — the rule is
+///     *integer type*, not `int`, and the promotion happens afterwards. A check written against
+///     `int` rejects both.
+///   - **`case 'a':` and `case 1+1:` are integer constant expressions.** The label rule is about
+///     what the expression *folds to*, not how it is spelled, which is the same distinction the
+///     duplicate-case rule needed in wave 312.
+#[test]
+fn the_switch_census() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // The controlling expression must have integer type.
+        "int f(double d){ switch(d){ case 1: return 1; } return 0; }",
+        "int f(int *p){ switch(p){ case 0: return 1; } return 0; }",
+        "struct S { int a; }; int f(struct S s){ switch(s){ case 1: return 1; } return 0; }",
+        // A case label must be an integer constant expression.
+        "int f(int n, int m){ switch(n){ case m: return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 1.5: return 1; } return 0; }",
+        // A label needs a switch to belong to.
+        "int f(int n){ case 1: return n; }",
+        "int f(int n){ default: return n; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // **Any integer type**, not `int` — the promotion happens after the rule, not instead
+        // of it.
+        "int f(char c){ switch(c){ case 1: return 1; } return 0; }",
+        "int f(long n){ switch(n){ case 1: return 1; } return 0; }",
+        "int f(unsigned u){ switch(u){ case 1u: return 1; } return 0; }",
+        "enum E { A, B }; int f(enum E e){ switch(e){ case A: return 1; case B: return 2; } return 0; }",
+        // A label is judged by what it folds to.
+        "int f(int n){ switch(n){ case 'a': return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 1+1: return 1; } return 0; }",
+        // A switch with no labels, and one with only a default, are both legal.
+        "int f(int n){ switch(n){ } return 0; }",
+        "int f(int n){ switch(n){ default: return 1; } }",
+        // `_Generic`, which this census found already correct.
+        "int f(int n){ int x = _Generic(n, int: 1, default: 2); return x; }",
+        "int f(double d){ int x = _Generic(d, int: 1, default: 2); return x; }",
+        "int f(int n){ int x = _Generic(n, int: 1, long: 2, default: 3); return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
