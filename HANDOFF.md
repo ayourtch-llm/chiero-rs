@@ -487,9 +487,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 311) — 1484 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 312) — 1485 tests, 4 ignored, M1 165/165 by contract
 >
-> **Next: rows 4–7 of the constraint census below** — assigning to a `const`, a parameter of
+> **Next: rows 8–12 of the constraint census below** — duplicate `case` values, multiple `default`
+> labels, `break` outside a loop or switch, `continue` outside a loop, and a label used but never
+> defined. They are one family too: all five need *statement* context sema does not carry today
+> (loop and switch nesting, the set of case values in the innermost switch, the labels a function
+> defines). Expect the wave's work to be that context, with five cheap checks on top of it — the
+> reverse of wave 311, where the rules were the easy part and their placement was not.
+>
+> Rows 13–16 (function redefinition, conflicting declaration types, `static` after non-`static`,
+> function returning an array) are independent of that context and can be taken in any order. — assigning to a `const`, a parameter of
 > incomplete type, a variable declared `void`, and using a `void`-valued call. They are the
 > remaining rows that are about *types* rather than about statements, so they sit in the same part
 > of sema as wave 308's three and should cost less than rows 8–16, which need statement-level
@@ -904,10 +912,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | ~~1~~ | ~~member that does not exist~~ | **fixed, wave 308** |
 > | ~~2~~ | ~~subscripting a non-array~~ | **fixed, wave 308** — `int x = 5; x[0]` returned 5 |
 > | ~~3~~ | ~~calling a non-function~~ | **fixed, wave 308** |
-> | 4 | assigning to a `const` object | `const int k = 1; k = 2;` |
-> | 5 | parameter of incomplete type | `struct T; int s(struct T t)` |
-> | 6 | variable declared `void` | `void w;` |
-> | 7 | using a `void`-valued call | `void v(void); return v();` |
+> | ~~4~~ | ~~assigning to a `const` object~~ | **fixed, wave 311** |
+> | ~~5~~ | ~~parameter of incomplete type~~ | **fixed, wave 311** — definitions only |
+> | ~~6~~ | ~~variable declared `void`~~ | **fixed, wave 311** |
+> | ~~7~~ | ~~using a `void`-valued call~~ | **fixed, wave 311** |
 > | 8 | duplicate `case` value | `case 1: case 1:` |
 > | 9 | multiple `default` labels | `default: default:` |
 > | 10 | `break` outside loop or switch | |
@@ -920,6 +928,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > Rows 1–3 are the ones that matter most for this engine: they are type errors that let execution
 > proceed on a value computed from nothing. The rest are diagnostics a compiler owes its user.
+>
+> **Rows 4–7 closed in wave 311.** The `const` rule needed machinery sema did not have — it had
+> never read the AST's `Quals` at all — and the shape of it is worth keeping: a scoped set of
+> objects declared `const` at their **outermost** level. `const int k` and `int *const p` both make
+> the *name* read-only; `const int *p` makes the *pointee* read-only and leaves `p` assignable.
+> The check fires only when the assignment target is the name itself, because `*p = 1` depends on
+> the pointee's qualifiers, which sema still does not model — it says nothing rather than guessing.
+>
+> Placement mattered more than the rules did:
+>   - `void` objects are rejected in `check_complete`, **not** by adding `void` to `is_incomplete`
+>     — that predicate's other callers must keep allowing `void *p` and `sizeof(void)`.
+>   - A void *value* is rejected in `coerce`, which is exactly the set of places C wants a value,
+>     so `v();` and `(void)v();` need no exemption. It tests the **target** type too, because
+>     `return v();` from a void function is legal.
+>   - An incomplete *parameter* is checked where a body is walked, since a prototype may name one.
+>
+> **Nothing was over-rejected: all twelve legal forms passed before the fix as well as after**,
+> which is only knowable because the census runs its legal half.
 >
 > **Rows 1–3 closed in wave 308**, and the fix cannot key on `Ty::Error`: that means *unknown*, not
 > *wrong*, and an undeclared callee types as `Error` — `__builtin_isnan` and the rest of 7.12.14
@@ -2450,6 +2476,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Three waves running, the surviving mutant has been an exemption** (wave 311, confirming 303
+> and 308). The arithmetic is structural, not luck: a RED enumerates the programs a check must
+> *reject*, so every rejection is falsifiable the moment the check exists. What a check must
+> **accept** is enumerated by nobody unless someone writes it down, and that is where the
+> unfalsifiable claims collect. In wave 311 both survivors were legal programs — `return v();`
+> from a void function, and a block shadowing a `const` — and both were described as load-bearing
+> in prose before anything loaded them. **Budget mutation effort on the accepted list.**
 >
 > **Ask the corpus which inputs it can take; do not curate the list by hand** (wave 310). The gate
 > named six headers because six were once tried. Enumerating the directory and running all
