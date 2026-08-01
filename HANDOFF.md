@@ -487,20 +487,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 323) — 1495 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 324) — 1496 tests, 4 ignored, M1 165/165 by contract
 >
-> **The tier method has now paid twice** — wave 321 (length-zero arrays), wave 322 (static locals,
-> block-scope `extern`, shadowing). Both waves found their defect in the first twenty programs, so
-> **keep going before switching fronts**:
+> **The tier method is spent for now** — wave 323 ran thirty-eight shapes on it for no findings,
+> after two waves that each found one in twenty. Do not open a tier five without a new selection
+> rule to justify it.
 >
->   1. **Tier-4 shapes.** Two selection rules have earned their keep: constructs used as *scenery*,
->      and constructs whose behaviour differs only on the *second* visit. Candidates on both:
->      `static` aggregates mutated across calls, a function's address compared across calls,
->      string literals with identical contents (are they one object?), `const` globals written
->      through a cast, a `goto` backwards over a declaration, recursion depth past the loop bound.
->   2. **Qualified types** — the last conversion-census row, and what makes wave 316's pointee rule
->      semantic. Budget for auditing **436 `Ty::` match sites**; do not start by adding the variant.
->   3. **A fifth census**, preferring a construct whose implementation arrived in pieces.
+> **Next, in descending order of what they buy:**
+>   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
+>      what makes wave 316's pointee rule semantic rather than syntactic. Budget for auditing
+>      **436 `Ty::` match sites across four crates**; do not start by adding the variant. This is
+>      the largest known-unfinished item in the project.
+>   2. **A fifth census**, preferring a construct whose implementation arrived in pieces (wave
+>      319's rule): `restrict`/`volatile`, compound literals, or bit-field access rules.
+>   3. **Widen a channel rather than write a net.** Wave 323's measurement showed every
+>      diagnostic-side rule is invisible to the differential channels — they compare answers on
+>      programs gcc *accepts*. A channel that compared *diagnostics* against `gcc -pedantic-errors`
+>      on generated programs would cover ground nothing currently does.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -897,6 +900,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟡 Wave 323 — the tier method's yield fell to zero
+>
+> Thirty-eight more shapes on the same two rules; **none failed.** Waves 321 and 322 each found a
+> defect in their first twenty, so the seam is now thin, and the next wave should know that before
+> spending itself here.
+>
+> Both tiers are committed as `scenery_and_second_visit_shapes_agree_with_gcc`, kept for what they
+> will catch when a representation moves under them. **The net was measured, not assumed:**
+> re-injecting wave 321's length-zero array and wave 322's frame-slot `static` locals both make it
+> fail. It cannot see two other recent defects, for reasons recorded at the site — wave 322's
+> name-restore rule needs a shadowed file-scope object read afterwards, and wave 320's deref rule
+> is a *diagnostic* on a program gcc rejects, which no value-comparing net can reach.
+>
+> **What that last point generalises to:** the differential channels compare *answers on programs
+> gcc accepts*. Every diagnostic-side rule in sema — sixteen census rows, four initializer rules,
+> the conversion rules — is outside all of them, and is held only by its own fixture plus the
+> no-diagnostics corpus gate. That asymmetry is worth remembering when judging what the suite
+> covers.
 >
 > ### 🔑 Wave 322 — the same method, three more defects
 >
@@ -2714,6 +2736,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A net that caught nothing must be shown able to catch something** (wave 323). Thirty-eight
+> shapes passed, which is either good news or a broken net, and the two are indistinguishable
+> without a test. Re-injecting the last three waves' defects settled it: two are caught, two are
+> not, and **the two it cannot see are a better finding than the two it can** — one is covered by
+> its own fixture, and the other is a diagnostic, which no channel comparing values on
+> gcc-accepted programs will ever reach.
 >
 > **A fixture that names things distinctly cannot test name resolution** (wave 322). Two defects —
 > a `static` local shadowing a file-scope object, and the binding not being restored afterwards —
