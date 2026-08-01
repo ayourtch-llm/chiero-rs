@@ -1430,3 +1430,65 @@ fn the_switch_census() {
         );
     }
 }
+
+/// **Dereferencing a pointer to an incomplete type.**
+///
+/// The case wave 319 wrote down and declined to report from where it found it: `switch(*p)` on a
+/// `struct I *` is rejected by gcc, and the fault is the *dereference*, not the switch. Nothing
+/// checked a `Deref` for completeness, so every use of `*p` on an opaque pointer was accepted —
+/// including `*p = *q`, which copies an object of unknown size.
+///
+/// The accepted list is what a pointer to an incomplete type is *for*, and it is most of the
+/// reason opaque handles work at all:
+///
+///   - **Copying, comparing and converting the pointer** never touches the pointee. `p != 0`,
+///     `struct I *q = p;` and `(long)p` are the opaque-handle idiom.
+///   - **`*p` on a `struct I **` is legal**: what it yields is `struct I *`, a complete pointer
+///     type. One level of indirection is one level — the same distinction wave 316's pointee-const
+///     rule needed, in the other direction.
+///   - **`&gi` on an `extern struct I gi;`** takes an address without needing a size, which is why
+///     wave 303 made that declaration legal in the first place.
+///
+/// `p->m` is here because it is `(*p).m` — the member lookup never gets a chance to fail, since
+/// the record it would look in has no members yet, and reporting "no member named `m`" would name
+/// the wrong thing.
+#[test]
+fn dereferencing_an_incomplete_pointee_is_rejected() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "struct I; int f(struct I *p){ switch(*p){ case 1: return 1; } return 0; }",
+        "struct I; int f(struct I *p){ (*p); return 0; }",
+        "struct I; int f(struct I *p, struct I *q){ *p = *q; return 0; }",
+        "struct I; int f(struct I *p){ return p->m; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // The pointer itself may be copied, compared and converted.
+        "struct I; int f(struct I *p){ struct I *q = p; return q != 0; }",
+        "struct I; int f(struct I *p){ return p != 0; }",
+        "struct I; int f(struct I *p){ return (int)(long)p; }",
+        "struct I; extern struct I gi; int f(void){ return &gi != 0; }",
+        // One level of indirection is one level: `*p` here is `struct I *`, which is complete.
+        "struct I; int f(struct I **p){ struct I *q = *p; return q != 0; }",
+        // A complete pointee may be dereferenced, copied and read through.
+        "struct C { int m; }; int f(struct C *p){ return p->m; }",
+        "struct C { int m; }; int f(struct C *p, struct C *q){ *p = *q; return p->m; }",
+        "int f(int *p){ return *p; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
