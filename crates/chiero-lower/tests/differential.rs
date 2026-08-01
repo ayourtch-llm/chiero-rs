@@ -5282,3 +5282,68 @@ fn an_array_takes_its_length_from_its_initializer() {
         agree_with(prelude, body);
     }
 }
+
+/// **A `static` local is one object for the whole program, initialized once.**
+///
+/// C 6.2.4p3: it has static storage duration, and its initializer runs before `main` rather than
+/// each time control reaches the declaration. This engine gave it automatic storage, so it was
+/// reinitialized on every entry — a counter in a loop stayed at 1, a counter in a function called
+/// twice stayed at 1, and one declared without an initializer produced no answer at all.
+///
+/// Found by wave 321's method, which is the point: `static int c = 0;` *at the top of a function
+/// that runs once* was already in the canonical net and passed, because a variable that is
+/// initialized once and read once behaves identically whichever storage it has. Only re-entry
+/// tells them apart, and re-entry is what a fixture avoids — a test that runs its subject twice
+/// has to explain why.
+///
+/// The three shapes below are the three ways to re-enter: another iteration, another call, and
+/// another pass through an inner block. The non-`static` case beside them is the control that
+/// keeps the fix from applying to every local.
+#[test]
+fn a_static_local_persists_across_entries() {
+    for (prelude, body) in [
+        // Re-entry by iteration.
+        (
+            "",
+            "int t=0; for(int i=0;i<3;i++){ static int c=0; c++; t=c; } return t;",
+        ),
+        // **Without an initializer it is zero-initialized**, like any static object — this one
+        // produced no answer at all, not merely a wrong one.
+        (
+            "",
+            "int t=0; for(int i=0;i<3;i++){ static int c; c++; t=c; } return t;",
+        ),
+        // Re-entry by call.
+        (
+            "static int bump(void){ static int c = 0; c++; return c; }",
+            "bump(); return bump();",
+        ),
+        (
+            "static int bump(void){ static int c = 10; c++; return c; }",
+            "bump(); bump(); return bump();",
+        ),
+        // Re-entry into an inner block.
+        (
+            "",
+            "int t=0; for(int i=0;i<2;i++){ { static int c=100; c++; t=c; } } return t;",
+        ),
+        // An array with static duration keeps what was written to it.
+        (
+            "",
+            "int t=0; for(int i=0;i<3;i++){ static int a[2]; a[i%2]=i; t=a[0]; } return t;",
+        ),
+        // **The controls.** An automatic local *is* reinitialized each time, which is the
+        // difference the fix must preserve rather than erase.
+        (
+            "",
+            "int t=0; for(int i=0;i<3;i++){ int c=0; c++; t=c; } return t;",
+        ),
+        ("", "static int c = 0; c++; return c;"),
+        (
+            "static int v=7;",
+            "int t=0; for(int i=0;i<2;i++){ static int *p = &v; t = *p; } return t;",
+        ),
+    ] {
+        agree_with(prelude, body);
+    }
+}
