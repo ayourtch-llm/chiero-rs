@@ -3177,3 +3177,86 @@ fn an_address_constant_reads_no_object() {
         );
     }
 }
+
+/// **The incomplete-type family, tabulated by context** (§9) — six messages over one predicate, so
+/// the thing to enumerate is *where* an incomplete type is forbidden, not what each message says.
+///
+/// Seventeen contexts against **two** incomplete types, and running both is what found the
+/// defects: `is_incomplete` deliberately excludes `void` — `void *p` and `void f(void)` need it to
+/// — so every context has to decide about `void` separately, and three had not.
+///
+///   - **`void a[3];` and `struct S { void m; };`** — an array element and a member need a size,
+///     and `void` has none. Both were silent while `struct I a[3];` was caught.
+///   - **`struct I f(void){ }`** — a *definition* must return a complete type. A *declaration*
+///     need not: `struct I f(void);` is legal C, because the type may be completed before anyone
+///     calls it. That distinction is why this is checked at the body and not at the type.
+///
+/// **Three further contexts are the deliberate `sizeof(void) == 1` extension** and stay silent:
+/// `sizeof(void)`, `_Alignof(void)` and `void *p + 1`. gcc refuses all three under
+/// `-pedantic-errors` and accepts them in the GNU mode the corpus uses; waves 335 and 343 recorded
+/// the same decision, and the fixture keeps them in the accepted half so a later wave does not
+/// "fix" one of them in isolation.
+#[test]
+fn an_incomplete_type_is_refused_in_every_context_that_needs_a_size() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // The same context, asked of an incomplete record and of `void`.
+    for bad in [
+        "struct I; struct I v;",
+        "void v;",
+        "struct I; struct I a[3];",
+        "void a[3];",
+        "int f(void){ void a[2]; return 0; }",
+        "struct I; struct S { struct I m; };",
+        "struct S { void m; };",
+        "union U { void m; };",
+        "struct I; int f(struct I p){ return 0; }",
+        "int f(void p){ return 0; }",
+        // A *definition* returns a complete type.
+        "struct I; struct I f(void){ }",
+        // The contexts that were already right, kept so the fix cannot lose them.
+        "struct I; unsigned g = sizeof(struct I);",
+        "struct I; unsigned g = _Alignof(struct I);",
+        "struct I; int f(struct I *p){ (*p); return 0; }",
+        "struct I; int f(struct I *p){ return p->m; }",
+        "struct I; int f(struct I *p){ return (int)(p + 1); }",
+        "struct I; int f(struct I *p){ struct I q = *p; return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // A pointer to an incomplete type needs no size, in any of its spellings.
+        "struct I; struct I *g;",
+        "struct I; int f(struct I *p){ return p != 0; }",
+        "struct I; int f(struct I *p){ return (int)(long)p; }",
+        "struct I; int f(struct I *p);",
+        "struct I; struct I *f(void);",
+        "struct I; struct S { struct I *m; };",
+        "struct S { void *m; };",
+        "void *g;",
+        // **A declaration may return an incomplete type**; only a definition may not.
+        "struct I; struct I f(void);",
+        "struct I; struct I f(void); int g(void){ return 0; }",
+        // `void` where it belongs.
+        "void f(void){ }",
+        "int f(void *p){ (void)*p; return 0; }",
+        // **The `sizeof(void) == 1` extension, kept deliberately** — see the doc comment.
+        "unsigned g = sizeof(void);",
+        "unsigned g = _Alignof(void);",
+        "int f(void *p){ return (int)(p + 1); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
