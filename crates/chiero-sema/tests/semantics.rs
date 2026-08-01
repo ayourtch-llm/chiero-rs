@@ -1818,3 +1818,88 @@ fn a_qualifier_is_part_of_the_type() {
         );
     }
 }
+
+/// **Five of C 6.5's operator constraints**, from wave 329's census — the first run of the method
+/// since wave 325's queue emptied. Thirty programs, twenty-one of them legal, verdicts from gcc
+/// under `-pedantic-errors`: sema was silent on all thirty and gcc rejected nine.
+///
+/// The five here are the operator half. Each accepted case is a discriminator for a rule that
+/// would otherwise be written too broadly:
+///
+///   - **`(x)++` is legal and `(x+1)++` is not**, so the increment rule is about lvalues rather
+///     than about parentheses — which costs nothing here only because the AST discards them.
+///   - **`(int){1}++` is legal**: a compound literal is an lvalue, and it is spelled as a cast in
+///     this AST, so a rule that rejects casts rejects it.
+///   - **`A++` on an enumeration constant is not an lvalue** even though it is spelled as a plain
+///     identifier, which no test of the expression's *kind* can see.
+///   - **`~c` on a `char` is legal** — the operand is promoted, so the rule is about the promoted
+///     type and not about the width written down.
+///   - **`*p;` as a statement is legal with `p` a `void *`**, and `(void)*p` too. The `void` rule
+///     is about *using the value*, not about producing it.
+#[test]
+fn the_operator_constraints_of_c_6_5() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // C 6.5.2.4p1 and 6.5.3.1p1: the operand of `++`/`--` is a modifiable lvalue.
+        "int f(void){ int x = 1; return x++++; }",
+        "int f(void){ int x = 1; return ++++x; }",
+        "int f(void){ int x = 1; return (x+1)++; }",
+        "int f(void){ int x = 1; return f()++; }",
+        "int f(void){ enum E { A }; return A++; }",
+        "int f(void){ int x=1,y=2; return (x,y)++; }",
+        // C 6.5.3.4p1: `sizeof` is not applied to a function type.
+        "void g(void); int f(void){ return sizeof(g); }",
+        // C 6.5.3.3p1: unary `+` and `-` take an arithmetic operand.
+        "int f(void){ int x = 1; return -&x != 0; }",
+        "int f(void){ int x = 1; return +&x != 0; }",
+        // C 6.5.3.3p4: `~` takes an integer operand.
+        "int f(int *p){ return (int)~p; }",
+        "int f(double d){ return (int)~d; }",
+        // C 6.3.2.2: a `void` value cannot be used.
+        "int f(void){ void *p = 0; return *p != 0; }",
+        "void v(void); int f(void){ return v() != 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Lvalues that must keep incrementing.
+        "int f(void){ int x = 1; return (x)++; }",
+        "int f(void){ int a[2]; return a[0]++; }",
+        "int f(void){ int x=1, *p=&x; return (*p)++; }",
+        "struct S { int m; }; int f(struct S *s){ return s->m++; }",
+        "int f(void){ return (int){1}++; }",
+        "struct S { int m; }; int f(void){ return (struct S){1}.m++; }",
+        "int f(void){ int x=1; return _Generic(1,int:x)++; }",
+        // `sizeof` of a *pointer* to a function, and of a function pointer type, are both fine.
+        "void g(void); int f(void){ return sizeof(&g); }",
+        "void g(void); int f(void){ return sizeof(void(*)(void)); }",
+        "int f(void){ int a[3]; return sizeof(a); }",
+        // Arithmetic operands, including one reached through a pointer.
+        "int f(int *p){ return -*p; }",
+        "int f(double d){ return (int)-d; }",
+        "int f(int n){ return ~n; }",
+        // `~` on a narrow integer: the promotion happens first, so this is `~(int)c`.
+        "int f(char c){ return ~c; }",
+        // A `void` value *produced* and discarded is fine; only *using* it is not.
+        "int f(void){ void *p = 0; *p; return 0; }",
+        "int f(void){ void *p = 0; (void)*p; return 0; }",
+        "void v(void); int f(void){ v(); return 0; }",
+        "int f(void){ void *p = 0; return p != 0; }",
+        "int f(int *p){ return *p != 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
