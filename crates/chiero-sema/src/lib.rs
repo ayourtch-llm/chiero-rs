@@ -862,6 +862,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        declaring: None,
         defined_tags: Default::default(),
         declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
@@ -913,6 +914,7 @@ pub fn const_eval(
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        declaring: None,
         defined_tags: Default::default(),
         declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
@@ -1021,6 +1023,15 @@ struct Cx<'a> {
     /// stack truncated on the way out of a compound statement rather than a set: C 6.8.6.1 is
     /// about whether a jump *crosses* a declaration, and the same block can open one after a
     /// label and not before it.
+    /// The declarator a type is currently being built for, when there is one.
+    ///
+    /// **A side channel, and deliberately so.** `ty_of` walks a type node and structurally does
+    /// not know the declarator — the same node serves a `sizeof`, a cast and a parameter, none of
+    /// which has a name. Threading an `Option<Symbol>` through every `ty_of` call site to reach
+    /// two diagnostics would cost more than it buys; setting it around the one call that *does*
+    /// have a name is one line, and it names the array in every type-level message rather than
+    /// only in the one this wave was reading.
+    declaring: Option<Symbol>,
     /// Tags *defined* — not merely declared — in each open scope. `struct S;` after a definition
     /// is how a forward declaration is written, so only a definition registers here.
     defined_tags: ScopedNames,
@@ -1285,7 +1296,11 @@ impl Cx<'_> {
                 init,
                 storage,
             } => {
+                // **Saved and restored, not just set.** An initializer can contain a `sizeof`
+                // over another type, and a nested declaration would otherwise inherit this name.
+                let outer_declaring = std::mem::replace(&mut self.declaring, name);
                 let t = self.ty_of(ty);
+                self.declaring = outer_declaring;
                 self.out.decl_types.insert(id, t);
                 let span = self.ast.decl(id).span;
                 self.check_storage_classes(storage, span);
@@ -1822,7 +1837,12 @@ impl Cx<'_> {
                         match n {
                             Some(n) if n >= 0 => ArrayLen::Fixed(n as u64),
                             Some(_) => {
-                                self.error(node.span, "array length is negative");
+                                let n = self
+                                    .declaring
+                                    .and_then(|n| self.text(n))
+                                    .map(|t| format!(" of `{t}`"))
+                                    .unwrap_or_default();
+                                self.error(node.span, format!("array length{n} is negative"));
                                 ArrayLen::Fixed(0)
                             }
                             None => ArrayLen::Vla(expr),
@@ -2188,7 +2208,14 @@ impl Cx<'_> {
             let DeclKind::Var { name, ty, .. } = self.ast.decl(m).kind.clone() else {
                 continue;
             };
+            // **A member's type is built for the *member*.** Without this the enclosing object's
+            // name was still in `declaring`, so `struct S { int bad[-1]; } x;` reported "array
+            // length of `x` is negative" — naming a declarator that is not the one at fault,
+            // which is exactly the class of defect this audit exists to remove. Introduced by the
+            // mechanism two commits earlier and caught by a mutant on its own restore.
+            let outer_declaring = std::mem::replace(&mut self.declaring, name);
             let fty = self.ty_of(ty);
+            self.declaring = outer_declaring;
             // **A flexible array member is the last one** (C 6.7.2.1p18). Checked by looking
             // *back*: an `ArrayLen::Flexible` already in `fields` means a member follows one, and
             // that is the violation. Asking "is this the last member" instead would need the
@@ -2263,7 +2290,21 @@ impl Cx<'_> {
 
             let bw = self.ast.bitfield(m);
             if let Some(bw) = bw {
-                let unit_bits = size_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
+                // **The bits *in the type*, not the bits it is stored in** (C 6.7.2.1p4). The two
+                // agree for every type anyone writes a bit-field on by hand, which is why
+                // `size_of_ty * 8` stood — and they differ for exactly one: a `_Bool` occupies a
+                // byte and holds a single bit, so `_Bool b : 2;` was accepted. `Ty::Int`'s `bits`
+                // is the number C means; the storage size is what `sizeof` reports.
+                let unit_bits = match self.out.types[fty.0 as usize] {
+                    Ty::Int { bits, .. } => u64::from(bits),
+                    // **Unreached, and measured so.** Every type a bit-field may take is
+                    // `Ty::Int` — C allows `_Bool`, `int` and `unsigned int`, gcc extends that to
+                    // the other integer types, and an enumeration is `Ty::Int` here too. An
+                    // instrumented run over the whole suite, VPP corpus included, never took this
+                    // arm, so mutating it survives and no test can be written that would not.
+                    // It exists because the match must be exhaustive.
+                    _ => size_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8,
+                };
                 let unit_align_bits = align_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
                 let span = self.ast.expr(bw).span;
 
@@ -2295,7 +2336,17 @@ impl Cx<'_> {
                     // `int f : 32` and `long f : 33` are both legal, and a check phrased the
                     // other way would accept every violation here and reject those.
                     Some(v) if (v.v as u64) > unit_bits => {
-                        self.error(span, "bit-field width exceeds the width of its type");
+                        // **Name the field.** In a struct of twenty bit-fields the nameless
+                        // sentence says only that one of them is wrong; gcc prints
+                        // `width of 'b' exceeds its type`.
+                        let n = name
+                            .and_then(|n| self.text(n))
+                            .map(|t| format!(" of `{t}`"))
+                            .unwrap_or_default();
+                        self.error(
+                            span,
+                            format!("bit-field width{n} exceeds the width of its type"),
+                        );
                         unit_bits
                     }
                     // Zero width declares no member, so there is nothing for a name to name.

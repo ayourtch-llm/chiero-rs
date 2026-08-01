@@ -2784,6 +2784,12 @@ fn a_width_diagnostic_names_its_declarator() {
     says("struct S { int a; int wide : 33; };", "`wide`");
     says("struct S { _Bool flag : 2; };", "`flag`");
     says("int negative_len[-1];", "`negative_len`");
+    // **The member, not the object it is declared inside.** `declaring` is a side channel, and a
+    // nested declaration inherits it unless each walk sets its own — this named `x` until the
+    // member walk did. Naming the wrong declarator is the same class of defect as naming a
+    // mechanism the program has not got.
+    says("struct S { int bad[-1]; } x;", "`bad`");
+    says("struct S { int bad[-1]; };", "`bad`");
 
     // **A zero-length array stays accepted**, and this is where that is recorded: gcc refuses it
     // under `-pedantic-errors` as a GNU extension, and the VPP tree contains **1777** of them —
