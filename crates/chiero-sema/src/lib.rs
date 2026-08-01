@@ -1191,10 +1191,15 @@ impl Cx<'_> {
                     self.type_stmt(body);
                     // **Checked here, once the whole body has been walked.** A `goto` may name a
                     // label declared later — that is what a forward jump is — so nothing can be
-                    // decided at the point of use. Labels are function-scoped in C, so the sets
-                    // are per function and are swapped out around the body rather than cleared:
-                    // a nested function definition is not legal C, but a stale set would be a
-                    // silent wrong answer if one ever arrived.
+                    // decided at the point of use. Labels are function-scoped, so the sets are
+                    // per function, and the *restore* below is what enforces that: two functions
+                    // may each define `lab`, and only the second may not `goto` the first's.
+                    //
+                    // `std::mem::take` rather than `clone` on the way in is **measured
+                    // equivalent** — the restore already leaves the set empty for the next
+                    // function, so nothing observes the clearing. It is kept because taking says
+                    // what the code means, and because a stale set would be a silent wrong answer
+                    // if a nested body ever reached here.
                     for (name, span) in std::mem::take(&mut self.labels_used) {
                         if !self.labels_defined.contains(&name) {
                             let n = self.text(name).unwrap_or("?").to_owned();

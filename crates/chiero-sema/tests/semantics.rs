@@ -808,6 +808,9 @@ fn the_statement_constraints_of_census_rows_eight_to_twelve() {
         "int f(void){ goto nowhere; return 0; }",
         // `continue` in a switch that is *not* inside a loop has no loop to continue.
         "int f(int n){ switch(n){ case 1: continue; } return 0; }",
+        // **Labels are scoped to their function.** A `goto` cannot reach one defined in another,
+        // which is what makes clearing the sets per function load-bearing rather than tidiness.
+        "int f(void){ lab: return 0; } int g(void){ goto lab; return 0; }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -817,6 +820,9 @@ fn the_statement_constraints_of_census_rows_eight_to_twelve() {
         "int f(void){ for(int i=0;i<3;i++){ if(i) break; } return 0; }",
         "int f(void){ for(int i=0;i<3;i++){ if(i) continue; } return 0; }",
         "int f(int n){ do { if(n) break; } while(n); return 0; }",
+        // **`break` in a bare `switch` is the ordinary way to end a case**, and it is the case
+        // that separates the two depth counters: `break` counts switches, `continue` does not.
+        "int f(int n){ switch(n){ case 1: break; } return 0; }",
         // `break` in a switch inside a loop breaks the switch...
         "int f(int n){ while(n){ switch(n){ case 1: break; } n--; } return 0; }",
         // ...and `continue` in the same place continues the loop.
@@ -828,10 +834,17 @@ fn the_statement_constraints_of_census_rows_eight_to_twelve() {
         // Several labels on one statement is not a duplicate of anything.
         "int f(int n){ switch(n){ case 1: case 2: return 1; } return 0; }",
         "enum E { A=1, B=2 }; int f(enum E e){ switch(e){ case A: return 1; case B: return 2; } return 0; }",
+        // **A `case` range is accepted and not checked for overlap.** `case 1 ... 3` is a GNU
+        // extension whose duplicate rule is about intervals meeting, not values being equal, so
+        // the check skips ranges rather than comparing their lower bounds and calling it done.
+        // That is a declared limit: `case 1 ... 3:` beside `case 2:` is a duplicate gcc rejects
+        // and this does not. Approximating it would trade a missed report for a wrong one.
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; case 4: return 2; } return 0; }",
         // Labels: backward, forward, and one that is never used at all.
         "int f(void){ int i=0; again: i++; if(i<3) goto again; return i; }",
         "int f(void){ int i=0; goto skip; i=9; skip: return i; }",
         "int f(void){ unused: return 0; }",
+        "int f(void){ lab: return 0; } int g(void){ lab: return 1; }",
     ] {
         assert!(
             diags(good).is_empty(),
