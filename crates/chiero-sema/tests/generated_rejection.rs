@@ -491,6 +491,16 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("static parameter", "int f(static int a){ return a; }"),
     ("register function", "register int f(void){ return 1; }"),
     ("auto function", "auto int f(void){ return 1; }"),
+    // Wave 353: the other two contexts whose cascades wave 351 closed, so the contract-20
+    // channel below guards them by name rather than only through the array one.
+    (
+        "division by zero in a case label",
+        "int f(int n){ switch(n){ case 1/0: return 1; } return 0; }",
+    ),
+    (
+        "division by zero in a bit-field width",
+        "struct S { int b : 1/0; };",
+    ),
     // **Wave 350's case-range rules are deliberately absent.** gcc rejects `case 1 ... 3` under
     // `-pedantic-errors` because ISO C has no case ranges at all, so a row here would be counted
     // as caught for a reason that is not the one under test — the overlap. This list's contract is
@@ -595,5 +605,46 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
         caught.len() >= FLOOR,
         "coverage fell to {} from {FLOOR}; newly missed: {missed:?}",
         caught.len()
+    );
+}
+
+/// **One mistake, one diagnostic** (contract 20) — the channel §9 asked for, and the one question
+/// no other channel here asks.
+///
+/// The ratchet above counts *rejections* and `generated_silence.rs` counts *false positives*;
+/// neither can see a program rejected **twice** for the same fault. Wave 351 found three such
+/// cascades by hand, all the same shape — a specific sentence ("division by zero") followed by a
+/// generic one about its consequence ("not an integer constant expression", "variably modified at
+/// file scope", "width is not constant") — and nothing was watching for a fourth.
+///
+/// **`VIOLATIONS` is the right corpus for it**, because its rows are one-mistake programs by
+/// construction: each was written to exercise exactly one constraint. Where that is *not* true the
+/// row is the defect, which is what this test found on its first run — and the fix is to the row,
+/// not to the engine.
+#[test]
+fn one_mistake_produces_one_diagnostic() {
+    let mut noisy = Vec::new();
+    for (name, src) in VIOLATIONS {
+        // A parse rejection is a rejection; the parser has its own diagnostics and its own
+        // contract, and counting them here would measure two engines at once.
+        let Ok(d) = std::panic::catch_unwind(|| {
+            harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux())
+                .analysis
+                .diagnostics
+                .iter()
+                .map(|x| x.message.clone())
+                .collect::<Vec<_>>()
+        }) else {
+            continue;
+        };
+        if d.len() > 1 {
+            noisy.push(format!("{name}: {d:?}"));
+        }
+    }
+    assert!(
+        noisy.is_empty(),
+        "{} row(s) report a single mistake more than once:\n  {}",
+        noisy.len(),
+        noisy.join("\n  ")
     );
 }
