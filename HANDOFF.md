@@ -487,23 +487,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 324) — 1496 tests, 4 ignored, M1 165/165 by contract
->
-> **The tier method is spent for now** — wave 323 ran thirty-eight shapes on it for no findings,
-> after two waves that each found one in twenty. Do not open a tier five without a new selection
-> rule to justify it.
+> ### ⏭️ START HERE (wave 325) — 1497 tests, 4 ignored, M1 165/165 by contract
 >
 > **Next, in descending order of what they buy:**
 >   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
 >      what makes wave 316's pointee rule semantic rather than syntactic. Budget for auditing
 >      **436 `Ty::` match sites across four crates**; do not start by adding the variant. This is
->      the largest known-unfinished item in the project.
->   2. **A fifth census**, preferring a construct whose implementation arrived in pieces (wave
->      319's rule): `restrict`/`volatile`, compound literals, or bit-field access rules.
->   3. **Widen a channel rather than write a net.** Wave 323's measurement showed every
->      diagnostic-side rule is invisible to the differential channels — they compare answers on
->      programs gcc *accepts*. A channel that compared *diagnostics* against `gcc -pedantic-errors`
->      on generated programs would cover ground nothing currently does.
+>      the largest known-unfinished item in the project and the only census follow-on left.
+>   2. **Widen `generated_silence.rs`.** It is aimed at eight historical rejections; every new
+>      diagnostic rule should add its neighbourhood to `historically_awkward`, which makes the
+>      channel grow with the rules instead of ageing against them.
+>   3. **The other half of the same channel.** This one asserts silence on legal programs. The
+>      mirror — *a program gcc rejects should produce a diagnostic* — is what the four censuses did
+>      by hand, and would find missing checks rather than false positives. It cannot be a passing
+>      assertion yet (many rules are still absent), so it wants to be a **reported count** with a
+>      ratchet, not a pass/fail gate.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -900,6 +898,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 324 — a generated channel for sema's diagnostics
+>
+> Wave 323's measurement said every diagnostic-side rule sits outside all the differential
+> channels, because they compare *answers on programs gcc accepts*. `generated_silence.rs` closes
+> that: **a program gcc accepts produces no sema diagnostics**, over generated programs rather
+> than the twenty-header corpus.
+>
+> Three decisions, each of which a second attempt would get wrong:
+>   - **gcc arbitrates what counts as generated.** A shape the generator thinks legal and gcc
+>     rejects is a bug in the *generator*, so it is skipped and counted — otherwise every gap in
+>     one's own C arrives looking like an engine finding. `-pedantic-errors`, per wave 314.
+>   - **Types and values are generated in pairs.** Picking them independently spends most of the
+>     output on programs gcc rejects, and a channel that skips most of what it makes measures
+>     itself.
+>   - **The shapes are aimed.** Twelve hundred unadventurous programs found nothing; the aimed set
+>     is drawn from rejections this project actually shipped (307, 309, 311, 313, 315, 316, 321,
+>     322), because rules are dense there and that is where a legal program gets caught by mistake.
+>
+> **No defect — and the channel was measured rather than trusted.** Five historical false positives
+> re-injected; all five make it fail. One needed the generator fixed first: the shadowing shape
+> *read* the inner variable where the rule guards *writes*, so it passed with the bug restored.
+>
+> **Tuning:** `CHIERO_SILENCE_COUNT` (default 300) and `CHIERO_SILENCE_SEED` (default 0).
 >
 > ### 🟡 Wave 323 — the tier method's yield fell to zero
 >
@@ -2736,6 +2758,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Aim a generator at where the rules are dense** (wave 324). Twelve hundred randomly-assembled
+> legal programs produced no complaint; the same channel aimed at shapes drawn from rejections the
+> project had actually shipped caught all five re-injected defects. **A false positive lives where
+> rules crowd together**, not in the middle of the language — so a generator for one should be
+> built from the bug list, not from the grammar.
+>
+> **Let the oracle decide what your generator meant to say** (wave 324). A shape the generator
+> believes legal and gcc rejects is a bug in the generator, and counting those separately is what
+> stops one's own misunderstanding of C from arriving as an engine finding. One shape cost a fifth
+> of the output before it was noticed — `return v();` from a `void` function, which gcc accepts by
+> default and rejects under `-pedantic-errors`.
 >
 > **A net that caught nothing must be shown able to catch something** (wave 323). Thirty-eight
 > shapes passed, which is either good news or a broken net, and the two are indistinguishable
