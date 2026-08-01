@@ -2539,3 +2539,107 @@ fn taking_an_address_and_dereferencing_are_constrained() {
         );
     }
 }
+
+/// **The audit §9 asked for: does a diagnostic name the mistake it found?**
+///
+/// A ratchet asks only whether a program was rejected, so a green row can carry a false sentence —
+/// which is how wave 339 shipped three of them. This fixture asks the other question, of the
+/// engine's **most-used diagnostic**: `incompatible types in this conversion` was one sentence for
+/// at least five distinct mistakes, and gcc distinguishes all five *and* names the context.
+///
+/// The five are genuinely different things to fix:
+///
+///   - **A discarded qualifier is not an incompatible type.** `int *p = cp;` has compatible
+///     pointee types; what is wrong is the `const`, and a reader told "incompatible types" will
+///     look for a type mismatch that is not there. The message must name *which* qualifier, since
+///     `volatile` reaches the same place.
+///   - **A pointer meeting an integer** is a different error from **two pointers meeting**, and
+///     C's own wording separates them ("makes pointer from integer" against "incompatible pointer
+///     type").
+///   - **The direction matters**: `int *p = 1;` and `int x = p;` are not the same mistake.
+///
+/// The context — initialization, assignment, argument, return — is already carried as
+/// `Conversion`, so saying it costs nothing and is what turns a diagnostic into a location.
+#[test]
+fn a_conversion_diagnostic_names_the_mistake() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let says = |src: &str, want: &[&str]| {
+        let d = diags(src);
+        for w in want {
+            assert!(
+                d.iter().any(|m| m.contains(w)),
+                "`{src}`\n  should mention {w:?}\n  said {d:?}"
+            );
+        }
+    };
+
+    // **Which qualifier, and in which context.**
+    says(
+        "int f(const int *cp){ int *p = cp; return *p; }",
+        &["const", "initializ"],
+    );
+    says(
+        "int f(volatile int *vp){ int *p = vp; return *p; }",
+        &["volatile", "initializ"],
+    );
+    says(
+        "void g(int *); int f(const int *cp){ g(cp); return 0; }",
+        &["const", "argument"],
+    );
+    says(
+        "const int *g(void); int *f(void){ return g(); }",
+        &["const", "return"],
+    );
+
+    // **A pointer and an integer, in both directions.**
+    says(
+        "int f(void){ int *p = 1; return *p; }",
+        &["pointer", "integer"],
+    );
+    says(
+        "int f(int *p){ int x = p; return x; }",
+        &["integer", "pointer"],
+    );
+
+    // **Two pointers that do not match** — a different sentence from either of the above.
+    says(
+        "int f(int *p){ char *q = p; return *q; }",
+        &["incompatible pointer"],
+    );
+    says(
+        "void g(int *); int f(char *q){ g(q); return 0; }",
+        &["incompatible pointer", "argument"],
+    );
+
+    // **A record from a scalar** is none of those.
+    says(
+        "struct S { int a; }; struct S s = 1;",
+        &["invalid initializer"],
+    );
+
+    // **And one mistake stays one diagnostic.** `sizeof` of an undeclared name reported the name
+    // *and* claimed an incomplete type — the last of the poison cascades wave 339 started on.
+    for src in [
+        "int f(void){ return sizeof(nope); }",
+        "int f(void){ return (int)sizeof(nope) + (int)sizeof(nope2); }",
+    ] {
+        let d = diags(src);
+        assert!(
+            d.iter().all(|m| m.contains("not declared")),
+            "`{src}` should report only the undeclared name: {d:?}"
+        );
+    }
+
+    // A real incomplete type still says so — the guard is about poison, not about the rule.
+    says(
+        "struct I; int f(void){ return (int)sizeof(struct I); }",
+        &["incomplete"],
+    );
+}
