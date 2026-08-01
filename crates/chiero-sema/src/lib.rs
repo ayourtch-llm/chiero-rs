@@ -1499,7 +1499,18 @@ impl Cx<'_> {
                         ty: t,
                         defined: body.is_some(),
                         internal: storage.static_,
-                        deferring: storage.extern_,
+                        // **A function with no storage-class specifier is `extern`**
+                        // (C 6.2.2p5), which an *object* is not: a plain `int x;` at file scope is
+                        // a tentative definition with external linkage, so `static int x; int x;`
+                        // conflicts while `static int f(void); int f(void);` does not — the
+                        // second declaration adopts the internal linkage rather than contradicting
+                        // it. This arm shared the object's `storage.extern_` and so reported
+                        // three legal shapes.
+                        //
+                        // **The adoption runs one way only.** `int f(void); static int f(void);`
+                        // is still an error: `static` states internal linkage outright and never
+                        // defers, which is what `internal` above already says.
+                        deferring: !storage.static_,
                     };
                     self.check_redeclaration(name, now, self.ast.decl(id).span);
                 }
