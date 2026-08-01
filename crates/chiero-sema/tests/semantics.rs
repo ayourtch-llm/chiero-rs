@@ -2329,3 +2329,79 @@ fn a_numeric_constant_is_constrained() {
         );
     }
 }
+
+/// **C 6.4.4.4's escape-sequence constraints**, the four rows wave 335's census left and §9 has
+/// carried since — blocked because `strlit.rs` returns values and has no way to report.
+///
+/// Two things make this more than a table of characters:
+///
+///   - **The range depends on the element width.** `"\x1FF"` is a constraint violation and
+///     `L"\x1FF"` is perfectly legal, because the limit is the width of one element and the
+///     prefix decides that. A rule written against `unsigned char` rejects correct wide strings.
+///   - **`\e` is a GNU extension this project accepts on purpose**, exactly like `0b101` and the
+///     extended floating suffixes. gcc refuses it under `-pedantic-errors` and accepts it in the
+///     mode the corpus is compiled with, and `string_units` has decoded it since it was written.
+#[test]
+fn an_escape_sequence_is_constrained() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // 6.4.4.4p9: an empty character constant has no value to have.
+        "int f(void){ return ''; }",
+        // 6.4.4.4p1: the escape sequences are a closed set.
+        "const char *s = \"\\q\";",
+        "int f(void){ return '\\q'; }",
+        // 6.4.4.4p1: `\x` is followed by at least one hexadecimal digit.
+        "const char *s = \"\\x\";",
+        // 6.4.4.4p9: the value fits one element of the string.
+        "const char *s = \"\\777\";",
+        "const char *s = \"\\400\";",
+        "const char *s = \"\\x100\";",
+        "const char *s = \"\\x1FF\";",
+        // 6.4.3p1: a universal character name takes exactly four or eight digits.
+        "const char *s = \"\\u41\";",
+        "const char *s = \"\\U0000e9\";",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Every escape C defines, and the one gcc adds.
+        "const char *s = \"\\n\\t\\r\\f\\v\\b\\a\\?\\\\\\\"\\'\";",
+        "const char *s = \"\\e\";",
+        // The largest values that fit one narrow element.
+        "const char *s = \"\\377\";",
+        "const char *s = \"\\xFF\";",
+        "int f(void){ return '\\377'; }",
+        "int f(void){ return '\\xFF'; }",
+        // **The same escapes in a wide string, where they do fit.** This is the pair that makes
+        // the rule about width rather than about 255.
+        "#include <stddef.h>\nconst wchar_t *s = L\"\\x1FF\";",
+        "#include <stddef.h>\nconst wchar_t *s = L\"\\777\";",
+        // Well-formed universal character names, both lengths, and a literal non-ASCII character.
+        "const char *s = \"\\u00e9\";",
+        "const char *s = \"\\U000000e9\";",
+        "const char *s = \"é\";",
+        // Ordinary literals that must not be disturbed.
+        "const char *s = \"\";",
+        "const char *s = \"it's\";",
+        "int f(void){ return 'a'; }",
+        "int f(void){ return '\\''; }",
+        "int f(void){ return '\\\\'; }",
+        "int f(void){ return 'ab'; }",
+        "const char *s = \"\\0\\1\\01\\001\";",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
