@@ -487,30 +487,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 341) — 1522 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 342) — 1523 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** Wave 340 changed no ratchet
-> number, which is the point: **none of its findings were visible to one.**
+> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** Two waves running with the
+> ratchet unchanged — every finding in 340 and 341 was invisible to it.
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the diagnostic audit.** Wave 340 did the poison cascades (all sixteen
->      single-mistake programs now yield one diagnostic) and the *conversion* message. **~80 more
->      `self.error(` sites in sema have never been read against gcc's wording.** The two classes
->      found so far are worth looking for specifically: a message that describes a type the code
->      *invented* (poison), and one sentence standing for several distinct mistakes. Candidates by
->      inspection: `excess elements in initializer` (three sites, three different causes),
->      `initializer element is not a constant expression`, `subscripted value is not an array or
->      pointer`, `called object is not a function or function pointer`.
+>   1. **Finish the audit.** Waves 340–341 covered the poison cascades, the *conversion* message
+>      and the four §9 named. **Roughly seventy `self.error(` sites in sema are still unread.** The
+>      three failure classes found so far, in the order they have paid:
+>      **(a) the message describes a mechanism the program does not contain** — the cursor reported
+>      as an index, the poisoned pointee reported as incomplete; **(b) one sentence for several
+>      distinct mistakes**; **(c) the sentence contradicts a capability the engine has** — vectors
+>      are subscriptable and the message said otherwise.
+>      Unread candidates by inspection: `bit-field width exceeds the width of its type`,
+>      `array length is negative`, `switch quantity is not an integer`, `case label is not an
+>      integer constant expression`, and the four `is defined more than once` / linkage messages.
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **How to run the audit**, since wave 340 established the method: write the smallest program that
-> reaches the site, read chiero's sentence beside gcc's, and ask two questions — *does it name a
-> thing the program contains* (poison fails this) and *would a different mistake produce the same
-> words* (a shared sentence fails this). Assert on the **phrase**, not on the words in it: mutation
-> caught a fixture that accepted "makes an integer from a pointer" for the opposite error because
-> both words were present either way.
+> **Class (c) is the one worth hunting deliberately**, because it is a *test* for capability drift
+> rather than a wording problem: `subscripted value is not an array or pointer` denied something
+> the engine had supported for hundreds of waves, so the sentence and the code had silently
+> diverged. **A message that enumerates what is allowed is a claim about the implementation, and
+> nothing was checking it.** Wave 341's fixture pins both halves — the message mentions vectors,
+> and `v[0]` stays silent — so the pair cannot drift apart again.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2818,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A message that enumerates what is allowed is a claim about the implementation** (wave 341).
+> `subscripted value is not an array or pointer` denied vectors, which this engine has subscripted
+> for hundreds of waves — the sentence and the code had drifted apart with nothing checking the
+> pair. **When a diagnostic lists the accepted cases, test the list against the engine**: assert
+> the message *and* that each listed case is silent, or the two will separate again.
+>
+> **A cursor is not a fact about the program** (wave 341). The initializer walk reports `at`, and
+> when it ran past the end it said "initializer index is outside the array" for
+> `int a[2] = {1,2,3};` — a program with no index in it. **Before naming a quantity in a
+> diagnostic, ask whether the source contains it**; internal positions, invented types and default
+> values are the three that keep escaping into messages.
 >
 > **Assert the phrase, not the words in it** (wave 340). A fixture checking that a message mentions
 > `"pointer"` and `"integer"` passed with the two arms swapped, because both words appear whichever
