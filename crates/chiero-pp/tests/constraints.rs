@@ -129,6 +129,93 @@ fn defined_is_not_a_macro_name() {
     }
 }
 
+/// **A directive takes the tokens it takes, and no more** — C 6.10p1's syntax, which gcc reports
+/// as "extra tokens at end of #... directive".
+///
+/// §9 held these back for two waves because `#endif FOO` was a real idiom before comments were
+/// reliable, and shipping the rule blind would mean a false positive on every old header. **The
+/// corpus answers it: zero occurrences** across glibc, gcc's own headers, the VPP test corpus and
+/// all 2,476 `.c`/`.h` files in the VPP tree. So the check is safe, and the count is the reason to
+/// believe it rather than a hope.
+///
+/// The rules come in two shapes with one guard between them:
+///
+///   - **`#endif` and `#else` take nothing**; `#ifdef`, `#ifndef` and `#undef` take exactly one
+///     macro name — required, so a bare one is its own error; `#line` takes a number and
+///     optionally a file string.
+///   - **None of it is diagnosed in skipped text.** `#if 0 / #if 1 / #endif junk / #endif` is
+///     accepted by gcc, because an inactive region is scanned for nesting and not for syntax.
+///     That is wave 333's `parent_active` rule again, and it is the only thing separating these
+///     rules from a false positive on every `#if 0`-ed block in the world.
+#[test]
+fn a_directive_takes_no_extra_tokens() {
+    for bad in [
+        "#if 1\n#endif junk\nint x = 1;\n",
+        "#if 0\n#else junk\n#endif\nint x = 1;\n",
+        "#define K 1\n#undef K junk\nint x = 1;\n",
+        "#ifdef A B C\n#endif\nint x = 1;\n",
+        "#ifndef A B\n#endif\nint x = 1;\n",
+        "#line 5 \"f.c\" junk\nint x = 1;\n",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: {bad:?}");
+    }
+
+    for good in [
+        // A comment is not a token by the time a directive is read.
+        "#if 1\n#endif /* done */\nint x = 1;\n",
+        // **Skipped text is scanned for nesting, not for syntax.**
+        "#if 0\n#if 1\n#endif junk\n#endif\nint x = 1;\n",
+        "#if 0\n#if 0\n#else junk\n#endif\n#endif\nint x = 1;\n",
+        "#if 0\n#undef K junk\n#endif\nint x = 1;\n",
+        "#if 0\n#ifdef A B C\n#endif\n#endif\nint x = 1;\n",
+        // The well-formed spellings of each.
+        "#define K 1\n#undef K\nint x = 1;\n",
+        "#ifdef A\n#endif\nint x = 1;\n",
+        "#ifndef A\n#endif\nint x = 1;\n",
+        "#line 5 \"f.c\"\nint x = 1;\n",
+        "#line 5\nint x = 1;\n",
+        // `#elif` and `#if` take an *expression*, so more than one token is the point.
+        "#if 0\n#elif 1 + 1\n#endif\nint x = 1;\n",
+        "#if 1 + 1 > 1\nint x = 1;\n#endif\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: {good:?} -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **`#ifdef`, `#ifndef` and `#undef` need a macro name** — C 6.10.1p1, 6.10.3.5p1.
+///
+/// Separate from the rule above because it fails the other way: not a token too many but none at
+/// all, and gcc says so in different words ("no macro name given in #... directive"). A single
+/// "wrong number of tokens" check would report the same sentence for both, and 023 §9 asks for a
+/// report a person can act on.
+#[test]
+fn a_conditional_on_a_macro_needs_its_name() {
+    for bad in [
+        "#ifdef\n#endif\nint x = 1;\n",
+        "#ifndef\n#endif\nint x = 1;\n",
+        "#undef\nint x = 1;\n",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: {bad:?}");
+    }
+    for good in [
+        "#ifdef A\n#endif\nint x = 1;\n",
+        "#undef NOPE\nint x = 1;\n",
+        // ...and not in skipped text, for the same reason as above.
+        "#if 0\n#ifdef\n#endif\n#endif\nint x = 1;\n",
+        "#if 0\n#undef\n#endif\nint x = 1;\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: {good:?} -> {:?}",
+            diags(good)
+        );
+    }
+}
+
 /// One C 6.10 constraint: a name for the report, and a program that violates it.
 const VIOLATIONS: &[(&str, &str)] = &[
     (
