@@ -1155,3 +1155,71 @@ fn the_conversion_census() {
         );
     }
 }
+
+/// **Writing through a pointer to `const`.**
+///
+/// §9's first front, taken in half. The other half — `int *p = cp;` discarding the qualifier —
+/// needs *qualified types*, and `Ty` has 436 match sites across four crates: a `Ty::Const`
+/// wrapper would make every one of them a silently-wrong branch, which is the failure class this
+/// project keeps finding. That is recorded as still blocked, with the measurement.
+///
+/// This half needs no type-system change and is the half that matters to this engine: `*p = 1`
+/// through a `const int *` is a **write to a read-only object**, which is undefined behaviour
+/// rather than a matter of taste. Wave 311 gave `const` to objects; this gives it to pointees, and
+/// the two are deliberately separate sets because C keeps them separate.
+///
+/// The accepted list is where the two `const`s are told apart:
+///
+///   - **`int *const p` is a const *pointer*** — `*p = 1` is legal and `p = 0` is not, which is
+///     wave 311's rule. `const int *p` is the reverse. A single notion of "p is const" gets one
+///     of them wrong whichever way it is written.
+///   - **`const int **p; *p = 0;` is legal**: `*p` has type `const int *`, which is not itself
+///     const-qualified. Only the innermost pointee is read-only, and one level of indirection is
+///     one level.
+///   - **Reading is always allowed**, which is the entire purpose of a pointer to const —
+///     `memcpy`'s `const char *src` is the shape, and case 13 is exactly that.
+#[test]
+fn a_write_through_a_pointer_to_const_is_rejected() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(const int *p){ *p = 1; return *p; }",
+        "int f(const int *p){ (*p)++; return *p; }",
+        "int f(const int *p){ *p += 1; return *p; }",
+        // A parameter declared as an array of const is a pointer to const.
+        "int f(const int p[]){ p[0] = 1; return p[0]; }",
+        // A member of a const-qualified object reached through a pointer.
+        "struct S { int m; }; int f(const struct S *s){ s->m = 1; return s->m; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Reading through it is the point of it.
+        "int f(const int *p){ return *p; }",
+        "int f(const int *p){ int x = *p; return x; }",
+        "struct S { int m; }; int f(const struct S *s){ return s->m; }",
+        "int f(char *d, const char *s){ *d = *s; return *d; }",
+        // A non-const pointee is writable.
+        "int f(int *p){ *p = 1; return *p; }",
+        // **The other `const`**: the pointer is read-only, the pointee is not.
+        "int f(int *const p){ *p = 1; return *p; }",
+        // One level of indirection is one level: `*p` here is `const int *`, not `const int`.
+        "int f(const int **p){ *p = 0; return **p; }",
+        // A const array may still be read.
+        "int f(void){ const int a[2] = {1,2}; return a[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
