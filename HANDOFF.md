@@ -487,33 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 334) — 1512 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 335) — 1514 tests, 4 ignored, M1 165/165 by contract
 >
-> **Two ratchets now.** `chiero-sema` at `FLOOR = 104` of 104, and `chiero-pp` at **18 of 21** —
-> new in wave 333, in `crates/chiero-pp/tests/constraints.rs`, and the only one with a non-empty
-> queue.
+> **Both ratchets are empty queues.** `chiero-sema` 104 of 104, `chiero-pp` 27 of 27. Neither is a
+> work list any more; both are regression gates.
 >
 > **Next, in descending order of what they buy:**
->   1. **The three extra-token rules**, named in the pp ratchet and printed when it fails: tokens
->      after `#endif`, `#else` and `#undef`. They are `-pedantic-errors` diagnostics that **old
->      headers genuinely trip over** — `#endif FOO` was the idiom before comments were reliable —
->      so **grep the VPP and glibc corpus first** and be ready to declare the rule rather than ship
->      a false positive on real headers. That check is the work; the rules themselves are three
->      lines each.
->   2. **Run the census on what remains**: C 6.5.3.2's address-of and indirection constraints, and
->      6.8's statement constraints beyond wave 312's. Both sema-side. Four runs have now produced
->      thirty-odd rules for four waves.
+>   1. **Census `chiero-parse` and `chiero-lex`** — the two crates left with a differential or
+>      corpus channel and **no constraint list**, which is where wave 333's rule says the findings
+>      are. The preprocessor was in exactly that position and gave up eleven rules in one run. For
+>      the parser the neighbourhood is C 6.7.6's declarator syntax and 6.8's statement syntax; for
+>      the lexer it is 6.4's token constraints — an unterminated character constant, a `'` with no
+>      characters, an integer suffix that is not one (`1z`), a `.` with no digits.
+>   2. **Sema's remaining neighbourhoods**: C 6.5.3.2's address-of and indirection constraints, and
+>      6.8's statement constraints beyond wave 312's.
 >   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
 >      pointee would tell 021 a store through it is UB. A checker question — cost it against
 >      023 §7 first.
 >
-> **What wave 333 says about where to look next:** the preprocessor had a differential channel and
-> no constraint list, and the census found **eleven** missing rules — more than any sema run,
-> against a crate with three hundred waves of work behind it. A differential channel grades what a
-> program *computes*; it cannot see a program that should have been refused. **When a component has
-> one kind of channel and not the other, the missing kind is where the findings are.** By that test
-> the remaining candidates are `chiero-lex` and `chiero-parse`, neither of which has a constraint
-> list either.
+> **Wave 334 is what a §9 warning is for.** It said the corpus check, not the rule, was the work,
+> and the rule was three lines each. The check took one command and returned **zero across 2,476
+> files**, which is why the suite passed first run instead of drowning the corpus gate in false
+> positives. **A number from the corpus is the difference between shipping a constraint and hoping
+> about one** — and either answer would have been useful, since a non-zero count would have meant
+> declaring the limit instead.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2819,6 +2816,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **"Active" is three states, not two, wherever conditional text is involved** (wave 334). A
+> directive can sit in a live region with a live branch, in a live region with a *dead* branch, or
+> inside skipped text — and `#if 0 / #endif junk` is an error while the same line nested inside
+> another `#if 0` is not. Every hand-written case happened to have a live branch, so keying on the
+> branch instead of the region survived mutation. **When a rule is guarded on activity, write the
+> dead-branch case explicitly**; it is the one the obvious fixture misses.
+>
+> **A `python` edit script that asserts before writing loses every edit in it** (wave 334, and
+> waves 330 and 317). It happened again — three edits, the second anchor stale after `cargo fmt`,
+> and the ratchet then ran green at the *old* count, which reads like success. **One anchor per
+> script, and `grep` that the edit landed.** A line-index edit is safer than a text anchor after
+> `fmt`, but it silently eats neighbouring lines: the same wave deleted a `const` declaration that
+> way and only the compiler noticed.
 >
 > **A component with only one kind of channel is where the findings are** (wave 333). `chiero-pp`
 > had a differential channel and no constraint list, and the first census against it found eleven
