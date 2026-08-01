@@ -1093,6 +1093,27 @@ fn the_conversion_census() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 
+    // **Contract 20: a poisoned operand is one diagnostic, not two.** An expression whose type is
+    // already `Ty::Error` has been reported by whatever made it so, and converting it must not add
+    // a second complaint. Only an exact count can falsify that — every case here is "diagnosed"
+    // either way.
+    for (src, want) in [
+        // An undeclared name types as `Ty::Error`, and assigning it to a *pointer* is what
+        // reaches the exemption: the check only runs when one side is pointer-like, so an
+        // incomplete struct — a record rather than poison since wave 304 — leaves through the
+        // arithmetic door before the poison is ever consulted.
+        ("int f(void){ int *p = nosuch; return p != 0; }", 1),
+        ("void g(int *); int f(void){ g(nosuch); return 0; }", 1),
+        ("int *f(void){ return nosuch; }", 1),
+    ] {
+        assert_eq!(
+            diags(src).len(),
+            want,
+            "one bad declaration is one diagnostic: `{src}` -> {:?}",
+            diags(src)
+        );
+    }
+
     for good in [
         // A cast says the programmer meant it.
         "int f(void){ int *p = (int *)1; return p != 0; }",
