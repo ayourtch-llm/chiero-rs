@@ -487,29 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 343) — 1524 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 344) — 1525 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 133 of 133, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 136 of 136, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly sixty-five `self.error(` sites in sema still unread. Wave 342
->      added a **fourth method** that outperformed the other three: instead of comparing a message
->      to gcc's phrasing, **enumerate the cases the message claims to cover and try each one.**
->      That is what found `_Bool b : 2`, a missing *rule* rather than a wording. Apply it to any
->      message naming a type or a category: `switch quantity is not an integer` (enum? `_Bool`?
->      `char`? — checked, all fine), `case label is not an integer constant expression`,
->      `arithmetic on a pointer to an incomplete type`, `a function may not return an array or a
->      function`, and the linkage family.
+>   1. **Finish the audit** — roughly sixty `self.error(` sites in sema still unread. The
+>      enumerate-the-category method has now paid twice running (`_Bool b : 2`, and five of seven
+>      pointer-arithmetic spellings), and both findings were **missing rules** rather than
+>      wordings. Remaining messages that name a category, and so are checklists:
+>      `case label is not an integer constant expression` (literal, enum, `sizeof`, `_Alignof`,
+>      character constant, arithmetic on those), `initializer element is not a constant expression`
+>      (same list plus `&global` and a string literal), `switch quantity is not an integer`
+>      (checked — complete), and the linkage family (`static` after non-`static`, `extern` after
+>      `static`, redefinition, conflicting types — four messages over one relation).
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **`declaring` is a side channel, and it needs care.** It carries the declarator name into
-> `ty_of`, which structurally has none. Any *other* walk that builds a type for a differently-named
-> thing must set its own — the member walk does, and it had to be made to after the mechanism
-> reported `struct S { int bad[-1]; } x;` against `x`. **If you add a third such walk, set and
-> restore it there too**, and write the nested case in the same edit; a mutant on the restore is
-> what caught it, not a fixture.
+> **The reason the method keeps working is worth stating.** A message naming a category was written
+> when *one* member of that category was implemented, and the sentence quietly claims the rest.
+> Nothing re-reads it when a second member is added elsewhere — `p += n` is typed in a different
+> arm from `p + n`, and `_Bool` reaches the width check by the same path as `int`. **The
+> enumeration is a search for members of a set the code never had in one place.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2815,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **One rule spread across four grammar arms will be implemented in one of them** (wave 343).
+> Pointer arithmetic has seven spellings and C types them in four different places; two were
+> checked. The give-away is a *flag* that routes around a shared path — `pointer_displacement`
+> exists precisely so a compound assignment never reaches the binary arm, which is also why the
+> check there never saw it. **When a rule has a shared predicate, grep for every arm that can
+> produce the shape**, not every arm that mentions the rule.
+>
+> **Decide which half to blame before shipping, not after** (wave 343). `p[i]` on an incomplete
+> pointee fails as arithmetic *and* as a dereference; only the missing stride is the reason.
+> Waves 339–341 found three such messages after the fact — this one was chosen deliberately and
+> pinned with a mutant that swaps the two sentences.
 >
 > **Enumerate the cases a message claims to cover, and try each one** (wave 342). Comparing
 > `bit-field width exceeds the width of its type` to gcc's phrasing found nothing; writing a
