@@ -487,33 +487,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 328) — 1501 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 329) — 1502 tests, 4 ignored, M1 165/165 by contract
 >
-> **The constraint queue is down to one item**, and it is the hard one. The ratchet
-> (`FLOOR = 63`) fails if any of the sixty-three regresses.
+> **The rejection ratchet's queue is empty.** `FLOOR = 74` and sema rejects 74 of 74. It is now a
+> regression gate rather than a work list, so a wave that wants a diagnostic-side target has to
+> **refill it with a new census** — the old one is exhausted.
 >
 > **Next, in descending order of what they buy:**
->   1. **Qualified types.** `discard const` is now the *only* violation below the line, and the
->      same change makes wave 316's pointee rule semantic rather than syntactic. It is the largest
->      unfinished item in the project. Budget for auditing **436 `Ty::` match sites across four
->      crates**; do not start by adding the variant — plan the audit first, then add it.
->   2. **The rejection list is no longer the queue.** Waves 307–327 emptied it down to one entry,
->      so the next wave that wants a diagnostic-side target must run a *new* census rather than
->      read the old one. C 6.7's declaration constraints and 6.5's remaining operator constraints
->      are the untouched neighbourhoods; the method is unchanged — 30 programs, half legal,
->      verdicts from gcc under `-pedantic-errors`.
+>   1. **A new constraint census.** C 6.7's declaration constraints and 6.5's remaining operator
+>      constraints are the untouched neighbourhoods. The method is unchanged and has now paid six
+>      waves running: 30 programs, half of them **legal**, verdicts from **gcc** under
+>      `-pedantic-errors`, never from judgement. The legal half is not optional — it is what found
+>      three false positives no other test could see.
+>   2. **Qualifiers reach lowering and CIR not at all.** Sema now models them; `chiero-lower` still
+>      throws them away, which is correct for representation and wrong for anything that wants to
+>      reason about `const` data — a `const` global is already emitted as `global const`, but a
+>      `const` *pointee* tells 021 that a store through it is UB. That is a checker question, so
+>      cost it against 023 §7 before starting.
 >   3. **Widen both generated channels with every new rule** — its neighbourhood into
->      `historically_awkward`, its violation into `VIOLATIONS` — so the two grow with the rules
->      rather than ageing against them. Wave 327 added two of each.
+>      `historically_awkward`, its violation into `VIOLATIONS`. Waves 327 and 328 added five and
+>      eleven respectively.
 >
-> **Wave 327 closed the VLA-scope rule**, and the useful part is why it took two waves. The rule is
-> not "a jump may not enter a block"; it is about which *declarations* a jump crosses. Three
-> gcc-verified cases forced that: jumping into a block declaring a non-VLA is legal, jumping past a
-> VLA in a flat body with no block at all is illegal, and jumping from after the declaration is
-> legal. A stack of open variably-modified scopes sampled at each label and each `goto` is the
-> smallest thing that gets all three right. **Wave 326 was right to defer it** rather than ship an
-> approximation, and that is the transferable part: an approximation that rejects correct code is
-> worse than a declared gap, per 020 §5.
+> **Wave 328's audit is the part worth reusing.** §9 had budgeted "436 `Ty::` match sites across
+> four crates" for qualified types and named it the project's largest remaining effort. Measured,
+> it was 274 sites across *two* — the other two match `CTy`, a different type — and **none of them
+> wanted the qualifier at all**, because a qualified `int` is laid out, promoted and lowered
+> exactly like an `int`. What actually changed meaning was `TyId` equality: four sites. The variant
+> the plan assumed became a side table, and the effort took one wave instead of the several it was
+> costed at. **The estimate was wrong in the direction that matters most — it named the wrong
+> thing to count.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2819,6 +2821,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Audit the thing that changes meaning, not the thing that mentions the type** (wave 328). The
+> qualified-types effort was costed at 436 match sites and came in at four, because the sites that
+> *mention* a type are not the sites that *depend on its identity*. Before paying for a
+> representation change, ask which code would give a different answer — usually a far smaller set
+> than the code that pattern-matches on it, and the gap between the two is where a wrong estimate
+> hides. A side table beside the interning key changed nothing for 274 readers.
+>
+> **A rule stated only in the negative is half a rule** (wave 328). "May not discard a qualifier"
+> landed and nine corpus headers went red inside a minute: C also says where qualifiers *combine*
+> (6.5.15p6, the conditional operator), and without that half the new check fires on correct code.
+> **When adding a constraint about a property, find the paragraph that says how that property
+> propagates**, and expect the corpus to be the thing that asks for it.
+>
+> **A representation change needs the channels that measure *silence*, not just the ones that
+> measure answers** (wave 328). Three regressions came from three different places — the
+> differential oracle (`_Generic` selecting `default`), a golden (a vacuous `bitcast i32 to i32`),
+> and contract 11's corpus walk (twenty `u64` against `u64`) — and none of them from the fixture
+> the wave was written against. A change to what a type *is* touches everything downstream of
+> typing, so the gate is the whole suite, run early and often, not the new test.
 >
 > **`error: test failed` matches a grep for a compile error** (wave 327). Three mutants were scored
 > NO-COMPILE that were in fact killed by a failing assertion, because cargo prints `error: test
