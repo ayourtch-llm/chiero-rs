@@ -4576,10 +4576,17 @@ impl Cx<'_> {
             }
             StmtKind::Switch { cond, body } => {
                 let c = self.type_expr(cond);
-                // **Any integer type, not `int`** (C 6.8.4.2p1). `switch(c)` on a `char` and
-                // `switch(u)` on an `unsigned` are both legal; the promotion below happens *after*
-                // this rule rather than instead of it, so testing the promoted type would be
-                // testing the wrong thing. `Ty::Error` stays silent — contract 20.
+                // **Any integer type, not `int`** (C 6.8.4.2p1). `switch(c)` on a `char`,
+                // `switch(u)` on an `unsigned` and `switch(n)` on a `long` are all legal, so the
+                // test is on the type's *category* — writing it against `int` rejects all three.
+                //
+                // Reading the operand's own type rather than the promoted one is **measured
+                // equivalent**: promotion only widens narrow integers, which are `Ty::Int` before
+                // and after, and it does not turn a `double` or a pointer into one. It is written
+                // this way because the rule is about what the program said, but a reader moving it
+                // after `promote_node` will not be caught.
+                //
+                // `Ty::Error` and incomplete types stay silent — contract 20.
                 let cty = self.out.typed.ty_of(c);
                 if !matches!(self.out.types[cty.0 as usize], Ty::Int { .. })
                     && !is_incomplete(&self.out, cty)

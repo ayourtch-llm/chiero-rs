@@ -1381,6 +1381,25 @@ fn the_switch_census() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 
+    // **Contract 20: a poisoned controlling expression is one diagnostic, not two.** An
+    // undeclared name has been reported where it was used; the switch rule must not add a second
+    // complaint about the type it could not determine. Only a count can see this — both are
+    // "diagnosed" either way.
+    for (src, want) in [
+        (
+            "int f(void){ switch(nosuch){ case 1: return 1; } return 0; }",
+            1,
+        ),
+        ("int f(void){ switch(nosuch){ default: return 1; } }", 1),
+    ] {
+        assert_eq!(
+            diags(src).len(),
+            want,
+            "one bad expression is one diagnostic: `{src}` -> {:?}",
+            diags(src)
+        );
+    }
+
     for good in [
         // **Any integer type**, not `int` — the promotion happens after the rule, not instead
         // of it.
@@ -1394,6 +1413,11 @@ fn the_switch_census() {
         // A switch with no labels, and one with only a default, are both legal.
         "int f(int n){ switch(n){ } return 0; }",
         "int f(int n){ switch(n){ default: return 1; } }",
+        // **Not covered, and deliberately so:** `switch(*p)` on a `struct I *` with `I`
+        // incomplete. gcc rejects it and this accepts it — but the fault is the *dereference of
+        // an incomplete type*, not the switch, and reporting it here would name the wrong thing.
+        // It belongs with the completeness rules, where nothing currently checks a `Deref`.
+        "struct I; int f(struct I *p){ switch(*p){ case 1: return 1; } return 0; }",
         // `_Generic`, which this census found already correct.
         "int f(int n){ int x = _Generic(n, int: 1, default: 2); return x; }",
         "int f(double d){ int x = _Generic(d, int: 1, default: 2); return x; }",
