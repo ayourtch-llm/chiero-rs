@@ -1230,3 +1230,81 @@ fn a_write_through_a_pointer_to_const_is_rejected() {
         );
     }
 }
+
+/// **Wave 314's two declared misses, closed.**
+///
+/// The initializer census left two things unchecked and said so. This is both.
+///
+/// **Brace elision.** `int a[2][2] = {1,2,3,4}` is legal and `{1,2,3,4,5}` is not, and wave 314
+/// declined to distinguish them: detecting elision was easy, distributing correctly was not, so
+/// the walk stopped counting entirely. It now counts *scalars* instead of items — the aggregate's
+/// total capacity against the flat list's length — which answers the question without
+/// distributing anything. `struct S { int p[2]; int q; }; struct S s[2] = {…}` holds six.
+///
+/// **A constant expression.** Wave 314 narrowed the file-scope rule to "the initializer contains a
+/// call", because `eval` and `addr_of` miss things C does call constant — a function designator,
+/// `&arr[1]`, a string. The rule now asks the question the other way round: what *disqualifies* an
+/// initializer is **reading the value of a non-`const` object**. Everything else here — an array
+/// name, a function name, an address, a string, an enumerator, `sizeof` — is an address or a
+/// constant and passes.
+///
+/// `static const int c = 5; int g = c;` is in the accepted list because **gcc accepts it**, even
+/// under `-pedantic-errors`. Strict C says a `const` object is not a constant expression; gcc
+/// folds it, and a rule that rejected it would reject real code. Wave 311's `read_only` set is
+/// exactly the information needed, which is why this is a lookup rather than a new pass.
+#[test]
+fn wave_314s_two_declared_misses() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // One scalar too many for a flat, brace-elided list.
+        "int a[2][2] = {1,2,3,4,5};",
+        "struct S { int p[2]; int q; }; struct S s[2] = {1,2,3,4,5,6,7};",
+        // Reading a non-`const` object is not a constant expression.
+        "int x; int g = x;",
+        "int x; int *p; int *q = p;",
+        "int x; int a[2] = {1, x};",
+        // Still caught, from wave 314.
+        "int f(void); int g = f();",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Exactly full, and under-full, with braces elided.
+        "int a[2][2] = {1,2,3,4};",
+        "int a[2][3] = {1,2,3};",
+        "struct S { int p[2]; int q; }; struct S s[2] = {1,2,3,4,5,6};",
+        // Mixed forms stay unchecked rather than wrongly checked: `{{1,2},3,4}` is legal, and
+        // counting scalars against capacity cannot see where the first item stops.
+        "int a[2][2] = {{1,2},3,4};",
+        "int a[2][2] = {{1,2},{3,4}};",
+        // Address constants of every spelling, which the old `contains_call` rule reached only
+        // by accident and the new one has to name.
+        "int a[4]; int *p = a;",
+        "int a[4]; int *p = &a[1];",
+        "int f(void); int (*fp)(void) = f;",
+        "int y; int *p = &y;",
+        "char *s = \"abc\";",
+        // Arithmetic, enumerators and `sizeof` are constants.
+        "int g = 1 + 2 * 3;",
+        "enum E { A = 7 }; int g = A;",
+        "int g = (int)(long)0;",
+        "int g = sizeof(int);",
+        // **gcc folds a `const` object**, even under `-pedantic-errors`.
+        "static const int c = 5; int g = c;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
