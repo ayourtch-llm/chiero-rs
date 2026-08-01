@@ -5660,18 +5660,28 @@ fn an_extended_floating_suffix_names_its_type() {
     agree("return (int)(1.0f64x / 3.0f64x * 3.0f64x + 0.5);");
     agree("return (int)((0.5f64x + 0.25f64x) * 4);");
     agree("return _Generic(0.0f128, float:1, double:2, long double:3, default:9);");
-    // **The `x` forms and `_Float32`/`_Float64` are absent, and that is a declared limit rather
-    // than an oversight.** gcc selects `default` for `_Generic(0.0f32, float: …)` and for
-    // `0.0f64x`; this engine selects `float` and `long double`, because `FloatKind` has no variant
-    // to tell `_Float32` from `float` or `_Float64x` from `long double`. **It never did**: a
-    // *declared* `_Float32` has mapped to `FloatKind::F32` since the type existed, so the literal
-    // suffix did not introduce this. Separating them needs a `FloatKind` variant reaching CIR,
-    // lowering and the executor, which §9 carries.
-    //
-    // The three spellings above are exactly the ones whose kinds *are* distinct here, so they
-    // still hold the rule that a suffixed literal is not one of the three standard types — and
-    // every `sizeof` and `_Alignof` case above is right regardless, which is what the corpus
-    // depends on.
+    // **`_Float32` and `_Float64` are distinct from `float` and `double`** (C 6.2.5, F.10), which
+    // wave 336 recorded as a declared limit and wave 354 closed. gcc selects `default` for
+    // `_Generic(0.0f32, float: …)`, and so does this engine now.
+    agree("return _Generic(0.0f32, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f64, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f32x, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0f32, _Float32:1, float:2, default:9);");
+    agree("return _Generic(0.0f64, _Float64:1, double:2, default:9);");
+    agree("_Float32 a = 1; return _Generic(a, _Float32:1, float:2, default:9);");
+    agree("_Float64 a = 1; return _Generic(a, _Float64:1, double:2, default:9);");
+    // **The conversions, which are what makes this more than a naming change.** An extended type
+    // outranks the standard type of its own width and is outranked by the wider one, so
+    // `_Float32 + float` is `_Float32` and `_Float32 + double` is `double`.
+    agree("_Float32 a = 1; float b = 2; return _Generic(a + b, _Float32:1, float:2, default:9);");
+    agree("_Float32 a = 1; double b = 2; return _Generic(a + b, double:1, _Float32:2, default:9);");
+    agree("_Float32 a = 1; return _Generic(a + 1.0f, _Float32:1, float:2, default:9);");
+    agree("_Float32 a = 1; return _Generic(+a, _Float32:1, float:2, default:9);");
+    agree("_Float64 a = 1; double b = 2; return _Generic(a + b, _Float64:1, double:2, default:9);");
+    // ...and their *values* and widths are unchanged, which is what the corpus depends on.
+    agree("_Float32 a = 2; float b = 3; return (int)(a * b);");
+    agree("_Float64 a = 2; double b = 3; return (int)(a + b);");
+    agree("return (int)sizeof(_Float32) + (int)sizeof(_Float64);");
     agree("return _Generic(0.0, float:1, double:2, long double:3, default:9);");
     agree("return _Generic(0.0f, float:1, double:2, long double:3, default:9);");
     agree("return _Generic(0.0l, float:1, double:2, long double:3, default:9);");
