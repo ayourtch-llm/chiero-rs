@@ -349,6 +349,12 @@ pub enum DeclKind {
     Typedef {
         name: Symbol,
         ty: TypeId,
+        /// The other storage-class specifiers written beside `typedef`.
+        ///
+        /// **Kept because `typedef` is itself one** (C 6.7.1p1), so any of these being set is a
+        /// violation. The node dropped them until wave 333, which is why the multiple-storage-class
+        /// rule could not see `typedef static int T;` — the `static` was gone before sema looked.
+        storage: Storage,
     },
     Func {
         name: Symbol,

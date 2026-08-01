@@ -220,6 +220,15 @@ struct Conditional {
     parent_active: bool,
     active: bool,
     taken: bool,
+    /// Where the `#if` that opened this frame is, so an unterminated one can point at it.
+    ///
+    /// **The opening span, not the end of the file.** "unterminated `#if`" reported at EOF names
+    /// the one place in the file that is certainly not the mistake; 023 §9's rule about a report
+    /// a person can act on applies to *where* as much as to what.
+    opened: Span,
+    /// Whether an `#else` has been seen, so a second one can be reported. Distinct from `taken`,
+    /// which says a *branch* was taken and is already true for `#if 1` before any `#else`.
+    saw_else: bool,
 }
 
 #[derive(Clone)]
@@ -485,6 +494,16 @@ impl Engine {
             i = end;
         }
         output.extend(self.expand(ordinary));
+        // **Every `#if` opened in this file is closed in it** (C 6.10.1). Checked per group
+        // rather than globally, because a conditional may not span an `#include`: the stack is
+        // local to this call, so a header that opens one and does not close it is reported
+        // against the header rather than against whatever came after.
+        for frame in &conditionals {
+            self.diagnostics.push(Diagnostic {
+                span: frame.opened,
+                message: "unterminated `#if`".into(),
+            });
+        }
         output
     }
 
@@ -813,11 +832,22 @@ impl Engine {
         match directive {
             Some("if") => {
                 let parent_active = active;
+                // **C 6.10.1p1: `#if` has an expression.** Only when the branch is live: an
+                // inactive `#if` inside a skipped region is not evaluated at all, and 012's rule
+                // is that skipped text is lexed but not diagnosed.
+                if parent_active && line.len() <= 2 {
+                    self.diagnostics.push(Diagnostic {
+                        span: line[0].token.span,
+                        message: "`#if` with no expression".into(),
+                    });
+                }
                 let value = parent_active && self.eval_if(&line[2..], current, loader);
                 conditionals.push(Conditional {
                     parent_active,
                     active: value,
                     taken: value,
+                    opened: line[0].token.span,
+                    saw_else: false,
                 });
             }
             Some("ifdef" | "ifndef") => {
@@ -835,6 +865,8 @@ impl Engine {
                     parent_active,
                     active: value,
                     taken: value,
+                    opened: line[0].token.span,
+                    saw_else: false,
                 });
             }
             Some("elif") => {
@@ -873,17 +905,45 @@ impl Engine {
                 });
             }
             Some("else") => {
-                if let Some(frame) = conditionals.last_mut() {
-                    frame.active = frame.parent_active && !frame.taken;
-                    frame.taken = true;
+                match conditionals.last_mut() {
+                    Some(frame) => {
+                        // **C 6.10.1p4: one `#else` per group.** `saw_else` and not `taken`:
+                        // `#if 1` sets `taken` before any `#else` is written, so keying on it
+                        // would report the first one.
+                        let again = frame.saw_else;
+                        frame.saw_else = true;
+                        frame.active = frame.parent_active && !frame.taken;
+                        frame.taken = true;
+                        if again {
+                            self.diagnostics.push(Diagnostic {
+                                span: line[0].token.span,
+                                message: "`#else` after `#else`".into(),
+                            });
+                        }
+                    }
+                    None => self.diagnostics.push(Diagnostic {
+                        span: line[0].token.span,
+                        message: "`#else` without `#if`".into(),
+                    }),
                 }
             }
             Some("endif") => {
-                conditionals.pop();
+                if conditionals.pop().is_none() {
+                    self.diagnostics.push(Diagnostic {
+                        span: line[0].token.span,
+                        message: "`#endif` without `#if`".into(),
+                    });
+                }
             }
             _ if !active => {}
             Some("define") => self.define(line),
             Some("undef") => {
+                if line.get(2).is_some_and(|t| t.text == "defined") {
+                    self.diagnostics.push(Diagnostic {
+                        span: line[2].token.span,
+                        message: "`defined` cannot be used as a macro name".into(),
+                    });
+                }
                 if let Some(name) = line.get(2)
                     && let Some(index) = self.by_name.remove(&name.text)
                 {
@@ -1004,6 +1064,91 @@ impl Engine {
         value.truth()
     }
 
+    /// C 6.10.3's constraints on a macro definition, checked where the parts are still separate.
+    ///
+    /// Four rules, and the reason they are one function is that each needs a different piece of
+    /// the definition — the parameter list, the replacement list, and whether the macro is
+    /// function-like at all — which are assembled into a `MacroDef` immediately after this and are
+    /// harder to ask about there.
+    fn check_macro_constraints(
+        &mut self,
+        name_tok: &Tok,
+        function_like: bool,
+        params: &[String],
+        variadic_name: &Option<String>,
+        std_variadic: bool,
+        body: &[Tok],
+    ) {
+        let at = |t: &Tok| t.token.span;
+        // **`defined` is not a macro name** (C 6.10.8p4). Reserved in both directions — `#undef`
+        // is handled at its own arm — because a macro called `defined` would change what
+        // `#if defined(X)` means, and the operator has no way to escape it.
+        if name_tok.text == "defined" {
+            self.diagnostics.push(Diagnostic {
+                span: at(name_tok),
+                message: "`defined` cannot be used as a macro name".into(),
+            });
+        }
+        // **6.10.3p6: the parameters are distinct.** Quadratic on purpose — a parameter list long
+        // enough for that to matter does not exist, and a set would need the names interned.
+        for (i, p) in params.iter().enumerate() {
+            if params[..i].contains(p) {
+                self.diagnostics.push(Diagnostic {
+                    span: at(name_tok),
+                    message: format!("duplicate macro parameter `{p}`"),
+                });
+                break;
+            }
+        }
+        // **6.10.3p5: `__VA_ARGS__` belongs to a variadic macro's replacement list and nowhere
+        // else** — not in an object-like macro, not in a non-variadic function-like one, and not
+        // as the name being defined.
+        let variadic = std_variadic || variadic_name.is_some();
+        if name_tok.text == "__VA_ARGS__" {
+            self.diagnostics.push(Diagnostic {
+                span: at(name_tok),
+                message: "`__VA_ARGS__` cannot be the name of a macro".into(),
+            });
+        } else if !variadic && let Some(t) = body.iter().find(|t| t.text == "__VA_ARGS__") {
+            self.diagnostics.push(Diagnostic {
+                span: at(t),
+                message: "`__VA_ARGS__` can only appear in a variadic macro's replacement list"
+                    .into(),
+            });
+        }
+        // **6.10.3.3p1: `##` appears at neither end.** Object-like macros too — unlike `#` below,
+        // this rule says nothing about the kind of macro, because a paste has no left or right
+        // operand there either.
+        let is_paste = |t: &Tok| matches!(t.token.kind, PpTokenKind::Punct(Punct::HashHash));
+        if body.first().is_some_and(is_paste) || body.last().is_some_and(is_paste) {
+            self.diagnostics.push(Diagnostic {
+                span: at(name_tok),
+                message: "`##` cannot appear at either end of a macro's replacement list".into(),
+            });
+        }
+        // **6.10.3.2p1: `#` is followed by a parameter — in a *function-like* macro.** In an
+        // object-like one `#` is not an operator at all, so `#define S # a` is ordinary tokens
+        // and must stay silent.
+        if function_like {
+            let names = |t: &Tok| {
+                params.contains(&t.text)
+                    || variadic_name.as_deref() == Some(t.text.as_str())
+                    || (std_variadic && t.text == "__VA_ARGS__")
+            };
+            for (i, t) in body.iter().enumerate() {
+                if matches!(t.token.kind, PpTokenKind::Punct(Punct::Hash))
+                    && !body.get(i + 1).is_some_and(names)
+                {
+                    self.diagnostics.push(Diagnostic {
+                        span: at(t),
+                        message: "`#` is not followed by a macro parameter".into(),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
     fn define(&mut self, line: &[Tok]) {
         let Some(name_tok) = line.get(2) else { return };
         let name = name_tok.text.clone();
@@ -1042,6 +1187,14 @@ impl Engine {
             }
         }
         let mut body = line.get(body_start..).unwrap_or_default().to_vec();
+        self.check_macro_constraints(
+            name_tok,
+            function_like,
+            &params,
+            &variadic_name,
+            std_variadic,
+            &body,
+        );
         strip_va_opt(&mut body, &mut self.diagnostics);
         let body_extent = extent(&body).unwrap_or(Span::new(
             name_tok.token.span.hi,

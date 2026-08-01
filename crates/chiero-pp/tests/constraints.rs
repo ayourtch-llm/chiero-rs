@@ -88,6 +88,12 @@ fn conditional_inclusion_is_constrained() {
         "#if 0\n#elif 1\n#else\n#endif\nint x = 1;\n",
         "#ifndef A\n#define A 1\n#endif\nint x = A;\n",
         "#if 1\nint x = 1;\n#endif\n",
+        // **Skipped text is not diagnosed** (012's rule, and gcc agrees): a `#if` inside an
+        // inactive region is counted for nesting but never evaluated, so a bare one there is
+        // fine. Mutation found this — the `parent_active` guard on the no-expression check was
+        // unobserved until a skipped `#if` existed to observe it.
+        "#if 0\n#if\n#endif\n#endif\nint x = 1;\n",
+        "#if 0\n#if @@@\n#endif\n#endif\nint x = 1;\n",
     ] {
         assert!(
             diags(good).is_empty(),
@@ -121,4 +127,145 @@ fn defined_is_not_a_macro_name() {
             diags(good)
         );
     }
+}
+
+/// One C 6.10 constraint: a name for the report, and a program that violates it.
+const VIOLATIONS: &[(&str, &str)] = &[
+    (
+        "duplicate macro parameter",
+        "#define M(a, a) (a)\nint x = M(1,2);\n",
+    ),
+    (
+        "# not before a parameter",
+        "#define S(a) # b\nconst char *s = S(1);\n",
+    ),
+    ("## at the start", "#define C(a) ## a\nint y = C(1);\n"),
+    ("## at the end", "#define C(a) a ##\nint y = C(1);\n"),
+    (
+        "## at the start, object-like",
+        "#define C ## a\nint x = 1;\n",
+    ),
+    (
+        "redefinition with a different body",
+        "#define K 1\n#define K 2\nint z = K;\n",
+    ),
+    (
+        "too few macro arguments",
+        "#define M(a, b) ((a)+(b))\nint q = M(1);\n",
+    ),
+    (
+        "too many macro arguments",
+        "#define M(a) (a)\nint q = M(1,2);\n",
+    ),
+    (
+        "__VA_ARGS__ outside a variadic macro",
+        "#define M(a) __VA_ARGS__\nint q = M(1);\n",
+    ),
+    (
+        "__VA_ARGS__ as a macro name",
+        "#define __VA_ARGS__ 1\nint x = 1;\n",
+    ),
+    ("#endif without #if", "int x = 1;\n#endif\n"),
+    ("#else without #if", "int x = 1;\n#else\n"),
+    (
+        "#else after #else",
+        "#if 1\n#else\n#else\n#endif\nint x = 1;\n",
+    ),
+    ("#if with no expression", "#if\n#endif\nint x = 1;\n"),
+    ("unterminated #if", "#if 1\nint x = 1;\n"),
+    ("unknown directive", "#nonsense\nint x = 1;\n"),
+    ("#define defined", "#define defined 1\nint x = 1;\n"),
+    ("#undef defined", "#undef defined\nint x = 1;\n"),
+    // **Not yet enforced**, and here so they stay visible. All three are extra tokens after a
+    // directive that takes none — `-pedantic-errors` diagnostics that old headers trip over, so
+    // the corpus needs checking before they are safe to add.
+    (
+        "extra tokens after #endif",
+        "#if 1\n#endif junk\nint x = 1;\n",
+    ),
+    (
+        "extra tokens after #else",
+        "#if 0\n#else junk\n#endif\nint x = 1;\n",
+    ),
+    (
+        "extra tokens after #undef",
+        "#define K 1\n#undef K junk\nint x = 1;\n",
+    ),
+];
+
+fn gcc_rejects(src: &str) -> Option<bool> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("gcc")
+        .args([
+            "-std=c11",
+            "-pedantic-errors",
+            "-E",
+            "-o",
+            "/dev/null",
+            "-x",
+            "c",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(src.as_bytes()).ok()?;
+    Some(!child.wait().ok()?.success())
+}
+
+/// **How much of C 6.10's constraint surface the preprocessor rejects, as a number that may not
+/// fall** — the same ratchet `chiero-sema` has carried since wave 325, which this crate had no
+/// analogue of until wave 333.
+///
+/// The failure prints the *names* of what is missed, so the next wave reads a queue rather than a
+/// percentage; and every entry is one gcc confirms, so a program gcc accepts is a bug in this list
+/// rather than a missing check.
+#[test]
+fn the_share_of_directive_violations_rejected_does_not_fall() {
+    /// Measured at wave 333. **Raise this when a rule is added; never lower it.**
+    ///
+    /// The three below the line are the extra-token rules, left open deliberately.
+    const FLOOR: usize = 18;
+
+    if gcc_rejects("int main(void){return 0;}\n") != Some(false) {
+        eprintln!("skipping: gcc not usable here");
+        return;
+    }
+
+    let mut caught = Vec::new();
+    let mut missed = Vec::new();
+    let mut not_a_violation = Vec::new();
+    for (name, src) in VIOLATIONS {
+        match gcc_rejects(src) {
+            Some(false) | None => {
+                not_a_violation.push(*name);
+                continue;
+            }
+            Some(true) => {}
+        }
+        if diags(src).is_empty() {
+            missed.push(*name);
+        } else {
+            caught.push(*name);
+        }
+    }
+
+    assert!(
+        not_a_violation.is_empty(),
+        "gcc accepts these, so they are bugs in this list rather than missing checks: \
+         {not_a_violation:?}"
+    );
+    eprintln!(
+        "chiero-pp rejects {} of {} directive violations; missing: {missed:?}",
+        caught.len(),
+        VIOLATIONS.len()
+    );
+    assert!(
+        caught.len() >= FLOOR,
+        "coverage fell to {} from {FLOOR}; newly missed: {missed:?}",
+        caught.len()
+    );
 }

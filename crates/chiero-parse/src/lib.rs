@@ -852,7 +852,14 @@ impl<'a> Parser<'a> {
         match (specs.is_typedef, name) {
             (true, Some(name)) => {
                 self.oracle.declare(name, true);
-                self.ast.add_decl(DeclKind::Typedef { name, ty }, span)
+                self.ast.add_decl(
+                    DeclKind::Typedef {
+                        name,
+                        ty,
+                        storage: specs.storage,
+                    },
+                    span,
+                )
             }
             (true, None) => {
                 self.error(span, "a typedef needs a name");

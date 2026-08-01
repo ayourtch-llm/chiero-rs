@@ -1441,7 +1441,24 @@ impl Cx<'_> {
                     self.coerce(node, t, Conversion::Assignment, init);
                 }
             }
-            DeclKind::Typedef { name, ty } => {
+            DeclKind::Typedef { name, ty, storage } => {
+                // **`typedef` is a storage-class specifier**, so any *other* one beside it is a
+                // violation (C 6.7.1p1) — including `_Thread_local`, which the object-side rule
+                // exempts. 6.7.1p2 lets `_Thread_local` accompany `static` or `extern` and
+                // nothing else, so `_Thread_local static int x;` is legal and
+                // `typedef _Thread_local int T;` is not. Reusing `check_storage_classes`
+                // unchanged would get exactly that case wrong, which is why this counts its own.
+                if storage.extern_
+                    || storage.static_
+                    || storage.auto
+                    || storage.register
+                    || storage.thread_local
+                {
+                    self.error(
+                        self.ast.decl(id).span,
+                        "`typedef` cannot be combined with another storage class",
+                    );
+                }
                 let t = self.ty_of(ty);
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
