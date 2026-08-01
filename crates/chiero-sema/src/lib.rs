@@ -2778,8 +2778,33 @@ impl Cx<'_> {
             // A cast to an integer type truncates to that type, which is how
             // `(char)0xFF == -1` gets its answer (contract 9).
             ExprKind::Cast { ty, operand } => {
-                let v = self.eval(operand)?;
                 let t = self.ty_of(ty);
+                // **A floating constant is an integer constant expression when it is the cast's
+                // *immediate* operand** (C 6.6p6), and only then. `eval` answers in integers, so
+                // a floating operand had made the whole expression unfoldable and
+                // `case (int)1.5:` — legal C — was rejected as "not an integer constant
+                // expression".
+                //
+                // **Immediate is the whole restriction.** `(int)-1.5` puts a unary operator
+                // between the cast and the constant and is *not* an integer constant expression;
+                // gcc agrees, and accepts it in an *initializer*, which needs only an
+                // *arithmetic* constant expression (6.6p8). Reading the operand's spelling rather
+                // than folding it is what keeps those apart — a recursive float folder here would
+                // accept `(int)(1.5 + 2.5)` in a `case`, which C does not.
+                if let Some(Ty::Int { signed, bits }) = self.out.types.get(t.0 as usize).cloned()
+                    && let ExprKind::Number(sym) = self.ast.expr(operand).kind
+                    && let Some(text) = self.text(sym).map(str::to_owned)
+                    // **No "is it an integer?" guard, because the two are disjoint.**
+                    // `float_literal` answers `None` for every spelling `parse_int_literal`
+                    // accepts — it needs a `.`, an exponent marker or an `f`, and none of those
+                    // survive an integer parse. A guard here was written first and mutation
+                    // could not falsify it; it is gone rather than left as a condition no test
+                    // can reach.
+                    && let Some((_, f)) = float_literal(&text)
+                {
+                    return Some(truncate(f as i128, bits, signed));
+                }
+                let v = self.eval(operand)?;
                 match self.out.types.get(t.0 as usize) {
                     Some(Ty::Int { signed, bits }) => {
                         let (signed, bits) = (*signed, *bits);
