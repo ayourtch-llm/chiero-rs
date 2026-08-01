@@ -252,12 +252,16 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// The measured count at wave 325. **Raise this when a rule is added; never lower it.**
     ///
-    /// Wave 325 measured 54, then closed three of the nine in the same wave — the call-arity and
-    /// void-`return` rules — and raised this to 57. The six below the line are the queue this
-    /// channel exists to keep visible: discarding `const` (needs qualified types — 436 `Ty::`
-    /// sites, see §9), assigning to an array, a duplicate struct member, a duplicate parameter
-    /// name, a `goto` into a VLA's scope, and taking the address of a `register` object.
-    const FLOOR: usize = 57;
+    /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
+    /// line are the two that need machinery sema does not have**, which is why the queue emptied
+    /// down to them rather than stopping anywhere arbitrary:
+    ///
+    ///   - **discarding `const`** needs *qualified types* — 436 `Ty::` match sites across four
+    ///     crates, budgeted in §9 as its own effort;
+    ///   - **a `goto` into a VLA's scope** needs per-label knowledge of whether a
+    ///     variably-modified declaration precedes it in the same block. Jumping into a block that
+    ///     declares a *non-VLA* is legal, so nothing cheaper than that distinction is correct.
+    const FLOOR: usize = 61;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

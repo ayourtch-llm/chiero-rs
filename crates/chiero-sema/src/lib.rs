@@ -786,6 +786,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         current_fn: None,
         read_only: Default::default(),
         read_only_pointee: Default::default(),
+        register_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -831,6 +832,7 @@ pub fn const_eval(
         current_fn: None,
         read_only: Default::default(),
         read_only_pointee: Default::default(),
+        register_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -913,6 +915,9 @@ struct Cx<'a> {
     /// is in `read_only` and not here, `const int *p` is here and not in `read_only`, and one
     /// set for both gets one of them wrong whichever way it is written.
     read_only_pointee: indexmap::IndexSet<Symbol>,
+    /// Objects declared `register`, whose address may not be taken. Scoped like `read_only`, and
+    /// for the same reason: a block may shadow one with an ordinary object.
+    register_objects: indexmap::IndexSet<Symbol>,
     /// How many *loops* enclose the statement being walked, and how many loops-or-switches.
     ///
     /// Two counters rather than one, because `break` and `continue` do not agree about what a
@@ -1125,6 +1130,11 @@ impl Cx<'_> {
                     } else {
                         self.read_only_pointee.swap_remove(&n);
                     }
+                    if storage.register {
+                        self.register_objects.insert(n);
+                    } else {
+                        self.register_objects.swap_remove(&n);
+                    }
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
@@ -1259,6 +1269,8 @@ impl Cx<'_> {
                     let saved_enums = self.enumerators.clone();
                     let saved_ro = self.read_only.clone();
                     let saved_rop = self.read_only_pointee.clone();
+                    let saved_reg = self.register_objects.clone();
+                    let mut seen_params: indexmap::IndexSet<Symbol> = Default::default();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -1279,6 +1291,16 @@ impl Cx<'_> {
                                 let span = self.ast.decl(p).span;
                                 self.error(span, format!("parameter `{n}` has an incomplete type"));
                             }
+                            // **A parameter name is unique within its list** (C 6.7.6.3p2).
+                            // Two *functions* may each have an `a`, so this is checked against
+                            // the parameters bound so far in this list rather than against
+                            // `values`, which by now holds the whole file scope.
+                            if seen_params.contains(&pn) {
+                                let text = self.text(pn).unwrap_or("?").to_owned();
+                                let span = self.ast.decl(p).span;
+                                self.error(span, format!("duplicate parameter `{text}`"));
+                            }
+                            seen_params.insert(pn);
                             if self.ast.ty(pty).quals.const_ {
                                 self.read_only.insert(pn);
                             } else {
@@ -1332,6 +1354,7 @@ impl Cx<'_> {
                     self.enumerators = saved_enums;
                     self.read_only = saved_ro;
                     self.read_only_pointee = saved_rop;
+                    self.register_objects = saved_reg;
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -1803,6 +1826,16 @@ impl Cx<'_> {
                 continue;
             };
             let fty = self.ty_of(ty);
+            // **A member name is unique within its record** (C 6.7.2.1p2), and only within it:
+            // two structs may each have an `m`, so the set is built per `lay_out` call rather
+            // than kept across them.
+            if let Some(n) = name
+                && fields.iter().any(|f| f.name == Some(n))
+            {
+                let text = self.text(n).unwrap_or("?").to_owned();
+                let span = self.ast.decl(m).span;
+                self.error(span, format!("duplicate member `{text}`"));
+            }
             // **A member must have a size, because the record has to place it.** This is the
             // check that makes reserving the record before laying out its members safe: the
             // reservation means `struct S { struct S s; }` now finds `S` in the tag table, and
@@ -3013,7 +3046,18 @@ impl Cx<'_> {
                 let inner = self.type_expr(*operand);
                 let ity = self.out.typed.ty_of(inner);
                 let (ty, inner) = match op {
-                    UnOp::AddrOf => (self.intern(Ty::Ptr(ity)), inner),
+                    UnOp::AddrOf => {
+                        // **A `register` object has no address** (C 6.7.1p6). Only the pair is an
+                        // error: `register int x` used by value is ordinary, and `&x` on a
+                        // non-`register` local is too.
+                        if let ExprKind::Ident(n) = self.ast.expr(*operand).kind
+                            && self.register_objects.contains(&n)
+                        {
+                            let text = self.text(n).unwrap_or("?").to_owned();
+                            self.error(span, format!("address of `register` object `{text}`"));
+                        }
+                        (self.intern(Ty::Ptr(ity)), inner)
+                    }
                     UnOp::Deref => {
                         let decayed = self.decay(inner, *operand);
                         let dty = self.out.typed.ty_of(decayed);
@@ -3071,6 +3115,15 @@ impl Cx<'_> {
             }
             ExprKind::Assign { op, lhs, rhs } => {
                 self.check_writable(*lhs, "assignment to");
+                // **An array is not assignable** (C 6.5.16p2: the left operand must be a
+                // modifiable lvalue, and an array type is not one). Checked on the *left* operand
+                // only: `a[0] = b[0]` is an element, and a `struct` holding an array assigns
+                // whole — which is how one copies an array in C, so rejecting arrays wherever
+                // they appear in an assignment would remove the only way to do it.
+                let lt = self.type_of_written(*lhs);
+                if lt.is_some_and(|t| matches!(self.out.types[t.0 as usize], Ty::Array { .. })) {
+                    self.error(span, "assignment to an array");
+                }
                 let l = self.type_expr(*lhs);
                 let lty = self.out.typed.ty_of(l);
                 let r = self.type_expr(*rhs);
@@ -4384,6 +4437,15 @@ impl Cx<'_> {
                 }
             }
         }
+    }
+
+    /// The type of an expression as *written*, without the array-to-pointer decay a use applies.
+    ///
+    /// `type_expr` is what records it, and it must run first — the assignment arm calls this
+    /// before typing the operands only because typing them is what fills the table this reads.
+    fn type_of_written(&mut self, e: ExprId) -> Option<TyId> {
+        let node = self.type_expr(e);
+        Some(self.out.typed.ty_of(node))
     }
 
     /// Reject a write to an object declared `const`.
