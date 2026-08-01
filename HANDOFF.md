@@ -487,30 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 350) — 1531 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 351) — 1532 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.** The predicate sweep is finished:
-> `assignable`'s `_Bool` arm (348), `is_null_constant` (349), and `not_an_lvalue` — probed in 348
-> and **correct**, since `&f`, `&a`, `&k`, `&(int){1}` and `(int){1} = 2` all behave.
+> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.** Every named audit category is
+> done: the conversion family (340), initializer overflow (341), widths (342), pointer arithmetic
+> (343), constant expressions (344), linkage (345), address constants (346), incomplete types
+> (347), and now `switch`/`case` (350). The predicate sweep is finished too (348, 349).
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the message audit** — about forty `self.error(` sites unread. The last named
->      category is the **`switch`/`case` family** beyond wave 319: a `case` in a block nested
->      inside the switch, a `default` among `case 1 ... 3` ranges, duplicate detection across
->      ranges, and a `switch` whose controlling expression is an enumeration.
->   2. **Sweep the *speculative* folds.** Wave 349 found `eval` reporting from inside a predicate;
->      `self.out.diagnostics.truncate(before)` appears at **five** sites and each is a place where
->      a fold is a question rather than a judgement. **Check the inverse too**: a fold that should
->      report and does not. `grep` for `eval(` calls with no surrounding save-and-truncate.
->   3. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
->   4. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336); **qualifiers reach sema but
->      not `chiero-lower`** (wave 328).
+>   1. **Sweep the speculative folds** — the target wave 349 promoted and 350 did not reach.
+>      `self.out.diagnostics.truncate(before)` appears at **five** sites; each is a fold used as a
+>      *question*. Check both directions: a fold that reports when it should not (wave 349's bug),
+>      and one that stays silent when it should report. `grep` for `eval(` with no surrounding
+>      save-and-truncate and ask which context each is in.
+>   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions —
+>      the last two neighbourhoods no census has touched.
+>   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
+>   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A checker question —
+>      cost it against 023 §7 first.
 >
-> **Widening a predicate reaches code that was never reachable.** `is_null_constant`'s kind guard
-> had been short-circuiting `eval`, so two defects behind it had never run: `truncate` panicked at
-> 128 bits, and `eval`'s diagnostics escaped from a speculative fold. **When removing a guard,
-> expect the code it was hiding to be broken** — and run the *whole* suite, not the new fixture:
-> both showed up in `chiero-lower`, one in a generated program.
+> **A ratchet row must be confirmable for the reason under test.** Wave 350's case-range rules
+> cannot go in `VIOLATIONS`: gcc refuses `case 1 ... 3` under `-pedantic-errors` because ISO C has
+> no ranges, so the row would be green for the extension rather than for the overlap. **When a rule
+> is about a GNU extension, the ratchet cannot hold it** — the GNU-calibrated fixture must, and the
+> ratchet should carry a comment where the row would have been so nobody adds it later.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2816,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A ratchet row must be confirmable for the reason under test** (wave 350). gcc rejects
+> `case 1 ... 3` under `-pedantic-errors` because ISO C has no case ranges, so a row about
+> *overlapping* ranges would be counted as caught for the extension instead. **A rule about a GNU
+> extension cannot live in the ratchet at all** — put it in the GNU-calibrated fixture and leave a
+> comment where the row would have been.
+>
+> **A set cannot describe a range** (wave 350). Wave 319 recorded each `case` as one number and
+> said so in its comment; that is not a bug in the code so much as in the data structure, and it
+> hid two rules. **When a comment admits a representation only handles part of a category, treat it
+> as an open finding** — the note had been sitting in the source for thirty waves.
 >
 > **Widening a predicate reaches code that was never reachable** (wave 349). `is_null_constant`'s
 > kind guard had short-circuited `eval`, so two defects behind it had never run — `truncate`
