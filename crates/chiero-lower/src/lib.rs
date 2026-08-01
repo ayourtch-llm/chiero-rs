@@ -1385,15 +1385,25 @@ impl Lowerer<'_> {
         match self.analysis.ty(ty) {
             Ty::Void => CTy::Void,
             Ty::Int { bits, .. } => CTy::Int((*bits).max(1)),
-            // CIR has three float kinds; sema's six map onto them. `_Float16` and
+            // CIR has three float kinds; sema's eight map onto them. `_Float16` and
             // `__bf16` become `F32` here rather than growing CIR a kind the solver
             // cannot model — recorded because it is a real narrowing, not a rename.
+            //
+            // **`_Float32` and `_Float64` are not a narrowing.** They are distinct *types* from
+            // `float` and `double` and share their *representation* exactly, and CIR describes
+            // representations — so they map onto the same kinds with nothing lost, which is why
+            // adding them to sema left this crate's own `FloatKind` alone.
             Ty::Float(k) => CTy::Float(match k {
-                FloatKind::F32 | FloatKind::Binary16 | FloatKind::BFloat16 => {
-                    chiero_cir::FloatKind::F32
+                FloatKind::F32
+                | FloatKind::Float32Ext
+                | FloatKind::Binary16
+                | FloatKind::BFloat16 => chiero_cir::FloatKind::F32,
+                FloatKind::X87_80 | FloatKind::Binary128 | FloatKind::Float64xExt => {
+                    chiero_cir::FloatKind::X87_80
                 }
-                FloatKind::X87_80 | FloatKind::Binary128 => chiero_cir::FloatKind::X87_80,
-                FloatKind::F64 => chiero_cir::FloatKind::F64,
+                FloatKind::F64 | FloatKind::Float64Ext | FloatKind::Float32xExt => {
+                    chiero_cir::FloatKind::F64
+                }
             }),
             Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. } => CTy::Ptr,
             Ty::Record(_) | Ty::Vector { .. } => CTy::Ptr,
@@ -1998,6 +2008,15 @@ impl Lowerer<'_> {
                 // declared `int` type and carries its width in a `BitRange` instead.
                 if matches!(to, CTy::Int(1)) && !matches!(from, CTy::Int(1)) {
                     return self.truth_of(inner, from, span);
+                }
+                // **Two float types can share one representation**, and a cast between them is
+                // nothing to emit. `_Float64x` and `long double` are different *types* — sema
+                // separates them so `_Generic` can — and both are CIR's `X87_80`, so the cast
+                // classifier produced an `FpTrunc` that narrows nothing and the verifier refused
+                // the function. Wave 328's rule at the CIR boundary: a conversion instruction
+                // means a real conversion happened.
+                if matches!((&from, &to), (CTy::Float(a), CTy::Float(b)) if a == b) {
+                    return inner;
                 }
                 let kind = cast_kind(&from, &to, from_signed, self.ty_signed(ty));
                 let dst = self.new_value();
@@ -5210,12 +5229,19 @@ fn stmt_name(k: &StmtKind) -> &'static str {
 /// pattern, which is wrong in the last places, and every operation on it is a declared gap
 /// — recorded so the narrowing is not mistaken for support.
 /// A float kind's width in bits.
-/// sema's `FloatKind` as CIR's. The two enums are the same three cases in two crates.
+/// sema's `FloatKind` as CIR's — **the second of two such maps, and now exhaustive.**
+///
+/// The other is in `cty`. This one had a catch-all `_ => X87_80`, which was right while sema had
+/// six kinds that happened to fall that way and silently wrong the moment wave 354 added four
+/// more: `_Float32` and `_Float64` landed on x87 here and on `F32`/`F64` there, so the same type
+/// had two representations depending on which map a path took. Written out in full so a new kind
+/// cannot join by default; the fourth time this project has found one rule implemented twice.
 fn cir_float_kind(k: chiero_sema::FloatKind) -> chiero_cir::FloatKind {
+    use chiero_sema::FloatKind as S;
     match k {
-        chiero_sema::FloatKind::F32 => chiero_cir::FloatKind::F32,
-        chiero_sema::FloatKind::F64 => chiero_cir::FloatKind::F64,
-        _ => chiero_cir::FloatKind::X87_80,
+        S::F32 | S::Float32Ext | S::Binary16 | S::BFloat16 => chiero_cir::FloatKind::F32,
+        S::F64 | S::Float64Ext | S::Float32xExt => chiero_cir::FloatKind::F64,
+        S::X87_80 | S::Float64xExt | S::Binary128 => chiero_cir::FloatKind::X87_80,
     }
 }
 

@@ -5678,6 +5678,23 @@ fn an_extended_floating_suffix_names_its_type() {
     agree("_Float32 a = 1; return _Generic(a + 1.0f, _Float32:1, float:2, default:9);");
     agree("_Float32 a = 1; return _Generic(+a, _Float32:1, float:2, default:9);");
     agree("_Float64 a = 1; double b = 2; return _Generic(a + b, _Float64:1, double:2, default:9);");
+    // **`_Float64x` keeps `long double`'s *precision*, not just its width.** Mapping it to CIR's
+    // `F64` passes every `sizeof` and every `_Generic` — both are eight-byte questions or type
+    // questions — and only a value needing more than 53 significand bits can tell: `1 + 1e-18`
+    // is distinguishable at 80 bits and vanishes at 64. Mutation found the fixture missing this.
+    agree("long double a = 1; a = a + 1e-18L; return a != (long double)1;");
+    agree("return (int)sizeof(_Float64x) * 100 + (int)_Alignof(_Float64x);");
+    agree("return (int)sizeof(_Float32x) * 100 + (int)_Alignof(_Float32x);");
+    agree("_Float64x a = 1; a = a + 1e-18f64x; return a != (_Float64x)1;");
+    agree("_Float64x a = 1; a = a + 1e-18L; return a != (_Float64x)1;");
+    // **A literal needing more than fifty-three mantissa bits**, which is the only thing that can
+    // see whether the exact-digits path read the suffix. `1.0000000000000000001` is distinct from
+    // `1` at eighty bits and equal to it at sixty-four; mutation found the fixture missing it,
+    // because every earlier case survived an `f64`-rounded literal.
+    agree("_Float64x a = 1.0000000000000000001f64x; return a != (_Float64x)1;");
+    agree("long double a = 1.0000000000000000001L; return a != (long double)1;");
+    agree("double a = 1.0000000000000000001; return a != 1;");
+    agree("double d = 1; d = d + 1e-18; return d != 1;");
     // ...and their *values* and widths are unchanged, which is what the corpus depends on.
     agree("_Float32 a = 2; float b = 3; return (int)(a * b);");
     agree("_Float64 a = 2; double b = 3; return (int)(a + b);");

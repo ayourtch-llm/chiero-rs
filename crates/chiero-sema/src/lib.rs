@@ -224,6 +224,25 @@ impl Qual {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FloatKind {
+    /// gcc's `_Float32` and `_Float64` — **distinct types from `float` and `double`** though
+    /// identical in width and representation (C 6.2.5, F.10).
+    ///
+    /// They exist as separate variants for one reason: type *identity*. `_Generic(0.0f32,
+    /// float: …)` selects `default` in gcc, and the interning key is the kind, so `float` and
+    /// `_Float32` must be different kinds to be different `TyId`s. Everything else about them —
+    /// size, alignment, the value a literal denotes, the CIR they lower to — is the standard
+    /// type's, and `chiero-cir` has no matching variants because it does not need any: it
+    /// describes *representations*, and these two share theirs.
+    Float32Ext,
+    Float64Ext,
+    /// gcc's `_Float32x` and `_Float64x` — the "at least this wide, and wider than the unsuffixed
+    /// one" forms, so `_Float32x` has `double`'s width and `_Float64x` has `long double`'s.
+    ///
+    /// Distinct from *everything*, which is why they need variants of their own rather than
+    /// sharing `Float64Ext` and `X87_80`: gcc's `_Generic` separates `_Float32x` from `double`
+    /// **and** from `_Float64`.
+    Float32xExt,
+    Float64xExt,
     Binary16,
     BFloat16,
     F32,
@@ -2090,11 +2109,20 @@ impl Cx<'_> {
                 LongDoubleKind::Binary128 => FloatKind::Binary128,
                 LongDoubleKind::Double => FloatKind::F64,
             }),
+            // **`bits` alone does not identify the type**, and reading it alone was a defect this
+            // wave introduced and its own fixture caught: `_Float64x` says 64, so it landed on
+            // `Float64Ext` and `sizeof` answered 8 where gcc says 16. The `x` forms mean "wider
+            // than the unsuffixed one" — `FloatFmt::Extended` is what the parser records them as,
+            // and it has to be read.
             B::ExtFloat { bits, fmt } => Ty::Float(match (bits, fmt) {
+                (32, chiero_ast::FloatFmt::Extended) => FloatKind::Float32xExt,
+                (64, chiero_ast::FloatFmt::Extended) => FloatKind::Float64xExt,
                 (16, chiero_ast::FloatFmt::Brain) => FloatKind::BFloat16,
                 (16, _) => FloatKind::Binary16,
-                (32, _) => FloatKind::F32,
-                (64, _) => FloatKind::F64,
+                // **`_Float32` is not `float`.** Same width, same representation, different type
+                // — which is the whole of what these two variants are for.
+                (32, _) => FloatKind::Float32Ext,
+                (64, _) => FloatKind::Float64Ext,
                 _ => FloatKind::Binary128,
             }),
         }
@@ -3063,9 +3091,9 @@ fn size_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         Ty::Int { bits, .. } => Some(((*bits).max(8) as u64).div_ceil(8)),
         Ty::Float(f) => Some(match f {
             FloatKind::Binary16 | FloatKind::BFloat16 => 2,
-            FloatKind::F32 => 4,
-            FloatKind::F64 => 8,
-            FloatKind::X87_80 => 16,
+            FloatKind::F32 | FloatKind::Float32Ext => 4,
+            FloatKind::F64 | FloatKind::Float64Ext | FloatKind::Float32xExt => 8,
+            FloatKind::X87_80 | FloatKind::Float64xExt => 16,
             FloatKind::Binary128 => 16,
         }),
         Ty::Ptr(_) => Some((t.pointer_width / 8) as u64),
@@ -3159,9 +3187,11 @@ fn align_of_ty(a: &Analysis, t: &TargetConfig, id: TyId) -> Option<u64> {
         }),
         Ty::Float(f) => Some(match f {
             FloatKind::Binary16 | FloatKind::BFloat16 => 2,
-            FloatKind::F32 => 4,
-            FloatKind::F64 => t.aligns.double_,
-            FloatKind::X87_80 | FloatKind::Binary128 => t.aligns.long_double,
+            FloatKind::F32 | FloatKind::Float32Ext => 4,
+            FloatKind::F64 | FloatKind::Float64Ext | FloatKind::Float32xExt => t.aligns.double_,
+            FloatKind::X87_80 | FloatKind::Binary128 | FloatKind::Float64xExt => {
+                t.aligns.long_double
+            }
         }),
         Ty::Ptr(_) => Some(t.aligns.pointer),
         Ty::Array { elem, .. } => align_of_ty(a, t, *elem),
@@ -3330,7 +3360,15 @@ pub fn decimal_float_parts(text: &str) -> Option<(String, i32)> {
     if lower.starts_with("0x") {
         return None;
     }
-    let body = lower.trim_end_matches(['f', 'l']);
+    // **The suffix comes off with the shared scan, not with `trim_end_matches`.** This was the
+    // third copy of the suffix grammar in this crate — wave 336 merged the other two after
+    // `float_literal` parsed `0.0f16` as `0.016` — and it failed the same way one step later:
+    // `1e-18f64x` kept `64x` on the exponent, `parse::<i32>` refused it, and the exact-digits
+    // path silently fell back to `f64`'s fifty-three bits for a type that has sixty-four.
+    let body = match number_split(&lower) {
+        Some((_, at)) => &lower[..at],
+        None => lower.trim_end_matches(['f', 'l']),
+    };
     let (mant, exp) = match body.split_once('e') {
         Some((m, e)) => (m, e.parse::<i32>().ok()?),
         None => (body, 0),
@@ -3554,12 +3592,14 @@ fn float_suffix_kind(suffix: &str, long_double: LongDoubleKind) -> Option<FloatK
         "l" => x87,
         "f16" => FloatKind::Binary16,
         "bf16" => FloatKind::BFloat16,
-        "f32" => FloatKind::F32,
-        "f64" => FloatKind::F64,
+        "f32" => FloatKind::Float32Ext,
+        "f64" => FloatKind::Float64Ext,
         "f128" | "q" => FloatKind::Binary128,
         // `_Float32x` is `double`; `_Float64x` and `__ibm128` are whatever `long double` is here.
-        "f32x" => FloatKind::F64,
-        "f64x" | "w" => x87,
+        // `_Float32x` is `double`'s width; gcc gives it `double`'s *type* too, unlike `_Float32`.
+        "f32x" => FloatKind::Float32xExt,
+        "f64x" => FloatKind::Float64xExt,
+        "w" => x87,
         _ => return None,
     })
 }
@@ -5243,13 +5283,23 @@ struct BinSides {
     be: ExprId,
 }
 
+/// The order the usual arithmetic conversions use (C 6.3.1.8, F.10.11).
+///
+/// **An extended type outranks the standard type of its own width**, and is outranked by the next
+/// wider standard one — `_Float32 + float` is `_Float32`, `_Float32 + double` is `double`. So the
+/// ranks interleave rather than sitting beside each other, and a fix that only made the kinds
+/// *distinct* would get every mixed expression wrong in one direction or the other.
 fn float_rank(k: FloatKind) -> u8 {
     match k {
         FloatKind::Binary16 | FloatKind::BFloat16 => 0,
         FloatKind::F32 => 1,
-        FloatKind::F64 => 2,
-        FloatKind::X87_80 => 3,
-        FloatKind::Binary128 => 4,
+        FloatKind::Float32Ext => 2,
+        FloatKind::F64 => 3,
+        FloatKind::Float32xExt => 4,
+        FloatKind::Float64Ext => 5,
+        FloatKind::X87_80 => 6,
+        FloatKind::Float64xExt => 7,
+        FloatKind::Binary128 => 8,
     }
 }
 
