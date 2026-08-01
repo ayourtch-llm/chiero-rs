@@ -1713,3 +1713,88 @@ fn a_goto_may_not_jump_into_a_variably_modified_scope() {
         );
     }
 }
+
+/// **Type qualifiers are part of the type** (C 6.7.3, 6.5.16.1p1), which is the last unfinished
+/// item on wave 325's ratchet and the largest one in the project.
+///
+/// The boundary below is gcc's under `-pedantic-errors`, probed rather than reasoned about,
+/// because three of these are places where C's rule surprises people:
+///
+///   - **`const int *const *cpp = pp;` is illegal in C**, though the analogous form is legal in
+///     C++. C 6.5.16.1 compares the pointed-to types for compatibility *ignoring* qualifiers only
+///     at the outermost level, so any qualifier difference below the first pointer is a mismatch —
+///     even one that adds `const`.
+///   - **`typedef int *ip; const ip p;` is a `const` pointer, not a pointer to `const`.** The
+///     qualifier applies to the typedef'd type as a whole, so `*p = 1` is legal.
+///   - **A member of a `const` struct is `const`**, so `&s->m` is a `const int *` even though `m`
+///     was declared plain `int`.
+///
+/// The legal half is the larger half on purpose. Twenty-three of these thirty already pass, and a
+/// change to how qualifiers are represented can break any of them; the census method's rule is
+/// that the legal half is where the damage shows up.
+#[test]
+fn a_qualifier_is_part_of_the_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Discarding `const` from a pointee: by assignment, through `&`, through an argument,
+        // and through an array's decay.
+        "int f(const int *cp){ int *p = cp; return *p; }",
+        "int f(void){ const int x = 0; int *p = &x; return *p; }",
+        "void g(int *); int f(const int *cp){ g(cp); return 0; }",
+        "int f(void){ const int a[3] = {1,2,3}; int *p = a; return *p; }",
+        // `volatile` is discarded the same way. A rule written only for `const` misses it.
+        "int f(volatile int *vp){ int *p = vp; return *p; }",
+        // Below the outermost pointer, *any* qualifier difference is a mismatch — including one
+        // that only adds `const`, which is what C++ programmers expect to be allowed.
+        "int f(const int **cpp){ int **pp = cpp; return **pp; }",
+        "int f(int **pp){ const int **cpp = pp; return **cpp; }",
+        "int f(int **pp){ const int *const *cpp = pp; return **cpp; }",
+        // A member reached through a `const` pointer is itself `const`.
+        "struct S { int m; }; int f(const struct S *s){ int *p = &s->m; return *p; }",
+        "struct S { const int m; }; int f(struct S *s){ s->m = 1; return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // *Adding* a qualifier at the outermost pointee is always allowed.
+        "int f(int *p){ const int *cp = p; return *cp; }",
+        "int f(int *p){ volatile int *vp = p; return *vp; }",
+        "int f(const int *cp){ const int *q = cp; return *q; }",
+        "int f(void){ int x = 0; const int *cp = &x; return *cp; }",
+        "int f(void){ const int x = 0; const int *cp = &x; return *cp; }",
+        "int f(void){ const int k = 1; const int *p = &k; return *p; }",
+        "void g(const int *); int f(int *p){ g(p); return 0; }",
+        // Reading a qualified *object* yields an unqualified value, so these are ordinary
+        // arithmetic and ordinary initialization.
+        "int f(void){ const int k = 1; int x = k; return x; }",
+        "int f(void){ const int k = 1; return k + 1; }",
+        "int f(void){ volatile int v = 1; int x = v; return x; }",
+        "int f(const int *cp){ return *cp; }",
+        "struct S { const int m; }; int f(void){ struct S s = {1}; return s.m; }",
+        "struct S { int m; }; int f(const struct S *s){ return s->m; }",
+        "int f(void){ const int a[3] = {1,2,3}; return a[0]; }",
+        "int f(void){ const int a[3] = {1,2,3}; const int *p = a; return *p; }",
+        // A cast says so explicitly, and a comparison does not convert either operand.
+        "int *f(const int *cp){ return (int *)cp; }",
+        "int f(const int *cp){ return (int)(cp == 0); }",
+        "int f(const int *cp, int *p){ return cp == p; }",
+        // A qualifier on a typedef applies to the whole type: `const ip` is `int *const`.
+        "typedef const int ci; int f(void){ ci k = 1; int x = k; return x; }",
+        "typedef int *ip; int f(void){ int x=0; const ip p = &x; *p = 1; return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
