@@ -487,22 +487,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 316) — 1489 tests, 4 ignored, M1 165/165 by contract
->
-> **Three censuses are done** — constraints (16 rows), initializers (7), conversions (8). Each
-> found every one of its rows unchecked, and the last two each found two *over*-rejections that
-> only the corpus could reveal.
+> ### ⏭️ START HERE (wave 317) — 1490 tests, 4 ignored, M1 165/165 by contract
 >
 > **Next, in descending order of what they buy:**
->   1. **Pointee qualifiers.** `const int *cp; int *p = cp;` is the one conversion row left, and
->      `*p = 1` through a pointer-to-const is a *write to a read-only object* — which matters to
->      this engine rather than only to a diagnostic. Wave 311 put `const` on objects; this is the
->      type-system half, and it unblocks both.
->   2. **Wave 314's two declared misses**: brace-elision distribution
->      (`int a[2][2] = {1,2,3,4,5}`), and a general constant-expression predicate so the
->      file-scope initializer rule is not narrowed to "contains a call".
->   3. **A fourth census**, if a fresh area is wanted: `switch`/`case` type rules, `_Generic`
->      selection, or the `restrict`/`volatile` qualifiers.
+>   1. **Wave 314's two declared misses**, both bounded and both in sema: brace-elision
+>      distribution (`int a[2][2] = {1,2,3,4,5}` is a miss today), and a general
+>      constant-expression predicate so the file-scope initializer rule is not narrowed to
+>      "contains a call" (`int x; int g = x;` is a miss today).
+>   2. **Qualified types**, which unblocks the last conversion row *and* makes the pointee rule
+>      above semantic instead of syntactic. Budget for auditing 436 `Ty::` match sites; do not
+>      start by adding the variant.
+>   3. **A fourth census**, for a fresh area: `switch`/`case` type rules, `_Generic` selection, or
+>      `restrict`/`volatile`.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -899,6 +895,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟡 Pointee `const` — half done in wave 316, half still blocked
+>
+> **Done: writing through a pointer to `const`.** `*p = 1`, `p[i] = 1` and `p->m = 1` on a
+> `const T *` are writes to a read-only object — undefined behaviour, not a matter of taste — and
+> are now rejected. `read_only_pointee` is a **second** set beside wave 311's `read_only`, because
+> C separates the two and one set gets one of them wrong either way: `int *const p` is in the
+> first and not the second, `const int *p` the reverse. Both are in the fixture on opposite sides.
+>
+> The rule looks **exactly one level down**: `const int **p; *p = 0;` is legal, because `*p` is a
+> perfectly writable `const int *`. And it is **syntactic** — it asks about the declared type of a
+> *named* pointer, so a pointee reached through an intermediate expression is not covered.
+>
+> **Still blocked: `int *p = cp;` discarding the qualifier**, the last conversion-census row. It
+> needs *qualified types*, and the measurement that decided wave 316's scope is worth keeping:
+> **`Ty` has 436 match sites across four crates** (sema, lower, cir, exec). A `Ty::Const` wrapper
+> would turn every `matches!(.., Ty::Int)` beneath it into a silently-wrong branch — the exact
+> failure class waves 304 and 308 were spent on. Anyone attempting it should plan to audit those
+> sites, not to add a variant and see what breaks.
 >
 > ### 🟢 Wave 315's conversion census — pointers and integers were interchangeable
 >
@@ -2574,6 +2589,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The idiom you are copying decides which cases you write** (wave 316). Every rejected case in
+> the pointer-to-const fixture used a *parameter*, because `const T *` is a parameter idiom — it
+> is how `memcpy` is spelled — so the declaration path for a *local* went untested and its mutant
+> survived, as did the shadowing rule beside it. **When a feature has a canonical spelling, write
+> one case that is deliberately not in that spelling**; the examples that come to mind are all
+> drawn from the same place.
+>
+> **Measure the blast radius before choosing the scope, and record the number** (wave 316). The
+> qualified-types half of this front was left alone after counting 436 `Ty::` match sites across
+> four crates. That is a decision a later reader can check and overturn, which "it seemed too big"
+> is not.
 >
 > **A census cannot enumerate the legal shapes nobody thought to write** (wave 315, confirming
 > 314). Two censuses running, the over-rejections were found by the *corpus* rather than by the
