@@ -3774,6 +3774,7 @@ impl Cx<'_> {
                 if matches!(op, UnOp::PreInc | UnOp::PreDec) {
                     // `++x` modifies its operand exactly as `x += 1` does.
                     self.check_writable(*operand, "increment or decrement of");
+                    self.check_incdec_pointee(*operand, span);
                 }
                 let inner = self.type_expr(*operand);
                 let ity = self.out.typed.ty_of(inner);
@@ -3910,6 +3911,7 @@ impl Cx<'_> {
             ExprKind::Postfix { operand, .. } => {
                 // `x++` and `x--` modify their operand exactly as `x += 1` does.
                 self.check_writable(*operand, "increment or decrement of");
+                self.check_incdec_pointee(*operand, span);
                 let inner = self.type_expr(*operand);
                 let ty = self.out.typed.ty_of(inner);
                 self.push_typed(TypedNode::Value {
@@ -3942,6 +3944,12 @@ impl Cx<'_> {
                 // want the coercion.
                 let pointer_displacement = matches!(op, Some(BinOp::Add) | Some(BinOp::Sub))
                     && matches!(self.out.ty(lty), Ty::Ptr(_) | Ty::Array { .. });
+                // **`p += n` is `p = p + n`**, so it needs the stride the same way. The binary arm
+                // never sees a compound assignment — that is what the flag above exists for — so
+                // the question is asked again here rather than shared with `+`.
+                if pointer_displacement && self.incomplete_pointee(lty) {
+                    self.error(span, "arithmetic on a pointer to an incomplete type");
+                }
                 // **`b += e` with `b` a `_Bool` does not convert `e` to `_Bool`.** C11
                 // 6.5.16.2p3 makes it mean `b = b + e`, and 6.5p4 promotes both operands — so
                 // the addition happens in `int` and only the *result* is converted back.
@@ -4052,6 +4060,14 @@ impl Cx<'_> {
             ExprKind::Index { base, index } => {
                 let b = self.type_expr(*base);
                 let b = self.decay(b, *base);
+                // **`p[i]` is `*(p + i)`**, so the stride has to exist. Reported as *arithmetic*
+                // rather than as a dereference: both fail here and only one is the reason —
+                // blaming the deref sends a reader to the pointee's use instead of to its missing
+                // definition.
+                let bty0 = self.out.typed.ty_of(b);
+                if self.incomplete_pointee(bty0) {
+                    self.error(span, "arithmetic on a pointer to an incomplete type");
+                }
                 let i = self.type_expr(*index);
                 let i = self.promote_node(i, *index, span);
                 let bty = self.out.typed.ty_of(b);
@@ -4693,9 +4709,7 @@ impl Cx<'_> {
             // one for any code that happened to use byte offsets.
             if matches!(op, BinOp::Add | BinOp::Sub) {
                 for t in [aty, bty] {
-                    if let Ty::Ptr(pointee) = self.out.types[t.0 as usize]
-                        && is_incomplete(&self.out, pointee)
-                    {
+                    if self.incomplete_pointee(t) {
                         self.error(span, "arithmetic on a pointer to an incomplete type");
                         break;
                     }
@@ -5718,6 +5732,17 @@ impl Cx<'_> {
         self.loop_depth -= 1;
     }
 
+    /// `p++`, `p--`, `++p`, `--p` — pointer arithmetic by another name (C 6.5.2.4p1, 6.5.3.1p1).
+    ///
+    /// Reported where the operand is *typed*, so the one predicate serves this and `p + 1` alike.
+    fn check_incdec_pointee(&mut self, operand: ExprId, span: Span) {
+        if let Some(t) = self.type_of_written(operand)
+            && self.incomplete_pointee(t)
+        {
+            self.error(span, "arithmetic on a pointer to an incomplete type");
+        }
+    }
+
     fn check_writable(&mut self, target: ExprId, what: &str) {
         // **One question about the type, not four questions about the syntax.**
         //
@@ -5798,6 +5823,21 @@ impl Cx<'_> {
         if n > 1 {
             self.error(span, "multiple storage classes in one declaration");
         }
+    }
+
+    /// Whether `t` is a pointer whose pointee has no size (C 6.5.6p2).
+    ///
+    /// **One question for all seven spellings of pointer arithmetic.** `p + n`, `p - q`, `p++`,
+    /// `p--`, `++p`, `--p`, `p += n`, `p -= n` and `p[i]` all scale by the pointee's size, and
+    /// only the first two were asking — the rest are the same operation written shorter, so they
+    /// share the predicate rather than repeating the match.
+    ///
+    /// **`void *` is deliberately not caught here.** `is_incomplete` excludes `Ty::Void` on
+    /// purpose, because gcc defines `sizeof(void)` as 1 in the GNU mode the corpus uses and this
+    /// engine implements that; an incomplete *record* has an unknown size rather than a defined
+    /// one, which is what makes one an extension and the other a violation.
+    fn incomplete_pointee(&self, t: TyId) -> bool {
+        matches!(self.out.types[t.0 as usize], Ty::Ptr(p) if is_incomplete(&self.out, p))
     }
 
     /// Whether `base.field` names a **bit-field** (C 6.5.3.2p1).

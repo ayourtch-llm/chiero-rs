@@ -431,6 +431,19 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "_Bool bit-field wider than one bit",
         "struct S { _Bool b : 2; };",
     ),
+    // Wave 343: the spellings of pointer arithmetic the message claimed but did not cover.
+    (
+        "increment a pointer to an incomplete type",
+        "struct I; int f(struct I *p){ p++; return p != 0; }",
+    ),
+    (
+        "compound-add a pointer to an incomplete type",
+        "struct I; int f(struct I *p){ p += 1; return p != 0; }",
+    ),
+    (
+        "subscript a pointer to an incomplete type",
+        "struct I; int f(struct I *p){ return p[0] != 0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -463,7 +476,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 342. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 343. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -483,7 +496,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 133;
+    const FLOOR: usize = 136;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
