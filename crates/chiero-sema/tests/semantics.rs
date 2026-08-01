@@ -764,3 +764,79 @@ fn the_type_constraints_of_census_rows_four_to_seven() {
         );
     }
 }
+
+/// **Rows 8–12 of the census: five constraints about *where a statement is*, not about types.**
+///
+/// A duplicate `case` value, a second `default`, `break` outside a loop or switch, `continue`
+/// outside a loop, and a `goto` to a label that is never defined. gcc rejects all eight programs
+/// below; this engine accepted every one, because sema walks statements without tracking what
+/// encloses them.
+///
+/// The accepted list is where the shape of that context is decided, and three of its cases decide
+/// it between them:
+///
+///   - **`continue` inside a `switch` inside a loop is legal.** It continues the *loop* — a switch
+///     is not a continuable statement. So `break` counts loops *and* switches while `continue`
+///     counts only loops, and one shared depth counter would reject this.
+///   - **Nested and sibling switches each have their own case set**, and their own `default`. A
+///     single set per function would reject `switch(a){case 1:} switch(a){case 1:}`, which is
+///     ordinary code.
+///   - **A label may be defined and never used.** Only the reverse is an error, so the check is on
+///     `goto` targets rather than on label declarations — and it can only run once the whole
+///     function has been walked, since `goto` forward to a label declared later is legal.
+///
+/// `case 2-1` duplicating `case 1` is here because the values must be *folded* before they are
+/// compared: comparing the written expressions would miss it.
+#[test]
+fn the_statement_constraints_of_census_rows_eight_to_twelve() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(int n){ switch(n){ case 1: return 1; case 1: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1: return 1; case 2-1: return 2; } return 0; }",
+        "int f(int n){ switch(n){ default: return 1; default: return 2; } return 0; }",
+        "int f(void){ break; return 0; }",
+        "int f(void){ continue; return 0; }",
+        "int f(void){ if (1) break; return 0; }",
+        "int f(void){ goto nowhere; return 0; }",
+        // `continue` in a switch that is *not* inside a loop has no loop to continue.
+        "int f(int n){ switch(n){ case 1: continue; } return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        "int f(int n){ switch(n){ case 1: return 1; case 2: return 2; default: return 3; } }",
+        "int f(void){ for(int i=0;i<3;i++){ if(i) break; } return 0; }",
+        "int f(void){ for(int i=0;i<3;i++){ if(i) continue; } return 0; }",
+        "int f(int n){ do { if(n) break; } while(n); return 0; }",
+        // `break` in a switch inside a loop breaks the switch...
+        "int f(int n){ while(n){ switch(n){ case 1: break; } n--; } return 0; }",
+        // ...and `continue` in the same place continues the loop.
+        "int f(int n){ while(n){ switch(n){ case 1: continue; } n--; } return 0; }",
+        // Each switch has its own case set and its own default, nested or sibling.
+        "int f(int n){ switch(n){ case 1: switch(n){ case 1: return 1; } } return 0; }",
+        "int f(int n){ switch(n){ case 1: switch(n){ default: return 1; } default: return 2; } }",
+        "int f(int n){ int a = n; switch(a){ case 1: return 1; } switch(a){ case 1: return 2; } return 0; }",
+        // Several labels on one statement is not a duplicate of anything.
+        "int f(int n){ switch(n){ case 1: case 2: return 1; } return 0; }",
+        "enum E { A=1, B=2 }; int f(enum E e){ switch(e){ case A: return 1; case B: return 2; } return 0; }",
+        // Labels: backward, forward, and one that is never used at all.
+        "int f(void){ int i=0; again: i++; if(i<3) goto again; return i; }",
+        "int f(void){ int i=0; goto skip; i=9; skip: return i; }",
+        "int f(void){ unused: return 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
