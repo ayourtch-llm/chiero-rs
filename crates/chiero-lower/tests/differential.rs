@@ -5249,6 +5249,13 @@ fn an_array_takes_its_length_from_its_initializer() {
         ("", "char s[] = \"hello\"; return (int)sizeof(s);"),
         ("", "char s[] = \"hello\"; return s[4];"),
         // The inner dimension is written, the outer inferred.
+        // **A designator sets the length**, so this is five long with one item — the count and
+        // the highest position are different numbers, and only the second is the answer.
+        (
+            "static int a[] = {[4] = 7};",
+            "return (int)(sizeof(a)/sizeof(a[0]));",
+        ),
+        ("static int a[] = {[4] = 7};", "return a[4];"),
         ("static int a[][2] = {{1,2},{3,4}};", "return a[1][1];"),
         (
             "static int a[][2] = {{1,2},{3,4}};",
@@ -5264,6 +5271,10 @@ fn an_array_takes_its_length_from_its_initializer() {
             "int t=0; for (int i=0;i<3;i++) t+=a[i]; return t;",
         ),
         // **Explicit lengths, which already worked** — the fault is the inference, not arrays.
+        // **A written length is never overridden**, even when the initializer is shorter:
+        // `int a[4] = {1,2}` is four long, and inferring from the list would make it two.
+        ("static int a[4] = {1,2};", "return (int)sizeof(a);"),
+        ("static char s[8] = \"hi\";", "return (int)sizeof(s);"),
         ("static int a[3] = {1,2,3};", "return a[2];"),
         ("static char s[4] = \"hi\";", "return s[0];"),
         ("static int a[2][2] = {{1,2},{3,4}};", "return a[1][1];"),
