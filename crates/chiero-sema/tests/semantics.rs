@@ -3675,3 +3675,76 @@ fn a_storage_class_belongs_to_its_context() {
     assert!(diags("static inline int f(void){ return 1; } int g(void){ return f(); }").is_empty());
     assert!(diags("inline int f(void){ return 1; }").is_empty());
 }
+
+/// **A compound literal is initialized like an object** (C 6.5.2.5p3) — wave 355's census over a
+/// construct no earlier one had looked at.
+///
+/// Eighteen programs, **five misses, and one cause**: the braced list of a compound literal is
+/// never checked. `check_init` runs for a declaration's initializer and a compound literal is not
+/// a declaration, so `(int){1,2}`, `(struct S){1,2}` and `(int[2]){1,2,3}` all passed — the same
+/// three rules that have been enforced on `int x = {1,2};` since wave 314.
+///
+/// The type is unchecked too, which is the other half of 6.5.2.5p1: the type name must be a
+/// **complete object type**, so `(struct Undefined){1}` and `(int[n]){1}` are violations. `void`
+/// and a function type were already caught, by the cast path rather than by any rule about
+/// compound literals.
+///
+/// The accepted half is what keeps the fix from reaching ordinary casts: **`(int)x` is not a
+/// compound literal**, and the only thing separating them in this AST is whether the operand is an
+/// initializer list — the distinction wave 329's `not_an_lvalue` already had to make.
+#[test]
+fn a_compound_literal_is_initialized_like_an_object() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // 6.5.2.5p3: the list initializes the object, so the initializer rules apply.
+        "int f(void){ return (int){1,2}; }",
+        "struct S { int a; }; int f(void){ return (struct S){1,2}.a; }",
+        "int f(void){ return (int[2]){1,2,3}[0]; }",
+        "struct S { int a, b; }; int f(void){ return (struct S){.nope = 1}.a; }",
+        "int f(void){ return (int[2]){[5] = 1}[0]; }",
+        // 6.5.2.5p1: the type name is a complete object type.
+        "int f(void){ return (struct Undefined){1}.a; }",
+        "int f(int n){ return (int[n]){1}[0]; }",
+        // ...and the two the cast path already caught, kept so the fix cannot lose them.
+        "int f(void){ return (void){1}; }",
+        "int f(void){ return (int(void)){1}; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Every well-formed spelling, including the inferred length and the qualified form.
+        "int f(void){ return (int){1}; }",
+        "int f(void){ return (unsigned){1}; }",
+        "struct S { int a; }; int f(void){ return (struct S){1}.a; }",
+        "struct S { int a, b; }; int f(void){ return (struct S){.b = 1}.b; }",
+        "int f(void){ return (int[3]){1,2,3}[1]; }",
+        "int f(void){ return (int[]){1,2,3}[2]; }",
+        "int f(void){ return (int[3]){1}[2]; }",
+        "int f(void){ return (int){1} + (int){2}; }",
+        "int f(void){ const int *p = &(const int){1}; return *p; }",
+        "int *g(void){ return &(int){1}; }",
+        "int f(void){ return (int)sizeof((int[]){1,2,3}); }",
+        "struct S { int a; }; int f(void){ struct S *p = &(struct S){1}; return p->a; }",
+        "int f(void){ (int){1} = 5; return 0; }",
+        // **An ordinary cast is not a compound literal**, and must stay untouched.
+        "int f(int x){ return (int)x; }",
+        "int f(double d){ return (int)d; }",
+        "int f(void){ return (int)(char)300; }",
+        "struct S { int a; }; int f(struct S *p){ return ((struct S *)p)->a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
