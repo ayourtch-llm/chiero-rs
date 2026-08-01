@@ -3260,3 +3260,79 @@ fn an_incomplete_type_is_refused_in_every_context_that_needs_a_size() {
         );
     }
 }
+
+/// **A predicate's documented exception, checked against each caller** (§9's promoted front).
+///
+/// `assignable`'s comment says "**`_Bool` takes any scalar** (C 6.3.1.2): `_Bool b = p;` is a test
+/// against zero, not a truncation". True — and true of a *conversion*. `assignable` has a second
+/// caller, the pointer-comparison rule, where **no conversion happens**: `p == b` converts
+/// nothing, so 6.5.9's constraint applies unchanged and the exception is simply wrong there.
+///
+/// Enumerating that caller found a wider hole behind it. The comparison check is guarded on
+/// **both** operands being pointers, so a pointer compared against *any* integer was never
+/// examined at all — `p == i`, `p == 1`, `p == c` all silent.
+///
+/// The boundary needs both halves of C 6.5:
+///
+///   - **Equality admits a null pointer constant**, so `p == 0` and `0 == p` are legal and
+///     `p == 1` is not — the value decides, not the type.
+///   - **A relational operator admits nothing**: `p > 0` is a constraint violation though
+///     `p == 0` is fine, which is the one case that separates 6.5.8 from 6.5.9.
+///   - **`!p` and `p && 1` stay legal**, because the logical operators take any scalar and are
+///     not comparisons at all.
+#[test]
+fn comparing_a_pointer_with_an_integer_is_constrained() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // The `_Bool` exception, wrong in this caller.
+        "int f(int *p, _Bool b){ return p == b; }",
+        "int f(int *p, _Bool b){ return p != b; }",
+        "int f(int *p, _Bool b){ return p < b; }",
+        // ...and the hole it was hiding: any integer at all, either way round.
+        "int f(int *p, int i){ return p == i; }",
+        "int f(int *p, int i){ return i == p; }",
+        "int f(int *p, long l){ return p == l; }",
+        "int f(int *p, char c){ return p == c; }",
+        // A non-zero constant is not a null pointer constant.
+        "int f(int *p){ return p == 1; }",
+        // **A relational operator has no null-constant exemption.**
+        "int f(int *p){ return p > 0; }",
+        "int f(int *p, int i){ return p < i; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Equality against a null pointer constant, both ways round and spelled two ways.
+        "int f(int *p){ return p == 0; }",
+        "int f(int *p){ return 0 == p; }",
+        "int f(int *p){ return p != 0; }",
+        "int f(int *p){ return p == (void*)0; }",
+        // Two pointers, and two `_Bool`s.
+        "int f(int *p, int *q){ return p == q; }",
+        "int f(int *p, int *q){ return p < q; }",
+        "int f(_Bool a, _Bool b){ return a == b; }",
+        "int f(int i, int j){ return i < j; }",
+        // **The logical operators are not comparisons** and take any scalar.
+        "int f(int *p){ return !p; }",
+        "int f(int *p){ return p && 1; }",
+        "int f(int *p){ return p ? 1 : 2; }",
+        // The conversion caller, where the `_Bool` exception is right and must stay.
+        "int f(int *p){ _Bool b = p; return b; }",
+        "int f(int *p){ if (p) return 1; return 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
