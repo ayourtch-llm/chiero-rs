@@ -1467,6 +1467,8 @@ fn dereferencing_an_incomplete_pointee_is_rejected() {
         "struct I; int f(struct I *p){ (*p); return 0; }",
         "struct I; int f(struct I *p, struct I *q){ *p = *q; return 0; }",
         "struct I; int f(struct I *p){ return p->m; }",
+        // Caught by the void-*value* rule, not this one — the same expression, a different fault.
+        "int f(void *p){ return *p; }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -1483,6 +1485,13 @@ fn dereferencing_an_incomplete_pointee_is_rejected() {
         "struct C { int m; }; int f(struct C *p){ return p->m; }",
         "struct C { int m; }; int f(struct C *p, struct C *q){ *p = *q; return p->m; }",
         "int f(int *p){ return *p; }",
+        // **A `void *` deref is legal**, as a GNU extension: `(*p);` yields a void expression and
+        // discarding it is fine. This is why `Ty::Void` is deliberately outside `is_incomplete` —
+        // and `return *p;` on the same pointer *is* rejected, by wave 311's void-value rule
+        // rather than by this one, which is the division of labour the two rules are meant to
+        // have.
+        "int f(void *p){ (*p); return 0; }",
+        "int f(void *p){ int *q = p; return *q; }",
     ] {
         assert!(
             diags(good).is_empty(),
