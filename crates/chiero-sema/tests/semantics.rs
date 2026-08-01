@@ -2161,3 +2161,46 @@ fn a_prototype_promises_what_an_empty_list_does_not() {
         );
     }
 }
+
+/// **`typedef` is a storage-class specifier** (C 6.7.1p1), so it may not accompany another — the
+/// item §9 has carried since wave 330, blocked because `DeclKind::Typedef` has no `Storage`.
+///
+/// **`_Thread_local` is counted here and exempt for an object**, which is the discriminator worth
+/// having: 6.7.1p2 lets it accompany `static` or `extern` and nothing else, so
+/// `_Thread_local static int x;` is legal and `typedef _Thread_local int T;` is not. A rule that
+/// reuses the object-side counter unchanged gets the second one wrong.
+#[test]
+fn a_typedef_takes_no_other_storage_class() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "typedef static int T;",
+        "typedef extern int T;",
+        "typedef register int T;",
+        "typedef _Thread_local int T;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        "typedef int T; T v = 1;",
+        "typedef const int CT; CT k = 1;",
+        "typedef int F(void); F *fp;",
+        // ...and the object-side rule keeps its exemption.
+        "_Thread_local static int x; int f(void){ return x; }",
+        "static _Thread_local int y; int f(void){ return y; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
