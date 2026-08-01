@@ -1997,3 +1997,78 @@ fn the_declaration_constraints_of_c_6_7() {
         );
     }
 }
+
+/// **Two more constraints, from wave 331's census** over C 6.7.9's initializers, 6.9's external
+/// definitions and 6.5.2.2's calls. Fifty-one programs across two runs; sema was silent on every
+/// legal one, so this is misses only.
+///
+/// The census's own bookkeeping was the first thing it corrected. §9 had flagged the ratchet's
+/// argument-count rows as suspect — they are fine, and reject exactly what they claim — and a
+/// nested function definition, which the probe reported as a *crash*, turns out to be rejected by
+/// the **parser** with a proper diagnostic. The probe harness asserts a clean parse, so a parser
+/// rejection arrives as a panic. That is evidence about the probe, not about the engine.
+///
+/// What the two rules here turn on:
+///
+///   - **`enum { A = 1 };` declares something and `struct { int m; };` does not.** Both are a
+///     declaration with no declarator, so the rule cannot be "no declarator"; an anonymous
+///     enumeration declares its enumerators, while an anonymous structure declares nothing at all.
+///   - **An anonymous *member* is a different thing entirely** and stays legal — C11's anonymous
+///     struct and union members are how a tagless aggregate is usefully written.
+///   - **A structure may be initialized from an expression, just not from any expression.**
+///     `struct S s = s2;` and `= f();` are ordinary copies; what `struct S s = 1;` lacks is a type
+///     that could be copied, and `assignable` never looked because neither side is a pointer.
+#[test]
+fn a_declaration_declares_something_and_a_record_is_not_a_scalar() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // C 6.7p2: a declaration declares a declarator, a tag, or the members of an enumeration.
+        "int;",
+        "const int;",
+        "struct { int m; };",
+        "union { int m; };",
+        "int f(void){ int; return 0; }",
+        "int f(void){ struct { int m; }; return 0; }",
+        // C 6.7.9p13: a structure or union is initialized by a braced list or by a value of its
+        // own type — not by a scalar.
+        "struct S { int a; }; struct S s = 1;",
+        "struct S { int a; }; int f(void){ struct S s = 1; return s.a; }",
+        "union U { int a; }; union U u = 1;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Declarations that *do* declare something with no declarator.
+        "enum { A = 1 }; int f(void){ return A; }",
+        "struct S { int m; }; int f(struct S *p){ return p->m; }",
+        "struct S; int f(struct S *p){ return p != 0; }",
+        "typedef int T; int f(void){ T v = 1; return v; }",
+        // **An anonymous member is not an empty declaration.** Same spelling, different rule.
+        "struct S { int a; struct { int b; }; }; int f(struct S *s){ return s->b; }",
+        "struct S { int a; union { int b; float c; }; }; int f(struct S *s){ return s->b; }",
+        // A record initialized from a braced list, and from a value of its own type.
+        "struct S { int a; }; struct S s = {1}; int f(void){ return s.a; }",
+        "struct S { int a; }; int f(void){ struct S s2 = {1}; struct S s = s2; return s.a; }",
+        "struct S { int a; }; struct S g(void); int f(void){ struct S s = g(); return s.a; }",
+        "union U { int a; char b; }; union U u = {1}; int f(void){ return u.a; }",
+        "union U { int a; char b; }; int f(void){ union U u2 = {1}; union U u = u2; return u.a; }",
+        // ...and the scalar initializations that must stay ordinary.
+        "int x = 1; int f(void){ return x; }",
+        "int f(void){ int a[2] = {1,2}; return a[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
