@@ -1118,6 +1118,14 @@ fn the_conversion_census() {
         "int f(void){ double d = 1.5; int i = d; return i; }",
         "int f(void){ int i = 1; double d = i; return (int)d; }",
         "int f(void){ unsigned u = 1; int i = u; return i; }",
+        // **`_Bool` takes any scalar** (C 6.3.1.2) — a pointer converts to it as a test against
+        // zero, not a truncation. It is the one destination that accepts everything.
+        "int f(int *p){ _Bool b = p; return b; }",
+        // **A parameter declared as an array keeps its array type in sema** while the argument
+        // passed to it has decayed to a pointer, so the two sides of one legal call arrive
+        // spelled differently. Comparing spellings rather than pointees rejects this.
+        "int sum(int a[2][3]); int f(void){ int a[2][3]; return sum(a); }",
+        "int g(int *p); int f(void){ int a[4]; return g(a); }",
     ] {
         assert!(
             diags(good).is_empty(),

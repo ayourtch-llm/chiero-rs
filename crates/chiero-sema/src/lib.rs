@@ -3671,6 +3671,20 @@ impl Cx<'_> {
                 op,
                 BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
             );
+            // **Comparing two pointers needs them compatible** (C 6.5.9p2), and this does not go
+            // through `coerce` — pointer operands keep their own types, which is what the arm
+            // above exists to do. So the same question is asked here, in the one place where two
+            // pointers meet without either being converted to the other.
+            //
+            // A null constant on either side is exempt, and so is `void *`, both by way of
+            // `assignable` rather than a second copy of those rules.
+            if comparison && is_ptr(self, aty) && is_ptr(self, bty) {
+                let an = self.is_null_constant(ae);
+                let bn = self.is_null_constant(be);
+                if !self.assignable(aty, bty, bn) && !self.assignable(bty, aty, an) {
+                    self.error(span, "comparison between incompatible pointer types");
+                }
+            }
             let (a, b) = if !comparison {
                 (a, b)
             } else if is_ptr(self, aty) && !is_ptr(self, bty) && self.is_null_constant(be) {
@@ -3730,6 +3744,14 @@ impl Cx<'_> {
         ) && !matches!(self.out.types[to.0 as usize], Ty::Void)
         {
             self.error(span, "a `void` value is used where a value is required");
+        }
+        // **One place for four rules.** Assignment, argument passing, `return` and initialization
+        // all arrive here, and C states the same constraint for all four (6.5.16.1) — so the
+        // check lives where they meet rather than at each of them.
+        let from = self.out.typed.ty_of(node);
+        let null_constant = self.is_null_constant(expr);
+        if !self.assignable(from, to, null_constant) {
+            self.error(span, "incompatible types in this conversion");
         }
         let id = self.convert(node, to, why, span);
         self.set_top(expr, id)
@@ -4121,6 +4143,66 @@ impl Cx<'_> {
     /// sema does not model, so it says nothing rather than guessing. `int *const p; *p = 1;` is
     /// legal and must stay so, and it is legal precisely because the write is not to `p`.
     /// Walk `body` with one more enclosing loop, which is also one more breakable statement.
+    /// Whether a value of type `from` may become `to` without a cast (C 6.5.16.1, 6.5.9).
+    ///
+    /// Only *pointer* mixing is judged. C's arithmetic conversions are unrestricted — `long` to
+    /// `int` and `double` to `int` narrow silently — so a rule based on type identity would
+    /// reject every one of them, and the whole question here is which pointers may meet.
+    fn assignable(&self, from: TyId, to: TyId, null_constant: bool) -> bool {
+        let f = self.out.types[from.0 as usize].clone();
+        let t = self.out.types[to.0 as usize].clone();
+        let ptr_like = |x: &Ty| matches!(x, Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. });
+        if !ptr_like(&f) && !ptr_like(&t) {
+            return true;
+        }
+        // **Poison is compatible with everything.** An `Error` operand means something else has
+        // already been reported, and contract 20 keeps one bad declaration to one diagnostic.
+        if matches!(f, Ty::Error) || matches!(t, Ty::Error) {
+            return true;
+        }
+        // **`_Bool` takes any scalar** (C 6.3.1.2): `_Bool b = p;` is a test against zero, not a
+        // truncation, and it is legal for every pointer. This is checked before anything else
+        // because it is the one destination that accepts everything.
+        if matches!(t, Ty::Int { bits: 1, .. }) {
+            return true;
+        }
+        // **A pointee, whichever way the type was spelled.** A parameter declared `int a[2][3]`
+        // keeps its array type in sema while the argument passed to it has decayed to a pointer,
+        // so the two sides of one legal call arrive here spelled differently. Normalising both is
+        // what lets the comparison be about the pointee rather than about the spelling.
+        let pointee = |x: &Ty| match x {
+            Ty::Ptr(p) => Some(*p),
+            Ty::Array { elem, .. } => Some(*elem),
+            _ => None,
+        };
+        match (&f, &t) {
+            // **`0` is a null pointer constant, `1` is not** (C 6.3.2.3p3). The distinction is the
+            // value rather than the type, which is why this is a parameter and not a type test.
+            (_, Ty::Ptr(_)) if null_constant => true,
+            // A function converts to a pointer to itself.
+            (Ty::Func { .. }, Ty::Ptr(b)) => self.compatible(from, *b),
+            _ => match (pointee(&f), pointee(&t)) {
+                (Some(a), Some(b)) => {
+                    let av = matches!(self.out.types[a.0 as usize], Ty::Void);
+                    let bv = matches!(self.out.types[b.0 as usize], Ty::Void);
+                    // `void *` converts to and from any object pointer without a cast, in both
+                    // directions — that is what makes it `void *`.
+                    av || bv || self.compatible(a, b)
+                }
+                _ => false,
+            },
+        }
+    }
+
+    /// Whether two pointee types are the same type, structurally.
+    ///
+    /// Types are interned, so this is mostly identity — the exception is a function type reached
+    /// through a pointer, where the *parameters* must agree and an empty list still means
+    /// "unspecified" for the reason recorded on `types_conflict`.
+    fn compatible(&self, a: TyId, b: TyId) -> bool {
+        a == b || !self.types_conflict(a, b)
+    }
+
     /// Whether two declarations of one name commit to incompatible types.
     ///
     /// **Return types are compared always; parameter lists only when both are non-empty.** The
