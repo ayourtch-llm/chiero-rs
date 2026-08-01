@@ -71,6 +71,21 @@ pub fn unquote(spelling: &str) -> &str {
 
 /// Decode one fragment's **content** (no quotes, no prefix) into width-independent units.
 pub fn string_units(content: &str) -> Vec<StrUnit> {
+    string_units_reporting(content, &mut Vec::new())
+}
+
+/// The same walk, also collecting what is **wrong** with the escapes it passed (C 6.4.4.4p1).
+///
+/// **One walk with two entry points, not two walks.** The escape grammar is already written here;
+/// a separate inspector would be a second implementation of it, and wave 336 earned the rule that
+/// says where the defect will then be — `float_literal` guessing at a suffix grammar
+/// `number_defect` already knew. The information a defect needs is only available *during* the
+/// decode: by the time `\q` has become `StrUnit::Char('q')` it is indistinguishable from a
+/// literal `q`.
+///
+/// **Shape only.** Whether a value fits is not decidable here, because it depends on the element
+/// width and this walk does not know the prefix — see [`escape_range_defect`].
+pub fn string_units_reporting(content: &str, bad: &mut Vec<String>) -> Vec<StrUnit> {
     let mut out = Vec::with_capacity(content.len());
     let mut it = content.chars().peekable();
     while let Some(c) = it.next() {
@@ -110,6 +125,9 @@ pub fn string_units(content: &str) -> Vec<StrUnit> {
                 }
                 // `\x` with no digits is not a valid escape; keep the letter rather than
                 // silently deleting it, which is what the catch-all below does too.
+                if !any {
+                    bad.push("`\\x` used with no following hex digits".into());
+                }
                 out.push(if any {
                     StrUnit::Raw(v)
                 } else {
@@ -151,6 +169,9 @@ pub fn string_units(content: &str) -> Vec<StrUnit> {
                 if got == n {
                     out.push(StrUnit::Char(v));
                 } else {
+                    bad.push(format!(
+                        "incomplete universal character name: `\\{e}` takes {n} hex digits"
+                    ));
                     out.push(StrUnit::Char(e as u32));
                     // Re-emit what was consumed, so a malformed escape keeps its length.
                     for sh in (0..got).rev() {
@@ -162,10 +183,38 @@ pub fn string_units(content: &str) -> Vec<StrUnit> {
             }
             // An unknown escape keeps the escaped character, which is what gcc does for
             // the ones it warns about.
-            other => out.push(StrUnit::Char(other as u32)),
+            other => {
+                bad.push(format!("unknown escape sequence `\\{other}`"));
+                out.push(StrUnit::Char(other as u32));
+            }
         }
     }
     out
+}
+
+/// Whether any numeric escape in `content` names a value one `bits`-wide element cannot hold
+/// (C 6.4.4.4p9).
+///
+/// **Separate from the walk because it needs the prefix, which the walk does not have.**
+/// `"\x1FF"` is a constraint violation and `L"\x1FF"` is legal; the limit is the width of one
+/// element, and only the caller knows which literal this content came from.
+///
+/// **Only a `Raw` unit is checked.** A `Char` is a *character* — a literal `é` or a well-formed
+/// universal character name — and one above 255 in a narrow string is encoded as UTF-8 rather than
+/// being out of range. Checking those too would reject every non-ASCII string literal in the
+/// corpus.
+pub fn escape_range_defect(content: &str, bits: u32) -> Option<String> {
+    let max: u64 = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    string_units(content).into_iter().find_map(|u| match u {
+        StrUnit::Raw(v) if u64::from(v) > max => Some(format!(
+            "escape sequence value {v} does not fit a {bits}-bit element"
+        )),
+        _ => None,
+    })
 }
 
 /// Encode a fragment's **spelling** into the elements of an array of `bits`-wide elements,
@@ -232,7 +281,7 @@ pub fn char_element(spelling: &str) -> (bool, u32) {
 }
 
 /// The content of a character constant's spelling: everything between the quotes.
-fn unquote_char(spelling: &str) -> &str {
+pub fn unquote_char(spelling: &str) -> &str {
     match (spelling.find('\''), spelling.rfind('\'')) {
         (Some(a), Some(b)) if b > a => &spelling[a + 1..b],
         _ => spelling,

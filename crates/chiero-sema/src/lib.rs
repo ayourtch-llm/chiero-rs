@@ -3544,6 +3544,26 @@ impl Cx<'_> {
                     .text(*spelling)
                     .map(strlit::char_element)
                     .unwrap_or((true, int_bits));
+                if let Some(text) = self.text(*spelling).map(str::to_owned) {
+                    // **A character constant's escapes are bounded by its *element*, which is
+                    // not its type.** A plain `'x'` has type `int`, so `char_element` answers 32
+                    // — correctly, for the type — while the constant is a sequence of *bytes* and
+                    // `'\400'` is a violation. `string_element` is what knows the element width,
+                    // and it agrees with `char_element` for every prefixed form; the two differ
+                    // only in the plain case, which is exactly the case that matters here.
+                    let ebits = strlit::string_element(&text).1;
+                    //
+                    // **And its quotes are `'`, not `"`.** `unquote` strips only double quotes,
+                    // so asking it about `''` returns `''` — not empty, and the check said
+                    // nothing. The two literal kinds need their own unquoting and share
+                    // everything after it.
+                    let content = strlit::unquote_char(&text);
+                    if content.is_empty() {
+                        self.error(span, "empty character constant");
+                    } else {
+                        self.check_literal_content(content, ebits, span);
+                    }
+                }
                 let ty = self.intern(Ty::Int { signed, bits });
                 self.push_typed(TypedNode::Value {
                     expr,
@@ -3569,6 +3589,14 @@ impl Cx<'_> {
                     signed: esign,
                     bits: ebits,
                 });
+                // **Every fragment, at the element width the *first* one set.** Concatenated
+                // literals share one element type, so `"\x1FF" L"x"` is checked at the width the
+                // whole object ends up with — which is the width its escapes have to fit.
+                for f in fragments.iter() {
+                    if let Some(text) = self.text(f.spelling).map(str::to_owned) {
+                        self.check_literal(&text, ebits, self.ast.expr(expr).span);
+                    }
+                }
                 // **Phase 5 decides the length, not the source text.** Counting source
                 // characters made `"a\nb"` five elements and `u"\uFFFF"` five where C has
                 // four and one. The count and the contents now come from one decoder
@@ -5555,6 +5583,29 @@ impl Cx<'_> {
         .count();
         if n > 1 {
             self.error(span, "multiple storage classes in one declaration");
+        }
+    }
+
+    /// Report what is wrong with a literal's escapes (C 6.4.4.4), shape first and range second.
+    ///
+    /// At most **one diagnostic per literal**: three bad escapes in one string are one mistake
+    /// about one string, which is contract 20's spirit applied below the declaration level.
+    /// Shape is asked before range because a malformed escape has no value to be out of range.
+    fn check_literal(&mut self, spelling: &str, bits: u32, span: Span) {
+        self.check_literal_content(strlit::unquote(spelling), bits, span);
+    }
+
+    /// The same, given content the caller has already unquoted — which the two literal kinds must
+    /// do differently.
+    fn check_literal_content(&mut self, content: &str, bits: u32, span: Span) {
+        let mut bad = Vec::new();
+        strlit::string_units_reporting(content, &mut bad);
+        if let Some(first) = bad.first() {
+            self.error(span, first.clone());
+            return;
+        }
+        if let Some(why) = strlit::escape_range_defect(content, bits) {
+            self.error(span, why);
         }
     }
 

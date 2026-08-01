@@ -2365,6 +2365,12 @@ fn an_escape_sequence_is_constrained() {
         "const char *s = \"\\400\";",
         "const char *s = \"\\x100\";",
         "const char *s = \"\\x1FF\";",
+        // **A character constant is bounded by its *element*, not by the `int` it has as a
+        // type.** `'\\x100'` is a violation though the constant's type is 32 bits wide, which is
+        // why the width comes from `char_element`. Mutation found this: checking at `int_bits`
+        // survived, because every character case in the fixture fitted eight bits anyway.
+        "int f(void){ return '\\400'; }",
+        "int f(void){ return '\\x100'; }",
         // 6.4.3p1: a universal character name takes exactly four or eight digits.
         "const char *s = \"\\u41\";",
         "const char *s = \"\\U0000e9\";",
@@ -2381,14 +2387,26 @@ fn an_escape_sequence_is_constrained() {
         "const char *s = \"\\xFF\";",
         "int f(void){ return '\\377'; }",
         "int f(void){ return '\\xFF'; }",
+        // ...and the same escape in a *wide* character constant, where it fits.
+        "int f(void){ return (int)L'\\x1FF'; }",
         // **The same escapes in a wide string, where they do fit.** This is the pair that makes
-        // the rule about width rather than about 255.
-        "#include <stddef.h>\nconst wchar_t *s = L\"\\x1FF\";",
-        "#include <stddef.h>\nconst wchar_t *s = L\"\\777\";",
+        // the rule about width rather than about 255. Written through `sizeof` so the fixture
+        // needs no `wchar_t` — the sema harness has no include loader, and a typedef of my own
+        // would be asserting the width rather than asking for it.
+        "int f(void){ return (int)sizeof(L\"\\x1FF\"); }",
+        "int f(void){ return (int)sizeof(L\"\\777\"); }",
+        "int f(void){ return (int)sizeof(u\"\\x1FF\"); }",
+        "int f(void){ return (int)sizeof(U\"\\x1FFFF\"); }",
         // Well-formed universal character names, both lengths, and a literal non-ASCII character.
         "const char *s = \"\\u00e9\";",
         "const char *s = \"\\U000000e9\";",
         "const char *s = \"é\";",
+        // **A character above 255 in a *narrow* string is encoded, not out of range.** `€` is
+        // U+20AC and becomes three UTF-8 bytes; the range rule is about numeric *escapes*, which
+        // name one element directly. Mutation found this: extending the check to `StrUnit::Char`
+        // survived, because every other non-ASCII case here is under 256.
+        "const char *s = \"€\";",
+        "const char *s = \"\\u20ac\";",
         // Ordinary literals that must not be disturbed.
         "const char *s = \"\";",
         "const char *s = \"it's\";",
