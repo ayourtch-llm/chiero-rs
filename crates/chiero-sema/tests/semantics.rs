@@ -1036,3 +1036,93 @@ fn the_initializer_census() {
         );
     }
 }
+
+/// **The conversion census: is this value allowed where it is being put?**
+///
+/// The third census in wave 307's shape, aimed at assignment, argument passing, `return` and
+/// pointer comparison. Sema converts operands but never asks whether the conversion is one C
+/// permits, so a pointer and an integer are interchangeable everywhere.
+///
+/// **Every violation here is a gcc *warning* by default and an error only under
+/// `-pedantic-errors`.** That is the whole reason this ground was never covered: wave 307's census
+/// tried `int *p = 1;` and `return p;`, read "gcc:ok", and moved on. For an engine whose subject
+/// is undefined behaviour these are not stylistic — a pointer read as an integer is exactly the
+/// confusion the memory model exists to catch.
+///
+/// Seventeen accepted cases, and four of them decide the rules:
+///
+///   - **`void *` converts to and from any object pointer without a cast.** That is what makes it
+///     `void *`, and a rule phrased as "the pointee types differ" rejects `g(p)` for
+///     `void g(void *)`, which is most of the C standard library.
+///   - **`0` is a null pointer constant**, so `int *p = 0;` and `p == 0` are legal while
+///     `int *p = 1;` is not. The distinction is the *value*, not the type.
+///   - **`int (*fp)(int) = g;` is legal and `int (*fp)(long) = g;` is not**, so function pointers
+///     are compared by their full type rather than being waved through as pointers.
+///   - **Arithmetic conversions are unrestricted**: `long` to `int`, `double` to `int`, `unsigned`
+///     to `int` all narrow silently in C, and a rule that caught pointer mixing by comparing type
+///     identity would reject every one of them.
+///
+/// **`const int *cp; int *p = cp;` is deliberately absent.** Discarding a qualifier is the ninth
+/// violation gcc reports here, and sema does not model pointee qualifiers at all — wave 311 put
+/// `const` on *objects* only. Adding it is a type-system change, not a check, and pretending
+/// otherwise would mean a rule that fires on the wrong thing.
+#[test]
+fn the_conversion_census() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // An integer that is not a null pointer constant, and a pointer used as an integer.
+        "int f(void){ int *p = 1; return *p; }",
+        "int f(int *p){ int x = p; return x; }",
+        // Pointers to unrelated types, in each of the four places a conversion happens.
+        "int f(int *p){ char *q = p; return *q; }",
+        "void g(int *); int f(char *q){ g(q); return 0; }",
+        "int f(int *p){ return p; }",
+        "int f(int *p, char *q){ return p == q; }",
+        "struct S { int a; }; int f(struct S *s){ int *p = s; return *p; }",
+        // A function pointer whose signature does not match.
+        "int g(int); int f(void){ int (*fp)(long) = g; return (int)fp(1); }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // A cast says the programmer meant it.
+        "int f(void){ int *p = (int *)1; return p != 0; }",
+        "void g(void *); int f(int *p){ g((void *)p); return 0; }",
+        // `void *` converts both ways without one.
+        "int f(int *p){ void *v = p; int *q = v; return *q; }",
+        "void g(void *); int f(int *p){ g(p); return 0; }",
+        // `0` is a null pointer constant; `1` is not.
+        "int f(void){ int *p = 0; return p == 0; }",
+        "int f(int *p){ return p == 0; }",
+        "int f(void){ int (*fp)(void) = 0; return fp == 0; }",
+        // Same types, and a string literal.
+        "int f(int *p){ int *q = p; return *q; }",
+        "int f(int *p, int *q){ return p == q; }",
+        "int f(void){ char *s = \"abc\"; return s[0]; }",
+        "int g(int); int f(void){ int (*fp)(int) = g; return fp(1); }",
+        // Adding `const` to a pointee is a widening, not a mismatch.
+        "int f(int *p){ const int *cp = p; return *cp; }",
+        // Arithmetic conversions narrow and widen freely — a rule based on type identity
+        // would reject all of these.
+        "int f(void){ long l = 1; int i = l; return i; }",
+        "int f(void){ int i = 1; long l = i; return (int)l; }",
+        "int f(void){ double d = 1.5; int i = d; return i; }",
+        "int f(void){ int i = 1; double d = i; return (int)d; }",
+        "int f(void){ unsigned u = 1; int i = u; return i; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
