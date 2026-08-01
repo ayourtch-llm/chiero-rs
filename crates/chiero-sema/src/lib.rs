@@ -2938,8 +2938,26 @@ fn usual_arithmetic(a: IntVal, b: IntVal) -> IntVal {
 }
 
 fn truncate(v: i128, bits: u32, signed: bool) -> IntVal {
+    // **At 128 bits there is nothing to mask, and the mask does not exist.** `i128` holds exactly
+    // that range already, while `(1 << 127) - 1` overflows and panics — the clamp below turned
+    // `__int128`'s 128 into 127 and walked straight into it.
+    //
+    // Latent until wave 349: `is_null_constant` used to short-circuit on the expression's *kind*
+    // before calling `eval`, so no 128-bit expression was ever folded here. Widening that
+    // predicate to C's actual rule made every `__int128` expression reach this function, and the
+    // whole `__int128` fixture panicked at once.
+    if bits >= 128 {
+        return IntVal { v, bits, signed };
+    }
     let bits = bits.clamp(1, 127);
-    let mask = (1i128 << bits) - 1;
+    // Built in `u128` so a 127-bit mask is representable; `1i128 << 127` is the sign bit.
+    //
+    // **This and the early return above are alternatives, and mutation says so**: reverting either
+    // one alone survives, and reverting both panics. The early return is what states the rule —
+    // `i128` already *is* 128 bits — and the `u128` mask is what makes the clamped 127 case safe
+    // if a later change reaches it. Neither is redundant with a caller; they are redundant with
+    // each other, deliberately.
+    let mask = ((1u128 << bits) - 1) as i128;
     let raw = v & mask;
     let out = if signed && (raw >> (bits - 1)) & 1 == 1 {
         raw - (1i128 << bits)
@@ -4918,10 +4936,29 @@ impl Cx<'_> {
     /// constant. Checked on the **written** expression, because `0` and a variable that
     /// happens to hold zero are different things.
     fn is_null_constant(&mut self, expr: ExprId) -> bool {
-        matches!(
-            self.ast.expr(expr).kind,
-            ExprKind::Number(_) | ExprKind::Cast { .. }
-        ) && self.eval(expr).map(|v| v.v) == Some(0)
+        // **Any integer constant expression worth zero** (C 6.3.2.3p3), which is what `eval`
+        // already answers — it folds constant expressions and returns `None` for anything else.
+        //
+        // A guard on the expression's *kind* stood here, admitting only a `Number` or a `Cast`.
+        // Its comment was half right: the question must be about the written expression rather
+        // than about a variable that happens to hold zero, and `eval` is precisely that
+        // distinction. What the guard added was a second, coarser idea of "written", and it
+        // refused `1 - 1`, `'\0'`, `(1 ? 0 : 0)`, `sizeof(int) - 4` and an enumerator worth zero.
+        //
+        // The case the comment protects is still protected, and by the same call: `eval` answers
+        // `None` for a variable, for a `const int` — C does not call that a constant expression —
+        // and for `i - i` on a parameter.
+        //
+        // **Asked speculatively, so its diagnostics are discarded.** `eval` reports as it folds —
+        // signed overflow, division by zero — and this predicate is a *question*, put to every
+        // operand of every comparison and assignment. With the kind guard gone it began folding
+        // expressions nobody asked it to evaluate, and a generated program was refused for
+        // "signed overflow in a constant expression" that no constant context contained. The
+        // same save-and-truncate the other speculative folds use.
+        let before = self.out.diagnostics.len();
+        let v = self.eval(expr).map(|v| v.v);
+        self.out.diagnostics.truncate(before);
+        v == Some(0)
     }
 
     /// **Which mistake this conversion is**, in gcc's terms rather than one sentence for all of
