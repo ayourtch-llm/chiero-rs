@@ -487,18 +487,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 319) — 1491 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 320) — 1492 tests, 4 ignored, M1 165/165 by contract
+>
+> **Four censuses done** — constraints (16 rows), initializers (7), conversions (8), `switch` (7).
+> Every one found its rows unchecked except `_Generic`, which was already correct.
 >
 > **Next, in descending order of what they buy:**
->   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
->      the thing that would make wave 316's pointee rule semantic rather than syntactic. Budget for
->      auditing **436 `Ty::` match sites across four crates**; do not start by adding the variant.
->   2. **A fourth census**, for a fresh area: `switch`/`case` type rules, `_Generic` selection, or
->      `restrict`/`volatile`.
->
-> The initializer and constant-expression work is closed: both of wave 314's declared misses are
-> fixed, and the two arms that remain unfalsifiable are labelled with their reasons rather than
-> left as a puzzle.
+>   1. **Completeness of a dereference.** Nothing checks `*p` where `p` points at an incomplete
+>      type — wave 319 hit it through `switch(*p)` and declined to report it from there, because
+>      the fault is the dereference. It is small, it has a natural home beside wave 303's rules,
+>      and it closes a case already written down.
+>   2. **Qualified types.** The last conversion-census row (`int *p = cp;`) and what would make
+>      wave 316's pointee rule semantic rather than syntactic. Budget for auditing **436 `Ty::`
+>      match sites across four crates**; do not start by adding the variant.
+>   3. **A fifth census.** Prefer a construct whose implementation arrived in pieces —
+>      `restrict`/`volatile`, or compound literals, rather than something written as a unit.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -895,6 +898,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 319's `switch` census — and `_Generic` came back clean
+>
+> The fourth census. Seven rules unchecked: a `switch` controlled by a non-integer, a `case` label
+> that is not an integer constant expression, and `case`/`default` outside any switch.
+>
+> **`_Generic` was censused alongside and was already correct** — a selector matching no
+> association without a `default`, and two associations naming one type, are both diagnosed. **The
+> first area a census has found already covered**, and the likely reason is that `_Generic` was
+> implemented as a unit with its constraints, where `switch` grew its statement handling (wave 312)
+> and its type rules separately. That is a useful shape to look for: a construct built in one go
+> tends to carry its rules; one that grew in layers tends not to.
+>
+> Two rules cost two lines each because wave 312 had already built the stack of open switches — a
+> `case` outside a switch is `break` outside a loop, asked of a different stack.
+>
+> **The controlling-type test is on the type's *category***: `char`, `unsigned` and `long` are all
+> legal, so writing it against `int` rejects all three. Reading the operand's own type rather than
+> the promoted one is **measured equivalent** — promotion widens narrow integers and does not turn
+> a `double` into one — and is labelled as such at the site.
+>
+> **Recorded as not covered:** `switch(*p)` where `p` points at an incomplete struct. gcc rejects
+> it; the fault is the *dereference* of an incomplete type rather than the switch, and **nothing
+> checks a `Deref` for completeness today** — that is the natural home for it.
 >
 > ### 🟢 Wave 317 closed wave 314's two declared misses
 >
@@ -2616,6 +2643,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A construct built in one go carries its rules; one that grew in layers does not** (wave 319).
+> The fourth census found `switch` missing all seven of its rules and `_Generic` missing none —
+> and `_Generic` was written as a unit with its constraints, while `switch` acquired statement
+> handling in one wave and never acquired type rules at all. **When choosing where to census next,
+> prefer the construct whose implementation arrived in pieces.**
 >
 > **Verify the fixture edit landed before believing the mutant that survives it** (wave 318). Wave
 > 317 recorded three arms as unfalsifiable; one of them was not, and the difference was an edit
