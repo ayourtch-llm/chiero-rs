@@ -1197,6 +1197,9 @@ fn a_write_through_a_pointer_to_const_is_rejected() {
         "int f(const int p[]){ p[0] = 1; return p[0]; }",
         // A member of a const-qualified object reached through a pointer.
         "struct S { int m; }; int f(const struct S *s){ s->m = 1; return s->m; }",
+        // **A local, not only a parameter.** Every other rejected case here is a parameter, so
+        // the declaration site that records a local's pointee was unfalsifiable without this.
+        "int f(void){ int x=1; const int *p = &x; *p = 2; return x; }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -1215,6 +1218,10 @@ fn a_write_through_a_pointer_to_const_is_rejected() {
         "int f(const int **p){ *p = 0; return **p; }",
         // A const array may still be read.
         "int f(void){ const int a[2] = {1,2}; return a[0]; }",
+        // **A block may shadow a pointer-to-const with a writable one.** Without removing the
+        // name from the set on the inner declaration, the shadow inherits the outer pointee's
+        // constness — the same rule wave 311 needed for objects, and equally unloaded until now.
+        "int g(const int *p){ int q=1; { int *p = &q; *p = 2; } return q; }",
     ] {
         assert!(
             diags(good).is_empty(),

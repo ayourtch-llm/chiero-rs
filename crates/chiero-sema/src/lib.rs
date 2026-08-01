@@ -4342,6 +4342,10 @@ impl Cx<'_> {
                 operand,
             }
             | ExprKind::Index { base: operand, .. }
+            // `arrow: true` is **measured equivalent** to `arrow: _` — a `.` member access on
+            // something in this set cannot arise, since the set holds pointers and arrays and a
+            // struct value is neither. It is written the strict way because it states which
+            // access this arm is about, not because a case distinguishes it.
             | ExprKind::Member {
                 base: operand,
                 arrow: true,
