@@ -3417,3 +3417,87 @@ fn a_null_pointer_constant_is_any_zero_constant_expression() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 }
+
+/// **The `switch`/`case` family beyond wave 319** — the last category on §9's message audit.
+///
+/// Fifteen contexts. Eleven already agree with gcc, including the ones that look hardest: a `case`
+/// inside a nested *block* belongs to the enclosing switch and is legal, a `case` inside a nested
+/// *switch* belongs to the inner one, a label in a `while` is not in a switch at all, and
+/// `case 1+0:` collides with `case 1:` because the rule is about the folded value.
+///
+/// **The two misses are both about ranges.** `case 1 ... 3` is a GNU extension this engine
+/// supports — gcc refuses it under `-pedantic-errors`, so this fixture is calibrated to GNU mode
+/// like `0b101` and `\e` — and wave 319's duplicate table records a range by its **lower bound
+/// only**, which its own comment says. So:
+///
+///   - **`case 1 ... 3:` then `case 2:`** — the single value falls inside the range and was not
+///     seen, because only 1 was in the table.
+///   - **`case 1 ... 3:` then `case 3 ... 5:`** — the ranges overlap at 3, and neither lower
+///     bound is in the other's.
+///
+/// **`case 3 ... 1:` is an empty range, and gcc gives it its lower bound** — not nothing, and not
+/// the span read backwards. It collides with `case 3:` and with a second `case 3 ... 1:`, and not
+/// with `1` or `2`. That is the discriminator, and it was probed rather than assumed: a first
+/// draft of this fixture called an empty range collision-free and gcc disagreed. The occupied
+/// interval is therefore `[lo, max(lo, hi)]`, which also happens to be what wave 319's
+/// lower-bound-only rule already did for the empty case — the reason that rule looked right.
+#[test]
+fn a_case_range_occupies_every_value_in_it() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A value inside a range, and a range containing a value, in both orders.
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; case 2: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 2: return 1; case 1 ... 3: return 2; } return 0; }",
+        // Overlapping ranges, touching at one end and overlapping in the middle.
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; case 3 ... 5: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1 ... 9: return 1; case 4 ... 5: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 4 ... 5: return 1; case 1 ... 9: return 2; } return 0; }",
+        // An empty range still occupies its lower bound, so these two collide at 3.
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; case 3: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 3: return 1; case 3 ... 1: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; case 3 ... 1: return 2; } return 0; }",
+        // ...and the plain duplicates wave 319 already caught, kept so the fix cannot lose them.
+        "int f(int n){ switch(n){ case 1: return 1; case 1: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1: return 1; case 1+0: return 2; } return 0; }",
+        "int f(int n){ switch(n){ default: return 1; default: return 2; } return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Ranges that do not meet, on either side and adjacent.
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; case 4: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; case 4 ... 6: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 4 ... 6: return 1; case 1 ... 3: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 0: return 1; case 1 ... 3: return 2; case 4: return 3; } return 0; }",
+        // **An empty range occupies its lower bound**, not nothing and not the whole span.
+        // `case 3 ... 1` collides with `case 3` and with nothing else — so `1` and `2` are free,
+        // and a second `3 ... 1` is a duplicate, which is in the rejected half above.
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; case 2: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; case 1: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 3 ... 1: return 1; case 5 ... 4: return 2; } return 0; }",
+        // A range beside a `default`, and a one-element range.
+        "int f(int n){ switch(n){ case 1 ... 3: return 1; default: return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1 ... 1: return 1; case 2: return 2; } return 0; }",
+        // The contexts that were already right.
+        "int f(int n){ switch(n){ case 1: { case 2: ; } return 1; } return 0; }",
+        "int f(int n){ switch(n){ case 1: switch(n){ case 1: return 1; } return 2; } return 0; }",
+        "int f(int n){ switch(n){ case 1: { int q = 2; return q; } case 2: return 2; } return 0; }",
+        "enum E { A, B }; int f(enum E e){ switch(e){ case A: return 1; case B: return 2; } return 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
