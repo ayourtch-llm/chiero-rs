@@ -1149,6 +1149,12 @@ impl Cx<'_> {
                 }
                 self.check_complete(id, t);
                 if let Some(init) = init {
+                    self.check_init(t, init);
+                    // **File scope only.** A local initializer may be any expression; only a
+                    // static storage duration needs a value the linker can write down.
+                    if scope == Scope::File {
+                        self.check_static_init(init);
+                    }
                     let node = self.type_expr(init);
                     // 014 §5: the initializer arrives **as the declared type**, so
                     // lowering never has to work out what the assignment did.
@@ -3877,6 +3883,237 @@ impl Cx<'_> {
     /// nothing — one bad declaration is one diagnostic no matter how many times the name
     /// appears, which is what keeps a single missing header from burying the real problem
     /// under a hundred copies.
+    /// Whether this list leaves out braces around an aggregate member, as C 6.7.9p20 permits.
+    ///
+    /// The signal is an aggregate element initialised by something that is not itself a list.
+    /// When that happens the flat sequence is distributed across the sub-objects and positions no
+    /// longer line up with items, so the counting rules above stop applying.
+    fn elides_braces(&self, elem: TyId, items: &[chiero_ast::InitItem]) -> bool {
+        let aggregate = matches!(
+            self.out.types[elem.0 as usize],
+            Ty::Array { .. } | Ty::Record(_)
+        );
+        aggregate
+            && items
+                .iter()
+                .any(|i| !matches!(self.ast.expr(i.value).kind, ExprKind::InitList(_)))
+    }
+
+    /// Check an initializer against the type it initializes (C 6.7.9).
+    ///
+    /// **Recursive, because C's rules are.** The target type drives the walk: an array
+    /// distributes its list across elements, a record across members, and a scalar takes one
+    /// value. Counting anything at the top level cannot work — `int a[2][2] = {1,2,3,4}` is legal
+    /// with braces elided, so four items against an outer dimension of two is not an error.
+    ///
+    /// **Positions, not counts.** A designator moves the cursor, so `{[0]=1,[2]=3}` has two items
+    /// and a highest index of 2. The cursor is what both the range check and the excess check
+    /// read.
+    fn check_init(&mut self, target: TyId, init: ExprId) {
+        let span = self.ast.expr(init).span;
+        let ty = self.out.types[target.0 as usize].clone();
+
+        // A string may initialise a character array directly, with the terminator dropped when it
+        // is the only thing that does not fit: `char s[3] = "abc"` is legal and `"abcd"` is not.
+        if let ExprKind::Str { fragments } = self.ast.expr(init).kind.clone()
+            && let Ty::Array {
+                len: ArrayLen::Fixed(n),
+                ..
+            } = ty
+        {
+            let chars: usize = fragments
+                .iter()
+                .filter_map(|f| self.text(f.spelling).map(|t| t.to_owned()))
+                .map(|t| {
+                    let (_, bits) = strlit::string_element(&t);
+                    strlit::string_elements(&t, bits).len()
+                })
+                .sum();
+            if chars as u64 > n {
+                self.error(span, "initializer-string is longer than the array");
+            }
+            return;
+        }
+
+        let ExprKind::InitList(items) = self.ast.expr(init).kind.clone() else {
+            return;
+        };
+
+        match ty {
+            Ty::Array { elem, len } => {
+                // **Brace elision defeats counting, so counting stops.** `int a[2][2] =
+                // {1,2,3,4}` is legal: the braces around each row may be omitted and the flat
+                // list is distributed across them. Treating each top-level item as one element
+                // then reports items 3 and 4 as out of range, which is the first thing this did.
+                //
+                // Detecting elision is easy — an aggregate element initialised by something that
+                // is not a list — and distributing correctly is not, so this declines to answer
+                // rather than answering wrongly. `int a[2][2] = {1,2,3,4,5}` is a declared miss.
+                if self.elides_braces(elem, &items) {
+                    for item in &items {
+                        self.type_expr(item.value);
+                    }
+                    return;
+                }
+                let bound = match len {
+                    ArrayLen::Fixed(n) => Some(n),
+                    _ => None,
+                };
+                let mut at = 0u64;
+                for item in &items {
+                    for d in &item.designators {
+                        if let chiero_ast::Designator::Index(e) = d
+                            && let Some(v) = self.eval(*e).map(|v| v.v)
+                        {
+                            at = v.max(0) as u64;
+                        }
+                    }
+                    if let Some(n) = bound
+                        && at >= n
+                    {
+                        let dspan = self.ast.expr(item.value).span;
+                        self.error(dspan, "initializer index is outside the array");
+                        break;
+                    }
+                    self.check_init(elem, item.value);
+                    at += 1;
+                }
+            }
+            Ty::Record(r) => {
+                let fields = self.out.records[r.0 as usize].fields.clone();
+                if let Some(f) = fields.first()
+                    && self.elides_braces(f.ty, &items)
+                {
+                    for item in &items {
+                        self.type_expr(item.value);
+                    }
+                    return;
+                }
+                let is_union = self.out.records[r.0 as usize].is_union;
+                let mut at = 0usize;
+                for item in &items {
+                    let mut named = None;
+                    for d in &item.designators {
+                        if let chiero_ast::Designator::Field(f) = d {
+                            match fields.iter().position(|x| x.name == Some(*f)) {
+                                Some(i) => {
+                                    at = i;
+                                    named = Some(i);
+                                }
+                                None => {
+                                    let n = self.text(*f).unwrap_or("?").to_owned();
+                                    let dspan = self.ast.expr(item.value).span;
+                                    self.error(
+                                        dspan,
+                                        format!("no member named `{n}` to initialize"),
+                                    );
+                                    named = Some(usize::MAX);
+                                }
+                            }
+                        }
+                    }
+                    if named == Some(usize::MAX) {
+                        continue;
+                    }
+                    // **A union takes one member, so a second positional item is excess** — but a
+                    // designated one names its own member and only ever writes that.
+                    if at >= fields.len() || (is_union && at > 0 && named.is_none()) {
+                        let dspan = self.ast.expr(item.value).span;
+                        self.error(dspan, "excess elements in initializer");
+                        break;
+                    }
+                    self.check_init(fields[at].ty, item.value);
+                    at += 1;
+                }
+            }
+            // **A vector initialises elementwise**, like an array of its lanes — `v4 v = {1,2,3,4}`
+            // is four values, not four excess ones. It reaches the scalar arm otherwise, which is
+            // where the whole vector corpus landed.
+            Ty::Vector { elem, lanes, .. } => {
+                for (i, item) in items.iter().enumerate() {
+                    if i >= lanes as usize {
+                        let dspan = self.ast.expr(item.value).span;
+                        self.error(dspan, "excess elements in vector initializer");
+                        break;
+                    }
+                    self.check_init(elem, item.value);
+                }
+            }
+            // **A scalar takes one value, braced at most once.** `int x = {1}` is legal and
+            // `int x = {1,2}` is not; the inner value is checked against the scalar again, which
+            // is what rejects `int x = {{1},{2}}` for the same reason.
+            _ => {
+                if items.len() > 1 {
+                    self.error(span, "excess elements in scalar initializer");
+                }
+            }
+        }
+    }
+
+    /// Whether an expression performs a call anywhere inside it.
+    ///
+    /// The one thing a file-scope initializer certainly may not do: a call happens at run time and
+    /// there is nothing for the linker to write down.
+    fn contains_call(&self, e: ExprId) -> bool {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Call { .. } => true,
+            ExprKind::Unary { operand, .. } | ExprKind::Cast { operand, .. } => {
+                self.contains_call(operand)
+            }
+            ExprKind::Postfix { operand, .. } => self.contains_call(operand),
+            ExprKind::Binary { lhs, rhs, .. } | ExprKind::Assign { lhs, rhs, .. } => {
+                self.contains_call(lhs) || self.contains_call(rhs)
+            }
+            ExprKind::Comma { lhs, rhs } => self.contains_call(lhs) || self.contains_call(rhs),
+            ExprKind::Index { base, index } => {
+                self.contains_call(base) || self.contains_call(index)
+            }
+            ExprKind::Member { base, .. } => self.contains_call(base),
+            ExprKind::Cond { cond, then, els } => {
+                self.contains_call(cond)
+                    || then.is_some_and(|t| self.contains_call(t))
+                    || self.contains_call(els)
+            }
+            ExprKind::InitList(items) => items.iter().any(|i| self.contains_call(i.value)),
+            _ => false,
+        }
+    }
+
+    /// Whether an expression is a constant expression, for a file-scope initializer (C 6.7.9p4).
+    ///
+    /// Asked of the *whole* initializer including its list elements, because `{f()}` is as
+    /// non-constant as `f()` is. Both `eval` and `addr_of` count: `&y` and `"s"` are address
+    /// constants, which arithmetic folding alone cannot answer for.
+    fn check_static_init(&mut self, init: ExprId) {
+        match self.ast.expr(init).kind.clone() {
+            ExprKind::InitList(items) => {
+                for item in items {
+                    self.check_static_init(item.value);
+                }
+            }
+            ExprKind::Str { .. } => {}
+            _ => {
+                let before = self.out.diagnostics.len();
+                let constant = self.eval(init).is_some() || self.addr_of(init).is_some();
+                self.out.diagnostics.truncate(before);
+                // **Not constant is not the same as "we could not fold it".** `eval` answers about
+                // arithmetic and `addr_of` about object addresses, and between them they miss
+                // several things C *does* call constant expressions — a function designator such
+                // as `{add1, dbl}` in a table of function pointers is the one that broke the
+                // corpus, and `&arr[1]` and string literals are others.
+                //
+                // So the complaint is narrowed to what cannot be constant under any reading: an
+                // initializer containing a **call**. That is the census case, `int g = f();`, and
+                // it is sound where the general question is not. The declared miss is
+                // `int x; int g = x;` — a non-constant that this accepts.
+                if !constant && self.contains_call(init) {
+                    let span = self.ast.expr(init).span;
+                    self.error(span, "initializer element is not a constant expression");
+                }
+            }
+        }
+    }
+
     /// Reject a write to an object declared `const`.
     ///
     /// **Only when the target is the name itself.** `*p = 1` and `a[i] = 1` are writes through a

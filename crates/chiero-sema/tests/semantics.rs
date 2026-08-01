@@ -1014,6 +1014,15 @@ fn the_initializer_census() {
         "struct S { int m[2]; }; struct S s = {{1,2}};",
         "struct S { int x; }; struct S a[2] = {{1},{2}};",
         "union U { int i; float f; }; union U u = {1};",
+        // **A vector initialises elementwise.** It is not a scalar, and treating it as one
+        // rejected the entire vector corpus — four lanes read as three excess elements.
+        "typedef int v4 __attribute__((vector_size(16))); v4 v = {1,2,3,4};",
+        // **Address constants the folder cannot answer for are still constants.** A function
+        // designator in a table of function pointers, and the address of an array element, are
+        // both legal at file scope and neither `eval` nor `addr_of` says so.
+        "static int a1(int x){return x;} static int (*tab[1])(int) = {a1};",
+        "static int arr[4]; static int *p = &arr[1];",
+        "static char *s = \"abc\";",
         // Constant expressions at file scope, including an address constant.
         "int g = 1 + 2;",
         "int y; int *p = &y;",
