@@ -2645,3 +2645,80 @@ fn a_conversion_diagnostic_names_the_mistake() {
         &["incomplete"],
     );
 }
+
+/// **The diagnostic audit, continued** (§9): four more messages read beside gcc's, using wave
+/// 340's two questions — *does it name a thing the program contains*, and *would a different
+/// mistake produce the same words*.
+///
+/// The worst is the first, and it is wave 339's failure class again: **`int a[2] = {1,2,3};`
+/// reports "initializer index is outside the array"** when the program contains no index at all.
+/// The engine walks initializers with a cursor and reports the cursor; a reader is told to look
+/// for a `[5] =` that was never written. gcc says "excess elements in array initializer", and
+/// keeps "array index in initializer exceeds array bounds" for the case where an index really was
+/// written — two different mistakes that chiero gave one sentence.
+///
+/// The other three are smaller and all actionable:
+///
+///   - **An array and a struct overflow differently**, and gcc names which.
+///   - **`called object is not a function` does not say *which* object**, though the name is right
+///     there in the expression.
+///   - **`subscripted value is not an array or pointer` is untrue as written**: this engine
+///     subscripts vectors, and does so correctly — only the message forgot.
+#[test]
+fn an_initializer_diagnostic_names_the_mistake() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let says = |src: &str, want: &str| {
+        let d = diags(src);
+        assert!(
+            d.iter().any(|m| m.contains(want)),
+            "`{src}`\n  should say {want:?}\n  said {d:?}"
+        );
+    };
+    let never = |src: &str, unwanted: &str| {
+        let d = diags(src);
+        assert!(
+            !d.iter().any(|m| m.contains(unwanted)),
+            "`{src}`\n  should not say {unwanted:?}\n  said {d:?}"
+        );
+    };
+
+    // **Too many elements is not an index.** The program has no `[n] =` in it.
+    says("int a[2] = {1,2,3};", "excess elements in an array");
+    never("int a[2] = {1,2,3};", "index");
+    says("int a[2][2] = {1,2,3,4,5};", "excess elements in an array");
+    never("int a[2][2] = {1,2,3,4,5};", "index");
+    says("char s[3] = \"abcd\";", "longer than the array");
+
+    // ...and where an index *was* written, it still says so.
+    says("int a[3] = {[5] = 1};", "index");
+
+    // **Which aggregate overflowed.**
+    says(
+        "struct S { int x, y; }; struct S s = {1,2,3};",
+        "excess elements in a struct",
+    );
+    says(
+        "union U { int a; }; union U u = {1,2};",
+        "excess elements in a union",
+    );
+    says("int x = {1,2};", "excess elements in a scalar");
+
+    // **Name the object that is not callable, and the one that is not subscriptable.**
+    says("int f(void){ int q = 5; return q(); }", "`q`");
+    says("int f(double d){ return (int)d(); }", "`d`");
+
+    // **A vector is subscriptable, and this engine does it** — so the message must not deny it.
+    says("int f(void){ int x = 5; return x[0]; }", "vector");
+    assert!(
+        diags("typedef int v4 __attribute__((vector_size(16))); int f(v4 v){ return v[0]; }")
+            .is_empty(),
+        "a vector really is subscriptable here"
+    );
+}
