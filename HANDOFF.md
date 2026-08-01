@@ -487,29 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 344) — 1525 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 345) — 1526 tests, 4 ignored, M1 165/165 by contract
 >
 > **Sema 136 of 136, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly sixty `self.error(` sites in sema still unread. The
->      enumerate-the-category method has now paid twice running (`_Bool b : 2`, and five of seven
->      pointer-arithmetic spellings), and both findings were **missing rules** rather than
->      wordings. Remaining messages that name a category, and so are checklists:
->      `case label is not an integer constant expression` (literal, enum, `sizeof`, `_Alignof`,
->      character constant, arithmetic on those), `initializer element is not a constant expression`
->      (same list plus `&global` and a string literal), `switch quantity is not an integer`
->      (checked — complete), and the linkage family (`static` after non-`static`, `extern` after
->      `static`, redefinition, conflicting types — four messages over one relation).
+>   1. **Finish the audit** — roughly fifty-five `self.error(` sites in sema still unread. The
+>      enumerate-the-category method has now paid three times running, and the third one found a
+>      **false positive** rather than a missing rule, which is the more valuable direction. Still
+>      unread and category-shaped: the **linkage family** (`static` after non-`static`, `extern`
+>      after `static`, `is defined more than once`, `conflicting types` — four messages over one
+>      relation, so enumerate the *pairs* of declarations rather than the messages), and
+>      `initializer element is not a constant expression` in its **address-constant** half
+>      (`&global`, `&a[k]`, `a + k`, `&s.m`, a string literal, and the casts of those).
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **The reason the method keeps working is worth stating.** A message naming a category was written
-> when *one* member of that category was implemented, and the sentence quietly claims the rest.
-> Nothing re-reads it when a second member is added elsewhere — `p += n` is typed in a different
-> arm from `p + n`, and `_Bool` reaches the width check by the same path as `int`. **The
-> enumeration is a search for members of a set the code never had in one place.**
+> **Two paths that check "the same" rule may be checking different rules.** Wave 344's first draft
+> asserted a `case` label and an initializer admit the same constant expressions; C gives them
+> *different* paragraphs — 6.6p6 for integer constant expressions, 6.6p8 for arithmetic ones — and
+> `int g = (int)-1.5;` is legal where `case (int)-1.5:` is not. **Before merging two checklists,
+> find the paragraph number for each**; the checklist method makes this mistake attractive because
+> the lists overlap by fourteen entries out of fifteen.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2815,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Two paths checking "the same" rule may be checking different rules** (wave 344). A `case` label
+> needs an integer constant expression (C 6.6p6) and an initializer an arithmetic one (6.6p8); the
+> lists overlap by fourteen entries out of fifteen, and the fifteenth is real. **Find the paragraph
+> number for each before merging two checklists** — the overlap is what makes the error attractive.
+>
+> **A category check can be too strict as easily as too lax** (wave 344). Three waves of
+> enumeration found missing rules; the fourth found a *false positive*, `case (int)1.5:` rejected.
+> **Run the accepted half of a category as carefully as the rejected half** — wave 303's rule says
+> the false positive is the worse defect, and only the accepted half can find it.
 >
 > **One rule spread across four grammar arms will be implemented in one of them** (wave 343).
 > Pointer arithmetic has seven spellings and C types them in four different places; two were
