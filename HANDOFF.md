@@ -487,32 +487,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 330) — 1503 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 331) — 1504 tests, 4 ignored, M1 165/165 by contract
 >
-> **The queue is refilled and named.** Wave 329's census turned up eight new rows; five are closed
-> and `FLOOR = 80` of 83. The three left open are the next wave's work, and the ratchet prints them
-> by name when it fails:
+> **`FLOOR = 89` of 89: the ratchet's queue is empty again.** Waves 329 and 330 ran a census and
+> closed everything it found. A diagnostic-side wave must refill it first.
 >
->   1. **`static extern int x;` — multiple storage classes in one declaration** (C 6.7.1p2). Sema
->      reads storage-class specifiers already; nothing counts them.
->   2. **`const int k = 1; int a[k];` at file scope — variably modified at file scope**
->      (C 6.7.6.2p2). Note the trap: `k` is `const` but not a *constant expression* in C, so this
->      is a VLA, and a VLA is illegal at file scope. Wave 327's machinery knows what a VLA is; it
->      does not know that a file-scope one is an error.
->   3. **`enum E { A = 1, A = 2 };` — a duplicate enumerator** (C 6.7.2.2). The enumerator table is
->      keyed by name and the second write simply wins.
+> **Next, in descending order of what they buy:**
+>   1. **Run the census again.** Two runs have now cost two waves and produced twelve rules, the
+>      best ratio of any method here. Untouched neighbourhoods: **C 6.7.9's initializer
+>      constraints** beyond what wave 314 covered, **6.9's external-definition rules**, and
+>      **6.5.2.2's function-call constraints** (argument count and type against a prototype — the
+>      ratchet has carried "too few arguments" and "too many arguments" as *caught* since an
+>      earlier wave, so check what those actually reject before assuming the neighbourhood is
+>      done). Method unchanged: 30 programs, half legal, verdicts from gcc under
+>      `-pedantic-errors`.
+>   2. **`typedef static int T;` needs a parser change.** `DeclKind::Typedef` carries no `Storage`,
+>      so the multiple-storage-class rule cannot see it. Small, and it is the only violation
+>      wave 330 knowingly left — worth doing when something else is already in the parser.
+>   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
+>      pointee would tell 021 that a store through it is UB. A checker question — cost it against
+>      023 §7 first.
+>   4. **Widen both generated channels with every new rule.** Waves 327–330 added five, eleven,
+>      eleven and nine.
 >
-> **Then run the census again** — one run yielded eight rows and cost one wave, which is the best
-> ratio of any method in this project. C 6.7's remaining declaration constraints are the obvious
-> next neighbourhood; 6.5's operator half is now done.
->
-> **Also open, unchanged from wave 328:** qualifiers reach sema but not `chiero-lower` or CIR. A
-> `const` *pointee* would tell 021 that a store through it is UB. That is a checker question — cost
-> it against 023 §7 before starting, and do not assume the sema-side representation carries over.
->
-> **Widen both generated channels with every new rule** — its neighbourhood into
-> `historically_awkward`, its violation into `VIOLATIONS`. Waves 327–329 added five, eleven and
-> eleven.
+> **What wave 330 is really about is the shadowing case nobody writes.** Two of its four rules
+> needed a scoped name set, and mutation showed the fixture could not observe the set's *removal* —
+> because the case I had written was two **sibling** scopes, and a sibling never reads a stale
+> entry: its mark already starts past them. The shape that reads them is declaring in the
+> **enclosing** scope after an inner one has closed. Wave 326 recorded that a scoped set's removal
+> is unfalsifiable until something reuses the name; wave 330 adds *which* reuse, because the
+> obvious one does not work.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2818,6 +2822,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The shadowing case that tests a scoped set is inner-then-*outer*, not sibling-then-sibling**
+> (wave 330). A sibling scope's mark already starts past the previous scope's leftovers, so it
+> reads none of them and passes whether or not removal works. Only a declaration in the *enclosing*
+> scope, after an inner one has closed, touches the stale entries. This is wave 326's rule with the
+> missing half: **write the enclosing-scope reuse, not the sibling one.**
+>
+> **A `python` edit script must write before it asserts, or check that it wrote** (wave 330). Two
+> multi-edit scripts raised on their second anchor and wrote nothing, and the second time the
+> ratchet ran green at the *old* count — which reads exactly like success. This is the wave 317
+> trap recurring. **Prefer one anchor per script**, and when a count is the result, compare it to
+> the number expected rather than to zero failures.
 >
 > **An equivalent mutant is a claim to retract, not a gap to fill** (wave 329). The unary-operand
 > check survived swapping the promoted type for the raw one, and the honest reading was not "add a
