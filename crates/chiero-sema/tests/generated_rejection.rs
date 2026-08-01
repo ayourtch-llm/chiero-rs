@@ -444,6 +444,16 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "subscript a pointer to an incomplete type",
         "struct I; int f(struct I *p){ return p[0] != 0; }",
     ),
+    // Wave 346: an address constant reads no object.
+    (
+        "initializer through a pointer object",
+        "struct S { int m; } s; struct S *p = &s; int *g = &p->m;",
+    ),
+    ("initializer dereferencing", "int x; int g = *&x;"),
+    (
+        "initializer with a variable subscript",
+        "int a[3]; int i; int *g = &a[i];",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -476,7 +486,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 343. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 346. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -496,7 +506,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 136;
+    const FLOOR: usize = 139;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

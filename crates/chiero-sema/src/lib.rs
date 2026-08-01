@@ -5454,6 +5454,45 @@ impl Cx<'_> {
         }
     }
 
+    /// Whether **forming the address** of `e` requires reading an object (C 6.6p9).
+    ///
+    /// Distinct from [`reads_an_object`] because `&` inverts the question: `&x` reads nothing
+    /// though `x` alone would, and `&*p` reads `p` though neither `&` nor `*` reads on its own.
+    /// Each arm is one of 6.6p9's constructors:
+    ///
+    ///   - a **name** is an address constant outright;
+    ///   - a **subscript** reads whatever its index reads, and its base only if that base is a
+    ///     pointer *object* rather than an array;
+    ///   - `.` keeps the question, `->` is a dereference and so hands the base to the ordinary
+    ///     walk. **The `.` arm is measured unreached**: every `&s.m` this walk could see has
+    ///     already been folded by `addr_of`, so the check short-circuits before asking, and
+    ///     mutating that arm survives. It is written the correct way rather than the convenient
+    ///     one because the `->` arm beside it is *not* unreached, and a reader comparing the two
+    ///     needs the distinction to be the one C makes;
+    ///   - **`&*E` cancels**: `*` yields the object `E` points at and `&` takes its address back,
+    ///     so the pair reads exactly what `E` does. This is why `&*&x` and `&*(a+1)` are constants
+    ///     and `&*p` is not.
+    fn address_reads_an_object(&self, e: ExprId) -> bool {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Ident(_) => false,
+            ExprKind::Index { base, index } => {
+                self.reads_an_object(index) || self.address_reads_an_object(base)
+            }
+            ExprKind::Member { base, arrow, .. } => {
+                if arrow {
+                    self.reads_an_object(base)
+                } else {
+                    self.address_reads_an_object(base)
+                }
+            }
+            ExprKind::Unary {
+                op: UnOp::Deref,
+                operand,
+            } => self.reads_an_object(operand),
+            _ => self.reads_an_object(e),
+        }
+    }
+
     fn reads_an_object(&self, e: ExprId) -> bool {
         match self.ast.expr(e).kind.clone() {
             ExprKind::Call { .. } => true,
@@ -5473,16 +5512,21 @@ impl Cx<'_> {
                     None => false,
                 }
             }
-            // **`&x` is an address, whatever `x` is** — the operand is not read, so the walk stops
-            // rather than descending into it.
-            //
-            // **Measured unreachable**: every address constant that gets this far has already
-            // been answered by `addr_of`, including `(long)&y`, so removing this arm changes no
-            // answer. It is kept because it states the rule the walk depends on — a reader adding
-            // a case `addr_of` cannot fold would otherwise find `&x` counting as a read.
+            // **`&E` asks a different question, so it gets its own walk.** The operand of `&` is
+            // not read — that much was right — but *forming* the address can still require
+            // reading something: `&p->m` reads `p`, `&a[i]` reads `i`. Returning `false` here
+            // outright accepted both.
             ExprKind::Unary {
-                op: UnOp::AddrOf, ..
-            } => false,
+                op: UnOp::AddrOf,
+                operand,
+            } => self.address_reads_an_object(operand),
+            // **A dereference is a read, whatever it wraps.** `*&x` descended into `&x` and hit
+            // the arm above, so the walk answered "reads nothing" for an expression whose whole
+            // purpose is to read. The `&*E` case does *not* come through here — it is handled in
+            // `address_reads_an_object`, where `*` and `&` cancel.
+            ExprKind::Unary {
+                op: UnOp::Deref, ..
+            } => true,
             ExprKind::Unary { operand, .. } | ExprKind::Cast { operand, .. } => {
                 self.reads_an_object(operand)
             }
