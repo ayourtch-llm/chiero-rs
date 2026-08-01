@@ -2993,6 +2993,23 @@ impl Cx<'_> {
                             Ty::Ptr(p) => p,
                             _ => self.intern(Ty::Error),
                         };
+                        // **`*p` needs the pointee to be a complete object type** (C 6.5.3.2p4):
+                        // the result designates an object, and an object of unknown size is not
+                        // one. `*p = *q` on an opaque pointer copies something whose extent
+                        // nobody knows, which is the case that matters here rather than the
+                        // diagnostic.
+                        //
+                        // Checked on the *pointee*, not on `p`: copying, comparing and converting
+                        // the pointer itself never touches it, and those are what an opaque handle
+                        // is for. `struct I **p` is unaffected — its pointee is a pointer, which
+                        // is complete.
+                        //
+                        // A `void *` deref is left to the arm above: `Ty::Void` is not incomplete
+                        // by `is_incomplete`'s reckoning, deliberately, since `void *p` and
+                        // `sizeof(void)` are both legal and that predicate has other callers.
+                        if is_incomplete(&self.out, pointee) {
+                            self.error(span, "dereference of a pointer to an incomplete type");
+                        }
                         (pointee, decayed)
                     }
                     UnOp::Not => (

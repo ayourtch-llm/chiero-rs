@@ -1413,11 +1413,10 @@ fn the_switch_census() {
         // A switch with no labels, and one with only a default, are both legal.
         "int f(int n){ switch(n){ } return 0; }",
         "int f(int n){ switch(n){ default: return 1; } }",
-        // **Not covered, and deliberately so:** `switch(*p)` on a `struct I *` with `I`
-        // incomplete. gcc rejects it and this accepts it — but the fault is the *dereference of
-        // an incomplete type*, not the switch, and reporting it here would name the wrong thing.
-        // It belongs with the completeness rules, where nothing currently checks a `Deref`.
-        "struct I; int f(struct I *p){ switch(*p){ case 1: return 1; } return 0; }",
+        // Wave 319 recorded `switch(*p)` on an incomplete pointee here as deliberately
+        // uncovered, because the fault is the dereference rather than the switch. Wave 320 added
+        // that rule, so the case now lives in `dereferencing_an_incomplete_pointee_is_rejected`
+        // and is diagnosed by the check that names the right thing.
         // `_Generic`, which this census found already correct.
         "int f(int n){ int x = _Generic(n, int: 1, default: 2); return x; }",
         "int f(double d){ int x = _Generic(d, int: 1, default: 2); return x; }",
