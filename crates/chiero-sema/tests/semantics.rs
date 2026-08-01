@@ -1633,9 +1633,18 @@ fn four_more_constraint_violations_are_rejected() {
         "static int g(int a, ...){ return a; }",
         // Two functions may each have a parameter named `a`.
         "static int g(int a){ return a; } static int h(int a){ return a; }",
+        // **A parameter may shadow a file-scope name.** Checking the list against `values` — which
+        // by then holds the whole file scope — makes this a duplicate, and it is the shape that
+        // separates "this list" from "everything in scope".
+        "static int a; static int g(int a){ return a; }",
         // `register` without an address, and an address without `register`.
         "int f(void){ register int x = 0; return x; }",
         "int f(void){ int x = 0; return *&x; }",
+        // **A block may shadow a `register` object with an ordinary one**, and the inner `x` has
+        // an address. Without clearing the name on the inner declaration the shadow inherits the
+        // outer object's storage class — the same rule `read_only` and `read_only_pointee` each
+        // needed, for the third time.
+        "int f(void){ register int x=0; { int x=1; return *&x; } }",
     ] {
         assert!(
             diags(good).is_empty(),
