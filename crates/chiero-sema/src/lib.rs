@@ -4576,6 +4576,17 @@ impl Cx<'_> {
             }
             StmtKind::Switch { cond, body } => {
                 let c = self.type_expr(cond);
+                // **Any integer type, not `int`** (C 6.8.4.2p1). `switch(c)` on a `char` and
+                // `switch(u)` on an `unsigned` are both legal; the promotion below happens *after*
+                // this rule rather than instead of it, so testing the promoted type would be
+                // testing the wrong thing. `Ty::Error` stays silent — contract 20.
+                let cty = self.out.typed.ty_of(c);
+                if !matches!(self.out.types[cty.0 as usize], Ty::Int { .. })
+                    && !is_incomplete(&self.out, cty)
+                {
+                    let span = self.ast.expr(cond).span;
+                    self.error(span, "switch quantity is not an integer");
+                }
                 self.promote_node(c, cond, self.ast.expr(cond).span);
                 self.switches.push((Default::default(), false));
                 self.breakable_depth += 1;
@@ -4591,6 +4602,24 @@ impl Cx<'_> {
                 // **The folded value, not the written expression.** `case 2-1` and `case 1` are
                 // the same label. A case whose value will not fold is left alone: something else
                 // has already complained, and inventing a value here would invent a duplicate.
+                // **A case label is an integer constant expression** (C 6.8.4.2p3), judged by
+                // what it folds to rather than how it is spelled: `case 'a':` and `case 1+1:` are
+                // fine, `case m:` and `case 1.5:` are not. `eval` answers integers only, so a
+                // failure to fold is both conditions at once — which is why one complaint covers
+                // "not constant" and "not an integer" without having to tell them apart.
+                //
+                // A range (`case 1 ... 3`) is checked on its lower bound only, for the reason
+                // recorded on the duplicate rule below.
+                if self.eval(lo).is_none() {
+                    let span = self.ast.expr(lo).span;
+                    self.error(span, "case label is not an integer constant expression");
+                }
+                // **A label needs a switch to belong to** — the same question `break` asks of
+                // the loop stack, asked of the switch stack that wave 312 already built.
+                if self.switches.is_empty() {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, "`case` label not within a switch");
+                }
                 let folded = if hi.is_none() {
                     self.eval(lo).map(|v| v.v)
                 } else {
@@ -4609,6 +4638,10 @@ impl Cx<'_> {
                 self.type_stmt(body);
             }
             StmtKind::Default { body } => {
+                if self.switches.is_empty() {
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, "`default` label not within a switch");
+                }
                 let repeated = match self.switches.last_mut() {
                     Some((_, seen)) => std::mem::replace(seen, true),
                     None => false,
