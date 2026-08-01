@@ -130,6 +130,47 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "discard const",
         "int f(const int *cp){ int *p = cp; return *p; }",
     ),
+    // Qualified types (wave 328).
+    (
+        "discard volatile",
+        "int f(volatile int *vp){ int *p = vp; return *p; }",
+    ),
+    (
+        "discard const through void *",
+        "int f(const void *cp){ void *p = cp; return p != 0; }",
+    ),
+    (
+        "discard const through &",
+        "int f(void){ const int x = 0; int *p = &x; return *p; }",
+    ),
+    (
+        "discard const through an argument",
+        "void g(int *); int f(const int *cp){ g(cp); return 0; }",
+    ),
+    (
+        "qualified array typedef, element const",
+        "typedef int arr[3]; int f(void){ const arr a = {1,2,3}; int *p = a; return *p; }",
+    ),
+    (
+        "discard const through array decay",
+        "int f(void){ const int a[3] = {1,2,3}; int *p = a; return *p; }",
+    ),
+    (
+        "qualifier mismatch below the outermost pointee",
+        "int f(int **pp){ const int **cpp = pp; return **cpp; }",
+    ),
+    (
+        "qualifier mismatch below, even adding const",
+        "int f(int **pp){ const int *const *cpp = pp; return **cpp; }",
+    ),
+    (
+        "address of a member of a const struct",
+        "struct S { int m; }; int f(const struct S *s){ int *p = &s->m; return *p; }",
+    ),
+    (
+        "write a const member",
+        "struct S { const int m; }; int f(struct S *s){ s->m = 1; return 0; }",
+    ),
     // `switch` (wave 319).
     (
         "switch on double",
@@ -257,7 +298,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 327. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 328. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -269,9 +310,10 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     ///     variably-modified scopes are open at each label and at each `goto` and requiring the
     ///     first set to be contained in the second.
     ///
-    /// **One remains: discarding `const`**, which needs *qualified types* — 436 `Ty::` match sites
-    /// across four crates, budgeted in §9 as its own effort. It is the only entry below the line.
-    const FLOOR: usize = 63;
+    /// **The queue is empty.** Wave 328 added qualified types and closed the last entry, so this
+    /// is now a pure regression gate rather than a work list: the next diagnostic-side wave has
+    /// to run a new census to refill it.
+    const FLOOR: usize = 74;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

@@ -3607,6 +3607,12 @@ fn generic_selection_agrees_with_gcc() {
     agree("const int c = 1; return _Generic(c, int: 1, default: 2);");
     agree("volatile int v = 1; return _Generic(v, int: 1, default: 2);");
     agree("int a[3]; return _Generic(a, int *: 1, default: 3);");
+    // **The stripping is outermost-only.** A qualifier on the *pointee* survives lvalue
+    // conversion, so a `const int *` still selects a `const int *` association — and an
+    // association naming `const int` matches nothing, because the controlling type never is one.
+    agree("const int *p = 0; return _Generic(p, const int *: 1, int *: 3, default: 2);");
+    agree("int c = 1; return _Generic(c, const int: 1, default: 2);");
+    agree("const int c = 1; return _Generic(c, const int: 1, default: 2);");
     agree("return _Generic(\"s\", char *: 1, default: 3);");
     // **No promotion of the controlling expression.** A narrow type stays narrow.
     agree("unsigned char u = 1; return _Generic(u, unsigned char: 1, int: 2, default: 3);");

@@ -1750,8 +1750,23 @@ fn a_qualifier_is_part_of_the_type() {
         "int f(void){ const int x = 0; int *p = &x; return *p; }",
         "void g(int *); int f(const int *cp){ g(cp); return 0; }",
         "int f(void){ const int a[3] = {1,2,3}; int *p = a; return *p; }",
+        // **`const arr` on an array typedef qualifies the *element*** (C 6.7.3p9), which is the
+        // only spelling that reaches that rule: in `const int a[3]` the parser has already put
+        // the qualifier on the element, so the rule looks dead until a typedef hides the array.
+        // Mutation found the branch unobserved and this is what it was missing.
+        "typedef int arr[3]; int f(void){ const arr a = {1,2,3}; int *p = a; return *p; }",
+        "typedef int arr[3]; int f(void){ const arr a = {1,2,3}; a[0]=1; return a[0]; }",
         // `volatile` is discarded the same way. A rule written only for `const` misses it.
         "int f(volatile int *vp){ int *p = vp; return *p; }",
+        // **`void *` does not exempt a pointer from the qualifier rule.** It converts to and from
+        // any object pointer without a cast, and that permission is about the *pointee's shape*,
+        // not its qualifiers — so `void *p = cp;` discards `const` exactly as `int *p = cp;`
+        // does. Mutation found this: exempting `void *` from the qualifier check changed nothing
+        // any test could see, because the rest of the fixture never routes a qualifier through
+        // one.
+        "int f(const void *cp){ void *p = cp; return p != 0; }",
+        "int f(const int *cp){ void *p = cp; return p != 0; }",
+        "int f(volatile void *vp){ void *p = vp; return p != 0; }",
         // Below the outermost pointer, *any* qualifier difference is a mismatch — including one
         // that only adds `const`, which is what C++ programmers expect to be allowed.
         "int f(const int **cpp){ int **pp = cpp; return **pp; }",
@@ -1773,6 +1788,9 @@ fn a_qualifier_is_part_of_the_type() {
         "int f(void){ const int x = 0; const int *cp = &x; return *cp; }",
         "int f(void){ const int k = 1; const int *p = &k; return *p; }",
         "void g(const int *); int f(int *p){ g(p); return 0; }",
+        // ...and adding one *through* `void *` is legal in both directions.
+        "int f(void *p){ const void *cp = p; return cp != 0; }",
+        "int f(const void *cp){ const void *p = cp; return p != 0; }",
         // Reading a qualified *object* yields an unqualified value, so these are ordinary
         // arithmetic and ordinary initialization.
         "int f(void){ const int k = 1; int x = k; return x; }",
@@ -1783,6 +1801,8 @@ fn a_qualifier_is_part_of_the_type() {
         "struct S { int m; }; int f(const struct S *s){ return s->m; }",
         "int f(void){ const int a[3] = {1,2,3}; return a[0]; }",
         "int f(void){ const int a[3] = {1,2,3}; const int *p = a; return *p; }",
+        "typedef int arr[3]; int f(void){ const arr a = {1,2,3}; const int *p = a; return *p; }",
+        "typedef int arr[3]; int f(void){ const arr a = {1,2,3}; return a[0]; }",
         // A cast says so explicitly, and a comparison does not convert either operand.
         "int *f(const int *cp){ return (int *)cp; }",
         "int f(const int *cp){ return (int)(cp == 0); }",

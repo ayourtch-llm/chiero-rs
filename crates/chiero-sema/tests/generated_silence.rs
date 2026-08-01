@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(16) {
+    match rng.below(19) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -168,6 +168,19 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         13 => format!("static int f{n}(int m){{ int a{n}[m]; goto skip; skip: return a{n}[0]; }}"),
         14 => format!(
             "static int f{n}(int m){{ if (m) goto skip; {{ int b{n}[2]; b{n}[0] = 1; skip: return m; }} }}"
+        ),
+        // Wave 328: the legal half of the qualifier rules, which is the half that breaks.
+        // Adding a qualifier at the outermost pointee, reading a qualified object as a value,
+        // a qualifier on a typedef qualifying the *pointer*, and the conditional operator
+        // combining two pointees' qualifiers — C 6.5.15p6, which nine corpus headers needed.
+        15 => format!(
+            "static int f{n}(int *p, const int *cp){{ const int *q = p; volatile int *v = p; return *q + *cp + *v; }}"
+        ),
+        16 => format!(
+            "typedef int *ip{n}; static int f{n}(void){{ int x = 0; const ip{n} p = &x; *p = 1; const int k = 2; return x + k + (k + 1); }}"
+        ),
+        17 => format!(
+            "static const void *f{n}(const void *s, void *d){{ return s < d ? s : d; }}\nstatic int g{n}(const char *a, char *b){{ return *(a < b ? a : b); }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),

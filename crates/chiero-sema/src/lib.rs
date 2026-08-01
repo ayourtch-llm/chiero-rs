@@ -175,6 +175,44 @@ pub enum Ty {
     Error,
 }
 
+/// The qualifiers on a type: `const`, `volatile`, `restrict` (C 6.7.3).
+///
+/// **Held beside the type rather than inside it.** `Ty` could have gained a `Qualified { of, q }`
+/// variant, and §9 budgeted 436 match sites for the audit that would need; the audit found the
+/// number is 274 across two crates, and that *none of them want to see the qualifier* — a
+/// qualified `int` is laid out, promoted, converted and lowered exactly like an `int`. So the
+/// qualifier goes in a table parallel to `types`, the interning key becomes `(Ty, Qual)`, and
+/// every existing `match self.out.types[t]` keeps seeing the unqualified shape it was written
+/// for. What changes meaning is `TyId` equality, and that is **four sites**.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Qual {
+    pub const_: bool,
+    pub volatile_: bool,
+    pub restrict_: bool,
+}
+
+impl Qual {
+    pub const NONE: Qual = Qual {
+        const_: false,
+        volatile_: false,
+        restrict_: false,
+    };
+
+    /// Whether `self` has every qualifier `other` has — C 6.5.16.1's "all the qualifiers of".
+    ///
+    /// `restrict` is **not** included. C 6.7.3.1 makes it a promise about aliasing rather than a
+    /// property the assignment must preserve, and gcc accepts `int *p = rp;` from a
+    /// `int *restrict rp`. Including it would reject correct code, which wave 303's rule ranks
+    /// worse than missing incorrect code.
+    fn covers(self, other: Qual) -> bool {
+        (self.const_ || !other.const_) && (self.volatile_ || !other.volatile_)
+    }
+
+    fn is_none(self) -> bool {
+        self == Qual::NONE
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FloatKind {
     Binary16,
@@ -417,7 +455,16 @@ pub struct GlobalTable {
 #[derive(Debug, Default)]
 pub struct Analysis {
     pub(crate) types: Vec<Ty>,
-    pub(crate) interned: IndexMap<Ty, TyId>,
+    /// The qualifiers of each `TyId`, parallel to `types`. See [`Qual`].
+    pub(crate) quals: Vec<Qual>,
+    /// Each `TyId` → the same type with its qualifiers removed, parallel to `types`.
+    ///
+    /// **Precomputed rather than re-interned on demand**, because the places that need it —
+    /// assignment, comparison, the usual conversions — hold `&self` and interning needs `&mut`.
+    /// A qualified type is always interned *after* its unqualified form, so the entry always
+    /// exists by the time anything can ask.
+    pub(crate) unqual: Vec<TyId>,
+    pub(crate) interned: IndexMap<(Ty, Qual), TyId>,
     pub(crate) records: Vec<RecordLayout>,
     pub(crate) by_tag: IndexMap<Symbol, RecordId>,
     pub(crate) decl_types: IndexMap<DeclId, TyId>,
@@ -574,6 +621,20 @@ impl Analysis {
         self.by_tag.iter().find(|&(_, &r)| r == id).map(|(&s, _)| s)
     }
 
+    /// This type without its qualifiers (C 6.7.3), for consumers asking about representation.
+    ///
+    /// A qualifier changes what a program may *do* with an object, never how the object is laid
+    /// out or converted — so anything reasoning about representation should ask this, and
+    /// anything reasoning about assignment should not.
+    pub fn unqualified(&self, t: TyId) -> TyId {
+        self.unqual[t.0 as usize]
+    }
+
+    /// The qualifiers on this type.
+    pub fn qualifiers(&self, t: TyId) -> Qual {
+        self.quals[t.0 as usize]
+    }
+
     pub fn ty_of_decl(&self, d: DeclId) -> Option<TyId> {
         self.decl_types.get(&d).copied()
     }
@@ -584,7 +645,7 @@ impl Analysis {
     /// `TyId(0)` is whichever type was interned first, which is an arbitrary type wearing
     /// the name of an error.
     pub fn interned_error(&self) -> Option<TyId> {
-        self.interned.get(&Ty::Error).copied()
+        self.interned.get(&(Ty::Error, Qual::NONE)).copied()
     }
 
     /// Any valid id, for a caller that must return *something*. Prefer
@@ -1001,13 +1062,55 @@ enum Scope {
 
 impl Cx<'_> {
     fn intern(&mut self, ty: Ty) -> TyId {
-        if let Some(&id) = self.out.interned.get(&ty) {
+        self.intern_qual(ty, Qual::NONE)
+    }
+
+    /// Intern a type carrying qualifiers.
+    ///
+    /// The unqualified form is interned **first and unconditionally**, so `unqual` is populated
+    /// before anything holding only `&self` can look the qualified id up.
+    fn intern_qual(&mut self, ty: Ty, q: Qual) -> TyId {
+        if let Some(&id) = self.out.interned.get(&(ty.clone(), q)) {
             return id;
         }
+        let bare = if q.is_none() {
+            TyId(self.out.types.len() as u32)
+        } else {
+            self.intern(ty.clone())
+        };
         let id = TyId(self.out.types.len() as u32);
         self.out.types.push(ty.clone());
-        self.out.interned.insert(ty, id);
+        self.out.quals.push(q);
+        self.out.unqual.push(bare);
+        self.out.interned.insert((ty, q), id);
         id
+    }
+
+    /// The same type without its qualifiers.
+    fn bare(&self, t: TyId) -> TyId {
+        self.out.unqual[t.0 as usize]
+    }
+
+    fn qual_of(&self, t: TyId) -> Qual {
+        self.out.quals[t.0 as usize]
+    }
+
+    /// `t` with `q` added to whatever it already carries.
+    fn add_quals(&mut self, t: TyId, q: Qual) -> TyId {
+        if q.is_none() {
+            return t;
+        }
+        let had = self.qual_of(t);
+        let merged = Qual {
+            const_: had.const_ || q.const_,
+            volatile_: had.volatile_ || q.volatile_,
+            restrict_: had.restrict_ || q.restrict_,
+        };
+        if merged == had {
+            return t;
+        }
+        let ty = self.out.types[t.0 as usize].clone();
+        self.intern_qual(ty, merged)
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -1464,8 +1567,37 @@ impl Cx<'_> {
     fn ty_of(&mut self, ty: TypeId) -> TyId {
         let base = self.ty_of_inner(ty);
         let out = self.apply_vector_size(ty, base);
+        let out = self.qualify(ty, out);
         self.out.syntactic_types.insert(ty, out);
         out
+    }
+
+    /// Attach a syntactic node's qualifiers to the type it produced.
+    ///
+    /// Applied **here rather than in `ty_of_inner`'s arms** so that it reaches every spelling with
+    /// one rule, including a typedef: `typedef int *ip; const ip p;` qualifies the whole typedef'd
+    /// type, making `p` an `int *const` and not a pointer to `const int`, which is the reading
+    /// people expect and C does not use.
+    ///
+    /// **Qualifying an array qualifies its element** (C 6.7.3p9), and it must, because the array
+    /// is only ever seen through its decay: `const int a[3]` has to give `&a[0]` the type
+    /// `const int *` or `int *p = a;` looks fine. A qualifier left on the `Ty::Array` itself would
+    /// be dropped by the decay and the rule would silently do nothing.
+    fn qualify(&mut self, node: TypeId, t: TyId) -> TyId {
+        let q = self.ast.ty(node).quals;
+        let q = Qual {
+            const_: q.const_,
+            volatile_: q.volatile_,
+            restrict_: q.restrict_,
+        };
+        if q.is_none() {
+            return t;
+        }
+        if let Ty::Array { elem, len } = self.out.types[t.0 as usize].clone() {
+            let e = self.add_quals(elem, q);
+            return self.intern(Ty::Array { elem: e, len });
+        }
+        self.add_quals(t, q)
     }
 
     /// `__attribute__((vector_size(n)))` turns the type it is written on into a vector of
@@ -2927,8 +3059,15 @@ impl Cx<'_> {
     /// **Not inserting a no-op cast is the point**, not an optimization: contract 11's
     /// corpus check reads operand types, and a tree full of `int -> int` casts would
     /// satisfy it while saying nothing. A `Cast` here means a real conversion happened.
+    ///
+    /// **Compared bare, because a qualifier has no representation.** Reading an object yields an
+    /// unqualified value (C 6.3.2.1p2), so `const int` reaching an `int` is not a conversion at
+    /// all — there is nothing to convert. Wave 328 made qualifiers part of type identity and this
+    /// comparison started saying otherwise: `return table[i];` from a `const int[]` grew a
+    /// `bitcast i32 to i32`, which is precisely the vacuous cast the paragraph above says must
+    /// not exist. The golden caught it.
     fn convert(&mut self, node: TypedId, to: TyId, why: Conversion, span: Span) -> TypedId {
-        if self.out.typed.ty_of(node) == to {
+        if self.bare(self.out.typed.ty_of(node)) == self.bare(to) {
             return node;
         }
         self.push_typed(TypedNode::Cast {
@@ -3393,6 +3532,17 @@ impl Cx<'_> {
                     );
                 }
                 let ty = found.unwrap_or_else(|| self.intern(Ty::Error));
+                // **A member of a qualified aggregate is qualified** (C 6.5.2.3p3). `s->m` where
+                // `s` is a `const struct S *` has type `const int` even where `m` is declared
+                // plain `int`, so `&s->m` is a `const int *` and cannot initialize an `int *`.
+                // The qualifiers come from the *record* — from the pointee for `->`, from the
+                // base itself for `.` — and not from the pointer, which is why this reads a
+                // different type in each arm.
+                let from_base = match &base_ty {
+                    Ty::Ptr(p) => self.qual_of(*p),
+                    _ => self.qual_of(bty),
+                };
+                let ty = self.add_quals(ty, from_base);
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty,
@@ -3631,9 +3781,18 @@ impl Cx<'_> {
                 // **Decayed, and that is the whole of "lvalue conversion" here.** C11 says
                 // the controlling expression's type is taken as if it had undergone lvalue
                 // conversion, so an array selects `int *` and a string literal `char *`.
-                // Qualifiers need no work at all: `Ty` does not carry them, so `const int`
-                // and `int` are already one interned id — which is why `const` matching
-                // `int` is free and not a rule implemented anywhere.
+                //
+                // **Lvalue conversion also drops qualifiers, and now that has to be done.**
+                // This comment used to say the opposite — that `const int` and `int` were
+                // already one interned id, so `const` matching `int` was free. Wave 328 made
+                // qualifiers part of type identity and that sentence became a wrong answer:
+                // `_Generic(c, int: 1, default: 2)` with a `const int c` startedselecting
+                // `default`. The differential channel caught it on the same run.
+                //
+                // **Stripped at the outermost level only**, which is what `bare` does and what
+                // gcc agrees with: `const int *p` still selects a `const int *` association,
+                // because the qualifier there is on the pointee and no conversion touches it.
+                // An association naming `const int` therefore matches nothing at all.
                 //
                 // **And no promotion.** Every other context here would call `promote_node`;
                 // doing so would make `(unsigned char)1` select `int`, which is the single
@@ -3668,7 +3827,7 @@ impl Cx<'_> {
                             let at = self.ty_of(t);
                             // Interned types compare by id, so this *is* the compatibility
                             // test for everything `_Generic` can name.
-                            if at == cty {
+                            if at == self.bare(cty) {
                                 // **Also 6.5.1.1p2: no two associations may name compatible
                                 // types.** Both of these guards survived mutation until they
                                 // were made to report, because only an *invalid* program can
@@ -4034,6 +4193,28 @@ impl Cx<'_> {
         );
         match (&ta, &tb) {
             (Ty::Error, _) | (_, Ty::Error) => self.intern(Ty::Error),
+            // **Two pointers meet at a pointee qualified with the qualifiers of both**
+            // (C 6.5.15p6). This is the conditional operator's rule, and it is the reason the
+            // rule exists: `src < dest ? src : dest` with a `const void *` and a `void *` is
+            // ordinary C — VPP's `clib_memcpy` writes it — and there is no conversion for either
+            // arm to undergo, because the answer is a *third* type that both convert to.
+            //
+            // Without it the two arms have no common type, `coerce` asks `assignable`, and the
+            // `void *` arm is reported as discarding `const`. Nine corpus headers said so at
+            // once, which is what a rule stated only in the negative looks like from the far
+            // side: the wave added "may not discard a qualifier" and forgot "and here is where
+            // qualifiers combine".
+            (Ty::Ptr(pa), Ty::Ptr(pb)) if self.bare(*pa) == self.bare(*pb) => {
+                let (qa, qb) = (self.qual_of(*pa), self.qual_of(*pb));
+                let both = Qual {
+                    const_: qa.const_ || qb.const_,
+                    volatile_: qa.volatile_ || qb.volatile_,
+                    restrict_: qa.restrict_ && qb.restrict_,
+                };
+                let bare = self.bare(*pa);
+                let pointee = self.add_quals(bare, both);
+                self.intern(Ty::Ptr(pointee))
+            }
             // Floating wins over integer, and the wider float wins.
             (Ty::Float(x), Ty::Float(y)) => {
                 let k = if float_rank(*x) >= float_rank(*y) {
@@ -4562,9 +4743,23 @@ impl Cx<'_> {
                 (Some(a), Some(b)) => {
                     let av = matches!(self.out.types[a.0 as usize], Ty::Void);
                     let bv = matches!(self.out.types[b.0 as usize], Ty::Void);
+                    // **The destination pointee must have every qualifier the source has**
+                    // (C 6.5.16.1p1). Checked for `void *` too: `void *p = cp;` from a
+                    // `const void *` discards `const` exactly as any other pointer would, and
+                    // exempting `void *` from the qualifier rule is how a permissive `void *`
+                    // case swallows it.
+                    if !self.qual_of(b).covers(self.qual_of(a)) {
+                        return false;
+                    }
                     // `void *` converts to and from any object pointer without a cast, in both
                     // directions — that is what makes it `void *`.
-                    av || bv || self.compatible(a, b)
+                    //
+                    // **Compared bare.** C ignores qualifiers only at *this* level: the check
+                    // above has already accounted for them here, and anything deeper is part of
+                    // the type. That is why `const int **cpp = pp;` is illegal in C though the
+                    // analogue is legal in C++ — one level down, `int *` and `const int *` are
+                    // simply different types.
+                    av || bv || self.compatible(self.bare(a), self.bare(b))
                 }
                 _ => false,
             },
@@ -4683,41 +4878,35 @@ impl Cx<'_> {
     }
 
     fn check_writable(&mut self, target: ExprId, what: &str) {
-        let span = self.ast.expr(target).span;
-        match self.ast.expr(target).kind.clone() {
-            ExprKind::Ident(n) => {
-                if self.read_only.contains(&n) {
-                    let name = self.text(n).unwrap_or("?").to_owned();
-                    self.error(span, format!("{what} read-only object `{name}`"));
-                }
-            }
-            // **A write *through* a pointer.** `*p`, `p[i]` and `p->m` are the same access
-            // written three ways, so they share one question: does `p` point at something
-            // `const`? `p->m` is `(*p).m`, which is why a member reached by arrow lands here and
-            // a member of a local struct does not.
-            ExprKind::Unary {
-                op: UnOp::Deref,
-                operand,
-            }
-            | ExprKind::Index { base: operand, .. }
-            // `arrow: true` is **measured equivalent** to `arrow: _` — a `.` member access on
-            // something in this set cannot arise, since the set holds pointers and arrays and a
-            // struct value is neither. It is written the strict way because it states which
-            // access this arm is about, not because a case distinguishes it.
-            | ExprKind::Member {
-                base: operand,
-                arrow: true,
-                ..
-            } => {
-                if let ExprKind::Ident(n) = self.ast.expr(operand).kind
-                    && self.read_only_pointee.contains(&n)
-                {
-                    let name = self.text(n).unwrap_or("?").to_owned();
-                    self.error(span, format!("{what} read-only location through `{name}`"));
-                }
-            }
-            _ => {}
+        // **One question about the type, not four questions about the syntax.**
+        //
+        // This was three scoped name-sets and a syntactic walk: `read_only` for a `const` object,
+        // `read_only_pointee` for a pointer parameter whose element was `const`, and an arm each
+        // for `*p`, `p[i]` and `p->m` to route a write through a pointer to the second set. Every
+        // one of them was reconstructing, from the spelling of the declaration, what the type
+        // now says outright. `s->m` where `m` is declared `const` was the case no amount of
+        // spelling could reach, because the qualifier is on the *member*.
+        //
+        // `type_of_written` types the target, which the callers do again immediately after;
+        // `type_expr` is memoized, so the second call is a lookup.
+        let Some(t) = self.type_of_written(target) else {
+            return;
+        };
+        if !self.qual_of(t).const_ {
+            return;
         }
+        let span = self.ast.expr(target).span;
+        // The name is worth naming when there is one, and there usually is: a write is to an
+        // object, through a pointer, or to a member, and all three have something to call it.
+        let named = match self.ast.expr(target).kind.clone() {
+            ExprKind::Ident(n) => self.text(n).map(|t| format!(" `{t}`")),
+            ExprKind::Member { field, .. } => self.text(field).map(|t| format!(" `{t}`")),
+            _ => None,
+        };
+        self.error(
+            span,
+            format!("{what} read-only object{}", named.unwrap_or_default()),
+        );
     }
 
     /// Whether this declared type is a pointer — or an array, which a parameter's is — whose

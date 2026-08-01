@@ -475,8 +475,14 @@ fn no_operation_in_the_corpus_is_left_implicit() {
             if operands.len() != 2 {
                 continue;
             }
-            let a = typed.ty_of(operands[0]);
-            let b = typed.ty_of(operands[1]);
+            // **Compared without qualifiers.** Contract 11 asks whether lowering would have to
+            // *infer an operation*; a qualifier is not one. `x & c` with a `const u64` `c` needs
+            // no conversion at all — the two operands have one representation, and C's usual
+            // arithmetic conversions act on values, which lvalue conversion has already stripped.
+            // Wave 328 made qualifiers part of type identity and twenty corpus operations
+            // appeared here overnight, every one of them `u64` against `u64`.
+            let a = p.analysis.unqualified(typed.ty_of(operands[0]));
+            let b = p.analysis.unqualified(typed.ty_of(operands[1]));
             // A pointer operand is legitimately of a different type from an integer one
             // (`p + n`), and a comparison against a null constant likewise.
             let scalarish =
