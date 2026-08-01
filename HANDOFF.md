@@ -487,34 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 354) — 1536 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 355) — 1536 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 156 of 156, `chiero-pp` 27 of 27, `chiero-parse` clean**, and sema now has a **third**
-> channel: `one_mistake_produces_one_diagnostic` — contract 20, over the same rows.
+> **Sema 156 of 156, `chiero-pp` 27 of 27, `chiero-parse` clean.** Wave 336's `FloatKind` limit is
+> closed; all ten float kinds are distinct types with the right ranks, widths and representations.
 >
 > **Next, in descending order of what they buy:**
->   1. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
->      (wave 336). gcc's `_Generic` distinguishes them; this engine does not, and wave 336's
->      fixture marks exactly where the missing rows go. **Sizes and alignments are already right**,
->      so this buys `_Generic` fidelity and nothing else — but it is now the oldest open item with
->      a known shape. Per wave 328, cost it by the sites that depend on *kind identity*, not by
->      `FloatKind::` mentions; it reaches `chiero-cir`, `chiero-lower` and `chiero-exec`.
->   2. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A `const` pointee would
->      tell 021 that a store through it is UB — a checker question, so cost it against 023 §7
->      first, and note it may be worth more than item 1 despite being newer.
->   3. **A census chosen by reading the standard.** Every neighbourhood this list named has been
->      run; the next one has to be picked from C itself. Unexamined so far: 6.5.2.5 compound
->      literals, 6.7.9's designator rules beyond wave 314, and 6.10.3.5's `#undef`/redefinition
->      interaction beyond wave 333.
->   4. **Give `chiero-pp` and `chiero-parse` the contract-20 channel too.** Both lists were
->      measured clean this wave, so the test is a gate rather than a fix — cheap, and it stops the
->      next cascade there.
+>   1. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328) — now the
+>      oldest open item. A `const` pointee would let 021 report a store through it as UB, which is
+>      a *checker* capability rather than a fidelity one. **Cost it the way wave 354 costed
+>      `FloatKind`**: add the field, let the compiler list what breaks, and count only that.
+>      Against 023 §7 first — decide what fidelity a missing qualifier implies before adding one.
+>   2. **A census chosen by reading C**, since every neighbourhood this list named is done.
+>      Unexamined: 6.5.2.5 compound literals, 6.7.9's designators beyond wave 314, 6.10.3.5's
+>      `#undef`/redefinition interaction beyond wave 333.
+>   3. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both lists were
+>      measured clean, so it is a gate rather than a fix — cheap.
 >
-> **A channel measured thin is still worth building, but say so.** This one found 1 of 181 rows,
-> and that one was a defect in the *row*. Its worth is proved by mutation instead: reverting each of
-> wave 351's three cascade fixes makes exactly one row report twice, and the ratchet catches none
-> of them. **When a new channel finds little, report the number and prove the channel with
-> mutants** rather than implying the search was rich.
+> **A catch-all arm in a mapping is a defect waiting for a new variant.** Wave 354 added four
+> `FloatKind`s and `cir_float_kind`'s `_ => X87_80` silently swallowed two of them, so one type had
+> two representations depending on which of the two maps a path took. **When adding a variant to an
+> enum, `grep` for catch-alls over it before trusting the compiler** — exhaustive matches announce
+> themselves and `_` arms do not. The same wave found `B::ExtFloat` reading `bits` and ignoring
+> `fmt`, which is the same failure in a different dress: a match that does not look at everything
+> that distinguishes its cases.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2820,6 +2816,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A catch-all arm is a defect waiting for a new variant** (wave 354). Adding four `FloatKind`s
+> broke five *exhaustive* matches, which the compiler named, and silently changed one `_ => X87_80`
+> that it did not — leaving the same type with two representations depending on which of two maps a
+> path took. **Before adding a variant, grep for `_ =>` arms over that enum**; the compiler only
+> protects you from the matches that were already complete.
+>
+> **A match must look at everything that distinguishes its cases** (wave 354). `B::ExtFloat` read
+> `bits` and ignored `fmt`, so `_Float64x` — which reports 64 bits — became `_Float64` and
+> `sizeof` answered 8 instead of 16. The parser had recorded `FloatFmt::Extended` all along.
+> **When two cases share a field's value, the discriminator is some other field** — find it before
+> assuming the first one identifies them.
 >
 > **A channel measured thin is still worth building — say the number** (wave 353). The contract-20
 > channel found 1 row of 181, and that one was a defect in the row rather than the engine. Its
