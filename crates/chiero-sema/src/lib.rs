@@ -3924,6 +3924,40 @@ impl Cx<'_> {
     /// nothing — one bad declaration is one diagnostic no matter how many times the name
     /// appears, which is what keeps a single missing header from burying the real problem
     /// under a hundred copies.
+    /// How many scalars this type can absorb from a brace-elided initializer.
+    ///
+    /// `None` when the answer is not a fixed number — a flexible or unsized array, an incomplete
+    /// record — in which case nothing is counted rather than something being guessed.
+    fn scalar_capacity(&self, ty: TyId) -> Option<u64> {
+        match self.out.types[ty.0 as usize].clone() {
+            Ty::Array {
+                elem,
+                len: ArrayLen::Fixed(n),
+            } => self.scalar_capacity(elem)?.checked_mul(n),
+            Ty::Array { .. } => None,
+            Ty::Record(r) => {
+                let rec = self.out.records.get(r.0 as usize)?;
+                if !rec.complete {
+                    return None;
+                }
+                let (fields, is_union) = (rec.fields.clone(), rec.is_union);
+                let each: Option<Vec<u64>> =
+                    fields.iter().map(|f| self.scalar_capacity(f.ty)).collect();
+                let each = each?;
+                // **A union holds one member at a time**, so its capacity is the largest of them
+                // rather than their sum — and a flat list may only ever fill the first.
+                if is_union {
+                    each.into_iter().max().or(Some(0))
+                } else {
+                    each.into_iter().try_fold(0u64, |a, b| a.checked_add(b))
+                }
+            }
+            Ty::Vector { lanes, .. } => Some(lanes as u64),
+            Ty::Void | Ty::Func { .. } | Ty::Error => None,
+            _ => Some(1),
+        }
+    }
+
     /// Whether this list leaves out braces around an aggregate member, as C 6.7.9p20 permits.
     ///
     /// The signal is an aggregate element initialised by something that is not itself a list.
@@ -3991,6 +4025,22 @@ impl Cx<'_> {
                 // is not a list — and distributing correctly is not, so this declines to answer
                 // rather than answering wrongly. `int a[2][2] = {1,2,3,4,5}` is a declared miss.
                 if self.elides_braces(elem, &items) {
+                    // **Count scalars, not items.** Distributing a flat list across sub-objects is
+                    // the hard part and is not needed to answer "is there one too many": the
+                    // aggregate's total scalar capacity against the list's length does it.
+                    //
+                    // Only when the list is *entirely* flat. `{{1,2},3,4}` is legal and a scalar
+                    // count cannot see where the braced item stops, so a mixed list is left
+                    // unchecked — a narrower limit than wave 314's, not a different one.
+                    let flat = items
+                        .iter()
+                        .all(|i| !matches!(self.ast.expr(i.value).kind, ExprKind::InitList(_)));
+                    if flat
+                        && let Some(cap) = self.scalar_capacity(target)
+                        && items.len() as u64 > cap
+                    {
+                        self.error(span, "excess elements in initializer");
+                    }
                     for item in &items {
                         self.type_expr(item.value);
                     }
@@ -4091,31 +4141,78 @@ impl Cx<'_> {
         }
     }
 
-    /// Whether an expression performs a call anywhere inside it.
+    /// Whether an expression *reads the value of an object*, which is the one thing a file-scope
+    /// initializer may not do (C 6.7.9p4).
     ///
-    /// The one thing a file-scope initializer certainly may not do: a call happens at run time and
-    /// there is nothing for the linker to write down.
-    fn contains_call(&self, e: ExprId) -> bool {
+    /// **Asked as a disqualification rather than as a qualification.** The positive question — "is
+    /// this a constant expression" — needs a complete account of address constants and gets it
+    /// wrong by omission, which is why wave 314 narrowed it to "contains a call". The negative
+    /// question has one answer: a name denoting an object whose value is read, or a call.
+    ///
+    /// Four things that look like reads and are not. An **array** or **function** name is an
+    /// address. An **enumerator** is a constant. A **`const` object** is one gcc folds —
+    /// `static const int c = 5; int g = c;` compiles even under `-pedantic-errors`, so rejecting
+    /// it would reject real code, and wave 311's `read_only` set is what knows. And an object of
+    /// **incomplete type** is skipped for contract 20's reason: its declaration has already been
+    /// reported, and one bad declaration is one diagnostic however often the name appears.
+    fn reads_an_object(&self, e: ExprId) -> bool {
         match self.ast.expr(e).kind.clone() {
             ExprKind::Call { .. } => true,
+            ExprKind::Ident(n) => {
+                if self.enumerators.contains_key(&n) || self.read_only.contains(&n) {
+                    return false;
+                }
+                match self.values.get(&n) {
+                    Some(t) => {
+                        !is_incomplete(&self.out, *t)
+                            && !matches!(
+                                self.out.types[t.0 as usize],
+                                Ty::Array { .. } | Ty::Func { .. }
+                            )
+                    }
+                    // An unknown name has been reported already; saying so twice helps nobody.
+                    None => false,
+                }
+            }
+            // **`&x` is an address, whatever `x` is** — the operand is not read, so the walk stops
+            // rather than descending into it.
+            ExprKind::Unary {
+                op: UnOp::AddrOf, ..
+            } => false,
             ExprKind::Unary { operand, .. } | ExprKind::Cast { operand, .. } => {
-                self.contains_call(operand)
+                self.reads_an_object(operand)
             }
-            ExprKind::Postfix { operand, .. } => self.contains_call(operand),
+            ExprKind::Postfix { operand, .. } => self.reads_an_object(operand),
             ExprKind::Binary { lhs, rhs, .. } | ExprKind::Assign { lhs, rhs, .. } => {
-                self.contains_call(lhs) || self.contains_call(rhs)
+                self.reads_an_object(lhs) || self.reads_an_object(rhs)
             }
-            ExprKind::Comma { lhs, rhs } => self.contains_call(lhs) || self.contains_call(rhs),
+            ExprKind::Comma { lhs, rhs } => self.reads_an_object(lhs) || self.reads_an_object(rhs),
             ExprKind::Index { base, index } => {
-                self.contains_call(base) || self.contains_call(index)
+                self.reads_an_object(base) || self.reads_an_object(index)
             }
-            ExprKind::Member { base, .. } => self.contains_call(base),
+            ExprKind::Member { base, .. } => self.reads_an_object(base),
             ExprKind::Cond { cond, then, els } => {
-                self.contains_call(cond)
-                    || then.is_some_and(|t| self.contains_call(t))
-                    || self.contains_call(els)
+                self.reads_an_object(cond)
+                    || then.is_some_and(|t| self.reads_an_object(t))
+                    || self.reads_an_object(els)
             }
-            ExprKind::InitList(items) => items.iter().any(|i| self.contains_call(i.value)),
+            ExprKind::InitList(items) => items.iter().any(|i| self.reads_an_object(i.value)),
+            _ => false,
+        }
+    }
+
+    /// An address constant the folder cannot answer for: an array or function name, or a string,
+    /// standing where a pointer is wanted.
+    fn is_address_constant(&self, e: ExprId) -> bool {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Str { .. } => true,
+            ExprKind::Cast { operand, .. } => self.is_address_constant(operand),
+            ExprKind::Ident(n) => self.values.get(&n).is_some_and(|t| {
+                matches!(
+                    self.out.types[t.0 as usize],
+                    Ty::Array { .. } | Ty::Func { .. }
+                )
+            }),
             _ => false,
         }
     }
@@ -4135,7 +4232,9 @@ impl Cx<'_> {
             ExprKind::Str { .. } => {}
             _ => {
                 let before = self.out.diagnostics.len();
-                let constant = self.eval(init).is_some() || self.addr_of(init).is_some();
+                let constant = self.eval(init).is_some()
+                    || self.addr_of(init).is_some()
+                    || self.is_address_constant(init);
                 self.out.diagnostics.truncate(before);
                 // **Not constant is not the same as "we could not fold it".** `eval` answers about
                 // arithmetic and `addr_of` about object addresses, and between them they miss
@@ -4147,7 +4246,7 @@ impl Cx<'_> {
                 // initializer containing a **call**. That is the census case, `int g = f();`, and
                 // it is sound where the general question is not. The declared miss is
                 // `int x; int g = x;` — a non-constant that this accepts.
-                if !constant && self.contains_call(init) {
+                if !constant && self.reads_an_object(init) {
                     let span = self.ast.expr(init).span;
                     self.error(span, "initializer element is not a constant expression");
                 }
