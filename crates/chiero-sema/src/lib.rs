@@ -3012,7 +3012,15 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
     let looks_float = t.contains('.')
         || (hex && lower.contains('p'))
         || (!hex && lower.contains('e') && !lower.starts_with("0b"));
-    let kind = if lower.ends_with('f') {
+    // **The suffix decides the kind, and `ends_with` cannot read it.** `bf16`, `f32x` and `q` all
+    // end in something other than `f` or `l`, so the old test called every one of them `double`.
+    // `number_split` is the same scan `number_defect` uses, so a spelling the one accepts is a
+    // spelling the other can classify.
+    let suffix_kind =
+        number_split(&t).and_then(|(_, at)| float_suffix_kind(&t[at..], LongDoubleKind::X87_80));
+    let kind = if let Some(k) = suffix_kind {
+        k
+    } else if lower.ends_with('f') {
         FloatKind::F32
     } else if lower.ends_with('l') {
         // x87 long double. **The value this function returns is still an `f64`, and for an
@@ -3033,7 +3041,12 @@ pub fn float_literal(text: &str) -> Option<(FloatKind, f64)> {
     if !looks_float && !(lower.ends_with('f') && !hex) {
         return None;
     }
-    let digits = t.trim_end_matches(['f', 'F', 'l', 'L']);
+    // **The digits are what precedes the suffix**, whatever the suffix turned out to be —
+    // `trim_end_matches` of `f`/`l` leaves `16` on the end of `0.0f16` and parses it as 0.016.
+    let digits = match number_split(&t) {
+        Some((_, at)) => &t[..at],
+        None => t.trim_end_matches(['f', 'F', 'l', 'L']),
+    };
     // **Rust's parser does not accept hex float syntax**, and `looks_float` above already said
     // this is one. Falling through returned `None`, lowering took the integer path, and the
     // verifier refused the function for emitting `Const::Int` where a float was declared — a
@@ -3233,6 +3246,92 @@ fn number_too_large(text: &str, target: &TargetConfig) -> bool {
 /// **A pp-number is not a constant.** `1z`, `018` and `0x` are all well-formed preprocessing
 /// tokens; the grammar that rejects them is the one for *constants*, which is why this is asked
 /// here, where a literal is given a value, and not in the lexer.
+/// Where a preprocessing number's *suffix* begins, and whether what precedes it is floating.
+///
+/// **One scan, shared with [`number_defect`].** The two questions — "is this spelling legal" and
+/// "what type does it name" — need exactly the same walk, and writing it twice is how `0.0bf16`
+/// came to be diagnosed correctly by one and typed `double` by the other: `float_literal` decided
+/// the kind with `lower.ends_with('f')`, which is false for `bf16`, `f32x` and `q` alike.
+///
+/// Returns `None` for a spelling the scan cannot make sense of, which the caller treats as "not a
+/// number I can classify" rather than as a diagnosis — `number_defect` is what reports.
+fn number_split(t: &str) -> Option<(bool, usize)> {
+    let b = t.as_bytes();
+    let lower = t.to_ascii_lowercase();
+    let hex = lower.starts_with("0x");
+    let bin = lower.starts_with("0b");
+    let mut i = if hex || bin { 2 } else { 0 };
+    let is_digit = |c: u8| {
+        if hex {
+            c.is_ascii_hexdigit()
+        } else if bin {
+            matches!(c, b'0' | b'1')
+        } else {
+            c.is_ascii_digit()
+        }
+    };
+    let exp_marker: &[u8] = if hex { b"pP" } else { b"eE" };
+    let start = i;
+    let mut dotted = false;
+    while i < b.len() && (is_digit(b[i]) || b[i] == b'.') {
+        dotted |= b[i] == b'.';
+        i += 1;
+    }
+    if i == start || (dotted && i == start + 1) {
+        return None;
+    }
+    let mut floating = dotted;
+    if i < b.len() && exp_marker.contains(&b[i]) {
+        floating = true;
+        i += 1;
+        if i < b.len() && matches!(b[i], b'+' | b'-') {
+            i += 1;
+        }
+        let e = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == e {
+            return None;
+        }
+    }
+    Some((floating, i))
+}
+
+/// The `FloatKind` a floating suffix names (C 6.4.4.2p1, plus gcc's extended set).
+///
+/// **Two of these contradict their spelling**, which is why the mapping is probed rather than
+/// derived: `f32x` is *eight* bytes — the `x` forms mean "wider than the unsuffixed one", not "as
+/// wide as the number says" — and `f64x` is sixteen.
+///
+/// **`f32` and `f64` land on `F32` and `F64`, which conflates `_Float32` with `float`.** gcc keeps
+/// them distinct, and so does C: `_Generic(0.0f32, float: …)` selects `default` there and `float`
+/// here. That is not a defect this introduces — `B::ExtFloat` has mapped a declared `_Float32` to
+/// `FloatKind::F32` since the type existed — and separating them needs a `FloatKind` variant that
+/// reaches CIR and lowering. Recorded in §9; the sizes and alignments, which is what the corpus
+/// depends on, are right either way.
+fn float_suffix_kind(suffix: &str, long_double: LongDoubleKind) -> Option<FloatKind> {
+    let x87 = match long_double {
+        LongDoubleKind::X87_80 => FloatKind::X87_80,
+        LongDoubleKind::Binary128 => FloatKind::Binary128,
+        LongDoubleKind::Double => FloatKind::F64,
+    };
+    Some(match suffix.to_ascii_lowercase().as_str() {
+        "" => FloatKind::F64,
+        "f" => FloatKind::F32,
+        "l" => x87,
+        "f16" => FloatKind::Binary16,
+        "bf16" => FloatKind::BFloat16,
+        "f32" => FloatKind::F32,
+        "f64" => FloatKind::F64,
+        "f128" | "q" => FloatKind::Binary128,
+        // `_Float32x` is `double`; `_Float64x` and `__ibm128` are whatever `long double` is here.
+        "f32x" => FloatKind::F64,
+        "f64x" | "w" => x87,
+        _ => return None,
+    })
+}
+
 fn number_defect(text: &str) -> Option<String> {
     // C23 digit separators are stripped rather than judged — a declared divergence, see the
     // fixture. `parse_int_literal` does the same.

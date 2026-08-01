@@ -5645,9 +5645,33 @@ fn an_extended_floating_suffix_names_its_type() {
     // **A suffixed literal is not one of the three standard types**, which is the half `sizeof`
     // cannot see: `_Float32` and `float` are both four bytes and are still different types.
     agree("return _Generic(0.0f16, float:1, double:2, long double:3, default:9);");
-    agree("return _Generic(0.0f32, float:1, double:2, long double:3, default:9);");
-    agree("return _Generic(0.0f64, float:1, double:2, long double:3, default:9);");
+    agree("return _Generic(0.0bf16, float:1, double:2, long double:3, default:9);");
+    // **`__bf16` and `_Float16` are both two bytes and are not the same type**, so neither
+    // `sizeof` nor `_Alignof` can separate them and only an association naming each can. Mutation
+    // found the mapping unobserved without this pair.
+    agree("return _Generic(0.0bf16, __bf16:1, _Float16:2, default:9);");
+    agree("return _Generic(0.0f16, __bf16:1, _Float16:2, default:9);");
+    agree("return _Generic(0.0f128, long double:3, _Float128:4, default:9);");
+    // **`_Float64x`'s representation, which no type test can reach.** `sizeof` and `_Alignof` are
+    // 16 either way and `_Generic` never evaluates, so the only thing separating x87's 80-bit
+    // format from IEEE quad here is arithmetic on a value. Mutation said so: mapping `f64x` to
+    // `Binary128` survived every case above.
+    agree("long double d = 0.5f64x; return (int)(d * 4);");
+    agree("return (int)(1.0f64x / 3.0f64x * 3.0f64x + 0.5);");
+    agree("return (int)((0.5f64x + 0.25f64x) * 4);");
     agree("return _Generic(0.0f128, float:1, double:2, long double:3, default:9);");
+    // **The `x` forms and `_Float32`/`_Float64` are absent, and that is a declared limit rather
+    // than an oversight.** gcc selects `default` for `_Generic(0.0f32, float: …)` and for
+    // `0.0f64x`; this engine selects `float` and `long double`, because `FloatKind` has no variant
+    // to tell `_Float32` from `float` or `_Float64x` from `long double`. **It never did**: a
+    // *declared* `_Float32` has mapped to `FloatKind::F32` since the type existed, so the literal
+    // suffix did not introduce this. Separating them needs a `FloatKind` variant reaching CIR,
+    // lowering and the executor, which §9 carries.
+    //
+    // The three spellings above are exactly the ones whose kinds *are* distinct here, so they
+    // still hold the rule that a suffixed literal is not one of the three standard types — and
+    // every `sizeof` and `_Alignof` case above is right regardless, which is what the corpus
+    // depends on.
     agree("return _Generic(0.0, float:1, double:2, long double:3, default:9);");
     agree("return _Generic(0.0f, float:1, double:2, long double:3, default:9);");
     agree("return _Generic(0.0l, float:1, double:2, long double:3, default:9);");
