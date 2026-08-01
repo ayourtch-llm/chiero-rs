@@ -487,32 +487,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 336) — 1515 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 337) — 1516 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema's ratchet is 113 of 113, `chiero-pp`'s is 27 of 27.** Both empty queues.
+> **Sema's ratchet is 113 of 113, `chiero-pp`'s 27 of 27**, and wave 335's literal-typing defect is
+> closed. Both queues empty.
 >
 > **Next, in descending order of what they buy:**
->   1. **`0.0f16` is typed `double`.** Wave 335's census surfaced this and deliberately did not fix
->      it: `number_defect` now *accepts* gcc's extended floating suffixes, because every VPP header
->      reaches one, but `float_literal` still knows only `f` and `l`, so the literal gets
->      `FloatKind::F64`. The `Ty::Float` kinds already exist (`Binary16`, `BFloat16`, `Binary128`,
->      …) and `Kw::F16` types a *declaration* correctly — it is only the literal suffix that is
->      unread. **A wrong type on a literal the corpus actually contains**, so this outranks a new
->      census.
->   2. **The four C 6.4 rows wave 335 left**: an empty character constant, `\q`, `\x` with no
+>   1. **The four C 6.4 rows wave 335 left**: an empty character constant, `\q`, `\x` with no hex
 >      digits, and an octal escape out of range. All four live in `strlit.rs`, which **has no
->      diagnostic channel at all** — it returns values and cannot report. That is a refactor
->      (thread a `&mut Vec<Diagnostic>` or return a result), and it is the reason they were not
->      done with the rest.
->   3. **Census `chiero-parse`** — the last crate with a corpus channel and no constraint list.
->      C 6.7.6's declarator syntax and 6.8's statement syntax.
+>      diagnostic channel** — it returns values and cannot report. Thread a `&mut Vec<…>` or return
+>      a result; the rules themselves are a line each. This is the only *named* outstanding
+>      constraint work.
+>   2. **Census `chiero-parse`** — the last crate with a corpus channel and no constraint list.
+>      C 6.7.6's declarator syntax and 6.8's statement syntax. Wave 333's rule has now paid twice
+>      (eleven rules from the preprocessor, thirteen from the lexer).
+>   3. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`.
+>      gcc's `_Generic` distinguishes them and this engine does not; wave 336's fixture marks
+>      exactly where the missing rows would go. **Predates the literal work** — a *declared*
+>      `_Float32` has mapped to `FloatKind::F32` since the type existed. Costing it: a new variant
+>      reaches `chiero-cir`, `chiero-lower` and `chiero-exec`, and per wave 328's rule the number
+>      to measure is not `FloatKind::` mentions but the places that *depend on kind identity*.
+>      Sizes and alignments are already right, so this buys `_Generic` fidelity and little else —
+>      rank it accordingly.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Wave 335 is the third time a new constraint found a defect that predates it** — after wave
-> 331's aliased `__gnuc_va_list` and wave 328's `_Generic`. The pattern is worth naming: a rule
-> that inspects a *shape* nothing inspected before will report on whatever was already wrong there.
-> Both times the right response was to accept the shape and record the defect separately, not to
-> half-fix it inside the wave.
+> **Wave 336's mutation is the lesson.** Three of seven mutants survived every *type*-shaped test —
+> `sizeof`, `_Alignof`, and `_Generic` against the three standard types — because two-byte kinds
+> are two bytes whatever you call them. Killing them needed associations naming the exact extended
+> types, and for `_Float64x` it needed **arithmetic on a value**, since nothing about a type can
+> separate x87's 80-bit format from IEEE quad at the same width. **When a rule maps spellings onto
+> representations, the mutants that survive are the ones two representations share — and the test
+> that kills them is a value, not a type.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2818,6 +2823,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a rule maps spellings onto representations, only a value separates equal-width kinds**
+> (wave 336). Three mutants survived `sizeof`, `_Alignof` and `_Generic`-against-the-standard-types
+> because `__bf16` and `_Float16` are both two bytes, and `_Float64x` and IEEE quad are both
+> sixteen. Two needed associations naming the exact type; the third needed **arithmetic**, because
+> no type test can see a format. **Ask what two candidate mappings would share, and test the thing
+> they do not.**
+>
+> **A second implementation of a grammar is where the defect will be** (wave 336). `number_defect`
+> knew the suffix grammar and `float_literal` guessed at it with `ends_with('f')` — false for
+> `bf16`, `f32x`, `q` and `w` — and the same duplication left `trim_end_matches` parsing `0.0f16`
+> as `0.016`. One shared scan answers both questions. This is the fourth time this project has
+> found one rule implemented twice and the copies disagreeing.
 >
 > **A new constraint reports on whatever was already wrong in the shape it inspects** (wave 335,
 > and 331 and 328 before it). Suffix validation found `0.0f16` typed as `double`; the
