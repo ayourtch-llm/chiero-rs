@@ -487,17 +487,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 318) — 1491 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 319) — 1491 tests, 4 ignored, M1 165/165 by contract
 >
 > **Next, in descending order of what they buy:**
 >   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
 >      the thing that would make wave 316's pointee rule semantic rather than syntactic. Budget for
 >      auditing **436 `Ty::` match sites across four crates**; do not start by adding the variant.
->   2. **The three unfalsifiable arms above**, if a cheaper win is wanted — each needs one case
->      routed past the check that currently answers first, which is a fixture problem rather than a
->      code one.
->   3. **A fourth census**, for a fresh area: `switch`/`case` type rules, `_Generic` selection, or
+>   2. **A fourth census**, for a fresh area: `switch`/`case` type rules, `_Generic` selection, or
 >      `restrict`/`volatile`.
+>
+> The initializer and constant-expression work is closed: both of wave 314's declared misses are
+> fixed, and the two arms that remain unfalsifiable are labelled with their reasons rather than
+> left as a puzzle.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -910,12 +911,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `const` object (**gcc folds it**, even under `-pedantic-errors`), and an object of incomplete
 > type (contract 20 — its declaration was reported already).
 >
-> **Three arms are measured unfalsifiable and labelled at the site**: the union branch of
-> `scalar_capacity`, the unsized-array `None`, and the `AddrOf` short-circuit. The cause is the
-> same each time — *another check answers first*: a union in an over-long list trips the array
-> range rule before capacity is consulted, and a bare `&y` is folded by `addr_of` before the read
-> walk runs. **Whoever revisits this should route a case past the earlier check**, not write one
-> that produces the right diagnostic by the wrong road.
+> **Two arms are measured unreachable and labelled at the site**, each with its own reason:
+>   - the **unsized-array `None`** — an array written `[]` *with* an initializer has its length
+>     inferred before this runs, so the target is always `Fixed`; the arm exists for shapes reached
+>     by recursion, and a flexible array member is caught by the record rule first;
+>   - the **`AddrOf` short-circuit** in `reads_an_object` — every address constant that gets that
+>     far has already been answered by `addr_of`, `(long)&y` included.
+>
+> **Wave 317 listed a third and was wrong.** The union branch of `scalar_capacity` is falsifiable;
+> the case written for it never reached the file, because an edit script raised on a later anchor
+> and wrote nothing. `union U u[2] = {1,2,3};` is the shape that reaches the capacity rule rather
+> than the array *range* rule, and with it present the mutant dies.
 >
 > ### 🟡 Pointee `const` — half done in wave 316, half still blocked
 >
@@ -2610,6 +2616,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Verify the fixture edit landed before believing the mutant that survives it** (wave 318). Wave
+> 317 recorded three arms as unfalsifiable; one of them was not, and the difference was an edit
+> script that asserted on its third anchor and wrote *nothing* — losing two cases while a separate
+> edit landed, so the file looked half-updated and the conclusion looked measured. **A survivor is
+> evidence about the test that ran, and the test that ran is not always the test you wrote.**
+> `grep` for the case before drawing the conclusion; it costs one command.
 >
 > **When a mutant survives, ask which check answered first** (wave 317). Three arms could not be
 > falsified, and in every case the fixture reached a *different* rule that produced a diagnostic
