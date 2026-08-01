@@ -252,12 +252,12 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// The measured count at wave 325. **Raise this when a rule is added; never lower it.**
     ///
-    /// The nine below the line at that measurement, which is the queue this channel exists to
-    /// keep visible: discarding `const` (needs qualified types — 436 `Ty::` sites, see §9),
-    /// assigning to an array, calling with too few or too many arguments, returning a value from
-    /// a `void` function, a duplicate struct member, a duplicate parameter name, a `goto` into a
-    /// VLA's scope, and taking the address of a `register` object.
-    const FLOOR: usize = 54;
+    /// Wave 325 measured 54, then closed three of the nine in the same wave — the call-arity and
+    /// void-`return` rules — and raised this to 57. The six below the line are the queue this
+    /// channel exists to keep visible: discarding `const` (needs qualified types — 436 `Ty::`
+    /// sites, see §9), assigning to an array, a duplicate struct member, a duplicate parameter
+    /// name, a `goto` into a VLA's scope, and taking the address of a `register` object.
+    const FLOOR: usize = 57;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

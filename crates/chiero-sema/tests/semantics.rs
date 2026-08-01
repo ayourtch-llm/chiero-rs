@@ -722,6 +722,12 @@ fn the_type_constraints_of_census_rows_four_to_seven() {
         // Row 7: a void call has no value to use.
         "void v(void); int f(void){ return v(); }",
         "void v(void); int f(void){ int x = v(); return x; }",
+        // **`return v();` from a `void` function is a constraint violation** (C 6.8.6.4p1), and
+        // wave 311 put it in the *accepted* list by checking gcc's default, which is lenient
+        // about it. Wave 314 established that this project calibrates to `-pedantic-errors`
+        // precisely because half of C's constraint violations are warnings by default; under
+        // that setting gcc rejects this, so it belongs here.
+        "void v(void); void w(void){ return v(); }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -746,10 +752,6 @@ fn the_type_constraints_of_census_rows_four_to_seven() {
         "typedef void V; V h(void); int f(void){ h(); return 0; }",
         // A function returning void, defined and called.
         "static void s(int *p){ *p = 1; } int f(void){ int x=0; s(&x); return x; }",
-        // **`return v();` from a `void` function is legal** (C 6.8.6.4p1) and is the reason the
-        // void-value rule tests the *target* type rather than just the source. Dropping that test
-        // rejects this and passes everything else in the list.
-        "void v(void); void w(void){ return v(); }",
         "void v(void); void w(void){ v(); return; }",
         // **A block may shadow a `const` with a mutable object.** Without the removal from the
         // read-only set, the inner `k` would inherit the outer one's constness and this would be

@@ -3342,6 +3342,46 @@ impl Cx<'_> {
                 } else {
                     ret
                 };
+                // **The argument count must match the parameter list** (C 6.5.2.2p2), with two
+                // exemptions that are the difference between a rule and a nuisance:
+                //
+                //   - a **variadic** function takes *at least* its named parameters, so `...`
+                //     turns the equality into a minimum;
+                //   - an **empty** parameter list is "unspecified", not "none" — `int g();`
+                //     admits any call, and the parser cannot tell it from `int g(void)` anyway
+                //     (wave 313 met the same limit from the declaration side).
+                //
+                // For this engine a short call is not just a diagnostic: the missing parameter
+                // reads whatever the frame held, which the memory model then reports against the
+                // *callee*.
+                // **Through the pointer, as the arm above does.** A callee decays to a pointer
+                // to function, so matching `Ty::Func` alone sees nothing — which is exactly what
+                // the first version of this check did, silently.
+                let signature = match callee_ty.clone() {
+                    Ty::Func {
+                        params, variadic, ..
+                    } => Some((params, variadic)),
+                    Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
+                        Ty::Func {
+                            params, variadic, ..
+                        } => Some((params, variadic)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some((formals, variadic)) = signature
+                    && !formals.is_empty()
+                {
+                    let n = args.len();
+                    let want = formals.len();
+                    if n < want || (n > want && !variadic) {
+                        let how = if n < want { "few" } else { "many" };
+                        self.error(
+                            span,
+                            format!("too {how} arguments: expected {want}, got {n}"),
+                        );
+                    }
+                }
                 let mut ops = vec![c];
                 for (i, a) in args.iter().enumerate() {
                     let node = self.type_expr(*a);
@@ -4754,6 +4794,16 @@ impl Cx<'_> {
             }
             StmtKind::Return(Some(e)) => {
                 let node = self.type_expr(e);
+                // **A `return` with a value in a `void` function** (C 6.8.6.4p1). Checked here
+                // rather than through `coerce`, which is never reached: there is no return type
+                // to convert *to*, so the conversion that would have complained never happens.
+                if self
+                    .current_ret
+                    .is_some_and(|r| matches!(self.out.types[r.0 as usize], Ty::Void))
+                {
+                    let span = self.ast.expr(e).span;
+                    self.error(span, "`return` with a value in a function returning `void`");
+                }
                 // **A returned value is converted to the function's return type.**
                 // `Conversion::Return` existed in the enum and nothing produced it, so
                 // `char f(void) { return 300; }` returned 300 — the truncation C requires
