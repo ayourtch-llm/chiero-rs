@@ -478,6 +478,11 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "pointer ordered against zero",
         "int f(int *p){ return p > 0; }",
     ),
+    // **Wave 350's case-range rules are deliberately absent.** gcc rejects `case 1 ... 3` under
+    // `-pedantic-errors` because ISO C has no case ranges at all, so a row here would be counted
+    // as caught for a reason that is not the one under test — the overlap. This list's contract is
+    // that every entry is a violation gcc confirms, and it cannot confirm this one. The rules are
+    // held by `a_case_range_occupies_every_value_in_it`, which is calibrated to GNU mode.
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {

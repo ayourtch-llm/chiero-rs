@@ -1011,7 +1011,18 @@ struct Cx<'a> {
     /// One frame per `switch` currently open: the case values seen, and whether a `default` has
     /// been. A stack rather than a set, because a nested switch starts a fresh set and a sibling
     /// switch may legally repeat every value of the one before it.
-    switches: Vec<(indexmap::IndexSet<i128>, bool)>,
+    /// Per open `switch`: the **closed intervals** its labels occupy, and whether a `default` has
+    /// been seen.
+    ///
+    /// **Intervals, not a set of values.** `case 1 ... 3` is a GNU range this engine supports, and
+    /// a set can only record one number for it — the lower bound, which is what wave 319 did, so
+    /// `case 2:` beside it collided with nothing. A range may span more values than are worth
+    /// enumerating (`case 0 ... 1000000`), so the interval is stored and intersection is asked
+    /// rather than membership.
+    ///
+    /// A `Vec` rather than a map: switches are short, the test is against every entry anyway, and
+    /// source order makes the diagnostics deterministic (001 §5).
+    switches: Vec<(Vec<(i128, i128)>, bool)>,
     /// The labels this function defines, and the `goto`s that named one. Collected for the whole
     /// function and checked at the end: a forward `goto` names a label declared later, so nothing
     /// can be decided at the point of use.
@@ -6195,8 +6206,8 @@ impl Cx<'_> {
                 // failure to fold is both conditions at once — which is why one complaint covers
                 // "not constant" and "not an integer" without having to tell them apart.
                 //
-                // A range (`case 1 ... 3`) is checked on its lower bound only, for the reason
-                // recorded on the duplicate rule below.
+                // A range's *bounds* are both constant expressions; the lower one is asked here
+                // and the upper one below, where the interval is built.
                 if self.eval(lo).is_none() {
                     let span = self.ast.expr(lo).span;
                     self.error(span, "case label is not an integer constant expression");
@@ -6207,19 +6218,32 @@ impl Cx<'_> {
                     let span = self.ast.stmt(stmt).span;
                     self.error(span, "`case` label not within a switch");
                 }
-                let folded = if hi.is_none() {
-                    self.eval(lo).map(|v| v.v)
-                } else {
-                    None
+                // **The interval a label occupies.** A plain `case v:` is `[v, v]`; a range is
+                // `[lo, hi]`. An **empty** range — `case 3 ... 1` — occupies its *lower bound*
+                // and nothing else, which is gcc's rule and not an invention: `3 ... 1` collides
+                // with `case 3:` and with a second `3 ... 1`, and not with `1` or `2`. That is
+                // what `max` encodes, and it is why the old lower-bound-only rule looked right —
+                // it was correct for exactly the empty case and wrong for every other range.
+                let interval = match (self.eval(lo).map(|v| v.v), hi) {
+                    (Some(l), None) => Some((l, l)),
+                    (Some(l), Some(h)) => self.eval(h).map(|v| (l, v.v.max(l))),
+                    (None, _) => None,
                 };
-                if let Some(v) = folded {
-                    let duplicate = self
-                        .switches
-                        .last_mut()
-                        .is_some_and(|(seen, _)| !seen.insert(v));
-                    if duplicate {
+                if let Some((l, h)) = interval
+                    && let Some((seen, _)) = self.switches.last_mut()
+                {
+                    // Two closed intervals meet when neither ends before the other begins.
+                    let clash = seen.iter().any(|&(a, b)| l <= b && a <= h);
+                    if clash {
                         let span = self.ast.expr(lo).span;
-                        self.error(span, format!("duplicate case value `{v}`"));
+                        let what = if l == h {
+                            format!("duplicate case value `{l}`")
+                        } else {
+                            format!("case range `{l} ... {h}` overlaps an earlier label")
+                        };
+                        self.error(span, what);
+                    } else {
+                        seen.push((l, h));
                     }
                 }
                 self.type_stmt(body);
