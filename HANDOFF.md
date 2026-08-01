@@ -487,32 +487,34 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 353) — 1535 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 354) — 1536 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 154 of 154, `chiero-pp` 27 of 27, `chiero-parse` clean.** Every neighbourhood the census
-> method named has now been run, and the three audit sweeps are finished.
+> **Sema 156 of 156, `chiero-pp` 27 of 27, `chiero-parse` clean**, and sema now has a **third**
+> channel: `one_mistake_produces_one_diagnostic` — contract 20, over the same rows.
 >
 > **Next, in descending order of what they buy:**
->   1. **A contract-20 channel.** Wave 351 found three cascades by asking *does this program
->      produce exactly one diagnostic?*, and **no existing channel asks it**: the ratchet counts
->      rejections, the silence channel counts false positives, neither counts duplicates. Build it
->      the way the other generated channels are built — take `VIOLATIONS`' 154 rows, which are
->      one-mistake programs by construction, and assert `diagnostics.len() == 1` for each. Expect
->      cascades wherever a *specific* message is followed by a *generic* one about its consequence.
->   2. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
->      (wave 336). `_Generic` fidelity only; sizes and alignments are already right.
->   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A `const` pointee would
->      tell 021 a store through it is UB — a checker question, cost against 023 §7 first.
->   4. **Run the census again** on whatever C 6.5 operator constraints remain; the named
->      neighbourhoods are exhausted, so the next run has to be chosen by reading the standard
->      rather than by following this list.
+>   1. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
+>      (wave 336). gcc's `_Generic` distinguishes them; this engine does not, and wave 336's
+>      fixture marks exactly where the missing rows go. **Sizes and alignments are already right**,
+>      so this buys `_Generic` fidelity and nothing else — but it is now the oldest open item with
+>      a known shape. Per wave 328, cost it by the sites that depend on *kind identity*, not by
+>      `FloatKind::` mentions; it reaches `chiero-cir`, `chiero-lower` and `chiero-exec`.
+>   2. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A `const` pointee would
+>      tell 021 that a store through it is UB — a checker question, so cost it against 023 §7
+>      first, and note it may be worth more than item 1 despite being newer.
+>   3. **A census chosen by reading the standard.** Every neighbourhood this list named has been
+>      run; the next one has to be picked from C itself. Unexamined so far: 6.5.2.5 compound
+>      literals, 6.7.9's designator rules beyond wave 314, and 6.10.3.5's `#undef`/redefinition
+>      interaction beyond wave 333.
+>   4. **Give `chiero-pp` and `chiero-parse` the contract-20 channel too.** Both lists were
+>      measured clean this wave, so the test is a gate rather than a fix — cheap, and it stops the
+>      next cascade there.
 >
-> **When a rule is stated in four paragraphs, it will be implemented in none.** Wave 352's nine
-> misses were one table split across C 6.7.1p3, 6.8.5p3, 6.7.6.3p2 and 6.9.1p4 — each reads as a
-> minor aside about a different construct, and no single reading of the standard makes the shape
-> visible. **The grid is what made it one rule**: seven specifiers by five contexts, every cell put
-> to gcc. Look for other rules with that shape — the same specifier or type asked about in several
-> syntactic positions.
+> **A channel measured thin is still worth building, but say so.** This one found 1 of 181 rows,
+> and that one was a defect in the *row*. Its worth is proved by mutation instead: reverting each of
+> wave 351's three cascade fixes makes exactly one row report twice, and the ratchet catches none
+> of them. **When a new channel finds little, report the number and prove the channel with
+> mutants** rather than implying the search was rich.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2818,6 +2820,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A channel measured thin is still worth building — say the number** (wave 353). The contract-20
+> channel found 1 row of 181, and that one was a defect in the row rather than the engine. Its
+> value was shown by *mutation* instead: reverting each of wave 351's three cascade fixes makes a
+> row report twice and the ratchet notices none of them. **Report what a new channel found, and
+> prove it with mutants when the answer is "almost nothing".**
+>
+> **A test corpus row can carry more than one mistake** (wave 353). `struct I *p; void *q = p + 1;`
+> exercises the arithmetic rule *and* the constant-initializer rule, and both diagnostics are
+> correct. **A row that tests one rule must contain one mistake** — otherwise it cannot be used by
+> any channel that counts.
 >
 > **A rule stated in four paragraphs will be implemented in none** (wave 352). Which storage class
 > each context admits is one table, split across C 6.7.1p3, 6.8.5p3, 6.7.6.3p2 and 6.9.1p4; each
