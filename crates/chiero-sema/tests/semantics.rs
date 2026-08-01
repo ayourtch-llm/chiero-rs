@@ -2204,3 +2204,113 @@ fn a_typedef_takes_no_other_storage_class() {
         );
     }
 }
+
+/// **C 6.4.4's constraints on numeric constants** — wave 335's census over the lexer, and the
+/// first run against a crate `chiero-lex` shares with sema.
+///
+/// A *pp-number* is deliberately permissive: `1z` and `018` are well-formed preprocessing tokens
+/// and only stop being valid when something asks them for a value. So these rules live where that
+/// happens, and the census found the consequence of their absence is **not a missing diagnostic
+/// but a wrong answer** — when neither the integer nor the floating parser accepts a literal, the
+/// typing arm falls through to `FloatKind::F64`, so `int x = 018;` types as `double`.
+///
+/// The legal half carries the GNU extension this project accepts on purpose, because a rule
+/// written from C11 alone rejects it: **`0b101` is a binary constant**, refused under
+/// `-pedantic-errors` and accepted in the GNU mode the corpus is compiled with.
+///
+/// **C23's digit separators are a second such divergence, deliberately asserted neither way.**
+/// `parse_int_literal` strips `'` on purpose; gcc rejects `1'000` under `-std=c11` even without
+/// `-pedantic-errors` and accepts it under `-std=c2x`. Calling it legal would assert a C11 fact
+/// that is false, and calling it illegal would demand a rule that removes working support. It is
+/// recorded here as a declared divergence instead.
+#[test]
+fn a_numeric_constant_is_constrained() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let expr = |e: &str| format!("int f(void){{ return (int)({e}); }}");
+
+    for bad in [
+        // 6.4.4.1p1: an integer suffix is `u`, `l`, `ll` or a `u` with one of those — nothing
+        // else, and `ll` does not mix case.
+        "1z",
+        "1i",
+        "1uu",
+        "1lll",
+        "1Ll",
+        "1lL",
+        "0o7",
+        // 6.4.4.2p1: a floating suffix is `f` or `l`.
+        "1.0z",
+        "1.0u",
+        "1.0ll",
+        // 6.4.4.2p1: an exponent has digits, and a hexadecimal float has an exponent.
+        "1e",
+        "0x1p",
+        "0x1.8",
+        // 6.4.4.1p1: `0x` has digits, and an octal constant has octal ones.
+        "0x",
+        "018",
+        "08",
+        // 6.4.4.1p5: the value fits some integer type.
+        "99999999999999999999999",
+    ] {
+        let src = expr(bad);
+        assert!(!diags(&src).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Every valid integer suffix, in both cases.
+        "1",
+        "1u",
+        "1U",
+        "1l",
+        "1L",
+        "1ul",
+        "1lu",
+        "1LL",
+        "1ll",
+        "1ull",
+        "1llu",
+        "1ULL",
+        // Every valid floating one, and the exponent forms.
+        "1.0",
+        "1.0f",
+        "1.0F",
+        "1.0l",
+        "1.0L",
+        "1e3",
+        "1E3",
+        "1.e3",
+        ".5",
+        "1e-3",
+        // Hexadecimal, integer and floating.
+        "0x1f",
+        "0X1F",
+        "0x1p3",
+        "0x1P3f",
+        "0x1.8p3",
+        // Octal, including the one-digit case that is not a prefix at all.
+        "0",
+        "07",
+        "0777",
+        // **A binary constant is a GNU extension this project accepts on purpose** — gcc refuses
+        // `0b101` under `-pedantic-errors` and accepts it in the GNU mode the corpus uses.
+        "0b101",
+        // The largest values that do fit.
+        "9223372036854775807",
+        "18446744073709551615u",
+    ] {
+        let src = expr(good);
+        assert!(
+            diags(&src).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(&src)
+        );
+    }
+}
