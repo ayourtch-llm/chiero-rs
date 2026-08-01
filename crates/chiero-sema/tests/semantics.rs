@@ -746,6 +746,16 @@ fn the_type_constraints_of_census_rows_four_to_seven() {
         "typedef void V; V h(void); int f(void){ h(); return 0; }",
         // A function returning void, defined and called.
         "static void s(int *p){ *p = 1; } int f(void){ int x=0; s(&x); return x; }",
+        // **`return v();` from a `void` function is legal** (C 6.8.6.4p1) and is the reason the
+        // void-value rule tests the *target* type rather than just the source. Dropping that test
+        // rejects this and passes everything else in the list.
+        "void v(void); void w(void){ return v(); }",
+        "void v(void); void w(void){ v(); return; }",
+        // **A block may shadow a `const` with a mutable object.** Without the removal from the
+        // read-only set, the inner `k` would inherit the outer one's constness and this would be
+        // rejected — which is what makes the removal load-bearing rather than tidiness.
+        "int f(void){ const int k = 1; { int k = 2; k = 3; return k; } }",
+        "int f(const int p){ int q = p; { int p = 1; p = 2; q += p; } return q; }",
     ] {
         assert!(
             diags(good).is_empty(),
