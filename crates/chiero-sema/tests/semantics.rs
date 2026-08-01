@@ -2302,6 +2302,21 @@ fn a_numeric_constant_is_constrained() {
         // **A binary constant is a GNU extension this project accepts on purpose** — gcc refuses
         // `0b101` under `-pedantic-errors` and accepts it in the GNU mode the corpus uses.
         "0b101",
+        // **gcc's extended floating suffixes, which the corpus made non-optional.** Every VPP
+        // header reaches a `0.0f16`, so a rule with C11's two suffixes alone reports a false
+        // positive on all twenty corpus seeds — which is exactly what it did before these were
+        // added. Recognising them is not the same as typing them: `0.0f16` is still `double`
+        // here, a gap this census surfaced and §9 records.
+        "0.0f16",
+        "0.0F16",
+        "0.0f32",
+        "0.0f64",
+        "0.0f128",
+        "0.0f32x",
+        "0.0f64x",
+        "0.0bf16",
+        "0.0q",
+        "0.0w",
         // The largest values that do fit.
         "9223372036854775807",
         "18446744073709551615u",

@@ -367,6 +367,31 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("typedef with static", "typedef static int T;"),
     ("typedef with extern", "typedef extern int T;"),
     ("typedef with _Thread_local", "typedef _Thread_local int T;"),
+    // Wave 335's lexer census — C 6.4.4's constant constraints.
+    ("invalid integer suffix", "int f(void){ return 1z; }"),
+    ("mixed-case ll suffix", "int f(void){ return (int)1Ll; }"),
+    (
+        "invalid floating suffix",
+        "int f(void){ return (int)1.0z; }",
+    ),
+    (
+        "integer suffix on a float",
+        "int f(void){ return (int)1.0u; }",
+    ),
+    ("exponent with no digits", "int f(void){ return (int)1e; }"),
+    (
+        "hex float with no exponent",
+        "int f(void){ return (int)0x1.8; }",
+    ),
+    (
+        "hex constant with no digits",
+        "int f(void){ return (int)0x; }",
+    ),
+    ("invalid octal digit", "int f(void){ return 018; }"),
+    (
+        "integer constant too large",
+        "int f(void){ return (int)99999999999999999999999; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -399,7 +424,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 333. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 335. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -419,7 +444,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 104;
+    const FLOOR: usize = 113;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

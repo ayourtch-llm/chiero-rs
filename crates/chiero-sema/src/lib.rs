@@ -3202,11 +3202,148 @@ fn parse_int_literal(text: &str, target: &TargetConfig) -> Option<IntVal> {
             return Some(IntVal { v, bits, signed });
         }
     }
+    // **Nothing standard holds it.** 6.4.4.1p5 makes a constant with no representable type a
+    // constraint violation, and gcc says so even where `__int128` exists — the extended type is
+    // not among those an unsuffixed constant may take. Answering with a 128-bit value keeps the
+    // rest of typing working; `number_too_large` is what makes it a report rather than a licence.
     Some(IntVal {
         v,
         bits: 128,
         signed: true,
     })
+}
+
+/// Whether this integer constant fits no standard integer type (C 6.4.4.1p5).
+///
+/// Asked of the *parsed value*, not of the spelling, because the answer depends on the suffix:
+/// `18446744073709551615u` fits `unsigned long long` and the same digits without the `u` do not.
+fn number_too_large(text: &str, target: &TargetConfig) -> bool {
+    let Some(v) = parse_int_literal(text, target) else {
+        return false;
+    };
+    v.bits > (target.sizes.long_ * 8) as u32
+}
+
+/// **What is wrong with a preprocessing number, if anything** (C 6.4.4).
+///
+/// Returns the message rather than reporting it, so this stays a pure function of the spelling —
+/// every case below is decidable from the text alone — and so the same rules can be asked from
+/// more than one place.
+///
+/// **A pp-number is not a constant.** `1z`, `018` and `0x` are all well-formed preprocessing
+/// tokens; the grammar that rejects them is the one for *constants*, which is why this is asked
+/// here, where a literal is given a value, and not in the lexer.
+fn number_defect(text: &str) -> Option<String> {
+    // C23 digit separators are stripped rather than judged — a declared divergence, see the
+    // fixture. `parse_int_literal` does the same.
+    let t: String = text.chars().filter(|c| *c != '\'').collect();
+    let b = t.as_bytes();
+    let lower = t.to_ascii_lowercase();
+    let hex = lower.starts_with("0x");
+    let bin = lower.starts_with("0b");
+    let mut i = if hex || bin { 2 } else { 0 };
+
+    // **The digit set and the exponent marker go together.** In a hexadecimal constant `e` is a
+    // digit and `p` introduces the exponent; everywhere else `e` does. Splitting on the wrong one
+    // makes `0x1e` look like an exponent with no digits.
+    let is_digit = |c: u8| {
+        if hex {
+            c.is_ascii_hexdigit()
+        } else if bin {
+            matches!(c, b'0' | b'1')
+        } else {
+            c.is_ascii_digit()
+        }
+    };
+    let exp_marker: &[u8] = if hex { b"pP" } else { b"eE" };
+
+    let start = i;
+    let mut dotted = false;
+    while i < b.len() && (is_digit(b[i]) || b[i] == b'.') {
+        dotted |= b[i] == b'.';
+        i += 1;
+    }
+    if i == start || (dotted && i == start + 1) {
+        return Some(format!("`{text}` has no digits"));
+    }
+
+    let mut floating = dotted;
+    if i < b.len() && exp_marker.contains(&b[i]) {
+        floating = true;
+        i += 1;
+        if i < b.len() && matches!(b[i], b'+' | b'-') {
+            i += 1;
+        }
+        let e = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == e {
+            return Some(format!("`{text}` has an exponent with no digits"));
+        }
+    } else if hex && dotted {
+        // **6.4.4.2p1: a hexadecimal floating constant has an exponent.** `0x1.8` is not a number
+        // in C, because `p` is the only thing that says where the binary point went.
+        return Some(format!("`{text}` needs a `p` exponent"));
+    }
+
+    // **An octal constant is `0` followed by *octal* digits.** Checked after the shape is known,
+    // because `018.5` and `018e1` are decimal floating constants and perfectly legal — the digit
+    // `8` is only a mistake when the leading `0` really is an octal prefix.
+    if !hex
+        && !bin
+        && !floating
+        && t.len() > 1
+        && b[0] == b'0'
+        && let Some(c) = t[1..i].chars().find(|c| !('0'..='7').contains(c))
+    {
+        return Some(format!(
+            "invalid digit `{c}` in the octal constant `{text}`"
+        ));
+    }
+
+    // **6.4.4.1p1 and 6.4.4.2p1: the suffix sets, and they are not the same.** An integer takes a
+    // `u` and one of `l`/`ll` in either order; a float takes `f` or `l` alone. `ll` may not mix
+    // case, which is the part a shorter rule gets wrong.
+    let suffix = &t[i..];
+    let valid = if floating {
+        // C11's two, plus **gcc's extended floating suffixes, which the corpus uses**: VPP writes
+        // `0.0f16` and every one of its headers reaches it. They are refused under
+        // `-pedantic-errors` and accepted in the GNU mode the corpus is compiled with, so they
+        // belong with `0b101` among this project's declared extensions.
+        //
+        // **Recognising a suffix is not the same as typing it.** `float_literal` still knows only
+        // `f`/`l`, so `0.0f16` is typed `double` rather than `_Float16` — a real gap this rule
+        // surfaced and did not create, recorded in §9. Rejecting the literal here would replace a
+        // wrong type with a wrong diagnostic on code that compiles.
+        matches!(
+            suffix.to_ascii_lowercase().as_str(),
+            "" | "f"
+                | "l"
+                | "f16"
+                | "f32"
+                | "f64"
+                | "f128"
+                | "f32x"
+                | "f64x"
+                | "bf16"
+                | "q"
+                | "w"
+                | "df"
+                | "dd"
+                | "dl"
+        )
+    } else {
+        let rest = match suffix.find(['u', 'U']) {
+            Some(k) => format!("{}{}", &suffix[..k], &suffix[k + 1..]),
+            None => suffix.to_string(),
+        };
+        matches!(rest.as_str(), "" | "l" | "L" | "ll" | "LL")
+    };
+    if !valid {
+        return Some(format!("invalid suffix `{suffix}` on `{text}`"));
+    }
+    None
 }
 
 fn fits(v: i128, bits: u32, signed: bool) -> bool {
@@ -3271,6 +3408,17 @@ impl Cx<'_> {
         let id = match &node.kind {
             ExprKind::Number(sym) => {
                 let text = self.text(*sym).unwrap_or("").to_owned();
+                // **A malformed constant is reported here, where a pp-number is asked for a
+                // value.** Without it the fall-through below is a wrong answer rather than a
+                // missing diagnostic: neither parser accepts `018`, so it became a `double`.
+                if let Some(why) = number_defect(&text) {
+                    self.error(span, why);
+                } else if number_too_large(&text, &self.target) {
+                    self.error(
+                        span,
+                        format!("the integer constant `{text}` is too large for any integer type"),
+                    );
+                }
                 let v = parse_int_literal(&text, &self.target);
                 let ty = match v {
                     Some(v) => self.intern(Ty::Int {
