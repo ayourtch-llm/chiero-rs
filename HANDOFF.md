@@ -487,30 +487,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 335) — 1514 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 336) — 1515 tests, 4 ignored, M1 165/165 by contract
 >
-> **Both ratchets are empty queues.** `chiero-sema` 104 of 104, `chiero-pp` 27 of 27. Neither is a
-> work list any more; both are regression gates.
+> **Sema's ratchet is 113 of 113, `chiero-pp`'s is 27 of 27.** Both empty queues.
 >
 > **Next, in descending order of what they buy:**
->   1. **Census `chiero-parse` and `chiero-lex`** — the two crates left with a differential or
->      corpus channel and **no constraint list**, which is where wave 333's rule says the findings
->      are. The preprocessor was in exactly that position and gave up eleven rules in one run. For
->      the parser the neighbourhood is C 6.7.6's declarator syntax and 6.8's statement syntax; for
->      the lexer it is 6.4's token constraints — an unterminated character constant, a `'` with no
->      characters, an integer suffix that is not one (`1z`), a `.` with no digits.
->   2. **Sema's remaining neighbourhoods**: C 6.5.3.2's address-of and indirection constraints, and
->      6.8's statement constraints beyond wave 312's.
->   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328). A `const`
->      pointee would tell 021 a store through it is UB. A checker question — cost it against
->      023 §7 first.
+>   1. **`0.0f16` is typed `double`.** Wave 335's census surfaced this and deliberately did not fix
+>      it: `number_defect` now *accepts* gcc's extended floating suffixes, because every VPP header
+>      reaches one, but `float_literal` still knows only `f` and `l`, so the literal gets
+>      `FloatKind::F64`. The `Ty::Float` kinds already exist (`Binary16`, `BFloat16`, `Binary128`,
+>      …) and `Kw::F16` types a *declaration* correctly — it is only the literal suffix that is
+>      unread. **A wrong type on a literal the corpus actually contains**, so this outranks a new
+>      census.
+>   2. **The four C 6.4 rows wave 335 left**: an empty character constant, `\q`, `\x` with no
+>      digits, and an octal escape out of range. All four live in `strlit.rs`, which **has no
+>      diagnostic channel at all** — it returns values and cannot report. That is a refactor
+>      (thread a `&mut Vec<Diagnostic>` or return a result), and it is the reason they were not
+>      done with the rest.
+>   3. **Census `chiero-parse`** — the last crate with a corpus channel and no constraint list.
+>      C 6.7.6's declarator syntax and 6.8's statement syntax.
+>   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Wave 334 is what a §9 warning is for.** It said the corpus check, not the rule, was the work,
-> and the rule was three lines each. The check took one command and returned **zero across 2,476
-> files**, which is why the suite passed first run instead of drowning the corpus gate in false
-> positives. **A number from the corpus is the difference between shipping a constraint and hoping
-> about one** — and either answer would have been useful, since a non-zero count would have meant
-> declaring the limit instead.
+> **Wave 335 is the third time a new constraint found a defect that predates it** — after wave
+> 331's aliased `__gnuc_va_list` and wave 328's `_Generic`. The pattern is worth naming: a rule
+> that inspects a *shape* nothing inspected before will report on whatever was already wrong there.
+> Both times the right response was to accept the shape and record the defect separately, not to
+> half-fix it inside the wave.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2818,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A new constraint reports on whatever was already wrong in the shape it inspects** (wave 335,
+> and 331 and 328 before it). Suffix validation found `0.0f16` typed as `double`; the
+> declares-something rule found an aliased `__gnuc_va_list`; qualified types found `_Generic`
+> ignoring lvalue conversion. **Expect the first run of a new rule to fail on the corpus for
+> reasons that are not the rule**, and separate the two: accept the shape, record the defect,
+> do not half-fix it inside the wave.
+>
+> **The corpus decides which extensions are optional** (wave 335). C11 has two floating suffixes;
+> gcc has a dozen, and every VPP header reaches a `0.0f16`, so the C11-only rule was a false
+> positive on all twenty corpus seeds. **Before writing a rule from the standard, grep the corpus
+> for what the standard leaves out.**
 >
 > **"Active" is three states, not two, wherever conditional text is involved** (wave 334). A
 > directive can sit in a live region with a live branch, in a live region with a *dead* branch, or
