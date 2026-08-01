@@ -4039,7 +4039,10 @@ impl Cx<'_> {
                     // diagnostic.
                     _ => {
                         if !is_incomplete(&self.out, bty) {
-                            self.error(span, "subscripted value is not an array or pointer");
+                            self.error(
+                                span,
+                                "subscripted value is not an array, pointer or vector",
+                            );
                         }
                         self.intern(Ty::Error)
                     }
@@ -4122,7 +4125,21 @@ impl Cx<'_> {
                     || matches!(&callee_ty, Ty::Ptr(p)
                         if matches!(self.out.types[p.0 as usize], Ty::Func { .. } | Ty::Error));
                 if !callable {
-                    self.error(span, "called object is not a function or function pointer");
+                    // **Name it when it has a name.** gcc prints `called object 'q' is not a
+                    // function`, and the name is the whole of what a reader needs — a call
+                    // expression can have several operands and only one of them is the callee.
+                    // `(*fp)()` and `a[i]()` have no name to give, so the sentence stands alone.
+                    let named = match self.ast.expr(*callee).kind {
+                        ExprKind::Ident(n) => self.text(n).map(|t| format!(" `{t}`")),
+                        _ => None,
+                    };
+                    self.error(
+                        span,
+                        format!(
+                            "called object{} is not a function or function pointer",
+                            named.unwrap_or_default()
+                        ),
+                    );
                 }
                 // **A floating classification macro returns `int`.** 7.12.14's `isless`,
                 // `isunordered` and the rest are macros over `__builtin_*`, which nothing
@@ -5150,7 +5167,17 @@ impl Cx<'_> {
                         && let Some(cap) = self.scalar_capacity(target)
                         && items.len() as u64 > cap
                     {
-                        self.error(span, "excess elements in initializer");
+                        // **Which aggregate overflowed**, since the same walk serves all of
+                        // them and the fix differs: an array takes a shorter list, a struct takes
+                        // fewer members.
+                        let what = match self.out.types[target.0 as usize] {
+                            Ty::Array { .. } => "an array",
+                            Ty::Record(r) if self.out.records[r.0 as usize].is_union => "a union",
+                            Ty::Record(_) => "a struct",
+                            Ty::Vector { .. } => "a vector",
+                            _ => "a scalar",
+                        };
+                        self.error(span, format!("excess elements in {what} initializer"));
                     }
                     for item in &items {
                         self.type_expr(item.value);
@@ -5163,18 +5190,30 @@ impl Cx<'_> {
                 };
                 let mut at = 0u64;
                 for item in &items {
+                    // **Whether an index was *written* is the difference between two mistakes.**
+                    // The walk uses `at` as a cursor, and reporting the cursor told a reader of
+                    // `int a[2] = {1,2,3};` to look for a designator the program does not
+                    // contain. A designator that is out of range and a list that is simply too
+                    // long are different things to fix, and gcc words them differently.
+                    let mut designated = false;
                     for d in &item.designators {
                         if let chiero_ast::Designator::Index(e) = d
                             && let Some(v) = self.eval(*e).map(|v| v.v)
                         {
                             at = v.max(0) as u64;
+                            designated = true;
                         }
                     }
                     if let Some(n) = bound
                         && at >= n
                     {
                         let dspan = self.ast.expr(item.value).span;
-                        self.error(dspan, "initializer index is outside the array");
+                        let msg = if designated {
+                            "initializer index is outside the array"
+                        } else {
+                            "excess elements in an array initializer"
+                        };
+                        self.error(dspan, msg);
                         break;
                     }
                     self.check_init(elem, item.value);
@@ -5221,7 +5260,8 @@ impl Cx<'_> {
                     // designated one names its own member and only ever writes that.
                     if at >= fields.len() || (is_union && at > 0 && named.is_none()) {
                         let dspan = self.ast.expr(item.value).span;
-                        self.error(dspan, "excess elements in initializer");
+                        let what = if is_union { "a union" } else { "a struct" };
+                        self.error(dspan, format!("excess elements in {what} initializer"));
                         break;
                     }
                     self.check_init(fields[at].ty, item.value);
@@ -5235,7 +5275,7 @@ impl Cx<'_> {
                 for (i, item) in items.iter().enumerate() {
                     if i >= lanes as usize {
                         let dspan = self.ast.expr(item.value).span;
-                        self.error(dspan, "excess elements in vector initializer");
+                        self.error(dspan, "excess elements in a vector initializer");
                         break;
                     }
                     self.check_init(elem, item.value);
@@ -5246,7 +5286,7 @@ impl Cx<'_> {
             // is what rejects `int x = {{1},{2}}` for the same reason.
             _ => {
                 if items.len() > 1 {
-                    self.error(span, "excess elements in scalar initializer");
+                    self.error(span, "excess elements in a scalar initializer");
                 }
             }
         }
