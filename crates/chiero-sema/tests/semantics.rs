@@ -3665,7 +3665,9 @@ fn a_storage_class_belongs_to_its_context() {
     assert!(diags("typedef int T; T v;").is_empty());
     assert!(diags("int f(void){ typedef int T; T v = 1; return v; }").is_empty());
     assert!(!diags("int f(void){ for (typedef int T; 0; ) ; return 0; }").is_empty());
-    assert!(!diags("int f(typedef int a){ return 0; }").is_empty());
+    // `typedef` in a parameter is caught by the **parser** — a parameter is built as a `Var`
+    // whatever its specifiers said, so `is_typedef` never reaches sema. Its fixture lives with
+    // the other parser constraints.
     assert!(diags("_Thread_local int x;").is_empty());
     assert!(diags("int f(void){ _Thread_local static int x; return x; }").is_empty());
 

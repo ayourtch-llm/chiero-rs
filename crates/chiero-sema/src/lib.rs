@@ -1117,6 +1117,21 @@ enum Scope {
     Block,
 }
 
+/// Where a declaration sits, for the storage-class table (C 6.7.1p3 and its three neighbours).
+///
+/// **Finer than [`Scope`], and deliberately separate from it.** `Scope` answers contract 14's
+/// redefinition question and has exactly two answers; this one has five, because a `for`
+/// initializer and a parameter are block-ish for linkage and not for storage. Widening `Scope`
+/// would have made every existing `scope == Scope::Block` a question about the wrong thing.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum StorageContext {
+    File,
+    Block,
+    ForInit,
+    Parameter,
+    Function,
+}
+
 /// Names declared in the scope being walked, for the rules that ask "again, *here*?".
 ///
 /// **A stack with marks, not a depth counter.** Two sibling blocks are two different scopes at the
@@ -1330,6 +1345,14 @@ impl Cx<'_> {
                 self.out.decl_types.insert(id, t);
                 let span = self.ast.decl(id).span;
                 self.check_storage_classes(storage, span);
+                self.check_storage_context(
+                    storage,
+                    match scope {
+                        Scope::File => StorageContext::File,
+                        Scope::Block => StorageContext::Block,
+                    },
+                    span,
+                );
                 // **A variably-modified declarator needs automatic storage duration**
                 // (C 6.7.6.2p2). Not a rule about *where* the declaration is: `int a[k]` with a
                 // `const int k` is a VLA in a function body and at file scope alike — `const`
@@ -1520,6 +1543,11 @@ impl Cx<'_> {
                 // violation there for the same reason. `inline` is not counted, which is what
                 // keeps `static inline` — the most common spelling in the corpus — legal.
                 self.check_storage_classes(storage, self.ast.decl(id).span);
+                self.check_storage_context(
+                    storage,
+                    StorageContext::Function,
+                    self.ast.decl(id).span,
+                );
                 // **A *definition* returns a complete type** (C 6.9.1p3); a declaration need not.
                 // `struct I f(void);` is legal — the type may be completed before anything calls
                 // it — so this asks about `body` rather than about the type alone, and it is the
@@ -1940,6 +1968,23 @@ impl Cx<'_> {
                         node.span,
                         "a function may not return an array or a function",
                     );
+                }
+                // **A parameter takes only `register`** (C 6.7.6.3p2). Asked here because a
+                // parameter never reaches `decl` — it is a `DeclId` walked for its *type* only,
+                // which is why the storage on it had nothing looking at it at all.
+                for &p in &params {
+                    match self.ast.decl(p).kind.clone() {
+                        DeclKind::Var { storage, .. } => self.check_storage_context(
+                            storage,
+                            StorageContext::Parameter,
+                            self.ast.decl(p).span,
+                        ),
+                        DeclKind::Typedef { .. } => self.error(
+                            self.ast.decl(p).span,
+                            "`typedef` is not allowed in a parameter",
+                        ),
+                        _ => {}
+                    }
                 }
                 let ps: Vec<TyId> = params
                     .iter()
@@ -6048,6 +6093,50 @@ impl Cx<'_> {
         }
     }
 
+    /// **Which storage classes the context admits** (C 6.7.1p3, 6.8.5p3, 6.7.6.3p2, 6.9.1p4).
+    ///
+    /// Four paragraphs, one table. Written as a table because that is what they are: read singly
+    /// they look like four unrelated rules, which is how all four came to be unimplemented.
+    ///
+    /// **`inline` and `_Noreturn` are absent on purpose.** They are *function specifiers*, not
+    /// storage classes, and folding them in would reject `static inline` — the corpus's commonest
+    /// spelling, and a case wave 330 already had to protect once.
+    fn check_storage_context(
+        &mut self,
+        storage: chiero_ast::Storage,
+        ctx: StorageContext,
+        span: Span,
+    ) {
+        let offender = match ctx {
+            // No automatic storage exists to refer to.
+            StorageContext::File => [("auto", storage.auto), ("register", storage.register)],
+            // A block admits all four.
+            StorageContext::Block => [("", false), ("", false)],
+            // 6.8.5p3: only `auto` and `register`. A `static` here would outlive its loop.
+            StorageContext::ForInit => [("extern", storage.extern_), ("static", storage.static_)],
+            // 6.7.6.3p2: only `register`.
+            StorageContext::Parameter => [
+                ("extern", storage.extern_ || storage.auto),
+                ("static", storage.static_),
+            ],
+            // 6.9.1p4: only `extern` and `static`.
+            StorageContext::Function => [("auto", storage.auto), ("register", storage.register)],
+        }
+        .into_iter()
+        .find(|&(_, hit)| hit)
+        .map(|(name, _)| name);
+        if let Some(name) = offender {
+            let where_ = match ctx {
+                StorageContext::File => "a file-scope declaration",
+                StorageContext::Block => "a block-scope declaration",
+                StorageContext::ForInit => "a `for` initializer",
+                StorageContext::Parameter => "a parameter",
+                StorageContext::Function => "a function",
+            };
+            self.error(span, format!("`{name}` is not allowed in {where_}"));
+        }
+    }
+
     /// Whether `t` is a pointer whose pointee has no size (C 6.5.6p2).
     ///
     /// **One question for all seven spellings of pointer arithmetic.** `p + n`, `p - q`, `p++`,
@@ -6191,6 +6280,22 @@ impl Cx<'_> {
                 match init {
                     Some(ForInit::Decl(ds)) => {
                         for d in ds {
+                            // **A `for` initializer is block-ish for linkage and not for
+                            // storage** (C 6.8.5p3), so it takes the ordinary block walk *and*
+                            // its own storage question. A `typedef` is not a storage class in
+                            // this engine's AST — it is a `DeclKind` — so it is asked separately.
+                            match self.ast.decl(d).kind.clone() {
+                                DeclKind::Var { storage, .. } => self.check_storage_context(
+                                    storage,
+                                    StorageContext::ForInit,
+                                    self.ast.decl(d).span,
+                                ),
+                                DeclKind::Typedef { .. } => self.error(
+                                    self.ast.decl(d).span,
+                                    "`typedef` is not allowed in a `for` initializer",
+                                ),
+                                _ => {}
+                            }
                             self.block_decl(d);
                         }
                     }

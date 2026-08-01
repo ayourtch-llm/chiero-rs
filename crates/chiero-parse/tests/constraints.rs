@@ -166,3 +166,31 @@ fn a_function_is_not_initialized() {
         );
     }
 }
+
+/// **`typedef` in a parameter** — C 6.7.6.3p2, from wave 352's storage-class grid.
+///
+/// A parameter takes only `register`. This one is here rather than in sema because a parameter is
+/// built as a `DeclKind::Var` whatever its specifiers said, so `is_typedef` is discarded before
+/// sema sees it — the same shape as wave 331's `typedef static` and wave 339's initialized
+/// function, and the third time a rule has landed in the parser for that reason.
+#[test]
+fn a_parameter_is_not_a_typedef() {
+    for bad in [
+        "int f(typedef int a){ return 0; }",
+        "int f(int b, typedef int a){ return b; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+    for good in [
+        "int f(int a){ return a; }",
+        "int f(register int a){ return a; }",
+        "typedef int T; int f(T a){ return a; }",
+        "typedef int T; int f(void){ T v = 1; return v; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

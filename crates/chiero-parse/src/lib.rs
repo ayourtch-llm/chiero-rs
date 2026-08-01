@@ -1876,6 +1876,13 @@ impl<'a> Parser<'a> {
                 self.oracle.declare(n, false);
             }
             let span = self.span_from(start);
+            // **`typedef` is a storage-class specifier and a parameter takes only `register`**
+            // (C 6.7.6.3p2). Reported here because a parameter is built as a `DeclKind::Var`
+            // whatever its specifiers said, so `is_typedef` is gone by the time sema looks —
+            // the same shape as wave 331's `typedef static` and wave 339's initialized function.
+            if specs.is_typedef {
+                self.error(span, "`typedef` is not allowed in a parameter");
+            }
             let d = self.ast.add_decl(
                 DeclKind::Var {
                     name,
