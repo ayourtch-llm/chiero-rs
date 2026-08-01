@@ -487,16 +487,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 317) — 1490 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 318) — 1491 tests, 4 ignored, M1 165/165 by contract
 >
 > **Next, in descending order of what they buy:**
->   1. **Wave 314's two declared misses**, both bounded and both in sema: brace-elision
->      distribution (`int a[2][2] = {1,2,3,4,5}` is a miss today), and a general
->      constant-expression predicate so the file-scope initializer rule is not narrowed to
->      "contains a call" (`int x; int g = x;` is a miss today).
->   2. **Qualified types**, which unblocks the last conversion row *and* makes the pointee rule
->      above semantic instead of syntactic. Budget for auditing 436 `Ty::` match sites; do not
->      start by adding the variant.
+>   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
+>      the thing that would make wave 316's pointee rule semantic rather than syntactic. Budget for
+>      auditing **436 `Ty::` match sites across four crates**; do not start by adding the variant.
+>   2. **The three unfalsifiable arms above**, if a cheaper win is wanted — each needs one case
+>      routed past the check that currently answers first, which is a fixture problem rather than a
+>      code one.
 >   3. **A fourth census**, for a fresh area: `switch`/`case` type rules, `_Generic` selection, or
 >      `restrict`/`volatile`.
 >
@@ -895,6 +894,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 317 closed wave 314's two declared misses
+>
+> **Brace elision: count scalars, not items.** Distributing a flat list across sub-objects is the
+> hard part and is not needed to answer "is there one too many" — total scalar capacity against
+> list length does it. `scalar_capacity` returns `None` where the answer is not fixed (unsized
+> array, incomplete record) so nothing is counted rather than guessed. Only a **fully flat** list
+> is counted: `{{1,2},3,4}` is legal and a scalar count cannot see where the braced item stops.
+>
+> **The constant rule, asked the other way round.** "Is this a constant expression" needs a
+> complete account of address constants and fails by omission — that is how wave 314 ended at
+> "contains a call". "Does this **read the value of a non-`const` object**" has one answer. Four
+> things that look like reads are not: an array or function name (an address), an enumerator, a
+> `const` object (**gcc folds it**, even under `-pedantic-errors`), and an object of incomplete
+> type (contract 20 — its declaration was reported already).
+>
+> **Three arms are measured unfalsifiable and labelled at the site**: the union branch of
+> `scalar_capacity`, the unsized-array `None`, and the `AddrOf` short-circuit. The cause is the
+> same each time — *another check answers first*: a union in an over-long list trips the array
+> range rule before capacity is consulted, and a bare `&y` is folded by `addr_of` before the read
+> walk runs. **Whoever revisits this should route a case past the earlier check**, not write one
+> that produces the right diagnostic by the wrong road.
 >
 > ### 🟡 Pointee `const` — half done in wave 316, half still blocked
 >
@@ -2589,6 +2610,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a mutant survives, ask which check answered first** (wave 317). Three arms could not be
+> falsified, and in every case the fixture reached a *different* rule that produced a diagnostic
+> of its own — so the assertion passed, by the wrong road. The diagnosing check is not always the
+> one under test. **Assert the message, or route the case past the earlier rule**; "it was
+> diagnosed" is the weakest evidence a fixture can offer, and wave 315 learned the same thing
+> about reaching a guard at all.
 >
 > **The idiom you are copying decides which cases you write** (wave 316). Every rejected case in
 > the pointer-to-const fixture used a *parameter*, because `const T *` is a parameter idiom — it
