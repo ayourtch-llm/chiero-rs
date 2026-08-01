@@ -3000,3 +3000,103 @@ fn a_constant_expression_admits_the_same_things_everywhere() {
         );
     }
 }
+
+/// **The linkage relation, enumerated as pairs rather than as messages** (§9).
+///
+/// Four diagnostics describe one relation between two declarations of a name, so the category to
+/// walk is the *pairs*: five first declarations against four second ones, for objects and again
+/// for functions. Forty cells; the object half agrees with gcc in all twenty, and **three
+/// function cells were false positives.**
+///
+/// The cause is a paragraph that applies to one and not the other. **C 6.2.2p5: a function
+/// declared with no storage-class specifier has the linkage it would have with `extern`** — so a
+/// plain `int f(void);` after `static int f(void);` *adopts* the internal linkage and is legal.
+/// An *object* has no such rule: a plain `int x;` at file scope is a tentative definition with
+/// external linkage, so `static int x; int x;` really is a conflict. The engine applied the
+/// object rule to both.
+///
+/// This is wave 344's lesson from the other side: there, two paths checked what looked like one
+/// rule and C had two paragraphs; here, one path checked two things C treats differently.
+#[test]
+fn linkage_is_a_relation_between_two_declarations() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // **A function with no storage class is `extern`** (6.2.2p5), so these three are legal.
+    for good in [
+        "static int f(void); int f(void);",
+        "static int f(void); int f(void){ return 2; }",
+        "static int f(void){ return 1; } int f(void);",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    // **An object has no such rule**, and the same shape stays a conflict.
+    for bad in [
+        "static int x; int x;",
+        "static int x; int x = 2;",
+        "static int x = 1; int x;",
+        "int x; static int x;",
+        "int x = 1; static int x;",
+        "extern int x; static int x;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    // ...and `static` after an external *function* is still a conflict — the adoption runs one
+    // way only, which is what separates this from "linkage never conflicts for functions".
+    for bad in [
+        "int f(void); static int f(void);",
+        "extern int f(void); static int f(void);",
+        "int f(void){ return 1; } static int f(void);",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    // The rest of the function matrix, which was already right and is pinned so the fix cannot
+    // over-reach into it.
+    for good in [
+        "int f(void); int f(void);",
+        "int f(void); extern int f(void);",
+        "int f(void); int f(void){ return 2; }",
+        "static int f(void); static int f(void);",
+        "static int f(void); extern int f(void);",
+        "extern int f(void); int f(void);",
+        "extern int f(void); extern int f(void);",
+        "extern int f(void); int f(void){ return 2; }",
+        "int f(void){ return 1; } int f(void);",
+        "int f(void){ return 1; } extern int f(void);",
+        "static int f(void){ return 1; } static int f(void);",
+        "static int f(void){ return 1; } extern int f(void);",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    // Two definitions are two definitions whatever the linkage, and a type conflict is separate
+    // from a linkage one — both halves of the relation the four messages share.
+    for bad in [
+        "int f(void){ return 1; } int f(void){ return 2; }",
+        "static int f(void){ return 1; } int f(void){ return 2; }",
+        "int x = 1; int x = 2;",
+        "static int x = 1; static int x = 2;",
+        "int x; long x;",
+        "static int x; static long x;",
+        "int f(void); long f(void);",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+}
