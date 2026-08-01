@@ -2722,3 +2722,73 @@ fn an_initializer_diagnostic_names_the_mistake() {
         "a vector really is subscriptable here"
     );
 }
+
+/// **The audit, third instalment** — and this time reading the messages found a missing *rule*.
+///
+/// §9 asked for class (c): a sentence that contradicts what the engine does. Checking
+/// `bit-field width exceeds the width of its type` against every type it can be written on turned
+/// up the opposite problem — **`struct S { _Bool b : 2; };` is a constraint violation gcc rejects
+/// and this engine accepts.** The check compares the width against the type's *storage* size,
+/// which is eight bits for a `_Bool`; C 6.7.2.1p4 bounds it by the number of bits in the type,
+/// and a `_Bool` holds one. Nothing had asked, because the only bit-field cases anyone writes by
+/// hand are `int`.
+///
+/// Two messages beside it name nothing, where gcc names the declarator — `width of 'b' exceeds
+/// its type`, `size of array 'a' is negative`. In a struct with twenty bit-fields, the sentence
+/// without the name says only that one of them is wrong.
+#[test]
+fn a_width_diagnostic_names_its_declarator() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let says = |src: &str, want: &str| {
+        let d = diags(src);
+        assert!(
+            d.iter().any(|m| m.contains(want)),
+            "`{src}`\n  should say {want:?}\n  said {d:?}"
+        );
+    };
+
+    // **A `_Bool` bit-field holds one bit.** The rule, not the wording.
+    for bad in [
+        "struct S { _Bool b : 2; };",
+        "struct S { _Bool b : 8; };",
+        "struct S { int a; _Bool b : 3; };",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    // ...and the widths that do fit, on every type a bit-field can take.
+    for good in [
+        "struct S { _Bool b : 1; };",
+        "struct S { char c : 8; };",
+        "struct S { short s : 16; };",
+        "struct S { int b : 32; };",
+        "struct S { long l : 64; };",
+        "struct S { unsigned u : 32; };",
+        "struct S { int a : 3; int : 5; int b : 2; };",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    // **Name the declarator**, which is the whole of what a reader needs in a struct full of them.
+    says("struct S { int a; int wide : 33; };", "`wide`");
+    says("struct S { _Bool flag : 2; };", "`flag`");
+    says("int negative_len[-1];", "`negative_len`");
+
+    // **A zero-length array stays accepted**, and this is where that is recorded: gcc refuses it
+    // under `-pedantic-errors` as a GNU extension, and the VPP tree contains **1777** of them —
+    // the pre-flexible-array idiom for a trailing variable-length member. Rejecting it would fail
+    // on the corpus this project exists to read.
+    assert!(diags("int a[0];").is_empty());
+    assert!(diags("struct S { int n; int a[0]; };").is_empty());
+}
