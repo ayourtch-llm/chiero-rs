@@ -321,7 +321,7 @@ struct Specs {
 /// each bracket is consumed — see [`Parser::declarator_suffixes`].
 enum Suffix {
     Arr(ArrayLen, Span),
-    Fun(Vec<DeclId>, bool, bool, Span),
+    Fun(Vec<DeclId>, bool, bool, bool, Span),
 }
 
 struct Parser<'a> {
@@ -1617,12 +1617,13 @@ impl<'a> Parser<'a> {
                 Suffix::Arr(len, span) => {
                     self.ast.add_type(TypeKind::Array { elem: ty, len }, span)
                 }
-                Suffix::Fun(params, variadic, kr, span) => self.ast.add_type(
+                Suffix::Fun(params, variadic, kr, prototyped, span) => self.ast.add_type(
                     TypeKind::Func {
                         ret: ty,
                         params,
                         variadic,
                         kr,
+                        prototyped,
                     },
                     span,
                 ),
@@ -1673,10 +1674,10 @@ impl<'a> Parser<'a> {
             if self.is_punct(0, Punct::LParen) {
                 let open = self.pos;
                 self.pos += 1;
-                let (params, variadic, kr) = self.parameter_list();
+                let (params, variadic, kr, prototyped) = self.parameter_list();
                 self.expect_punct(Punct::RParen, "to close a parameter list");
                 let span = self.span_from(open);
-                out.push(Suffix::Fun(params, variadic, kr, span));
+                out.push(Suffix::Fun(params, variadic, kr, prototyped, span));
                 continue;
             }
             return;
@@ -1691,16 +1692,23 @@ impl<'a> Parser<'a> {
         matches!(self.spellings.get(s.0 as usize), Some(t) if &**t == "0")
     }
 
-    fn parameter_list(&mut self) -> (Vec<DeclId>, bool, bool) {
+    /// The parameters, whether variadic, whether K&R, and **whether specified at all**.
+    ///
+    /// The last is not `params.is_empty()`: `f()` and `f(void)` both yield an empty list and mean
+    /// opposite things. A K&R identifier list is not a prototype either — it names parameters
+    /// without typing them — which is why `static int g(){...}` still accepts `g(1)`.
+    fn parameter_list(&mut self) -> (Vec<DeclId>, bool, bool, bool) {
         let mut params = Vec::new();
         let mut variadic = false;
-        // `f(void)` is an empty parameter list, not one parameter of type void.
+        // `f(void)` is an empty parameter list, not one parameter of type void — and it is a
+        // *prototype*, which is what distinguishes it from `f()` two lines below. The two produce
+        // the same empty list and mean opposite things.
         if self.is_kw(0, Kw::Void) && self.is_punct(1, Punct::RParen) {
             self.pos += 1;
-            return (params, false, false);
+            return (params, false, false, true);
         }
         if self.is_punct(0, Punct::RParen) {
-            return (params, false, false);
+            return (params, false, false, false);
         }
         // An old-style identifier list: every entry is a bare name (contract 4). The
         // types arrive in declarations between the `)` and the `{`.
@@ -1726,7 +1734,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            return (params, false, true);
+            return (params, false, true, false);
         }
         loop {
             if self.eat_punct(Punct::Ellipsis) {
@@ -1762,7 +1770,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        (params, variadic, false)
+        (params, variadic, false, true)
     }
 
     fn starts_type_name(&self) -> bool {

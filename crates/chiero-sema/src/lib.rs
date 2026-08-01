@@ -146,6 +146,15 @@ pub enum Ty {
         ret: TyId,
         params: Vec<TyId>,
         variadic: bool,
+        /// Whether the parameters were **specified** — `(void)` and `(int)` yes, `()` no.
+        ///
+        /// Part of the type, so `int f()` and `int f(void)` intern to different `TyId`s. C treats
+        /// them as opposites: `(void)` promises there are no parameters, so a call with one is an
+        /// error, while `()` says nothing at all and no call to it can be wrong.
+        ///
+        /// A K&R identifier list is **not** prototyped. The names are there and the types are
+        /// not, which is why `static int g(){...}` still accepts `g(1)`.
+        prototyped: bool,
     },
     Record(RecordId),
     /// `__attribute__((vector_size(n)))`.
@@ -1809,6 +1818,7 @@ impl Cx<'_> {
                 ret,
                 params,
                 variadic,
+                prototyped,
                 ..
             } => {
                 let r = self.ty_of(ret);
@@ -1825,7 +1835,7 @@ impl Cx<'_> {
                         "a function may not return an array or a function",
                     );
                 }
-                let ps = params
+                let ps: Vec<TyId> = params
                     .iter()
                     .map(|&p| match &self.ast.decl(p).kind {
                         DeclKind::Var { ty, .. } => {
@@ -1835,10 +1845,25 @@ impl Cx<'_> {
                         _ => self.intern(Ty::Error),
                     })
                     .collect();
+                // **`void` may be the whole parameter list, but not one of several**
+                // (C 6.7.6.3p10). `f(void)` never reaches here — the parser recognises it and
+                // returns an empty list — so any `Ty::Void` still standing is a genuine parameter
+                // declared `void`, which no argument could ever supply.
+                //
+                // Reported once per list rather than once per offending parameter, because
+                // `f(void, void)` is one mistake about one list. Contract 20's spirit: one bad
+                // declaration, one diagnostic.
+                if ps
+                    .iter()
+                    .any(|&t| matches!(self.out.types[t.0 as usize], Ty::Void))
+                {
+                    self.error(node.span, "`void` must be the only parameter");
+                }
                 self.intern(Ty::Func {
                     ret: r,
                     params: ps,
                     variadic,
+                    prototyped,
                 })
             }
             TypeKind::Tag { tag, name, members } => self.tag(ty, tag, name, members),
@@ -3811,18 +3836,32 @@ impl Cx<'_> {
                 // the first version of this check did, silently.
                 let signature = match callee_ty.clone() {
                     Ty::Func {
-                        params, variadic, ..
-                    } => Some((params, variadic)),
+                        params,
+                        variadic,
+                        prototyped,
+                        ..
+                    } => Some((params, variadic, prototyped)),
                     Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
                         Ty::Func {
-                            params, variadic, ..
-                        } => Some((params, variadic)),
+                            params,
+                            variadic,
+                            prototyped,
+                            ..
+                        } => Some((params, variadic, prototyped)),
                         _ => None,
                     },
                     _ => None,
                 };
-                if let Some((formals, variadic)) = signature
-                    && !formals.is_empty()
+                // **Checked when the callee is prototyped, not when it has parameters.** The
+                // guard used to be `!formals.is_empty()`, which had to stand in for "specified"
+                // while `f()` and `f(void)` produced the same empty list — and the cost was that
+                // `int g(void); g(1);` went unreported, since the promise of *zero* parameters
+                // was indistinguishable from no promise at all.
+                //
+                // `int g(); g(1,2,3);` is still legal and still silent: an unprototyped
+                // declaration specifies nothing, so no call to it can have the wrong count.
+                if let Some((formals, variadic, prototyped)) = signature
+                    && prototyped
                 {
                     let n = args.len();
                     let want = formals.len();
@@ -5092,17 +5131,27 @@ impl Cx<'_> {
                     ret: r1,
                     params: p1,
                     variadic: v1,
+                    prototyped: q1,
                 },
                 Ty::Func {
                     ret: r2,
                     params: p2,
                     variadic: v2,
+                    prototyped: q2,
                 },
             ) => {
                 if r1 != r2 {
                     return true;
                 }
-                if p1.is_empty() || p2.is_empty() {
+                // **Parameters are compared when both declarations specified them.** This used to
+                // read `p1.is_empty() || p2.is_empty()`, and the comment above recorded why: the
+                // parser gave `f()` and `f(void)` the same empty list, so the only safe reading of
+                // an empty list was "unspecified" and `int f(void); int f(int);` went unreported.
+                //
+                // With the flag the guard says what it always meant. `f()` composes with anything
+                // — C 6.7.6.3p15 — so it still returns early; `f(void)` is a prototype with zero
+                // parameters and now conflicts with `f(int)` exactly as `f(char)` would.
+                if !q1 || !q2 {
                     return false;
                 }
                 p1 != p2 || v1 != v2

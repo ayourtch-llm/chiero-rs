@@ -418,6 +418,13 @@ pub enum TypeKind {
         /// Old-style K&R parameter list (contract 4): the names appeared in the
         /// declarator and their types in declarations before the body.
         kr: bool,
+        /// Whether the parameters were **specified** — `(void)` and `(int, char)` yes, `()` no.
+        ///
+        /// **`params.is_empty()` cannot answer this**, which is the whole reason the flag exists:
+        /// `f()` and `f(void)` both produce an empty list, and C treats them as opposites.
+        /// `f(void)` promises there are no parameters, so `f(1)` is an error; `f()` says nothing
+        /// at all, so no call to it can be wrong and no later declaration conflicts with it.
+        prototyped: bool,
     },
     /// `typeof(x)` / `__typeof__(*p)` (contract 8). 52 VPP files.
     TypeofExpr(ExprId),

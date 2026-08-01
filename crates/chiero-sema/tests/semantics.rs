@@ -2131,6 +2131,14 @@ fn a_prototype_promises_what_an_empty_list_does_not() {
         "int g(); int f(void){ return g(1,2,3); }",
         "int g(); int f(void){ return g(); }",
         "static int g(){ return 1; } int f(void){ return g(1); }",
+        // **A K&R definition with *named* parameters is still not a prototype.** gcc accepts a
+        // call with any count against `g(a) int a;`, even under `-pedantic-errors`. This is a
+        // different code path from `g()` above — that one takes the empty-list branch and never
+        // reaches the identifier-list branch at all — and mutation found the branch unobserved
+        // because of it.
+        "int g(a) int a; { return a; } int f(void){ return g(1,2); }",
+        "int g(a) int a; { return a; } int f(void){ return g(); }",
+        "int g(a, b) int a; int b; { return a+b; } int f(void){ return g(1); }",
         "void g(void); int f(void){ g(); return 0; }",
         // An empty list composes with a prototype rather than conflicting with it.
         "int f(); int f(int x){ return x; }",

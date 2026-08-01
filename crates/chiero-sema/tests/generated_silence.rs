@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(26) {
+    match rng.below(28) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -216,6 +216,15 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         ),
         25 => format!(
             "struct R{n} {{ int a; }};\nstruct R{n} g{n}(void);\nstatic int f{n}(void){{ struct R{n} x = {{1}}; struct R{n} y = x; struct R{n} z = g{n}(); return y.a + z.a; }}"
+        ),
+        // Wave 332: what an *un*prototyped declaration permits. `()` specifies nothing, so any
+        // call is legal and no later declaration conflicts with it; a K&R definition is not a
+        // prototype either. These are the shapes the prototype flag can reject by mistake.
+        26 => format!(
+            "int u{n}();\nint u{n}(int x){{ return x; }}\nstatic int f{n}(void){{ return u{n}(1) + u{n}(2); }}"
+        ),
+        27 => format!(
+            "int p{n}(void); int p{n}();\nstatic int q{n}(){{ return 7; }}\nstatic int f{n}(void){{ int (*fp)() = p{n}; return q{n}(1, 2) + (fp != 0); }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),
