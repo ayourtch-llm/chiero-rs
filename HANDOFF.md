@@ -487,30 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 349) — 1530 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 350) — 1531 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 146 of 146, `chiero-pp` 27 of 27, `chiero-parse` clean.** The predicate sweep is finished:
+> `assignable`'s `_Bool` arm (348), `is_null_constant` (349), and `not_an_lvalue` — probed in 348
+> and **correct**, since `&f`, `&a`, `&k`, `&(int){1}` and `(int){1} = 2` all behave.
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the predicate sweep** — wave 348 did `assignable`'s `_Bool` arm and found four
->      rows. Still unswept, each with a documented exception and more than one caller:
->      **`not_an_lvalue`** (excludes a `Cast` of an `InitList`, i.e. a compound literal; callers
->      are `&` and `check_writable`, and C treats those differently — `&f` on a function is legal
->      where `f = 1` is not, `&a` on an array is legal where `a = b` is not), and
->      **`is_null_constant`** (matches `Number` or `Cast`; used by `assignable`, by the comparison
->      rule and by the conversion arm, and `(void*)0` versus `(int)0` versus `0` are three
->      different things to three of them).
->   2. **Finish the message audit** — about forty sites unread. The `switch`/`case` family beyond
->      wave 319 is the last named category.
+>   1. **Finish the message audit** — about forty `self.error(` sites unread. The last named
+>      category is the **`switch`/`case` family** beyond wave 319: a `case` in a block nested
+>      inside the switch, a `default` among `case 1 ... 3` ranges, duplicate detection across
+>      ranges, and a `switch` whose controlling expression is an enumeration.
+>   2. **Sweep the *speculative* folds.** Wave 349 found `eval` reporting from inside a predicate;
+>      `self.out.diagnostics.truncate(before)` appears at **five** sites and each is a place where
+>      a fold is a question rather than a judgement. **Check the inverse too**: a fold that should
+>      report and does not. `grep` for `eval(` calls with no surrounding save-and-truncate.
 >   3. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   4. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336); **qualifiers reach sema but
 >      not `chiero-lower`** (wave 328).
 >
-> **A guard can be wrong in a way its own tests cannot reach.** The comparison rule required *both*
-> operands to be pointers, so every pointer-against-integer case fell outside it — no fixture for
-> that rule could fail, because the rule never ran. **When a check is guarded, write one case that
-> the guard excludes** and confirm something else catches it; wave 348 found four rows behind one
-> such guard, and the `_Bool` exception was merely the entry that made it visible.
+> **Widening a predicate reaches code that was never reachable.** `is_null_constant`'s kind guard
+> had been short-circuiting `eval`, so two defects behind it had never run: `truncate` panicked at
+> 128 bits, and `eval`'s diagnostics escaped from a speculative fold. **When removing a guard,
+> expect the code it was hiding to be broken** — and run the *whole* suite, not the new fixture:
+> both showed up in `chiero-lower`, one in a generated program.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2816,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Widening a predicate reaches code that was never reachable** (wave 349). `is_null_constant`'s
+> kind guard had short-circuited `eval`, so two defects behind it had never run — `truncate`
+> panicked at 128 bits, and `eval`'s diagnostics escaped from what is only a question. **When
+> removing a guard, expect what it was hiding to be broken**, and run the whole suite rather than
+> the new fixture: both appeared in another crate.
+>
+> **A predicate must not report** (wave 349). `eval` diagnoses as it folds, and asking it "is this
+> zero?" of every comparison operand refused a generated program for an overflow no constant
+> context contained. **A fold used as a question saves and truncates the diagnostic list**; the
+> five existing sites do, and this one did not.
+>
+> **Two fixes for one crash may be alternatives, and mutation will say so** (wave 349). Reverting
+> either the early return or the `u128` mask survived; reverting both panicked. **Say which is the
+> rule and which is the guard** rather than letting a reader assume each is load-bearing.
 >
 > **A guard can be wrong in a way its own tests cannot reach** (wave 348). The pointer-comparison
 > rule required *both* operands to be pointers, so `p == i` fell outside it entirely — and no
