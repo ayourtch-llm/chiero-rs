@@ -2798,3 +2798,85 @@ fn a_width_diagnostic_names_its_declarator() {
     assert!(diags("int a[0];").is_empty());
     assert!(diags("struct S { int n; int a[0]; };").is_empty());
 }
+
+/// **The audit's fourth method again** (§9): enumerate the cases a message claims to cover, and
+/// try each one.
+///
+/// `arithmetic on a pointer to an incomplete type` names a *category*, and C's pointer arithmetic
+/// has seven spellings. Two were checked — `p + n` and `p - q` — and the other five went silent,
+/// including the two that are the same operation written shorter:
+///
+///   - **`p++`, `p--` and `p += n` are pointer arithmetic**, and they need the pointee's size for
+///     exactly the reason `p + 1` does.
+///   - **`p[0]` is `*(p + 0)`**, so it needs it too — and this one also *dereferences*, which is
+///     why the fixture pins that the diagnostic names the arithmetic rather than the deref.
+///
+/// The return-type message beside it was checked the same way and is **complete**: `int g(void)[3]`
+/// and `int g(void)(void)` are rejected, while `int (*g(void))[3]`, `int (*g(void))(void)` and a
+/// `struct` return stay legal. Recording that is the point of the method — most enumerations
+/// confirm, and the one that does not is the finding.
+///
+/// **`void *` and function-pointer arithmetic stay legal**, and belong in the accepted half rather
+/// than being overlooked: gcc refuses both under `-pedantic-errors` and accepts them in GNU mode,
+/// where `sizeof(void)` is 1 — which this engine already implements deliberately. An incomplete
+/// *record* is a different thing: its size is unknown rather than defined to be one.
+#[test]
+fn every_spelling_of_pointer_arithmetic_needs_a_complete_pointee() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // The two that were checked.
+        "struct I; int f(struct I *p){ struct I *q = p + 1; return q != 0; }",
+        "struct I; int f(struct I *p, struct I *q){ return (int)(p - q); }",
+        // ...and the five that were not.
+        "struct I; int f(struct I *p){ p++; return p != 0; }",
+        "struct I; int f(struct I *p){ p--; return p != 0; }",
+        "struct I; int f(struct I *p){ ++p; return p != 0; }",
+        "struct I; int f(struct I *p){ --p; return p != 0; }",
+        "struct I; int f(struct I *p){ p += 1; return p != 0; }",
+        "struct I; int f(struct I *p){ p -= 1; return p != 0; }",
+        "struct I; int f(struct I *p){ return p[0] != 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    // **The subscript names the arithmetic, not the dereference.** `p[0]` fails for one reason —
+    // the stride is unknown — and reporting the deref would send a reader to the wrong half.
+    let d = diags("struct I; int f(struct I *p){ return p[0] != 0; }");
+    assert!(
+        d.iter().any(|m| m.contains("arithmetic")),
+        "`p[0]` on an incomplete pointee should name the arithmetic: {d:?}"
+    );
+
+    for good in [
+        // A complete pointee takes every spelling.
+        "struct C { int m; }; int f(struct C *p){ p++; p--; ++p; --p; p += 1; p -= 1; return p[0].m; }",
+        "int f(int *p){ p++; p--; p += 2; return p[0]; }",
+        // **`void *` and function-pointer arithmetic are GNU extensions this engine keeps**,
+        // resting on the same `sizeof(void) == 1` it already implements.
+        "int f(void *p){ void *q = p + 1; return q != 0; }",
+        "int f(void *p){ p++; return p != 0; }",
+        "int f(void (*g)(void)){ return (int)(g + 1 != 0); }",
+        // A pointer to an incomplete type is fine as long as nothing needs its size.
+        "struct I; int f(struct I *p){ return p != 0; }",
+        "struct I; int f(struct I *p, struct I *q){ return p == q; }",
+        "struct I; int f(struct I **pp){ return pp[0] != 0; }",
+        // The return-type enumeration, confirmed rather than changed.
+        "int (*g(void))[3]; int f(void){ return g() != 0; }",
+        "int (*g(void))(void); int f(void){ return g() != 0; }",
+        "struct S { int m; }; struct S g(void); int f(void){ return g().m; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
