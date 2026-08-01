@@ -487,17 +487,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 314) — 1487 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 315) — 1488 tests, 4 ignored, M1 165/165 by contract
 >
-> **The constraint census is exhausted: all sixteen rows closed** (waves 308, 311, 312, 313).
+> **Two censuses are done — constraints (16 rows) and initializers (7 rows).** Both are closed.
 >
-> **Next: a second census in the same shape**, thirty programs with half of them legal, aimed at
-> **initializers** — too many elements for an array or struct, a scalar wrapped in braces twice,
-> a designator out of range, a string initialiser too long for its array, an initialiser that is
-> not a constant expression at file scope. Wave 307's census touched this ground once and stopped:
-> `int arr[3] = {1,2,3,4}` is a *warning* in gcc, not an error, so the one case it tried proved
-> nothing and the interesting ones were never reached. Use `-pedantic-errors` when the default
-> verdict is a warning, and record which it was.
+> **Next, pick one:**
+>   - **A third census**, same shape, aimed at *conversions and comparisons*: assigning a pointer
+>     to an integer without a cast, comparing pointers of different types, passing the wrong
+>     pointer type to a prototype, returning a pointer from an `int` function. Wave 307's census
+>     touched three of these (`int *p = 1;`, `return p;`) and found gcc **warns** rather than
+>     errors, so they need `-pedantic-errors` — the same trap wave 314 documented.
+>   - **Close wave 314's two declared misses**, both of which need real work rather than a check:
+>     brace-elision distribution (`int a[2][2] = {1,2,3,4,5}`), and a general constant-expression
+>     predicate so the file-scope initializer rule is not narrowed to "contains a call".
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -894,6 +896,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🟢 Wave 314's initializer census — seven checks, and two false positives the suite found
+>
+> The second census in wave 307's shape, aimed where sema had never been graded: `InitList` typed
+> to `Ty::Error` and was never compared against what it initializes. Twenty-six programs, nineteen
+> of them legal.
+>
+> **Four of the seven violations are gcc *warnings* by default and errors only under
+> `-pedantic-errors`** — excess elements for an array, a struct or a scalar, and an over-long
+> string. Wave 307's census stopped at exactly this boundary: it tried one, read "gcc:ok", and
+> moved on. **Take the verdict at both strictness levels and record which it was.**
+>
+> Three rules shaped the walk, each forced by a legal case:
+>   - **Positions, not counts.** `{[0]=1,[2]=3}` is two items with a highest index of 2.
+>   - **Brace elision defeats counting, so counting stops.** `int a[2][2] = {1,2,3,4}` is legal;
+>     detecting elision is easy, distributing correctly is not, so the walk declines to answer.
+>     `int a[2][2] = {1,2,3,4,5}` is a **declared miss**.
+>   - **`char s[3] = "abc"` is legal** — the terminator is dropped when it is the only thing that
+>     does not fit.
+>
+> **The two false positives came from the suite, not the census**, and that is the finding:
+>   - a **vector** initialises elementwise and fell to the scalar arm, failing the whole vector
+>     corpus at once;
+>   - **"not constant" is not "we could not fold it"** — a function designator in a table of
+>     function pointers is a constant expression that neither `eval` nor `addr_of` answers for, so
+>     the complaint is narrowed to initializers containing a **call**. `int x; int g = x;` is the
+>     declared miss.
+>
+> A census asks what gcc *rejects*. Neither of those is something gcc rejects, so no census could
+> have contained them — only a corpus of real code that the checks then broke.
 >
 > ### 🔴 Wave 307's constraint census — one false positive fixed, sixteen gaps recorded
 >
@@ -2514,6 +2546,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A fix that arrives as a false-positive repair lands only in the accepted list** (wave 314).
+> The vector arm was written because the vector corpus broke, so `v4 v = {1,2,3,4}` went into the
+> accepted list and `{1,2,3,4,5}` was never written — leaving the lane bound unfalsifiable. This
+> is wave 312's lesson from the other side: there an *exception* was missing from the accepted
+> list, here a *rule* was missing from the rejected one. **When a check is added to stop something
+> being rejected, write the case that must still be rejected in the same edit.**
 >
 > **Four waves running, the surviving mutant has been an exemption** (wave 312, confirming 303,
 > 308 and 311). The arithmetic is structural, not luck: a RED enumerates the programs a check must
