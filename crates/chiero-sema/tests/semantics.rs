@@ -1500,3 +1500,68 @@ fn dereferencing_an_incomplete_pointee_is_rejected() {
         );
     }
 }
+
+/// **A call and a `return` must match the function's type.**
+///
+/// Three of the nine violations wave 325's ratchet found unchecked, taken together because they
+/// are one idea: the function's declared type says how many arguments it takes and whether it
+/// yields a value, and neither end was being held to it.
+///
+/// For this engine the argument rules are not merely diagnostics. A call with too few arguments
+/// leaves a parameter reading whatever the frame happened to hold, which is precisely the
+/// uninitialised read the memory model exists to report — and the engine would report it against
+/// the *callee*, blaming code that is correct.
+///
+/// The accepted list carries the two exemptions that make the rule survive real C:
+///
+///   - **A variadic function takes *at least* its named parameters**, so the count is a minimum
+///     rather than an equality once `...` is present.
+///   - **An old-style declaration says nothing about its parameters**, so `int g();` admits any
+///     call — the same empty-list problem wave 313 met from the other side, and the same answer:
+///     an empty parameter list is "unspecified", not "none".
+#[test]
+fn a_call_and_a_return_match_the_functions_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "static int g(int a, int b){ return a+b; } int f(void){ return g(1); }",
+        "static int g(int a){ return a; } int f(void){ return g(1,2); }",
+        "static int g(int a, int b, int c){ return a; } int f(void){ return g(1,2); }",
+        // A `return` with a value in a function returning `void`.
+        "static void v(void){ return 1; }",
+        "static void v(int n){ if (n) return n; return; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Exactly right, and with no parameters at all.
+        "static int g(int a, int b){ return a+b; } int f(void){ return g(1,2); }",
+        "static int g(void){ return 1; } int f(void){ return g(); }",
+        // **Variadic: the named parameters are a minimum**, not an equality.
+        "static int g(int a, ...); int f(void){ return g(1); }",
+        "static int g(int a, ...); int f(void){ return g(1,2,3); }",
+        // **An old-style declaration admits any call** — an empty list is unspecified, not none.
+        "static int g(); int f(void){ return g(1,2,3); }",
+        "static int g(); int f(void){ return g(); }",
+        // `return;` in a void function, and a value in a non-void one.
+        "static void v(void){ return; }",
+        "static void v(int n){ if (n) return; }",
+        "static int g(void){ return 1; }",
+        // A void call as a statement is not a `return` with a value.
+        "static void v(void){} static void w(void){ v(); return; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
