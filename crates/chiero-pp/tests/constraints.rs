@@ -152,6 +152,13 @@ fn a_directive_takes_no_extra_tokens() {
     for bad in [
         "#if 1\n#endif junk\nint x = 1;\n",
         "#if 0\n#else junk\n#endif\nint x = 1;\n",
+        // **A dead branch is not skipped text.** `#if 0 / #endif junk` is an error: the
+        // conditional *group* is in a live region, so its own directives are read as syntax even
+        // though the branch between them is not. Mutation found this — keying the `#endif` check
+        // on the current branch's activity rather than the enclosing region's survived until
+        // these two lines existed, because every earlier case had a live branch as well.
+        "#if 0\n#endif junk\nint x = 1;\n",
+        "#if 1\n#else\n#endif junk\nint x = 1;\n",
         "#define K 1\n#undef K junk\nint x = 1;\n",
         "#ifdef A B C\n#endif\nint x = 1;\n",
         "#ifndef A B\n#endif\nint x = 1;\n",
@@ -263,9 +270,8 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("unknown directive", "#nonsense\nint x = 1;\n"),
     ("#define defined", "#define defined 1\nint x = 1;\n"),
     ("#undef defined", "#undef defined\nint x = 1;\n"),
-    // **Not yet enforced**, and here so they stay visible. All three are extra tokens after a
-    // directive that takes none — `-pedantic-errors` diagnostics that old headers trip over, so
-    // the corpus needs checking before they are safe to add.
+    // Wave 334, after the corpus check wave 333 asked for: zero occurrences of a trailing token
+    // across glibc, gcc's own headers and 2,476 VPP files, so these are safe rather than hoped.
     (
         "extra tokens after #endif",
         "#if 1\n#endif junk\nint x = 1;\n",
@@ -278,6 +284,21 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "extra tokens after #undef",
         "#define K 1\n#undef K junk\nint x = 1;\n",
     ),
+    (
+        "extra tokens after #ifdef",
+        "#ifdef A B C\n#endif\nint x = 1;\n",
+    ),
+    (
+        "extra tokens after #ifndef",
+        "#ifndef A B\n#endif\nint x = 1;\n",
+    ),
+    (
+        "extra tokens after #line",
+        "#line 5 \"f.c\" junk\nint x = 1;\n",
+    ),
+    ("no macro name in #ifdef", "#ifdef\n#endif\nint x = 1;\n"),
+    ("no macro name in #ifndef", "#ifndef\n#endif\nint x = 1;\n"),
+    ("no macro name in #undef", "#undef\nint x = 1;\n"),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -312,11 +333,12 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// rather than a missing check.
 #[test]
 fn the_share_of_directive_violations_rejected_does_not_fall() {
-    /// Measured at wave 333. **Raise this when a rule is added; never lower it.**
+    /// Measured at wave 334. **Raise this when a rule is added; never lower it.**
     ///
-    /// The three below the line are the extra-token rules, left open deliberately.
-    const FLOOR: usize = 18;
-
+    /// Wave 333 opened this list with three rules below the line; wave 334 closed them and six
+    /// more the probe found beside them, so the queue is empty and this is a regression gate.
+    /// The next preprocessor wave has to run a new census to refill it.
+    const FLOOR: usize = 27;
     if gcc_rejects("int main(void){return 0;}\n") != Some(false) {
         eprintln!("skipping: gcc not usable here");
         return;

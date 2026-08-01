@@ -852,6 +852,9 @@ impl Engine {
             }
             Some("ifdef" | "ifndef") => {
                 let parent_active = active;
+                if parent_active && self.check_macro_name_present(line) {
+                    self.check_extra_tokens(line, 3);
+                }
                 let defined = line
                     .get(2)
                     .is_some_and(|name| self.by_name.contains_key(&name.text));
@@ -905,6 +908,9 @@ impl Engine {
                 });
             }
             Some("else") => {
+                if conditionals.last().is_none_or(|f| f.parent_active) {
+                    self.check_extra_tokens(line, 2);
+                }
                 match conditionals.last_mut() {
                     Some(frame) => {
                         // **C 6.10.1p4: one `#else` per group.** `saw_else` and not `taken`:
@@ -928,6 +934,12 @@ impl Engine {
                 }
             }
             Some("endif") => {
+                // **The frame being closed, not the one enclosing it.** Read before the pop, so
+                // that `#if 0 / #endif junk` is reported — the group is live even though its
+                // branch is not — while an `#endif` inside a skipped region stays silent.
+                if conditionals.last().is_none_or(|f| f.parent_active) {
+                    self.check_extra_tokens(line, 2);
+                }
                 if conditionals.pop().is_none() {
                     self.diagnostics.push(Diagnostic {
                         span: line[0].token.span,
@@ -938,6 +950,9 @@ impl Engine {
             _ if !active => {}
             Some("define") => self.define(line),
             Some("undef") => {
+                if self.check_macro_name_present(line) {
+                    self.check_extra_tokens(line, 3);
+                }
                 if line.get(2).is_some_and(|t| t.text == "defined") {
                     self.diagnostics.push(Diagnostic {
                         span: line[2].token.span,
@@ -951,6 +966,8 @@ impl Engine {
                 }
             }
             Some("line") => {
+                // A number and optionally a file string, so four tokens with the `#` and the name.
+                self.check_extra_tokens(line, 4);
                 if let Some(number) = line.get(2)
                     && let Ok(reported_start) = number.text.parse::<u32>()
                     && let Some(loc) = self.source_map.lookup_loc(number.token.span.lo)
@@ -1062,6 +1079,46 @@ impl Engine {
             });
         }
         value.truth()
+    }
+
+    /// **A directive that takes a fixed number of tokens takes no more** (C 6.10p1).
+    ///
+    /// `want` is how long the whole line may be, counting the `#` and the directive name — so 2
+    /// for `#endif` and `#else`, 3 for the ones naming a macro.
+    ///
+    /// The caller decides *whether* to ask, and that is the whole subtlety: none of this is
+    /// diagnosed in skipped text, and the activity that governs is the **enclosing** region's,
+    /// not the current branch's. `#if 0 / #else junk` is an error — the group itself is live even
+    /// though its first branch is not — while the same line nested inside another `#if 0` is not.
+    fn check_extra_tokens(&mut self, line: &[Tok], want: usize) {
+        if line.len() > want {
+            self.diagnostics.push(Diagnostic {
+                span: line[want].token.span,
+                message: format!(
+                    "extra tokens at the end of the `#{}` directive",
+                    line.get(1).map_or("", |t| t.text.as_str())
+                ),
+            });
+        }
+    }
+
+    /// **`#ifdef`, `#ifndef` and `#undef` name a macro** (C 6.10.1p1, 6.10.3.5p1).
+    ///
+    /// Its own check rather than a lower bound inside `check_extra_tokens`, because it fails the
+    /// other way and a reader needs to be told which: "extra tokens" and "no macro name" are
+    /// different mistakes, and one sentence for both is the kind of report 023 §9 rules out.
+    fn check_macro_name_present(&mut self, line: &[Tok]) -> bool {
+        if line.len() < 3 {
+            self.diagnostics.push(Diagnostic {
+                span: line[0].token.span,
+                message: format!(
+                    "no macro name given in the `#{}` directive",
+                    line.get(1).map_or("", |t| t.text.as_str())
+                ),
+            });
+            return false;
+        }
+        true
     }
 
     /// C 6.10.3's constraints on a macro definition, checked where the parts are still separate.
