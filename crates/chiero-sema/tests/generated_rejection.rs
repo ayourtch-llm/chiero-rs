@@ -266,6 +266,46 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "int f(void){ register int x = 0; return *&x; }",
     ),
     ("negative array length", "int a[-1];"),
+    // Wave 329's census: the C 6.5 operator constraints, closed in the same wave.
+    (
+        "increment a non-lvalue",
+        "int f(void){ int x = 1; return x++++; }",
+    ),
+    (
+        "increment an enumeration constant",
+        "int f(void){ enum E { A }; return A++; }",
+    ),
+    (
+        "sizeof a function",
+        "void g(void); int f(void){ return sizeof(g); }",
+    ),
+    (
+        "unary minus on a pointer",
+        "int f(void){ int x = 1; return -&x != 0; }",
+    ),
+    (
+        "bit-complement on a double",
+        "int f(double d){ return (int)~d; }",
+    ),
+    (
+        "void value as an operand",
+        "int f(void){ void *p = 0; return *p != 0; }",
+    ),
+    // ...and its C 6.7 declaration rows, which wave 329 did **not** close. Left here on purpose:
+    // this channel exists to keep a known gap visible, and a violation nobody has written a rule
+    // for is exactly what it is for. They are the next wave's queue.
+    (
+        "multiple storage classes",
+        "int f(void){ static extern int x; return x; }",
+    ),
+    (
+        "variably modified at file scope",
+        "const int k = 1; int a[k];",
+    ),
+    (
+        "duplicate enumerator",
+        "enum E { A = 1, A = 2 }; int f(void){ return A; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -298,7 +338,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 328. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 329. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -310,10 +350,11 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     ///     variably-modified scopes are open at each label and at each `goto` and requiring the
     ///     first set to be contained in the second.
     ///
-    /// **The queue is empty.** Wave 328 added qualified types and closed the last entry, so this
-    /// is now a pure regression gate rather than a work list: the next diagnostic-side wave has
-    /// to run a new census to refill it.
-    const FLOOR: usize = 74;
+    /// Wave 328 emptied the queue; **wave 329's census refilled it.** Eight new rows, five closed
+    /// in the same wave and three left open — `static extern`, a variably-modified array at file
+    /// scope, and a duplicate enumerator. Those three are the next wave's work list, and the
+    /// failure message prints them by name.
+    const FLOOR: usize = 80;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

@@ -1832,8 +1832,8 @@ fn a_qualifier_is_part_of_the_type() {
 ///     this AST, so a rule that rejects casts rejects it.
 ///   - **`A++` on an enumeration constant is not an lvalue** even though it is spelled as a plain
 ///     identifier, which no test of the expression's *kind* can see.
-///   - **`~c` on a `char` is legal** — the operand is promoted, so the rule is about the promoted
-///     type and not about the width written down.
+///   - **`~c` on a `char` is legal**, and a narrow integer is the shape most likely to be caught
+///     by a rule written about widths rather than about categories.
 ///   - **`*p;` as a statement is legal with `p` a `void *`**, and `(void)*p` too. The `void` rule
 ///     is about *using the value*, not about producing it.
 #[test]
@@ -1887,7 +1887,9 @@ fn the_operator_constraints_of_c_6_5() {
         "int f(int *p){ return -*p; }",
         "int f(double d){ return (int)-d; }",
         "int f(int n){ return ~n; }",
-        // `~` on a narrow integer: the promotion happens first, so this is `~(int)c`.
+        // `~` on a narrow integer. **Whether this is checked before or after promotion is
+        // measured equivalent** — `char` is an integer type either way — so this case pins the
+        // category rule, not an ordering.
         "int f(char c){ return ~c; }",
         // A `void` value *produced* and discarded is fine; only *using* it is not.
         "int f(void){ void *p = 0; *p; return 0; }",

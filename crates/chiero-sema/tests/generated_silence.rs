@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(19) {
+    match rng.below(21) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -181,6 +181,19 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         ),
         17 => format!(
             "static const void *f{n}(const void *s, void *d){{ return s < d ? s : d; }}\nstatic int g{n}(const char *a, char *b){{ return *(a < b ? a : b); }}"
+        ),
+        // Wave 329: the legal half of the C 6.5 operator census — the lvalues that must keep
+        // incrementing (including a compound literal, which this AST spells as a cast), the
+        // promotion that makes `~c` legal on a `char`, and a `void` value produced and discarded
+        // rather than used.
+        18 => format!(
+            "struct Q{n} {{ int m; }};\nstatic int f{n}(struct Q{n} *s, int *p){{ int a[2] = {{0,0}}; return (a[0])++ + (*p)++ + s->m++ + (int){{1}}++; }}"
+        ),
+        19 => format!(
+            "static int f{n}(char c, int *p, double d){{ return ~c + -*p + (int)-d + !p; }}"
+        ),
+        20 => format!(
+            "static void v{n}(void){{}}\nstatic int f{n}(void){{ void *p = 0; *p; (void)*p; v{n}(); return p != 0; }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),

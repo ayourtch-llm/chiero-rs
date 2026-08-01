@@ -3297,7 +3297,48 @@ impl Cx<'_> {
                     ),
                     _ => {
                         let promoted = self.promote_node(inner, *operand, span);
-                        (self.out.typed.ty_of(promoted), promoted)
+                        let pty = self.out.typed.ty_of(promoted);
+                        // **C 6.5.3.3: `+` and `-` take an arithmetic operand, `~` an integer
+                        // one.**
+                        //
+                        // Written against the *promoted* type, and that is **measured
+                        // equivalent** to asking the operand's own: promotion maps `Int` to
+                        // `Int`, and the decay inside it maps `Array` and `Func` to `Ptr`, so
+                        // every operand lands on the same side of this test either way. Mutation
+                        // says so — swapping `promoted` for `inner` survives the suite.
+                        //
+                        // The comment here first claimed the promotion was what made `~c` legal
+                        // on a `char`. It is not: `char` is an integer type before promotion as
+                        // well as after. `~c` is legal because the rule is about the *category*,
+                        // and no conversion C applies here changes one.
+                        //
+                        // `Error` is exempt, per contract 20 — poison means something upstream
+                        // has already reported.
+                        let bad = match op {
+                            UnOp::Minus | UnOp::Plus => !matches!(
+                                self.out.types[pty.0 as usize],
+                                Ty::Int { .. } | Ty::Float(_) | Ty::Vector { .. } | Ty::Error
+                            ),
+                            UnOp::BitNot => !matches!(
+                                self.out.types[pty.0 as usize],
+                                Ty::Int { .. } | Ty::Vector { .. } | Ty::Error
+                            ),
+                            _ => false,
+                        };
+                        if bad {
+                            let what = match op {
+                                UnOp::Minus => "unary `-`",
+                                UnOp::Plus => "unary `+`",
+                                _ => "`~`",
+                            };
+                            let needs = if matches!(op, UnOp::BitNot) {
+                                "an integer"
+                            } else {
+                                "an arithmetic"
+                            };
+                            self.error(span, format!("{what} needs {needs} operand"));
+                        }
+                        (pty, promoted)
                     }
                 };
                 self.push_typed(TypedNode::Value {
@@ -3695,6 +3736,17 @@ impl Cx<'_> {
                 if is_incomplete(&self.out, operand_ty) {
                     self.error(span, "`sizeof` applied to an incomplete type");
                 }
+                // **A function type has no size** (C 6.5.3.4p1), and this is a separate rule from
+                // incompleteness rather than a case of it: `is_incomplete` deliberately answers
+                // "may this be an object *yet*", and a function type never can be — it is not an
+                // incomplete object type, it is not an object type at all.
+                //
+                // Asked without the decay that `sizeof(&g)` relies on, which is why `sizeof(g)`
+                // is rejected while `sizeof(&g)` and `sizeof(void(*)(void))` stay legal: the
+                // operand of `sizeof` is the one place C does *not* decay a function designator.
+                if matches!(self.out.types[operand_ty.0 as usize], Ty::Func { .. }) {
+                    self.error(span, "`sizeof` applied to a function type");
+                }
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -3934,6 +3986,24 @@ impl Cx<'_> {
     /// they came from, which conversions have to be recorded against.
     fn type_binary(&mut self, expr: ExprId, op: BinOp, sides: BinSides, span: Span) -> TypedId {
         let BinSides { a, b, ae, be } = sides;
+        // **A `void` value cannot be an operand** (C 6.3.2.2: a `void` expression's value does
+        // not exist). `*p != 0` on a `void *` and `v() != 0` on a `void` function both arrive
+        // here, and neither goes through `coerce` — where the same rule already lived for
+        // assignment, arguments and `return` — because binary operands keep their own types.
+        //
+        // **Producing a `void` value is fine; only using it is not.** `*p;` as a statement and
+        // `(void)*p` are both legal C, and both stay legal because nothing asks this question of
+        // them. That is the distinction the accepted half of wave 329's fixture pins, and it is
+        // why this is checked at the operand rather than wherever a `void` value is made.
+        for (node, e) in [(a, ae), (b, be)] {
+            if matches!(
+                self.out.types[self.out.typed.ty_of(node).0 as usize],
+                Ty::Void
+            ) {
+                let span = self.ast.expr(e).span;
+                self.error(span, "a `void` value is used where a value is required");
+            }
+        }
         let int_bits = (self.target.sizes.int_ * 8) as u32;
         let int_ty = self.intern(Ty::Int {
             signed: true,
@@ -4599,6 +4669,53 @@ impl Cx<'_> {
     /// it would reject real code, and wave 311's `read_only` set is what knows. And an object of
     /// **incomplete type** is skipped for contract 20's reason: its declaration has already been
     /// reported, and one bad declaration is one diagnostic however often the name appears.
+    /// Whether `e` is certainly **not** an lvalue (C 6.3.2.1p1).
+    ///
+    /// **Asked as a disqualification**, like `reads_an_object` above and for the same reason: the
+    /// positive question — "does this designate an object" — has to be right about every
+    /// expression kind, and being wrong about one rejects correct code. This lists the kinds that
+    /// cannot designate an object and treats everything else as an lvalue, so a shape nobody
+    /// thought of is accepted rather than refused. Wave 303's rule.
+    ///
+    /// Two entries are not what they look like:
+    ///
+    ///   - **`Cast` is only disqualifying when its operand is not an initializer list.** A
+    ///     compound literal `(int){1}` is an lvalue and this AST spells it as a cast, so the
+    ///     blanket rule rejects `(int){1}++`, which gcc accepts.
+    ///   - **An `Ident` naming an enumeration constant is not an lvalue.** `A++` is spelled
+    ///     exactly like `x++` and no test of the expression's *kind* can tell them apart; the
+    ///     enumerator table can.
+    ///
+    /// Parentheses need no entry because the parser discards them, which is what makes `(x)++`
+    /// legal here for free — and is the reason the accepted half of wave 329's fixture pins it,
+    /// since an AST that kept them would need this to see through.
+    fn not_an_lvalue(&self, e: ExprId) -> bool {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Number(_)
+            | ExprKind::Char { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::Postfix { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::Cond { .. }
+            | ExprKind::Assign { .. }
+            | ExprKind::Comma { .. }
+            | ExprKind::StmtExpr(_)
+            | ExprKind::SizeofExpr(_)
+            | ExprKind::SizeofType(_)
+            | ExprKind::AlignofExpr(_)
+            | ExprKind::AlignofType(_)
+            | ExprKind::TypeName(_)
+            | ExprKind::InitList(_) => true,
+            // `*p` designates an object; every other unary operator produces a value.
+            ExprKind::Unary { op, .. } => !matches!(op, UnOp::Deref),
+            ExprKind::Cast { operand, .. } => {
+                !matches!(self.ast.expr(operand).kind, ExprKind::InitList(_))
+            }
+            ExprKind::Ident(n) => self.enumerators.contains_key(&n),
+            _ => false,
+        }
+    }
+
     fn reads_an_object(&self, e: ExprId) -> bool {
         match self.ast.expr(e).kind.clone() {
             ExprKind::Call { .. } => true,
@@ -4889,6 +5006,14 @@ impl Cx<'_> {
         //
         // `type_of_written` types the target, which the callers do again immediately after;
         // `type_expr` is memoized, so the second call is a lookup.
+        // **Not an lvalue at all** (C 6.5.2.4p1, 6.5.3.1p1): `x++++` increments a value. Asked
+        // before the qualifier question because it is the more basic failure and because the type
+        // of `x++` is a perfectly ordinary `int` — nothing about the *type* is wrong.
+        if self.not_an_lvalue(target) {
+            let span = self.ast.expr(target).span;
+            self.error(span, format!("{what} something that is not an lvalue"));
+            return;
+        }
         let Some(t) = self.type_of_written(target) else {
             return;
         };
