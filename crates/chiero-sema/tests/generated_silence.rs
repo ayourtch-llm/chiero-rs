@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(14) {
+    match rng.below(16) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -161,6 +161,13 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         // Wave 322: a `static` local, including one shadowing a file-scope name.
         12 => format!(
             "static int c{n} = 9;\nstatic int f{n}(void){{ static int c{n} = 1; c{n}++; return c{n}; }}"
+        ),
+        // Wave 327: legal jumps around a variably-modified declaration — from *after* it, and
+        // into a block that declares an ordinary array. Both are shapes the VLA-scope rule can
+        // reject by mistake if it is approximated as "jumping into a block".
+        13 => format!("static int f{n}(int m){{ int a{n}[m]; goto skip; skip: return a{n}[0]; }}"),
+        14 => format!(
+            "static int f{n}(int m){{ if (m) goto skip; {{ int b{n}[2]; b{n}[0] = 1; skip: return m; }} }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),

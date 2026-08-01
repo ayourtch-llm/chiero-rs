@@ -792,6 +792,9 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        open_vla_scopes: Vec::new(),
+        next_vla_scope: 0,
+        label_scopes: Default::default(),
         prior: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
@@ -838,6 +841,9 @@ pub fn const_eval(
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        open_vla_scopes: Vec::new(),
+        next_vla_scope: 0,
+        label_scopes: Default::default(),
         prior: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
@@ -934,7 +940,18 @@ struct Cx<'a> {
     /// function and checked at the end: a forward `goto` names a label declared later, so nothing
     /// can be decided at the point of use.
     labels_defined: indexmap::IndexSet<Symbol>,
-    labels_used: Vec<(Symbol, Span)>,
+    labels_used: Vec<(Symbol, Span, Vec<u32>)>,
+    /// The variably-modified scopes open at the point being walked, innermost last.
+    ///
+    /// A scope opens at a VLA's declaration and closes with its block, which is why this is a
+    /// stack truncated on the way out of a compound statement rather than a set: C 6.8.6.1 is
+    /// about whether a jump *crosses* a declaration, and the same block can open one after a
+    /// label and not before it.
+    open_vla_scopes: Vec<u32>,
+    next_vla_scope: u32,
+    /// The scopes open where each label sits. A `goto` is illegal when this is not contained in
+    /// the scopes open at the `goto`.
+    label_scopes: indexmap::IndexMap<Symbol, Vec<u32>>,
     /// Every file-scope declaration seen so far, for comparing the next one against it.
     prior: indexmap::IndexMap<Symbol, Prior>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
@@ -1129,6 +1146,33 @@ impl Cx<'_> {
                         self.read_only_pointee.insert(n);
                     } else {
                         self.read_only_pointee.swap_remove(&n);
+                    }
+                    // **A variably-modified declaration opens a scope** that runs to the end of
+                    // its block.
+                    //
+                    // Only at block scope, because only a block closes a scope. A parameter
+                    // reaches here too — `int f(int n, int a[n])` is in the corpus — and its
+                    // scope has no compound statement to end it, so an entry pushed for one
+                    // would outlive the function and every function after it.
+                    //
+                    // **That guard is measured-unobserved**, and the reason is worth stating
+                    // rather than papering over: a parameter's scope is open at *every* label
+                    // and every `goto` in the body, so the containment below holds with or
+                    // without the leak. Dropping it survives the suite. It is kept because the
+                    // stack is only meaningful if it tracks block structure, not because any
+                    // test can currently tell.
+                    if scope == Scope::Block
+                        && matches!(
+                            self.out.types[t.0 as usize],
+                            Ty::Array {
+                                len: ArrayLen::Vla(_),
+                                ..
+                            }
+                        )
+                    {
+                        let id = self.next_vla_scope;
+                        self.next_vla_scope += 1;
+                        self.open_vla_scopes.push(id);
                     }
                     if storage.register {
                         self.register_objects.insert(n);
@@ -1326,6 +1370,7 @@ impl Cx<'_> {
                     };
                     let saved_defined = std::mem::take(&mut self.labels_defined);
                     let saved_used = std::mem::take(&mut self.labels_used);
+                    let mut saved_label_scopes = std::mem::take(&mut self.label_scopes);
                     self.type_stmt(body);
                     // **Checked here, once the whole body has been walked.** A `goto` may name a
                     // label declared later — that is what a forward jump is — so nothing can be
@@ -1338,14 +1383,34 @@ impl Cx<'_> {
                     // function, so nothing observes the clearing. It is kept because taking says
                     // what the code means, and because a stale set would be a silent wrong answer
                     // if a nested body ever reached here.
-                    for (name, span) in std::mem::take(&mut self.labels_used) {
+                    for (name, span, from) in std::mem::take(&mut self.labels_used) {
                         if !self.labels_defined.contains(&name) {
                             let n = self.text(name).unwrap_or("?").to_owned();
                             self.error(span, format!("label `{n}` used but not defined"));
+                            continue;
+                        }
+                        // **A jump may not enter the scope of a variably-modified identifier**
+                        // (C 6.8.6.1p1). The label's open scopes must all be open at the `goto`
+                        // too; anything open there and not here is a scope the jump *enters*,
+                        // skipping the declaration that gives the array its length.
+                        //
+                        // Checked at function end for the same reason the undefined-label check
+                        // is: the label may be declared after the `goto` that names it.
+                        if let Some(at) = self.label_scopes.get(&name)
+                            && at.iter().any(|s| !from.contains(s))
+                        {
+                            let n = self.text(name).unwrap_or("?").to_owned();
+                            self.error(
+                                span,
+                                format!(
+                                    "jump to label `{n}` enters the scope of a                                      variably-modified declaration"
+                                ),
+                            );
                         }
                     }
                     self.labels_defined = saved_defined;
                     self.labels_used = saved_used;
+                    self.label_scopes = std::mem::take(&mut saved_label_scopes);
                     self.current_ret = saved_ret;
                     self.current_fn = saved_fn;
                     // A parameter does not outlive its function; restoring rather than
@@ -4717,9 +4782,13 @@ impl Cx<'_> {
                 }
             }
             StmtKind::Compound(ss) => {
+                // Scopes opened inside this block end with it. Truncating rather than popping one
+                // per declaration keeps the two in step even when a block opens several.
+                let outer = self.open_vla_scopes.len();
                 for s in ss {
                     self.type_stmt(s);
                 }
+                self.open_vla_scopes.truncate(outer);
             }
             StmtKind::If { cond, then, els } => {
                 let c = self.type_expr(cond);
@@ -4852,6 +4921,10 @@ impl Cx<'_> {
             }
             StmtKind::Label { name, body } => {
                 self.labels_defined.insert(name);
+                // **Where the label sits, in variably-modified terms.** Sampled at the label and
+                // not at the block, because `{ skip: ; int a[n]; }` puts the label outside the
+                // scope and `{ int a[n]; skip: ; }` puts it inside — the same block either way.
+                self.label_scopes.insert(name, self.open_vla_scopes.clone());
                 self.type_stmt(body);
             }
             StmtKind::Return(Some(e)) => {
@@ -4884,7 +4957,11 @@ impl Cx<'_> {
                 }
             }
             StmtKind::Goto(name) => {
-                self.labels_used.push((name, self.ast.stmt(stmt).span));
+                self.labels_used.push((
+                    name,
+                    self.ast.stmt(stmt).span,
+                    self.open_vla_scopes.clone(),
+                ));
             }
             StmtKind::Break => {
                 if self.breakable_depth == 0 {

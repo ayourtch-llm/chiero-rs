@@ -187,6 +187,13 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "member through incomplete pointee",
         "struct I; int f(struct I *p){ return p->m; }",
     ),
+    // Wave 327: the shapes around the VLA rule that must stay rejected, including the one with
+    // no block at all — the case that shows it is about crossing a declaration, not entering a
+    // block.
+    (
+        "goto into a VLA scope, no block",
+        "int f(int n){ goto skip; int a[n]; skip: return 0; }",
+    ),
     // Rules nothing checks yet — the ones this channel exists to keep visible.
     (
         "assignment to array",
@@ -250,7 +257,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 325. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 327. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -258,10 +265,13 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     ///
     ///   - **discarding `const`** needs *qualified types* — 436 `Ty::` match sites across four
     ///     crates, budgeted in §9 as its own effort;
-    ///   - **a `goto` into a VLA's scope** needs per-label knowledge of whether a
-    ///     variably-modified declaration precedes it in the same block. Jumping into a block that
-    ///     declares a *non-VLA* is legal, so nothing cheaper than that distinction is correct.
-    const FLOOR: usize = 61;
+    ///   - **a `goto` into a VLA's scope** — closed in wave 327, by recording which
+    ///     variably-modified scopes are open at each label and at each `goto` and requiring the
+    ///     first set to be contained in the second.
+    ///
+    /// **One remains: discarding `const`**, which needs *qualified types* — 436 `Ty::` match sites
+    /// across four crates, budgeted in §9 as its own effort. It is the only entry below the line.
+    const FLOOR: usize = 63;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
