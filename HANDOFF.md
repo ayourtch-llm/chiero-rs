@@ -487,29 +487,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 352) — 1533 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 353) — 1535 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 148 of 148, `chiero-pp` 27 of 27, `chiero-parse` clean.** The message audit, the predicate
-> sweep and the speculative-fold sweep are all finished.
+> **Sema 154 of 154, `chiero-pp` 27 of 27, `chiero-parse` clean.** Every neighbourhood the census
+> method named has now been run, and the three audit sweeps are finished.
 >
 > **Next, in descending order of what they buy:**
->   1. **Census C 6.8's statement constraints beyond wave 312's**, and **6.9's external
->      definitions** — the last two neighbourhoods no census has touched. Method unchanged: 30
->      programs, half legal, verdicts from gcc under `-pedantic-errors`.
->   2. **A contract-20 sweep of its own.** Wave 351 found three cascades by asking one question —
->      *does this program produce exactly one diagnostic?* — and none of them was visible to any
->      other channel. **Generate malformed programs with exactly one mistake and assert
->      `diagnostics.len() == 1`.** The ratchet counts rejections, the silence channel counts false
->      positives, and neither counts *duplicates*; wave 351 checked six contexts by hand and found
->      three bad.
->   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
->   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328).
+>   1. **A contract-20 channel.** Wave 351 found three cascades by asking *does this program
+>      produce exactly one diagnostic?*, and **no existing channel asks it**: the ratchet counts
+>      rejections, the silence channel counts false positives, neither counts duplicates. Build it
+>      the way the other generated channels are built — take `VIOLATIONS`' 154 rows, which are
+>      one-mistake programs by construction, and assert `diagnostics.len() == 1` for each. Expect
+>      cascades wherever a *specific* message is followed by a *generic* one about its consequence.
+>   2. **`FloatKind` cannot tell `_Float32` from `float`**, nor `_Float64x` from `long double`
+>      (wave 336). `_Generic` fidelity only; sizes and alignments are already right.
+>   3. **Qualifiers reach sema but not `chiero-lower` or CIR** (wave 328). A `const` pointee would
+>      tell 021 a store through it is UB — a checker question, cost against 023 §7 first.
+>   4. **Run the census again** on whatever C 6.5 operator constraints remain; the named
+>      neighbourhoods are exhausted, so the next run has to be chosen by reading the standard
+>      rather than by following this list.
 >
-> **A diagnostic that a later rule renders redundant is a cascade in waiting.** Every one of wave
-> 351's three had the same shape: a *specific* sentence ("division by zero") followed by a
-> *generic* one about the consequence ("not an integer constant expression", "variably modified at
-> file scope", "width is not constant"). **When adding a rule that fires on an unfoldable value,
-> ask what already reported** — the fold usually did, and better.
+> **When a rule is stated in four paragraphs, it will be implemented in none.** Wave 352's nine
+> misses were one table split across C 6.7.1p3, 6.8.5p3, 6.7.6.3p2 and 6.9.1p4 — each reads as a
+> minor aside about a different construct, and no single reading of the standard makes the shape
+> visible. **The grid is what made it one rule**: seven specifiers by five contexts, every cell put
+> to gcc. Look for other rules with that shape — the same specifier or type asked about in several
+> syntactic positions.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2818,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A rule stated in four paragraphs will be implemented in none** (wave 352). Which storage class
+> each context admits is one table, split across C 6.7.1p3, 6.8.5p3, 6.7.6.3p2 and 6.9.1p4; each
+> reads as a minor aside about a different construct, and all four were missing. **Build the grid —
+> specifiers by contexts, every cell put to gcc** — and the shape appears at once.
+>
+> **A finer context is a new type, not a wider `Scope`** (wave 352). `Scope` has two answers
+> because contract 14's redefinition rule has two; storage has five, since a `for` initializer and
+> a parameter are block-ish for linkage and not for storage. **Adding a variant to an existing enum
+> changes the meaning of every match on it** — a parallel type costs one `match` and nothing else.
 >
 > **A fold can report *and* succeed** (wave 351). `2147483647 + 1` yields a wrapped value and
 > complains on the way, so a rescue keyed on "the fold failed" still threw the complaint away and
