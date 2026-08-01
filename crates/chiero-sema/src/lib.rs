@@ -790,6 +790,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        prior: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -833,6 +834,7 @@ pub fn const_eval(
         switches: Vec::new(),
         labels_defined: Default::default(),
         labels_used: Vec::new(),
+        prior: Default::default(),
         values: IndexMap::new(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
@@ -921,6 +923,8 @@ struct Cx<'a> {
     /// can be decided at the point of use.
     labels_defined: indexmap::IndexSet<Symbol>,
     labels_used: Vec<(Symbol, Span)>,
+    /// Every file-scope declaration seen so far, for comparing the next one against it.
+    prior: indexmap::IndexMap<Symbol, Prior>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
     values: IndexMap<Symbol, TyId>,
@@ -929,6 +933,36 @@ struct Cx<'a> {
     unknown_names: indexmap::IndexSet<Symbol>,
     /// File-scope names that already have an *initialized* definition — contract 14.
     defined_with_init: indexmap::IndexSet<Symbol>,
+}
+
+/// The linkage a redeclaration resolves to, given the one already established.
+///
+/// C 6.2.2p4: `static` is internal; a plain file-scope declaration is external; and `extern`
+/// takes whatever the prior declaration had. Only the last of those needs `was` at all, and it
+/// is the whole reason this is a function rather than a field.
+fn resolved_linkage(was: Prior, now: Prior) -> bool {
+    if now.internal {
+        true
+    } else if now.deferring {
+        was.internal
+    } else {
+        false
+    }
+}
+
+/// What a previous file-scope declaration of a name committed to.
+#[derive(Copy, Clone)]
+struct Prior {
+    ty: TyId,
+    /// A function with a body, or an object without `extern` — the things C calls definitions.
+    defined: bool,
+    /// `static`. Internal linkage; the mirror of it is *explicitly* external.
+    internal: bool,
+    /// Written `extern`, which claims nothing about linkage and so conflicts with nothing.
+    deferring: bool,
+    /// An old-style declaration says nothing about its parameters, so its type must not be
+    /// compared with a prototype's. `int f(); int f(int);` is legal C.
+    kr: bool,
 }
 
 /// Where a declaration appears. Contract 14's redefinition rule is a *file-scope* rule, and the
@@ -1061,7 +1095,12 @@ impl Cx<'_> {
 
     fn decl(&mut self, id: DeclId, scope: Scope) {
         match self.ast.decl(id).kind.clone() {
-            DeclKind::Var { name, ty, init, .. } => {
+            DeclKind::Var {
+                name,
+                ty,
+                init,
+                storage,
+            } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
                 if let Some(a) = self.declared_align(ty) {
@@ -1082,6 +1121,21 @@ impl Cx<'_> {
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
                     // second *initialized* definition is an error, so the thing tracked
                     // is "has an initializer", not "has been seen".
+                    if scope == Scope::File {
+                        // An object is *defined* unless it says `extern`: `int x;` is a tentative
+                        // definition and `extern int x;` is only a declaration (C 6.9.2). The
+                        // repeat-tentative case is handled by the branch below, which is about
+                        // initializers rather than linkage, so `defined` here is about linkage
+                        // alone and an initializer is not consulted.
+                        let now = Prior {
+                            ty: t,
+                            defined: false,
+                            internal: storage.static_,
+                            deferring: storage.extern_,
+                            kr: false,
+                        };
+                        self.check_redeclaration(n, now, self.ast.decl(id).span);
+                    }
                     if scope == Scope::Block {
                         // **A block-scope name redefines nothing.** It has no linkage, so it is a
                         // distinct object from every other declaration of that name — in an
@@ -1113,10 +1167,29 @@ impl Cx<'_> {
                     self.out.typedef_aligns.insert(name, a);
                 }
             }
-            DeclKind::Func { name, ty, body, .. } => {
+            DeclKind::Func {
+                name,
+                ty,
+                body,
+                storage,
+            } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
                 self.values.insert(name, t);
+                if scope == Scope::File {
+                    let kr = matches!(
+                        &self.ast.ty(ty).kind,
+                        chiero_ast::TypeKind::Func { kr: true, .. }
+                    );
+                    let now = Prior {
+                        ty: t,
+                        defined: body.is_some(),
+                        internal: storage.static_,
+                        deferring: storage.extern_,
+                        kr,
+                    };
+                    self.check_redeclaration(name, now, self.ast.decl(id).span);
+                }
                 // **A declaration's parameters are typed too.** Only definitions used to
                 // get this, so `void f(void *p, size_t n);` left both parameters with no
                 // recorded type — and a consumer asking `ty_of_decl` got `None` and
@@ -1373,6 +1446,19 @@ impl Cx<'_> {
                 ..
             } => {
                 let r = self.ty_of(ret);
+                // **A function may not return an array or another function** (C 6.7.6.3p1):
+                // neither can be copied out by value, and both are what pointers exist for.
+                // `int (*f(void))[3]` is unaffected — its return type is a *pointer*, and the
+                // array lives behind it.
+                if matches!(
+                    self.out.types[r.0 as usize],
+                    Ty::Array { .. } | Ty::Func { .. }
+                ) {
+                    self.error(
+                        node.span,
+                        "a function may not return an array or a function",
+                    );
+                }
                 let ps = params
                     .iter()
                     .map(|&p| match &self.ast.decl(p).kind {
@@ -3807,6 +3893,96 @@ impl Cx<'_> {
     /// sema does not model, so it says nothing rather than guessing. `int *const p; *p = 1;` is
     /// legal and must stay so, and it is legal precisely because the write is not to `p`.
     /// Walk `body` with one more enclosing loop, which is also one more breakable statement.
+    /// Whether two declarations of one name commit to incompatible types.
+    ///
+    /// **Return types are compared always; parameter lists only when both are non-empty.** The
+    /// parser gives `f()` and `f(void)` the *same* empty list — `parameter_list` returns
+    /// `(vec![], false, false)` for both — so sema cannot tell "unspecified parameters" from "no
+    /// parameters", and comparing an empty list against a prototype would reject
+    /// `int f(); int f(int x){...}`, which is legal C.
+    ///
+    /// That is a declared limit in one direction only: `int f(void); int f(int);` is a conflict
+    /// this misses. It is the right way round — wave 303's rule is that rejecting a correct
+    /// program is worse than missing an incorrect one — and comparing return types regardless
+    /// keeps `int f(); long f();` caught, since even an old-style declaration commits to what it
+    /// returns.
+    fn types_conflict(&self, a: TyId, b: TyId) -> bool {
+        if a == b {
+            return false;
+        }
+        match (
+            self.out.types[a.0 as usize].clone(),
+            self.out.types[b.0 as usize].clone(),
+        ) {
+            (
+                Ty::Func {
+                    ret: r1,
+                    params: p1,
+                    variadic: v1,
+                },
+                Ty::Func {
+                    ret: r2,
+                    params: p2,
+                    variadic: v2,
+                },
+            ) => {
+                if r1 != r2 {
+                    return true;
+                }
+                if p1.is_empty() || p2.is_empty() {
+                    return false;
+                }
+                p1 != p2 || v1 != v2
+            }
+            // Interned types, so anything else differing is a real difference.
+            _ => true,
+        }
+    }
+
+    /// Compare a file-scope declaration with any earlier one of the same name (C 6.7p4, 6.2.2p7).
+    fn check_redeclaration(&mut self, name: Symbol, now: Prior, span: Span) {
+        let Some(&was) = self.prior.get(&name) else {
+            self.prior.insert(name, now);
+            return;
+        };
+        let text = self.text(name).unwrap_or("?").to_owned();
+
+        if was.defined && now.defined {
+            self.error(span, format!("`{text}` is defined more than once"));
+        } else if !was.kr && !now.kr && self.types_conflict(was.ty, now.ty) {
+            self.error(span, format!("conflicting types for `{text}`"));
+        } else if resolved_linkage(was, now) != was.internal {
+            // **`extern` adopts, it does not defer.** C 6.2.2p4: an `extern` declaration takes
+            // the linkage of a prior visible declaration, and external only when there is none.
+            // That is what makes the rule asymmetric — `static int n; extern int n;` is legal
+            // because the second adopts internal linkage, while `extern int n; static int n;` is
+            // not, because the first already resolved to external. A model where `extern` simply
+            // never conflicts accepts both, and was the first thing written here.
+            let (a, b) = if now.internal {
+                ("static", "non-static")
+            } else {
+                ("non-static", "static")
+            };
+            self.error(
+                span,
+                format!("{a} declaration of `{text}` follows {b} declaration"),
+            );
+        }
+
+        // The record keeps whichever facts are the stronger claim: once defined, always defined,
+        // and the linkage the pair resolved to governs the rest.
+        self.prior.insert(
+            name,
+            Prior {
+                ty: now.ty,
+                defined: was.defined || now.defined,
+                internal: resolved_linkage(was, now),
+                deferring: was.deferring && now.deferring,
+                kr: was.kr && now.kr,
+            },
+        );
+    }
+
     fn in_loop(&mut self, body: impl FnOnce(&mut Self)) {
         self.loop_depth += 1;
         self.breakable_depth += 1;
