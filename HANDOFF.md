@@ -487,29 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 347) — 1528 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 348) — 1529 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 139 of 139, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 142 of 142, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly forty-five `self.error(` sites in sema still unread. Five
->      waves, five kinds of finding, so it is still paying. Still unread and category-shaped: the
->      **`switch`/`case` family** beyond wave 319 (a `case` in a block nested inside the switch, a
->      `default` among ranges, duplicate detection across `case 1 ... 3`), the **incomplete-type
->      family** (`sizeof`, member access, array element, parameter, return type, `_Alignof` — six
->      messages over one predicate, so tabulate the *contexts* rather than the messages, as wave
->      345 did for linkage), and the **conversion family**'s remaining half (`_Bool`, vectors,
->      `void *` against function pointers).
->   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
->   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
->   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
+>   1. **Finish the audit** — roughly forty `self.error(` sites in sema still unread. Six waves,
+>      six kinds of finding. Still unread and category-shaped: the **`switch`/`case` family**
+>      beyond wave 319 (a `case` in a block nested inside the switch, a `default` among ranges,
+>      duplicate detection across `case 1 ... 3`), and the **conversion family**'s remaining half
+>      (`_Bool` against every scalar, vectors, `void *` against function pointers).
+>   2. **A predicate with a documented exclusion is a checklist too.** `is_incomplete` excludes
+>      `void` on purpose, and wave 347 found two callers that needed the exclusion reversed. The
+>      other predicates carrying a stated exception are `not_an_lvalue` (wave 329, excludes the
+>      `Cast`-of-`InitList` case), `reads_an_object` (excludes `&`), and `assignable`'s `_Bool`
+>      arm. **Enumerate each predicate's callers and ask whether the exception is right for each.**
+>   3. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
+>   4. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336); **qualifiers reach sema but
+>      not `chiero-lower`** (wave 328).
 >
-> **Watch for an operator that inverts its operand's question.** `&` was treated as a full stop
-> because "the operand of `&` is not read" — true, and not the question. Forming an address can
-> still require reads (`&p->m`, `&a[i]`), and `&*E` *cancels* rather than compounding. **When a
-> walk hits an operator that changes what is being asked, it needs a second recursion, not a
-> base case.** `sizeof` is the other operator of that shape in this engine and its walk has never
-> been checked — its operand is unevaluated, so a read inside it is not a read.
+> **Run a category against two members of it, not one.** Seventeen contexts asked only of
+> `struct I` would have confirmed everything; asking the same seventeen of `void` found three
+> defects, because `void` is the incomplete type the shared predicate deliberately omits. **When a
+> predicate has a documented exception, the exception is the second member to test with.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2815,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Run a category against two members, and make the second one the documented exception**
+> (wave 347). Seventeen incomplete-type contexts asked of `struct I` confirm everything; the same
+> seventeen asked of `void` found three defects, because `is_incomplete` omits `void` on purpose
+> and each caller had to decide separately. **A predicate with a stated exception is itself a
+> checklist** — enumerate its callers and ask whether the exception is right for each.
+>
+> **A shared predicate is the place to put "needs a size", not each caller** (wave 347). Two of
+> three callers had reimplemented the question and one had forgotten half of it. `has_no_size`
+> exists so a fourth context inherits the answer instead of repeating the omission — and the
+> *return type* deliberately does not use it, which is what a mutant swapping them proves.
 >
 > **An operator that inverts its operand's question needs a second recursion, not a base case**
 > (wave 346). `reads_an_object` stopped at `&` because the operand of `&` is not read — true, and
