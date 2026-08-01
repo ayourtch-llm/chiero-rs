@@ -3587,3 +3587,89 @@ fn a_failed_constant_fold_keeps_its_explanation() {
         );
     }
 }
+
+/// **Where each storage class may appear** — wave 352's census over C 6.8's statement constraints
+/// and 6.9's external definitions, the last two neighbourhoods no census had touched.
+///
+/// Twenty programs found nine misses, and every one of them is the same question asked in a
+/// different place, so the fixture is the **grid**: seven specifiers against five contexts.
+/// C states it in four separate paragraphs, which is why it reads as four unrelated rules and was
+/// implemented as none:
+///
+///   - **6.7.1p3 — file scope takes no `auto` and no `register`.** There is no automatic storage
+///     to refer to.
+///   - **6.8.5p3 — a `for` declaration takes only `auto` or `register`.** `static` there would
+///     outlive the loop it is scoped to.
+///   - **6.7.6.3p2 — a parameter takes only `register`.**
+///   - **6.9.1p4 — a function definition takes only `extern` or `static`.** `inline` and
+///     `_Noreturn` are *function specifiers* and are unaffected, which is what stops this rule
+///     rejecting `static inline`, the corpus's commonest spelling.
+///
+/// `_Thread_local` is its own row and not a synonym for either: it is legal at file scope, and at
+/// block scope only beside `static` or `extern` (6.7.1p3).
+#[test]
+fn a_storage_class_belongs_to_its_context() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // The grid, written as `(specifier, file, block, for, parameter, function)` with `true`
+    // meaning legal. Every cell was put to gcc under `-pedantic-errors`.
+    let grid: &[(&str, bool, bool, bool, bool, bool)] = &[
+        ("", true, true, true, true, true),
+        ("extern ", true, true, false, false, true),
+        ("static ", true, true, false, false, true),
+        ("auto ", false, true, true, false, false),
+        ("register ", false, true, true, true, false),
+    ];
+
+    for &(sc, file, block, for_, param, func) in grid {
+        let cases: [(&str, bool, String); 5] = [
+            ("file scope", file, format!("{sc}int x;")),
+            (
+                "block scope",
+                block,
+                format!("int f(void){{ {sc}int x = 1; return x; }}"),
+            ),
+            (
+                "`for` initializer",
+                for_,
+                format!("int f(void){{ for ({sc}int i = 0; i < 2; i++) ; return 0; }}"),
+            ),
+            (
+                "parameter",
+                param,
+                format!("int f({sc}int a){{ return a; }}"),
+            ),
+            ("function", func, format!("{sc}int f(void){{ return 1; }}")),
+        ];
+        for (where_, legal, src) in cases {
+            let d = diags(&src);
+            if legal {
+                assert!(
+                    d.is_empty(),
+                    "`{sc}` in a {where_} is legal: `{src}` -> {d:?}"
+                );
+            } else {
+                assert!(!d.is_empty(), "`{sc}` in a {where_} is not: `{src}`");
+            }
+        }
+    }
+
+    // **`typedef` and `_Thread_local` do not fit the grid**, and are asked their own way.
+    assert!(diags("typedef int T; T v;").is_empty());
+    assert!(diags("int f(void){ typedef int T; T v = 1; return v; }").is_empty());
+    assert!(!diags("int f(void){ for (typedef int T; 0; ) ; return 0; }").is_empty());
+    assert!(!diags("int f(typedef int a){ return 0; }").is_empty());
+    assert!(diags("_Thread_local int x;").is_empty());
+    assert!(diags("int f(void){ _Thread_local static int x; return x; }").is_empty());
+
+    // **A function specifier is not a storage class**, so the corpus's commonest spelling stays.
+    assert!(diags("static inline int f(void){ return 1; } int g(void){ return f(); }").is_empty());
+    assert!(diags("inline int f(void){ return 1; }").is_empty());
+}
