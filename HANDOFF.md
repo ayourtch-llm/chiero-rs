@@ -487,29 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 340) — 1521 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 341) — 1522 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** No named constraint work
-> outstanding.
+> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** Wave 340 changed no ratchet
+> number, which is the point: **none of its findings were visible to one.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Audit the diagnostics that already exist**, rather than adding more. Wave 339's most
->      useful finding was not a missing rule but **three wrong sentences and a cascade**: `*x` on
->      an `int` blamed an incomplete type, and `*nope` reported twice. Neither is visible to a
->      ratchet, which only asks *whether* something was rejected. **A sweep that asks "does this
->      diagnostic name the actual mistake" has never been run**, and there are now ~130 of them.
->      Method: for each `self.error(` site, construct the smallest program reaching it and read the
->      message against gcc's.
->   2. **Census the remaining neighbourhoods**: C 6.8's statement constraints beyond wave 312's,
->      and 6.9's external definitions — wave 339 touched both only glancingly.
+>   1. **Finish the diagnostic audit.** Wave 340 did the poison cascades (all sixteen
+>      single-mistake programs now yield one diagnostic) and the *conversion* message. **~80 more
+>      `self.error(` sites in sema have never been read against gcc's wording.** The two classes
+>      found so far are worth looking for specifically: a message that describes a type the code
+>      *invented* (poison), and one sentence standing for several distinct mistakes. Candidates by
+>      inspection: `excess elements in initializer` (three sites, three different causes),
+>      `initializer element is not a constant expression`, `subscripted value is not an array or
+>      pointer`, `called object is not a function or function pointer`.
+>   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **The ratchet has a blind spot, and wave 339 is where it showed.** `dereference of a pointer to
-> an incomplete type` on `*x` counts as a *catch* — the program was rejected, the row is green —
-> while telling the reader something false. 023 §9 says a report a person cannot act on is not a
-> report; a ratchet cannot see that, because it measures rejection and not explanation. **When a
-> census finds a row already caught, read the message before crediting it.**
+> **How to run the audit**, since wave 340 established the method: write the smallest program that
+> reaches the site, read chiero's sentence beside gcc's, and ask two questions — *does it name a
+> thing the program contains* (poison fails this) and *would a different mistake produce the same
+> words* (a shared sentence fails this). Assert on the **phrase**, not on the words in it: mutation
+> caught a fixture that accepted "makes an integer from a pointer" for the opposite error because
+> both words were present either way.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2816,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Assert the phrase, not the words in it** (wave 340). A fixture checking that a message mentions
+> `"pointer"` and `"integer"` passed with the two arms swapped, because both words appear whichever
+> direction the error runs. **When testing a diagnostic's text, assert the span that distinguishes
+> it from its neighbour** — the words a wrong message shares with the right one are exactly the
+> ones a fixture must not rely on.
+>
+> **The context of a conversion was already carried and never said** (wave 340). `coerce` has had a
+> `Conversion` — assignment, argument, return — since it was written, and the diagnostic ignored
+> it, so three bad arguments produced three identical sentences. **Before enriching a message, look
+> for what the call site already knows**; it is usually cheaper than deriving it again.
 >
 > **A ratchet measures rejection, not explanation** (wave 339). `*x` on an `int` was rejected —
 > green row — with "dereference of a pointer to an incomplete type", which is false about the
