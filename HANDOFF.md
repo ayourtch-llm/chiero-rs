@@ -487,21 +487,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 326) — 1499 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 327) — 1500 tests, 4 ignored, M1 165/165 by contract
 >
-> **The queue is now measured, not guessed.** `generated_rejection.rs` names the six constraint
-> violations sema still accepts, and its floor (57) fails if any is lost.
+> **The constraint queue is down to its two hard items**, and the ratchet (`FLOOR = 61`) fails if
+> either of the sixty-one regresses.
 >
 > **Next, in descending order of what they buy:**
->   1. **Five of the six, which need no new machinery**: assignment to an array, a duplicate struct
->      member, a duplicate parameter name, a `goto` into a VLA's scope, the address of a `register`
->      object. Each is a check at a site sema already visits; raise `FLOOR` with each.
->   2. **Qualified types**, which is the sixth (`discard const`) and the largest unfinished item in
->      the project. Budget for auditing **436 `Ty::` match sites across four crates**; do not start
->      by adding the variant.
->   3. **Widen both generated channels.** Every new rule should add its neighbourhood to
->      `historically_awkward` (silence) and its violation to `VIOLATIONS` (rejection), so the two
->      grow with the rules instead of ageing against them.
+>   1. **Qualified types.** `discard const` is one of the two remaining violations, and the same
+>      change makes wave 316's pointee rule semantic rather than syntactic. It is the largest
+>      unfinished item in the project. Budget for auditing **436 `Ty::` match sites across four
+>      crates**; do not start by adding the variant — plan the audit first, then add it.
+>   2. **A `goto` into a VLA's scope**, the other remaining violation. Needs per-label knowledge of
+>      whether a variably-modified declaration precedes the label in its block; jumping into a
+>      block declaring a non-VLA is legal, so an approximation rejects correct code.
+>   3. **Widen both generated channels with every new rule** — its neighbourhood into
+>      `historically_awkward`, its violation into `VIOLATIONS` — so the two grow with the rules
+>      rather than ageing against them.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -898,6 +899,26 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 📊 Wave 326 — the ratchet reaches 61 of 63, and stops at a principled boundary
+>
+> Four more violations rejected: assigning to an array, a duplicate struct member, a duplicate
+> parameter name, and taking the address of a `register` object. Each went where sema already
+> visits the construct, and each needed one decision about where it stops:
+>   - the array rule reads the left operand's **written** type, before decay — `a[0] = b[0]` is an
+>     element, and a `struct` holding an array assigns whole, which is how one copies an array;
+>   - a duplicate member is checked **within the record**, a duplicate parameter **within the
+>     list** — `values` holds the whole file scope by then and would make every parameter
+>     shadowing a global a duplicate;
+>   - `register` gets its **own** scoped set beside `read_only` and `read_only_pointee`, because
+>     one set for three properties gets two of them wrong.
+>
+> **The two below the line are the two needing machinery that does not exist**, so the queue
+> emptied to a principled boundary rather than to where effort ran out:
+>   - **discarding `const`** — qualified types, 436 `Ty::` sites;
+>   - **a `goto` into a VLA's scope** — per-label knowledge of whether a variably-modified
+>     declaration precedes it. Jumping into a block declaring a *non-VLA* is legal, so nothing
+>     cheaper than that distinction is correct, and an approximation would reject legal code.
 >
 > ### 📊 Wave 325 — a ratchet on how much of C's constraint surface sema rejects
 >
@@ -2787,6 +2808,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A scoped set's removal is unfalsifiable until something reuses the name** (wave 326). Three
+> scoped sets now exist — `read_only` (311), `read_only_pointee` (316), `register_objects` (326) —
+> and every one of them had its `swap_remove` survive mutation until a shadowing case was written
+> by hand. The cause is wave 322's rule seen from the far side: fixture authors give things
+> distinct names, so the *removal* half of a scoped set is the last thing anything exercises.
+> **When adding a scoped set, write its shadowing case in the same edit as its insertion.**
 >
 > **A coverage number nobody can act on is not a report** (wave 325). The rejection ratchet prints
 > the *names* of what it missed, not the count, because "57 of 63" tells the next wave nothing to
