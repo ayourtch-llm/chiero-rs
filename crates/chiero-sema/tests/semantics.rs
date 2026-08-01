@@ -3100,3 +3100,80 @@ fn linkage_is_a_relation_between_two_declarations() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 }
+
+/// **The address-constant checklist** (§9), enumerated in a file-scope initializer, where the rule
+/// bites.
+///
+/// C 6.6p9 builds an address constant with `&`, `[]`, `.`, `->` and array-to-pointer decay — but
+/// only where forming the address **reads no object**. That last condition is what the engine's
+/// `reads_an_object` walk stops short of: it treats `&` as a full stop, on the grounds that the
+/// operand of `&` is not read. True of `&x`, and false of everything reached *through a pointer*.
+///
+/// Two misses, and both are the same shape:
+///
+///   - **`&p->m` reads `p`.** The arrow is a dereference; the pointer's value is not a constant,
+///     so the address of the member is not one either.
+///   - **`*&x` reads `x`.** A dereference is a read wherever it appears, and the walk descended
+///     into `&x` and stopped.
+///
+/// The accepted half is what keeps the fix from swallowing the whole category — five shapes that
+/// *look* like reads and are not: `&*&x`, `&*(a+1)`, `&(&s)->m`, `&a[1]` and `&a[0] + 2`.
+#[test]
+fn an_address_constant_reads_no_object() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Reached through a pointer object, so the pointer is read.
+        "struct S { int m; } s; struct S *p = &s; int *g = &p->m;",
+        "int *p; int *g = &*p;",
+        // A variable subscript is read even though the array is not.
+        "int a[3]; int i; int *g = &a[i];",
+        // A dereference is a read wherever it appears.
+        "int x; int g = *&x;",
+        "int x; int *p = &x; int g = *p;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // The plain forms 6.6p9 names.
+        "int x; int *g = &x;",
+        "int a[3]; int *g = &a[1];",
+        "int a[3]; int *g = a;",
+        "int a[3]; int *g = a + 1;",
+        "int a[3]; int *g = &a[0] + 2;",
+        "int a[3]; int *g = &a[1] - 1;",
+        "struct S { int m; int n; } s; int *g = &s.n;",
+        "int f(void); int (*g)(void) = f;",
+        "int f(void); int (*g)(void) = &f;",
+        "const char *g = \"s\";",
+        "char g[] = \"s\";",
+        "int *g = 0;",
+        "int *g = (int *)0;",
+        "int *g = (int *)100;",
+        "int x; int *g = &x + 1;",
+        "int x; long g = (long)&x;",
+        "int x; int *g = 1 ? &x : 0;",
+        "int x; int *const g = &x;",
+        // **The five that look like reads and are not.** `&*E` cancels when `E` is itself an
+        // address constant, and a `->` on an address constant is a `.` in disguise.
+        "int x; int *g = &*&x;",
+        "int a[3]; int *g = &*(a+1);",
+        "struct S { int m; } s; int *g = &(&s)->m;",
+        "struct S { int m; } s; int *g = &s.m;",
+        "int a[3]; int *g = &a[2 - 1];",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
