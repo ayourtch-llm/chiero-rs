@@ -853,3 +853,77 @@ fn the_statement_constraints_of_census_rows_eight_to_twelve() {
         );
     }
 }
+
+/// **Rows 13–16, the last of the census: a declaration compared with an earlier one.**
+///
+/// A function defined twice, a declaration whose type conflicts with an earlier one, `static`
+/// after non-`static` (and its mirror), and a function declared to return an array. gcc rejects
+/// all seven below; this engine accepted every one, because `analyze` never compares a file-scope
+/// declaration against a previous declaration of the same name. The cross-TU `GlobalTable` does
+/// something adjacent, but it is a separate pass that `analyze` does not run.
+///
+/// The accepted list is longer than the rejected one on purpose — repeating a declaration is how
+/// every header in C works, and three of these cases decide the rule's shape:
+///
+///   - **`extern int n;` after `static int n;` is legal** while `int n;` after it is not. The rule
+///     is about *linkage*, and `extern` is the spelling that defers to whatever already exists.
+///     A check phrased as "the storage classes differ" gets this backwards.
+///   - **`int f(); int f(int x){...}` is legal.** The first is an old-style declaration with
+///     unspecified parameters, not a claim that there are none, so it conflicts with nothing.
+///   - **`int (*f(void))[3]` returns a pointer to an array**, which is fine; only returning the
+///     array itself is not. The two spellings differ by one indirection and it is easy to write a
+///     check that rejects both.
+#[test]
+fn the_declaration_constraints_of_census_rows_thirteen_to_sixteen() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Row 13: two definitions of one function.
+        "int f(void){ return 0; } int f(void){ return 1; }",
+        // Row 14: the parameter list conflicts, and the return type conflicts.
+        "int h(int); int h(long){ return 0; }",
+        "int h(int); long h(int){ return 0; }",
+        // Row 15: linkage, in both directions that C forbids.
+        "extern int n; static int n;",
+        "static int n; int n;",
+        "int f(void){ return 0; } static int f(void);",
+        // Row 16: a function may not return an array.
+        "int f(void)[3];",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Declaring then defining, and declaring twice, is how headers work.
+        "int f(void); int f(void){ return 0; }",
+        "int f(void); int f(void);",
+        "static int g(void); static int g(void){ return 0; }",
+        "extern int n; extern int n;",
+        "int h(int); int h(int){ return 0; }",
+        "void f(void); void f(void){ }",
+        "int f(int a, int b); int f(int a, int b){ return a+b; }",
+        // `extern` defers to what exists; only a fresh external definition conflicts.
+        "static int n; extern int n;",
+        // An old-style declaration claims nothing about its parameters.
+        "int f(); int f(int x){ return x; }",
+        // Different names never conflict.
+        "int f(void){ return 0; } int g(void){ return 1; }",
+        // Returning a pointer to an array is legal; only the array itself is not.
+        "int (*f(void))[3];",
+        "typedef int A[3]; A *g(void);",
+        "struct S { int a; }; struct S f(void){ struct S s = {1}; return s; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
