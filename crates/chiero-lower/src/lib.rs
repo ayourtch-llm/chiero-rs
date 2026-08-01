@@ -177,6 +177,11 @@ struct FnState {
     /// which is the point: CIR picks one order, and this records that the source did not.
     order_sensitive: bool,
     name: chiero_cir::Symbol,
+    /// `static` locals of this function, which have static storage duration and so live in the
+    /// module's globals rather than in a frame slot. Kept per function because the *name* is
+    /// scoped to it: a `static int c` here must not be visible to another function, nor shadow a
+    /// file-scope `c` outside this body.
+    static_locals: Vec<(chiero_span::Symbol, Option<chiero_cir::GlobalId>)>,
     params: Vec<Param>,
     ret: CTy,
     variadic: bool,
@@ -1035,6 +1040,7 @@ impl Lowerer<'_> {
             access_paths: IndexMap::new(),
             order_sensitive: order_sensitive_body(self.ast, self.analysis, body),
             name: cir_name.clone(),
+            static_locals: Vec::new(),
             params: Vec::new(),
             ret: ret.clone(),
             variadic,
@@ -1208,9 +1214,11 @@ impl Lowerer<'_> {
                     &*cir_name
                 ),
             });
+            self.restore_static_local_names();
             self.f = None;
             return;
         }
+        self.restore_static_local_names();
         let fs = self.f.take().expect("inside a function");
         self.module.funcs[slot] = Function {
             id: fs.id,
@@ -1728,12 +1736,67 @@ impl Lowerer<'_> {
         self.set_term(Terminator::Goto(target));
     }
 
+    /// Put back whatever the function's `static` locals displaced in the file-scope table.
+    ///
+    /// **Both exits, including the refusal one.** A function that lowering gives up on has still
+    /// declared its statics by then, and leaving their names bound would let the *next* function
+    /// resolve `c` to an object it cannot see.
+    fn restore_static_local_names(&mut self) {
+        let Some(fs) = self.f.as_mut() else { return };
+        let entries = std::mem::take(&mut fs.static_locals);
+        for (name, shadowed) in entries {
+            match shadowed {
+                Some(prev) => {
+                    self.globals.insert(name, prev);
+                }
+                None => {
+                    self.globals.swap_remove(&name);
+                }
+            }
+        }
+    }
+
     fn local_decl(&mut self, d: chiero_ast::DeclId) {
         let decl = self.ast.decl(d).kind.clone();
         let span = self.ast.decl(d).span;
-        let DeclKind::Var { name, init, .. } = decl else {
+        let DeclKind::Var {
+            name,
+            init,
+            ref storage,
+            ..
+        } = decl
+        else {
             return;
         };
+        // **A `static` local has static storage duration** (C 6.2.4p3): one object for the whole
+        // program, initialized before `main` rather than each time control reaches it. So it is
+        // built exactly like a file-scope object — same initializer folding, same zero default —
+        // and the declaration emits no code at all.
+        //
+        // `declare_global` registers the name in the module-wide table, which is right for the
+        // object and wrong for the name: it is scoped to this function. So the entry is moved
+        // into the frame's own map, restoring whatever file-scope binding it displaced.
+        if storage.static_ && !storage.extern_ {
+            let Some(n) = name else { return };
+            let shadowed = self.globals.get(&n).copied();
+            self.declare_global(d);
+            let Some(gid) = self.globals.get(&n).copied() else {
+                return;
+            };
+            // The binding stays in `globals` for the rest of the body, so every consumer — a
+            // read, a write, an address — resolves it the same way a file-scope object is
+            // resolved. What it displaced is remembered and put back when the function ends.
+            self.fs().static_locals.push((n, shadowed));
+            // **Renamed so a dump can tell two of them apart.** Two functions may each declare
+            // `static int c`, and so may a file-scope `c` alongside them; the ids stay distinct
+            // either way, but a reader of the CIR should not have to guess which is which.
+            let owner = self.fs().name.clone();
+            self.module.globals[gid.0 as usize].name =
+                std::sync::Arc::from(format!("{owner}.{}", self.sym(n).unwrap_or_default()));
+            self.module.globals[gid.0 as usize].linkage = chiero_cir::Linkage::Internal;
+            let _ = gid;
+            return;
+        }
         let Some(sty) = self.analysis.ty_of_decl(d) else {
             return;
         };
