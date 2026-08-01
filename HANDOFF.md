@@ -487,23 +487,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 321) — 1493 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 322) — 1494 tests, 4 ignored, M1 165/165 by contract
 >
-> **Four censuses done and their follow-ons closed.** Constraints (16 rows), initializers (7),
-> conversions (8), `switch` (7), plus the deref-completeness rule wave 319 wrote down and wave 320
-> closed.
+> **Wave 321's method is the front, not a finished job.** Asking "what do the channels use as
+> *scenery*" found a length-zero array in twenty programs. The second tier that found it had
+> twenty shapes and two failures; the rest of that tier is committed as
+> `an_array_takes_its_length_from_its_initializer`'s neighbours but the *method* has more in it:
 >
-> **Next, in descending order of what they buy:**
->   1. **Qualified types.** The last conversion-census row (`int *p = cp;` discarding `const`) and
->      what would make wave 316's pointee rule semantic rather than syntactic. Budget for auditing
->      **436 `Ty::` match sites across four crates**; do not start by adding the variant. This is
->      now the only item left from the census programme.
->   2. **A fifth census**, preferring a construct whose implementation arrived in pieces (wave
->      319's rule): `restrict`/`volatile`, compound literals, or bit-field access rules.
->   3. **Return to the engine.** Five waves have been spent in sema. The last differential finding
->      was wave 306's, and the corpus channels — `if_differential`, the canonical-use net, the
->      symbolic/concrete channel — have not been widened since. A wave spent asking what *those*
->      cannot yet see may be worth more than a fifth census.
+>   1. **Keep going with tier-3 canonical shapes**, chosen the same way — constructs that appear
+>      in fixtures as setup rather than as subject. Candidates not yet exercised: `static` locals
+>      with initializers, arrays of arrays passed by pointer, `union` members read after writing a
+>      different one, functions returning structs by value into an array element.
+>   2. **Qualified types** — the last conversion-census row, and what makes wave 316's pointee
+>      rule semantic. Budget for auditing **436 `Ty::` match sites**; do not start by adding the
+>      variant.
+>   3. **A fifth census**, preferring a construct whose implementation arrived in pieces.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -900,6 +898,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > is one constant now, and the ABI gate went from 652 records / 2,909 `_Static_assert`s to
 > **1,369 / 5,482**, all accepted by gcc. Second time a duplicated definition was caught only
 > because the copy stopped tracking — `size_of_cty` is the other, still open below.
+>
+> ### 🔑 Wave 321 — the channels' blind spot, found by asking what they cannot see
+>
+> §9 recorded a judgement rather than a task: five waves in sema, the differential channels not
+> widened since wave 306. Acting on it found a defect in the first twenty programs.
+>
+> **`int a[] = {1,2,3}` was an array of length zero.** Sema turned an unspecified length into
+> `ArrayLen::Flexible` and never completed it from the initializer (C 6.7.9p22), so `sizeof`
+> returned 0 where gcc says 12, and reading any element degraded the run to `Unknown`.
+> `static char buf[] = "…"` is in most C files.
+>
+> **Why it survived eighteen canonical programs and a hundred corpus fixtures:** every fixture
+> that needs an array writes its length, because whoever writes the fixture picks the length to
+> make the arithmetic obvious. It only appeared here because it was used in a *helper* line — the
+> source of a copy loop — rather than as the thing under test. **A construct used incidentally is
+> tested by nobody**; that is a better search than another list of constructs.
+>
+> The fix rebuilds the type at the *declaration*, since `ty_of` sees a declarator and no
+> initializer, and re-interns rather than mutating because every consumer relies on types being
+> immutable. Length comes from the **cursor**, so `int a[] = {[4] = 7}` is five.
+>
+> **Two other probe results were correct behaviour, not defects**, and are worth knowing: a
+> 16-iteration loop reports fidelity `Bounded` — the engine declaring its limit exactly as 023 §7
+> requires — and it looked like a failure only because `chiero_answer` reads return values and
+> never fidelity. **A probe that ignores the fidelity field will read every declared limit as a
+> defect.**
 >
 > ### 🟢 Wave 320 — dereferencing an incomplete pointee
 >
@@ -2664,6 +2688,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A construct used *incidentally* is tested by nobody** (wave 321). `int a[] = {1,2,3}` had
+> length zero and survived eighteen canonical programs, a hundred corpus fixtures and four
+> censuses — because every fixture that needs an array writes its length, since the author picks
+> the length to make the arithmetic obvious. It surfaced only when it appeared in a *helper* line
+> rather than as the subject. **Look at what your fixtures use to set the scene, not at what they
+> assert**; the scenery is what nothing checks.
+>
+> **A probe that ignores fidelity reads every declared limit as a defect** (wave 321). A
+> 16-iteration loop returns no value and reports `Bounded`, which is the engine doing exactly what
+> 023 §7 requires. `chiero_answer` reads return values only, so the probe called it a failure.
+> **Before reporting "no answer", read the fidelity** — the difference between a bug and a
+> declared limit is a field this project spent waves building.
 >
 > **Report the fault, not its consequence** (wave 320). `p->m` on a pointer to an incomplete type
 > used to say "no member named `m`" — the lookup searched a record with no members and truthfully
