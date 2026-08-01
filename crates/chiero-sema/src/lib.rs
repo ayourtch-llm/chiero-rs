@@ -960,9 +960,6 @@ struct Prior {
     internal: bool,
     /// Written `extern`, which claims nothing about linkage and so conflicts with nothing.
     deferring: bool,
-    /// An old-style declaration says nothing about its parameters, so its type must not be
-    /// compared with a prototype's. `int f(); int f(int);` is legal C.
-    kr: bool,
 }
 
 /// Where a declaration appears. Contract 14's redefinition rule is a *file-scope* rule, and the
@@ -1132,7 +1129,6 @@ impl Cx<'_> {
                             defined: false,
                             internal: storage.static_,
                             deferring: storage.extern_,
-                            kr: false,
                         };
                         self.check_redeclaration(n, now, self.ast.decl(id).span);
                     }
@@ -1177,16 +1173,11 @@ impl Cx<'_> {
                 self.out.decl_types.insert(id, t);
                 self.values.insert(name, t);
                 if scope == Scope::File {
-                    let kr = matches!(
-                        &self.ast.ty(ty).kind,
-                        chiero_ast::TypeKind::Func { kr: true, .. }
-                    );
                     let now = Prior {
                         ty: t,
                         defined: body.is_some(),
                         internal: storage.static_,
                         deferring: storage.extern_,
-                        kr,
                     };
                     self.check_redeclaration(name, now, self.ast.decl(id).span);
                 }
@@ -3901,6 +3892,11 @@ impl Cx<'_> {
     /// parameters", and comparing an empty list against a prototype would reject
     /// `int f(); int f(int x){...}`, which is legal C.
     ///
+    /// A separate guard for old-style declarations was written first and **deleted as
+    /// subsumed**: a K&R *declaration* has an empty list and is skipped by the rule above, and a
+    /// K&R *definition* has its parameter types filled in by then and is legitimately comparable.
+    /// Mutation could not falsify the guard because there was nothing left for it to do.
+    ///
     /// That is a declared limit in one direction only: `int f(void); int f(int);` is a conflict
     /// this misses. It is the right way round — wave 303's rule is that rejecting a correct
     /// program is worse than missing an incorrect one — and comparing return types regardless
@@ -3949,7 +3945,7 @@ impl Cx<'_> {
 
         if was.defined && now.defined {
             self.error(span, format!("`{text}` is defined more than once"));
-        } else if !was.kr && !now.kr && self.types_conflict(was.ty, now.ty) {
+        } else if self.types_conflict(was.ty, now.ty) {
             self.error(span, format!("conflicting types for `{text}`"));
         } else if resolved_linkage(was, now) != was.internal {
             // **`extern` adopts, it does not defer.** C 6.2.2p4: an `extern` declaration takes
@@ -3978,7 +3974,6 @@ impl Cx<'_> {
                 defined: was.defined || now.defined,
                 internal: resolved_linkage(was, now),
                 deferring: was.deferring && now.deferring,
-                kr: was.kr && now.kr,
             },
         );
     }

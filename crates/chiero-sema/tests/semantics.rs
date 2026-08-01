@@ -885,8 +885,11 @@ fn the_declaration_constraints_of_census_rows_thirteen_to_sixteen() {
     };
 
     for bad in [
-        // Row 13: two definitions of one function.
+        // Row 13: two definitions of one function, adjacent and with a declaration between
+        // them. The second shape is what makes "once defined, always defined" load-bearing:
+        // without it the bare declaration in the middle resets the record.
         "int f(void){ return 0; } int f(void){ return 1; }",
+        "int f(void){ return 0; } int f(void); int f(void){ return 1; }",
         // Row 14: the parameter list conflicts, and the return type conflicts.
         "int h(int); int h(long){ return 0; }",
         "int h(int); long h(int){ return 0; }",
@@ -896,6 +899,9 @@ fn the_declaration_constraints_of_census_rows_thirteen_to_sixteen() {
         "int f(void){ return 0; } static int f(void);",
         // Row 16: a function may not return an array.
         "int f(void)[3];",
+        // A variadic prototype and a fixed one are different types, and the parameter lists are
+        // both non-empty so this is inside what the comparison can see.
+        "int f(int a, ...); int f(int a){ return a; }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -913,6 +919,14 @@ fn the_declaration_constraints_of_census_rows_thirteen_to_sixteen() {
         "static int n; extern int n;",
         // An old-style declaration claims nothing about its parameters.
         "int f(); int f(int x){ return x; }",
+        // A K&R definition, whose parameter types arrive between the `)` and the `{`, alone and
+        // after a declaration of each shape. All three are legal, and together they are why the
+        // separate old-style guard turned out to be unnecessary.
+        "int f(a) int a; { return a; } int g(void){ return f(1); }",
+        "int f(); int f(a) int a; { return a; }",
+        "int f(int); int f(a) int a; { return a; }",
+        // Variadic on both sides is not a difference.
+        "int f(int a, ...); int f(int a, ...){ return a; }",
         // Different names never conflict.
         "int f(void){ return 0; } int g(void){ return 1; }",
         // Returning a pointer to an array is legal; only the array itself is not.
