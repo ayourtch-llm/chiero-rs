@@ -487,30 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 346) — 1527 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 347) — 1528 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 136 of 136, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 139 of 139, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly fifty `self.error(` sites in sema still unread. Four waves,
->      four distinct kinds of finding, so the method is not exhausted: a **missing rule** (342), a
->      rule **spread across grammar arms** (343), a rule that is **too strict** (344), and a rule
->      **applied to the wrong category** (345). Still unread and category-shaped: the
->      **address-constant** half of `initializer element is not a constant expression` (`&global`,
->      `&a[k]`, `a + k`, `&s.m`, a string literal, and casts of those — enumerate them in a
->      *file-scope initializer*, where the rule bites), and the **switch/case family** beyond
->      wave 319 (`case` in a nested block, a `default` after a `case` range, duplicate detection
->      across ranges).
+>   1. **Finish the audit** — roughly forty-five `self.error(` sites in sema still unread. Five
+>      waves, five kinds of finding, so it is still paying. Still unread and category-shaped: the
+>      **`switch`/`case` family** beyond wave 319 (a `case` in a block nested inside the switch, a
+>      `default` among ranges, duplicate detection across `case 1 ... 3`), the **incomplete-type
+>      family** (`sizeof`, member access, array element, parameter, return type, `_Alignof` — six
+>      messages over one predicate, so tabulate the *contexts* rather than the messages, as wave
+>      345 did for linkage), and the **conversion family**'s remaining half (`_Bool`, vectors,
+>      `void *` against function pointers).
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Enumerate the relation, not the messages.** Four diagnostics described one relation between two
-> declarations; reading each against gcc's phrasing would have found nothing, because every one is
-> accurate *whenever it fires* — the defect was in **when**. Building the matrix of pairs is what
-> exposed it, and the same shape applies to any family of messages that share a subject:
-> initializer excess/index, the `switch` family, the incomplete-type family. **When several
-> messages describe one relation, tabulate the relation's inputs.**
+> **Watch for an operator that inverts its operand's question.** `&` was treated as a full stop
+> because "the operand of `&` is not read" — true, and not the question. Forming an address can
+> still require reads (`&p->m`, `&a[i]`), and `&*E` *cancels* rather than compounding. **When a
+> walk hits an operator that changes what is being asked, it needs a second recursion, not a
+> base case.** `sizeof` is the other operator of that shape in this engine and its walk has never
+> been checked — its operand is unevaluated, so a read inside it is not a read.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2815,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An operator that inverts its operand's question needs a second recursion, not a base case**
+> (wave 346). `reads_an_object` stopped at `&` because the operand of `&` is not read — true, and
+> the wrong question: forming an address can still require reads, and `&*E` cancels rather than
+> compounding. A base case answered two shapes wrongly; descending normally would have answered
+> five more wrongly the other way. **Look for the operator that changes the question** — `sizeof`
+> is the other one here, and its operand is unevaluated.
 >
 > **When several messages describe one relation, tabulate the relation's inputs** (wave 345). Four
 > linkage diagnostics describe one relation between two declarations. Read individually each is
