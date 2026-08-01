@@ -246,7 +246,17 @@ fn keyword(text: &str) -> Option<Kw> {
         "_Bool" => Kw::Bool,
         "__int128" | "__int128_t" => Kw::Int128,
         "_Complex" | "__complex__" => Kw::Complex,
-        "__builtin_va_list" | "__gnuc_va_list" => Kw::VaList,
+        // **Only the builtin.** `__gnuc_va_list` is not a gcc builtin type — it is a *typedef*
+        // that gcc's own `stdarg.h` writes, `typedef __builtin_va_list __gnuc_va_list;`, so that
+        // headers can name the type without claiming the name `va_list`. Treating it as a keyword
+        // turned that line into two type specifiers and no declarator: the typedef declared
+        // nothing, and every use of `__gnuc_va_list` as an identifier resolved to the keyword
+        // instead of to the declaration.
+        //
+        // Nothing noticed for three hundred waves because the alias made the *type* come out
+        // right anyway. Wave 331's "a declaration declares something" rule is what reported it,
+        // which is the case for adding a constraint even where a wrong answer is not yet visible.
+        "__builtin_va_list" => Kw::VaList,
         "_Float16" => Kw::F16,
         "__bf16" => Kw::BF16,
         "_Float32" => Kw::F32,

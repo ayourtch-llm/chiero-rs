@@ -189,13 +189,41 @@ fn a_va_list_has_the_abi_size_and_alignment() {
     );
 }
 
-/// **`__gnuc_va_list` is the same type**, which is the spelling glibc's headers use.
+/// **`__gnuc_va_list` is the same type — because a header says so, not because the lexer does.**
+///
+/// This fixture used to declare `ap` with no typedef at all, and passed, because the lexer mapped
+/// `__gnuc_va_list` to the same keyword as `__builtin_va_list`. That is not what it is:
+/// `__gnuc_va_list` is an ordinary typedef, written by gcc's own `stdarg.h` on the line reproduced
+/// below, so that headers can name the type without claiming `va_list`. gcc rejects the bare
+/// spelling and accepts `int __gnuc_va_list = 5;` — it is not reserved as a type at all.
+///
+/// The alias made the *type* come out right, which is why nothing noticed for three hundred waves.
+/// What it broke was the declaration: `typedef __builtin_va_list __gnuc_va_list;` parsed as two
+/// type specifiers and no declarator, so the typedef declared nothing. Wave 331's "a declaration
+/// declares something" rule is what reported it.
 #[test]
 fn the_gnuc_spelling_is_the_same_type() {
-    let p = parse("__gnuc_va_list ap;", TargetConfig::x86_64_linux());
+    let p = parse(
+        "typedef __builtin_va_list __gnuc_va_list;\n__gnuc_va_list ap;",
+        TargetConfig::x86_64_linux(),
+    );
     let id = p.decl_ty("ap").expect("ap");
     assert_eq!(p.analysis.size_of(id), Some(24));
     assert_eq!(p.analysis.align_of(id), Some(8));
+}
+
+/// **...and it is an ordinary identifier otherwise**, which is the half a keyword cannot express.
+#[test]
+fn the_gnuc_spelling_is_not_reserved() {
+    let p = parse(
+        "int __gnuc_va_list = 5;\nint f(void){ return __gnuc_va_list; }",
+        TargetConfig::x86_64_linux(),
+    );
+    assert!(
+        p.analysis.diagnostics.is_empty(),
+        "{:?}",
+        p.analysis.diagnostics
+    );
 }
 
 /// **A pointer to it is still a pointer**, which is what 020 §4.4.1 needs: the list lives

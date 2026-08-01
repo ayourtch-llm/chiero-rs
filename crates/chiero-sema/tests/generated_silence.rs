@@ -119,7 +119,7 @@ fn declaration(rng: &mut Rng, n: usize) -> String {
 /// (316), an inferred array length (321) and a `static` local (322). Those are where the rules
 /// are dense enough to catch a legal program by mistake.
 fn historically_awkward(rng: &mut Rng, n: usize) -> String {
-    match rng.below(24) {
+    match rng.below(26) {
         // Wave 307: the same local name in two functions is not a redefinition.
         0 => format!(
             "static int f{n}a(void){{ int v = 1; return v; }}\nstatic int f{n}b(void){{ int v = 2; return v; }}"
@@ -207,6 +207,15 @@ fn historically_awkward(rng: &mut Rng, n: usize) -> String {
         ),
         23 => format!(
             "struct T{n}; struct T{n} {{ int m; }}; struct T{n};\nstatic int f{n}(struct T{n} *p){{ {{ struct Q{n} {{ int a; }} x = {{1}}; (void)x; }} {{ struct Q{n} {{ int b; }} y = {{2}}; (void)y; }} struct Q{n} {{ int c; }} z = {{3}}; return p->m + z.c; }}"
+        ),
+        // Wave 331: declarations with no declarator that *do* declare something — an
+        // anonymous enumeration declares its constants, a named tag declares the tag — plus the
+        // anonymous member that shares the spelling, and a record copied from its own type.
+        24 => format!(
+            "enum {{ AA{n} = 1 }};\nstruct S{n} {{ int a; struct {{ int b; }}; }};\nstruct S{n};\nstatic int f{n}(struct S{n} *s){{ return s->b + AA{n}; }}"
+        ),
+        25 => format!(
+            "struct R{n} {{ int a; }};\nstruct R{n} g{n}(void);\nstatic int f{n}(void){{ struct R{n} x = {{1}}; struct R{n} y = x; struct R{n} z = g{n}(); return y.a + z.a; }}"
         ),
         // Wave 309: `__func__` is declared by the language.
         _ => format!("static int f{n}(void){{ return (int)sizeof(__func__) + __func__[0]; }}"),

@@ -2061,6 +2061,14 @@ fn a_declaration_declares_something_and_a_record_is_not_a_scalar() {
         "struct S { int a; }; struct S g(void); int f(void){ struct S s = g(); return s.a; }",
         "union U { int a; char b; }; union U u = {1}; int f(void){ return u.a; }",
         "union U { int a; char b; }; int f(void){ union U u2 = {1}; union U u = u2; return u.a; }",
+        // **A qualifier does not stop a record being copied**, in either direction — reading a
+        // `const` object yields an unqualified value, and writing an unqualified one into a
+        // `const` object is what initializing it means. Mutation found this: comparing the two
+        // record types with their qualifiers survived, because nothing here copied a `const` one.
+        "struct S { int a; }; int f(const struct S *p){ struct S s = *p; return s.a; }",
+        "struct S { int a; }; int f(void){ const struct S c = {1}; struct S s = c; return s.a; }",
+        "struct S { int a; }; int f(void){ struct S m = {1}; const struct S c = m; return c.a; }",
+        "struct S { int a; }; void g(struct S); int f(const struct S *p){ g(*p); return 0; }",
         // ...and the scalar initializations that must stay ordinary.
         "int x = 1; int f(void){ return x; }",
         "int f(void){ int a[2] = {1,2}; return a[0]; }",

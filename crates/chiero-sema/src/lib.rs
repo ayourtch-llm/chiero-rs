@@ -1606,6 +1606,30 @@ impl Cx<'_> {
             DeclKind::TagDef { ty } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                // **A declaration declares something** (C 6.7p2): a declarator, a tag, or the
+                // members of an enumeration. The parser routes every declarator-less declaration
+                // here, so `int;` and `struct { int m; };` arrive alongside the legitimate
+                // `struct S { int m; };`.
+                //
+                // **The rule cannot be "no declarator", and it cannot be "anonymous" either.**
+                // `enum { A = 1 };` has neither a declarator nor a tag and is perfectly legal,
+                // because it declares its enumerators. So the question is asked of the *syntactic
+                // form*: a tag with a name declares that tag, an enumeration declares its
+                // constants, and everything else — a bare type, a nameless structure — declares
+                // nothing at all.
+                //
+                // An anonymous struct or union *member* is not this. It shares the spelling
+                // exactly and is legal C11, and it stays legal because members are laid out by
+                // `lay_out` and never reach this arm.
+                let declares = match self.ast.ty(ty).kind {
+                    TypeKind::Tag { tag, name, .. } => {
+                        tag == chiero_ast::TagKind::Enum || name.is_some()
+                    }
+                    _ => false,
+                };
+                if !declares {
+                    self.error(self.ast.decl(id).span, "this declaration declares nothing");
+                }
             }
             DeclKind::StaticAssert { cond, msg } => self.static_assert(id, cond, msg),
             DeclKind::Error => {}
@@ -4945,6 +4969,32 @@ impl Cx<'_> {
     fn assignable(&self, from: TyId, to: TyId, null_constant: bool) -> bool {
         let f = self.out.types[from.0 as usize].clone();
         let t = self.out.types[to.0 as usize].clone();
+        // **A structure or union is copied only from its own type** (C 6.7.9p13, 6.5.16.1p1).
+        // Asked before the pointer question below, because neither side is a pointer and the
+        // early return therefore let `struct S s = 1;` through — the whole rule for aggregates
+        // was on the wrong side of a test that exists to skip *arithmetic* conversions.
+        //
+        // A braced initializer never reaches here: `check_init` handles a list against the
+        // record's members, so what arrives is an assignment of one value to another, and for a
+        // record that means the types must match. Compared bare, since a `const struct S` copies
+        // into a `struct S` perfectly well.
+        let record = |x: &Ty| matches!(x, Ty::Record(_));
+        if record(&f) || record(&t) {
+            // **An *incomplete* record is already-reported poison**, exactly as `Ty::Error` is,
+            // and contract 20 is why: `typedef struct Undefined u_t; u_t x;` reports once for the
+            // declaration, and every later `x + 1` must stay silent. An incomplete record is not
+            // `Ty::Error` — it is a perfectly well-formed `Ty::Record` whose layout is unknown —
+            // so the poison escape above does not cover it, and without this the rule turned one
+            // diagnostic into eight.
+            if matches!(f, Ty::Error)
+                || matches!(t, Ty::Error)
+                || is_incomplete(&self.out, from)
+                || is_incomplete(&self.out, to)
+            {
+                return true;
+            }
+            return self.bare(from) == self.bare(to);
+        }
         let ptr_like = |x: &Ty| matches!(x, Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. });
         if !ptr_like(&f) && !ptr_like(&t) {
             return true;
