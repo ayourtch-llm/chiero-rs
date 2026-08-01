@@ -478,6 +478,9 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "pointer ordered against zero",
         "int f(int *p){ return p > 0; }",
     ),
+    // Wave 351: a malformed constant expression where one is required.
+    ("division by zero in an initializer", "int g = 1/0;"),
+    ("division by zero in an array length", "int a[1/0];"),
     // **Wave 350's case-range rules are deliberately absent.** gcc rejects `case 1 ... 3` under
     // `-pedantic-errors` because ISO C has no case ranges at all, so a row here would be counted
     // as caught for a reason that is not the one under test — the overlap. This list's contract is
@@ -515,7 +518,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 348. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 351. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -535,7 +538,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 146;
+    const FLOOR: usize = 148;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

@@ -3545,6 +3545,18 @@ fn a_failed_constant_fold_keeps_its_explanation() {
         );
     }
 
+    // **A fold can report *and* succeed**, which is the case mutation found this fixture missing:
+    // `2147483647 + 1` folds to a wrapped value and complains on the way, so keying the rescue on
+    // "the fold failed" still discarded it and `int g = 2147483647 + 1;` was accepted. gcc refuses
+    // it under `-pedantic-errors`.
+    for bad in ["int g = 2147483647 + 1;", "int g = 2147483647 * 2;"] {
+        let d = diags(bad);
+        assert!(
+            d.iter().any(|m| m.contains("overflow")),
+            "`{bad}` should report the overflow: {d:?}"
+        );
+    }
+
     // **One bad thing, one report** (contract 20). `case 1/0:` folded three times and said so
     // three times — twice for the division and once for "not an integer constant expression".
     for src in [
@@ -3552,6 +3564,7 @@ fn a_failed_constant_fold_keeps_its_explanation() {
         "int f(int n){ switch(n){ case 1 ... 1/0: return 1; } return 0; }",
         "int f(int n){ switch(n){ case 2147483647 + 1: return 1; } return 0; }",
         "int a[1/0];",
+        "int a[2147483647 + 1];",
         "struct S { int b : 1/0; };",
         "enum { X = 1/0 };",
     ] {

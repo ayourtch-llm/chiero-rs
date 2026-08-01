@@ -1886,7 +1886,23 @@ impl Cx<'_> {
                         ArrayLen::Flexible
                     }
                     chiero_ast::ArrayLen::Fixed(expr) => {
+                        let before = self.out.diagnostics.len();
                         let n = self.eval(expr).map(|v| v.v);
+                        // **A length that failed *and explained* is poison, not a VLA.** `1/0`
+                        // does not fold, and calling the result variably modified made
+                        // `int a[1/0];` report twice: the division, then "variably modified type
+                        // at file scope" — a consequence of the first, which is contract 20's
+                        // cascade. A genuine `int a[n]` folds to `None` with nothing said and is
+                        // still a VLA.
+                        // The same rule: an explained length is poison whether the fold failed
+                        // outright (`1/0`) or produced a wrapped value (`2147483647 + 1`, which
+                        // comes out negative and would draw a second complaint about that).
+                        if self.out.diagnostics.len() > before {
+                            return self.intern(Ty::Array {
+                                elem: e,
+                                len: ArrayLen::Fixed(0),
+                            });
+                        }
                         match n {
                             Some(n) if n >= 0 => ArrayLen::Fixed(n as u64),
                             Some(_) => {
@@ -2373,7 +2389,14 @@ impl Cx<'_> {
                 // kept the enumerator's fallback; the program is rejected either way, and a
                 // reader is better served by one diagnostic about the width than by a second
                 // about a field that vanished because of it.
-                let w = match self.eval(bw) {
+                let before = self.out.diagnostics.len();
+                let folded_bw = self.eval(bw);
+                // **The fold's own sentence is the better one**, so the generic complaint is added
+                // only when nothing has been said — the rule wave 301 gave enumerator values, and
+                // the same cascade `case 1/0:` and `int a[1/0];` had.
+                let explained = self.out.diagnostics.len() > before;
+                let w = match folded_bw {
+                    None if explained => 1,
                     None => {
                         self.error(
                             span,
@@ -5665,7 +5688,27 @@ impl Cx<'_> {
             _ => {
                 let before = self.out.diagnostics.len();
                 let constant = self.eval(init).is_some() || self.addr_of(init).is_some();
-                self.out.diagnostics.truncate(before);
+                // **Discard the fold's diagnostics only when it succeeded.** Asking whether
+                // something is constant is not itself an error — that is why the truncate is
+                // here — but when the answer is *no because the expression is malformed*, those
+                // diagnostics are the reason, and this arm has nothing better to say. Discarding
+                // them unconditionally accepted `int g = 1/0;` outright: `eval` refused it, said
+                // why, the explanation went in the bin, and `reads_an_object` found nothing to
+                // object to.
+                //
+                // **Only where a constant expression is required.** `int f(void){ return 1/0; }`
+                // is runtime undefined behaviour rather than a constraint violation, and this
+                // walk only runs on static initializers, so the distinction costs nothing here.
+                // **A fold can report and still succeed.** `2147483647 + 1` yields a wrapped
+                // value *and* complains, so keying the rescue on "the fold failed" discarded the
+                // overflow and accepted the program. What the truncate is for is the *silent*
+                // successful fold — an ordinary constant — so it runs only when nothing was said.
+                let explained = self.out.diagnostics.len() > before;
+                if !explained {
+                    self.out.diagnostics.truncate(before);
+                } else {
+                    return;
+                }
                 // **Not constant is not the same as "we could not fold it".** `eval` answers about
                 // arithmetic and `addr_of` about object addresses, and between them they miss
                 // several things C *does* call constant expressions — a function designator such
@@ -6208,7 +6251,21 @@ impl Cx<'_> {
                 //
                 // A range's *bounds* are both constant expressions; the lower one is asked here
                 // and the upper one below, where the interval is built.
-                if self.eval(lo).is_none() {
+                // **Folded once, and once only.** `eval` reports as it folds, so asking it three
+                // times about `case 1/0:` — for this check, for the interval's lower bound and
+                // for its upper — said "division by zero" twice and then added a third sentence
+                // about the label. Contract 20 wants one report for one mistake, and the second
+                // and third folds could tell a reader nothing the first had not.
+                //
+                // **And the first fold's own diagnostic is the better one.** "Division by zero in
+                // a constant expression" says what is wrong; "case label is not an integer
+                // constant expression" only says that something is. So the generic sentence is
+                // added *unless* the fold already explained itself, the same rule wave 301 gave
+                // enumerator values.
+                let before = self.out.diagnostics.len();
+                let folded_lo = self.eval(lo).map(|v| v.v);
+                let explained = self.out.diagnostics.len() > before;
+                if folded_lo.is_none() && !explained {
                     let span = self.ast.expr(lo).span;
                     self.error(span, "case label is not an integer constant expression");
                 }
@@ -6224,9 +6281,13 @@ impl Cx<'_> {
                 // with `case 3:` and with a second `3 ... 1`, and not with `1` or `2`. That is
                 // what `max` encodes, and it is why the old lower-bound-only rule looked right —
                 // it was correct for exactly the empty case and wrong for every other range.
-                let interval = match (self.eval(lo).map(|v| v.v), hi) {
+                let interval = match (folded_lo, hi) {
                     (Some(l), None) => Some((l, l)),
-                    (Some(l), Some(h)) => self.eval(h).map(|v| (l, v.v.max(l))),
+                    (Some(l), Some(h)) => {
+                        // The upper bound is a second expression and folds on its own; its
+                        // diagnostics are its own and are not suppressed.
+                        self.eval(h).map(|v| (l, v.v.max(l)))
+                    }
                     (None, _) => None,
                 };
                 if let Some((l, h)) = interval
