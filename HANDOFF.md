@@ -487,22 +487,33 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 327) — 1500 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 328) — 1501 tests, 4 ignored, M1 165/165 by contract
 >
-> **The constraint queue is down to its two hard items**, and the ratchet (`FLOOR = 61`) fails if
-> either of the sixty-one regresses.
+> **The constraint queue is down to one item**, and it is the hard one. The ratchet
+> (`FLOOR = 63`) fails if any of the sixty-three regresses.
 >
 > **Next, in descending order of what they buy:**
->   1. **Qualified types.** `discard const` is one of the two remaining violations, and the same
->      change makes wave 316's pointee rule semantic rather than syntactic. It is the largest
+>   1. **Qualified types.** `discard const` is now the *only* violation below the line, and the
+>      same change makes wave 316's pointee rule semantic rather than syntactic. It is the largest
 >      unfinished item in the project. Budget for auditing **436 `Ty::` match sites across four
 >      crates**; do not start by adding the variant — plan the audit first, then add it.
->   2. **A `goto` into a VLA's scope**, the other remaining violation. Needs per-label knowledge of
->      whether a variably-modified declaration precedes the label in its block; jumping into a
->      block declaring a non-VLA is legal, so an approximation rejects correct code.
+>   2. **The rejection list is no longer the queue.** Waves 307–327 emptied it down to one entry,
+>      so the next wave that wants a diagnostic-side target must run a *new* census rather than
+>      read the old one. C 6.7's declaration constraints and 6.5's remaining operator constraints
+>      are the untouched neighbourhoods; the method is unchanged — 30 programs, half legal,
+>      verdicts from gcc under `-pedantic-errors`.
 >   3. **Widen both generated channels with every new rule** — its neighbourhood into
 >      `historically_awkward`, its violation into `VIOLATIONS` — so the two grow with the rules
->      rather than ageing against them.
+>      rather than ageing against them. Wave 327 added two of each.
+>
+> **Wave 327 closed the VLA-scope rule**, and the useful part is why it took two waves. The rule is
+> not "a jump may not enter a block"; it is about which *declarations* a jump crosses. Three
+> gcc-verified cases forced that: jumping into a block declaring a non-VLA is legal, jumping past a
+> VLA in a flat body with no block at all is illegal, and jumping from after the declaration is
+> legal. A stack of open variably-modified scopes sampled at each label and each `goto` is the
+> smallest thing that gets all three right. **Wave 326 was right to defer it** rather than ship an
+> approximation, and that is the transferable part: an approximation that rejects correct code is
+> worse than a declared gap, per 020 §5.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2808,6 +2819,28 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **`error: test failed` matches a grep for a compile error** (wave 327). Three mutants were scored
+> NO-COMPILE that were in fact killed by a failing assertion, because cargo prints `error: test
+> failed, to rerun pass ...` on any test failure and the scorer checked `^error:` before checking
+> `^test result: FAILED`. **Detect a build failure by `could not compile`**, never by the word
+> `error`. A mutation scorer that misfiles a kill as a no-compile hides exactly the mutants that
+> prove a test works.
+>
+> **A guard can be live and still unobservable, and the comment should say which** (wave 327). The
+> `scope == Scope::Block` guard on VLA-scope tracking survived mutation, so I instrumented the
+> branch instead of arguing: it *is* reached — an array parameter takes it — but a parameter's
+> scope is open at every label and every `goto` in the body, so the containment test holds either
+> way. Kept, with the comment stating it is unobserved rather than claiming it prevents a bug.
+> **When mutation spares a guard, measure whether the branch is reached before deciding whether to
+> delete it or defend it** — "unreachable" and "reachable but inconsequential" call for different
+> code.
+>
+> **A rule's name can misdescribe its own shape** (wave 327). "A `goto` may not jump into a VLA's
+> scope" sounds like a rule about entering blocks; it is a rule about crossing declarations, and
+> the three gcc-verified cases that show it — a non-VLA block is fine, a flat body with no block is
+> not, a jump from after the declaration is fine — each defeat a different cheap approximation.
+> **Probe the boundary before designing to the name.**
 >
 > **A scoped set's removal is unfalsifiable until something reuses the name** (wave 326). Three
 > scoped sets now exist — `read_only` (311), `read_only_pointee` (316), `register_objects` (326) —
