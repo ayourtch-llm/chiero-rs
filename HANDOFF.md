@@ -487,32 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 342) — 1523 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 343) — 1524 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 132 of 132, `chiero-pp` 27 of 27, `chiero-parse` clean.** Two waves running with the
-> ratchet unchanged — every finding in 340 and 341 was invisible to it.
+> **Sema 133 of 133, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit.** Waves 340–341 covered the poison cascades, the *conversion* message
->      and the four §9 named. **Roughly seventy `self.error(` sites in sema are still unread.** The
->      three failure classes found so far, in the order they have paid:
->      **(a) the message describes a mechanism the program does not contain** — the cursor reported
->      as an index, the poisoned pointee reported as incomplete; **(b) one sentence for several
->      distinct mistakes**; **(c) the sentence contradicts a capability the engine has** — vectors
->      are subscriptable and the message said otherwise.
->      Unread candidates by inspection: `bit-field width exceeds the width of its type`,
->      `array length is negative`, `switch quantity is not an integer`, `case label is not an
->      integer constant expression`, and the four `is defined more than once` / linkage messages.
+>   1. **Finish the audit** — roughly sixty-five `self.error(` sites in sema still unread. Wave 342
+>      added a **fourth method** that outperformed the other three: instead of comparing a message
+>      to gcc's phrasing, **enumerate the cases the message claims to cover and try each one.**
+>      That is what found `_Bool b : 2`, a missing *rule* rather than a wording. Apply it to any
+>      message naming a type or a category: `switch quantity is not an integer` (enum? `_Bool`?
+>      `char`? — checked, all fine), `case label is not an integer constant expression`,
+>      `arithmetic on a pointer to an incomplete type`, `a function may not return an array or a
+>      function`, and the linkage family.
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Class (c) is the one worth hunting deliberately**, because it is a *test* for capability drift
-> rather than a wording problem: `subscripted value is not an array or pointer` denied something
-> the engine had supported for hundreds of waves, so the sentence and the code had silently
-> diverged. **A message that enumerates what is allowed is a claim about the implementation, and
-> nothing was checking it.** Wave 341's fixture pins both halves — the message mentions vectors,
-> and `v[0]` stays silent — so the pair cannot drift apart again.
+> **`declaring` is a side channel, and it needs care.** It carries the declarator name into
+> `ty_of`, which structurally has none. Any *other* walk that builds a type for a differently-named
+> thing must set its own — the member walk does, and it had to be made to after the mechanism
+> reported `struct S { int bad[-1]; } x;` against `x`. **If you add a third such walk, set and
+> restore it there too**, and write the nested case in the same edit; a mutant on the restore is
+> what caught it, not a fixture.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2818,6 +2815,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Enumerate the cases a message claims to cover, and try each one** (wave 342). Comparing
+> `bit-field width exceeds the width of its type` to gcc's phrasing found nothing; writing a
+> bit-field of *every* type it can take found `_Bool b : 2` accepted, because storage size and type
+> width agree for every type but one. **A message naming a category is a checklist** — walk it, and
+> test the boundary of each entry rather than one entry six ways.
+>
+> **A mechanism that names things will name the wrong thing** (wave 342). The `declaring` side
+> channel was added to name an array in its diagnostic and immediately reported
+> `struct S { int bad[-1]; } x;` against `x`. **Any nested walk that builds a type for a
+> differently-named thing must set and restore it**, and the nested case belongs in the same edit —
+> here a mutant on the restore caught what no fixture had.
 >
 > **A message that enumerates what is allowed is a claim about the implementation** (wave 341).
 > `subscripted value is not an array or pointer` denied vectors, which this engine has subscripted
