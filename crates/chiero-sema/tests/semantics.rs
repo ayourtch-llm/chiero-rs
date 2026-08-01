@@ -2880,3 +2880,123 @@ fn every_spelling_of_pointer_arithmetic_needs_a_complete_pointee() {
         );
     }
 }
+
+/// **The constant-expression checklist** (§9), and this one found a *false positive* — the failure
+/// mode wave 303 ranks worst, because it tells a reader their correct program is broken.
+///
+/// C 6.6p6 lists what an integer constant expression may contain: integer constants, enumeration
+/// constants, character constants, `sizeof`, `_Alignof` — **and floating constants, but only as
+/// the immediate operand of a cast.** That last clause is the whole of the finding:
+/// `case (int)1.5:` is legal C and was rejected, while `case (int)(1.5 + 2.5):` is not legal and
+/// must stay rejected. One is a floating *constant* being cast; the other is a floating
+/// *expression*.
+///
+/// **The two paths are not the same set, and finding that out was half the wave.** A `case` label
+/// needs an *integer* constant expression (6.6p6); an initializer needs an *arithmetic* one
+/// (6.6p8), which admits floating arithmetic under a cast. So `int g = (int)-1.5;` is legal and
+/// `case (int)-1.5:` is not — the unary minus makes the floating constant no longer the cast's
+/// immediate operand. An earlier draft of this fixture asserted one shared list and was wrong;
+/// they are walked separately now, with the overlap written out entry by entry.
+#[test]
+fn a_constant_expression_admits_the_same_things_everywhere() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // **Every entry of 6.6p6, in a `case` label and in a file-scope initializer.** Written as one
+    // list so the two paths are asked the same questions in the same order.
+    for e in [
+        "1",
+        "'a'",
+        "sizeof(int)",
+        "_Alignof(int)",
+        "1 + 2 * 3",
+        "(1 ? 2 : 3)",
+        "1 << 4",
+        "-1",
+        "(char)65",
+        "(long)5",
+        "(unsigned)-1",
+        "(int)sizeof(int)",
+        // **The clause that was missing**: a floating constant is allowed as a cast's immediate
+        // operand, and only there.
+        "(int)1.5",
+        "(int)1.5f",
+        "(int)(1.5)",
+        "1 + (int)1.5",
+        "(long)(int)1.5",
+    ] {
+        let case = format!("int f(int n){{ switch(n){{ case {e}: return 1; }} return 0; }}");
+        let init = format!("int g = {e};");
+        assert!(
+            diags(&case).is_empty(),
+            "`case {e}:` must be accepted -> {:?}",
+            diags(&case)
+        );
+        assert!(
+            diags(&init).is_empty(),
+            "`int g = {e};` must be accepted -> {:?}",
+            diags(&init)
+        );
+    }
+
+    // ...and an enumeration constant, which needs its own declaration.
+    assert!(
+        diags("enum E { A = 5 }; int f(int n){ switch(n){ case A: return 1; } return 0; }")
+            .is_empty()
+    );
+    assert!(diags("enum E { A = 5 }; int g = A;").is_empty());
+
+    // **What is still not an *integer* constant expression**, and the near-misses are the point.
+    // `-1.5` is a floating constant with a unary operator on it, so it is no longer the cast's
+    // *immediate* operand — gcc rejects `case (int)-1.5:` and accepts `int g = (int)-1.5;`.
+    //
+    // **The two paths genuinely differ here**, which is why the fixture asks them separately
+    // rather than sharing one list: a `case` label needs an *integer* constant expression
+    // (6.6p6), an initializer an *arithmetic* one (6.6p8), and the second admits floating
+    // arithmetic under a cast that the first does not. An earlier draft of this test asserted
+    // they were the same set and was wrong.
+    for e in [
+        "1.5",
+        "(int)-1.5",
+        "(int)+1.5",
+        "(int)(1.5 + 2.5)",
+        "(int)(1.5 * 2.0)",
+    ] {
+        let case = format!("int f(int n){{ switch(n){{ case {e}: return 1; }} return 0; }}");
+        assert!(!diags(&case).is_empty(), "`case {e}:` must be diagnosed");
+    }
+    for e in [
+        "(int)-1.5",
+        "(int)+1.5",
+        "(int)(1.5 + 2.5)",
+        "(int)(1.5 * 2.0)",
+    ] {
+        let init = format!("int g = {e};");
+        assert!(
+            diags(&init).is_empty(),
+            "`int g = {e};` must be accepted -> {:?}",
+            diags(&init)
+        );
+    }
+
+    // An address constant is an initializer's business and never a `case` label's.
+    for src in [
+        "int x; int *g = &x;",
+        "const char *g = \"s\";",
+        "int a[3]; int *g = &a[1];",
+        "int a[3]; int *g = a + 1;",
+        "struct S { int m; } s; int *g = &s.m;",
+    ] {
+        assert!(
+            diags(src).is_empty(),
+            "must be accepted: `{src}` -> {:?}",
+            diags(src)
+        );
+    }
+}
