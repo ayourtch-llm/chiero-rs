@@ -987,6 +987,8 @@ fn the_initializer_census() {
         "int a[3] = {[5] = 1};",
         "struct S { int x, y; }; struct S s = {.nope = 1};",
         "int f(void); int g = f();",
+        // A vector has exactly its lanes, and one more is excess like any other aggregate.
+        "typedef int v4 __attribute__((vector_size(16))); v4 v = {1,2,3,4,5};",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
