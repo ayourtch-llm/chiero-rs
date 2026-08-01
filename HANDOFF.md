@@ -487,29 +487,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 345) — 1526 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 346) — 1527 tests, 4 ignored, M1 165/165 by contract
 >
 > **Sema 136 of 136, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Finish the audit** — roughly fifty-five `self.error(` sites in sema still unread. The
->      enumerate-the-category method has now paid three times running, and the third one found a
->      **false positive** rather than a missing rule, which is the more valuable direction. Still
->      unread and category-shaped: the **linkage family** (`static` after non-`static`, `extern`
->      after `static`, `is defined more than once`, `conflicting types` — four messages over one
->      relation, so enumerate the *pairs* of declarations rather than the messages), and
->      `initializer element is not a constant expression` in its **address-constant** half
->      (`&global`, `&a[k]`, `a + k`, `&s.m`, a string literal, and the casts of those).
+>   1. **Finish the audit** — roughly fifty `self.error(` sites in sema still unread. Four waves,
+>      four distinct kinds of finding, so the method is not exhausted: a **missing rule** (342), a
+>      rule **spread across grammar arms** (343), a rule that is **too strict** (344), and a rule
+>      **applied to the wrong category** (345). Still unread and category-shaped: the
+>      **address-constant** half of `initializer element is not a constant expression` (`&global`,
+>      `&a[k]`, `a + k`, `&s.m`, a string literal, and casts of those — enumerate them in a
+>      *file-scope initializer*, where the rule bites), and the **switch/case family** beyond
+>      wave 319 (`case` in a nested block, a `default` after a `case` range, duplicate detection
+>      across ranges).
 >   2. **Census C 6.8's statement constraints beyond wave 312's**, and 6.9's external definitions.
 >   3. **`FloatKind` cannot tell `_Float32` from `float`** (wave 336). `_Generic` fidelity only.
 >   4. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328).
 >
-> **Two paths that check "the same" rule may be checking different rules.** Wave 344's first draft
-> asserted a `case` label and an initializer admit the same constant expressions; C gives them
-> *different* paragraphs — 6.6p6 for integer constant expressions, 6.6p8 for arithmetic ones — and
-> `int g = (int)-1.5;` is legal where `case (int)-1.5:` is not. **Before merging two checklists,
-> find the paragraph number for each**; the checklist method makes this mistake attractive because
-> the lists overlap by fourteen entries out of fifteen.
+> **Enumerate the relation, not the messages.** Four diagnostics described one relation between two
+> declarations; reading each against gcc's phrasing would have found nothing, because every one is
+> accurate *whenever it fires* — the defect was in **when**. Building the matrix of pairs is what
+> exposed it, and the same shape applies to any family of messages that share a subject:
+> initializer excess/index, the `switch` family, the incomplete-type family. **When several
+> messages describe one relation, tabulate the relation's inputs.**
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2815,6 +2816,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When several messages describe one relation, tabulate the relation's inputs** (wave 345). Four
+> linkage diagnostics describe one relation between two declarations. Read individually each is
+> accurate *whenever it fires*, so comparing wording to gcc's finds nothing; the matrix of five
+> first declarations against four second ones, for objects and for functions, found three false
+> positives in forty cells. **Enumerate the relation, not the messages.**
+>
+> **One rule applied to two categories C treats differently** (wave 345). A function with no
+> storage-class specifier is `extern` (C 6.2.2p5); an object is not. The function arm shared the
+> object's `deferring: storage.extern_`. This is wave 344's lesson inverted — there, two paths for
+> one rule; here, one path for two rules — and both are found the same way, by asking which
+> paragraph governs each case rather than which code path does.
 >
 > **Two paths checking "the same" rule may be checking different rules** (wave 344). A `case` label
 > needs an integer constant expression (C 6.6p6) and an initializer an arithmetic one (6.6p8); the
