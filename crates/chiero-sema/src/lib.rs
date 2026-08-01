@@ -785,6 +785,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         current_ret: None,
         current_fn: None,
         read_only: Default::default(),
+        read_only_pointee: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -829,6 +830,7 @@ pub fn const_eval(
         current_ret: None,
         current_fn: None,
         read_only: Default::default(),
+        read_only_pointee: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -906,6 +908,11 @@ struct Cx<'a> {
     /// of the same name, which is why a non-const declaration **removes** as well as a const one
     /// inserting.
     read_only: indexmap::IndexSet<Symbol>,
+    /// Objects whose *pointee* is `const`, so writing through them is a write to a read-only
+    /// object. A **separate** set from `read_only`, because C separates the two: `int *const p`
+    /// is in `read_only` and not here, `const int *p` is here and not in `read_only`, and one
+    /// set for both gets one of them wrong whichever way it is written.
+    read_only_pointee: indexmap::IndexSet<Symbol>,
     /// How many *loops* enclose the statement being walked, and how many loops-or-switches.
     ///
     /// Two counters rather than one, because `break` and `continue` do not agree about what a
@@ -1113,6 +1120,11 @@ impl Cx<'_> {
                     } else {
                         self.read_only.swap_remove(&n);
                     }
+                    if self.points_to_const(ty) {
+                        self.read_only_pointee.insert(n);
+                    } else {
+                        self.read_only_pointee.swap_remove(&n);
+                    }
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
@@ -1218,6 +1230,7 @@ impl Cx<'_> {
                     // parameter is, and was leaking into the rest of the TU.
                     let saved_enums = self.enumerators.clone();
                     let saved_ro = self.read_only.clone();
+                    let saved_rop = self.read_only_pointee.clone();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -1242,6 +1255,11 @@ impl Cx<'_> {
                                 self.read_only.insert(pn);
                             } else {
                                 self.read_only.swap_remove(&pn);
+                            }
+                            if self.points_to_const(pty) {
+                                self.read_only_pointee.insert(pn);
+                            } else {
+                                self.read_only_pointee.swap_remove(&pn);
                             }
                             self.values.insert(pn, t);
                             self.out.decl_types.insert(p, t);
@@ -1285,6 +1303,7 @@ impl Cx<'_> {
                     self.values = saved;
                     self.enumerators = saved_enums;
                     self.read_only = saved_ro;
+                    self.read_only_pointee = saved_rop;
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -4306,14 +4325,52 @@ impl Cx<'_> {
     }
 
     fn check_writable(&mut self, target: ExprId, what: &str) {
-        let ExprKind::Ident(n) = self.ast.expr(target).kind else {
-            return;
-        };
-        if self.read_only.contains(&n) {
-            let name = self.text(n).unwrap_or("?").to_owned();
-            let span = self.ast.expr(target).span;
-            self.error(span, format!("{what} read-only object `{name}`"));
+        let span = self.ast.expr(target).span;
+        match self.ast.expr(target).kind.clone() {
+            ExprKind::Ident(n) => {
+                if self.read_only.contains(&n) {
+                    let name = self.text(n).unwrap_or("?").to_owned();
+                    self.error(span, format!("{what} read-only object `{name}`"));
+                }
+            }
+            // **A write *through* a pointer.** `*p`, `p[i]` and `p->m` are the same access
+            // written three ways, so they share one question: does `p` point at something
+            // `const`? `p->m` is `(*p).m`, which is why a member reached by arrow lands here and
+            // a member of a local struct does not.
+            ExprKind::Unary {
+                op: UnOp::Deref,
+                operand,
+            }
+            | ExprKind::Index { base: operand, .. }
+            | ExprKind::Member {
+                base: operand,
+                arrow: true,
+                ..
+            } => {
+                if let ExprKind::Ident(n) = self.ast.expr(operand).kind
+                    && self.read_only_pointee.contains(&n)
+                {
+                    let name = self.text(n).unwrap_or("?").to_owned();
+                    self.error(span, format!("{what} read-only location through `{name}`"));
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// Whether this declared type is a pointer — or an array, which a parameter's is — whose
+    /// element is `const`.
+    ///
+    /// **The outermost pointee only.** `const int **p` is not: its immediate pointee is
+    /// `const int *`, which is a perfectly writable pointer, and only the level below that is
+    /// read-only. One level of indirection is one level.
+    fn points_to_const(&self, ty: TypeId) -> bool {
+        let inner = match self.ast.ty(ty).kind {
+            TypeKind::Ptr(inner) => inner,
+            TypeKind::Array { elem, .. } => elem,
+            _ => return false,
+        };
+        self.ast.ty(inner).quals.const_
     }
 
     fn check_complete(&mut self, id: DeclId, ty: TyId) {
