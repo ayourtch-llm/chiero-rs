@@ -5058,3 +5058,154 @@ fn alignas_goes_on_an_object_and_names_a_power_of_two() {
         );
     }
 }
+
+/// **A `_Generic` association names a complete object type** (C 6.5.1.1p2), and it may not be
+/// variably modified.
+///
+/// chiero already matches associations, rejects two that match, rejects two `default`s and
+/// rejects none matching — everything about the *selection*. What it never asks is whether the
+/// type named is one an object could have, so `void`, an incomplete tag, a function type and a
+/// VLA all pass.
+///
+/// The legal half is what stops the rule from being "a scalar": `int[3]`, a pointer and a
+/// qualified type are all complete object types and all legal here.
+#[test]
+fn a_generic_association_names_a_complete_object_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "int f(void){ return _Generic(1, void: 1, default: 0); }",
+            "a `_Generic` association needs a complete object type",
+        ),
+        (
+            "struct I; int f(void){ return _Generic(1, struct I: 1, default: 0); }",
+            "a `_Generic` association needs a complete object type",
+        ),
+        (
+            "int f(void){ return _Generic(1, int(void): 1, default: 0); }",
+            "a `_Generic` association needs a complete object type",
+        ),
+        (
+            "int f(int n){ return _Generic(1, int[n]: 1, default: 0); }",
+            "a `_Generic` association may not be variably modified",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        "int f(void){ return _Generic(1, int: 1, default: 0); }",
+        "int f(void){ return _Generic(1, int: 1); }",
+        "int f(void){ return _Generic(1, int[3]: 1, default: 0); }",
+        "int f(void){ return _Generic(1, int*: 1, default: 0); }",
+        "int f(void){ return _Generic(1, const int: 1, default: 0); }",
+        "struct S{int a;}; int f(void){ return _Generic(1, struct S: 1, default: 0); }",
+        "int f(void){ int a[2]; return _Generic(a, int*: 1, default: 0); }",
+        "int f(void){ return _Generic(1, char: 1, long: 2, default: 0); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **`static` and qualifiers inside `[]` belong to a parameter, and so does `[*]`** (C 6.7.6.2p1,
+/// p4), and a **flexible array member needs a member before it** (6.7.2.1p18).
+///
+/// The first is the interesting one because the syntax is legal everywhere and the *meaning*
+/// exists only in a parameter: `int a[static 3]` as a parameter promises the caller passes at
+/// least three elements, and as an object declaration promises nothing, so C refuses it there.
+/// chiero parses all of it and asks nothing.
+///
+/// `int a[0]` stays legal — it is this project's declared divergence with 1777 uses in VPP — so
+/// the rule is about the *decorations* inside the brackets rather than about the size.
+#[test]
+fn array_decorations_belong_to_a_parameter() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "int a[static 3];",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "int f(void){ int a[const 3]; return a[0]; }",
+            "a qualifier in an array size belongs to a parameter",
+        ),
+        (
+            "struct S { int a[static 3]; };",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "typedef int T[static 3];",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "int f(void){ int a[*]; return 0; }",
+            "`[*]` belongs to a function prototype",
+        ),
+        // **A flexible array member needs something before it**, and a union may not have one.
+        (
+            "struct S { int a[]; };",
+            "a flexible array member needs a member before it",
+        ),
+        (
+            "union U { int a; int b[]; };",
+            "a union may not have a flexible array member",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **In a parameter**, where every decoration means something.
+        "int f(int a[static 3]);",
+        "int f(int a[static 3]){ return a[0]; }",
+        "int f(int a[const 3]);",
+        "int g(int a[const 3]){ return a[0]; }",
+        "int f(int a[volatile 3]);",
+        "int f(int a[]);",
+        "int f(int a[*]);",
+        "int f(int a[3][*]);",
+        // Ordinary arrays, including the declared `int a[0]` divergence and a VLA.
+        "int f(void){ int a[3]; return a[0]; }",
+        "int a[2];",
+        "int a[0];",
+        "int f(void){ int a[0]; return 0; }",
+        "int f(int n){ int a[n]; return a[0]; }",
+        // A flexible array member with a member before it, declared and used.
+        "struct S { int a; int b[]; };",
+        "struct S { int a; int b[]; }; int f(void){ struct S s; return s.a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
