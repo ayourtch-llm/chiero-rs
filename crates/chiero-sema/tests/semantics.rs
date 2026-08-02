@@ -5684,3 +5684,97 @@ fn a_diagnostic_names_the_thing_that_is_wrong() {
         );
     }
 }
+
+/// **A `case` label is a jump, and a `typedef` can be variably modified** (C 6.8.6.1p1), and
+/// **`~` wants an integer vector** (6.5.3.3p1).
+///
+/// Three misses that all sit beside a rule already written, which is why they are one test.
+///
+/// Wave 341 built the `goto`-into-a-VLA check and keyed it on `goto`. A `case` label is reached
+/// by a jump from the `switch` that is exactly as able to skip a declaration, and gcc refuses it
+/// for the same reason — the array's length is computed by a statement the jump did not run.
+/// The discriminator is the *braced* case: `case 1: { int a[n]; }` closes the scope before the
+/// next label, so nothing is skipped.
+///
+/// A **variably modified `typedef`** opens the same scope as an object of that type: `typedef int
+/// T[n]` evaluates `n` once, where the declaration stands. chiero's scope tracking sees objects
+/// and not typedefs.
+///
+/// And `~` takes any vector where wave 371 made `&`, `^` and `|` take only integer ones — the
+/// same paragraph, the same element question, and the unary arm was written before the binary one.
+#[test]
+fn a_case_label_jumps_and_a_typedef_can_be_variably_modified() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // A `case` reached past a variably-modified declaration, and a `default` likewise.
+        (
+            "int f(int n){ switch(n){ case 1: ; int a[n]; case 2: return 0; } return 0; }",
+            "a `case` label enters the scope of a variably-modified declaration",
+        ),
+        (
+            "int f(int n){ switch(n){ default: ; int a[n]; case 2: return 0; } return 0; }",
+            "a `case` label enters the scope of a variably-modified declaration",
+        ),
+        // A `goto` past a variably-modified **typedef**, which declares no object at all.
+        (
+            "int f(int n){ goto skip; typedef int T[n]; skip: return 0; }",
+            "jump to label `skip` enters the scope of a variably-modified declaration",
+        ),
+        // `~` on a floating vector, which wave 371 refuses for `&`, `^` and `|`.
+        (
+            "typedef float f4 __attribute__((vector_size(16)));\nint f(void){ f4 a={0}; return (int)(~a)[0]; }",
+            "`~` needs an integer operand",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    // **A record operand is reported once.** `-s` said "unary `-` needs an arithmetic operand"
+    // *and* drew a cast complaint from the enclosing cast, because the unary result kept the
+    // record's type. Contract 20, and the same poison the binary arms already apply.
+    assert_eq!(
+        diags("struct S{int a;}; int f(void){ struct S s; return (int)-s; }"),
+        vec!["unary `-` needs an arithmetic operand".to_string()],
+        "one sentence for a record under unary `-`"
+    );
+
+    for good in [
+        // **Braced**, so the scope closes before the next label and nothing is skipped.
+        "int f(int n){ switch(n){ case 1: { int a[n]; } case 2: return 0; } return 0; }",
+        // No later label, so no jump can land past the declaration.
+        "int f(int n){ switch(n){ case 1: ; int a[n]; return a[0]; } return 0; }",
+        // A fixed length is not variably modified, however it is declared.
+        "int f(int n){ switch(n){ case 1: ; int a[2]; case 2: return 0; } return 0; }",
+        "int f(int n){ goto skip; typedef int T[2]; skip: return 0; }",
+        // The declaration before the jump, which is the shape the rule must not disturb.
+        "int f(int n){ typedef int T[n]; goto skip; skip: return 0; }",
+        "int f(int n){ int a[n]; goto skip; skip: return a[0]; }",
+        "int f(int n){ { int a[n]; } goto skip; skip: return 0; }",
+        "int f(int n){ goto skip; { int a[n]; } skip: return 0; }",
+        // An **integer** vector under `~`, and a floating one under `-`, which is arithmetic.
+        "typedef int v4 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; return (~a)[0]; }",
+        "typedef float f4 __attribute__((vector_size(16)));\nint f(void){ f4 a={0}; return (int)(-a)[0]; }",
+        // The ordinary unary operands, which stay silent.
+        "int f(void){ _Bool b=1; return ~b; }",
+        "enum E{A=1}; int f(void){ enum E e=A; return ~e; }",
+        "int f(void){ double d=1; return (int)-d; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
