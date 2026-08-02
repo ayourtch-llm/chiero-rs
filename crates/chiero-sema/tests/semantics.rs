@@ -4522,3 +4522,116 @@ fn a_function_specifier_declares_a_function() {
         );
     }
 }
+
+/// **A cast names a scalar type and takes a scalar operand** (C 6.5.4p2), and a pointer does not
+/// convert to or from a floating type (p4).
+///
+/// Three parts of one paragraph, and the `void` exception is what ties them together: `(void)s`
+/// on a structure is legal, because a cast to `void` discards its operand rather than converting
+/// it. So the operand question is only asked when the target is *not* `void`, which is also why
+/// a rule written as "both sides must be scalar" would reject the one spelling people actually
+/// write with a struct.
+///
+/// The legal half decides the phrasing again: `(int)a` on an array and `(int)g` on a function
+/// are both legal, because each decays before the question is put — the same load-bearing step
+/// as waves 359, 360 and 361.
+#[test]
+fn a_cast_is_between_scalars() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A record operand, struct and union alike.
+        "struct S{int a;}; int f(void){ struct S s; return (int)s; }",
+        "union U{int a;}; int f(void){ union U u; return (int)u; }",
+        // A record *target*, even from a scalar and even from its own type.
+        "struct S{int a;}; int f(void){ struct S s; return (int)(struct S)s.a; }",
+        // **Pointer and floating do not convert**, in either direction.
+        "int f(void){ double d=1; return (int)(int*)d; }",
+        "int f(void){ int *p=0; return (double)p != 0; }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        // **`(void)` takes anything**, which is the exception the rule is built around.
+        "struct S{int a;}; int f(void){ struct S s; (void)s; return 0; }",
+        "struct S{int a;}; struct S g(void); int f(void){ (void)g(); return 0; }",
+        "int f(void){ int x=1; return (void)x, 0; }",
+        // The ordinary scalar conversions, including through a pointer-sized integer.
+        "int f(void){ double d=1; return (int)d; }",
+        "int f(void){ int x=1; return (int)(double)x; }",
+        "int f(void){ int *p=0; return (int)p; }",
+        "int f(void){ int x=1; return (int)(long)&x; }",
+        "int f(void){ float g=1; int *p=0; return (int)(float)(long)p + (int)g; }",
+        "int f(void){ int *p=0; return (_Bool)p; }",
+        "int f(void){ double d=1; return (_Bool)d; }",
+        // **Decay before the question**: an array and a function designator are both scalar here.
+        "int f(void){ int a[2]; return (int)a; }",
+        "int f(void){ int a[2]; return ((int(*)[2])a) != 0; }",
+        "void g(void); int f(void){ return (int)g; }",
+        // A qualified target, and a scalar member of the struct that is not scalar itself.
+        "int f(void){ int x=1; return (const int)x; }",
+        "struct S{int a;}; int f(void){ struct S s; return (int)s.a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **`*` and `/` take arithmetic operands; `%` takes integer ones** (C 6.5.5p2).
+///
+/// Two rules in one paragraph, and the discriminator is `double`: it is arithmetic, so `d / 2`
+/// is right and `d % 2` is wrong. A single "both must be arithmetic" rule accepts the second;
+/// a single "both must be integer" rule rejects the first.
+#[test]
+fn multiplicative_operands_are_arithmetic() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A pointer in `*` and in `/`, on either side.
+        "int f(void){ int *p=0; return (int)(p * 2); }",
+        "int f(void){ int *p=0; return (int)(2 * p); }",
+        "int f(void){ int *p=0; return (int)(p / 2); }",
+        // **A floating operand in `%`**, which is the half `*` and `/` allow.
+        "int f(void){ double d=2; return (int)(d % 2); }",
+        "int f(void){ float g=2; return (int)(g % 2); }",
+        "int f(void){ int x=2; double d=1; return (int)(x % d); }",
+        "int f(void){ int *p=0; int *q=0; return (int)(p % q); }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        "int f(void){ int x=5; return x % 2; }",
+        "int f(void){ double d=2; return (int)(d * 2); }",
+        "int f(void){ double d=1; return (int)(d / 2); }",
+        "int f(void){ double d=2; float g=1; return (int)(d/g); }",
+        // Every integer spelling `%` accepts, which is what keeps the rule off `Ty::Int`'s width.
+        "int f(void){ _Bool b=1; return b % 2; }",
+        "enum E{A=1}; int f(void){ enum E e=A; return e % 2; }",
+        "int f(void){ char c=2; return c * 2; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
