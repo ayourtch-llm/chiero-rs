@@ -4555,9 +4555,32 @@ fn a_cast_is_between_scalars() {
         // **Pointer and floating do not convert**, in either direction.
         "int f(void){ double d=1; return (int)(int*)d; }",
         "int f(void){ int *p=0; return (double)p != 0; }",
+        // **A vector keeps its size and wants an integer on the other side.** `(int)a` from a
+        // 16-byte vector is a size mismatch; `(double)a` is the right size and not an integer;
+        // `(v2)p` is the right size and not an integer either. Measured against gcc after the
+        // corpus gate refuted the first draft of this rule.
+        "typedef int v4 __attribute__((vector_size(16))); int f(void){ v4 a={0}; return (int)a[0]+(int)a; }",
+        "typedef int v2 __attribute__((vector_size(8))); double f(v2 a){ return (double)a; }",
+        "typedef int v2 __attribute__((vector_size(8))); long f(v2 a){ int *p=0; return (long)(v2)p; }",
+        "typedef int v4 __attribute__((vector_size(16))); typedef int v2 __attribute__((vector_size(8)));\nv4 f(v2 a){ return (v4)a; }",
     ] {
         assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
     }
+
+    // **Each half named, not merely counted.** `(int)(struct S)s.a` draws one diagnostic
+    // whichever half fires, so a mutant that deleted the *target* rule survived on it: the
+    // outer cast then found a non-scalar operand and reported that instead. The rows below put
+    // each half where only it can answer.
+    assert_eq!(
+        diags("struct S{int a;}; int f(void){ struct S s; (struct S)s.a; return 0; }"),
+        vec!["a cast names a scalar type or `void`".to_string()],
+        "a bare cast to a record names the target rule"
+    );
+    assert_eq!(
+        diags("struct S{int a;}; int f(void){ struct S s; return (int)s; }"),
+        vec!["a cast takes a scalar operand".to_string()],
+        "a record operand names the operand rule"
+    );
 
     for good in [
         // **`(void)` takes anything**, which is the exception the rule is built around.
@@ -4579,6 +4602,14 @@ fn a_cast_is_between_scalars() {
         // A qualified target, and a scalar member of the struct that is not scalar itself.
         "int f(void){ int x=1; return (const int)x; }",
         "struct S{int a;}; int f(void){ struct S s; return (int)s.a; }",
+        // **Vector to vector**, which `vppinfra/bitmap.h` does and the corpus gate caught this
+        // rule rejecting. Same width, different element type, is what gcc permits.
+        "typedef int v4 __attribute__((vector_size(16))); int f(void){ v4 a={0}; v4 b=(v4)a; return b[0]; }",
+        "typedef int v4 __attribute__((vector_size(16))); typedef long l2 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; l2 b=(l2)a; return (int)b[0]; }",
+        // **Vector to a same-size integer**, which is what VPP writes and what refuted the
+        // first draft: a two-lane vector to `uword`, and back.
+        "typedef int v2 __attribute__((vector_size(8))); long f(v2 a){ return (long)a; }",
+        "typedef int v2 __attribute__((vector_size(8))); v2 f(long a){ return (v2)a; }",
     ] {
         assert!(
             diags(good).is_empty(),
@@ -4618,6 +4649,12 @@ fn multiplicative_operands_are_arithmetic() {
         assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
     }
 
+    // **An operand already reported as unusable draws no second sentence** (contract 20). The
+    // declaration's own complaint stands; what must not appear beside it is `` `*` needs
+    // arithmetic operands`` about the type the reader has already been told to fix.
+    let cascade = diags("struct I; int f(void){ struct I x; return (int)(x * 2); }");
+    assert_eq!(cascade.len(), 1, "one sentence, not two: {cascade:?}");
+
     for good in [
         "int f(void){ int x=5; return x % 2; }",
         "int f(void){ double d=2; return (int)(d * 2); }",
@@ -4627,6 +4664,9 @@ fn multiplicative_operands_are_arithmetic() {
         "int f(void){ _Bool b=1; return b % 2; }",
         "enum E{A=1}; int f(void){ enum E e=A; return e % 2; }",
         "int f(void){ char c=2; return c * 2; }",
+        // **A vector is arithmetic here, and `%` takes one too** — gcc allows all three on an
+        // integer vector, which is why `Vector` is not gated on `integer_only`.
+        "typedef int v4 __attribute__((vector_size(16))); int f(void){ v4 a={0}; return (a % 2)[0] + (a * 2)[0]; }",
     ] {
         assert!(
             diags(good).is_empty(),

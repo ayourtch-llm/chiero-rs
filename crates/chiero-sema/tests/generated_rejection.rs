@@ -668,6 +668,39 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("`inline` on a parameter", "int f(inline int x);"),
     ("`inline` on a typedef", "typedef inline int T;"),
     ("`inline` on a member", "struct S{ inline int a; };"),
+    // C 6.5.4 and 6.5.5, wave 362. All refused by gcc in both modes.
+    (
+        "cast of a structure to a scalar",
+        "struct S{int a;}; int f(void){ struct S s; return (int)s; }",
+    ),
+    (
+        "cast to a structure type",
+        "struct S{int a;}; int f(void){ struct S s; return (int)(struct S)s.a; }",
+    ),
+    (
+        "cast of a floating value to a pointer",
+        "int f(void){ double d=1; return (int)(int*)d; }",
+    ),
+    (
+        "cast of a pointer to a floating type",
+        "int f(void){ int *p=0; return (double)p != 0; }",
+    ),
+    (
+        "pointer operand of `*`",
+        "int f(void){ int *p=0; return (int)(p * 2); }",
+    ),
+    (
+        "pointer operand of `/`",
+        "int f(void){ int *p=0; return (int)(p / 2); }",
+    ),
+    (
+        "floating operand of `%`",
+        "int f(void){ double d=2; return (int)(d % 2); }",
+    ),
+    (
+        "pointer operands of `%`",
+        "int f(void){ int *p=0; int *q=0; return (int)(p % q); }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -720,7 +753,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 202;
+    const FLOOR: usize = 210;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

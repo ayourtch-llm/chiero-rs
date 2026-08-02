@@ -4797,6 +4797,19 @@ impl Cx<'_> {
                 let inner = self.type_expr(*operand);
                 let inner = self.decay(inner, *operand);
                 let t = self.ty_of(*ty);
+                // **C 6.5.4p2/p4**, skipped for a compound literal — `(struct S){1}` shares this
+                // arm and is a record target on purpose.
+                // **A refused cast yields poison, not its written type.** `(int)(struct S)s.a`
+                // is one mistake; typing the inner cast as `struct S` made the *outer* one report
+                // that its operand was not scalar — contract 20's cascade. Poison propagates
+                // instead, and every check in this file already stays silent on it.
+                let t = if matches!(self.ast.expr(*operand).kind, ExprKind::InitList(_))
+                    || self.check_cast(t, self.out.typed.ty_of(inner), span)
+                {
+                    t
+                } else {
+                    self.intern(Ty::Error)
+                };
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty: t,
@@ -5142,6 +5155,41 @@ impl Cx<'_> {
         let b = self.promote_node(b, be, span);
         let aty = self.out.typed.ty_of(a);
         let bty = self.out.typed.ty_of(b);
+
+        // **C 6.5.5p2: `*` and `/` take arithmetic operands, `%` takes integer ones.** Two rules
+        // in one paragraph, and `double` is what separates them — it is arithmetic and not
+        // integer, so `d / 2` is right and `d % 2` is wrong. Written as one rule either way, one
+        // of those comes out backwards.
+        //
+        // Asked of the **promoted** operands, the same place the arm above asks about `~`: the
+        // promotion maps every integer spelling — `char`, `_Bool`, an enumeration — onto `Int`,
+        // so the rule needs no arm for any of them. A vector is arithmetic here, matching the
+        // `-`/`+`/`~` rule beside it and gcc's `vector_size`. Poison stays silent (contract 20).
+        if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Rem) {
+            let integer_only = matches!(op, BinOp::Rem);
+            // **An operand whose type is incomplete has already been reported** (contract 20).
+            // `struct I; struct I x; x * 2;` said the declaration was unusable and then said `*`
+            // needed arithmetic — the second sentence about a type the reader was already told
+            // to fix. Wave 358's lesson, in a new rule one wave later.
+            let ok = |cx: &Self, t: TyId| match cx.out.types[t.0 as usize] {
+                Ty::Int { .. } | Ty::Vector { .. } | Ty::Error => true,
+                Ty::Float(_) => !integer_only,
+                _ => is_incomplete(&cx.out, t),
+            };
+            if !ok(self, aty) || !ok(self, bty) {
+                let what = match op {
+                    BinOp::Mul => "`*`",
+                    BinOp::Div => "`/`",
+                    _ => "`%`",
+                };
+                let needs = if integer_only {
+                    "integer operands"
+                } else {
+                    "arithmetic operands"
+                };
+                self.error(span, format!("{what} needs {needs}"));
+            }
+        }
 
         // **A vector and a scalar keep their operands too**, for the reason the pointer branch
         // below gives. gcc's `vector_size` converts the scalar to the *element* type and
@@ -6682,6 +6730,96 @@ impl Cx<'_> {
                 format!("`{name}` declares a function, and this is {where_}"),
             );
         }
+    }
+
+    /// **A cast names a scalar type and takes a scalar operand** (C 6.5.4p2), and a pointer
+    /// converts to neither direction of a floating type (p4).
+    ///
+    /// **The `void` target is the exception the rule is built around**, not a footnote: a cast
+    /// to `void` discards its operand rather than converting it, so `(void)s` on a structure is
+    /// legal — and it is the only cast anyone writes with a struct. Asking "are both sides
+    /// scalar" would reject that and catch nothing anyone writes.
+    ///
+    /// The operand arrives **decayed**, which is why an array and a function designator are
+    /// scalar here and no arm is needed for either. Poison stays silent on both sides
+    /// (contract 20).
+    /// Answers whether the cast was accepted, so the caller can poison a refused one.
+    fn check_cast(&mut self, target: TyId, operand: TyId, span: Span) -> bool {
+        let scalar = |cx: &Self, t: TyId| {
+            matches!(
+                cx.out.types[t.0 as usize],
+                Ty::Int { .. } | Ty::Float(_) | Ty::Ptr(_) | Ty::Error
+            )
+        };
+        if matches!(self.out.types[target.0 as usize], Ty::Void) {
+            return true;
+        }
+        // **A cast involving a vector keeps its size, and the other side is a vector or an
+        // integer.** A GNU extension, and one the corpus needs — VPP casts a two-lane vector to
+        // `uword` all over `vppinfra`, and the twenty-header gate caught the first draft of this
+        // rule ("a vector converts only to a vector") rejecting it in six headers.
+        //
+        // The rule as measured against gcc, not as guessed: `(long)v` from an 8-byte vector is
+        // taken and `(int)v` is not; `(double)v` is refused at the same size, and so is
+        // `(v2)p` from a pointer; two vector types convert exactly when their widths match. One
+        // size test and one integer test cover all seven rows.
+        let vector = |cx: &Self, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Vector { .. });
+        if vector(self, target) || vector(self, operand) {
+            if matches!(self.out.types[target.0 as usize], Ty::Error)
+                || matches!(self.out.types[operand.0 as usize], Ty::Error)
+            {
+                return true;
+            }
+            let sizes = size_of_ty(&self.out, &self.target, target).zip(size_of_ty(
+                &self.out,
+                &self.target,
+                operand,
+            ));
+            let other_ok = |cx: &Self, t: TyId| {
+                matches!(
+                    cx.out.types[t.0 as usize],
+                    Ty::Vector { .. } | Ty::Int { .. }
+                )
+            };
+            if sizes.is_some_and(|(a, b)| a == b)
+                && other_ok(self, target)
+                && other_ok(self, operand)
+            {
+                return true;
+            }
+            self.error(
+                span,
+                "a cast involving a vector type needs an integer or a vector of the same size",
+            );
+            return false;
+        }
+        if !scalar(self, target) {
+            self.error(span, "a cast names a scalar type or `void`");
+            return false;
+        }
+        // **The operand side excuses an incomplete type; the target side does not.** An operand
+        // of incomplete type was already reported at its declaration, so complaining here is a
+        // second sentence about a fault the reader has been told about (contract 20). An
+        // incomplete *target* is a fresh mistake made by the cast itself, and keeps its own.
+        if !scalar(self, operand) && !is_incomplete(&self.out, operand) {
+            self.error(span, "a cast takes a scalar operand");
+            return false;
+        }
+        if is_incomplete(&self.out, operand) {
+            return false;
+        }
+        let float_and_pointer = |a: TyId, b: TyId| {
+            matches!(self.out.types[a.0 as usize], Ty::Float(_))
+                && matches!(self.out.types[b.0 as usize], Ty::Ptr(_))
+        };
+        if float_and_pointer(target, operand) || float_and_pointer(operand, target) {
+            self.error(
+                span,
+                "a pointer does not convert to or from a floating type",
+            );
+            return false;
+        }
+        true
     }
 
     /// Whether `t` is a pointer whose pointee has no size (C 6.5.6p2).
