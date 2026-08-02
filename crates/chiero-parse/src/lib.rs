@@ -600,7 +600,40 @@ impl<'a> Parser<'a> {
 
     // ---- diagnostics and recovery (§6) ----
 
+    /// Widen a **positional** span to the token it sits at, so no report covers nothing.
+    ///
+    /// `here()` returns a zero-width span between two tokens, which is the right answer for "an
+    /// insertion point" and the wrong one for a *report*: an editor highlights nothing, and 023
+    /// §9 asks for something a reader can act on. gcc points at the token that is actually there
+    /// — "expected `;` before `}` token" — so that is what this finds.
+    ///
+    /// Done **here rather than at the thirty-one call sites**, because `here()` is available,
+    /// plausible and exactly what anyone writing a parser diagnostic reaches for: waves 365 and
+    /// 366 each did, after the warning against it was already written. Fixing the call sites
+    /// would leave the thirty-second to make the same mistake.
+    fn visible(&self, span: Span) -> Span {
+        if !span.is_empty() {
+            return span;
+        }
+        // The token starting here — the one the parser stopped at.
+        if let Some(t) = self
+            .toks
+            .iter()
+            .find(|t| t.span.lo == span.lo && !t.span.is_empty())
+        {
+            return t.span;
+        }
+        // At end of input there is no such token, so name the last one instead: "unclosed `{`"
+        // then highlights the final token rather than the void after it.
+        self.toks
+            .iter()
+            .rev()
+            .find(|t| t.span.hi == span.lo && !t.span.is_empty())
+            .map_or(span, |t| t.span)
+    }
+
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        let span = self.visible(span);
         if self.diags.len() >= MAX_DIAGNOSTICS {
             // §6: continue silently, but *record* that we did. A run that hit the cap and
             // one that found exactly a hundred problems are different facts.
@@ -1682,16 +1715,23 @@ impl<'a> Parser<'a> {
                 Suffix::Arr(len, span) => {
                     self.ast.add_type(TypeKind::Array { elem: ty, len }, span)
                 }
-                Suffix::Fun(params, variadic, kr, prototyped, span) => self.ast.add_type(
-                    TypeKind::Func {
-                        ret: ty,
-                        params,
-                        variadic,
-                        kr,
-                        prototyped,
-                    },
-                    span,
-                ),
+                Suffix::Fun(params, variadic, kr, prototyped, span) => {
+                    // **From the return type through the parameter list.** The suffix's own span
+                    // is `(…)` alone, so a diagnostic pointing at a function *type* named the
+                    // parameters — the one part of `int(void)` that is never what is wrong with
+                    // it. A `_Generic` association of function type said `(void)`.
+                    let whole = self.join(self.ast.ty(ty).span, span);
+                    self.ast.add_type(
+                        TypeKind::Func {
+                            ret: ty,
+                            params,
+                            variadic,
+                            kr,
+                            prototyped,
+                        },
+                        whole,
+                    )
+                }
             };
         }
         ty

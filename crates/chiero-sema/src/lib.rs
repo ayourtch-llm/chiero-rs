@@ -1898,7 +1898,8 @@ impl Cx<'_> {
                             self.error(
                                 span,
                                 format!(
-                                    "jump to label `{n}` enters the scope of a                                      variably-modified declaration"
+                                    "jump to label `{n}` enters the scope of a \
+                                     variably-modified declaration"
                                 ),
                             );
                         }
@@ -2182,8 +2183,11 @@ impl Cx<'_> {
                     self.out.types[r.0 as usize],
                     Ty::Array { .. } | Ty::Func { .. }
                 ) {
+                    // **At the return type, not at the function.** The fault is the `[3]` in
+                    // `int f(void)[3]`, and the function node covers the whole declarator — true
+                    // of the mistake and useless for finding it.
                     self.error(
-                        node.span,
+                        self.ast.ty(ret).span,
                         "a function may not return an array or a function",
                     );
                 }

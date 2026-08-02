@@ -305,6 +305,30 @@ fn every_parse_diagnostic_points_at_visible_text() {
         }
     }
     assert!(checked >= 14, "only {checked} diagnostics were examined");
+
+    // **And it is the token the parser stopped at**, which the gate above cannot tell — a
+    // widening that picked any non-empty token would satisfy it. gcc's convention is to name
+    // the token that *is* there ("expected `;` before `}` token"), and these rows are that:
+    // `goto;` stops at the `;`, `return 1` at the `1`, and `if }` at the `}` five times over.
+    for (src, want) in [
+        ("int f(void){ goto; }", ";"),
+        ("int f(void){ return 1", "1"),
+        ("int a[static 3];", "static"),
+        ("int f(void){ if }", "}"),
+    ] {
+        let tu = preprocess_str("f.c", src, Config::default());
+        let mut oracle = ScopedTypedefs::new();
+        let parsed = parse_tu(&tu, &mut oracle);
+        let covered: Vec<&str> = parsed
+            .diagnostics
+            .iter()
+            .filter_map(|d| tu.source_map.span_text(d.span))
+            .collect();
+        assert!(
+            !covered.is_empty() && covered.iter().all(|t| *t == want),
+            "every diagnostic for `{src}` names {want:?}: {covered:?}"
+        );
+    }
     assert!(
         invisible.is_empty(),
         "{} diagnostic(s) point at no visible text:\n  {}",

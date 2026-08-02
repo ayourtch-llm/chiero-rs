@@ -1104,9 +1104,10 @@ fn every_diagnostic_points_at_visible_text() {
 #[test]
 fn a_span_covers_what_the_message_is_about() {
     for (src, want) in [
-        // The return type is at fault, so the declarator is what a reader must see — not the
-        // parameter list, which is the one part that is fine.
-        ("int f(void)[3];", "int f(void)[3]"),
+        // **The return type is at fault**, so that is what a reader must see. Not the parameter
+        // list, which is the one part of the declarator that is fine — and not the whole
+        // declaration either, which would be true and useless.
+        ("int f(void)[3];", "[3]"),
         (
             "int f(void){ return _Generic(1, int(void): 1, default: 0); }",
             "int(void)",
