@@ -487,22 +487,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 357) — 1538 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 358) — 1539 tests, 4 ignored, M1 169/169 by contract
 >
-> **Sema 165 of 165, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 169 of 169, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+>
+> **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
+> rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
+> now shipped: a value outside `int` (reported from the *range*, which is what sees the implicit
+> successor) and an enumeration with no enumerators.
+>
+> **The new thing wave 357 learned is what to do when a census row lands on behaviour the project
+> already implements deliberately.** The wide enum had a differential test, a mutation history, and
+> a place in the verifier corpus — all asserting *silence*. Three moves were available: drop the
+> rule, delete the coverage, or require both halves. The third is right, and the mechanism is
+> `harness::lower_diverging(src, expect)`: lowering is graded on a program sema reports, with the
+> message named. Reach for it whenever a divergence becomes reportable — and note the criterion
+> that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
+> report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
 >
 > **Next, in descending order of what they buy:**
->   1. **Continue the census by reading C.** Waves 355 and 356 each found several misses behind one
->      cause, which is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
+>   1. **Continue the census by reading C.** Waves 355–357 each found misses behind one cause, which
+>      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.15's conditional
->      operator** (the type of `p ? q : 0`, of two different struct pointers, of `void` arms), and
->      **6.7.2.2's enumeration constraints** (a value outside `int`, an enum with no enumerators).
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.7.2.1's bit-field
+>      constraints** (width past the type, width on a non-integer, a named zero-width field), and
+>      **6.7.9's initializer constraints beyond wave 356** (a scalar braced twice, a static
+>      initializer that is not a constant expression).
 >   2. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both measured
 >      clean, and wave 355 showed the gate earns its keep on *new* code.
 >   3. **`check_init` now has three callers** — declaration, compound literal, and the designator
 >      descent. Wave 355's note stands: if a fourth appears, the type-usability question belongs
 >      with it rather than repeated.
+>
+> **A survivor is the one mutation result worth distrusting.** Wave 357's first M1 scored SURVIVED
+> because its one-line anchor did not match the three-line call `cargo fmt` had produced — a mutant
+> that never applied and a mutant that nothing observes look identical from the outside. Every
+> mutant now carries a `MUTANT_MARK` the runner greps for before it scores, and the runner passes
+> `--no-fail-fast`: without it cargo stops at the first failing *binary*, so `chiero-lower`'s
+> failure hid whether `chiero-sema` observed the same mutant at all.
 >
 > **The cheapest census result is several misses behind one guard.** Wave 355's compound literal
 > was never wired to `check_init` at all; wave 356's nested designators were wired and then
@@ -2815,6 +2837,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a new rule reports code the project deliberately implements, require both halves rather
+> than choosing one** (wave 357). The wide enum had three tests asserting *silence*, which made the
+> extension and the diagnostic alternatives. `harness::lower_diverging(src, expect)` grades lowering
+> on a reported program with the message named — strictly more pinned than the `agree_with` it
+> replaced, which asserted only the value. Deleting either half would have been cheaper and wrong.
+>
+> **Whether to report a GNU extension is a measurement, not a preference** (wave 357). VPP has no
+> enumerator wide enough to force widening, so reporting one costs no reader anything; `int a[0]`
+> has 1777 uses, so reporting *it* would cost every reader something. Same criterion, opposite
+> answers. Count before deciding.
+>
+> **A mutant that never applied looks exactly like a mutant nothing observes** (wave 357). Both
+> score SURVIVED. Mark every mutant and grep for the mark before scoring, and pass
+> `--no-fail-fast` — cargo stops at the first failing binary, so a kill in one crate hides whether
+> any other crate saw the same mutant.
 >
 > **A guard that skips work is invisible to every channel that counts rejections** (wave 356).
 > `elides_braces` declared brace elision for `{[0][5] = 1}` — a nested designator writes a scalar
