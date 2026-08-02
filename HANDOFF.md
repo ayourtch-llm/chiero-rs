@@ -487,9 +487,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 373) — 1566 tests, 4 ignored, M1 260/260 by contract
+> ### ⏭️ START HERE (wave 374) — 1568 tests, 4 ignored, M1 260/260 by contract
 >
 > **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
+> **Every diagnostic in both `VIOLATIONS` lists now points at visible text** (wave 373).
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +505,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 373 built the span instrument and used it.** `SourceMap::span_text` had existed since
+> the span crate was written and **nothing called it**, so "the diagnostic is correct" had only
+> ever meant "the sentence is correct". Five spans covered no text at all — four from
+> `Parser::here()`, which returns a zero-width span at the next *unconsumed* token, and one from
+> an empty `#if` whose "last token" did not exist.
+>
+> **A capability nothing exercises is a capability that is wrong.** The array-suffix code carried
+> a comment warning against `here()` and the warning did not travel two hundred lines. Look for
+> API a crate exposes and the suite never calls — that is where the unmeasured behaviour is.
+>
+> **A regression gate's strictness cannot be mutation-tested while the tree is clean.** Weakening
+> wave 373's gate changes nothing until a defect exists. It was verified by *injecting* a
+> `Span::DUMMY` into an unrelated rule; the named span assertions beside it are what pin today's
+> spans.
 >
 > **Wave 372 closed 6.5.2.2, 6.7.6.1, 6.4.4.1 — and the message debt.** The census found *one*
 > row in twenty-eight, which is the third thin census running and the reason the other half of the
@@ -659,11 +675,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      floating operand through a typedef), **6.8.6.1's `goto` into a VLA scope beyond wave 341**,
 >      and **6.10.3.4's rescanning** (a macro that expands to its own name through two levels).
 >
->   2. **Spend the next waves on quality rather than coverage.** The message wave paid: three
->      diagnostics now name the fault instead of the wrong construct. The same audit has not been
->      run on **spans** — which token a diagnostic points at — and 023 §9 makes that as much a
->      part of "a report a person can act on" as the words are. A span audit needs a way to *see*
->      the span, which no current test asserts; building that is the wave.
+>   2. **Quality, continued — the instrument now exists.** Wave 373's gate asks only whether a
+>      span covers *any* text. The next question is whether it covers the *right* text, which the
+>      wave pinned for four rules by name and for none of the other 256. A sampling audit — render
+>      the covered text for every `VIOLATIONS` row and read it — is the same shape as the message
+>      audit and should find the same kind of thing: `enum E { A = 2147483648 }` points at the
+>      whole enumeration where the fault is the value.
+>
+>   3. **Two other suites have no span gate**: `chiero-parse`'s constraints test, and the sema
+>      *silence* channel (which has no diagnostics by construction, so it needs none). Adding the
+>      first is cheap and closes the family.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3009,6 +3030,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Look for API the crate exposes and the suite never calls** (wave 373). `span_text` was written
+> for exactly this audit and no test had ever used it, so every span in the project was unmeasured
+> — and one of them had been wrong since the wave that wrote it, with the *message* assertions all
+> passing. An uncalled accessor marks an axis nothing is checking.
+>
+> **A regression gate cannot mutation-test itself** (wave 373). Weakening one changes nothing
+> while the tree is clean, because its strictness is only observable when a defect exists. Verify
+> it by **injecting** the defect it claims to catch, and pin today's behaviour with named
+> assertions beside it.
 >
 > **Fixing a message means splitting an arm, and the test must pin both halves** (wave 372). Each
 > of the three wrong messages came from one arm answering for two faults. A fix that widens the
