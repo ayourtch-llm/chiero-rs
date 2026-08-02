@@ -876,6 +876,8 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         read_only: Default::default(),
         read_only_pointee: Default::default(),
         register_objects: Default::default(),
+        meanings: Default::default(),
+        body_scope_open: false,
         automatic_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
@@ -929,6 +931,8 @@ pub fn const_eval(
         read_only: Default::default(),
         read_only_pointee: Default::default(),
         register_objects: Default::default(),
+        meanings: Default::default(),
+        body_scope_open: false,
         automatic_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
@@ -1021,6 +1025,12 @@ struct Cx<'a> {
     /// Objects declared `register`, whose address may not be taken. Scoped like `read_only`, and
     /// for the same reason: a block may shadow one with an ordinary object.
     register_objects: indexmap::IndexSet<Symbol>,
+    /// What each ordinary identifier in scope means (C 6.2.3), for the rule that a name denotes
+    /// one thing per scope.
+    meanings: ScopedMeanings,
+    /// Set by the function-definition arm just before it walks the body, so the body's own
+    /// `Compound` does not open a *second* meanings scope over the parameters' one.
+    body_scope_open: bool,
     /// Objects with **automatic** storage duration, so `&x` in a static initializer is not an
     /// address constant. Scoped like `read_only` and `register_objects`, and for the same
     /// reason — a block-scope `static y` may shadow an automatic `y`, and `&y` then *is*
@@ -1199,7 +1209,105 @@ impl ScopedNames {
     }
 }
 
+/// What an **ordinary identifier** denotes (C 6.2.3): the namespace holding objects, functions,
+/// typedef names and enumeration constants — but not tags, and not labels.
+///
+/// A function and an object share `Ordinary` on purpose. C separates them, and so does gcc's
+/// message, but the *disagreement* between `int x;` and `int x(void);` is already reported by the
+/// type-conflict check; adding a second sentence here would be contract 20's cascade for no gain.
+/// What this enum has to tell apart is the cases nothing else asks about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Meaning {
+    /// A `typedef` name, carrying the type it names — repeating one with the *same* type is
+    /// legal C and with a different type is not, so the kind alone is not enough.
+    Typedef(TyId),
+    Ordinary,
+    Enumerator,
+}
+
+/// Ordinary identifiers in the scopes being walked, with what each one means.
+///
+/// The same shape as [`ScopedNames`] and deliberately not merged with it: that one answers
+/// "again, here?" for tags, which have their own namespace, and a shared table would make
+/// `struct S { int a; }; int S;` a redeclaration. Four census rows turn on exactly that.
+#[derive(Default)]
+struct ScopedMeanings {
+    names: Vec<(Symbol, Meaning)>,
+    marks: Vec<usize>,
+}
+
+impl ScopedMeanings {
+    fn enter(&mut self) {
+        self.marks.push(self.names.len());
+    }
+
+    fn leave(&mut self) {
+        let mark = self.marks.pop().unwrap_or(0);
+        self.names.truncate(mark);
+    }
+
+    /// Whether this is the outermost scope. File scope admits repeated declarations of an object
+    /// — `int x; int x;` is two tentative definitions (C 6.9.2p2) and is how every header is
+    /// written — and a block does not.
+    fn at_file_scope(&self) -> bool {
+        self.marks.is_empty()
+    }
+
+    /// What `name` already means **in the innermost scope**, and record the new meaning.
+    ///
+    /// Records unconditionally, including on a collision: the declaration exists whatever this
+    /// says about it, and leaving it out would make a third declaration of the same name report
+    /// against the first rather than the second.
+    fn declare(&mut self, name: Symbol, meaning: Meaning) -> Option<Meaning> {
+        let start = self.marks.last().copied().unwrap_or(0);
+        let was = self.names[start..]
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, m)| *m);
+        self.names.push((name, meaning));
+        was
+    }
+}
+
 impl Cx<'_> {
+    /// **An ordinary identifier means one thing per scope** (C 6.7p3).
+    ///
+    /// The four answers, in the order they are asked:
+    ///
+    /// - Nothing was declared: nothing to say.
+    /// - Two `typedef`s naming the same type: legal, and common — a header included twice through
+    ///   different paths lands here.
+    /// - Two `Ordinary` declarations: legal at **file scope** and not in a block. The type
+    ///   question is somebody else's, and answering it here would double the report.
+    /// - Anything else: the name means two different things, which is the case nothing else in
+    ///   this file was asking about.
+    fn declare_ordinary(&mut self, name: Symbol, meaning: Meaning, span: Span) {
+        let file_scope = self.meanings.at_file_scope();
+        let Some(was) = self.meanings.declare(name, meaning) else {
+            return;
+        };
+        let text = self.text(name).unwrap_or("?").to_owned();
+        match (was, meaning) {
+            (Meaning::Typedef(a), Meaning::Typedef(b)) if a == b => {}
+            (Meaning::Typedef(_), Meaning::Typedef(_)) => self.error(
+                span,
+                format!("`{text}` is redefined as a `typedef` for a different type"),
+            ),
+            (Meaning::Ordinary, Meaning::Ordinary) => {
+                if !file_scope {
+                    self.error(span, format!("`{text}` is declared twice in one block"));
+                }
+            }
+            // Two enumerators are already `declared_enumerators`' business, and it names them
+            // better than this would.
+            (Meaning::Enumerator, Meaning::Enumerator) => {}
+            _ => self.error(
+                span,
+                format!("`{text}` is declared as a different kind of thing"),
+            ),
+        }
+    }
+
     fn intern(&mut self, ty: Ty) -> TyId {
         self.intern_qual(ty, Qual::NONE)
     }
@@ -1466,6 +1574,7 @@ impl Cx<'_> {
                     } else {
                         self.automatic_objects.insert(n);
                     }
+                    self.declare_ordinary(n, Meaning::Ordinary, span);
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
@@ -1573,6 +1682,7 @@ impl Cx<'_> {
                     );
                 }
                 let t = self.ty_of(ty);
+                self.declare_ordinary(name, Meaning::Typedef(t), self.ast.decl(id).span);
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
                 if let Some(a) = self.declared_align(ty) {
@@ -1587,6 +1697,11 @@ impl Cx<'_> {
             } => {
                 let t = self.ty_of(ty);
                 self.out.decl_types.insert(id, t);
+                // **A function is an ordinary identifier**, so `int f(void); typedef int f;`
+                // collides. Two *declarations* of the same function do not — they land in the
+                // `Ordinary`/`Ordinary` arm, which file scope permits, and any disagreement about
+                // the type is `conflicting types for` f``'s business rather than this rule's.
+                self.declare_ordinary(name, Meaning::Ordinary, self.ast.decl(id).span);
                 self.values.insert(name, t);
                 // A function declaration carries storage classes too, and `static extern` is a
                 // violation there for the same reason. `inline` is not counted, which is what
@@ -1675,6 +1790,9 @@ impl Cx<'_> {
                     let saved_rop = self.read_only_pointee.clone();
                     let saved_reg = self.register_objects.clone();
                     let saved_auto = self.automatic_objects.clone();
+                    // **One scope for the parameters and the body**, per C 6.9.1p9. Opened here
+                    // rather than by the body's `Compound`, which is told to reuse it.
+                    self.meanings.enter();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -1714,12 +1832,20 @@ impl Cx<'_> {
                             // through the declaration arm because a parameter is part of the
                             // function's *type* and is never walked as an item.
                             self.automatic_objects.insert(pn);
+                            // **Recorded, not checked.** Collisions *among* parameters are
+                            // wave 359's rule, in the `TypeKind::Func` arm, and it names them
+                            // better ("duplicate parameter `a`"). What this entry is for is a
+                            // parameter colliding with a declaration in the *body*, which
+                            // nothing else sees. Wave 353's contract-20 channel caught the
+                            // double report on its own new row.
+                            self.meanings.declare(pn, Meaning::Ordinary);
                             self.values.insert(pn, t);
                             self.out.decl_types.insert(p, t);
                         }
                     }
                     // The return type the body's `return` statements convert to, and the name
                     // `__func__` denotes inside it.
+                    self.body_scope_open = true;
                     let saved_fn = self.current_fn;
                     self.current_fn = Some(name);
                     let saved_ret = self.current_ret;
@@ -1780,6 +1906,7 @@ impl Cx<'_> {
                     self.read_only_pointee = saved_rop;
                     self.register_objects = saved_reg;
                     self.automatic_objects = saved_auto;
+                    self.meanings.leave();
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -2418,6 +2545,7 @@ impl Cx<'_> {
                     format!("redeclaration of enumerator `{n}`"),
                 );
             }
+            self.declare_ordinary(en, Meaning::Enumerator, self.ast.decl(*m).span);
             self.enumerators.insert(en, v);
             pending.push((en, v));
         }
@@ -6931,8 +7059,18 @@ impl Cx<'_> {
                 let outer = self.open_vla_scopes.len();
                 self.defined_tags.enter();
                 self.declared_enumerators.enter();
+                // **The function body's outermost block is the parameters' scope** (C 6.9.1p9),
+                // so the body arm has already opened one and set this flag; opening a second
+                // here would let `int f(int T){ typedef int T; }` shadow rather than collide.
+                let own_scope = !std::mem::take(&mut self.body_scope_open);
+                if own_scope {
+                    self.meanings.enter();
+                }
                 for s in ss {
                     self.type_stmt(s);
+                }
+                if own_scope {
+                    self.meanings.leave();
                 }
                 self.declared_enumerators.leave();
                 self.defined_tags.leave();
@@ -6962,6 +7100,11 @@ impl Cx<'_> {
                 step,
                 body,
             } => {
+                // **A `for` initializer is its own scope** (C 6.8.5p5), which is why two
+                // `for (int i = 0; ...)` loops in one block are legal C — and why the first
+                // draft of the meanings table called the second `i` a redeclaration. Found by
+                // the corpus and by an existing fixture in the same run.
+                self.meanings.enter();
                 match init {
                     Some(ForInit::Decl(ds)) => {
                         for d in ds {
@@ -6997,6 +7140,7 @@ impl Cx<'_> {
                     self.type_expr(s);
                 }
                 self.in_loop(|cx| cx.type_stmt(body));
+                self.meanings.leave();
             }
             StmtKind::Switch { cond, body } => {
                 let c = self.type_expr(cond);

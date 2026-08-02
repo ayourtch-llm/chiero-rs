@@ -701,6 +701,28 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "pointer operands of `%`",
         "int f(void){ int *p=0; int *q=0; return (int)(p % q); }",
     ),
+    // C 6.7p3, wave 363. All refused by gcc in both modes.
+    ("typedef then object", "typedef int T; int T;"),
+    ("object then typedef", "int T; typedef int T;"),
+    (
+        "typedef redefined with another type",
+        "typedef int T; typedef long T;",
+    ),
+    (
+        "typedef and object in one block",
+        "int f(void){ typedef int T; int T; return 0; }",
+    ),
+    (
+        "object declared twice in one block",
+        "int f(void){ int x; int x; return x; }",
+    ),
+    ("function then typedef", "int f(void); typedef int f;"),
+    ("enumerator then object", "enum E { A }; int A;"),
+    ("object then enumerator", "int A; enum E { A };"),
+    (
+        "parameter then typedef",
+        "int f(int T){ typedef int T; return 0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -753,7 +775,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 210;
+    const FLOOR: usize = 219;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
