@@ -4211,13 +4211,20 @@ impl Cx<'_> {
                         }
                         (pointee, decayed)
                     }
-                    UnOp::Not => (
-                        self.intern(Ty::Int {
-                            signed: true,
-                            bits: int_bits,
-                        }),
-                        inner,
-                    ),
+                    UnOp::Not => {
+                        // **Decayed before the question**, unlike the other unary operators
+                        // here, which promote instead. `!a` on an array asks about the pointer
+                        // it decays to — which is what makes it legal and always false.
+                        let decayed = self.decay(inner, *operand);
+                        self.require_scalar(decayed, *operand, "the operand of `!`");
+                        (
+                            self.intern(Ty::Int {
+                                signed: true,
+                                bits: int_bits,
+                            }),
+                            decayed,
+                        )
+                    }
                     _ => {
                         let promoted = self.promote_node(inner, *operand, span);
                         let pty = self.out.typed.ty_of(promoted);
@@ -4402,6 +4409,7 @@ impl Cx<'_> {
                 // or not a test currently asks.
                 let c = self.type_expr(*cond);
                 let c = self.decay(c, *cond);
+                self.require_scalar(c, *cond, "the condition of `?:`");
                 let t = then.map(|t| {
                     let n = self.type_expr(t);
                     self.decay(n, t)
@@ -5070,6 +5078,15 @@ impl Cx<'_> {
         if matches!(op, BinOp::LogAnd | BinOp::LogOr) {
             let a = self.decay(a, ae);
             let b = self.decay(b, be);
+            // **Both operands, not just the left.** `1 || s` is as wrong as `s || 1`, and a
+            // short-circuit is a run-time notion that says nothing about the constraint.
+            let what = if matches!(op, BinOp::LogAnd) {
+                "an operand of `&&`"
+            } else {
+                "an operand of `||`"
+            };
+            self.require_scalar(a, ae, what);
+            self.require_scalar(b, be, what);
             return self.push_typed(TypedNode::Value {
                 expr,
                 ty: int_ty,
@@ -6711,7 +6728,7 @@ impl Cx<'_> {
             }
             StmtKind::If { cond, then, els } => {
                 let c = self.type_expr(cond);
-                self.condition(c, cond);
+                self.condition(c, cond, "the condition of `if`");
                 self.type_stmt(then);
                 if let Some(e) = els {
                     self.type_stmt(e);
@@ -6719,13 +6736,13 @@ impl Cx<'_> {
             }
             StmtKind::While { cond, body } => {
                 let c = self.type_expr(cond);
-                self.condition(c, cond);
+                self.condition(c, cond, "the condition of `while`");
                 self.in_loop(|cx| cx.type_stmt(body));
             }
             StmtKind::DoWhile { body, cond } => {
                 self.in_loop(|cx| cx.type_stmt(body));
                 let c = self.type_expr(cond);
-                self.condition(c, cond);
+                self.condition(c, cond, "the condition of `do`");
             }
             StmtKind::For {
                 init,
@@ -6762,7 +6779,7 @@ impl Cx<'_> {
                 }
                 if let Some(c) = cond {
                     let n = self.type_expr(c);
-                    self.condition(n, c);
+                    self.condition(n, c, "the condition of `for`");
                 }
                 if let Some(s) = step {
                     self.type_expr(s);
@@ -6886,7 +6903,18 @@ impl Cx<'_> {
                 self.type_stmt(body);
             }
             StmtKind::Label { name, body } => {
-                self.labels_defined.insert(name);
+                // **A label is defined once per function** (C 6.2.1p4). Its scope is the whole
+                // function, which is what makes this its own rule rather than a case of ordinary
+                // redeclaration: `a: { a: ; }` and two *sibling* blocks each defining `a` both
+                // collide, where every other identifier in those positions would not. That is
+                // also why nothing had to be built for it — `labels_defined` is already
+                // function-wide and cleared per function, so the collision is what `insert`
+                // returns and the block structure never enters into it.
+                if !self.labels_defined.insert(name) {
+                    let n = self.text(name).unwrap_or("?").to_owned();
+                    let span = self.ast.stmt(stmt).span;
+                    self.error(span, format!("duplicate label `{n}`"));
+                }
                 // **Where the label sits, in variably-modified terms.** Sampled at the label and
                 // not at the block, because `{ skip: ; int a[n]; }` puts the label outside the
                 // scope and `{ int a[n]; skip: ; }` puts it inside — the same block either way.
@@ -6963,9 +6991,32 @@ impl Cx<'_> {
 
     /// A controlling expression is compared against zero, so it decays but is not
     /// promoted to a common type with anything.
-    fn condition(&mut self, node: TypedId, expr: ExprId) {
+    fn condition(&mut self, node: TypedId, expr: ExprId, what: &str) {
         let node = self.decay(node, expr);
+        self.require_scalar(node, expr, what);
         self.set_top(expr, node);
+    }
+
+    /// **Where C asks a value "is it true", the value must be scalar** — C 6.8.4.1p1 (`if`),
+    /// 6.8.5p2 (`while`, `do`, `for`), 6.5.15p2 (`?:`), 6.5.3.3p1 (`!`), 6.5.13/14p2 (`&&` and
+    /// `||`). A structure or a union has no zero to compare against, and `void` has no value.
+    ///
+    /// **Asked of the decayed node**, which is the whole reason `if(a)` on an array is legal:
+    /// the array has become a pointer by the time the question is put, so this needs no array
+    /// arm and a rule phrased "integer or pointer" over the *written* type would have rejected
+    /// it. Every one of the eight callers decays first for its own reasons; this one depends on
+    /// it, so the two are done together in `condition` and immediately after the decay elsewhere.
+    ///
+    /// A vector is **not** scalar here, matching gcc, which refuses `if(v)` in GNU mode too.
+    fn require_scalar(&mut self, node: TypedId, expr: ExprId, what: &str) {
+        let t = self.out.typed.ty_of(node);
+        if !matches!(
+            self.out.types[t.0 as usize],
+            Ty::Int { .. } | Ty::Float(_) | Ty::Ptr(_) | Ty::Error
+        ) {
+            let span = self.ast.expr(expr).span;
+            self.error(span, format!("{what} needs a scalar, and this is not one"));
+        }
     }
 }
 

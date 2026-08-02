@@ -614,6 +614,37 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "assignment to an array",
         "int f(void){ int a[2]; a = 0; return a[0]; }",
     ),
+    // C 6.2.1 and the six paragraphs that ask for a scalar, wave 360. All refused by gcc in
+    // both modes.
+    ("duplicate label", "int f(int x){ a: a: return x; }"),
+    (
+        "duplicate label across a block",
+        "int f(int x){ a: { a: return x; } }",
+    ),
+    (
+        "struct as an `if` condition",
+        "struct S{int a;}; int f(void){ struct S s; if(s) return 1; return 0; }",
+    ),
+    (
+        "struct as a `while` condition",
+        "struct S{int a;}; int f(void){ struct S s; while(s) ; return 0; }",
+    ),
+    (
+        "struct as a `?:` condition",
+        "struct S{int a;}; int f(void){ struct S s; return s ? 1 : 0; }",
+    ),
+    (
+        "struct as the operand of `!`",
+        "struct S{int a;}; int f(void){ struct S s; return !s; }",
+    ),
+    (
+        "struct as an operand of `&&`",
+        "struct S{int a;}; int f(void){ struct S s; return s && 1; }",
+    ),
+    (
+        "`void` as an `if` condition",
+        "void g(void); int f(void){ if(g()) return 1; return 0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -666,7 +697,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 185;
+    const FLOOR: usize = 193;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
