@@ -3929,3 +3929,130 @@ fn an_enumerator_fits_in_an_int() {
         );
     }
 }
+
+/// **C 6.7.2.1p5: a bit-field's type is an integer type**, and `sizeof` does not apply to one.
+///
+/// gcc refuses every row below in *both* modes, so neither rule is a pedantic-only divergence.
+/// The list of accepted types is where the constraint's letter and gcc part company and the
+/// letter is not what this project follows: C names `_Bool`, `signed int` and `unsigned int`,
+/// then permits implementation-defined types, and gcc takes `char`, `short`, `long long`, an
+/// enumeration, and any typedef of those. So the rule chiero enforces is **integer or not**,
+/// which is the line gcc actually draws — a `float`, a pointer, a struct, a union, and an array
+/// are refused, and the qualified and typedef spellings of an integer are not.
+#[test]
+fn a_bitfield_has_an_integer_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // The four non-integer shapes, plus the typedef spelling that hides one.
+        "struct S { float a:3; };",
+        "struct S { double a:3; };",
+        "struct S { int *a:3; };",
+        "struct S { void *a:3; };",
+        "struct S { struct T { int x; } a:3; };",
+        "struct S { union U { int x; } a:3; };",
+        "struct S { int a[2]:3; };",
+        "typedef float F; struct S { F a:3; };",
+        // **`sizeof` of a bit-field**, which has no size to report. `&s.a` is already refused,
+        // and this is the same object with the same reason.
+        "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof(s.a); }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Every integer spelling gcc takes, including the ones C's letter does not name.
+        "struct S { char a:3; };",
+        "struct S { signed char a:3; };",
+        "struct S { short a:3; };",
+        "struct S { long long a:3; };",
+        "struct S { unsigned a:3; };",
+        "struct S { _Bool a:1; };",
+        "typedef int I; struct S { I a:3; };",
+        "enum E { X=1 }; struct S { enum E a:2; };",
+        "struct S { const volatile int a:3; };",
+        // And an ordinary non-bit-field member of each refused type, so the rule is about
+        // bit-fields rather than about the types.
+        "struct S { float a; int *b; struct T { int x; } c; int d[2]; };",
+        "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof(s); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **C 6.7.9p4: an object with static storage duration takes a constant initializer** — and
+/// `static` inside a function has static storage duration just as a file-scope object does.
+///
+/// chiero already enforced this, keyed on **file scope** rather than on storage duration, so
+/// every block-scope `static` went unchecked. The discriminator is the pair: `int n = 1; int
+/// a[2] = {n,2};` at file scope was refused before this wave, and the same initializer on a
+/// block-scope `static` was not.
+///
+/// The legal half is the larger half here and it is what keeps the rule from swallowing real
+/// code: an address constant (`&v` for a static `v`), a null pointer, a string, `sizeof`, an
+/// enumeration constant and ordinary arithmetic are all constant expressions.
+#[test]
+fn a_static_initializer_is_a_constant_expression() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A file-scope object read, directly and inside arithmetic.
+        "static int g = 1; int f(void){ static int x = g; return x; }",
+        "static int g = 1; int f(void){ static int x = g + 1; return x; }",
+        // An automatic, and a parameter — neither exists when the object is initialized.
+        "int f(void){ int y=1; static int x = y; return x; }",
+        "int f(int n){ static int x = n; return x; }",
+        // The address of an automatic, which is not an address constant.
+        "int f(void){ int x; static int *p = &x; return *p; }",
+        // Inside an aggregate initializer, array and struct alike — the element is where the
+        // non-constant sits, not the initializer as a whole.
+        "static int g; int f(void){ static int a[2] = {1,g}; return a[0]; }",
+        "struct S { int a; }; static int gg; int f(void){ static struct S s = { gg }; return s.a; }",
+        // Declared `extern` in the block, so the name resolves to an object with no address
+        // known here either.
+        "int f(void){ extern int g; static int x = g; return x; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        "int f(void){ static int x = 1; return x; }",
+        "int f(void){ static int x = 1+2*3; return x; }",
+        "int f(void){ static int a[2] = {1,2}; return a[0]; }",
+        // **Address constants**: the address of a static object is one, and so is a null pointer.
+        "static int v = 3; int f(void){ static int *p = &v; return *p; }",
+        "int f(void){ static int *p = 0; return p==0; }",
+        "int f(void){ static char s[4] = \"abc\"; return s[0]; }",
+        "int f(void){ static int x = sizeof(int); return x; }",
+        "enum E { A = 1 }; int f(void){ static int x = A; return x; }",
+        // A parameter read *outside* the static's initializer stays legal — the rule is about
+        // the initializer, not about the function.
+        "int f(int n){ static int x = 0; return x + n; }",
+        // And the non-static local beside it, which may read anything.
+        "int f(int n){ int y = n; static int x = 2; return x + y; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
