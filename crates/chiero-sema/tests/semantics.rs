@@ -5863,6 +5863,17 @@ fn a_refused_operand_poisons_and_a_message_names_its_own_construct() {
             "struct S{int a;}; struct T{int a;}; int f(void){ struct S *a=0; struct T *b=0; return (1 ? a : b) != 0; }",
             "pointer type mismatch in a conditional expression",
         ),
+        // **Every shape, because the prefix mechanism has no verb to lend here.** A version
+        // that only special-cased the pointer pair produced "a conditional expression's arms
+        // differ makes a pointer from an integer without a cast" for these two.
+        (
+            "int f(void){ int *p=0; return (1 ? 1 : p) != 0; }",
+            "pointer/integer type mismatch in a conditional expression",
+        ),
+        (
+            "int f(void){ double d=1; int *p=0; return (1 ? d : p) != 0; }",
+            "pointer/integer type mismatch in a conditional expression",
+        ),
         (
             "int f(void){ int *p=0; char *q=0; p = q; return *p; }",
             "initializing or assigning from an incompatible pointer type",
@@ -5873,6 +5884,38 @@ fn a_refused_operand_poisons_and_a_message_names_its_own_construct() {
             vec![want.to_string()],
             "the message for `{src}`"
         );
+    }
+
+    // **The K&R parameter, across both stages.** `chiero-parse`'s own test asserts the sentence;
+    // only here can the *absence* of a second one be asserted, because 013 and 014 both speak.
+    // The placeholder was `TypeKind::Error`, so 014 called a parameter whose type C specifies
+    // incomplete — and a mutant restoring that survived the parser's test entirely.
+    for (src, want) in [
+        (
+            "int f(a) { return a; }",
+            vec!["type of `a` defaults to `int`".to_string()],
+        ),
+        (
+            "int f(a) int b; { return a; }",
+            vec![
+                "this declaration names something that is not a parameter of the function it follows".to_string(),
+                "type of `a` defaults to `int`".to_string(),
+            ],
+        ),
+        ("int f(a) int a; { return a; }", vec![]),
+    ] {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let names = harness::names_of(&parsed);
+        let analysis = chiero_sema::analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+        let all: Vec<String> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .chain(analysis.diagnostics.iter().map(|d| d.message.clone()))
+            .collect();
+        assert_eq!(all, want, "both stages for `{src}`");
     }
 
     for good in [

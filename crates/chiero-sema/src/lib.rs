@@ -372,6 +372,12 @@ pub enum Conversion {
     NullPointer,
     /// Conversion to the type being assigned to or initialized.
     Assignment,
+    /// The common type of a conditional operator's two arms (C 6.5.15p6).
+    ///
+    /// A separate context because the arm is otherwise shared with assignment, and borrowing its
+    /// words made `1 ? a : b` report "initializing or assigning from an incompatible pointer
+    /// type" — which is neither. gcc names the construct.
+    Conditional,
     /// Conversion to a parameter's declared type.
     Argument,
     /// Conversion to the function's return type.
@@ -4772,10 +4778,10 @@ impl Cx<'_> {
                 };
                 let mut ops = vec![c];
                 if let (Some(t), Some(te)) = (t, then.as_ref()) {
-                    let t = self.coerce(t, ty, Conversion::UsualArithmetic, *te);
+                    let t = self.coerce(t, ty, Conversion::Conditional, *te);
                     ops.push(t);
                 }
-                let e = self.coerce(e, ty, Conversion::UsualArithmetic, *els);
+                let e = self.coerce(e, ty, Conversion::Conditional, *els);
                 ops.push(e);
                 self.push_typed(TypedNode::Value {
                     expr,
@@ -5633,6 +5639,17 @@ impl Cx<'_> {
                     "arithmetic operands"
                 };
                 self.error(span, format!("{what} needs {needs}"));
+                // **A refused operand yields poison**, as the additive, comparison, bitwise and
+                // unary arms have since waves 364 and 377. This one is the oldest of the family
+                // and never got it, so `(int)(s * 2)` said three things: this, an initializer
+                // complaint about a structure copy nobody wrote, and a cast complaint about a
+                // conversion that was never the fault.
+                let poison = self.intern(Ty::Error);
+                return self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: poison,
+                    operands: vec![a, b],
+                });
             }
         }
 
@@ -5953,10 +5970,12 @@ impl Cx<'_> {
             Conversion::Argument => "passing an argument",
             Conversion::Return => "returning a value",
             Conversion::Condition => "using a condition",
+
             _ => "initializing or assigning",
         };
         let f = self.out.types[from.0 as usize].clone();
         let t = self.out.types[to.0 as usize].clone();
+
         let pointee = |x: &Ty| match x {
             Ty::Ptr(p) => Some(*p),
             Ty::Array { elem, .. } => Some(*elem),
@@ -5964,6 +5983,23 @@ impl Cx<'_> {
         };
         let ptr_like = |x: &Ty| matches!(x, Ty::Ptr(_) | Ty::Array { .. } | Ty::Func { .. });
         let arith = |x: &Ty| matches!(x, Ty::Int { .. } | Ty::Float(_));
+
+        // **A conditional gets its own sentence in every shape**, because the prefixes below are
+        // verb phrases — "initializing or assigning", "passing an argument" — and there is no
+        // verb here: the arms simply differ. Prefixing produced "a conditional expression's arms
+        // differ makes a pointer from an integer without a cast", which a mutant found by
+        // surviving every row that only exercised the pointer pair. gcc names the mismatch and
+        // the construct, and says nothing about a conversion nobody asked for.
+        if matches!(why, Conversion::Conditional) {
+            return match (ptr_like(&f), ptr_like(&t)) {
+                (true, true) => "pointer type mismatch in a conditional expression",
+                (true, false) | (false, true) => {
+                    "pointer/integer type mismatch in a conditional expression"
+                }
+                (false, false) => "type mismatch in a conditional expression",
+            }
+            .into();
+        }
 
         // **The qualifier case first**, because it is the one the generic sentence describes
         // worst: everything about the types agrees except a `const` or a `volatile`.

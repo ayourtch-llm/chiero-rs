@@ -746,7 +746,11 @@ impl<'a> Parser<'a> {
         // They are read here, before the body, because the body's first statement may
         // shadow a parameter name and would then overwrite the type we are looking for.
         let kr = matches!(self.ast.ty(ty).kind, TypeKind::Func { kr: true, .. });
-        if kr && !self.is_punct(0, Punct::LBrace) {
+        // **Called for every old-style definition, not only those with declarations.** The
+        // `{`-guard was an optimisation and it hid the case the rule is about: `int f(a) { … }`
+        // has *no* declarations, so its parameter is the one that certainly defaults. The loop
+        // inside runs zero times there, which is what the guard was avoiding.
+        if kr {
             self.kr_parameter_declarations(ty);
         }
 
@@ -820,6 +824,8 @@ impl<'a> Parser<'a> {
             TypeKind::Func { params, .. } => params.clone(),
             _ => return,
         };
+        // Which parameters a declaration actually typed, so the rest can be named below.
+        let mut declared: indexmap::IndexSet<Symbol> = Default::default();
         while !self.at_end() && !self.is_punct(0, Punct::LBrace) && self.starts_declaration() {
             let before = self.pos;
             let specs = self.declaration_specifiers();
@@ -836,6 +842,7 @@ impl<'a> Parser<'a> {
                             *slot = ty;
                         }
                         self.oracle.declare(name, false);
+                        declared.insert(name);
                     }
                     None => {
                         let span = self.span_from(before);
@@ -853,6 +860,22 @@ impl<'a> Parser<'a> {
             self.expect_punct(Punct::Semi, "after an old-style parameter declaration");
             if self.pos == before {
                 break;
+            }
+        }
+        // **A parameter no declaration typed defaults to `int`** (C89 3.7.1), which this project
+        // reports because it calibrates to `-pedantic-errors` — gcc's `-Wimplicit-int` is an
+        // error there and a warning under `-std=gnu11`. Saying so is the whole fix: the type is
+        // `int` above rather than poison, so 014 no longer calls the parameter incomplete, which
+        // was a sentence about a type C specifies.
+        for &d in &params {
+            if let DeclKind::Var {
+                name: Some(n), ty, ..
+            } = self.ast.decl(d).kind
+                && !declared.contains(&n)
+            {
+                let text = self.spellings[n.0 as usize].to_string();
+                let span = self.ast.ty(ty).span;
+                self.error(span, format!("type of `{text}` defaults to `int`"));
             }
         }
     }
@@ -1937,7 +1960,12 @@ impl<'a> Parser<'a> {
                 let sp = self.here();
                 self.pos += 1;
                 self.oracle.declare(name, false);
-                let ty = self.ast.add_type(TypeKind::Error, sp);
+                // **An undeclared K&R parameter is an `int`** (C89 3.7.1, and what gcc
+                // implements). `TypeKind::Error` was a placeholder for "a later declaration will
+                // say", and when none came 014 read the poison as an incomplete type and said
+                // so — of a parameter whose type C specifies. The placeholder is replaced in
+                // `kr_parameter_declarations` when a declaration does arrive.
+                let ty = self.ast.add_type(TypeKind::Builtin(Builtin::Int), sp);
                 let d = self.ast.add_decl(
                     DeclKind::Var {
                         name: Some(name),

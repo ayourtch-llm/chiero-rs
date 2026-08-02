@@ -336,3 +336,50 @@ fn every_parse_diagnostic_points_at_visible_text() {
         invisible.join("\n  ")
     );
 }
+
+/// **An old-style parameter no declaration typed defaults to `int`** (C89 3.7.1).
+///
+/// 013 gave such a parameter `TypeKind::Error` as a placeholder for "a declaration will say", and
+/// when none came 014 read the poison as an *incomplete type* and said so — of a parameter whose
+/// type C specifies. Two symptoms, one cause: the wrong sentence for `int f(a) { … }`, and a
+/// second sentence for `int f(a) int b;` on top of the parser's correct one.
+///
+/// gcc reports the default under `-pedantic-errors` and warns under `-std=gnu11`, so this project
+/// reports it (wave 314's calibration). The declaration that names a non-parameter keeps its own
+/// sentence: `int f(a) int b;` is **two** faults and gcc gives two.
+#[test]
+fn an_undeclared_old_style_parameter_defaults_to_int() {
+    assert_eq!(
+        diags("int f(a) { return a; }\n"),
+        vec!["type of `a` defaults to `int`".to_string()]
+    );
+    assert_eq!(
+        diags("int f(a, b) int a; { return a+b; }\n"),
+        vec!["type of `b` defaults to `int`".to_string()]
+    );
+    // **Two faults, two sentences**, in the order gcc gives them: the stray declaration first,
+    // then the parameter it left untyped.
+    assert_eq!(
+        diags("int f(a) int b; { return a; }\n"),
+        vec![
+            "this declaration names something that is not a parameter of the function it follows"
+                .to_string(),
+            "type of `a` defaults to `int`".to_string(),
+        ]
+    );
+
+    for good in [
+        "int f(a) int a; { return a; }\n",
+        "int f(a, b) int a; int b; { return a+b; }\n",
+        "int f(a, b) int a, b; { return a+b; }\n",
+        // A prototype is not an identifier list and is untouched by any of this.
+        "int f(int a){ return a; }\n",
+        "int f(void){ return 0; }\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
