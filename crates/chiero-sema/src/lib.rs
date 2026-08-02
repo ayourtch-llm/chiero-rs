@@ -2519,6 +2519,8 @@ impl Cx<'_> {
         let mut next = 0i128;
         let mut lo = 0i128;
         let mut hi = 0i128;
+        // Each enumerator's value with the span that should be blamed for it.
+        let mut values: Vec<(i128, Span)> = Vec::new();
         // The constants' *type* is the enumeration's, and that is not known until every
         // value has been seen — so they are collected here and recorded below.
         let mut pending: Vec<(Symbol, i128)> = Vec::new();
@@ -2567,6 +2569,19 @@ impl Cx<'_> {
             next = v.wrapping_add(1);
             lo = lo.min(v);
             hi = hi.max(v);
+            // **Remember where each value came from**, because the range check below cannot
+            // recover it. Wave 357 put that check after the loop so the *implicit successor* is
+            // caught — `{A = 2147483647, B}` overflows on a `B` that names no value — and that is
+            // exactly the case with no initializer to point at, so the fallback is the
+            // enumerator's own declaration. gcc draws the same distinction: the value when one is
+            // written, the name when it is not.
+            values.push((
+                v,
+                match init {
+                    Some(e) => self.ast.expr(e).span,
+                    None => self.ast.decl(*m).span,
+                },
+            ));
             // **An enumerator is an ordinary identifier in its scope** (C 6.7.2.2p3), not a
             // member of its enumeration. So two *different* enums in one scope may not share a
             // constant's name any more than one enum may repeat one, and shadowing in an inner
@@ -2600,8 +2615,15 @@ impl Cx<'_> {
             // Reported from the *range* rather than from each initializer, which is what catches
             // the implicit successor: `{A = 2147483647, B}` names no value for `B` and overflows
             // on it.
+            // **The enumerator, not the enumeration.** Naming the whole `enum { … }` is true and
+            // useless once there is more than one constant in it; the first value outside the
+            // range is the one a reader has to change.
+            let blame = values
+                .iter()
+                .find(|&&(v, _)| v < -(1i128 << (int_bits - 1)) || v >= (1i128 << (int_bits - 1)))
+                .map_or(span, |&(_, s)| s);
             self.error(
-                span,
+                blame,
                 "an enumerator's value is not representable as an `int`",
             );
             // gcc widens to `long` (64-bit here) rather than to an arbitrary width.
