@@ -4130,3 +4130,151 @@ fn a_static_initializer_is_a_constant_expression() {
         );
     }
 }
+
+/// **A tag defined inside a parameter list is not a redefinition.** C 6.7.2.3 lets a parameter
+/// list define one; its scope ends with the list, which is why gcc warns that it is useless
+/// rather than refusing it.
+///
+/// This is a **false positive** rather than a miss, and it is the census's legal half that
+/// found it: `int f(struct S { int a; } s);` was refused outright, and a *definition* was
+/// refused twice — the parameter list is resolved once for the function's type and again when
+/// its body is walked, so the second pass finds the tag the first pass installed.
+///
+/// The duplicate is the discriminator. A fix that only made the tag table forgiving would make
+/// `struct S { int a; }; struct S { int b; };` legal too, which is why that row is pinned here
+/// beside the accepted ones.
+#[test]
+fn a_tag_defined_in_a_parameter_list_is_not_a_redefinition() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        "int f(struct S { int a; } s);",
+        "int f(struct S { int a; } s) { return s.a; }",
+        "int f(union U { int a; } u);",
+        "int f(enum E { A } e);",
+        "int f(enum E { A } e) { return (int)e; }",
+        // The same tag in two parameter lists, which is two scopes rather than one.
+        "int f(struct S { int a; } s); int g(struct S { int a; } s);",
+        // And the ordinary shapes around it, which never had the problem.
+        "struct S { int a; }; int f(struct S s) { return s.a; }",
+        "int f(struct S *s);",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    // **A genuine redefinition still is one**, at file scope and in a body alike.
+    for bad in [
+        "struct S { int a; }; struct S { int b; };",
+        "int f(void){ struct S { int a; }; struct S { int b; }; return 0; }",
+        "enum E { A }; enum E { B };",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+}
+
+/// **C 6.7.3p2: `restrict` qualifies a pointer**, and nothing else.
+///
+/// The line is drawn after typedefs resolve — `typedef int *P; P restrict p;` is legal and
+/// `typedef int T; T restrict x;` is not — and it is about the type the qualifier attaches to,
+/// not the declaration's outermost type: `int *restrict a[2];` is an array of restricted
+/// pointers and is fine, while `int restrict *p;` puts it on the `int` and is not.
+#[test]
+fn restrict_qualifies_only_a_pointer() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int restrict x;",
+        "float restrict f2;",
+        "int f(void){ int restrict x = 1; return x; }",
+        "struct S { int restrict a; };",
+        "int f(int restrict x);",
+        "typedef int T; T restrict x;",
+        "struct S { int a; }; struct S restrict s;",
+        // On the `int`, not on the pointer.
+        "int restrict *p;",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        "int *restrict p;",
+        "void *restrict v;",
+        "const int *restrict p;",
+        "typedef int *P; P restrict p;",
+        // An array **of** restricted pointers, where the qualifier is on the element.
+        "int *restrict a[2];",
+        "int f(int *restrict p, int *restrict q);",
+        "int f(int *restrict);",
+        "int f(void){ int a[2]; int *restrict p = a; return *p; }",
+        "int f(void){ int a[2]; int (*restrict p)[2] = &a; return (*p)[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **A prototype's parameter names are distinct, and `...` follows a named parameter.**
+///
+/// Two rules from C 6.7.6.3, both about the list rather than about a body. The first already
+/// existed and was keyed on the **definition** path — the same mis-keying wave 358 found in the
+/// constant-initializer check — so `int f(int x, int x);` was refused with a body and accepted
+/// without one. The second (p4) is calibrated to `-pedantic-errors`: gcc takes a bare `f(...)`
+/// under `-std=gnu11`.
+#[test]
+fn a_prototype_names_its_parameters_and_its_ellipsis() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(int x, int x);",
+        "int f(int x, int y, int x);",
+        "int f(...);",
+        "int f(...) { return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Unnamed parameters do not collide with each other, however many there are.
+        "int f(int, int);",
+        "typedef int T; int f(T, T);",
+        "int f(int x, int y);",
+        "int f(int a, ...);",
+        // Two *functions* may each use `x`, which is what the check must not confuse.
+        "int f(int x); int g(int x);",
+        "int f(int x) { return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
