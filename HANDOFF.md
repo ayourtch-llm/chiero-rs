@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 371) — 1563 tests, 4 ignored, M1 250/250 by contract
+> ### ⏭️ START HERE (wave 372) — 1564 tests, 4 ignored, M1 258/258 by contract
 >
-> **Sema 250 of 250, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
+> **Sema 258 of 258, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 371 closed 6.5.7, 6.5.10–6.5.12 and 6.7.3.** Eleven misses across five operators, one
+> question, and both places it belongs already existed — wave 362's integer arm and wave 364's
+> record arm. The wave added a predicate and two call sites, not a rule.
+>
+> **The vector reading was measured before the rule was written**, which is wave 362's lesson
+> applied: any vector may be multiplied, only an *integer* vector may be shifted or masked. The
+> mutant that refuses all vectors is killed by the corpus gate, not by any fixture — VPP shifts
+> vectors throughout `vppinfra`.
 >
 > **Wave 370 closed 6.10.6–6.10.9 and 6.11.** Six misses, one construct, and **not one of them
 > was a missing rejection** — `_Pragma` with a bad operand was already refused, by 013, three to
@@ -632,16 +641,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > **Next, in descending order of what they buy:**
 >   1. **Continue the census by reading C.** Waves 355–368 each found misses behind one cause, which
->      is the cheapest shape this method produces. Still unexamined: **6.5.7's shift constraints**
->      (a shift count wider than the promoted type, a negative count, a floating operand),
->      **6.5.10–6.5.12's bitwise constraints** (`&`, `^`, `|` on a pointer or a floating operand),
->      and **6.7.3's qualifier constraints beyond wave 359** (`const` on a function type, a
->      qualified `void` return, duplicate qualifiers through a typedef).
+>      is the cheapest shape this method produces. Still unexamined: **6.5.2.2's call constraints
+>      beyond argument counts** (calling through a pointer to an incompatible prototype, an
+>      argument of incomplete type), **6.7.6.1's pointer-declarator constraints** (a pointer to a
+>      bit-field type through a typedef, qualifiers between `*` and the declarator), and
+>      **6.4.4.1's integer-constant constraints** (a decimal constant too large for any signed
+>      type, an octal digit `8`).
 >
->      **A message wave is now worth its own turn.** Two known-wrong messages are recorded rather
->      than fixed: `#include <stdio.h> extra` says "invalid computed include" (wave 369), and
->      `d == p` says "comparison between a pointer and an integer" of a `double` (wave 364).
->      Neither is a miss; both send a reader to the wrong place.
+>      **A message wave is now worth its own turn**, and the list has grown to three: `#include
+>      <stdio.h> extra` says "invalid computed include" (369), `d == p` says "comparison between
+>      a pointer and an integer" of a `double` (364), and `int f(const void)` says "`void` must
+>      be the only parameter" where the fault is the qualifier (371). None is a miss; all three
+>      send a reader to the wrong place.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -2987,6 +2998,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Share the predicate, not the site, when the arms are not symmetric** (wave 371). Shifts return
+> early because they skip the usual arithmetic conversions; the bitwise operators fall through to
+> the general path. Forcing one call site would have meant moving one of them somewhere it does
+> not belong. Two calls to one predicate kept both the ordering and the differing vector rule
+> straight.
 >
 > **A recognition that declines is not a check that passes** (wave 370). `_Pragma`'s handling was
 > an `if let` chain: an operand it could not match fell through to a crate that could not name it.
