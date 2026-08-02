@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 366) — 1554 tests, 4 ignored, M1 235/235 by contract
+> ### ⏭️ START HERE (wave 367) — 1557 tests, 4 ignored, M1 241/241 by contract
 >
-> **Sema 235 of 235, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 241 of 241, `chiero-pp` 27 of 27, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 366 closed 6.5.1.1, 6.7.6.2 and finished 6.7.2.1.** Eleven misses, and **half were not
+> sema's to make**: `static`, qualifiers and `[*]` inside `[]` are discarded by 013 as meaningless,
+> which is true of 014 and a different thing from unconstrained. The rule went into
+> `chiero-parse`, and the RED announced the layering by failing on the sema harness's parse-clean
+> assertion. **When a census row's tokens never reach 014, the rule belongs to 013** — check where
+> the information dies before choosing the crate.
 >
 > **Wave 365 closed 6.5.2.1, 6.5.3.1 and 6.7.5.** Nine misses in three groups, and the wave needed
 > a **parser** change: 013 recorded `_Alignas` as an `aligned` attribute so 014 would have one
@@ -587,11 +594,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.3.4 and 6.5.1.1's
->      `sizeof` and generic-selection constraints** (`_Generic` with no matching association, two
->      compatible association types, `sizeof` a bit-field member through a typedef), and
->      **6.7.6.2's array-declarator constraints** (`static` or a qualifier in a non-parameter array
->      size, a VLA at file scope, `[*]` outside a prototype).
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.7.2.1's remaining
+>      structure constraints** (a member of function type, a struct containing itself by value
+>      through a typedef, an anonymous struct/union member's name collisions), and **6.4.4.4/6.4.5's
+>      character and string-literal constraints** (a multi-character constant's value, concatenating
+>      literals of different prefixes, an escape past the execution character set).
+>
+>      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
+>      census row's information is discarded by 013, that is where its rule goes.
 >
 >      **Four rows are deferred with evidence** from wave 364, all `-pedantic-errors`-only and all
 >      things real code does: a relational comparison between two function pointers, between a
@@ -2934,6 +2944,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Find where the information dies before choosing the crate** (wave 366). Half this wave's
+> census rows were about tokens 013 reads and throws away, so no rule in 014 could ever see them.
+> The RED said so by failing on the sema harness's parse-clean assertion rather than on its own
+> assertion — read that failure as "wrong crate", not as a broken harness.
+>
+> **When two paragraphs describe one mistake, gcc's message picks the survivor** (wave 366,
+> applying 361). `struct S { int a[]; int b; }` violates "needs a member before it" *and* "must be
+> last"; gcc says only the second. The fix was to move the new check **after** the loop, where
+> "is it the only member" is answerable — a question the loop cannot answer while running.
 >
 > **When two spellings unify to one representation, check whether their rules unify too** (wave
 > 365). 013 folded `_Alignas` into the `aligned` attribute so 014 had one place to look, which was
