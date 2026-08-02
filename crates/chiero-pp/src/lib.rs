@@ -1305,11 +1305,24 @@ impl Engine {
                 old.params == new.params
                     && old.variadic_name == new.variadic_name
                     && old.std_variadic == new.std_variadic
+                    // **C 6.10.3p2 compares spelling *and* white-space separation.** Two lists
+                    // of the same tokens are still different definitions if one writes `1 + 2`
+                    // and the other `1+2`; the standard would rather say so than pick one.
+                    //
+                    // The **first** token's `leading_space` is skipped, because space before the
+                    // list is not separation *within* it — `#define A   1 + 2` and
+                    // `#define A 1 + 2` are the same definition, and comparing it would make
+                    // every indented header a redefinition of itself.
                     && old
                         .body
                         .iter()
-                        .map(|token| &token.text)
-                        .eq(new.body.iter().map(|token| &token.text))
+                        .enumerate()
+                        .map(|(i, t)| (&t.text, i != 0 && t.token.leading_space))
+                        .eq(new
+                            .body
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| (&t.text, i != 0 && t.token.leading_space)))
             };
             self.macros[previous].def.undef_span = Some(name_tok.token.span);
             if !equivalent {

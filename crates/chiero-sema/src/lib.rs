@@ -6125,7 +6125,16 @@ impl Cx<'_> {
                         );
                         return None;
                     };
-                    let v = self.eval(*e).map(|v| v.v).unwrap_or(0).max(0) as u64;
+                    // **C 6.7.9p6: the index is non-negative**, asked here as well as on the
+                    // single-designator path — the two clamps were written separately and both
+                    // turned `[-1]` into `[0]`, a silently different program rather than a
+                    // rejected one.
+                    let raw = self.eval(*e).map(|v| v.v).unwrap_or(0);
+                    if raw < 0 {
+                        self.error(span, "initializer index is negative");
+                        return None;
+                    }
+                    let v = raw.max(0) as u64;
                     if let ArrayLen::Fixed(n) = len
                         && v >= n
                     {
@@ -6159,10 +6168,15 @@ impl Cx<'_> {
                         self.error(span, format!("no member named `{n}` to initialize"));
                         return None;
                     };
+                    // **The index of the member that *shows* the name**, which for a promoted
+                    // one is the anonymous member holding it. `position(name == f)` fell to
+                    // `unwrap_or(0)` for those, putting the cursor on the first field — right by
+                    // accident when the anonymous member came first, and wrong otherwise.
                     let pos = self.out.records[r.0 as usize]
                         .fields
+                        .clone()
                         .iter()
-                        .position(|x| x.name == Some(*f))
+                        .position(|x| self.field_shows(x, *f))
                         .unwrap_or(0) as u64;
                     first.get_or_insert(pos);
                     here = fl.ty;
@@ -6182,7 +6196,12 @@ impl Cx<'_> {
         // a scalar into an aggregate element, which is exactly the signal below — and it is not
         // brace elision at all, because the item says *precisely* which sub-object it means. The
         // rule was swallowing every nested designator, which is why four of them went unchecked.
-        if items.iter().any(|i| i.designators.len() > 1) {
+        // Wave 356 wrote this for `len() > 1`, and **one designator is the same argument**:
+        // `{.c = 1}` says precisely which sub-object it means, so nothing is elided. Keyed on the
+        // longer form, a record whose first member is an anonymous aggregate made every
+        // single-designator initializer skip the check entirely — which is how `.c = 1` on a
+        // record with no `c` went unreported. The same guard, found short twice.
+        if items.iter().any(|i| !i.designators.is_empty()) {
             return false;
         }
         let aggregate = matches!(
@@ -6312,6 +6331,15 @@ impl Cx<'_> {
                         if let chiero_ast::Designator::Index(e) = d
                             && let Some(v) = self.eval(*e).map(|v| v.v)
                         {
+                            // **C 6.7.9p6: the index is non-negative.** The upper bound was
+                            // checked below and the lower was clamped by `max(0)` — which turned
+                            // `[-1] = 1` into `[0] = 1`, a silently *different* program rather
+                            // than a rejected one. The clamp stays so the cursor is usable, and
+                            // now it is announced.
+                            if v < 0 {
+                                let dspan = self.ast.expr(item.value).span;
+                                self.error(dspan, "initializer index is negative");
+                            }
                             at = v.max(0) as u64;
                             designated = true;
                         }
@@ -6348,7 +6376,12 @@ impl Cx<'_> {
                     let mut named = None;
                     // The same descent the array arm takes, for the same reason: this loop keeps
                     // the *last* component, so `.p.x` looked for `x` in the outer record.
-                    if item.designators.len() > 1 {
+                    //
+                    // **Every designator takes it, not just the nested ones**: a single `.a` may
+                    // name a member an *anonymous* member promotes, which the top-level scan
+                    // below cannot see. `resolve_designators` asks `find_field`, which has
+                    // recursed into unnamed records since long before this wave.
+                    if !item.designators.is_empty() {
                         let Some((pos, inner)) = self.resolve_designators(target, item) else {
                             continue;
                         };

@@ -299,6 +299,11 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("no macro name in #ifdef", "#ifdef\n#endif\nint x = 1;\n"),
     ("no macro name in #ifndef", "#ifndef\n#endif\nint x = 1;\n"),
     ("no macro name in #undef", "#undef\nint x = 1;\n"),
+    // C 6.10.3p2, wave 368: white-space separation is part of the spelling.
+    (
+        "redefinition differing only in spacing",
+        "#define A 1 + 2\n#define A 1+2\nint x = A;\n",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -338,7 +343,7 @@ fn the_share_of_directive_violations_rejected_does_not_fall() {
     /// Wave 333 opened this list with three rules below the line; wave 334 closed them and six
     /// more the probe found beside them, so the queue is empty and this is a regression gate.
     /// The next preprocessor wave has to run a new census to refill it.
-    const FLOOR: usize = 27;
+    const FLOOR: usize = 28;
     if gcc_rejects("int main(void){return 0;}\n") != Some(false) {
         eprintln!("skipping: gcc not usable here");
         return;
@@ -403,6 +408,12 @@ fn a_macro_redefinition_matches_its_spelling() {
         // The same spelling twice, and the same spelling with different *surrounding* space.
         "#define A 1 + 2\n#define A 1 + 2\nint x = A;\n",
         "#define A   1 + 2\n#define A 1 + 2  \nint x = A;\n",
+        // **The space before the *first* body token is not separation within the list**, and gcc
+        // agrees: `#define F(x)x` and `#define F(x) x` are one definition. Comparing it would
+        // make that pair a redefinition, which is a false positive rather than a missed rule —
+        // and this is the only row where the two readings differ, since an object-like macro's
+        // first body token always carries a space.
+        "#define F(x)x\n#define F(x) x\nint x = F(1);\n",
         "#define A 1\n#define A 1\nint x = A;\n",
         // A redefinition after `#undef` is a fresh definition and never compared.
         "#define A 1 + 2\n#undef A\n#define A 1+2\nint x = A;\n",

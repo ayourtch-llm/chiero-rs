@@ -5387,6 +5387,14 @@ fn a_designator_names_a_visible_member() {
             "struct S{int a[2];}; int f(void){ struct S s = { .a[-1] = 1 }; return s.a[0]; }",
             "initializer index is negative",
         ),
+        // **Where the cursor lands after a promoted designator.** `.a` names the *union*, which
+        // is member 1, so the positional `2` beside it has nowhere to go. Every other row here
+        // puts the anonymous member first, where "field 0" is right by accident — a mutant that
+        // ignored promotion when placing the cursor survived all of them.
+        (
+            "struct S { int c; union { int a; int b; }; }; struct S s = { .a = 1, 2 };",
+            "excess elements in a struct initializer",
+        ),
     ] {
         assert_eq!(
             diags(src),

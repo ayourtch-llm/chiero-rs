@@ -823,6 +823,23 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "string literals with different prefixes",
         "int f(void){ return (int)sizeof(u\"a\" U\"b\"); }",
     ),
+    // C 6.7.9p6, wave 368. All refused by gcc in both modes.
+    (
+        "designator naming nothing the record shows",
+        "struct S{ union { int a; int b; }; }; int f(void){ struct S s = { .c = 1 }; return s.a; }",
+    ),
+    (
+        "designator naming a member of a named nested record",
+        "struct S{ struct { int a; } n; }; int f(void){ struct S s = { .a = 1 }; return s.n.a; }",
+    ),
+    (
+        "negative initializer index",
+        "int f(void){ int a[2] = { [-1] = 1 }; return a[0]; }",
+    ),
+    (
+        "negative initializer index under a member",
+        "struct S{int a[2];}; int f(void){ struct S s = { .a[-1] = 1 }; return s.a[0]; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -875,7 +892,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 246;
+    const FLOOR: usize = 250;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
