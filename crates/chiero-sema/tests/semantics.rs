@@ -4877,3 +4877,177 @@ fn additive_operands_are_arithmetic_or_a_pointer_and_an_integer() {
         );
     }
 }
+
+/// **A subscript is an integer, and `++` needs something it can add one to** (C 6.5.2.1p1,
+/// 6.5.3.1p1, 6.5.2.4p1).
+///
+/// chiero checks the *subscripted* value and not the subscript, so `a[d]` on a `double` and
+/// `a[p]` on a pointer both pass — the second being `*(a + p)`, which wave 364 has just made a
+/// constraint violation when written that way round.
+///
+/// `++` and `--` check only that the operand is modifiable; whether it is a *kind of thing* one
+/// can add one to is unasked, so a structure, an array and a function designator all increment
+/// silently.
+///
+/// **`void *` stays legal** on both counts: `v++` and `v[1]` are `-pedantic-errors` violations
+/// and GNU extensions this project implements (022 §4), so the rule is phrased on the operand's
+/// kind rather than on its pointee's size.
+#[test]
+fn a_subscript_is_an_integer_and_an_increment_needs_a_scalar() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // **The subscript**, which nothing was looking at.
+        (
+            "int f(void){ int a[2]; double d=0; return a[d]; }",
+            "a subscript is an integer",
+        ),
+        (
+            "int f(void){ int a[2]; int *p=0; return a[p]; }",
+            "a subscript is an integer",
+        ),
+        (
+            "struct S{int a;}; int f(void){ int a[2]; struct S s; return a[s]; }",
+            "a subscript is an integer",
+        ),
+        // **The operand of `++`/`--`**: a record, an array and a function are none of them
+        // things one adds one to.
+        (
+            "struct S{int a;}; int f(void){ struct S s; s++; return s.a; }",
+            "`++` needs a scalar operand",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; s--; return s.a; }",
+            "`--` needs a scalar operand",
+        ),
+        (
+            "int f(void){ union U{int a;} u; u++; return u.a; }",
+            "`++` needs a scalar operand",
+        ),
+        (
+            "int f(void){ int a[2]; a++; return a[0]; }",
+            "`++` needs a scalar operand",
+        ),
+        (
+            "void g(void); int f(void){ g++; return 0; }",
+            "`++` needs a scalar operand",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // Every integer spelling of a subscript, and the commuted form.
+        "int f(void){ int a[2]; return a[0]; }",
+        "int f(void){ int a[2]; return 0[a]; }",
+        "int f(void){ int *p=0; return p[0]; }",
+        "int f(void){ int a[2]; _Bool b=0; return a[b]; }",
+        "int f(void){ int a[2]; char c=0; return a[c]; }",
+        "enum E{A}; int f(void){ int a[2]; enum E e=A; return a[e]; }",
+        "struct S{int a;}; int f(void){ int a[2]; struct S s; return a[s.a]; }",
+        // Every scalar kind incremented, prefix and postfix.
+        "int f(void){ int x=1; x++; return x; }",
+        "int f(void){ int x=1; return ++x; }",
+        "int f(void){ int *p=0; return (int)p--; }",
+        "int f(void){ double d=1; return (int)d++; }",
+        "int f(void){ _Bool b=0; b++; return b; }",
+        "int f(void){ _Bool b=1; b--; return b; }",
+        "enum E{A}; int f(void){ enum E e=A; e++; return (int)e; }",
+        // A scalar **member** of a record that is not scalar itself.
+        "struct S{int a;}; int f(void){ struct S s; return ++s.a; }",
+        // **The declared GNU divergences.**
+        "int f(void){ void *v=0; v++; return v!=0; }",
+        "int f(void){ void *v=0; return (int)&v[1]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **`_Alignas` goes on an object, and names a power of two at least as strict as the type's own**
+/// (C 6.7.5p2–p5).
+///
+/// Four rules from one paragraph, and gcc refuses every row in *both* modes — none of this is
+/// pedantic calibration. VPP contains no `_Alignas` at all, so there is no divergence to weigh
+/// either: this is the rare census where the corpus has nothing to say.
+///
+/// The legal half pins the two easy mistakes: `_Alignas(0)` is explicitly *no* effect rather than
+/// an error, and an alignment **stricter** than the type's own is the entire point — `_Alignas(4)
+/// char` is fine and `_Alignas(1) int` is not.
+#[test]
+fn alignas_goes_on_an_object_and_names_a_power_of_two() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "int f(_Alignas(8) int x);",
+            "`_Alignas` is not allowed on a parameter",
+        ),
+        (
+            "typedef _Alignas(8) int T;",
+            "`_Alignas` is not allowed on a `typedef`",
+        ),
+        ("_Alignas(3) int x;", "an alignment must be a power of two"),
+        (
+            "int f(void){ _Alignas(3) int x=1; return x; }",
+            "an alignment must be a power of two",
+        ),
+        (
+            "struct S{ _Alignas(3) int a; };",
+            "an alignment must be a power of two",
+        ),
+        (
+            "_Alignas(1) int x;",
+            "an alignment may not be weaker than the type's own",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        "_Alignas(8) int x;",
+        "int f(void){ _Alignas(8) int x=1; return x; }",
+        "struct S{ _Alignas(8) int a; };",
+        "_Alignas(16) struct S{int a;} s;",
+        // **Zero is no effect, not an error**, and equal or stricter is the point of the feature.
+        "_Alignas(0) int x;",
+        "_Alignas(4) int x;",
+        "_Alignas(8) long y;",
+        "_Alignas(64) int x;",
+        "_Alignas(4) char c;",
+        "_Alignas(2) char c;",
+        // The type-name spelling, which names an alignment rather than a number.
+        "_Alignas(int) int x;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
