@@ -3720,6 +3720,27 @@ fn a_compound_literal_is_initialized_like_an_object() {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
 
+    // **The type check must say it is the type.** Without it `check_init` still rejects an
+    // incomplete record — a record with no members makes every element excess — so the program is
+    // caught with a sentence about the *initializer* and a reader is sent to count elements.
+    // Mutation found this: deleting the type check left every rejection intact.
+    for (src, want) in [
+        (
+            "int f(void){ return (struct Undefined){1}.a; }",
+            "complete object type",
+        ),
+        (
+            "int f(int n){ return (int[n]){1}[0]; }",
+            "variably modified",
+        ),
+    ] {
+        let d = diags(src);
+        assert!(
+            d.iter().any(|m| m.contains(want)),
+            "`{src}` should say {want:?}: {d:?}"
+        );
+    }
+
     for good in [
         // Every well-formed spelling, including the inferred length and the qualified form.
         "int f(void){ return (int){1}; }",

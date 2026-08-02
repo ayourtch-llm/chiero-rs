@@ -4522,6 +4522,48 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Cast { ty, operand } => {
+                // **A compound literal wears a cast's clothes** (C 6.5.2.5). `(int){1}` and
+                // `(int)x` are one `ExprKind` here, told apart only by whether the operand is an
+                // initializer list — the same distinction wave 329 needed to make `(int){1}++`
+                // an lvalue. That is why the initializer rules had never run on one: they are
+                // driven from a *declaration*, and this is an expression.
+                if matches!(self.ast.expr(*operand).kind, ExprKind::InitList(_)) {
+                    // **The ordinary path still runs.** An earlier draft returned from here with
+                    // its own typed node and lowering stopped answering `(struct S){9,1}.a` — the
+                    // node a compound literal produces is what 015 reads to build the object, and
+                    // it is built below. These checks are additions, not a replacement.
+                    let t = self.ty_of(*ty);
+                    // 6.5.2.5p1: the type name is a **complete object type**. `void` and a
+                    // function type are refused by the cast path already; an incomplete record
+                    // and a variably modified array are not.
+                    let span = self.ast.ty(*ty).span;
+                    let usable = if has_no_size(&self.out, t) {
+                        self.error(span, "a compound literal needs a complete object type");
+                        false
+                    } else if matches!(
+                        self.out.types[t.0 as usize],
+                        Ty::Array {
+                            len: ArrayLen::Vla(_),
+                            ..
+                        }
+                    ) {
+                        self.error(span, "a compound literal may not be variably modified");
+                        false
+                    } else {
+                        true
+                    };
+                    // 6.5.2.5p3: the braced list initializes the object, so every rule that
+                    // applies to `T x = {…};` applies here — excess elements, designators,
+                    // string length, the lot.
+                    //
+                    // **Only when the type is usable.** An incomplete record has no members, so
+                    // `check_init` calls every element excess and the reader gets two sentences
+                    // for one fault. Contract 20, and wave 353's channel caught it on this
+                    // wave's own new row — its first live catch.
+                    if usable {
+                        self.check_init(t, *operand);
+                    }
+                }
                 let inner = self.type_expr(*operand);
                 let inner = self.decay(inner, *operand);
                 let t = self.ty_of(*ty);

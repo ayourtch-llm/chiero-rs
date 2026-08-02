@@ -505,6 +505,23 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "division by zero in a bit-field width",
         "struct S { int b : 1/0; };",
     ),
+    // Wave 355: a compound literal is initialized like an object.
+    (
+        "excess elements in a compound literal",
+        "int f(void){ return (int){1,2}; }",
+    ),
+    (
+        "excess elements in a struct compound literal",
+        "struct S { int a; }; int f(void){ return (struct S){1,2}.a; }",
+    ),
+    (
+        "compound literal of incomplete type",
+        "int f(void){ return (struct Undefined){1}.a; }",
+    ),
+    (
+        "variably modified compound literal",
+        "int f(int n){ return (int[n]){1}[0]; }",
+    ),
     // **Wave 350's case-range rules are deliberately absent.** gcc rejects `case 1 ... 3` under
     // `-pedantic-errors` because ISO C has no case ranges at all, so a row here would be counted
     // as caught for a reason that is not the one under test — the overlap. This list's contract is
@@ -542,7 +559,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 353. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 355. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -562,7 +579,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 156;
+    const FLOOR: usize = 160;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
