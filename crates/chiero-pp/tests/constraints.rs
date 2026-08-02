@@ -299,6 +299,22 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("no macro name in #ifdef", "#ifdef\n#endif\nint x = 1;\n"),
     ("no macro name in #ifndef", "#ifndef\n#endif\nint x = 1;\n"),
     ("no macro name in #undef", "#undef\nint x = 1;\n"),
+    // C 6.10.1, wave 369: an `#if` expression is an integer constant expression, read to the end.
+    (
+        "`#if` expression ends early",
+        "int base;\n#if 1 +\n#endif\n",
+    ),
+    (
+        "`#if` with an unclosed group",
+        "int base;\n#if (1\n#endif\n",
+    ),
+    (
+        "`defined` with no operand",
+        "int base;\n#if defined\n#endif\n",
+    ),
+    ("`defined` unclosed", "int base;\n#if defined(A\n#endif\n"),
+    ("floating constant in `#if`", "int base;\n#if 1.0\n#endif\n"),
+    ("string literal in `#if`", "int base;\n#if \"s\"\n#endif\n"),
     // C 6.10.3p2, wave 368: white-space separation is part of the spelling.
     (
         "redefinition differing only in spacing",
@@ -343,7 +359,7 @@ fn the_share_of_directive_violations_rejected_does_not_fall() {
     /// Wave 333 opened this list with three rules below the line; wave 334 closed them and six
     /// more the probe found beside them, so the queue is empty and this is a regression gate.
     /// The next preprocessor wave has to run a new census to refill it.
-    const FLOOR: usize = 28;
+    const FLOOR: usize = 34;
     if gcc_rejects("int main(void){return 0;}\n") != Some(false) {
         eprintln!("skipping: gcc not usable here");
         return;
@@ -458,6 +474,13 @@ fn an_if_expression_is_an_integer_constant_expression() {
         ),
         ("int base;\n#if !\n#endif\n", "`#if` expression ends early"),
         ("int base;\n#if (1\n#endif\n", "`#if` expression ends early"),
+        // **Ends early *and* has tokens left**, which is the only shape where the two
+        // complaints could both fire: the group gives up looking for `)` at the `2`, which is
+        // then still unread. One mistake, one sentence (contract 20).
+        (
+            "int base;\n#if (1 2\n#endif\n",
+            "`#if` expression ends early",
+        ),
         (
             "int base;\n#if defined\n#endif\n",
             "`#if` expression ends early",
@@ -483,6 +506,11 @@ fn an_if_expression_is_an_integer_constant_expression() {
             "int base;\n#if 1.0f\n#endif\n",
             "a floating constant is not allowed in `#if`",
         ),
+        // The hexadecimal spelling, whose exponent is `p` — the pair that makes the radix matter.
+        (
+            "int base;\n#if 0x1p3\n#endif\n",
+            "a floating constant is not allowed in `#if`",
+        ),
         (
             "int base;\n#if \"s\"\n#endif\n",
             "a string literal is not allowed in `#if`",
@@ -504,6 +532,12 @@ fn an_if_expression_is_an_integer_constant_expression() {
         // expression, so the rule cannot be "digits only".
         "int base;\n#if 1\n#endif\n",
         "int base;\n#if 0x10\n#endif\n",
+        // **A hexadecimal `e` is a digit, not an exponent**, and a hexadecimal exponent is `p`.
+        // A rule that looked for `e` regardless of radix would call `0xe` floating — and every
+        // header writes hex constants. Found by a mutant that only a neighbouring differential
+        // test could see.
+        "int base;\n#if 0xe\n#endif\n",
+        "int base;\n#if 0xE1\n#endif\n",
         "int base;\n#if 1L\n#endif\n",
         "int base;\n#if 1u - 2u > 0\n#endif\n",
         "int base;\n#if 'a'\n#endif\n",

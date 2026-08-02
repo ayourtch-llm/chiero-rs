@@ -1043,6 +1043,23 @@ impl Engine {
             } else if tokens[i].text == "defined" {
                 let parenthesized = tokens.get(i + 1).is_some_and(|t| t.text == "(");
                 let name_index = i + if parenthesized { 2 } else { 1 };
+                // **`defined` is rewritten before the expression is parsed**, so a malformed one
+                // never reaches `primary` and could not be caught by the "ends early" arm there.
+                // The operand must exist and be an identifier, and a parenthesized one must
+                // close. `#if defined`, `#if defined(` and `#if defined(A` all produced a
+                // synthetic `0` and no complaint.
+                let named = tokens
+                    .get(name_index)
+                    .is_some_and(|t| matches!(t.token.kind, PpTokenKind::Ident(_)));
+                let closed =
+                    !parenthesized || tokens.get(name_index + 1).is_some_and(|t| t.text == ")");
+                if !named || !closed {
+                    self.diagnostics.push(Diagnostic {
+                        span: tokens[i].token.span,
+                        message: "`#if` expression ends early".into(),
+                    });
+                    return false;
+                }
                 let value = tokens
                     .get(name_index)
                     .is_some_and(|name| self.by_name.contains_key(&name.text));
@@ -1057,7 +1074,7 @@ impl Engine {
             }
         }
         let expanded = self.expand(prepared);
-        let (value, parsed) = {
+        let (value, parsed, ended_early) = {
             let mut parser = ExprParser {
                 tokens: &expanded,
                 pos: 0,
@@ -1065,11 +1082,16 @@ impl Engine {
                 pedantic: self.config.pedantic,
                 nesting: 0,
                 nesting_diagnosed: false,
+                ended_early: false,
             };
             let value = parser.expression(true);
-            (value, parser.pos)
+            (value, parser.pos, parser.ended_early)
         };
-        if parsed != expanded.len() {
+        // **An expression that ran out has already been reported**, and the tokens it did not
+        // reach are a consequence rather than a second fault (contract 20). `#if (1` would
+        // otherwise say both "ends early" and "unsupported token `)`" — of a `)` that is missing,
+        // not present.
+        if parsed != expanded.len() && !ended_early {
             self.diagnostics.push(Diagnostic {
                 span: expanded[parsed].token.span,
                 message: format!(
@@ -1974,6 +1996,8 @@ struct ExprParser<'a> {
     pedantic: bool,
     nesting: usize,
     nesting_diagnosed: bool,
+    /// Whether the expression ran out of tokens, so the trailing-token complaint stands down.
+    ended_early: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -2270,14 +2294,33 @@ impl ExprParser<'_> {
             }
             self.nesting += 1;
             let value = self.expression(live);
-            self.take(")");
+            if !self.take(")") {
+                self.ends_early();
+            }
             self.nesting -= 1;
             return value;
         }
         let Some(token) = self.tokens.get(self.pos) else {
+            // **The token it needed and did not get**, which is the opposite failure from the
+            // "unsupported token" the caller reports and looked the same from in here: both
+            // arrive as `primary` having nothing to return, and only one had an arm.
+            self.ends_early();
             return IfValue::ZERO;
         };
         self.pos += 1;
+        // **C 6.10.1p1: the expression is an *integer* constant expression.** A character
+        // constant is one and stays legal below; a floating constant and a string are not.
+        if matches!(token.token.kind, PpTokenKind::StringLit { .. }) {
+            self.report(token.token.span, "a string literal is not allowed in `#if`");
+            return IfValue::ZERO;
+        }
+        if matches!(token.token.kind, PpTokenKind::Number) && is_floating_ppnumber(&token.text) {
+            self.report(
+                token.token.span,
+                "a floating constant is not allowed in `#if`",
+            );
+            return IfValue::ZERO;
+        }
         if matches!(token.token.kind, PpTokenKind::Ident(_)) {
             if live && self.pedantic {
                 self.diagnostics.push(Diagnostic {
@@ -2288,6 +2331,30 @@ impl ExprParser<'_> {
             return IfValue::ZERO;
         }
         parse_if_literal(token)
+    }
+
+    /// **One complaint per `#if`.** A truncated expression makes every enclosing parser run out
+    /// too, so `#if (1 +` would say it three times without this (contract 20).
+    fn ends_early(&mut self) {
+        if self.ended_early {
+            return;
+        }
+        self.ended_early = true;
+        let span = self
+            .tokens
+            .last()
+            .map_or(Span::DUMMY, |token| token.token.span);
+        self.diagnostics.push(Diagnostic {
+            span,
+            message: "`#if` expression ends early".into(),
+        });
+    }
+
+    fn report(&mut self, span: Span, message: &str) {
+        self.diagnostics.push(Diagnostic {
+            span,
+            message: message.into(),
+        });
     }
 
     fn take(&mut self, text: &str) -> bool {
@@ -2332,6 +2399,29 @@ fn divide(left: IfValue, right: IfValue, remainder: bool) -> IfValue {
         }
     };
     IfValue { bits, unsigned }
+}
+
+/// Whether a pp-number spells a **floating** constant (C 6.4.4.2).
+///
+/// Read from the spelling because the lexer's `Number` covers both — a pp-number is deliberately
+/// one token class. A `.` anywhere settles it; otherwise it is the exponent that does, and which
+/// letter introduces one depends on the radix: `e` for decimal, `p` for hexadecimal. Asking for
+/// `e` in a hex number would call `0xe` floating, and asking for a trailing `f` would call `0xf`
+/// floating — both of which are integers every header writes.
+fn is_floating_ppnumber(text: &str) -> bool {
+    if text.contains('.') {
+        return true;
+    }
+    let hex = text.starts_with("0x") || text.starts_with("0X");
+    let exponent = if hex { ['p', 'P'] } else { ['e', 'E'] };
+    text.char_indices().any(|(i, c)| {
+        i > 0
+            && exponent.contains(&c)
+            && text[i + c.len_utf8()..]
+                .chars()
+                .next()
+                .is_some_and(|n| n.is_ascii_digit() || n == '+' || n == '-')
+    })
 }
 
 fn parse_if_literal(token: &Tok) -> IfValue {
