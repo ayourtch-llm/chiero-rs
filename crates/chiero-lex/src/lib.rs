@@ -535,7 +535,10 @@ impl Lexer<'_> {
         if !terminated {
             self.diagnostics.push(LexDiagnostic {
                 span: self.tokens.last().unwrap().span,
-                message: "unterminated literal".into(),
+                // **Which kind, because a line can carry both.** gcc distinguishes them and a
+                // reader on a long line needs the character to look for. The prefixed spellings
+                // reach here too, so the test is the quote rather than the token's prefix.
+                message: format!("missing terminating `{}` character", char::from(quote)),
             });
         }
     }
@@ -639,6 +642,11 @@ impl Lexer<'_> {
             b'#' => Some(Punct::Hash),
             _ => None,
         };
+        // **`Other` is not yet an error.** A character C has no use for is a fault only when it
+        // *reaches the program*: gcc takes `S(a\b)` where `#define S(x) #x` stringizes it, and
+        // takes `#define M @` until `M` is used. So the token is classified here and judged in
+        // 012, which is the crate that knows whether it survived expansion. The first draft of
+        // this wave reported here and an existing macro fixture refuted it.
         let kind = punct.map_or_else(|| PpTokenKind::Other(char::from(byte)), PpTokenKind::Punct);
         self.push(begin, self.pos, kind, None);
     }
@@ -685,8 +693,12 @@ impl Lexer<'_> {
     }
 }
 
+/// **`$` is an identifier character** in gcc, in both `-std=c11` and `-std=gnu11`, and VPP has a
+/// file that uses it. It is a GNU extension old enough that C never reclaimed the character, so
+/// leaving it out did not make the lexer stricter — it made 013 produce six "expected a
+/// declaration" messages for `int $x = 1;`, which is a false positive with a cascade.
 fn is_ident_start(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphabetic() || byte >= 0x80
+    byte == b'_' || byte == b'$' || byte.is_ascii_alphabetic() || byte >= 0x80
 }
 
 fn is_ident_continue(byte: u8) -> bool {

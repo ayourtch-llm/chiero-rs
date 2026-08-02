@@ -23,34 +23,31 @@ fn lexed(src: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **A stray character is named by the lexer, not spelled out by the parser** (C 6.4p3).
+/// **`$` belongs to an identifier** — the false positive this audit found first.
 ///
-/// `\`, `@` and a backtick are not in C's source character set outside a literal, and gcc says
-/// "stray `@` in program". chiero's lexer passes them through as `Other`, and 013 then produces
-/// three to six "expected a declaration" messages, none of which contains the character. That is
-/// wave 370's `_Pragma` shape exactly: the fault is recognised nowhere and spelled out by whoever
-/// trips over it next.
+/// gcc takes `$` in an identifier in *both* modes; it is a GNU extension old enough that C never
+/// reclaimed the character, and VPP has a file that uses it. chiero's lexer did not, so `int $x =
+/// 1;` reached 013 as an unexpected token and came back as six "expected a declaration"
+/// messages.
+///
+/// **The stray-character rule that came with it is 012's, not 010's**, and this test's first
+/// draft put it here. `Other` is not yet an error: gcc takes `S(a\b)` where `#define S(x) #x`
+/// stringizes the backslash, and takes `#define M @` until `M` is used. The lexer cannot know
+/// whether the token survives, so it classifies and says nothing — and an existing macro fixture
+/// refuted the first draft within one test run.
 #[test]
-fn a_stray_character_is_named_where_it_is_found() {
-    for (src, want) in [
-        ("int x = 1 \\ 2;\n", "\\"),
-        ("int @x;\n", "@"),
-        ("int `x;\n", "`"),
-    ] {
-        let got = lexed(src);
-        assert_eq!(
-            got,
-            vec![(format!("stray `{want}` in program"), want.to_owned())],
-            "the diagnostic for `{src}`"
-        );
-    }
-
-    // **`$` is not stray.** gcc takes it in an identifier in *both* modes — it is a GNU extension
-    // old enough that C never reclaimed the character — and chiero's parser was producing six
-    // messages for `int $x = 1;`. That is a false positive, which is the more expensive half of
-    // this test.
+fn a_dollar_is_an_identifier_character_and_other_is_not_yet_an_error() {
     for good in ["int $x = 1;\n", "int a$b = 1;\n", "int $ = 1;\n"] {
         assert!(lexed(good).is_empty(), "must lex cleanly: `{good}`");
+    }
+
+    // Classified, not judged: no diagnostic here, whatever 012 later decides.
+    for quiet in ["int x = 1 \\ 2;\n", "int @x;\n", "int `x;\n"] {
+        assert!(
+            lexed(quiet).is_empty(),
+            "010 classifies and does not judge: `{quiet}` -> {:?}",
+            lexed(quiet)
+        );
     }
 
     for good in [
@@ -109,9 +106,6 @@ fn every_lex_diagnostic_points_at_visible_text() {
         "char *s = \"abc\n",
         "char c = 'a\n",
         "/* abc\n",
-        "int x = 1 \\ 2;\n",
-        "int @x;\n",
-        "int `x;\n",
         "char *s = L\"abc\n",
         "int c = u'a\n",
     ] {
@@ -122,7 +116,8 @@ fn every_lex_diagnostic_points_at_visible_text() {
             }
         }
     }
-    assert!(checked >= 8, "only {checked} diagnostics were examined");
+    // Five sources, five diagnostics — the stray-character rows moved to 012 with the rule.
+    assert!(checked >= 5, "only {checked} diagnostics were examined");
     assert!(
         invisible.is_empty(),
         "{} diagnostic(s) point at no visible text:\n  {}",

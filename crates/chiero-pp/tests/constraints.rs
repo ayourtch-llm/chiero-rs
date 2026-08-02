@@ -738,3 +738,51 @@ fn every_directive_diagnostic_points_at_visible_text() {
         invisible.join("\n  ")
     );
 }
+
+/// **A stray character is one that reaches the program** (C 6.4p3).
+///
+/// 010 classifies a character C has no use for as `Other` and says nothing, because at that point
+/// it cannot know: gcc takes `S(a\b)` where `#define S(x) #x` stringizes the backslash, and takes
+/// `#define M @` until `M` is used. Only the token stream that goes to 013 answers the question,
+/// and answering it is what stops 013 producing three to six "expected a declaration" messages
+/// that never name the character.
+///
+/// Wave 376's first draft reported this in the lexer and an existing macro fixture refuted it
+/// inside one test run — which is the argument for the legal half below being longer than the
+/// illegal one.
+#[test]
+fn a_stray_character_is_named_when_it_reaches_the_program() {
+    for (src, want) in [
+        ("int x = 1 \\ 2;\n", "\\"),
+        ("int @x;\n", "@"),
+        ("int `x;\n", "`"),
+        // Reached through a macro, which is when a body's `@` becomes a fault.
+        ("#define M @\nint x = M;\n", "@"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![format!("stray `{want}` in program")],
+            "the diagnostic for `{src}`"
+        );
+    }
+
+    for good in [
+        // **Stringized**, so the character never reaches the program.
+        "#define S(x) #x\nconst char *p = S(a\\b);\n",
+        "#define S(x) #x\nconst char *p = S(a@b);\n",
+        // **Defined and not used**, likewise.
+        "#define M @\nint x;\n",
+        // Inside literals and comments, where the character is ordinary text.
+        "char *s = \"a\\\\b@c\";\n",
+        "/* a @ and a backslash */\nint x;\n",
+        "// a ` in a line comment\nint x;\n",
+        // And `$`, which is an identifier character in gcc and in this lexer since wave 376.
+        "int $x = 1;\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

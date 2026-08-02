@@ -263,7 +263,13 @@ fn lexer_diagnostics_are_promoted_only_on_active_lines() {
         Config::default(),
     );
     assert_eq!(active.diagnostics.len(), 1);
-    assert!(active.diagnostics[0].message.contains("unterminated"));
+    // Wave 376 split "unterminated literal" into the two gcc distinguishes, so this asks for the
+    // one this fixture produces rather than for a word both once shared.
+    assert!(
+        active.diagnostics[0]
+            .message
+            .contains("missing terminating")
+    );
 
     let inactive = preprocess_str(
         "inactive.c",

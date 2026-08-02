@@ -409,6 +409,20 @@ impl Engine {
         let input = std::mem::take(&mut self.input);
         let root_path = self.root_path.clone();
         let output = self.process_tokens(input, &root_path, 0, loader);
+        // **A stray character is one that reaches the program** (C 6.4p3). 010 classifies a
+        // character C has no use for as `Other` and says nothing, because at that point it does
+        // not know: gcc takes `S(a\b)` where `#define S(x) #x` stringizes the backslash, and
+        // takes `#define M @` until `M` is used. Only here, on the token stream that goes to
+        // 013, is the question answerable — and answering it is what stops 013 producing three
+        // to six "expected a declaration" messages that never name the character.
+        for t in &output {
+            if let PpTokenKind::Other(c) = t.token.kind {
+                self.diagnostics.push(Diagnostic {
+                    span: t.token.span,
+                    message: format!("stray `{c}` in program"),
+                });
+            }
+        }
         let tokens = output.iter().map(|t| t.token.clone()).collect();
         let spellings = output.into_iter().map(|t| t.text).collect();
         let macro_defs: Vec<_> = self
