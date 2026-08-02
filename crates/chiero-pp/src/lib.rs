@@ -1378,14 +1378,40 @@ impl Engine {
         let mut input: VecDeque<_> = input.into();
         let mut output = Vec::new();
         while let Some(token) = input.pop_front() {
-            if token.text == "_Pragma"
-                && input.front().is_some_and(|token| token.text == "(")
-                && let Some((mut args, close)) = parse_args(&input, 0)
-                && args.len() == 1
-            {
-                let expanded = self.expand(args.pop().unwrap_or_default());
-                if expanded.len() == 1
-                    && matches!(expanded[0].token.kind, PpTokenKind::StringLit { .. })
+            // **`_Pragma` decides, rather than declining to match** (C 6.10.9p1). The chain
+            // below used to be conditional all the way down, so an operand that was not one
+            // string literal fell through untouched — to 013, which has never heard of
+            // `_Pragma` and answered "expected a declaration" three to five times. Recognising
+            // the *operator* and then judging the *operand* separates "this is not a `_Pragma`"
+            // from "this is a bad one".
+            if token.text == "_Pragma" {
+                let parsed = input
+                    .front()
+                    .is_some_and(|t| t.text == "(")
+                    .then(|| parse_args(&input, 0))
+                    .flatten();
+                let one_string = match &parsed {
+                    Some((args, _)) if args.len() == 1 => {
+                        let expanded = self.expand(args[0].clone());
+                        (expanded.len() == 1
+                            && matches!(expanded[0].token.kind, PpTokenKind::StringLit { .. }))
+                        .then_some(expanded)
+                    }
+                    _ => None,
+                };
+                let close = parsed.as_ref().map_or(0, |(_, c)| *c);
+                let Some(expanded) = one_string else {
+                    self.diagnostics.push(Diagnostic {
+                        span: token.token.span,
+                        message: "`_Pragma` takes one string literal".into(),
+                    });
+                    // **Consumed, not left behind.** The tokens are what 013 would have flailed
+                    // over; dropping them is what turns five sentences into one.
+                    if parsed.is_some() {
+                        input.drain(..=close);
+                    }
+                    continue;
+                };
                 {
                     self.pragmas.push(PragmaRecord {
                         span: token.token.span,

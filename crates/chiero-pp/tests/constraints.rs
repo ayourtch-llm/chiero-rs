@@ -299,6 +299,15 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("no macro name in #ifdef", "#ifdef\n#endif\nint x = 1;\n"),
     ("no macro name in #ifndef", "#ifndef\n#endif\nint x = 1;\n"),
     ("no macro name in #undef", "#undef\nint x = 1;\n"),
+    // C 6.10.9p1, wave 370: `_Pragma` takes one string literal.
+    ("`_Pragma` of an identifier", "int base; _Pragma(once)\n"),
+    ("`_Pragma` of a number", "int base; _Pragma(1)\n"),
+    ("`_Pragma` with no operand", "int base; _Pragma()\n"),
+    (
+        "`_Pragma` of two literals",
+        "int base; _Pragma(\"a\" \"b\")\n",
+    ),
+    ("`_Pragma` with no operand list", "int base; _Pragma\n"),
     // C 6.10.1, wave 369: an `#if` expression is an integer constant expression, read to the end.
     (
         "`#if` expression ends early",
@@ -359,7 +368,7 @@ fn the_share_of_directive_violations_rejected_does_not_fall() {
     /// Wave 333 opened this list with three rules below the line; wave 334 closed them and six
     /// more the probe found beside them, so the queue is empty and this is a regression gate.
     /// The next preprocessor wave has to run a new census to refill it.
-    const FLOOR: usize = 34;
+    const FLOOR: usize = 39;
     if gcc_rejects("int main(void){return 0;}\n") != Some(false) {
         eprintln!("skipping: gcc not usable here");
         return;
@@ -597,6 +606,13 @@ fn a_pragma_operator_takes_one_string_literal() {
             "int base; _Pragma(\"a\" \"b\")\n",
             "`_Pragma` takes one string literal",
         ),
+        // **Two arguments**, which is a different mistake from two literals in one argument and
+        // reaches a different line: a mutant accepting any non-empty argument *list* survived
+        // every row until this one.
+        (
+            "int base; _Pragma(\"a\", \"b\")\n",
+            "`_Pragma` takes one string literal",
+        ),
         // Unclosed, and the operator with no operand list at all.
         (
             "int base; _Pragma(\"once\"\n",
@@ -610,6 +626,21 @@ fn a_pragma_operator_takes_one_string_literal() {
             "the message for `{src}`"
         );
     }
+
+    // **The tokens are consumed, which is the point.** Reporting without dropping them leaves
+    // 013 exactly the input that produced five "expected a declaration" messages, so this half of
+    // the fix is invisible to a diagnostic count and has to be asserted on the output. A mutant
+    // that reported and left the tokens behind survived every row above.
+    let tu = preprocess_str("f.c", "int base; _Pragma(once)\n", Config::default());
+    let spellings: Vec<String> = tu
+        .tokens
+        .iter()
+        .filter_map(|t| tu.text(t).map(str::to_owned))
+        .collect();
+    assert!(
+        !spellings.iter().any(|t| t == "_Pragma" || t == "once"),
+        "a refused `_Pragma` leaves nothing for the parser: {spellings:?}"
+    );
 
     for good in [
         "int base; _Pragma(\"once\")\n",
