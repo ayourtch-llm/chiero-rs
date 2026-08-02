@@ -233,10 +233,17 @@ fn an_enum_widens_its_underlying_type_only_when_a_value_requires_it() {
         "enum E { A = 0x100000000 }; enum E e;",
         TargetConfig::x86_64_linux(),
     );
-    assert!(
-        wide.analysis.diagnostics.is_empty(),
-        "{:?}",
-        wide.analysis.diagnostics
+    // **Reported and widened both**, as of wave 357: the width past `int` is a declared GNU
+    // divergence, so sema says so *and* still gives `e` a type wide enough to hold the value.
+    // Asserting silence here would have made the two halves alternatives; they are not.
+    assert_eq!(
+        wide.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["an enumerator's value is not representable as an `int`"],
+        "the divergence is reported once, and nothing else is"
     );
     let ty = wide.decl_ty("e").expect("`e` is typed");
     assert!(
@@ -246,6 +253,11 @@ fn an_enum_widens_its_underlying_type_only_when_a_value_requires_it() {
     );
 
     let narrow = parse("enum E { A = 1 }; enum E e;", TargetConfig::x86_64_linux());
+    assert!(
+        narrow.analysis.diagnostics.is_empty(),
+        "and one that fits is not reported: {:?}",
+        narrow.analysis.diagnostics
+    );
     let ty = narrow.decl_ty("e").expect("`e` is typed");
     assert!(
         matches!(narrow.analysis.ty(ty), Ty::Int { bits: 32, .. }),

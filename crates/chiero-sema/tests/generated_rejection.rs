@@ -542,6 +542,26 @@ const VIOLATIONS: &[(&str, &str)] = &[
     // as caught for a reason that is not the one under test — the overlap. This list's contract is
     // that every entry is a violation gcc confirms, and it cannot confirm this one. The rules are
     // held by `a_case_range_occupies_every_value_in_it`, which is calibrated to GNU mode.
+    // C 6.7.2.2, wave 357. The range rule is calibrated to `-pedantic-errors` — gcc takes
+    // these under `-std=gnu11` and widens — and the implicit-successor row is the one a
+    // rule that only inspected written initializers would miss.
+    (
+        "enumerator past int",
+        "enum E { A = 2147483648 }; int f(void){ return (int)A; }",
+    ),
+    (
+        "enumerator below int",
+        "enum E { A = -2147483649 }; int f(void){ return (int)A; }",
+    ),
+    (
+        "implicit successor past int",
+        "enum E { A = 2147483647, B }; int f(void){ return (int)B; }",
+    ),
+    // Refused by gcc in *both* modes, unlike the three above.
+    (
+        "enumeration with no enumerators",
+        "enum E { }; int f(void){ return 0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -594,7 +614,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 165;
+    const FLOOR: usize = 169;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

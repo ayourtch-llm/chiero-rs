@@ -53,6 +53,39 @@ fn agree_with(prelude: &str, body: &str) {
     );
 }
 
+/// The same, for a program on the **declared GNU divergence** list.
+///
+/// gcc's oracle here runs `-std=gnu11`, which accepts the construct, so the value
+/// comparison is as meaningful as ever — what changes is that chiero is required to report
+/// the divergence rather than pass in silence.
+fn agree_with_divergence(prelude: &str, body: &str, expect: &str) {
+    let expected = match gcc_answer(prelude, body) {
+        Ok(v) => v,
+        Err(Oracle::NoGcc) => {
+            eprintln!("skipping `{prelude} / {body}`: gcc not on PATH (015 contract 5)");
+            SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        Err(Oracle::Broken(why)) => panic!("the oracle is broken, not absent: {why}"),
+    };
+    let src = format!("{prelude}\nint probe(void) {{ {body} }}");
+    let m = harness::lower_diverging(&src, expect);
+    let mut arena = TermArena::new();
+    let r = chiero_exec::Engine::new(&m)
+        .with_entry("probe")
+        .run(&mut arena);
+    let got = r
+        .states()
+        .iter()
+        .find_map(|s| s.return_value_bits(&mut arena))
+        .map(|b| b as u32 as i32);
+    assert_eq!(
+        got,
+        Some(expected),
+        "`{prelude} int probe(void) {{ {body} }}`: chiero says {got:?}, gcc says {expected}"
+    );
+}
+
 /// Why the oracle produced no answer.
 enum Oracle {
     /// gcc is not installed. The one case where skipping is honest.
@@ -1351,16 +1384,33 @@ fn an_enumeration_constant_is_its_value() {
     // an enumeration constant is an `int`, but only because it also requires the values to
     // fit one; gcc widens the whole enumeration to `long` when they do not, and
     // `sizeof(X)` is then 8. Emitted 32 bits wide, `X` lowers to `5000000000i32`.
-    agree_with("enum Big { X = 5000000000 };\n", "return (int)(X >> 32);");
-    agree_with(
+    // The widening is a **declared divergence** as of wave 357: gcc takes it under
+    // `-std=gnu11` and refuses it under `-pedantic-errors`, so chiero widens *and* reports.
+    // Both halves are pinned here — the value against gcc, the report by name.
+    const WIDE: &str = "an enumerator's value is not representable as an `int`";
+    agree_with_divergence(
+        "enum Big { X = 5000000000 };\n",
+        "return (int)(X >> 32);",
+        WIDE,
+    );
+    agree_with_divergence(
         "enum Big { X = 5000000000 };\n",
         "return (int)(X & 0xffffffff);",
+        WIDE,
     );
-    agree_with("enum Big { X = 5000000000 };\n", "return (int)sizeof(X);");
+    agree_with_divergence(
+        "enum Big { X = 5000000000 };\n",
+        "return (int)sizeof(X);",
+        WIDE,
+    );
     // And a negative wide one, so the widening keeps its signedness. `Y >> 32` alone does
     // not discriminate — the comparison does.
-    agree_with("enum Neg { Y = -5000000000 };\n", "return (int)(Y >> 32);");
-    agree_with("enum Neg { Y = -5000000000 };\n", "return Y < 0;");
+    agree_with_divergence(
+        "enum Neg { Y = -5000000000 };\n",
+        "return (int)(Y >> 32);",
+        WIDE,
+    );
+    agree_with_divergence("enum Neg { Y = -5000000000 };\n", "return Y < 0;", WIDE);
     // **A function-local enum does not escape its function**, and does not overwrite a
     // file-scope name it shares. Found by a mutation: recording the values by *name* keeps
     // whichever was seen last, so the file-scope `K` read as 2. Both uses are pinned,

@@ -46,9 +46,11 @@ const SOURCES: &[&str] = &[
     "struct S{int a;int b;};\n\
      int probe(void){ struct S *p=&(struct S){1,2}; struct S y=({struct S t;t.a=3;t.b=4;t;}); \
      return p->a+y.b+(struct S){7,8}.a+(int){9}; }",
-    // Enumerations, including one too wide for `int`.
-    "enum E{A=3,B,C=7};\nenum Big{X=5000000000};\n\
-     int probe(void){ enum E e=B; return e+A+(int)(X>>32); }",
+    // Enumerations. The one too wide for `int` moved to `DIVERGING` in wave 357, when
+    // that width became a reported divergence — it still has to verify, so it is checked
+    // by the same loop rather than dropped.
+    "enum E{A=3,B,C=7};\n\
+     int probe(void){ enum E e=B; return e+A+C; }",
     // Conditions over pointers and `_Bool`, which is where `truth_of` decides a type.
     "int probe(void){ int x; int *p=&x; _Bool b=p; if(p){b=!p;} while(p){break;} return b+(p?1:0); }",
     // Mixed-width struct members and arrays of them, where the store widths are decided.
@@ -60,6 +62,16 @@ const SOURCES: &[&str] = &[
      l=(unsigned long)c; return (int)(l>>32)+(int)(unsigned)s+u+(int)(long)c; }",
 ];
 
+/// Sources that sema **reports** and lowering still has to handle, with the message each
+/// must produce. A declared GNU divergence is not a reason for the verifier invariant to
+/// stop applying: chiero lowers these and the engine runs them, so malformed CIR here
+/// would fail exactly as silently as anywhere else.
+const DIVERGING: &[(&str, &str)] = &[(
+    "enum Big{X=5000000000};\n\
+     int probe(void){ return (int)(X>>32)+(int)sizeof(X); }",
+    "an enumerator's value is not representable as an `int`",
+)];
+
 /// **Every module lowering emits verifies clean.**
 ///
 /// A verifier error here is not a style complaint: it means the engine will be handed an
@@ -68,8 +80,15 @@ const SOURCES: &[&str] = &[
 #[test]
 fn every_lowered_module_verifies() {
     let mut bad: Vec<(usize, String)> = Vec::new();
-    for (i, src) in SOURCES.iter().enumerate() {
-        let m = harness::lower(src);
+    let all = SOURCES
+        .iter()
+        .map(|s| (*s, None))
+        .chain(DIVERGING.iter().map(|(s, d)| (*s, Some(*d))));
+    for (i, (src, diverges)) in all.enumerate() {
+        let m = match diverges {
+            None => harness::lower(src),
+            Some(d) => harness::lower_diverging(src, d),
+        };
         let errs: Vec<String> = chiero_cir::verify::verify(&m)
             .iter()
             .filter(|e| e.is_error())

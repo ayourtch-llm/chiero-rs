@@ -2239,6 +2239,12 @@ impl Cx<'_> {
             let _ = span;
             return self.intern(Ty::Error);
         };
+        // **C 6.7.2.2p1: an enumeration has an enumerator list.** Unlike the range rule below,
+        // gcc refuses `enum E { };` in GNU mode too — an empty enumeration has no values, so
+        // there is no extension to be had.
+        if members.is_empty() {
+            self.error(span, "an enumeration needs at least one enumerator");
+        }
         let mut next = 0i128;
         let mut lo = 0i128;
         let mut hi = 0i128;
@@ -2313,6 +2319,19 @@ impl Cx<'_> {
                 bits: int_bits,
             }
         } else {
+            // **C 6.7.2.2p2: every enumerator is representable as `int`.** The widening below is
+            // a GNU extension, and this project calibrates constraint violations to
+            // `-pedantic-errors` (wave 314), so the widening happens *and* is reported — the type
+            // stays usable so nothing downstream cascades, exactly as an out-of-range array bound
+            // is reported and then clamped.
+            //
+            // Reported from the *range* rather than from each initializer, which is what catches
+            // the implicit successor: `{A = 2147483647, B}` names no value for `B` and overflows
+            // on it.
+            self.error(
+                span,
+                "an enumerator's value is not representable as an `int`",
+            );
             // gcc widens to `long` (64-bit here) rather than to an arbitrary width.
             Ty::Int {
                 signed: lo < 0 || hi < (1i128 << 63),

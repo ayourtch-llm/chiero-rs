@@ -165,6 +165,44 @@ pub fn lower_with_config(
     lowered.module
 }
 
+/// Lower a program that sema **reports as a declared GNU divergence**, requiring the report.
+///
+/// [`lower`] insists every stage is silent, which is right for a legal fixture. But this
+/// project keeps a short list of constructs it implements *and* reports — gcc accepts them
+/// under `-std=gnu11` and refuses them under `-pedantic-errors`, and both halves are
+/// behaviour worth pinning. Skipping the fixture would lose the lowering; relaxing [`lower`]
+/// to ignore diagnostics would lose the report. So the caller names the expected message,
+/// and anything else — silence included — fails.
+pub fn lower_diverging(src: &str, expect: &str) -> Module {
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu(&tu, &mut oracle);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let names = Names(&parsed);
+    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let msgs: Vec<&str> = analysis
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains(expect)),
+        "the divergence must still be reported ({expect:?}), got {msgs:?}"
+    );
+    assert!(
+        msgs.iter().all(|m| m.contains(expect)),
+        "and nothing else: {msgs:?}"
+    );
+    let lowered = chiero_lower::lower_tu(&parsed.ast, &analysis, &names);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "and lower without refusing anything: {:?}",
+        lowered.diagnostics
+    );
+    lowered.module
+}
+
 /// Lower, or `None` if any stage refused. Unlike [`lower`] this does not assert: the
 /// census compares chiero against gcc over generated programs, where a refusal is a
 /// legitimate outcome to skip rather than a test failure.
