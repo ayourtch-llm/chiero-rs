@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 377) — 1575 tests, 4 ignored, M1 260/260 by contract
+> ### ⏭️ START HERE (wave 378) — 1576 tests, 4 ignored, M1 263/263 by contract
 >
-> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
+> **Sema 263 of 263, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
 > **All three crates have a span gate** (373, 374); the sema corpus is also checked for spans that
 > cover the *wrong* text, for messages carrying their own source formatting (374), and for
@@ -508,6 +508,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 377 found four misses, every one beside a rule already written.** A `case` label is a
+> jump and wave 341's check was keyed on `goto`; a variably-modified `typedef` opens the same
+> scope as an object and declares none; `~` took any vector where wave 371 restricted `&`, `^` and
+> `|` to integer ones; and a record under unary `-` reported twice where the binary arms have
+> poisoned since 364. **When a rule is added, ask which of its siblings did not get it** — that is
+> now four waves running where the cheapest finding was an old rule's blind spot.
+>
+> **Three mutants each named a row the fixture lacked**, and one of them exposed a dead arm in the
+> test itself: a `default` row written with a `case` *after* it is reported by the `case`, so the
+> `default` code was never reached. **A row that passes does not prove the arm you meant ran.**
 >
 > **Wave 376 audited `chiero-lex`, the last crate without a constraints test.** Three findings, and
 > the middle one **moved crates during the wave**: a stray character is 012's business, not 010's,
@@ -721,8 +732,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
 >      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
->      **6.5.3.3's unary arithmetic**, **6.8.6.1's `goto` into a VLA scope beyond wave 341**, and
->      **6.10.3.4's rescanning** (a macro expanding to its own name through two levels).
+>      **6.7.2.3's tag compatibility across translation units**, **6.5.15's conditional operator
+>      with two pointer arms of different qualification**, and **6.9.1p12's parameter scope in a
+>      K&R definition**. 6.5.3.3, 6.8.6.1 and 6.10.3.4 are closed — the last needs nothing, and
+>      the census row for it was ill-formed besides: a self-referential macro is legal C.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3068,6 +3081,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a rule is added, ask which of its siblings did not get it** (wave 377). Four of this
+> wave's four findings were old rules missing a treatment their neighbours had: `goto` had the VLA
+> check and `case` did not, the binary bitwise arm restricted vectors and the unary one did not,
+> the binary arms poisoned a refused operand and the unary one did not. The cheapest census is the
+> one that reads the rule written *last* and asks who else should have changed.
+>
+> **A row that passes does not prove the arm you meant ran** (wave 377). A `default` row with a
+> `case` after it is reported by the `case`; the `default` arm was dead and a mutant deleting it
+> survived. When two rules can answer one row, order the row so only the one under test can.
 >
 > **When a new rule breaks an old fixture, read the fixture first** (wave 376). Two did this wave,
 > and both were right: a stringize test proved a stray character is not a lexing fault, and a
