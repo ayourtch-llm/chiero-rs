@@ -5940,3 +5940,124 @@ fn a_refused_operand_poisons_and_a_message_names_its_own_construct() {
         );
     }
 }
+
+/// **A tag reused as a different kind is not a redefinition**, and **every `Conversion` the
+/// public API can return is one the engine produces**.
+///
+/// Two findings from §9's sibling sweep, which this wave pointed at the shared `Conversion`
+/// contexts and at the tag table.
+///
+/// `union U { … }; struct U { … };` reports "redefinition of `struct U`" — but `U` was never a
+/// struct, and a reader is sent to look for an earlier `struct U` that does not exist. gcc says
+/// "`U` defined as wrong kind of tag", and keeps "redefinition" for a genuine second definition
+/// of the same kind. One arm was answering for two faults, which is wave 372's shape.
+///
+/// The second is smaller and is the sweep's actual target. `Conversion` is stored in the typed
+/// AST and exposed by `conversions_of`, so each variant is a promise to a consumer that the
+/// engine can tell that case apart. Nine are produced; **`Condition` never is** — conditions are
+/// checked by `require_scalar` and converted by nobody. A consumer asking "was this a conversion
+/// to a condition?" always gets no, and no test could have noticed because no test enumerates
+/// what the enum can return.
+#[test]
+fn a_wrong_kind_tag_is_not_a_redefinition() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "union U { int a; }; struct U { int b; };",
+            "`U` is defined as the wrong kind of tag",
+        ),
+        (
+            "struct S { int a; }; union S { int b; };",
+            "`S` is defined as the wrong kind of tag",
+        ),
+        (
+            "struct S { int a; }; enum S { A };",
+            "`S` is defined as the wrong kind of tag",
+        ),
+        (
+            "enum E { A }; struct E { int a; };",
+            "`E` is defined as the wrong kind of tag",
+        ),
+        // **A genuine redefinition keeps its own sentence**, which is what stops this being one
+        // message widened to cover two faults.
+        (
+            "struct S { int a; }; struct S { int b; };",
+            "redefinition of `struct S`",
+        ),
+        (
+            "union U { int a; }; union U { int b; };",
+            "redefinition of `union U`",
+        ),
+        ("enum E { A }; enum E { B };", "redefinition of `enum E`"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // A forward declaration then a definition of the same kind.
+        "struct S; struct S { int a; }; int f(void){ struct S s; return s.a; }",
+        // The same name as a tag and as an ordinary identifier, which are different namespaces.
+        "struct S { int a; }; int S;",
+        // Two different tags of different kinds.
+        "struct S { int a; }; union U { int b; };",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **Every `Conversion` the API can return is one some program produces.**
+///
+/// The enum is public and stored in the typed AST, so a variant nothing constructs is a
+/// distinction promised to consumers and never made. This enumerates them the only way that
+/// proves anything: run programs and collect what appears.
+#[test]
+fn every_conversion_kind_is_reachable() {
+    use std::collections::BTreeSet;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for src in [
+        "int f(void){ int a[2]; int *p = a; return *p; }",
+        "void g(void); int f(void){ void (*p)(void)=g; return p!=0; }",
+        "int f(void){ char c=1; return c + 1; }",
+        "int f(void){ int *p = 0; return p==0; }",
+        "int g(int); int f(void){ char c=1; return g(c); }",
+        "long f(void){ char c=1; return c; }",
+        "int f(void){ double d=1; return (1 ? d : 2) > 0; }",
+        "int f(void){ int x = 1; long y = x; return (int)y; }",
+        "struct S{int a;}; int f(void){ struct S s; if(s.a) return 1; return 0; }",
+    ] {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        for node in p.analysis.typed().nodes() {
+            if let chiero_sema::TypedNode::Cast { why, .. } = node {
+                seen.insert(format!("{why:?}"));
+            }
+        }
+    }
+    // **From the enum, not from a list written beside it.** A hand-written list passes by
+    // agreeing with itself: the first draft of this test omitted the one variant that is never
+    // produced and was green.
+    let missing: Vec<String> = chiero_sema::Conversion::ALL
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .filter(|d| !seen.contains(d))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "declared but never produced: {missing:?} (produced: {seen:?})"
+    );
+}

@@ -386,6 +386,28 @@ pub enum Conversion {
     Condition,
 }
 
+impl Conversion {
+    /// Every variant, so a test can ask whether the engine ever produces each one.
+    ///
+    /// `Conversion` is stored in the typed AST and handed out by `conversions_of`, which makes
+    /// each variant a promise to a consumer that this engine can tell that case apart. Written
+    /// out here rather than derived because the list is the point: it has to change when the
+    /// enum does, and a gate that enumerated only what it expected would pass by agreeing with
+    /// itself.
+    pub const ALL: &'static [Conversion] = &[
+        Conversion::IntegerPromotion,
+        Conversion::UsualArithmetic,
+        Conversion::ArrayDecay,
+        Conversion::FunctionDecay,
+        Conversion::NullPointer,
+        Conversion::Assignment,
+        Conversion::Conditional,
+        Conversion::Argument,
+        Conversion::Return,
+        Conversion::Condition,
+    ];
+}
+
 impl TypedAst {
     pub fn nodes(&self) -> &[TypedNode] {
         &self.nodes
