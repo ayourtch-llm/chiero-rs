@@ -5539,3 +5539,106 @@ fn shift_and_bitwise_operands_are_integers() {
         );
     }
 }
+
+/// **Calling a function whose return type is incomplete** (C 6.5.2.2p1), and **three messages
+/// that name the wrong thing**.
+///
+/// The census half is one row: `struct I; struct I g(void); g();` is refused by gcc in both modes
+/// and taken here. A *declaration* returning an incomplete type is legal — nothing is produced
+/// until there is a call — which is the same distinction wave 359 drew for parameters, and it is
+/// why the check belongs at the call rather than at the declarator.
+///
+/// The rest of this test is 023 §9's other half. A report a person cannot act on is not a report,
+/// and a report that names the wrong thing is worse than none: it sends a reader somewhere the
+/// fault is not. Three have accumulated with the census recording them rather than fixing them,
+/// and each is a *different* way to be wrong:
+///
+/// - **The wrong operand kind.** `d == p` said "a pointer and an integer" of a `double`; the
+///   arm had two cases and one message.
+/// - **The wrong rule.** `int f(const void)` said `void` must be the only parameter — it *is* the
+///   only parameter, and the fault is the qualifier.
+/// - **The wrong construct.** `#include <stdio.h> extra` said "invalid computed include"; the
+///   include is perfectly well formed and the tokens after it are not. That one is `chiero-pp`'s
+///   and is pinned in its own constraints test.
+#[test]
+fn a_diagnostic_names_the_thing_that_is_wrong() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // **The census miss.** A call whose result cannot exist.
+        (
+            "struct I; struct I g(void); int f(void){ g(); return 0; }",
+            "calling `g` produces an incomplete type",
+        ),
+        // **The wrong operand kind.** `double` is not an integer, and the message said it was.
+        (
+            "int f(void){ double d=1; int *p=0; return d == p; }",
+            "comparison between a pointer and a floating value",
+        ),
+        (
+            "int f(void){ double d=1; int *p=0; return d < p; }",
+            "comparison between a pointer and a floating value",
+        ),
+        // **The wrong rule.** The `void` *is* the only parameter; the qualifier is the fault.
+        (
+            "int f(const void);",
+            "`void` as the only parameter may not be qualified",
+        ),
+        (
+            "int f(volatile void);",
+            "`void` as the only parameter may not be qualified",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    // **The rule each message replaced still fires where it should.** A pointer against a genuine
+    // integer keeps the old sentence, and a `void` beside another parameter keeps the old rule —
+    // these are what would break if a message were changed by widening its arm instead of
+    // splitting it.
+    for (src, want) in [
+        (
+            "int f(void){ int x=1; int *p=0; return p == x; }",
+            "comparison between a pointer and an integer",
+        ),
+        ("int f(void, int x);", "`void` must be the only parameter"),
+        ("int f(int x, void);", "`void` must be the only parameter"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // A declaration returning an incomplete type is legal until it is called.
+        "struct I; struct I g(void); int f(void){ return 0; }",
+        // Completed before the call, which is the ordinary shape in a header pair.
+        "struct I { int a; }; struct I g(void); int f(void){ return g().a; }",
+        "struct S{int a;}; struct S g(void); int f(void){ struct S s = g(); return s.a; }",
+        // `void` as the only parameter, unqualified, and an ordinary qualified parameter.
+        "int f(void);",
+        "int f(const int x);",
+        // Comparisons that stay legal.
+        "int f(void){ double d=1; return d == 1; }",
+        "int f(void){ int *p=0; return p == 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

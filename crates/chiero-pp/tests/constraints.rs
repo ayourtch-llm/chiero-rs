@@ -663,3 +663,43 @@ fn a_pragma_operator_takes_one_string_literal() {
         );
     }
 }
+
+/// **Tokens after a `#include` are tokens after a `#include`** (C 6.10p1, 6.10.2).
+///
+/// Wave 369 recorded this as wrong rather than absent and left it: `#include <stdio.h> extra` is
+/// refused, and the sentence says "invalid computed include". The include is perfectly well
+/// formed; what is wrong is the `extra` after it, and a reader is sent to look at the header name
+/// instead. gcc says "extra tokens at end of #include directive".
+///
+/// The distinction the message has to keep is that a **computed** include really can be invalid —
+/// `#define H\n#include H` expands to nothing — and that row keeps the old sentence. One arm was
+/// answering for two faults.
+#[test]
+fn an_include_diagnostic_names_the_extra_tokens() {
+    let src = "int base;\n#include <stdio.h> extra\n";
+    assert_eq!(
+        diags(src),
+        vec!["extra tokens after the `#include` header name".to_string()],
+        "the message for `{src}`"
+    );
+
+    // **The computed-include fault keeps its own sentence**, which is what stops this being one
+    // message widened to cover two things.
+    let computed = "int base;\n#define H\n#include H\n";
+    assert_eq!(
+        diags(computed),
+        vec!["invalid computed include".to_string()],
+        "the message for `{computed}`"
+    );
+
+    for good in [
+        "int base;\n#define H <stdio.h>\n#include H\n",
+        "int base;\n#include <stdio.h>\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
