@@ -4675,3 +4675,89 @@ fn multiplicative_operands_are_arithmetic() {
         );
     }
 }
+
+/// **An ordinary identifier means one thing per scope** (C 6.7p3): a name may not be a `typedef`
+/// here and an object there, and a block may not declare the same object twice.
+///
+/// This is a *mechanism* rather than a rule, which is why §9 held it for its own wave: nothing
+/// in sema records what a name **means**, only what type it has. `conflicting types for `x``
+/// already catches two objects that disagree, and that is the whole of what exists — so a name
+/// that is a `typedef` in one declaration and an object in the next passes, in either order, at
+/// either scope.
+///
+/// The legal half is most of the work and every row of it is load-bearing:
+///
+/// - **File scope is not block scope.** `int x; int x;` at file scope is two tentative
+///   definitions and is how every header has always worked; the identical pair inside a function
+///   is a redeclaration. A rule that does not separate them breaks C or breaks headers.
+/// - **Tags are a separate namespace.** `struct S { int a; }; int S;` is legal both ways round,
+///   and so is `typedef int T; struct T { int a; };` — a table keyed on the bare name gets all
+///   four of those wrong.
+/// - **`typedef struct S S;`** names a typedef after its own tag, which is the idiom this rule
+///   most easily breaks.
+/// - **Repeating a `typedef` with the same type is legal**, and with a different type is not.
+#[test]
+fn an_identifier_means_one_thing_per_scope() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A `typedef` and an object, at file scope, both orders.
+        "typedef int T; int T;",
+        "int T; typedef int T;",
+        // The same inside a block, both orders.
+        "int f(void){ typedef int T; int T; return 0; }",
+        "int f(void){ int T; typedef int T; return 0; }",
+        // Two `typedef`s that disagree about the type.
+        "typedef int T; typedef long T;",
+        // **Two objects in one block**, which file scope permits and a block does not.
+        "int f(void){ int x; int x; return x; }",
+        // A `typedef` and a function, in every order including after the definition.
+        "int f(void); typedef int f;",
+        "typedef int f; int f(void);",
+        "int f(void){ return 0; } typedef int f;",
+        // **An enumerator is an ordinary identifier**, so it collides with objects.
+        "enum E { A }; int A;",
+        "int A; enum E { A };",
+        "int f(void){ int x; enum E { x }; return 0; }",
+        "int f(void){ enum E { x }; int x; return 0; }",
+        // A parameter is in the body's scope, so a `typedef` of its name collides.
+        "int f(int T){ typedef int T; return 0; }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        // **File scope: tentative definitions**, which is how every header works.
+        "int x; int x;",
+        "int x = 1; int x;",
+        "extern int x; extern int x;",
+        "static int x; static int x;",
+        // The same `typedef` twice, with the same type.
+        "typedef int T; typedef int T;",
+        // **Tags are a separate namespace**, in all four combinations.
+        "struct S { int a; }; int S;",
+        "int S; struct S { int a; };",
+        "typedef int T; struct T { int a; };",
+        "typedef struct S S; struct S { int a; }; int f(S *p){ return p->a; }",
+        // **An inner scope may shadow anything**, with any meaning.
+        "typedef int T; int f(void){ int T; return T; }",
+        "typedef int T; int f(void){ typedef long T; T x = 1; return (int)x; }",
+        "int f(void){ int x; { int x; return x; } }",
+        // And the ordinary uses of a typedef, which the table must not disturb.
+        "typedef int T; int f(T x){ return x; }",
+        "typedef int T; T x; int f(void){ return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
