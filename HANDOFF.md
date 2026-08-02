@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 370) — 1562 tests, 4 ignored, M1 250/250 by contract
+> ### ⏭️ START HERE (wave 371) — 1563 tests, 4 ignored, M1 250/250 by contract
 >
-> **Sema 250 of 250, `chiero-pp` 34 of 34, `chiero-parse` 5 constraint tests.**
+> **Sema 250 of 250, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 370 closed 6.10.6–6.10.9 and 6.11.** Six misses, one construct, and **not one of them
+> was a missing rejection** — `_Pragma` with a bad operand was already refused, by 013, three to
+> five times, in messages that never said `_Pragma`. The cause was a conditional `if let` chain
+> with no `else`: nothing was decided to be wrong, the pattern simply did not match.
+>
+> **A silent fall-through and a missing check look identical from a census.** Both show as "gcc
+> refuses, chiero accepts" or as a wrong message. When a construct is recognised in one crate and
+> diagnosed in another, look for the branch where recognition *declines* rather than *judges*.
 >
 > **Wave 369 closed 6.10.1.** Eleven misses in one place: the `#if` evaluator reported the token
 > it did not *know* and never the token it *needed*. Both arrive as `primary` having nothing to
@@ -623,15 +632,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > **Next, in descending order of what they buy:**
 >   1. **Continue the census by reading C.** Waves 355–368 each found misses behind one cause, which
->      is the cheapest shape this method produces. Still unexamined: **6.10.6/6.10.7's `#pragma`
->      and null directives** (an unknown pragma's diagnosis, `_Pragma` with a non-string operand),
->      **6.10.8's predefined macros** (`__DATE__`/`__TIME__` shape, redefining `__STDC__`), and
->      **6.11's obsolescent features** (an unprototyped declarator's diagnosis, a `register`
->      array).
+>      is the cheapest shape this method produces. Still unexamined: **6.5.7's shift constraints**
+>      (a shift count wider than the promoted type, a negative count, a floating operand),
+>      **6.5.10–6.5.12's bitwise constraints** (`&`, `^`, `|` on a pointer or a floating operand),
+>      and **6.7.3's qualifier constraints beyond wave 359** (`const` on a function type, a
+>      qualified `void` return, duplicate qualifiers through a typedef).
 >
->      **One message is wrong rather than absent**, recorded in wave 369's RED so it is not
->      re-found as a miss: `#include <stdio.h> extra` reports "invalid computed include", which
->      is not what a reader needs. That is a message wave, not a census wave.
+>      **A message wave is now worth its own turn.** Two known-wrong messages are recorded rather
+>      than fixed: `#include <stdio.h> extra` says "invalid computed include" (wave 369), and
+>      `d == p` says "comparison between a pointer and an integer" of a `double` (wave 364).
+>      Neither is a miss; both send a reader to the wrong place.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -2977,6 +2987,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A recognition that declines is not a check that passes** (wave 370). `_Pragma`'s handling was
+> an `if let` chain: an operand it could not match fell through to a crate that could not name it.
+> From the census this is indistinguishable from a missing rule. When a construct is recognised in
+> one crate and reported by another, the branch that *declines to match* is where the rule goes.
+>
+> **Some fixes are invisible to a diagnostic count** (wave 370). Consuming the refused tokens is
+> what turns five parse errors into one, and no assertion about *messages* can see it — the mutant
+> that reported and left them behind survived every row. Assert on the artefact the fix actually
+> changes, even when that means a different kind of claim from the rest of the file.
 >
 > **An error arm for "did not recognise" is not one for "ran out"** (wave 369). The `#if`
 > evaluator had reported unsupported tokens since it was written and said nothing about truncated
