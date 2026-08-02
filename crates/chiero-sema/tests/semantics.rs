@@ -4761,3 +4761,83 @@ fn an_identifier_means_one_thing_per_scope() {
         );
     }
 }
+
+/// **What `+` and `-` accept** (C 6.5.6p2–p3), and what `==` does not (6.5.9p2).
+///
+/// `+` takes two arithmetic operands, or a pointer and an integer in either order. `-` takes
+/// those, or **two pointers to compatible types**. Everything else — two pointers added, an
+/// integer minus a pointer, a pointer plus a `double`, a structure on either side — is a
+/// constraint violation, and chiero accepts all of them.
+///
+/// Two of the misses are worse than silence: `s + 1` on a structure reports "invalid
+/// initializer: a structure or union is copied only from its own type" *and* a cast complaint
+/// from an enclosing cast, neither of which names the mistake. This rule replaces both.
+///
+/// **The declared divergences must survive.** `void *` and function-pointer arithmetic are GNU
+/// extensions this project implements on purpose (022 §4, and `sizeof(void) == 1`), so `v + 1`
+/// and `g + 1` stay legal here even though `-pedantic-errors` refuses them. A rule phrased "the
+/// pointee must be a complete object type" would take them out, which is why it is not.
+#[test]
+fn additive_operands_are_arithmetic_or_a_pointer_and_an_integer() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Two pointers added, and an integer minus a pointer — `-` is not commutative.
+        "int f(void){ int *p=0; int *q=0; return (int)(p+q); }",
+        "int f(void){ int *p=0; return (int)(1-p); }",
+        // A pointer and a floating value, which is not an integer.
+        "int f(void){ double d=1; int *p=0; return (int)(p+d); }",
+        // **Two pointers subtracted with incompatible pointees.**
+        "int f(void){ int *p=0; char *q=0; return (int)(p-q); }",
+        // A structure on either side of either operator.
+        "struct S{int a;}; int f(void){ struct S s; return (int)(s+1); }",
+        "struct S{int a;}; int f(void){ struct S s; struct S t; return (int)(s-t); }",
+        // **A record is not comparable** (6.5.9p2), struct and union, and against a constant.
+        "struct S{int a;}; int f(void){ struct S s; struct S t; return s == t; }",
+        "struct S{int a;}; int f(void){ struct S s; struct S t; return s != t; }",
+        "union U{int a;}; int f(void){ union U u; union U v; return u == v; }",
+        "struct S{int a;}; int f(void){ struct S s; return s == 0; }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        // Pointer and integer, both orders, and every integer spelling.
+        "int f(void){ int *p=0; return (int)(p+1); }",
+        "int f(void){ int *p=0; return (int)(1+p); }",
+        "int f(void){ int *p=0; return (int)(p-1); }",
+        "int f(void){ int *p=0; _Bool b=1; return (int)(p+b); }",
+        "int f(void){ int *p=0; char c=1; return (int)(p+c); }",
+        "enum E{A=1}; int f(void){ int *p=0; enum E e=A; return (int)(p+e); }",
+        // Two pointers subtracted, where the pointees agree **through qualifiers, typedefs and
+        // a decayed array** — none of which makes them incompatible.
+        "int f(void){ int *p=0; int *q=0; return (int)(p-q); }",
+        "typedef int T; int f(void){ int *p=0; T *q=0; return (int)(p-q); }",
+        "int f(void){ const int *p=0; int *q=0; return (int)(p-q); }",
+        "int f(void){ int a[2]; int *p=0; return (int)(a-p); }",
+        "int f(void){ int a[2]; return (int)(a+1); }",
+        // Ordinary arithmetic, which the rule must not disturb.
+        "int f(void){ double d=1; return (int)(d+1); }",
+        "int f(void){ double d=1; return (int)(d-1); }",
+        // **The declared GNU divergences**: `void *` and function-pointer arithmetic.
+        "int f(void){ void *v=0; return (int)(v+1); }",
+        "void g(void); int f(void){ return (int)(g+1); }",
+        // And the comparisons that stay legal beside the record rule.
+        "int f(void){ int *p=0; int *q=0; return p == q; }",
+        "int f(void){ double d=1; return d == 1; }",
+        "int f(void){ int a[2]; return a == a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
