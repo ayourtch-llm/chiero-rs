@@ -546,9 +546,24 @@ impl Engine {
             &expanded
         };
         let Some((name, quoted)) = parse_header_name(header_tokens) else {
+            // **Two faults reached one sentence.** A *computed* include really can be invalid —
+            // `#define H` then `#include H` expands to nothing — but `#include <stdio.h> extra`
+            // is a perfectly well-formed header name with tokens after it, and saying "invalid
+            // computed include" sends a reader to inspect the header name. gcc says "extra
+            // tokens at end of #include directive".
+            //
+            // Told apart by asking whether a **prefix** of the operand is a header name, which
+            // is exactly the difference: the name parsed and the line did not stop there.
+            let extra =
+                (1..header_tokens.len()).any(|n| parse_header_name(&header_tokens[..n]).is_some());
+            let message = if extra {
+                "extra tokens after the `#include` header name"
+            } else {
+                "invalid computed include"
+            };
             self.diagnostics.push(Diagnostic {
                 span: line.get(1).map_or(Span::DUMMY, |token| token.token.span),
-                message: "invalid computed include".into(),
+                message: message.into(),
             });
             return Vec::new();
         };

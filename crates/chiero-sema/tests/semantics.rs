@@ -5586,6 +5586,16 @@ fn a_diagnostic_names_the_thing_that_is_wrong() {
             "int f(void){ double d=1; int *p=0; return d < p; }",
             "comparison between a pointer and a floating value",
         ),
+        // **The pointer on the left**, which is what makes the message read the *other* side
+        // rather than a fixed one. A mutant that always looked left survived both rows above.
+        (
+            "int f(void){ double d=1; int *p=0; return p == d; }",
+            "comparison between a pointer and a floating value",
+        ),
+        (
+            "int f(void){ int x=1; int *p=0; return x == p; }",
+            "comparison between a pointer and an integer",
+        ),
         // **The wrong rule.** The `void` *is* the only parameter; the qualifier is the fault.
         (
             "int f(const void);",
@@ -5614,6 +5624,13 @@ fn a_diagnostic_names_the_thing_that_is_wrong() {
         ),
         ("int f(void, int x);", "`void` must be the only parameter"),
         ("int f(int x, void);", "`void` must be the only parameter"),
+        // **Both faults at once**, which is the only row where the count decides: the `void` is
+        // qualified *and* not alone, and gcc names the second. A mutant that dropped the count
+        // test was masked by the qualifier test on every other row.
+        (
+            "int f(const void, int x);",
+            "`void` must be the only parameter",
+        ),
     ] {
         assert_eq!(
             diags(src),

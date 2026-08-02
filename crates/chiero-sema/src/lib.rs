@@ -2262,7 +2262,25 @@ impl Cx<'_> {
                     .iter()
                     .any(|&t| matches!(self.out.types[t.0 as usize], Ty::Void))
                 {
-                    self.error(node.span, "`void` must be the only parameter");
+                    // **Two faults reached one sentence.** `f(void, int)` has a `void` among
+                    // others; `f(const void)` has `void` *as* the only parameter and qualifies
+                    // it — so the old message told a reader the opposite of what was wrong. The
+                    // parser folds `(void)` into an empty list, so a single `Ty::Void` still
+                    // standing means either shape, and the count tells them apart.
+                    let qualified_only = ps.len() == 1
+                        && params.first().is_some_and(|&p| {
+                            matches!(self.ast.decl(p).kind, DeclKind::Var { ty, .. }
+                            if {
+                                let q = self.ast.ty(ty).quals;
+                                q.const_ || q.volatile_ || q.restrict_ || q.atomic
+                            })
+                        });
+                    let what = if qualified_only {
+                        "`void` as the only parameter may not be qualified"
+                    } else {
+                        "`void` must be the only parameter"
+                    };
+                    self.error(node.span, what);
                 }
                 self.intern(Ty::Func {
                     ret: r,
@@ -4909,6 +4927,32 @@ impl Cx<'_> {
                         ),
                     );
                 }
+                // **C 6.5.2.2p1: a call produces a value, so its type must be one an object can
+                // have.** A *declaration* returning an incomplete type is legal — nothing is
+                // produced until there is a call — which is the same distinction wave 359 drew
+                // for parameters, and it is why this is asked here and not at the declarator.
+                //
+                // **`void` needs no arm here.** `is_incomplete` deliberately excludes it — wave
+                // 347 split `has_no_size` into `is_incomplete || Void` for exactly this reason —
+                // so a `void` function is already silent. Writing `Ty::Void` beside `Ty::Error`
+                // looked like the careful thing and was dead code: the mutant that removes it
+                // survives, which is the signal to delete rather than to test.
+                if callable
+                    && !matches!(self.out.types[ret.0 as usize], Ty::Error)
+                    && is_incomplete(&self.out, ret)
+                {
+                    let named = match self.ast.expr(*callee).kind {
+                        ExprKind::Ident(n) => self.text(n).map(|t| format!(" `{t}`")),
+                        _ => None,
+                    };
+                    self.error(
+                        span,
+                        format!(
+                            "calling{} produces an incomplete type",
+                            named.unwrap_or_default()
+                        ),
+                    );
+                }
                 // **A floating classification macro returns `int`.** 7.12.14's `isless`,
                 // `isunordered` and the rest are macros over `__builtin_*`, which nothing
                 // declares — gcc knows them intrinsically — so the generic path above types
@@ -5712,7 +5756,18 @@ impl Cx<'_> {
                     self.is_null_constant(ae)
                 };
                 if !(equality && null) {
-                    self.error(span, "comparison between a pointer and an integer");
+                    // **Name the operand that is actually there.** This arm fires whenever
+                    // exactly one side is a pointer, and said "an integer" of whatever the other
+                    // side was — including a `double`, which is not one. One arm, two cases, one
+                    // message; splitting the message is the fix, and widening it to "a
+                    // non-pointer" would lose the one it already got right.
+                    let other = if is_ptr(self, aty) { bty } else { aty };
+                    let what = if matches!(self.out.types[other.0 as usize], Ty::Float(_)) {
+                        "comparison between a pointer and a floating value"
+                    } else {
+                        "comparison between a pointer and an integer"
+                    };
+                    self.error(span, what);
                 }
             }
             let (a, b) = if !comparison {

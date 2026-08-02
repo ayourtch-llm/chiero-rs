@@ -873,6 +873,15 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "floating operand of `^`",
         "int f(void){ double d=1; return (int)(d ^ 1); }",
     ),
+    // C 6.5.2.2p1 and 6.7.6.3p10, wave 372.
+    (
+        "call producing an incomplete type",
+        "struct I; struct I g(void); int f(void){ g(); return 0; }",
+    ),
+    (
+        "qualified `void` as the only parameter",
+        "int f(const void);",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -925,7 +934,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 258;
+    const FLOOR: usize = 260;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
