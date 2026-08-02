@@ -5425,3 +5425,117 @@ fn a_designator_names_a_visible_member() {
         );
     }
 }
+
+/// **`<<`, `>>`, `&`, `^` and `|` take integer operands** (C 6.5.7p2, 6.5.10–6.5.12p2).
+///
+/// Five operators and one question, which is the same question `%` already asks — wave 362 built
+/// that arm for the multiplicative operators and the shift and bitwise ones never joined it.
+/// A floating operand, a pointer and a record all pass today.
+///
+/// **A record produces the wrong message rather than none**, which is why those rows assert what
+/// is said: `s ^ 1` reports "a structure or union is copied only from its own type" *and* a cast
+/// complaint from the enclosing cast, neither naming the operator. Wave 364 fixed exactly this
+/// for `+`, `-` and the comparisons and the record arm was keyed on those; this wave extends the
+/// key rather than adding a second arm.
+///
+/// **An integer vector is an integer here.** gcc takes `v << 1`, `v & 1` and `v | w` on
+/// `vector_size` integers and refuses them on a float vector, so the rule reads the element type
+/// — and VPP shifts vectors throughout `vppinfra`, so getting this wrong breaks the corpus rather
+/// than the suite.
+#[test]
+fn shift_and_bitwise_operands_are_integers() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // A floating operand, on each side of a shift.
+        (
+            "int f(void){ double d=1; return (int)(d << 1); }",
+            "`<<` needs integer operands",
+        ),
+        (
+            "int f(void){ int x=1; double d=1; return (int)(x << d); }",
+            "`<<` needs integer operands",
+        ),
+        (
+            "int f(void){ int x=1; return (int)(x >> 1.0); }",
+            "`>>` needs integer operands",
+        ),
+        // A pointer, in a shift and in each bitwise operator.
+        (
+            "int f(void){ int *p=0; return (int)(p << 1); }",
+            "`<<` needs integer operands",
+        ),
+        (
+            "int f(void){ int *p=0; return (int)(p & 1); }",
+            "`&` needs integer operands",
+        ),
+        (
+            "int f(void){ int *p=0; int *q=0; return (int)(p | q); }",
+            "`|` needs integer operands",
+        ),
+        // Floating operands of the bitwise operators.
+        (
+            "int f(void){ double d=1; return (int)(d & 1); }",
+            "`&` needs integer operands",
+        ),
+        (
+            "int f(void){ double d=1; return (int)(d ^ 1); }",
+            "`^` needs integer operands",
+        ),
+        // **A record**, where the mistake was reported as something else entirely.
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s << 1); }",
+            "a structure or union is not an operand of `<<`, `>>`, `&`, `^` or `|`",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s ^ 1); }",
+            "a structure or union is not an operand of `<<`, `>>`, `&`, `^` or `|`",
+        ),
+        // **A float vector**, which gcc refuses where it takes an integer one.
+        (
+            "typedef float f4 __attribute__((vector_size(16)));\nint f(void){ f4 a={0}; return (int)(a & 1)[0]; }",
+            "`&` needs integer operands",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // Every integer spelling, on both sides, for each operator.
+        "int f(void){ int x=1; return x << 1; }",
+        "int f(void){ int x=1; return x >> 1; }",
+        "int f(void){ char c=1; return c << 8; }",
+        "int f(void){ _Bool b=1; return b & 1; }",
+        "enum E{A=1}; int f(void){ enum E e=A; return e << 1; }",
+        "int f(void){ int x=1; return x ^ 1; }",
+        "int f(void){ int x=1; return x | 1; }",
+        "int f(void){ long x=1; return (int)(x << 40); }",
+        // Counts C leaves undefined but does not *constrain* — this is a rule about types.
+        "int f(void){ int x=1; return x << 32; }",
+        "int f(void){ int x=1; return x << -1; }",
+        // **Integer vectors**, which VPP writes throughout `vppinfra`.
+        "typedef int v4 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; return (a << 1)[0]; }",
+        "typedef int v4 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; return (a & 1)[0]; }",
+        "typedef int v4 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; v4 b={0}; return (a | b)[0]; }",
+        "typedef int v4 __attribute__((vector_size(16)));\nint f(void){ v4 a={0}; return (a >> 1)[0]; }",
+        // A float vector *multiplied*, which stays legal — the rule is these five operators.
+        "typedef float f4 __attribute__((vector_size(16)));\nint f(void){ f4 a={0}; return (int)(a * a)[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
