@@ -5790,3 +5790,110 @@ fn a_case_label_jumps_and_a_typedef_can_be_variably_modified() {
         );
     }
 }
+
+/// **The siblings wave 377's rule did not reach**, plus one message that names the wrong
+/// construct.
+///
+/// §9's newest instruction is to read the rule written last and ask who else should have changed.
+/// Waves 364 and 377 made the binary and unary arms **poison** an operand they refuse, so an
+/// enclosing cast says nothing further. The multiplicative arm — wave 362's, the oldest of the
+/// three — never got it, and `(int)(s * 2)` produces three sentences where every other operator
+/// produces one: the operand complaint, an initializer complaint about a structure copy that
+/// nobody wrote, and a cast complaint about a conversion that was never the fault.
+///
+/// The same sweep found the K&R arm: `int f(a) int b;` draws the parser's correct sentence *and*
+/// a sema complaint that `a` has an incomplete type — which is a consequence of the declaration
+/// the parser already rejected, not a second mistake.
+///
+/// And the conditional operator reports an incompatible pointer pair as "initializing or
+/// assigning", which is neither. gcc says "pointer type mismatch in conditional expression"; the
+/// arm is shared with assignment and the message was never told which caller it had.
+#[test]
+fn a_refused_operand_poisons_and_a_message_names_its_own_construct() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // **One sentence, from the arm that owns the fault.** Each of these is the same shape and
+    // the multiplicative one was the outlier.
+    for (src, want) in [
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s * 2); }",
+            "`*` needs arithmetic operands",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s / 2); }",
+            "`/` needs arithmetic operands",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s % 2); }",
+            "`%` needs integer operands",
+        ),
+        // The arms that already poisoned, kept here so a fix that moved the poison rather than
+        // adding it is caught.
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(-s + 1); }",
+            "unary `-` needs an arithmetic operand",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s << 1); }",
+            "a structure or union is not an operand of `<<`, `>>`, `&`, `^` or `|`",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    // **The conditional operator names itself.** The arm is shared with assignment, and the
+    // assignment wording stays where assignment is what happened.
+    for (src, want) in [
+        (
+            "int f(void){ int *a=0; char *b=0; return (1 ? a : b) != 0; }",
+            "pointer type mismatch in a conditional expression",
+        ),
+        (
+            "struct S{int a;}; struct T{int a;}; int f(void){ struct S *a=0; struct T *b=0; return (1 ? a : b) != 0; }",
+            "pointer type mismatch in a conditional expression",
+        ),
+        (
+            "int f(void){ int *p=0; char *q=0; p = q; return *p; }",
+            "initializing or assigning from an incompatible pointer type",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // Qualified arms of a conditional, which combine rather than conflict.
+        "int f(void){ const int *a=0; int *b=0; return *(1 ? a : b); }",
+        "int f(void){ volatile int *a=0; int *b=0; return *(1 ? a : b); }",
+        "int f(void){ int *a=0; void *b=0; return (1 ? a : b) != 0; }",
+        "int f(void){ int *a=0; return (1 ? a : 0) != 0; }",
+        // Two structures of the *same* type, which a conditional may choose between.
+        "struct S{int a;}; int f(void){ struct S x={1}; struct S y={2}; return (1 ? x : y).a; }",
+        // K&R definitions that are well formed.
+        "int f(a) int a; { return a; }",
+        "int f(a, b) int a; int b; { return a+b; }",
+        // And the ordinary arithmetic the poison must not disturb.
+        "int f(void){ int x=2; return x * 2; }",
+        "int f(void){ double d=2; return (int)(d / 2); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
