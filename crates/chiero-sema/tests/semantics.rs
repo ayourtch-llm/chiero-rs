@@ -5719,9 +5719,12 @@ fn a_case_label_jumps_and_a_typedef_can_be_variably_modified() {
             "int f(int n){ switch(n){ case 1: ; int a[n]; case 2: return 0; } return 0; }",
             "a `case` label enters the scope of a variably-modified declaration",
         ),
+        // **The `default` as the label that enters**, not merely present in the switch: written
+        // the other way round the following `case` reports first and the `default` arm is never
+        // reached. A mutant that deleted it survived until this row said `default:` last.
         (
-            "int f(int n){ switch(n){ default: ; int a[n]; case 2: return 0; } return 0; }",
-            "a `case` label enters the scope of a variably-modified declaration",
+            "int f(int n){ switch(n){ case 1: ; int a[n]; default: return 0; } return 0; }",
+            "a `default` label enters the scope of a variably-modified declaration",
         ),
         // A `goto` past a variably-modified **typedef**, which declares no object at all.
         (
@@ -5758,6 +5761,15 @@ fn a_case_label_jumps_and_a_typedef_can_be_variably_modified() {
         // A fixed length is not variably modified, however it is declared.
         "int f(int n){ switch(n){ case 1: ; int a[2]; case 2: return 0; } return 0; }",
         "int f(int n){ goto skip; typedef int T[2]; skip: return 0; }",
+        // **Nested switches at different depths.** The inner one begins with a scope already
+        // open, so its labels enter nothing; a check that read the *outermost* switch's depth
+        // rather than the innermost would reject this, and no other row distinguishes them.
+        "int f(int n){ switch(n){ case 1: { int a[n]; switch(n){ case 2: return 0; case 3: return a[0]; } } } return 0; }",
+        // **A `switch` inside an existing variably-modified scope.** The scope was open before
+        // the switch began, so no label enters it — and a rule that compared against zero rather
+        // than against the depth *at the switch* would reject this. It is the only row where
+        // that distinction shows.
+        "int f(int n){ int a[n]; switch(n){ case 1: return 0; case 2: return a[0]; } return 0; }",
         // The declaration before the jump, which is the shape the rule must not disturb.
         "int f(int n){ typedef int T[n]; goto skip; skip: return 0; }",
         "int f(int n){ int a[n]; goto skip; skip: return a[0]; }",

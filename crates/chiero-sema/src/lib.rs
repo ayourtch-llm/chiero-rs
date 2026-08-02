@@ -888,6 +888,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         defined_tags: Default::default(),
         declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
+        switch_vla_depth: Vec::new(),
         next_vla_scope: 0,
         label_scopes: Default::default(),
         prior: Default::default(),
@@ -943,6 +944,7 @@ pub fn const_eval(
         defined_tags: Default::default(),
         declared_enumerators: Default::default(),
         open_vla_scopes: Vec::new(),
+        switch_vla_depth: Vec::new(),
         next_vla_scope: 0,
         label_scopes: Default::default(),
         prior: Default::default(),
@@ -1088,6 +1090,13 @@ struct Cx<'a> {
     /// name any more than one enum may repeat one.
     declared_enumerators: ScopedNames,
     open_vla_scopes: Vec<u32>,
+    /// How many variably-modified scopes were open when each enclosing `switch` began.
+    ///
+    /// **A `case` label is a jump** (C 6.8.6.1p1): control reaches it from the `switch`, skipping
+    /// whatever lies between. Wave 341 built this check for `goto`, where the destination is
+    /// named and the comparison is between two label positions; here the origin is the `switch`
+    /// itself, so what has to be remembered is the depth *there*.
+    switch_vla_depth: Vec<usize>,
     next_vla_scope: u32,
     /// The scopes open where each label sits. A `goto` is illegal when this is not contained in
     /// the scopes open at the `goto`.
@@ -1693,6 +1702,23 @@ impl Cx<'_> {
                 let t = self.ty_of(ty);
                 self.check_alignment(ty, t, StorageContext::NotAnObject);
                 self.declare_ordinary(name, Meaning::Typedef(t), self.ast.decl(id).span);
+                // **A variably modified `typedef` opens a scope too** (C 6.8.6.1p1). `typedef int
+                // T[n]` evaluates `n` once, where the declaration stands, so a jump past it skips
+                // that evaluation exactly as a jump past `int a[n]` does — and this declares no
+                // object, which is why the scope tracking beside the object arm never saw it.
+                if scope == Scope::Block
+                    && matches!(
+                        self.out.types[t.0 as usize],
+                        Ty::Array {
+                            len: ArrayLen::Vla(_),
+                            ..
+                        }
+                    )
+                {
+                    let id = self.next_vla_scope;
+                    self.next_vla_scope += 1;
+                    self.open_vla_scopes.push(id);
+                }
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
                 if let Some(a) = self.declared_align(ty) {
@@ -4551,10 +4577,17 @@ impl Cx<'_> {
                                 self.out.types[pty.0 as usize],
                                 Ty::Int { .. } | Ty::Float(_) | Ty::Vector { .. } | Ty::Error
                             ),
-                            UnOp::BitNot => !matches!(
-                                self.out.types[pty.0 as usize],
-                                Ty::Int { .. } | Ty::Vector { .. } | Ty::Error
-                            ),
+                            // **An *integer* vector**, as wave 371 requires for `&`, `^` and
+                            // `|` — the same paragraph and the same element question. This arm
+                            // was written before that one and took any vector, so `~` on a
+                            // `float` vector passed where `&` on one did not.
+                            UnOp::BitNot => match self.out.types[pty.0 as usize] {
+                                Ty::Int { .. } | Ty::Error => false,
+                                Ty::Vector { elem, .. } => {
+                                    !matches!(self.out.types[elem.0 as usize], Ty::Int { .. })
+                                }
+                                _ => true,
+                            },
                             _ => false,
                         };
                         if bad {
@@ -4570,6 +4603,12 @@ impl Cx<'_> {
                             };
                             self.error(span, format!("{what} needs {needs} operand"));
                         }
+                        // **A refused operand yields poison**, as the binary arms have done since
+                        // wave 364. `(int)-s` on a record reported the operand *and* drew a cast
+                        // complaint, because the result kept the record's type — one mistake,
+                        // two sentences, and the second about a conversion that was never the
+                        // fault.
+                        let pty = if bad { self.intern(Ty::Error) } else { pty };
                         (pty, promoted)
                     }
                 };
@@ -6858,6 +6897,26 @@ impl Cx<'_> {
         self.visible_names(f.name, f.ty).contains(&n)
     }
 
+    /// **A `switch` label is reached by a jump** (C 6.8.6.1p1), so it may not land inside the
+    /// scope of a variably-modified declaration the jump did not run.
+    ///
+    /// The comparison is against the depth recorded when the `switch` began, not against another
+    /// label's: the origin of this jump is the `switch` itself. That is the whole difference from
+    /// wave 341's `goto` check, which compares two label positions — and it is why a *braced*
+    /// case is legal: `case 1: { int a[n]; }` closes the scope before the next label, so the depth
+    /// is back where it started by the time that label is reached.
+    fn check_label_vla_scope(&mut self, stmt: StmtId, what: &str) {
+        if let Some(&depth) = self.switch_vla_depth.last()
+            && self.open_vla_scopes.len() > depth
+        {
+            let span = self.ast.stmt(stmt).span;
+            self.error(
+                span,
+                format!("{what} enters the scope of a variably-modified declaration"),
+            );
+        }
+    }
+
     /// Whether a declaration names an object with **static storage duration** (C 6.2.4).
     ///
     /// Everything at file scope has it, and inside a block only `static` and `extern` do. There
@@ -7684,12 +7743,15 @@ impl Cx<'_> {
                 }
                 self.promote_node(c, cond, self.ast.expr(cond).span);
                 self.switches.push((Default::default(), false));
+                self.switch_vla_depth.push(self.open_vla_scopes.len());
                 self.breakable_depth += 1;
                 self.type_stmt(body);
                 self.breakable_depth -= 1;
+                self.switch_vla_depth.pop();
                 self.switches.pop();
             }
             StmtKind::Case { lo, hi, body } => {
+                self.check_label_vla_scope(stmt, "a `case` label");
                 self.type_expr(lo);
                 if let Some(h) = hi {
                     self.type_expr(h);
@@ -7764,6 +7826,7 @@ impl Cx<'_> {
                 self.type_stmt(body);
             }
             StmtKind::Default { body } => {
+                self.check_label_vla_scope(stmt, "a `default` label");
                 if self.switches.is_empty() {
                     let span = self.ast.stmt(stmt).span;
                     self.error(span, "`default` label not within a switch");

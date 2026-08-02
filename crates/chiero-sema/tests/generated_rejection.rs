@@ -882,6 +882,19 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "qualified `void` as the only parameter",
         "int f(const void);",
     ),
+    // C 6.8.6.1 and 6.5.3.3, wave 377. All refused by gcc in both modes.
+    (
+        "a `case` label past a variably-modified declaration",
+        "int f(int n){ switch(n){ case 1: ; int a[n]; case 2: return 0; } return 0; }",
+    ),
+    (
+        "a `default` label past a variably-modified declaration",
+        "int f(int n){ switch(n){ case 1: ; int a[n]; default: return 0; } return 0; }",
+    ),
+    (
+        "a jump past a variably-modified typedef",
+        "int f(int n){ goto skip; typedef int T[n]; skip: return 0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -934,7 +947,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 260;
+    const FLOOR: usize = 263;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
