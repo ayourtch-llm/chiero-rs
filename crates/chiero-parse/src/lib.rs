@@ -1086,9 +1086,15 @@ impl<'a> Parser<'a> {
                     // `__attribute__((aligned))` is legal in both positions and VPP writes it on
                     // typedefs throughout `vppinfra`. One name for both would have to choose which
                     // of those to get wrong.
+                    // **The token index, not `here()`.** A zero-width span at the next,
+                    // unconsumed token is the fabricated range 010 §4 forbids: it lies between
+                    // two tokens and is a boundary of neither, so an editor highlights nothing
+                    // and a reader is told an alignment is wrong without being told which. The
+                    // array-suffix code two hundred lines below carries the same warning; this
+                    // wave is what noticed the warning had not travelled.
+                    let astart = self.pos;
                     self.pos += 1;
                     let name = self.intern("_Alignas");
-                    let asp = self.here();
                     let mut args = Vec::new();
                     if self.eat_punct(Punct::LParen) {
                         // **`_Alignas` takes a type name as well as a constant** (C11
@@ -1110,7 +1116,8 @@ impl<'a> Parser<'a> {
                     attrs.push(Attr {
                         name,
                         args,
-                        span: asp,
+                        // Covers `_Alignas(…)` entire, which is what the alignment rules point at.
+                        span: self.span_from(astart),
                     });
                 }
                 TokKind::Kw(Kw::Signed) => {

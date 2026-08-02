@@ -704,3 +704,37 @@ fn an_include_diagnostic_names_the_extra_tokens() {
         "a well-formed include reaches the loader rather than the message split"
     );
 }
+
+/// **Every directive diagnostic points at visible text** (023 §9), the preprocessor's half of
+/// wave 373's gate.
+///
+/// The same question `chiero-sema`'s asks, over this crate's own `VIOLATIONS`. It found one:
+/// `#if` with an empty expression has no tokens, so "the last token" was nothing and the span
+/// covered no text. The fix is the directive's own span — the one thing that is certainly there
+/// when the expression is not.
+#[test]
+fn every_directive_diagnostic_points_at_visible_text() {
+    let mut invisible: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for (name, src) in VIOLATIONS {
+        let tu = preprocess_str("f.c", src, Config::default());
+        for d in &tu.diagnostics {
+            checked += 1;
+            match tu.source_map.span_text(d.span) {
+                Some(t) if !t.is_empty() => {}
+                _ => invisible.push(format!("{name}: {}", d.message)),
+            }
+        }
+    }
+    assert!(
+        checked > VIOLATIONS.len() / 2,
+        "only {checked} diagnostics were examined across {} rows",
+        VIOLATIONS.len()
+    );
+    assert!(
+        invisible.is_empty(),
+        "{} diagnostic(s) point at no visible text:\n  {}",
+        invisible.len(),
+        invisible.join("\n  ")
+    );
+}

@@ -856,7 +856,8 @@ impl Engine {
                         message: "`#if` with no expression".into(),
                     });
                 }
-                let value = parent_active && self.eval_if(&line[2..], current, loader);
+                let value =
+                    parent_active && self.eval_if(&line[2..], line[0].token.span, current, loader);
                 conditionals.push(Conditional {
                     parent_active,
                     active: value,
@@ -891,7 +892,8 @@ impl Engine {
                 let should_eval = conditionals
                     .last()
                     .is_some_and(|frame| frame.parent_active && !frame.taken);
-                let value = should_eval && self.eval_if(&line[2..], current, loader);
+                let value =
+                    should_eval && self.eval_if(&line[2..], line[0].token.span, current, loader);
                 if let Some(frame) = conditionals.last_mut() {
                     frame.active = value;
                     frame.taken |= value;
@@ -1038,7 +1040,13 @@ impl Engine {
         });
     }
 
-    fn eval_if(&mut self, tokens: &[Tok], current: &Path, loader: &mut dyn FileLoader) -> bool {
+    fn eval_if(
+        &mut self,
+        tokens: &[Tok],
+        directive: Span,
+        current: &Path,
+        loader: &mut dyn FileLoader,
+    ) -> bool {
         let mut prepared = Vec::new();
         let mut i = 0;
         while i < tokens.len() {
@@ -1098,6 +1106,7 @@ impl Engine {
                 nesting: 0,
                 nesting_diagnosed: false,
                 ended_early: false,
+                directive,
             };
             let value = parser.expression(true);
             (value, parser.pos, parser.ended_early)
@@ -2039,6 +2048,12 @@ struct ExprParser<'a> {
     nesting_diagnosed: bool,
     /// Whether the expression ran out of tokens, so the trailing-token complaint stands down.
     ended_early: bool,
+    /// The `#if` or `#elif` token, for the case where there is **no** token to point at.
+    ///
+    /// `#if` with an empty expression has an empty token list, so "the last token" is nothing and
+    /// the span covered no text — a diagnostic an editor highlights as a caret between two
+    /// characters. Wave 373 built the gate that found it.
+    directive: Span,
 }
 
 #[derive(Copy, Clone)]
@@ -2384,7 +2399,7 @@ impl ExprParser<'_> {
         let span = self
             .tokens
             .last()
-            .map_or(Span::DUMMY, |token| token.token.span);
+            .map_or(self.directive, |token| token.token.span);
         self.diagnostics.push(Diagnostic {
             span,
             message: "`#if` expression ends early".into(),

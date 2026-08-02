@@ -5036,6 +5036,31 @@ fn alignas_goes_on_an_object_and_names_a_power_of_two() {
         );
     }
 
+    // **And it points at the specifier**, not merely at something. The blanket gate in
+    // `generated_rejection` asks whether a span covers any text; this asks whether it covers the
+    // right text, which is the difference between a diagnostic a reader can follow and one that
+    // merely compiles. Both spans were zero-width until wave 373 built a way to look.
+    for (src, want) in [
+        ("_Alignas(3) int x;", "_Alignas(3)"),
+        ("int f(_Alignas(8) int x);", "_Alignas(8)"),
+        ("_Alignas(1) int x;", "_Alignas(1)"),
+    ] {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let analysis = chiero_sema::analyze(
+            &parsed.ast,
+            &TargetConfig::x86_64_linux(),
+            &harness::names_of(&parsed),
+        );
+        let covered: Vec<&str> = analysis
+            .diagnostics
+            .iter()
+            .filter_map(|d| tu.source_map.span_text(d.span))
+            .collect();
+        assert_eq!(covered, vec![want], "the span for `{src}`");
+    }
+
     for good in [
         "_Alignas(8) int x;",
         "int f(void){ _Alignas(8) int x=1; return x; }",
