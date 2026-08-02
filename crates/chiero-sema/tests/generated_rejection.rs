@@ -802,6 +802,27 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "a flexible array member in a union",
         "union U { int a; int b[]; };",
     ),
+    // C 6.7.2.1 and 6.4.5, wave 367. All refused by gcc in both modes.
+    (
+        "a member of function type",
+        "struct S { int f(void); int a; };",
+    ),
+    (
+        "a member of function type through a typedef",
+        "typedef int F(void); struct S { F a; };",
+    ),
+    (
+        "an anonymous member colliding with a sibling",
+        "struct S { struct { int a; }; int a; };",
+    ),
+    (
+        "two anonymous members sharing a name",
+        "struct S { struct { int a; }; struct { int a; }; };",
+    ),
+    (
+        "string literals with different prefixes",
+        "int f(void){ return (int)sizeof(u\"a\" U\"b\"); }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -854,7 +875,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 241;
+    const FLOOR: usize = 246;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

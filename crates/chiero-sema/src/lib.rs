@@ -2705,8 +2705,20 @@ impl Cx<'_> {
             // **A member name is unique within its record** (C 6.7.2.1p2), and only within it:
             // two structs may each have an `m`, so the set is built per `lay_out` call rather
             // than kept across them.
-            if let Some(n) = name
-                && fields.iter().any(|f| f.name == Some(n))
+            // **An anonymous member's names are the record's own** (6.7.2.1p13), which is what
+            // makes `s.a` resolve through one — `find_field` has always recursed into unnamed
+            // record members for lookup. The uniqueness check looked only at the top level, so
+            // the names it promotes for *use* were never checked for *collision*.
+            //
+            // Both directions matter and both are this one comparison: a named member colliding
+            // with something an earlier anonymous member promoted, and an anonymous member whose
+            // promotions collide with what is already there. `visible_names` answers for either
+            // side, and a **named** nested member contributes nothing — which is the row that
+            // stops this from being "walk into every record".
+            let contributed = self.visible_names(name, fty);
+            if let Some(&n) = contributed
+                .iter()
+                .find(|&&n| fields.iter().any(|f| self.field_shows(f, n)))
             {
                 let text = self.text(n).unwrap_or("?").to_owned();
                 let span = self.ast.decl(m).span;
@@ -2733,7 +2745,18 @@ impl Cx<'_> {
             // it while mutating the bit-field rule beside it, and the first attempt at the guard
             // asked `Ty::Error`, which also suppressed `enum E; struct S { enum E m; };` — a
             // genuinely incomplete member that nothing else reports.
-            if has_no_size(&self.out, fty) && !bit_field_of_a_bad_type && !member_ty_explained {
+            // **A member has an object type** (C 6.7.2.1p3), and a function type is not an
+            // incomplete one — it is not an object type at all, so `has_no_size` below never saw
+            // it. Wave 339 drew that distinction for `sizeof` and this site never got it. The
+            // pointer spelling `int (*f)(void)` is a pointer and unaffected, which is the whole
+            // reason C can say this.
+            if matches!(self.out.types[fty.0 as usize], Ty::Func { .. }) {
+                let span = self.ast.decl(m).span;
+                self.error(span, "a member may not have a function type");
+            } else if has_no_size(&self.out, fty)
+                && !bit_field_of_a_bad_type
+                && !member_ty_explained
+            {
                 let what = match name {
                     Some(n) => format!("`{}`", self.text(n).unwrap_or("?")),
                     None => "an unnamed field".to_owned(),
@@ -4211,6 +4234,35 @@ impl Cx<'_> {
                 // `sizeof(L"AB")` answered 3 instead of 12 — a silent wrong answer, and one
                 // §9 attributed to `unquote`, which strips the prefix perfectly well and
                 // never had the type to lose.
+                // **C 6.4.5p5: two literals with different prefixes do not concatenate.** One
+                // prefixed and one plain is fine — the result takes the prefix — so the question
+                // is whether two *non-empty* prefixes disagree, and it is asked about the prefix
+                // rather than the element type because `u8` and plain share an element and do
+                // not share this rule.
+                //
+                // Reported once for the whole literal: `L"a" u"b" U"c"` is one bad literal, not
+                // two bad joins (contract 20's spirit).
+                let mut seen_prefix: Option<&'static str> = None;
+                let mut prefix_clash = false;
+                for f in fragments.iter() {
+                    let Some(text) = self.text(f.spelling) else {
+                        continue;
+                    };
+                    let p = strlit::string_prefix(text);
+                    if p.is_empty() {
+                        continue;
+                    }
+                    match seen_prefix {
+                        Some(q) if q != p => prefix_clash = true,
+                        _ => seen_prefix = Some(p),
+                    }
+                }
+                if prefix_clash {
+                    self.error(
+                        span,
+                        "string literals with different prefixes do not concatenate",
+                    );
+                }
                 let (esign, ebits) = fragments
                     .first()
                     .and_then(|f| self.text(f.spelling))
@@ -6624,6 +6676,31 @@ impl Cx<'_> {
                 self.error(span, "an alignment may not be weaker than the type's own");
             }
         }
+    }
+
+    /// The names a member makes visible in its enclosing record: its own if it has one, and
+    /// otherwise — an *anonymous* struct or union — the names of everything inside it, in turn.
+    fn visible_names(&self, name: Option<Symbol>, ty: TyId) -> Vec<Symbol> {
+        if let Some(n) = name {
+            return vec![n];
+        }
+        let Ty::Record(r) = self.out.types[ty.0 as usize] else {
+            return Vec::new();
+        };
+        let Some(layout) = self.out.records.get(r.0 as usize) else {
+            return Vec::new();
+        };
+        layout
+            .fields
+            .clone()
+            .iter()
+            .flat_map(|f| self.visible_names(f.name, f.ty))
+            .collect()
+    }
+
+    /// Whether an already-laid-out field makes `n` visible, directly or by promotion.
+    fn field_shows(&self, f: &FieldLayout, n: Symbol) -> bool {
+        self.visible_names(f.name, f.ty).contains(&n)
     }
 
     /// Whether a declaration names an object with **static storage duration** (C 6.2.4).

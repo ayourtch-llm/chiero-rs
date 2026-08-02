@@ -5299,6 +5299,11 @@ fn string_literals_concatenate_only_with_a_compatible_prefix() {
         "int f(void){ return (int)sizeof(u\"a\" U\"b\"); }",
         "int f(void){ return (int)sizeof(L\"a\" u8\"b\"); }",
         "int f(void){ return (int)sizeof(U\"a\" u\"b\"); }",
+        // **`u8` against `u`**, which is the pair that distinguishes the prefix from the element
+        // width and from a prefix match by first letter. A mutant reading `u8` as `u` survived
+        // every other row.
+        "int f(void){ return (int)sizeof(u\"a\" u8\"b\"); }",
+        "int f(void){ return (int)sizeof(u8\"a\" u\"b\"); }",
     ] {
         assert_eq!(
             diags(bad),

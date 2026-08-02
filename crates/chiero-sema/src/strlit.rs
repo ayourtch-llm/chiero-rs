@@ -45,6 +45,25 @@ pub enum StrUnit {
 ///
 /// `char16_t`'s unsignedness is observable only above 32767, so nothing could pin it until
 /// `u"\uFFFF"` existed to produce 65535 — a signed reading answers -1.
+/// The literal's **prefix as written**, or `""` for a plain one.
+///
+/// Separate from [`string_element`] because C 6.4.5p5 asks about the prefix and not the element
+/// type: `u8"a" "b"` concatenates and `L"a" u8"b"` does not, though `u8` and plain share an
+/// element type. A rule phrased on the element would get exactly those two backwards.
+pub fn string_prefix(spelling: &str) -> &'static str {
+    if spelling.starts_with("u8") {
+        "u8"
+    } else if spelling.starts_with('L') {
+        "L"
+    } else if spelling.starts_with('u') {
+        "u"
+    } else if spelling.starts_with('U') {
+        "U"
+    } else {
+        ""
+    }
+}
+
 pub fn string_element(spelling: &str) -> (bool, u32) {
     if spelling.starts_with("u8") {
         (true, 8)
