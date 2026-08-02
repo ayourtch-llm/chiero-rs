@@ -1083,3 +1083,67 @@ fn every_diagnostic_points_at_visible_text() {
         invisible.join("\n  ")
     );
 }
+
+/// **A span covers the text the message is about, and a message is one line of prose.**
+///
+/// Wave 373's gate asks whether a span covers *any* text; this asks whether it covers the right
+/// text, and it was found by doing what that wave could not — rendering all 252 diagnostics the
+/// `VIOLATIONS` corpus produces and reading them. Two families came out, and both are invisible
+/// to every message assertion in the suite.
+///
+/// **A `Func` type node's span is its parameter list.** So the two rules that point at a function
+/// *type* point at `(void)`: "a function may not return an array or a function" on `int
+/// f(void)[3]` sends a reader to the parameters, and a `_Generic` association of function type
+/// names `(void)` where the association is `int(void)`. One cause, two rules, and the parameter
+/// list is the one part of the declarator that is *not* at fault in either.
+///
+/// **One message carries its own source indentation.** A Rust string literal broken across lines
+/// keeps the leading whitespace of the continuation, so the `goto`-into-a-VLA diagnostic reads
+/// "…the scope of a<38 spaces>variably-modified declaration". Twenty-one messages in this file
+/// are written across lines; one of them was written without the `\` that joins them.
+#[test]
+fn a_span_covers_what_the_message_is_about() {
+    for (src, want) in [
+        // The return type is at fault, so the declarator is what a reader must see — not the
+        // parameter list, which is the one part that is fine.
+        ("int f(void)[3];", "int f(void)[3]"),
+        (
+            "int f(void){ return _Generic(1, int(void): 1, default: 0); }",
+            "int(void)",
+        ),
+    ] {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let names = harness::names_of(&parsed);
+        let analysis = chiero_sema::analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+        let covered: Vec<&str> = analysis
+            .diagnostics
+            .iter()
+            .filter_map(|d| tu.source_map.span_text(d.span))
+            .collect();
+        assert_eq!(covered, vec![want], "the span for `{src}`");
+    }
+
+    // **Every message is one line with no run of spaces**, checked over the whole corpus because
+    // the fault is a typo in a string literal and could be anywhere.
+    let mut ragged: Vec<String> = Vec::new();
+    for (name, src) in VIOLATIONS {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let names = harness::names_of(&parsed);
+        let analysis = chiero_sema::analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+        for d in &analysis.diagnostics {
+            if d.message.contains("  ") || d.message.contains('\n') {
+                ragged.push(format!("{name}: {:?}", d.message));
+            }
+        }
+    }
+    assert!(
+        ragged.is_empty(),
+        "{} message(s) carry their own source formatting:\n  {}",
+        ragged.len(),
+        ragged.join("\n  ")
+    );
+}

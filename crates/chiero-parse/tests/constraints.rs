@@ -266,3 +266,49 @@ fn array_decorations_belong_to_a_parameter() {
         );
     }
 }
+
+/// **Every parse diagnostic points at visible text** (023 §9), the third and last of wave 373's
+/// gate family.
+///
+/// `chiero-sema` and `chiero-pp` got theirs in 373; this crate was left because its constraints
+/// test had no `VIOLATIONS` list to run over. The list is small and the question is the same: a
+/// report whose span covers no text is one a reader cannot follow to the fault.
+#[test]
+fn every_parse_diagnostic_points_at_visible_text() {
+    let mut invisible: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for src in [
+        "int int x;",
+        "float double x;",
+        "signed unsigned x;",
+        "long float x;",
+        "int a[static 3];",
+        "typedef int T[static 3];",
+        "int f(void){ int a[*]; return 0; }",
+        "int f(void){ int a[const 3]; return a[0]; }",
+        "struct S { int a[static 3]; };",
+        "int f(void){ return 1",
+        "int f(void) { return 1; ",
+        "int f(void){ goto; }",
+        "int f(void){ for(;) ; }",
+        "int f(void){ if }",
+    ] {
+        let tu = preprocess_str("f.c", src, Config::default());
+        let mut oracle = ScopedTypedefs::new();
+        let parsed = parse_tu(&tu, &mut oracle);
+        for d in &parsed.diagnostics {
+            checked += 1;
+            match tu.source_map.span_text(d.span) {
+                Some(t) if !t.is_empty() => {}
+                _ => invisible.push(format!("{src:?}: {}", d.message)),
+            }
+        }
+    }
+    assert!(checked >= 14, "only {checked} diagnostics were examined");
+    assert!(
+        invisible.is_empty(),
+        "{} diagnostic(s) point at no visible text:\n  {}",
+        invisible.len(),
+        invisible.join("\n  ")
+    );
+}
