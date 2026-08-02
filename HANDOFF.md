@@ -487,36 +487,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 356) — 1537 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 357) — 1538 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 160 of 160, `chiero-pp` 27 of 27, `chiero-parse` clean.**
->
-> **The qualifier item is closed as not-worth-doing, and must not be re-proposed without a new
-> reason.** Waves 328–354 carried "qualifiers reach sema but not `chiero-lower` or CIR" on the
-> strength of "a `const` pointee would tell 021 a store through it is UB". Costed in wave 355:
-> **040's checker catalogue lists no such checker**, and **023 §7's causes table — normative and
-> complete — does not admit a dropped qualifier**, because dropping one changes nothing the engine
-> computes. If a future wave wants it, the prerequisite is a *spec change* adding the checker, not
-> an implementation.
+> **Sema 165 of 165, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Next, in descending order of what they buy:**
->   1. **Continue the census, chosen by reading C.** Wave 355 took 6.5.2.5 and found five misses
->      behind one cause. Still unexamined: **6.7.9's designators beyond wave 314** (nested
->      designators, `[a][b] =`, `.x.y =`, a designator after a positional element), **6.10.3.5's
->      `#undef`/redefinition interaction beyond wave 333**, and **6.5.16.2's compound assignment**
->      (which operators admit a pointer left operand).
+>   1. **Continue the census by reading C.** Waves 355 and 356 each found several misses behind one
+>      cause, which is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
+>      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.15's conditional
+>      operator** (the type of `p ? q : 0`, of two different struct pointers, of `void` arms), and
+>      **6.7.2.2's enumeration constraints** (a value outside `int`, an enum with no enumerators).
 >   2. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both measured
->      clean, so it is a gate — and wave 355 shows the gate earns its keep on *new* code, which is
->      the argument for having it before the next rule rather than after.
->   3. **`check_init` is reachable from two places now.** Wave 355 added the second. If a third
->      appears, the type-usability question belongs with it rather than repeated — the shape that
->      has produced four "one rule implemented twice" findings here.
+>      clean, and wave 355 showed the gate earns its keep on *new* code.
+>   3. **`check_init` now has three callers** — declaration, compound literal, and the designator
+>      descent. Wave 355's note stands: if a fourth appears, the type-usability question belongs
+>      with it rather than repeated.
 >
-> **A census that finds five misses behind one cause is the cheapest kind.** The construct was
-> never wired into an existing rule at all, so the fix was one call and the five symptoms went
-> together. **When a census finds several misses in one construct, look for the single missing
-> wire before writing several rules** — wave 352's storage grid and wave 355's compound literal
-> were both that shape.
+> **The cheapest census result is several misses behind one guard.** Wave 355's compound literal
+> was never wired to `check_init` at all; wave 356's nested designators were wired and then
+> swallowed by `elides_braces`. In both cases the fix was one place and the symptoms went together.
+> **When a census finds several misses in one construct, find the single guard or missing call
+> before writing several rules** — and check the guards that *skip* work, not just the rules that
+> do it, since a wrong skip is invisible to every channel that counts rejections.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2822,6 +2815,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A guard that skips work is invisible to every channel that counts rejections** (wave 356).
+> `elides_braces` declared brace elision for `{[0][5] = 1}` — a nested designator writes a scalar
+> into an aggregate element, which is its exact signal — and the whole initializer check was
+> skipped. Four rules went missing behind one `return`. **When a census finds several misses in one
+> construct, look at what *skips* the checking before writing new checks.**
+>
+> **A cursor bug hides when every fixture designates position 0** (wave 356). Dropping the outer
+> position from the designator descent survived every case written by hand, because they all named
+> `[0]` or the first member. `{[1][1] = 1, 2}` overflows and `{[0][0] = 1, 2}` does not — **pick
+> the fixture's indices so that a wrong cursor lands somewhere different.**
 >
 > **Cost a proposed feature against the spec that would consume it** (wave 355). The qualifier work
 > was carried for twenty-seven waves on the strength of a checker that 040's catalogue does not
