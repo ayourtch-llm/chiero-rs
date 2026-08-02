@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 378) — 1576 tests, 4 ignored, M1 263/263 by contract
+> ### ⏭️ START HERE (wave 379) — 1578 tests, 4 ignored, M1 263/263 by contract
 >
 > **Sema 263 of 263, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
@@ -508,6 +508,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 378 ran the census by asking who else should have changed**, and it worked: the
+> multiplicative arm — the *oldest* of the operand-check family — had been skipped by both waves
+> that added poison to its siblings, and `(int)(s * 2)` said three things where every other
+> operator said one. The contract-20 channel could not see it, because it runs over `VIOLATIONS`
+> and no row there puts a record under `*`. **A channel only sees the rows it was given.**
+>
+> **A test in one crate cannot assert the absence of another crate's sentence.** The K&R claim is
+> "one message, not two", and 013's harness sees only 013 — the mutant that restored the poisoned
+> placeholder passed the parser's test completely. Cross-stage claims need a cross-stage
+> assertion, and the sema file is where this project puts them.
 >
 > **Wave 377 found four misses, every one beside a rule already written.** A `case` label is a
 > jump and wave 341's check was keyed on `goto`; a variably-modified `typedef` opens the same
@@ -732,10 +743,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
 >      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
->      **6.7.2.3's tag compatibility across translation units**, **6.5.15's conditional operator
->      with two pointer arms of different qualification**, and **6.9.1p12's parameter scope in a
->      K&R definition**. 6.5.3.3, 6.8.6.1 and 6.10.3.4 are closed — the last needs nothing, and
->      the census row for it was ill-formed besides: a self-referential macro is legal C.
+>      **6.7.2.3's tag compatibility across translation units**, **6.3.1.8's usual arithmetic
+>      conversions on a `_Bool` operand**, and **6.5.2.5's compound literal at file scope**.
+>      6.5.15, 6.9.1p12 and 6.5.3.3/6.8.6.1/6.10.3.4 are closed.
+>
+>      **The sibling sweep is the cheaper census** and has now paid twice (377, 378). Run it on
+>      the rule this wave wrote — the conditional's own sentence — and ask which other *shared*
+>      arms report in a caller's words. `Conversion::Condition` and `Conversion::Argument` exist;
+>      nothing has checked what the remaining `_ =>` arm covers.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3081,6 +3096,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A channel only sees the rows it was given** (wave 378). `one_mistake_produces_one_diagnostic`
+> has run since wave 353 and never caught the multiplicative arm's triple report, because no
+> `VIOLATIONS` row puts a record under `*`. A gate over a corpus is a claim about *that corpus* —
+> when a sweep finds something the gate should have caught, add the row as well as the fix.
+>
+> **A test in one crate cannot assert the absence of another crate's sentence** (wave 378). The
+> mutant that restored a poisoned placeholder passed `chiero-parse`'s test completely; the claim
+> was about what 014 would then say. Cross-stage claims need a cross-stage assertion.
 >
 > **When a rule is added, ask which of its siblings did not get it** (wave 377). Four of this
 > wave's four findings were old rules missing a treatment their neighbours had: `goto` had the VLA
