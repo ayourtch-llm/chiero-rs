@@ -5187,3 +5187,144 @@ fn a_flexible_array_member_needs_a_member_before_it() {
         );
     }
 }
+
+/// **A member has an object type, and an anonymous member's names join the enclosing record**
+/// (C 6.7.2.1p3, p13).
+///
+/// A function is not an object, so `struct S { int f(void); }` declares something that cannot
+/// exist — chiero takes it, and `has_no_size` does not catch it because a function type is not
+/// *incomplete*, it is not an object type at all. That is the same distinction wave 339 drew for
+/// `sizeof`, in a place that never got it.
+///
+/// An **anonymous** struct or union member has no name of its own, so C 6.7.2.1p13 puts its
+/// members into the enclosing record's namespace — which is what makes `s.a` work, and what
+/// makes `a` collide with a sibling. The discriminator is the *named* nested member: `struct {
+/// int a; } n;` puts nothing in the enclosing namespace, so `int a;` beside it is fine.
+#[test]
+fn a_member_is_an_object_and_an_anonymous_one_shares_its_names() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // A function type, spelled directly and through a typedef, in a struct and a union.
+        (
+            "struct S { int f(void); int a; };",
+            "a member may not have a function type",
+        ),
+        (
+            "union U { void g(void); };",
+            "a member may not have a function type",
+        ),
+        (
+            "typedef int F(void); struct S { F a; };",
+            "a member may not have a function type",
+        ),
+        // **An anonymous member's names are the enclosing record's**, so they collide there.
+        (
+            "struct S { struct { int a; }; int a; };",
+            "duplicate member `a`",
+        ),
+        (
+            "struct S { struct { int a; }; struct { int a; }; };",
+            "duplicate member `a`",
+        ),
+        (
+            "struct S { union { int a; }; union { int a; }; };",
+            "duplicate member `a`",
+        ),
+        // Through **two** levels of anonymity, which is what makes this recursive.
+        (
+            "struct S { struct { struct { int a; }; }; int a; };",
+            "duplicate member `a`",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // A **pointer** to a function is an object, and is how one writes this.
+        "struct S { int (*f)(void); };",
+        "typedef int F(void); struct S { F *a; };",
+        // Anonymous members whose names do not collide, in either order and either kind.
+        "struct S { struct { int a; }; struct { int b; }; };",
+        "struct S { struct { int a; }; union { int b; }; };",
+        "struct S { struct { int a; }; int b; };",
+        "struct S { int b; struct { int a; }; };",
+        // **A named nested member contributes nothing** to the enclosing namespace.
+        "struct S { struct { int a; } n; int a; };",
+        // And the uses that make the promotion worth having.
+        "struct S { struct { int a; }; }; int f(void){ struct S s; return s.a; }",
+        "struct S { union { int a; float b; }; }; int f(void){ struct S s; return s.a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **Two string literals with different prefixes do not concatenate** (C 6.4.5p5).
+///
+/// One prefixed and one plain is fine and the result takes the prefix — `"a" L"b"` is a wide
+/// string — so the rule is about *two different* prefixes rather than about disagreeing with
+/// plain. chiero concatenates anything, and `u"a" U"b"` produced a string whose only complaint
+/// came from the type it was later assigned to.
+///
+/// `u8` counts as a prefix for this and not for the element width: `u8"a" "b"` is legal and
+/// `L"a" u8"b"` is not, which is why the rule cannot be phrased on the element type.
+#[test]
+fn string_literals_concatenate_only_with_a_compatible_prefix() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(void){ return (int)sizeof(u\"a\" L\"b\"); }",
+        "int f(void){ return (int)sizeof(u\"a\" U\"b\"); }",
+        "int f(void){ return (int)sizeof(L\"a\" u8\"b\"); }",
+        "int f(void){ return (int)sizeof(U\"a\" u\"b\"); }",
+    ] {
+        assert_eq!(
+            diags(bad),
+            vec!["string literals with different prefixes do not concatenate".to_string()],
+            "the message for `{bad}`"
+        );
+    }
+
+    for good in [
+        // The same prefix, and a prefix beside a plain literal in either order.
+        "int f(void){ return (int)sizeof(u\"a\" u\"b\"); }",
+        "int f(void){ return (int)sizeof(L\"a\" L\"b\"); }",
+        "int f(void){ return (int)sizeof(U\"a\" U\"b\"); }",
+        "int f(void){ return (int)sizeof(u8\"a\" u8\"b\"); }",
+        "int f(void){ return (int)sizeof(\"a\" L\"b\"); }",
+        "int f(void){ return (int)sizeof(L\"a\" \"b\"); }",
+        "int f(void){ return (int)sizeof(u8\"a\" \"b\"); }",
+        // Three plain literals, and a single one of each prefix.
+        "int f(void){ return (int)sizeof(\"a\" \"b\" \"c\"); }",
+        "char *f(void){ return \"a\" \"b\"; }",
+        "int f(void){ return (int)sizeof(L\"a\"); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
