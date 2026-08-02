@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 362) — 1548 tests, 4 ignored, M1 202/202 by contract
+> ### ⏭️ START HERE (wave 363) — 1550 tests, 4 ignored, M1 210/210 by contract
 >
-> **Sema 202 of 202, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 210 of 210, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 362 closed 6.5.4, 6.5.5, 6.9.1 and 6.9.2.** Twelve misses in two rules. The wave's
+> lesson is not either rule but **how the vector case was got right**: two plausible drafts passed
+> every hand-written fixture and were refuted by the twenty-header corpus gate, once each. VPP
+> casts a two-lane vector to `uword` throughout `vppinfra`, and only measuring gcc — after the gate
+> pointed at the construct — produced the rule that holds ("a cast involving a vector keeps its
+> size, and the other side is a vector or an integer").
+>
+> **One thing is deferred with evidence, not missed:** `typedef int T; int T;` — an identifier
+> declared twice in one scope with different meanings. Refused by gcc in both modes, in both
+> orders, at file and block scope, while `typedef int T; typedef int T;` and inner shadowing stay
+> legal. It needs a scoped table of ordinary identifiers carrying what each name *means*, which is
+> a mechanism rather than a rule. **That is the best-evidenced next wave.**
 >
 > **Wave 361 closed 6.5.2.3, 6.7.4 and 6.5.3.2.** `.` and `->` were interchangeable — 013 left
 > `arrow` on the node saying "014 decides whether either was legal", and 014 never asked. Function
@@ -544,13 +557,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.4 and 6.5.5's
->      cast and multiplicative constraints** (a cast to or from a record, `%` on a floating type,
->      a cast between a pointer and a floating type), and **6.9.1/6.9.2's external-definition
->      constraints** (a function definition whose type is not a function type, an object defined
->      with an incomplete type, `static` after a use with external linkage). **Run the legal half
->      every time** — it has now produced the wave's most valuable finding twice (355 and 359), and
->      in 360 and 361 it decided the rule's phrasing.
+>      `#undef` of a built-in, a function-like macro redefined object-like), and **6.5.6/6.5.8/6.5.9's
+>      additive and comparison constraints** (subtracting incompatible pointers, comparing a
+>      pointer with an integer, relational operators on function pointers). Before those, the
+>      **identifier-meaning table** deferred above is the strongest lead. **Run the legal half
+>      every time** — and read the corpus gate's failures as census results (wave 362), not as
+>      breakage: each one named the exact construct to go and measure.
 >   2. **One row is deferred, not missed:** `int x = {}` — empty initializer braces — is a pedantic
 >      error under C11 and legal under `-std=gnu11` and C23. Wave 357's criterion applies: count
 >      real uses before forming an opinion. Do not re-find it as a defect.
@@ -2878,6 +2890,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **The corpus gate is a census channel, not just a safety net** (wave 362). Two successive drafts
+> of the vector-cast rule passed every hand-written fixture and were each refuted by the twenty
+> real headers. When it fails, do not weaken the rule to make it pass — **read which construct it
+> names and go measure gcc on that construct**. Both times, the failure was pointing at a GNU
+> extension VPP uses everywhere and the standard does not describe.
+>
+> **A count assertion cannot tell two halves of a rule apart** (wave 362). `(int)(struct S)s.a`
+> draws exactly one diagnostic whether the target rule or the operand rule fires, so a mutant that
+> deleted the target half survived. When one rule has several arms, assert the **message** on a row
+> where only that arm can answer.
 >
 > **A correct mutant measured against a dirty baseline says nothing** (wave 361, completing the
 > set). A batch that hit the ten-minute command limit left its last mutation applied, so the next
