@@ -561,3 +561,74 @@ fn an_if_expression_is_an_integer_constant_expression() {
         );
     }
 }
+
+/// **`_Pragma` takes exactly one string literal** (C 6.10.9p1).
+///
+/// This is not a missing check but a **misplaced** one. `_Pragma` is recognised here, and when
+/// the operand is anything other than one string literal the tokens fall through untouched — to
+/// the parser, which has no idea what `_Pragma` is and reports "expected a declaration" three to
+/// five times over. One mistake, five sentences, none of them naming it.
+///
+/// That is the shape wave 366 named: the information is at its widest in the crate that has it,
+/// and 013 cannot diagnose an operator 010 owns. The fall-through was silent because a
+/// *conditional* `if let` chain has no `else` — nothing was decided to be wrong, it simply did
+/// not match.
+///
+/// The legal half pins what the operator does accept: any string prefix, since `L"once"` is a
+/// string literal, and a macro that expands to one.
+#[test]
+fn a_pragma_operator_takes_one_string_literal() {
+    for (src, want) in [
+        // Not a string: an identifier, a number, and nothing at all.
+        (
+            "int base; _Pragma(once)\n",
+            "`_Pragma` takes one string literal",
+        ),
+        (
+            "int base; _Pragma(1)\n",
+            "`_Pragma` takes one string literal",
+        ),
+        (
+            "int base; _Pragma()\n",
+            "`_Pragma` takes one string literal",
+        ),
+        // **Two literals**, which C does not concatenate here — the operand is one *token*.
+        (
+            "int base; _Pragma(\"a\" \"b\")\n",
+            "`_Pragma` takes one string literal",
+        ),
+        // Unclosed, and the operator with no operand list at all.
+        (
+            "int base; _Pragma(\"once\"\n",
+            "`_Pragma` takes one string literal",
+        ),
+        ("int base; _Pragma\n", "`_Pragma` takes one string literal"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        "int base; _Pragma(\"once\")\n",
+        "int base; _Pragma(\"GCC diagnostic push\")\n",
+        // **Any string prefix.** `L"once"` is a string literal, so the rule is about the token
+        // class and not about the spelling.
+        "int base; _Pragma(L\"once\")\n",
+        // Reached through a macro, which is the shape `#pragma` wrappers are written in.
+        "#define ONCE _Pragma(\"once\")\nint base;\nONCE\n",
+        "#define S \"once\"\nint base; _Pragma(S)\n",
+        // And the directive spelling beside it, which is a different construct and unaffected.
+        "int base;\n#pragma once\n",
+        "int base;\n#pragma nonsense whatever\n",
+        "int base;\n#pragma\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
