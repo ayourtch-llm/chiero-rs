@@ -1157,6 +1157,11 @@ enum StorageContext {
     ForInit,
     Parameter,
     Function,
+    /// A `typedef`, and a member of a structure or union. Neither takes a storage class *or* a
+    /// function specifier; the storage side of a `typedef` is counted separately (6.7.1p2 lets
+    /// `_Thread_local` accompany `static` there and not here), so this context exists for the
+    /// specifier half, which is the same in both places.
+    NotAnObject,
 }
 
 /// Names declared in the scope being walked, for the rules that ask "again, *here*?".
@@ -1556,6 +1561,15 @@ impl Cx<'_> {
                     self.error(
                         self.ast.decl(id).span,
                         "`typedef` cannot be combined with another storage class",
+                    );
+                } else {
+                    // **The specifier half**, which the counting above deliberately does not
+                    // cover. `else` because a `typedef` carrying both a stray storage class and
+                    // an `inline` is one bad declaration (contract 20).
+                    self.check_storage_context(
+                        storage,
+                        StorageContext::NotAnObject,
+                        self.ast.decl(id).span,
                     );
                 }
                 let t = self.ty_of(ty);
@@ -2462,9 +2476,18 @@ impl Cx<'_> {
         let mut flexible_member = None;
 
         for &m in members {
-            let DeclKind::Var { name, ty, .. } = self.ast.decl(m).kind.clone() else {
+            let DeclKind::Var {
+                name, ty, storage, ..
+            } = self.ast.decl(m).kind.clone()
+            else {
                 continue;
             };
+            // **A member is not an object declaration either** (C 6.7.4p2): `struct S { inline
+            // int a; }` is refused by gcc in *both* modes, unlike the `-pedantic-errors`-only
+            // rows on objects. Storage classes on a member are the parser's business; this is
+            // the specifier half only, which is why the shared context is named for what a
+            // member and a `typedef` have in common rather than for either one.
+            self.check_storage_context(storage, StorageContext::NotAnObject, self.ast.decl(m).span);
             // **A member's type is built for the *member*.** Without this the enclosing object's
             // name was still in `declaring`, so `struct S { int bad[-1]; } x;` reported "array
             // length of `x` is negative" — naming a declarator that is not the one at fault,
@@ -4510,19 +4533,40 @@ impl Cx<'_> {
                     operands: vec![b, i],
                 })
             }
-            ExprKind::Member { base, field, .. } => {
+            ExprKind::Member { base, field, arrow } => {
+                let arrow = *arrow;
                 let b = self.type_expr(*base);
                 let b = self.decay(b, *base);
                 let bty = self.out.typed.ty_of(b);
                 let base_ty = self.out.types[bty.0 as usize].clone();
-                let rec = match &base_ty {
-                    Ty::Record(r) => Some(*r),
+                // **`.` takes a structure, `->` takes a pointer to one** (C 6.5.2.3p1–p2). 013
+                // kept `arrow` syntactic and left the question here; until wave 361 nothing
+                // asked it, so the two operators were interchangeable.
+                //
+                // Asked of the **decayed** base, which is what makes `struct S a[2]; a->a`
+                // legal — the array is a pointer by the time the question is put. A rule
+                // written against the base as spelled would reject it, and would also get both
+                // typedef spellings backwards, since `typedef struct S *SP;` puts no `*` in
+                // `SP p;`.
+                let (rec, wrong_operator) = match &base_ty {
+                    Ty::Record(r) => (Some(*r), arrow),
                     Ty::Ptr(p) => match self.out.types[p.0 as usize].clone() {
-                        Ty::Record(r) => Some(r),
-                        _ => None,
+                        Ty::Record(r) => (Some(r), !arrow),
+                        _ => (None, false),
                     },
-                    _ => None,
+                    _ => (None, false),
                 };
+                // **Only when the base is a record either way** (contract 20): `int x; x->a` is
+                // one mistake and the complaint below names it. This arm is for the base that is
+                // a structure, or a pointer to one, and reached with the other operator.
+                if wrong_operator {
+                    let (used, want) = if arrow {
+                        ("`->`", "a pointer to a structure or union")
+                    } else {
+                        ("`.`", "a structure or union")
+                    };
+                    self.error(span, format!("{used} needs {want}"));
+                }
                 let found = rec.and_then(|r| self.out.find_field(r, *field).map(|f| f.ty));
                 // **Two different mistakes, told apart.** A base that is not a structure at all
                 // and a structure without that member are separate errors, and saying which is
@@ -6594,6 +6638,7 @@ impl Cx<'_> {
             ],
             // 6.9.1p4: only `extern` and `static`.
             StorageContext::Function => [("auto", storage.auto), ("register", storage.register)],
+            StorageContext::NotAnObject => [("", false), ("", false)],
         }
         .into_iter()
         .find(|&(_, hit)| hit)
@@ -6605,8 +6650,37 @@ impl Cx<'_> {
                 StorageContext::ForInit => "a `for` initializer",
                 StorageContext::Parameter => "a parameter",
                 StorageContext::Function => "a function",
+                StorageContext::NotAnObject => "a `typedef` or a member",
             };
             self.error(span, format!("`{name}` is not allowed in {where_}"));
+            return;
+        }
+        // **A function specifier declares a function** (C 6.7.4p2). Asked here rather than in a
+        // rule of its own because it is the same question in the same five places: `inline` and
+        // `_Noreturn` belong on a function and nowhere else, so every context except `Function`
+        // refuses both.
+        //
+        // Below the storage complaint and behind its `return`, so `inline register int x;` is
+        // one sentence rather than two — contract 20, and the storage class is the more useful
+        // half to name first.
+        if !matches!(ctx, StorageContext::Function)
+            && let Some(name) = [("inline", storage.inline), ("_Noreturn", storage.noreturn)]
+                .into_iter()
+                .find(|&(_, hit)| hit)
+                .map(|(name, _)| name)
+        {
+            let where_ = match ctx {
+                StorageContext::File => "a file-scope object",
+                StorageContext::Block => "a block-scope object",
+                StorageContext::ForInit => "a `for` initializer",
+                StorageContext::Parameter => "a parameter",
+                StorageContext::NotAnObject => "a `typedef` or a member",
+                StorageContext::Function => unreachable!("excluded above"),
+            };
+            self.error(
+                span,
+                format!("`{name}` declares a function, and this is {where_}"),
+            );
         }
     }
 

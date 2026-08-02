@@ -645,6 +645,29 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "`void` as an `if` condition",
         "void g(void); int f(void){ if(g()) return 1; return 0; }",
     ),
+    // C 6.5.2.3 and 6.7.4, wave 361. The member rows are refused by gcc in both modes; the
+    // specifier rows on objects are `-pedantic-errors` calibration, the one on a member is not.
+    (
+        "`->` on a structure",
+        "struct S{int a;}; int f(void){ struct S s; return s->a; }",
+    ),
+    (
+        "`.` on a pointer",
+        "struct S{int a;}; int f(void){ struct S *p=0; return p.a; }",
+    ),
+    (
+        "`.` on a pointer behind a typedef",
+        "typedef struct S{int a;} *SP; int f(void){ SP p=0; return p.a; }",
+    ),
+    ("`inline` on a file-scope object", "inline int x;"),
+    ("`_Noreturn` on a file-scope object", "_Noreturn int x;"),
+    (
+        "`inline` on a block-scope object",
+        "int f(void){ inline int y=1; return y; }",
+    ),
+    ("`inline` on a parameter", "int f(inline int x);"),
+    ("`inline` on a typedef", "typedef inline int T;"),
+    ("`inline` on a member", "struct S{ inline int a; };"),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -697,7 +720,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 193;
+    const FLOOR: usize = 202;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
