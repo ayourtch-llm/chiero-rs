@@ -487,10 +487,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 374) — 1568 tests, 4 ignored, M1 260/260 by contract
+> ### ⏭️ START HERE (wave 375) — 1570 tests, 4 ignored, M1 260/260 by contract
 >
-> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
-> **Every diagnostic in both `VIOLATIONS` lists now points at visible text** (wave 373).
+> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 7 constraint tests.**
+> **All three crates have a span gate** (373, 374), and the sema corpus is also checked for
+> spans that cover the *wrong* text and for messages carrying their own source formatting.
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -505,6 +506,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 374 read all 252 rendered diagnostics** — the only way to ask whether a span covers the
+> *right* text. Twenty-one spans were wrong; **sixteen were `Parser::here()`**, which two separate
+> waves reached for after the warning against it was written. The fix is in `error`, not at the
+> thirty-one call sites: fixing callers leaves the thirty-second to repeat it.
+>
+> **A blanket gate cannot tell one non-empty span from another.** A mutant that widened to *any*
+> token passed it; four rows asserting *which* token kill it. Every gate of this shape needs named
+> assertions beside it — the same pairing wave 373 recorded.
 >
 > **Wave 373 built the span instrument and used it.** `SourceMap::span_text` had existed since
 > the span crate was written and **nothing called it**, so "the diagnostic is correct" had only
@@ -675,16 +685,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      floating operand through a typedef), **6.8.6.1's `goto` into a VLA scope beyond wave 341**,
 >      and **6.10.3.4's rescanning** (a macro that expands to its own name through two levels).
 >
->   2. **Quality, continued — the instrument now exists.** Wave 373's gate asks only whether a
->      span covers *any* text. The next question is whether it covers the *right* text, which the
->      wave pinned for four rules by name and for none of the other 256. A sampling audit — render
->      the covered text for every `VIOLATIONS` row and read it — is the same shape as the message
->      audit and should find the same kind of thing: `enum E { A = 2147483648 }` points at the
->      whole enumeration where the fault is the value.
+>   2. **Quality, continued.** Messages and spans have both had their audit. The axis not yet
+>      looked at is **how many** diagnostics one mistake produces *in the corpus rather than the
+>      ratchet*: `one_mistake_produces_one_diagnostic` runs over `VIOLATIONS`, where every row is
+>      one fault by construction. A program with *two* faults should produce two reports and
+>      neither should be a consequence of the other, and nothing measures that.
 >
->   3. **Two other suites have no span gate**: `chiero-parse`'s constraints test, and the sema
->      *silence* channel (which has no diagnostics by construction, so it needs none). Adding the
->      first is cheap and closes the family.
+>   3. **Spans that are true and useless.** Wave 374 fixed the two that were plainly wrong. Several
+>      remain wide rather than incorrect — `enum E { A = 2147483648 }` names the whole enumeration
+>      where the fault is the value, and `struct S { int a[]; }` names the member where the fault
+>      is the record. Narrowing them is a judgement call per rule, so it wants a wave with gcc
+>      open beside it rather than a gate.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3030,6 +3041,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Fix the mistake where it is made, not where it landed** (wave 374). Sixteen bad spans came
+> from one accessor that is available, plausible and wrong for reports; two waves reached for it
+> *after* the warning existed. Correcting thirty-one call sites would have left the thirty-second.
+> When the same error recurs across waves, the fix belongs at the shared step.
+>
+> **True and useless is the span failure mode** (wave 374). A function-type node spanned its
+> parameter list — accurate about the node and unhelpful about the fault, which was the return
+> type. A span audit is not looking for spans that are *wrong*; it is looking for spans that do
+> not point at what the sentence is about.
 >
 > **Look for API the crate exposes and the suite never calls** (wave 373). `span_text` was written
 > for exactly this audit and no test had ever used it, so every span in the project was unmeasured
