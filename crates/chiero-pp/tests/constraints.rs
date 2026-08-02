@@ -716,7 +716,15 @@ fn an_include_diagnostic_names_the_extra_tokens() {
 fn every_directive_diagnostic_points_at_visible_text() {
     let mut invisible: Vec<String> = Vec::new();
     let mut checked = 0usize;
-    for (name, src) in VIOLATIONS {
+    // **`VIOLATIONS` plus the rows that are not directive faults.** A stray character is
+    // reported here and by *gcc's compiler* rather than its preprocessor, so it does not belong
+    // in a list the ratchet checks against `gcc -E` — but its span needs the same gate.
+    let extra = [
+        ("stray backslash", "int x = 1 \\ 2;\n"),
+        ("stray at-sign", "int @x;\n"),
+        ("stray from a macro body", "#define M @\nint x = M;\n"),
+    ];
+    for (name, src) in VIOLATIONS.iter().chain(extra.iter()) {
         let tu = preprocess_str("f.c", src, Config::default());
         for d in &tu.diagnostics {
             checked += 1;
