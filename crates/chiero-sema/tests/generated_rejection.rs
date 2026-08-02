@@ -723,6 +723,35 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "parameter then typedef",
         "int f(int T){ typedef int T; return 0; }",
     ),
+    // C 6.5.6 and 6.5.9, wave 364. All refused by gcc in both modes.
+    (
+        "two pointers added",
+        "int f(void){ int *p=0; int *q=0; return (int)(p+q); }",
+    ),
+    (
+        "an integer minus a pointer",
+        "int f(void){ int *p=0; return (int)(1-p); }",
+    ),
+    (
+        "a pointer offset by a floating value",
+        "int f(void){ double d=1; int *p=0; return (int)(p+d); }",
+    ),
+    (
+        "pointers to incompatible types subtracted",
+        "int f(void){ int *p=0; char *q=0; return (int)(p-q); }",
+    ),
+    (
+        "a structure added to an integer",
+        "struct S{int a;}; int f(void){ struct S s; return (int)(s+1); }",
+    ),
+    (
+        "structures compared",
+        "struct S{int a;}; int f(void){ struct S s; struct S t; return s == t; }",
+    ),
+    (
+        "unions compared",
+        "union U{int a;}; int f(void){ union U u; union U v; return u == v; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -775,7 +804,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 219;
+    const FLOOR: usize = 226;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

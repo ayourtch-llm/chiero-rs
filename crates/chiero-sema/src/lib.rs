@@ -5360,6 +5360,37 @@ impl Cx<'_> {
             });
         }
 
+        // **C 6.5.6p2–p3 and 6.5.9p2: a record is not an operand of `+`, `-` or a comparison.**
+        // Asked before the pointer branch because neither operand is a pointer, so nothing below
+        // would look at it — `s + 1` used to reach the conversion path and report "a structure or
+        // union is copied only from its own type", which is true of nothing the program wrote.
+        // Poison and incomplete types stay silent (contract 20).
+        let comparison_op = matches!(
+            op,
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
+        );
+        if matches!(op, BinOp::Add | BinOp::Sub) || comparison_op {
+            let record = |cx: &Self, t: TyId| {
+                matches!(cx.out.types[t.0 as usize], Ty::Record(_)) && !is_incomplete(&cx.out, t)
+            };
+            if record(self, aty) || record(self, bty) {
+                let what = if comparison_op {
+                    "a structure or union is not comparable"
+                } else {
+                    "a structure or union is not an operand of `+` or `-`"
+                };
+                self.error(span, what);
+                // Poison, so an enclosing cast or condition does not add a second sentence
+                // about the type this operator could not produce (contract 20).
+                let poison = self.intern(Ty::Error);
+                return self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: poison,
+                    operands: vec![a, b],
+                });
+            }
+        }
+
         // Pointer arithmetic and comparisons keep their operands as they are: `p + n` has
         // no common type, and forcing one would turn a pointer into an integer.
         let is_ptr = |cx: &Cx, t: TyId| matches!(cx.out.types[t.0 as usize], Ty::Ptr(_));
@@ -5376,6 +5407,43 @@ impl Cx<'_> {
                         self.error(span, "arithmetic on a pointer to an incomplete type");
                         break;
                     }
+                }
+                // **C 6.5.6p2–p3: what may sit beside a pointer.** `+` takes a pointer and an
+                // integer in either order; `-` takes a pointer and an integer *in that order*,
+                // or two pointers to compatible types.
+                //
+                // The other operand must be an **integer**, which is why `p + d` is refused —
+                // the pointee's size scales an integer count, and there is no meaning for a
+                // fractional one. `Ty::Error` is silent, and an incomplete pointee has already
+                // been reported just above.
+                let integer = |cx: &Self, t: TyId| {
+                    matches!(cx.out.types[t.0 as usize], Ty::Int { .. } | Ty::Error)
+                };
+                let both = is_ptr(self, aty) && is_ptr(self, bty);
+                let bad = if both {
+                    // Two pointers: legal only for `-`, and only when the pointees agree. The
+                    // compatibility question is `assignable`'s, exactly as for `p == q` below —
+                    // a second copy of it would drift, and it is what makes qualifiers and
+                    // typedefs not count.
+                    matches!(op, BinOp::Add)
+                        || (!self.assignable(aty, bty, false) && !self.assignable(bty, aty, false))
+                } else if is_ptr(self, aty) {
+                    !integer(self, bty)
+                } else {
+                    // The pointer is on the right, so `-` has an integer on the left: `1 - p`
+                    // is not pointer arithmetic in any direction.
+                    matches!(op, BinOp::Sub) || !integer(self, aty)
+                };
+                if bad {
+                    let what = match (both, op) {
+                        (true, BinOp::Add) => "two pointers cannot be added",
+                        (true, _) => "subtracting pointers to incompatible types",
+                        (_, BinOp::Sub) if !is_ptr(self, aty) => {
+                            "an integer minus a pointer is not pointer arithmetic"
+                        }
+                        _ => "a pointer may only be offset by an integer",
+                    };
+                    self.error(span, what);
                 }
             }
             let ty = match op {

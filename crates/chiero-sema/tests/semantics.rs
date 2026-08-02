@@ -4808,6 +4808,42 @@ fn additive_operands_are_arithmetic_or_a_pointer_and_an_integer() {
         assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
     }
 
+    // **Each message named, not merely counted.** A mutant that gave the additive and the
+    // comparison case one shared sentence survived every row above: both still report exactly
+    // once, and only the wording differs. Wave 362 earned this rule and this is its second catch.
+    for (src, want) in [
+        (
+            "struct S{int a;}; int f(void){ struct S s; struct S t; return s == t; }",
+            "a structure or union is not comparable",
+        ),
+        (
+            "struct S{int a;}; int f(void){ struct S s; return (int)(s+1); }",
+            "a structure or union is not an operand of `+` or `-`",
+        ),
+        (
+            "int f(void){ int *p=0; int *q=0; return (int)(p+q); }",
+            "two pointers cannot be added",
+        ),
+        (
+            "int f(void){ int *p=0; char *q=0; return (int)(p-q); }",
+            "subtracting pointers to incompatible types",
+        ),
+        (
+            "int f(void){ int *p=0; return (int)(1-p); }",
+            "an integer minus a pointer is not pointer arithmetic",
+        ),
+        (
+            "int f(void){ double d=1; int *p=0; return (int)(p+d); }",
+            "a pointer may only be offset by an integer",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
     for good in [
         // Pointer and integer, both orders, and every integer spelling.
         "int f(void){ int *p=0; return (int)(p+1); }",
