@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 363) — 1550 tests, 4 ignored, M1 210/210 by contract
+> ### ⏭️ START HERE (wave 364) — 1551 tests, 4 ignored, M1 219/219 by contract
 >
-> **Sema 210 of 210, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 219 of 219, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 363 built the identifier-meaning table** §9 had been holding since 362, and closed 6.7p3
+> with it — fourteen misses from one mechanism. `ScopedMeanings` is beside `ScopedNames` rather
+> than merged with it, because tags are a separate namespace and four census rows turn on that.
+>
+> **What cost the most was the scope boundaries, not the rule.** Three had to be right and two were
+> wrong first: file scope admits tentative definitions where a block does not, a `for` initializer
+> is its own scope, and the parameters share the body's outermost block. The corpus gate refuted a
+> draft again — second wave running.
 >
 > **Wave 362 closed 6.5.4, 6.5.5, 6.9.1 and 6.9.2.** Twelve misses in two rules. The wave's
 > lesson is not either rule but **how the vector case was got right**: two plausible drafts passed
@@ -557,12 +566,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), and **6.5.6/6.5.8/6.5.9's
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.6/6.5.8/6.5.9's
 >      additive and comparison constraints** (subtracting incompatible pointers, comparing a
->      pointer with an integer, relational operators on function pointers). Before those, the
->      **identifier-meaning table** deferred above is the strongest lead. **Run the legal half
->      every time** — and read the corpus gate's failures as census results (wave 362), not as
+>      pointer with an integer, relational operators on function pointers), and **6.5.16.1's
+>      simple-assignment constraints beyond wave 359** (assigning between incompatible struct
+>      types through a typedef, a `void *` to a function pointer). **Run the legal half every
+>      time** — and read the corpus gate's failures as census results (waves 362 and 363), not as
 >      breakage: each one named the exact construct to go and measure.
+>
+>      **`ScopedMeanings` now exists**, so a rule needing "what does this name mean here" has a
+>      home rather than a mechanism to build first.
 >   2. **One row is deferred, not missed:** `int x = {}` — empty initializer braces — is a pedantic
 >      error under C11 and legal under `-std=gnu11` and C23. Wave 357's criterion applies: count
 >      real uses before forming an opinion. Do not re-find it as a defect.
@@ -2890,6 +2903,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a rule needs scopes, the boundaries are the work** (wave 363). The four-way match at the
+> centre of the identifier-meaning rule was written once and never changed; three scope boundaries
+> took two drafts and two gate failures. Before writing the rule, enumerate **where a scope opens**
+> — and remember the ones C makes that look like nothing: a `for` initializer, and a function
+> body sharing its outermost block with the parameters.
+>
+> **A guard that protects a single edit can break a paired one** (wave 363). Wave 362's dirty-base
+> check restored the file *between* the two halves of an enter/leave mutation, so it scored
+> NOT-APPLIED. Both guard and rule were right; the fix is to apply paired edits in **one**
+> invocation. Every mutation rule earned since 359 has now caught something on a later wave.
 >
 > **The corpus gate is a census channel, not just a safety net** (wave 362). Two successive drafts
 > of the vector-cast rule passed every hand-written fixture and were each refuted by the twenty
