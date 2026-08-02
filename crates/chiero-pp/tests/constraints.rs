@@ -430,3 +430,100 @@ fn a_macro_redefinition_matches_its_spelling() {
         );
     }
 }
+
+/// **An `#if` expression is an integer constant expression, and it is read to the end**
+/// (C 6.10.1p1, p4).
+///
+/// The evaluator reports an *unsupported* token — `#if 1 2` and `#if sizeof(int)` are caught —
+/// and says nothing about input that simply runs out: `#if 1 +`, `#if !`, `#if (1` and
+/// `#if defined(` all evaluate to something and no one is told. The two failures look alike from
+/// inside a recursive-descent parser and are opposite from outside: one is a token it does not
+/// know, the other is a token it needed and did not get.
+///
+/// **Floating and string operands are the other half.** `#if 1.0` and `#if "s"` are not integer
+/// constant expressions and gcc refuses both in either mode; a character constant *is* one and
+/// stays legal, which is what stops the rule from being "digits only".
+///
+/// The legal half pins what the rule must not touch: `1L` and `0x10` are integers however they
+/// are spelled, `defined(A) && defined(B)` is the idiom every header uses, and an undefined name
+/// is `0` rather than an error.
+#[test]
+fn an_if_expression_is_an_integer_constant_expression() {
+    for (src, want) in [
+        // **Runs out**: an operator with no right operand, a prefix with no operand, an
+        // unclosed group, and `defined` in both its broken spellings.
+        (
+            "int base;\n#if 1 +\n#endif\n",
+            "`#if` expression ends early",
+        ),
+        ("int base;\n#if !\n#endif\n", "`#if` expression ends early"),
+        ("int base;\n#if (1\n#endif\n", "`#if` expression ends early"),
+        (
+            "int base;\n#if defined\n#endif\n",
+            "`#if` expression ends early",
+        ),
+        (
+            "int base;\n#if defined(\n#endif\n",
+            "`#if` expression ends early",
+        ),
+        (
+            "int base;\n#if defined(A\n#endif\n",
+            "`#if` expression ends early",
+        ),
+        // **Not an integer**: floating constants in three spellings, and strings in two.
+        (
+            "int base;\n#if 1.0\n#endif\n",
+            "a floating constant is not allowed in `#if`",
+        ),
+        (
+            "int base;\n#if 1.5e3\n#endif\n",
+            "a floating constant is not allowed in `#if`",
+        ),
+        (
+            "int base;\n#if 1.0f\n#endif\n",
+            "a floating constant is not allowed in `#if`",
+        ),
+        (
+            "int base;\n#if \"s\"\n#endif\n",
+            "a string literal is not allowed in `#if`",
+        ),
+        (
+            "int base;\n#if u\"s\"\n#endif\n",
+            "a string literal is not allowed in `#if`",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // Integers however spelled, and a character constant — which *is* an integer constant
+        // expression, so the rule cannot be "digits only".
+        "int base;\n#if 1\n#endif\n",
+        "int base;\n#if 0x10\n#endif\n",
+        "int base;\n#if 1L\n#endif\n",
+        "int base;\n#if 1u - 2u > 0\n#endif\n",
+        "int base;\n#if 'a'\n#endif\n",
+        "int base;\n#if L'a'\n#endif\n",
+        // Complete expressions of every shape the evaluator supports.
+        "int base;\n#if 1 + 2\n#endif\n",
+        "int base;\n#if 1 == 1\n#endif\n",
+        "int base;\n#if (1)\n#endif\n",
+        "int base;\n#if 1 ? 2 : 3\n#endif\n",
+        // `defined` in both legal spellings, and the idiom every header uses.
+        "int base;\n#if defined(A)\n#endif\n",
+        "int base;\n#if defined A\n#endif\n",
+        "int base;\n#if defined(A) && defined(B)\n#endif\n",
+        // **An undefined name is zero**, not a mistake.
+        "int base;\n#if UNDEFINED_NAME\n#endif\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
