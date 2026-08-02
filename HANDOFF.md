@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 359) — 1541 tests, 4 ignored, M1 178/178 by contract
+> ### ⏭️ START HERE (wave 360) — 1544 tests, 4 ignored, M1 185/185 by contract
 >
-> **Sema 178 of 178, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 185 of 185, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -505,6 +505,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
 >
+> **Wave 359 closed 6.5.16 and 6.7.6.3.** 6.5.16 needed nothing — all 26 assignment rows already
+> agreed with gcc, which is a result worth recording rather than a wasted census. 6.7.6.3 gave a
+> **false positive** (a tag defined in a parameter list called a redefinition, and reported *twice*
+> for a definition), three misses, and a duplicate. The cause of the false positive was that a
+> parameter list was not a scope; the cause of one miss was the same mis-keying wave 358 found, in
+> a different rule. **Two waves running, the largest finding was a check that existed and was
+> keyed on the wrong thing.** Ask that question first.
+>
 > **Wave 358 closed 6.7.2.1 and 6.7.9.** Three rules, nine misses — and the largest was §9's
 > predicted shape twice over: the constant-initializer check *existed* and was keyed on
 > `Scope::File` rather than on storage duration, so every block-scope `static` went unchecked.
@@ -512,14 +520,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the symptoms go together.
 >
 > **Next, in descending order of what they buy:**
->   1. **Continue the census by reading C.** Waves 355–358 each found misses behind one cause, which
+>   1. **Continue the census by reading C.** Waves 355–359 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.16's assignment
->      constraints** (incompatible pointer types, a qualified pointee assigned to an unqualified
->      one, assigning to an array or a function), and **6.7.6.3's function-declarator constraints**
->      (a parameter of function type, `void` alongside another parameter, a definition whose
->      declarator is not a prototype).
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.8.4/6.8.5's
+>      statement constraints** (a `switch` on a non-integer, `case` outside a `switch`, a jump into
+>      a VLA's scope), and **6.5.2.2's call constraints beyond argument counts** (calling a
+>      non-function, an argument that will not convert, a call through an unprototyped declarator).
+>      **Run the legal half every time** — it has now produced the wave's most valuable finding
+>      twice (355 and 359).
 >   2. **One row is deferred, not missed:** `int x = {}` — empty initializer braces — is a pedantic
 >      error under C11 and legal under `-std=gnu11` and C23. Wave 357's criterion applies: count
 >      real uses before forming an opinion. Do not re-find it as a defect.
@@ -2847,6 +2856,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A malformed mutant reads as a survivor** (wave 359). An edit that deleted two `enter()` calls
+> and left their `leave()`s did not model "no scope" — it popped an enclosing one — and scored
+> SURVIVED. Wave 357's rule covers mutants that never applied; this is the neighbour, a mutant that
+> applied and modelled the wrong thing. For any paired edit (enter/leave, push/pop, save/restore),
+> mutate **both halves or neither**, and treat a survivor on a rule you just watched fire as a bug
+> in the mutant until proven otherwise.
+>
+> **A scope is the fix for a whole class of false positive** (wave 359). A parameter list was not
+> one, so a tag defined in it was a redefinition of itself — twice over for a definition, which
+> resolves the list a second time. When something is reported *twice*, look for a pass that runs
+> twice before looking at the rule.
+>
+> **A fixture written to prove you broke nothing can find something** (wave 359). `enum E { A };
+> enum E { B };` was in the new test only to show genuine redefinitions still reported. They never
+> had: the struct path used the scoped set and `enum_ty` did not. **Write the "still rejected" half
+> even when you are certain**, and read its failure as a finding rather than as a bad assertion.
 >
 > **A missing check is often a mis-keyed one** (wave 358). The constant-initializer rule existed
 > and asked `Scope::File` where C asks about storage duration, so five of eight census misses were
