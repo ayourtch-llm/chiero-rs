@@ -3856,3 +3856,76 @@ fn a_designator_list_descends_into_the_object() {
         );
     }
 }
+
+/// **An enumerator is representable as `int`** (C 6.7.2.2p2) — wave 357's census.
+///
+/// Eighteen programs across two neighbourhoods. **The conditional operator came back complete**:
+/// all twelve of 6.5.15p3's cases agree with gcc, including the three that are easy to get wrong —
+/// `p ? q : 0` takes the pointer's type, `p ? q : v` with a `void *` is legal, and two *different*
+/// struct pointers are not. Recording a confirmation is part of the method.
+///
+/// The enumeration half gave three misses, in two rules:
+///
+///   - **A value outside `int`**, at either end, and **the implicit successor counts**:
+///     `{A = 2147483647, B}` overflows on `B`, which no explicit value names.
+///   - **An enumeration has at least one enumerator** (6.7.2.2p1). `enum E { };` is refused by gcc
+///     in *both* modes, unlike the range rule.
+///
+/// A case that looked like an exemption is not one: **C has no forward-declared enumeration**, so
+/// `enum E { A }; enum E;` is an error even after the definition — unlike a struct tag, where a
+/// repeat declaration is how forward references work (wave 330). It is out of the accepted half
+/// because gcc rejects it, not because this engine does.
+///
+/// **The range rule is `-pedantic-errors` only** — GNU C widens an enum to whatever type holds its
+/// values — so it sits with the other rules this project calibrates that way rather than with the
+/// extensions it keeps. The corpus decides whether that is safe, and it is: the twenty-header gate
+/// stays silent.
+#[test]
+fn an_enumerator_fits_in_an_int() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // Outside `int`, at either end.
+        "enum E { A = 2147483648 }; int f(void){ return (int)A; }",
+        "enum E { A = -2147483649 }; int f(void){ return (int)A; }",
+        "enum E { A = 4294967295 }; int f(void){ return (int)A; }",
+        // **The implicit successor**, which no explicit value names.
+        "enum E { A = 2147483647, B }; int f(void){ return (int)B; }",
+        // 6.7.2.2p1: an enumeration has an enumerator list.
+        "enum E { }; int f(void){ return 0; }",
+        "enum E { } e; int f(void){ return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // The extremes that do fit, and the ordinary shapes around them.
+        "enum E { A = 2147483647 }; int f(void){ return (int)A; }",
+        "enum E { A = -2147483648 }; int f(void){ return (int)A; }",
+        "enum E { A = 2147483646, B }; int f(void){ return (int)B; }",
+        "enum E { A = 1 }; int f(void){ return A; }",
+        "enum E { A = 1, }; int f(void){ return A; }",
+        "enum E { A, B, C }; int f(void){ return C; }",
+        "enum E { A = -1, B }; int f(void){ return B; }",
+        "enum E { A }; enum E e; int f(void){ return (int)e; }",
+        "enum { A = 1 }; int f(void){ return A; }",
+        // The conditional-operator half, confirmed rather than changed.
+        "int f(int c, int *p){ return *(c ? p : 0); }",
+        "int f(int c, int *p, void *v){ return (c ? p : v) != 0; }",
+        "void g(void); void h(void); int f(int c){ c ? g() : h(); return 0; }",
+        "struct S { int a; }; int f(int c, struct S x, struct S y){ return (c ? x : y).a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
