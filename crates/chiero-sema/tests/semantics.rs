@@ -4917,6 +4917,13 @@ fn a_subscript_is_an_integer_and_an_increment_needs_a_scalar() {
             "struct S{int a;}; int f(void){ int a[2]; struct S s; return a[s]; }",
             "a subscript is an integer",
         ),
+        // **The commuted form**, where the non-integer is on the *left*. `0[a]` is legal C, so
+        // the rule asks about whichever operand is not the pointer — and a mutant that only ever
+        // looked right survived every row above.
+        (
+            "int f(void){ int a[2]; double d=0; return d[a]; }",
+            "a subscript is an integer",
+        ),
         // **The operand of `++`/`--`**: a record, an array and a function are none of them
         // things one adds one to.
         (

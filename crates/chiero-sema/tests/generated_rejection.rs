@@ -752,6 +752,34 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "unions compared",
         "union U{int a;}; int f(void){ union U u; union U v; return u == v; }",
     ),
+    // C 6.5.2.1, 6.5.3.1 and 6.7.5, wave 365. All refused by gcc in both modes.
+    (
+        "a floating subscript",
+        "int f(void){ int a[2]; double d=0; return a[d]; }",
+    ),
+    (
+        "a pointer subscript",
+        "int f(void){ int a[2]; int *p=0; return a[p]; }",
+    ),
+    (
+        "a structure incremented",
+        "struct S{int a;}; int f(void){ struct S s; s++; return s.a; }",
+    ),
+    (
+        "an array incremented",
+        "int f(void){ int a[2]; a++; return a[0]; }",
+    ),
+    (
+        "a function incremented",
+        "void g(void); int f(void){ g++; return 0; }",
+    ),
+    ("`_Alignas` on a parameter", "int f(_Alignas(8) int x);"),
+    ("`_Alignas` on a typedef", "typedef _Alignas(8) int T;"),
+    (
+        "an alignment that is not a power of two",
+        "_Alignas(3) int x;",
+    ),
+    ("an alignment weaker than the type", "_Alignas(1) int x;"),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -804,7 +832,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 226;
+    const FLOOR: usize = 235;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

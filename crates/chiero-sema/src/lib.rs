@@ -1575,6 +1575,15 @@ impl Cx<'_> {
                         self.automatic_objects.insert(n);
                     }
                     self.declare_ordinary(n, Meaning::Ordinary, span);
+                    self.check_alignment(
+                        ty,
+                        t,
+                        if scope == Scope::File {
+                            StorageContext::File
+                        } else {
+                            StorageContext::Block
+                        },
+                    );
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
                     // legal C11 §6.9.2 — it is how headers have always worked. Only a
@@ -1682,6 +1691,7 @@ impl Cx<'_> {
                     );
                 }
                 let t = self.ty_of(ty);
+                self.check_alignment(ty, t, StorageContext::NotAnObject);
                 self.declare_ordinary(name, Meaning::Typedef(t), self.ast.decl(id).span);
                 self.typedefs.insert(name, t);
                 self.out.decl_types.insert(id, t);
@@ -2208,7 +2218,9 @@ impl Cx<'_> {
                     .map(|&p| match &self.ast.decl(p).kind {
                         DeclKind::Var { ty, .. } => {
                             let ty = *ty;
-                            self.ty_of(ty)
+                            let t = self.ty_of(ty);
+                            self.check_alignment(ty, t, StorageContext::Parameter);
+                            t
                         }
                         _ => self.intern(Ty::Error),
                     })
@@ -2631,6 +2643,12 @@ impl Cx<'_> {
             let before_member_ty = self.out.diagnostics.len();
             let fty = self.ty_of(ty);
             let member_ty_explained = self.out.diagnostics.len() > before_member_ty;
+            // A member is an object, so `_Alignas` is legal on it and only the value is checked.
+            // **Using the type already resolved**, never resolving it again: a second `ty_of` on
+            // the same node re-emits whatever the first said — an inline `struct T { … }` in the
+            // member's own declaration was reported as a redefinition of itself. Wave 359's
+            // parameter-list defect, in a new caller.
+            self.check_alignment(ty, fty, StorageContext::File);
             self.declaring = outer_declaring;
             // **A flexible array member is the last one** (C 6.7.2.1p18). Checked by looking
             // *back*: an `ArrayLen::Flexible` already in `fields` means a member follows one, and
@@ -2970,7 +2988,10 @@ impl Cx<'_> {
         let attrs = self.ast.ty(ty).attrs.clone();
         let mut best: Option<u64> = None;
         for a in attrs {
-            if !matches!(self.text(a.name), Some("aligned" | "__aligned__")) {
+            if !matches!(
+                self.text(a.name),
+                Some("aligned" | "__aligned__" | "_Alignas")
+            ) {
                 continue;
             }
             let Some(&arg) = a.args.first() else {
@@ -4287,7 +4308,12 @@ impl Cx<'_> {
                 if matches!(op, UnOp::PreInc | UnOp::PreDec) {
                     // `++x` modifies its operand exactly as `x += 1` does.
                     self.check_writable(*operand, "increment or decrement of");
-                    self.check_incdec_pointee(*operand, span);
+                    let op = if matches!(op, UnOp::PreInc) {
+                        "++"
+                    } else {
+                        "--"
+                    };
+                    self.check_incdec_pointee(*operand, span, op);
                 }
                 let inner = self.type_expr(*operand);
                 let ity = self.out.typed.ty_of(inner);
@@ -4428,10 +4454,15 @@ impl Cx<'_> {
                     operands: vec![inner],
                 })
             }
-            ExprKind::Postfix { operand, .. } => {
+            ExprKind::Postfix { operand, op } => {
                 // `x++` and `x--` modify their operand exactly as `x += 1` does.
                 self.check_writable(*operand, "increment or decrement of");
-                self.check_incdec_pointee(*operand, span);
+                let name = if matches!(op, chiero_ast::PostfixOp::Inc) {
+                    "++"
+                } else {
+                    "--"
+                };
+                self.check_incdec_pointee(*operand, span, name);
                 let inner = self.type_expr(*operand);
                 let ty = self.out.typed.ty_of(inner);
                 self.push_typed(TypedNode::Value {
@@ -4621,6 +4652,33 @@ impl Cx<'_> {
                     Ty::Vector { elem, .. } => Some(elem),
                     _ => None,
                 };
+                // **C 6.5.2.1p1: one operand is a pointer and the other an integer.** chiero
+                // asked only about the subscripted value, so `a[d]` on a `double` and `a[p]` on a
+                // pointer both passed — and the second is `*(a + p)`, which wave 364 made a
+                // violation when written that way round, so the same mistake was reported or not
+                // depending on spelling.
+                //
+                // Asked of the operand that is **not** the pointer, which is what keeps `0[a]`
+                // legal: C lets either side be the pointer, and the arm below already commutes.
+                // The non-pointer side is the *promoted* one, so every integer spelling —
+                // `char`, `_Bool`, an enumeration — has already become `Ty::Int` and needs no arm.
+                // `(None, None)` is the base arm's case below — "subscripted value is not an
+                // array, pointer or vector" — and saying anything here would double it.
+                let non_pointer_side = match (elem_of(self, bty), elem_of(self, ity)) {
+                    (Some(_), None) => Some(ity),
+                    (None, Some(_)) => Some(bty),
+                    // **Both sides pointers**, which `a[p]` is: `*(a + p)` adds two pointers.
+                    // Reported here rather than left to wave 364's additive rule, because that
+                    // rule never sees a subscript.
+                    (Some(_), Some(_)) => Some(bty),
+                    (None, None) => None,
+                };
+                if let Some(other) = non_pointer_side
+                    && !matches!(self.out.types[other.0 as usize], Ty::Int { .. } | Ty::Error)
+                    && !is_incomplete(&self.out, other)
+                {
+                    self.error(span, "a subscript is an integer");
+                }
                 if let Some(elem) = elem_of(self, bty).or_else(|| elem_of(self, ity)) {
                     let id = self.push_typed(TypedNode::Value {
                         expr,
@@ -6455,6 +6513,60 @@ impl Cx<'_> {
         }
     }
 
+    /// **C 6.7.5p2–p5: where `_Alignas` may appear and what it may name.**
+    ///
+    /// Two of the four rules apply to `__attribute__((aligned))` as well — a non-power-of-two and
+    /// a parameter are refused for both spellings — and two do not: gcc takes the attribute on a
+    /// `typedef` and takes it weakening a type's alignment, and VPP writes it on typedefs
+    /// throughout `vppinfra`. That split is why the parser gives `_Alignas` its own attribute
+    /// name, and why this function asks which spelling it is looking at.
+    ///
+    /// `_Alignas(0)` is **explicitly no effect** (p3), not an error, which is why the value is
+    /// read from the attribute rather than from `declared_align` — the latter has already
+    /// discarded a zero.
+    fn check_alignment(&mut self, node: TypeId, resolved: TyId, ctx: StorageContext) {
+        for a in self.ast.ty(node).attrs.clone() {
+            let alignas = matches!(self.text(a.name), Some("_Alignas"));
+            if !alignas && !matches!(self.text(a.name), Some("aligned" | "__aligned__")) {
+                continue;
+            }
+            let span = a.span;
+            // A parameter has no alignment to specify — both spellings, both modes.
+            if matches!(ctx, StorageContext::Parameter) {
+                let what = if alignas { "`_Alignas`" } else { "`aligned`" };
+                self.error(span, format!("{what} is not allowed on a parameter"));
+                continue;
+            }
+            // ...and `_Alignas` alone is refused on a `typedef`, where the attribute is legal.
+            if alignas && matches!(ctx, StorageContext::NotAnObject) {
+                self.error(span, "`_Alignas` is not allowed on a `typedef`");
+                continue;
+            }
+            let Some(arg) = a.args.first().copied() else {
+                continue;
+            };
+            let Some(n) = self.eval(arg).map(|v| v.v) else {
+                continue;
+            };
+            // Zero is no effect; anything else must be a power of two.
+            if n == 0 {
+                continue;
+            }
+            if n < 0 || (n & (n - 1)) != 0 {
+                self.error(span, "an alignment must be a power of two");
+                continue;
+            }
+            // **And `_Alignas` may not weaken.** The attribute may — `__attribute__((aligned(1)))
+            // int` is legal GNU C — so this arm is `_Alignas`-only too.
+            if alignas
+                && let Some(natural) = align_of_ty(&self.out, &self.target, resolved)
+                && (n as u64) < natural
+            {
+                self.error(span, "an alignment may not be weaker than the type's own");
+            }
+        }
+    }
+
     /// Whether a declaration names an object with **static storage duration** (C 6.2.4).
     ///
     /// Everything at file scope has it, and inside a block only `static` and `extern` do. There
@@ -6764,11 +6876,31 @@ impl Cx<'_> {
     /// `p++`, `p--`, `++p`, `--p` — pointer arithmetic by another name (C 6.5.2.4p1, 6.5.3.1p1).
     ///
     /// Reported where the operand is *typed*, so the one predicate serves this and `p + 1` alike.
-    fn check_incdec_pointee(&mut self, operand: ExprId, span: Span) {
-        if let Some(t) = self.type_of_written(operand)
-            && self.incomplete_pointee(t)
-        {
+    fn check_incdec_pointee(&mut self, operand: ExprId, span: Span, op: &str) {
+        let Some(t) = self.type_of_written(operand) else {
+            return;
+        };
+        if self.incomplete_pointee(t) {
             self.error(span, "arithmetic on a pointer to an incomplete type");
+            return;
+        }
+        // **C 6.5.2.4p1 / 6.5.3.1p1: the operand is a real or pointer type.** A structure, a
+        // union, an array and a function designator are none of those, and `check_writable`
+        // above does not ask — it asks whether the object may be *written*, which is a different
+        // question that `s++` passes.
+        //
+        // Asked of the type **as written**, deliberately not decayed: an array is not a
+        // modifiable lvalue, and decaying it first would make `a++` look like pointer
+        // arithmetic. That is the opposite of waves 360–364, where the decay was the load-bearing
+        // step — here it would hide the mistake, and the difference is that `++` writes back.
+        //
+        // `void *` keeps its GNU arithmetic: the question is the operand's kind, not its
+        // pointee's size.
+        if !matches!(
+            self.out.types[t.0 as usize],
+            Ty::Int { .. } | Ty::Float(_) | Ty::Ptr(_) | Ty::Vector { .. } | Ty::Error
+        ) {
+            self.error(span, format!("`{op}` needs a scalar operand"));
         }
     }
 

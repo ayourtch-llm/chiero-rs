@@ -1066,10 +1066,15 @@ impl<'a> Parser<'a> {
                     self.attribute_specifiers(&mut attrs);
                 }
                 TokKind::Kw(Kw::Alignas) => {
-                    // Recorded as an attribute so 014 has one place to look for
-                    // alignment, rather than two spellings of one fact.
+                    // Recorded as an attribute so 014 has one place to look for alignment,
+                    // rather than two spellings of one fact — but under its **own name**, because
+                    // C and GNU disagree about where each spelling may appear. `_Alignas` is
+                    // refused on a `typedef` and may not weaken a type's alignment;
+                    // `__attribute__((aligned))` is legal in both positions and VPP writes it on
+                    // typedefs throughout `vppinfra`. One name for both would have to choose which
+                    // of those to get wrong.
                     self.pos += 1;
-                    let name = self.intern("aligned");
+                    let name = self.intern("_Alignas");
                     let asp = self.here();
                     let mut args = Vec::new();
                     if self.eat_punct(Punct::LParen) {
