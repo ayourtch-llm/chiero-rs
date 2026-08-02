@@ -487,11 +487,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 375) — 1570 tests, 4 ignored, M1 260/260 by contract
+> ### ⏭️ START HERE (wave 376) — 1571 tests, 4 ignored, M1 260/260 by contract
 >
 > **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 7 constraint tests.**
-> **All three crates have a span gate** (373, 374), and the sema corpus is also checked for
-> spans that cover the *wrong* text and for messages carrying their own source formatting.
+> **All three crates have a span gate** (373, 374); the sema corpus is also checked for spans that
+> cover the *wrong* text, for messages carrying their own source formatting (374), and for
+> **two-fault programs producing exactly two reports** (375).
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -506,6 +507,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 375 audited an axis that was already right, and that is the finding.** Nothing had
+> measured what a program with *two* faults reports — the contract-20 channel runs over rows that
+> are one fault by construction — so both directions were untested. Thirty programs across
+> expressions, declarators, functions, struct members and all three *stages* were already correct.
+> **Write down the searches that find nothing**, or the next wave repeats them; this is the first
+> quality axis that needed no fix.
+>
+> The span half did find one: the enumerator range diagnostic named the whole enumeration. It now
+> names the **value** when written and the **enumerator** when implicit — two answers because
+> wave 357's check fires after the loop, which is what catches the implicit successor and also
+> what leaves it with no value to point at.
 >
 > **Wave 374 read all 252 rendered diagnostics** — the only way to ask whether a span covers the
 > *right* text. Twenty-one spans were wrong; **sixteen were `Parser::here()`**, which two separate
@@ -685,17 +698,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      floating operand through a typedef), **6.8.6.1's `goto` into a VLA scope beyond wave 341**,
 >      and **6.10.3.4's rescanning** (a macro that expands to its own name through two levels).
 >
->   2. **Quality, continued.** Messages and spans have both had their audit. The axis not yet
->      looked at is **how many** diagnostics one mistake produces *in the corpus rather than the
->      ratchet*: `one_mistake_produces_one_diagnostic` runs over `VIOLATIONS`, where every row is
->      one fault by construction. A program with *two* faults should produce two reports and
->      neither should be a consequence of the other, and nothing measures that.
+>   2. **Quality: the audited axes are done.** Messages (372), spans (373–375), contract 20 (353)
+>      and two-fault behaviour (375) have each been looked at, and only the last needed no fix.
+>      The remaining wide spans were compared against gcc in 375 and are **defensible**: `struct S
+>      { int a[]; }` names the member where gcc names `a`, `s == t` names the operands where gcc
+>      names `==`. Narrowing those is style, not a defect — do not re-open it without a reason.
 >
->   3. **Spans that are true and useless.** Wave 374 fixed the two that were plainly wrong. Several
->      remain wide rather than incorrect — `enum E { A = 2147483648 }` names the whole enumeration
->      where the fault is the value, and `struct S { int a[]; }` names the member where the fault
->      is the record. Narrowing them is a judgement call per rule, so it wants a wave with gcc
->      open beside it rather than a gate.
+>   3. **The unaudited axis is `chiero-lex`.** It has no constraints test and no span gate, and
+>      every other crate's audit found something. Its diagnostics reach users through the same
+>      pipeline; nothing has ever rendered one.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3041,6 +3052,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Write down the searches that find nothing** (wave 375). Thirty two-fault programs were tried
+> and every one was already correct. That is worth a commit and a §9 line: without them the next
+> wave re-runs the same search, and "we checked and it was fine" is a fact about the engine that
+> only exists if someone records it.
+>
+> **When a check is deliberately late, its span must be captured early** (wave 375). The enumerator
+> range check fires after the loop so the implicit successor is caught — which is exactly why it
+> cannot recover *which* enumerator was at fault. Two numbers do not remember where they came
+> from. If a rule is moved later for a reason, carry the spans forward with it.
 >
 > **Fix the mistake where it is made, not where it landed** (wave 374). Sixteen bad spans came
 > from one accessor that is available, plausible and wrong for reports; two waves reached for it
