@@ -4296,3 +4296,115 @@ fn a_prototype_names_its_parameters_and_its_ellipsis() {
         );
     }
 }
+
+/// **A label is defined once per function** (C 6.2.1p4: a label's scope is the whole function).
+///
+/// The scope is what makes this its own rule rather than a case of ordinary redeclaration: a
+/// label ignores blocks entirely, so `a: { a: ; }` and two sibling blocks each defining `a`
+/// both collide, while every other identifier in those positions would not.
+///
+/// The legal half is where the rule earns its shape. Two *functions* may each use `a`; a label
+/// may share its name with an object, because labels have their own namespace; a label may be
+/// defined and never jumped to; and one may sit inside a `switch` beside a `case`.
+#[test]
+fn a_label_is_defined_once_per_function() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "int f(int x){ a: a: return x; }",
+        // **Across a block boundary**, which is the case an ordinary scoped set would miss.
+        "int f(int x){ a: { a: return x; } }",
+        // And between two blocks that do not contain one another.
+        "int f(int x){ if(x){ a: return 1; } a: return 0; }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        // The same name in two functions, which is two scopes.
+        "int f(int x){ a: return x; } int g(int x){ a: return x; }",
+        // A label and an object may share a name: separate namespaces.
+        "int f(int x){ int a=1; a: return a+x; }",
+        // Defined and jumped to, defined and not, and defined inside a `switch`.
+        "int f(int x){ a: goto a; return x; }",
+        "int f(int x){ return x; unused: return 0; }",
+        "int f(int x){ switch(x){ a: case 1: return 1; } goto a; return 0; }",
+        "int f(int x){ goto a; { a: return x; } }",
+        "int f(int x){ a: ; return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **Where C asks a value "is it true", the value must be scalar** — C 6.8.4.1p1 (`if`),
+/// 6.8.5p2 (`while`, `do`, `for`), 6.5.15p2 (`?:`), 6.5.3.3p1 (`!`) and 6.5.13/14p2 (`&&`,
+/// `||`). A structure or a union has no zero to compare against, and `void` has no value at all.
+///
+/// Eight contexts and one question, which is why they are one test: each of them ends up asking
+/// the same thing about its operand, and a rule written in one place should reach all eight.
+/// The legal half pins what "scalar" includes and is the half that keeps the rule honest — an
+/// **array** is scalar for this purpose, because it decays to a pointer before the question is
+/// asked, and a rule phrased as "integer or pointer" would reject `if(a)`.
+#[test]
+fn a_condition_needs_a_scalar() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    const S: &str = "struct S{int a;}; int f(void){ struct S s; ";
+
+    for bad in [
+        &format!("{S}if(s) return 1; return 0; }}"),
+        &format!("{S}while(s) ; return 0; }}"),
+        &format!("{S}do ; while(s); return 0; }}"),
+        &format!("{S}for(;s;) ; return 0; }}"),
+        &format!("{S}return s ? 1 : 0; }}"),
+        &format!("{S}return !s; }}"),
+        &format!("{S}return s && 1; }}"),
+        &format!("{S}return 1 || s; }}"),
+        // A union, which has the same problem for the same reason.
+        "union U{int a;}; int f(void){ union U u; if(u) return 1; return 0; }",
+        // **`void` is not scalar either**, and a call is how one reaches a condition.
+        "void g(void); int f(void){ if(g()) return 1; return 0; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Every scalar kind, in the contexts above.
+        "int f(void){ double d=1; return !d; }",
+        "int f(void){ int *p=0; return p && 1; }",
+        "int f(void){ int *p=0; if(p) return 1; return 0; }",
+        "enum E{A}; int f(void){ enum E e=A; return e ? 1 : 0; }",
+        "int f(void){ _Bool b=1; while(b) return 1; return 0; }",
+        // **An array decays before the question is asked**, so it is scalar here.
+        "int f(void){ int a[2]; if(a) return 1; return 0; }",
+        "int f(void){ int a[2]; return a ? 1 : 0; }",
+        "int f(void){ int a[2]; return !a; }",
+        // A scalar *member* of the struct that is not scalar itself.
+        "struct S{int a;}; int f(void){ struct S s; if(s.a) return 1; return 0; }",
+        // A function returning a value, so the rule is about `void` rather than about calls.
+        "int g(void); int f(void){ if(g()) return 1; return 0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
