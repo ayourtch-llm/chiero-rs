@@ -840,6 +840,39 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "negative initializer index under a member",
         "struct S{int a[2];}; int f(void){ struct S s = { .a[-1] = 1 }; return s.a[0]; }",
     ),
+    // C 6.5.7 and 6.5.10-6.5.12, wave 371. All refused by gcc in both modes.
+    (
+        "floating left operand of `<<`",
+        "int f(void){ double d=1; return (int)(d << 1); }",
+    ),
+    (
+        "floating shift count",
+        "int f(void){ int x=1; double d=1; return (int)(x << d); }",
+    ),
+    (
+        "pointer operand of `<<`",
+        "int f(void){ int *p=0; return (int)(p << 1); }",
+    ),
+    (
+        "record operand of `<<`",
+        "struct S{int a;}; int f(void){ struct S s; return (int)(s << 1); }",
+    ),
+    (
+        "floating operand of `&`",
+        "int f(void){ double d=1; return (int)(d & 1); }",
+    ),
+    (
+        "pointer operand of `&`",
+        "int f(void){ int *p=0; return (int)(p & 1); }",
+    ),
+    (
+        "pointer operands of `|`",
+        "int f(void){ int *p=0; int *q=0; return (int)(p | q); }",
+    ),
+    (
+        "floating operand of `^`",
+        "int f(void){ double d=1; return (int)(d ^ 1); }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -892,7 +925,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 250;
+    const FLOOR: usize = 258;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

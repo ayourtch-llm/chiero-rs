@@ -5416,6 +5416,8 @@ impl Cx<'_> {
             signed: true,
             bits: int_bits,
         });
+        // Named once, because two arms below key on it: the record complaint and the integer one.
+        let bitwise_op = matches!(op, BinOp::BitAnd | BinOp::BitXor | BinOp::BitOr);
         // Shifts do **not** take the usual arithmetic conversions: each operand is
         // promoted on its own and the result has the left operand's type. Applying the
         // common type here would silently widen `x << 1` to whatever the shift count is.
@@ -5423,6 +5425,29 @@ impl Cx<'_> {
             let a = self.promote_node(a, ae, span);
             let b = self.promote_node(b, be, span);
             let ty = self.out.typed.ty_of(a);
+            let bty = self.out.typed.ty_of(b);
+            // **A record is named as one**, before the integer question: `s << 1` reported "a
+            // structure or union is copied only from its own type" plus a cast complaint, and
+            // neither said `<<`. The record arm below never sees a shift, because this branch
+            // returns first — so the check comes here rather than the key being widened.
+            if self.record_operand(ty, bty) {
+                self.error(
+                    span,
+                    "a structure or union is not an operand of `<<`, `>>`, `&`, `^` or `|`",
+                );
+                let poison = self.intern(Ty::Error);
+                return self.push_typed(TypedNode::Value {
+                    expr,
+                    ty: poison,
+                    operands: vec![a, b],
+                });
+            }
+            let what = if matches!(op, BinOp::Shl) {
+                "`<<`"
+            } else {
+                "`>>`"
+            };
+            self.check_integer_operands(what, ty, bty, span);
             return self.push_typed(TypedNode::Value {
                 expr,
                 ty,
@@ -5462,6 +5487,20 @@ impl Cx<'_> {
         // promotion maps every integer spelling — `char`, `_Bool`, an enumeration — onto `Int`,
         // so the rule needs no arm for any of them. A vector is arithmetic here, matching the
         // `-`/`+`/`~` rule beside it and gcc's `vector_size`. Poison stays silent (contract 20).
+        // **The same question as `%`**, for the three bitwise operators (C 6.5.10–6.5.12p2).
+        // Beside wave 362's arm rather than inside it, because the vector answers differ: any
+        // vector may be multiplied and only an *integer* vector may be masked.
+        // **Not when a record is involved**, which the arm below names specifically and better.
+        // This check runs first because it lives beside wave 362's multiplicative one, so the
+        // guard is here rather than an ordering change — `s ^ 1` would otherwise draw both.
+        if bitwise_op && !self.record_operand(aty, bty) {
+            let what = match op {
+                BinOp::BitAnd => "`&`",
+                BinOp::BitXor => "`^`",
+                _ => "`|`",
+            };
+            self.check_integer_operands(what, aty, bty, span);
+        }
         if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Rem) {
             let integer_only = matches!(op, BinOp::Rem);
             // **An operand whose type is incomplete has already been reported** (contract 20).
@@ -5538,13 +5577,15 @@ impl Cx<'_> {
             op,
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
         );
-        if matches!(op, BinOp::Add | BinOp::Sub) || comparison_op {
-            let record = |cx: &Self, t: TyId| {
-                matches!(cx.out.types[t.0 as usize], Ty::Record(_)) && !is_incomplete(&cx.out, t)
-            };
-            if record(self, aty) || record(self, bty) {
+        let bitwise_op = matches!(op, BinOp::BitAnd | BinOp::BitXor | BinOp::BitOr);
+        if (matches!(op, BinOp::Add | BinOp::Sub) || comparison_op || bitwise_op)
+            && self.record_operand(aty, bty)
+        {
+            {
                 let what = if comparison_op {
                     "a structure or union is not comparable"
+                } else if bitwise_op {
+                    "a structure or union is not an operand of `<<`, `>>`, `&`, `^` or `|`"
                 } else {
                     "a structure or union is not an operand of `+` or `-`"
                 };
@@ -7317,6 +7358,35 @@ impl Cx<'_> {
             return false;
         }
         true
+    }
+
+    /// **`<<`, `>>`, `&`, `^` and `|` take integer operands** (C 6.5.7p2, 6.5.10–6.5.12p2).
+    ///
+    /// The same question `%` asks — wave 362 wrote that arm for the multiplicative operators and
+    /// these five never joined it. Kept as one predicate rather than two arms because the answer
+    /// is identical and the *vector* rule is not: an integer vector counts here, a floating one
+    /// does not, where wave 362's arm takes any vector because a float vector may be multiplied.
+    ///
+    /// Asked of the **promoted** operands, where `char`, `_Bool` and an enumeration have already
+    /// become `Ty::Int`. Poison and incomplete types stay silent (contract 20).
+    /// Whether either operand is a **complete** record, which no operator in 6.5 accepts but
+    /// assignment and the member operators. Incomplete ones have already been reported.
+    fn record_operand(&self, aty: TyId, bty: TyId) -> bool {
+        let record = |t: TyId| {
+            matches!(self.out.types[t.0 as usize], Ty::Record(_)) && !is_incomplete(&self.out, t)
+        };
+        record(aty) || record(bty)
+    }
+
+    fn check_integer_operands(&mut self, what: &str, aty: TyId, bty: TyId, span: Span) {
+        let integer = |cx: &Self, t: TyId| match cx.out.types[t.0 as usize] {
+            Ty::Int { .. } | Ty::Error => true,
+            Ty::Vector { elem, .. } => matches!(cx.out.types[elem.0 as usize], Ty::Int { .. }),
+            _ => is_incomplete(&cx.out, t),
+        };
+        if !integer(self, aty) || !integer(self, bty) {
+            self.error(span, format!("{what} needs integer operands"));
+        }
     }
 
     /// Whether `t` is a pointer whose pointee has no size (C 6.5.6p2).
