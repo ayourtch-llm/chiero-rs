@@ -487,30 +487,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 355) — 1536 tests, 4 ignored, M1 165/165 by contract
+> ### ⏭️ START HERE (wave 356) — 1537 tests, 4 ignored, M1 165/165 by contract
 >
-> **Sema 156 of 156, `chiero-pp` 27 of 27, `chiero-parse` clean.** Wave 336's `FloatKind` limit is
-> closed; all ten float kinds are distinct types with the right ranks, widths and representations.
+> **Sema 160 of 160, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+>
+> **The qualifier item is closed as not-worth-doing, and must not be re-proposed without a new
+> reason.** Waves 328–354 carried "qualifiers reach sema but not `chiero-lower` or CIR" on the
+> strength of "a `const` pointee would tell 021 a store through it is UB". Costed in wave 355:
+> **040's checker catalogue lists no such checker**, and **023 §7's causes table — normative and
+> complete — does not admit a dropped qualifier**, because dropping one changes nothing the engine
+> computes. If a future wave wants it, the prerequisite is a *spec change* adding the checker, not
+> an implementation.
 >
 > **Next, in descending order of what they buy:**
->   1. **Qualifiers reach sema but not `chiero-lower` or CIR** (open since wave 328) — now the
->      oldest open item. A `const` pointee would let 021 report a store through it as UB, which is
->      a *checker* capability rather than a fidelity one. **Cost it the way wave 354 costed
->      `FloatKind`**: add the field, let the compiler list what breaks, and count only that.
->      Against 023 §7 first — decide what fidelity a missing qualifier implies before adding one.
->   2. **A census chosen by reading C**, since every neighbourhood this list named is done.
->      Unexamined: 6.5.2.5 compound literals, 6.7.9's designators beyond wave 314, 6.10.3.5's
->      `#undef`/redefinition interaction beyond wave 333.
->   3. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both lists were
->      measured clean, so it is a gate rather than a fix — cheap.
+>   1. **Continue the census, chosen by reading C.** Wave 355 took 6.5.2.5 and found five misses
+>      behind one cause. Still unexamined: **6.7.9's designators beyond wave 314** (nested
+>      designators, `[a][b] =`, `.x.y =`, a designator after a positional element), **6.10.3.5's
+>      `#undef`/redefinition interaction beyond wave 333**, and **6.5.16.2's compound assignment**
+>      (which operators admit a pointer left operand).
+>   2. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both measured
+>      clean, so it is a gate — and wave 355 shows the gate earns its keep on *new* code, which is
+>      the argument for having it before the next rule rather than after.
+>   3. **`check_init` is reachable from two places now.** Wave 355 added the second. If a third
+>      appears, the type-usability question belongs with it rather than repeated — the shape that
+>      has produced four "one rule implemented twice" findings here.
 >
-> **A catch-all arm in a mapping is a defect waiting for a new variant.** Wave 354 added four
-> `FloatKind`s and `cir_float_kind`'s `_ => X87_80` silently swallowed two of them, so one type had
-> two representations depending on which of the two maps a path took. **When adding a variant to an
-> enum, `grep` for catch-alls over it before trusting the compiler** — exhaustive matches announce
-> themselves and `_` arms do not. The same wave found `B::ExtFloat` reading `bits` and ignoring
-> `fmt`, which is the same failure in a different dress: a match that does not look at everything
-> that distinguishes its cases.
+> **A census that finds five misses behind one cause is the cheapest kind.** The construct was
+> never wired into an existing rule at all, so the fix was one call and the five symptoms went
+> together. **When a census finds several misses in one construct, look for the single missing
+> wire before writing several rules** — wave 352's storage grid and wave 355's compound literal
+> were both that shape.
 >
 > **The census method itself is the asset**, and it has now paid four waves running. Its two
 > non-obvious rules, both learned the hard way: run the **legal** half (it found three false
@@ -2816,6 +2822,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Cost a proposed feature against the spec that would consume it** (wave 355). The qualifier work
+> was carried for twenty-seven waves on the strength of a checker that 040's catalogue does not
+> list, and 023 §7's normative causes table does not admit a dropped qualifier because it changes
+> nothing computed. **Before implementing, find the consumer in the specs** — if there is none, the
+> prerequisite is a spec change, and saying so closes the item instead of deferring it again.
+>
+> **Additions, not a replacement, when a node is read downstream** (wave 355). Returning early from
+> the cast arm with a freshly typed node stopped lowering answering `(struct S){9,1}.a`: 015 reads
+> the node the ordinary path builds. **When adding checks to an arm that produces a value, add
+> them beside the existing construction** rather than around it.
 >
 > **A catch-all arm is a defect waiting for a new variant** (wave 354). Adding four `FloatKind`s
 > broke five *exhaustive* matches, which the compiler named, and silently changed one `_ => X87_80`
