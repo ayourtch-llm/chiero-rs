@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 361) — 1546 tests, 4 ignored, M1 193/193 by contract
+> ### ⏭️ START HERE (wave 362) — 1548 tests, 4 ignored, M1 202/202 by contract
 >
-> **Sema 193 of 193, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 202 of 202, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 361 closed 6.5.2.3, 6.7.4 and 6.5.3.2.** `.` and `->` were interchangeable — 013 left
+> `arrow` on the node saying "014 decides whether either was legal", and 014 never asked. Function
+> specifiers went into `check_storage_context` rather than a checker of their own. 6.5.3.2 needed
+> nothing.
+>
+> **The decay before the question is now three waves running** (359's `restrict` on an array
+> element, 360's conditions, 361's member base). When a rule is about "what kind of thing is this",
+> find where the operand is already normalised and ask there; it is usually also the answer to the
+> array case.
 >
 > **Wave 360 closed 6.8.1, 6.8.4, 6.8.5, 6.8.6 and 6.5.2.2.** Thirteen misses in two rules, and
 > both were **one place**: eight contexts ask "is this value true", and one `require_scalar` reaches
@@ -534,12 +544,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.3.2 and 6.5.2.3's
->      member and address constraints** (`.` on a non-record, `->` on a non-pointer, a member that
->      is not a member of *that* type), and **6.7.4's `inline` and function-specifier constraints**
->      (`inline` on an object, a `static` object inside an `inline` function with external
->      linkage). **Run the legal half every time** — it has now produced the wave's most valuable
->      finding twice (355 and 359), and in 360 it decided the rule's phrasing.
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.4 and 6.5.5's
+>      cast and multiplicative constraints** (a cast to or from a record, `%` on a floating type,
+>      a cast between a pointer and a floating type), and **6.9.1/6.9.2's external-definition
+>      constraints** (a function definition whose type is not a function type, an object defined
+>      with an incomplete type, `static` after a use with external linkage). **Run the legal half
+>      every time** — it has now produced the wave's most valuable finding twice (355 and 359), and
+>      in 360 and 361 it decided the rule's phrasing.
 >   2. **One row is deferred, not missed:** `int x = {}` — empty initializer braces — is a pedantic
 >      error under C11 and legal under `-std=gnu11` and C23. Wave 357's criterion applies: count
 >      real uses before forming an opinion. Do not re-find it as a defect.
@@ -2867,6 +2878,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A correct mutant measured against a dirty baseline says nothing** (wave 361, completing the
+> set). A batch that hit the ten-minute command limit left its last mutation applied, so the next
+> batch scored against a mutated base. Restore from the saved copy and **`diff` against it before
+> applying** — never assume the previous run's restore ran. With 359 (malformed reads as survivor)
+> and 360 (killed for the wrong reason), the three ways a mutation result lies are now all written
+> down.
+>
+> **Run a no-op control in every sweep** (wave 361). A mutant that changes only a comment must
+> score SURVIVED. If it does not, the harness is manufacturing kills and every other result in the
+> sweep is worthless.
 >
 > **When N contexts ask the same question, find what they already share** (wave 360). Eight places
 > ask "is this value true", and one predicate served all eight *because every one of them already
