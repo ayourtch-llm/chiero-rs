@@ -4168,6 +4168,18 @@ impl Cx<'_> {
                 // Same shape as the pointer case above and wave 133's fix: sema coercing a
                 // compound assignment's right operand to the lvalue's type when the operation
                 // does not call for it. The *result* is still converted, by the store.
+                // **`%=` is an integer operation** (C 6.5.5p2 via 6.5.16.2p1), unlike every other
+                // arithmetic compound assignment: `d *= 2` on a `double` is fine and `d %= 2` is
+                // not. Asked of the *left* operand's type and of the right one, since either
+                // being floating is the violation.
+                if matches!(op, Some(BinOp::Rem)) {
+                    let rty = self.out.typed.ty_of(r);
+                    if matches!(self.out.ty(lty), Ty::Float(_))
+                        || matches!(self.out.types[rty.0 as usize], Ty::Float(_))
+                    {
+                        self.error(span, "`%` needs integer operands");
+                    }
+                }
                 let bool_lvalue =
                     op.is_some() && matches!(self.out.ty(lty), Ty::Int { bits: 1, .. });
                 // **`v *= 2` does not convert `2` to a vector.** The third instance of the
@@ -5442,12 +5454,95 @@ impl Cx<'_> {
         }
     }
 
+    /// Follow a designator list into the object, reporting any component that names nothing
+    /// (C 6.7.9p6, p7).
+    ///
+    /// Returns the position the **first** component selects — the outer cursor — and the type the
+    /// **last** one reaches, which is what the item's value initializes. `{[1].y = 3}` selects
+    /// element 1 of the array and hands back the type of `y`.
+    ///
+    /// **The descent is why this is a function and not a longer loop.** The existing walks looped
+    /// over the components and kept the last index, so `[0][5]` set the *outer* cursor to 5 and
+    /// asked the outer bound about it. Each component has to be asked of the type the previous one
+    /// reached, and only the first one moves the cursor the caller keeps.
+    fn resolve_designators(
+        &mut self,
+        ty: TyId,
+        item: &chiero_ast::InitItem,
+    ) -> Option<(Option<u64>, TyId)> {
+        let span = self.ast.expr(item.value).span;
+        let mut here = ty;
+        let mut first: Option<u64> = None;
+        for d in &item.designators {
+            match d {
+                chiero_ast::Designator::Index(e) => {
+                    let Ty::Array { elem, len } = self.out.types[here.0 as usize].clone() else {
+                        self.error(
+                            span,
+                            "an array designator names something that is not an array",
+                        );
+                        return None;
+                    };
+                    let v = self.eval(*e).map(|v| v.v).unwrap_or(0).max(0) as u64;
+                    if let ArrayLen::Fixed(n) = len
+                        && v >= n
+                    {
+                        self.error(span, "initializer index is outside the array");
+                        return None;
+                    }
+                    first.get_or_insert(v);
+                    here = elem;
+                }
+                // gcc's `[a ... b] =` range designator. Its *lower* bound moves the cursor, the
+                // same reading wave 350 gave a `case` range; whether the upper bound is in range
+                // is a rule this wave does not add, so it is left alone rather than half-checked.
+                chiero_ast::Designator::Range(lo, _) => {
+                    let Ty::Array { elem, .. } = self.out.types[here.0 as usize].clone() else {
+                        return None;
+                    };
+                    let v = self.eval(*lo).map(|v| v.v).unwrap_or(0).max(0) as u64;
+                    first.get_or_insert(v);
+                    here = elem;
+                }
+                chiero_ast::Designator::Field(f) => {
+                    let Ty::Record(r) = self.out.types[here.0 as usize] else {
+                        self.error(
+                            span,
+                            "a field designator names something that is not a struct or union",
+                        );
+                        return None;
+                    };
+                    let Some(fl) = self.out.find_field(r, *f) else {
+                        let n = self.text(*f).unwrap_or("?").to_owned();
+                        self.error(span, format!("no member named `{n}` to initialize"));
+                        return None;
+                    };
+                    let pos = self.out.records[r.0 as usize]
+                        .fields
+                        .iter()
+                        .position(|x| x.name == Some(*f))
+                        .unwrap_or(0) as u64;
+                    first.get_or_insert(pos);
+                    here = fl.ty;
+                }
+            }
+        }
+        Some((first, here))
+    }
+
     /// Whether this list leaves out braces around an aggregate member, as C 6.7.9p20 permits.
     ///
     /// The signal is an aggregate element initialised by something that is not itself a list.
     /// When that happens the flat sequence is distributed across the sub-objects and positions no
     /// longer line up with items, so the counting rules above stop applying.
     fn elides_braces(&self, elem: TyId, items: &[chiero_ast::InitItem]) -> bool {
+        // **A designator that descends is not elision, it is the opposite.** `{[0][5] = 1}` writes
+        // a scalar into an aggregate element, which is exactly the signal below — and it is not
+        // brace elision at all, because the item says *precisely* which sub-object it means. The
+        // rule was swallowing every nested designator, which is why four of them went unchecked.
+        if items.iter().any(|i| i.designators.len() > 1) {
+            return false;
+        }
         let aggregate = matches!(
             self.out.types[elem.0 as usize],
             Ty::Array { .. } | Ty::Record(_)
@@ -5557,6 +5652,20 @@ impl Cx<'_> {
                     // contain. A designator that is out of range and a list that is simply too
                     // long are different things to fix, and gcc words them differently.
                     let mut designated = false;
+                    // **A multi-component list is followed into the object**; a single one keeps
+                    // the cheaper path, which also keeps the cursor semantics the excess-element
+                    // rule depends on. `resolve_designators` reports its own faults and returns
+                    // `None`, and one bad designator is one diagnostic (contract 20), so the item
+                    // is skipped rather than checked again against the wrong type.
+                    if item.designators.len() > 1 {
+                        let Some((pos, inner)) = self.resolve_designators(target, item) else {
+                            continue;
+                        };
+                        at = pos.unwrap_or(at);
+                        self.check_init(inner, item.value);
+                        at += 1;
+                        continue;
+                    }
                     for d in &item.designators {
                         if let chiero_ast::Designator::Index(e) = d
                             && let Some(v) = self.eval(*e).map(|v| v.v)
@@ -5595,6 +5704,17 @@ impl Cx<'_> {
                 let mut at = 0usize;
                 for item in &items {
                     let mut named = None;
+                    // The same descent the array arm takes, for the same reason: this loop keeps
+                    // the *last* component, so `.p.x` looked for `x` in the outer record.
+                    if item.designators.len() > 1 {
+                        let Some((pos, inner)) = self.resolve_designators(target, item) else {
+                            continue;
+                        };
+                        at = pos.unwrap_or(at as u64) as usize;
+                        self.check_init(inner, item.value);
+                        at += 1;
+                        continue;
+                    }
                     for d in &item.designators {
                         if let chiero_ast::Designator::Field(f) = d {
                             match fields.iter().position(|x| x.name == Some(*f)) {

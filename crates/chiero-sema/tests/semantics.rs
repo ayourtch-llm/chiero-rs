@@ -3813,6 +3813,15 @@ fn a_designator_list_descends_into_the_object() {
         "struct P { int x, y; }; struct P p = {.y = 1, 2};",
         // 6.5.5p2: `%` is an integer operation, so `%=` is too.
         "int f(double d){ d %= 2; return (int)d; }",
+        // **Either operand being floating is the violation.** Mutation found the fixture testing
+        // only the left one, which the `d %= 2` row above already covers.
+        "int f(int x){ x %= 2.0; return x; }",
+        "int f(int x, double d){ x %= d; return x; }",
+        // **A nested designator moves the outer cursor**, so a positional element after it
+        // resumes from the row it named. Mutation found this: dropping the cursor update left
+        // every earlier case passing, because their designators happened to name position 0.
+        "int a[2][2] = {[1][1] = 1, 2};",
+        "struct P { int x, y; }; struct P a[2] = {[1].y = 1, 2};",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
@@ -3821,6 +3830,8 @@ fn a_designator_list_descends_into_the_object() {
         // Nested designators that are in range, and the mixed forms around them.
         "int a[2][2] = {[0][0] = 1, [1][1] = 2};",
         "int a[2][2] = {[1][1] = 2};",
+        // ...and one naming position 0 leaves room for the element after it.
+        "int a[2][2] = {[0][0] = 1, 2};",
         "int a[2][2] = {{1,2},{3,4}};",
         "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.x = 1};",
         "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.y = 1};",

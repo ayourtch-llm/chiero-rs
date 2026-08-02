@@ -522,6 +522,21 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "variably modified compound literal",
         "int f(int n){ return (int[n]){1}[0]; }",
     ),
+    // Wave 356: a designator list descends.
+    ("nested index out of range", "int a[2][2] = {[0][5] = 1};"),
+    ("outer index out of range", "int a[2][2] = {[5][0] = 1};"),
+    (
+        "nested field designator names nothing",
+        "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.nope = 1};",
+    ),
+    (
+        "member designator on an array element",
+        "struct P { int x, y; }; struct P a[2] = {[1].nope = 3};",
+    ),
+    (
+        "remainder on a floating operand",
+        "int f(double d){ d %= 2; return (int)d; }",
+    ),
     // **Wave 350's case-range rules are deliberately absent.** gcc rejects `case 1 ... 3` under
     // `-pedantic-errors` because ISO C has no case ranges at all, so a row here would be counted
     // as caught for a reason that is not the one under test — the overlap. This list's contract is
@@ -559,7 +574,7 @@ fn gcc_rejects(src: &str) -> Option<bool> {
 /// the next wave has a queue rather than a percentage.
 #[test]
 fn the_share_of_violations_sema_rejects_does_not_fall() {
-    /// The measured count at wave 355. **Raise this when a rule is added; never lower it.**
+    /// The measured count at wave 356. **Raise this when a rule is added; never lower it.**
     ///
     /// Wave 325 measured 54 and closed three; wave 326 closed four more. **The two still below the
     /// line are the two that need machinery sema does not have**, which is why the queue emptied
@@ -579,7 +594,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 160;
+    const FLOOR: usize = 165;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
