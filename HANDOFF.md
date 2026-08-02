@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 372) — 1564 tests, 4 ignored, M1 258/258 by contract
+> ### ⏭️ START HERE (wave 373) — 1566 tests, 4 ignored, M1 260/260 by contract
 >
-> **Sema 258 of 258, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
+> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,19 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 372 closed 6.5.2.2, 6.7.6.1, 6.4.4.1 — and the message debt.** The census found *one*
+> row in twenty-eight, which is the third thin census running and the reason the other half of the
+> wave was the three wrong messages §9 had carried since 364.
+>
+> **A wrong message is a different defect from a missing one, and needs a different test.** Each
+> fix had to **split an arm, not widen one**, so each is pinned from both sides: the rule the
+> message replaced is asserted to still fire where it should. Widening passes the new rows and
+> fails those.
+>
+> **The census is returning less each wave.** Three in a row have come back nearly empty. That is
+> a result — the constraint surface is largely covered — and it means the next waves are worth
+> spending on *quality* (messages, spans, contract 20) rather than on more sections.
 >
 > **Wave 371 closed 6.5.7, 6.5.10–6.5.12 and 6.7.3.** Eleven misses across five operators, one
 > question, and both places it belongs already existed — wave 362's integer arm and wave 364's
@@ -641,18 +654,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > **Next, in descending order of what they buy:**
 >   1. **Continue the census by reading C.** Waves 355–368 each found misses behind one cause, which
->      is the cheapest shape this method produces. Still unexamined: **6.5.2.2's call constraints
->      beyond argument counts** (calling through a pointer to an incompatible prototype, an
->      argument of incomplete type), **6.7.6.1's pointer-declarator constraints** (a pointer to a
->      bit-field type through a typedef, qualifiers between `*` and the declarator), and
->      **6.4.4.1's integer-constant constraints** (a decimal constant too large for any signed
->      type, an octal digit `8`).
+>      is the cheapest shape this method produces, but three censuses running have come back nearly
+>      empty. Remaining sections worth a reading: **6.5.3.3's unary arithmetic** (`~` on a
+>      floating operand through a typedef), **6.8.6.1's `goto` into a VLA scope beyond wave 341**,
+>      and **6.10.3.4's rescanning** (a macro that expands to its own name through two levels).
 >
->      **A message wave is now worth its own turn**, and the list has grown to three: `#include
->      <stdio.h> extra` says "invalid computed include" (369), `d == p` says "comparison between
->      a pointer and an integer" of a `double` (364), and `int f(const void)` says "`void` must
->      be the only parameter" where the fault is the qualifier (371). None is a miss; all three
->      send a reader to the wrong place.
+>   2. **Spend the next waves on quality rather than coverage.** The message wave paid: three
+>      diagnostics now name the fault instead of the wrong construct. The same audit has not been
+>      run on **spans** — which token a diagnostic points at — and 023 §9 makes that as much a
+>      part of "a report a person can act on" as the words are. A span audit needs a way to *see*
+>      the span, which no current test asserts; building that is the wave.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -2998,6 +3009,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Fixing a message means splitting an arm, and the test must pin both halves** (wave 372). Each
+> of the three wrong messages came from one arm answering for two faults. A fix that widens the
+> arm — "a non-pointer", "an invalid include" — passes every new row and quietly loses the case
+> the message already got right. Assert the old sentence still fires where it should.
+>
+> **A test with no legal half should say why** (wave 372). `chiero-pp`'s `diags` has no file
+> loader, so no well-formed `#include` can be silent there; asserting one would have been
+> asserting the harness. Write the absence down rather than inventing a row that passes for the
+> wrong reason.
 >
 > **Share the predicate, not the site, when the arms are not symmetric** (wave 371). Shifts return
 > early because they skip the usual arithmetic conversions; the bitwise operators fall through to
