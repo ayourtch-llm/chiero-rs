@@ -1035,3 +1035,51 @@ fn one_mistake_produces_one_diagnostic() {
         noisy.join("\n  ")
     );
 }
+
+/// **Every diagnostic points at something a reader can see** (023 §9).
+///
+/// The message audit was wave 372's; this is the other half of the same claim. A report whose
+/// span covers no text is one a reader cannot follow to the fault — an editor puts the caret
+/// between two tokens and highlights nothing — and until this test there was **no way to observe
+/// a span at all**, which is why four of them had been wrong since wave 365 with every message
+/// assertion passing.
+///
+/// `SourceMap::span_text` is the instrument. It has existed all along; nothing in the suite
+/// called it, so "the diagnostic is correct" had only ever meant "the sentence is correct".
+///
+/// Run over `VIOLATIONS`, which is 260 programs already known to be rejected — the audit needs a
+/// corpus of *faults*, and building a second one would have been building a worse one.
+///
+/// The failure prints the row and the message, so this reads as a queue rather than a count.
+#[test]
+fn every_diagnostic_points_at_visible_text() {
+    let mut invisible: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for (name, src) in VIOLATIONS {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let names = harness::names_of(&parsed);
+        let analysis = chiero_sema::analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+        for d in &analysis.diagnostics {
+            checked += 1;
+            match tu.source_map.span_text(d.span) {
+                Some(t) if !t.is_empty() => {}
+                _ => invisible.push(format!("{name}: {}", d.message)),
+            }
+        }
+    }
+    // **A gate that quantifies over an empty set passes vacuously**, and this one would if the
+    // rows stopped reaching sema. The seventh such floor in this file, for the same reason.
+    assert!(
+        checked > VIOLATIONS.len() / 2,
+        "only {checked} diagnostics were examined across {} rows",
+        VIOLATIONS.len()
+    );
+    assert!(
+        invisible.is_empty(),
+        "{} diagnostic(s) point at no visible text:\n  {}",
+        invisible.len(),
+        invisible.join("\n  ")
+    );
+}
