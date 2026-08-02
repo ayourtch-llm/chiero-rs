@@ -487,9 +487,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 376) — 1571 tests, 4 ignored, M1 260/260 by contract
+> ### ⏭️ START HERE (wave 377) — 1575 tests, 4 ignored, M1 260/260 by contract
 >
-> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 7 constraint tests.**
+> **Sema 260 of 260, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
+> **All four crates now have a constraints test and a span gate** (376 closed the last one).
 > **All three crates have a span gate** (373, 374); the sema corpus is also checked for spans that
 > cover the *wrong* text, for messages carrying their own source formatting (374), and for
 > **two-fault programs producing exactly two reports** (375).
@@ -507,6 +508,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 376 audited `chiero-lex`, the last crate without a constraints test.** Three findings, and
+> the middle one **moved crates during the wave**: a stray character is 012's business, not 010's,
+> because `Other` is only a fault when the token *reaches the program* — gcc takes `S(a\b)` where
+> `#define S(x) #x` stringizes it, and takes `#define M @` until `M` is used.
+>
+> **An existing fixture refuted the first draft inside one test run.** `macro_expansion.rs` had
+> tested stringize escaping for many waves; it caught the lexer-level rule immediately. When a new
+> rule breaks an old fixture, **read the fixture before changing it** — twice this wave it was
+> right and the new rule was wrong.
+>
+> **The expensive half of that audit was a false positive**: `$` is an identifier character in gcc
+> in both modes and VPP uses it, and leaving it out produced six parse errors for `int $x = 1;`.
+> A rule that rejects legal code costs more than one that misses illegal code.
 >
 > **Wave 375 audited an axis that was already right, and that is the finding.** Nothing had
 > measured what a program with *two* faults reports — the contract-20 channel runs over rows that
@@ -704,9 +719,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >      { int a[]; }` names the member where gcc names `a`, `s == t` names the operands where gcc
 >      names `==`. Narrowing those is style, not a defect — do not re-open it without a reason.
 >
->   3. **The unaudited axis is `chiero-lex`.** It has no constraints test and no span gate, and
->      every other crate's audit found something. Its diagnostics reach users through the same
->      pipeline; nothing has ever rendered one.
+>   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
+>      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
+>      **6.5.3.3's unary arithmetic**, **6.8.6.1's `goto` into a VLA scope beyond wave 341**, and
+>      **6.10.3.4's rescanning** (a macro expanding to its own name through two levels).
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3052,6 +3068,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When a new rule breaks an old fixture, read the fixture first** (wave 376). Two did this wave,
+> and both were right: a stringize test proved a stray character is not a lexing fault, and a
+> lexer contract proved `Other` alone is not an error. The suite is the accumulated argument of
+> every earlier wave — a fixture that contradicts today's rule is evidence, not an obstacle.
+>
+> **A rule that rejects legal code costs more than one that misses illegal code** (wave 376).
+> `$` missing from the identifier alphabet produced six parse errors for a line gcc accepts in
+> both modes. When auditing a crate, run the *legal* half first: it is where the expensive faults
+> are.
 >
 > **Write down the searches that find nothing** (wave 375). Thirty two-fault programs were tried
 > and every one was already correct. That is worth a commit and a §9 line: without them the next
