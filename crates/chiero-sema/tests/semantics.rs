@@ -4408,3 +4408,117 @@ fn a_condition_needs_a_scalar() {
         );
     }
 }
+
+/// **`.` takes a structure, `->` takes a pointer to one** (C 6.5.2.3p1–p2), and chiero treated
+/// the two as interchangeable: `s->a` on a structure and `p.a` on a pointer were both accepted.
+///
+/// The rule is asked of the **decayed** operand, which is what wave 360's condition rule needed
+/// too and for the same reason: `struct S a[2]; a->a` is legal, because the array is a pointer
+/// by the time the question is put. A rule written against the operand as spelled would reject
+/// it.
+///
+/// The legal half is where the typedef rows earn their place. `typedef struct S *SP; SP p;`
+/// makes `p->a` right and `p.a` wrong even though neither spelling contains a `*`, so a rule
+/// keyed on syntax rather than on the resolved type gets both backwards.
+#[test]
+fn dot_takes_a_structure_and_arrow_takes_a_pointer() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // `->` on a structure, and on a union.
+        "struct S{int a;}; int f(void){ struct S s; return s->a; }",
+        "union U{int a;}; int f(void){ union U u; return u->a; }",
+        // `.` on a pointer, spelled with a `*` and hidden behind a typedef.
+        "struct S{int a;}; int f(void){ struct S *p=0; return p.a; }",
+        "union U{int a;}; int f(void){ union U *p=0; return p.a; }",
+        "typedef struct S{int a;} *SP; int f(void){ SP p=0; return p.a; }",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        "struct S{int a;}; int f(void){ struct S s; return s.a; }",
+        "struct S{int a;}; int f(void){ struct S *p=0; return p->a; }",
+        "struct S{int a;}; int f(void){ struct S *p=0; return (*p).a; }",
+        "union U{int a; char b;}; int f(void){ union U u; return u.a + u.b; }",
+        // **An array of structures decays**, so `->` on it is right and `.` is not.
+        "struct S{int a;}; int f(void){ struct S a[2]; return a->a; }",
+        "struct S{int a;}; int f(void){ struct S a[2]; return a[0].a; }",
+        // Both typedef spellings, which is what keeps the rule off syntax.
+        "typedef struct S{int a;} S; int f(void){ S *p=0; return p->a; }",
+        "typedef struct S{int a;} *SP; int f(void){ SP p=0; return p->a; }",
+        // Qualified, cast, nested, and the value shapes a member may hang off.
+        "struct S{int a;}; int f(void){ const struct S *p=0; return p->a; }",
+        "struct S{int a;}; int f(void){ void *v=0; return ((struct S*)v)->a; }",
+        "struct S{struct T{int x;} t;}; int f(void){ struct S s; return s.t.x; }",
+        "struct S{int a;}; int f(void){ struct S **pp=0; return (*pp)->a; }",
+        "struct S{int a;}; struct S g(void); int f(void){ return g().a; }",
+        "struct S{int a;}; int f(void){ return (struct S){1}.a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
+
+/// **A function specifier declares a function** (C 6.7.4p2): `inline` and `_Noreturn` may not be
+/// written on an object, a parameter, a typedef, or a member.
+///
+/// Most rows are `-pedantic-errors` calibration — `-std=gnu11` takes `inline int x;` — but a
+/// **member** is refused by gcc in both modes, so the rule is not uniformly a divergence.
+///
+/// This is the same shape as the storage-class question `check_storage_context` already answers,
+/// asked in the same places, which is where it belongs rather than in a rule of its own.
+#[test]
+fn a_function_specifier_declares_a_function() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        "inline int x;",
+        "_Noreturn int x;",
+        "int f(void){ inline int y=1; return y; }",
+        "int f(void){ static inline int y=1; return y; }",
+        "int f(inline int x);",
+        "typedef inline int T;",
+        "struct S{ inline int a; };",
+        "struct S{ _Noreturn int a; };",
+    ] {
+        assert_eq!(diags(bad).len(), 1, "one sentence for `{bad}`");
+    }
+
+    for good in [
+        // Every spelling on a function, which is the whole point of the specifier.
+        "inline int f(void){ return 1; }",
+        "static inline int f(void){ return 1; }",
+        "extern inline int f(void){ return 1; }",
+        "inline int f(int x){ return x; }",
+        "inline int f(void); int f(void){ return 1; }",
+        "_Noreturn void f(void){ for(;;); }",
+        "inline _Noreturn void f(void){ for(;;); }",
+        "_Noreturn void g(void); int f(void){ g(); return 0; }",
+        // And an ordinary object beside one, so the rule is about the specifier.
+        "inline int f(void){ return 1; } int x; int g(void){ return f()+x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
