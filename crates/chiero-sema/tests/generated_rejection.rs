@@ -596,6 +596,24 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "block-scope static holding the address of an automatic",
         "int f(void){ int x; static int *p = &x; return *p; }",
     ),
+    // C 6.7.6.3 and 6.7.3, wave 359. The ellipsis row is `-pedantic-errors`-calibrated; the
+    // rest are refused by gcc in both modes.
+    (
+        "duplicate parameter in a declaration",
+        "int f(int x, int x);",
+    ),
+    ("ellipsis with no named parameter", "int f(...);"),
+    ("restrict on a non-pointer", "int restrict x;"),
+    (
+        "restrict on a non-pointer through a typedef",
+        "typedef int T; T restrict x;",
+    ),
+    ("restrict on an array of non-pointers", "int restrict a[2];"),
+    ("enum tag defined twice", "enum E { A }; enum E { B };"),
+    (
+        "assignment to an array",
+        "int f(void){ int a[2]; a = 0; return a[0]; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -648,7 +666,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 178;
+    const FLOOR: usize = 185;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

@@ -1629,12 +1629,20 @@ impl Cx<'_> {
                     chiero_ast::TypeKind::Func { params, .. } => params.clone(),
                     _ => Vec::new(),
                 };
+                // **In the list's own scope**, as in the `TypeKind::Func` arm: this loop
+                // re-resolves the same parameter types, and a tag defined in the list would
+                // otherwise be installed a second time in the *enclosing* scope and reported as
+                // a redefinition of itself.
+                self.defined_tags.enter();
+                self.declared_enumerators.enter();
                 for p in &params {
                     if let DeclKind::Var { ty: pty, .. } = self.ast.decl(*p).kind.clone() {
                         let t = self.ty_of(pty);
                         self.out.decl_types.insert(*p, t);
                     }
                 }
+                self.declared_enumerators.leave();
+                self.defined_tags.leave();
                 if let Some(body) = body {
                     // **Parameters are in scope in the body.** They are declared on the
                     // function's *type*, not as items, so nothing else brings them in —
@@ -1653,7 +1661,6 @@ impl Cx<'_> {
                     let saved_rop = self.read_only_pointee.clone();
                     let saved_reg = self.register_objects.clone();
                     let saved_auto = self.automatic_objects.clone();
-                    let mut seen_params: indexmap::IndexSet<Symbol> = Default::default();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -1674,16 +1681,10 @@ impl Cx<'_> {
                                 let span = self.ast.decl(p).span;
                                 self.error(span, format!("parameter `{n}` has an incomplete type"));
                             }
-                            // **A parameter name is unique within its list** (C 6.7.6.3p2).
-                            // Two *functions* may each have an `a`, so this is checked against
-                            // the parameters bound so far in this list rather than against
-                            // `values`, which by now holds the whole file scope.
-                            if seen_params.contains(&pn) {
-                                let text = self.text(pn).unwrap_or("?").to_owned();
-                                let span = self.ast.decl(p).span;
-                                self.error(span, format!("duplicate parameter `{text}`"));
-                            }
-                            seen_params.insert(pn);
+                            // The uniqueness of parameter names moved to the `TypeKind::Func`
+                            // arm in wave 359, which every declarator passes through — here it
+                            // only ever saw definitions. Reporting it in both places would be
+                            // two sentences for one mistake.
                             if self.ast.ty(pty).quals.const_ {
                                 self.read_only.insert(pn);
                             } else {
@@ -1859,6 +1860,30 @@ impl Cx<'_> {
         if q.is_none() {
             return t;
         }
+        // **C 6.7.3p2: `restrict` qualifies a pointer**, and nothing else. Asked here for the
+        // same reason the qualifiers are applied here: this is the one place every spelling
+        // passes, typedefs included, so `typedef int *P; P restrict p;` is legal and
+        // `typedef int T; T restrict x;` is not without either being special-cased.
+        //
+        // Asked of the type the qualifier **actually attaches to**, which for an array is its
+        // element — the line immediately below is what puts it there. That is what makes
+        // `int *restrict a[2]` an array of restricted pointers and legal, while
+        // `int restrict a[2]` is not. Poison is excused, as everywhere (contract 20).
+        if q.restrict_ {
+            let target = match self.out.types[t.0 as usize].clone() {
+                Ty::Array { elem, .. } => elem,
+                _ => t,
+            };
+            if !matches!(
+                self.out.types[target.0 as usize],
+                Ty::Ptr { .. } | Ty::Error
+            ) {
+                self.error(
+                    self.ast.ty(node).span,
+                    "`restrict` qualifies a pointer, and this is not one",
+                );
+            }
+        }
         if let Ty::Array { elem, len } = self.out.types[t.0 as usize].clone() {
             let e = self.add_quals(elem, q);
             return self.intern(Ty::Array { elem: e, len });
@@ -2028,6 +2053,15 @@ impl Cx<'_> {
                         _ => {}
                     }
                 }
+                // **A parameter list is its own scope** (C 6.7.6.3p1), so a tag defined in one
+                // is not a redefinition of anything and does not outlive the declarator. Without
+                // this, `int f(struct S { int a; } s);` was refused outright — and a *definition*
+                // was refused twice, since the list is resolved once for the function's type and
+                // again when the body is walked, and the second pass found what the first
+                // installed. The parameter's *type* is already a `TyId` by then, so a body that
+                // says `s.a` is unaffected by the tag name going out of scope here.
+                self.defined_tags.enter();
+                self.declared_enumerators.enter();
                 let ps: Vec<TyId> = params
                     .iter()
                     .map(|&p| match &self.ast.decl(p).kind {
@@ -2038,6 +2072,31 @@ impl Cx<'_> {
                         _ => self.intern(Ty::Error),
                     })
                     .collect();
+                // **A parameter name is unique within its list** (C 6.7.6.3p2). This lives here,
+                // where every declarator passes, rather than on the definition path where it was
+                // until wave 359 — keyed there, `int f(int x, int x);` was refused with a body
+                // and accepted without one. Two *functions* may each have an `x`, which is why
+                // the set is built per list and never consulted across them.
+                let mut seen: indexmap::IndexSet<Symbol> = Default::default();
+                for &p in &params {
+                    if let DeclKind::Var { name: Some(pn), .. } = self.ast.decl(p).kind
+                        && !seen.insert(pn)
+                    {
+                        let text = self.text(pn).unwrap_or("?").to_owned();
+                        self.error(
+                            self.ast.decl(p).span,
+                            format!("duplicate parameter `{text}`"),
+                        );
+                    }
+                }
+                // **`...` follows at least one named parameter** (C 6.7.6.3p4): `va_start` needs
+                // a parameter to start from. Calibrated to `-pedantic-errors`, as wave 314 set —
+                // `-std=gnu11` takes a bare `f(...)`.
+                if variadic && params.is_empty() {
+                    self.error(node.span, "`...` needs a named parameter before it");
+                }
+                self.declared_enumerators.leave();
+                self.defined_tags.leave();
                 // **`void` may be the whole parameter list, but not one of several**
                 // (C 6.7.6.3p10). `f(void)` never reaches here — the parser recognises it and
                 // returns an empty list — so any `Ty::Void` still standing is a genuine parameter
@@ -2262,6 +2321,20 @@ impl Cx<'_> {
             let _ = span;
             return self.intern(Ty::Error);
         };
+        // **An enum tag is defined once per scope** (C 6.7.2.3p1), the same rule the struct and
+        // union path enforces through the same scoped set — and it was missing here, so
+        // `enum E { A }; enum E { B };` was accepted. Found by a fixture written for the
+        // parameter-list scope beside it: the row was there to prove the new scope had not made
+        // genuine redefinitions legal, and it turned out they always had been.
+        //
+        // Registered on the **definition** only, exactly as for a struct: this arm is past the
+        // `members.is_none()` return, so `enum E;` after a definition never reaches it.
+        if let Some(name) = name
+            && self.defined_tags.redeclares(name)
+        {
+            let n = self.text(name).unwrap_or("?").to_owned();
+            self.error(span, format!("redefinition of `enum {n}`"));
+        }
         // **C 6.7.2.2p1: an enumeration has an enumerator list.** Unlike the range rule below,
         // gcc refuses `enum E { };` in GNU mode too — an empty enumeration has no values, so
         // there is no extension to be had.
@@ -4217,7 +4290,9 @@ impl Cx<'_> {
                 // whole — which is how one copies an array in C, so rejecting arrays wherever
                 // they appear in an assignment would remove the only way to do it.
                 let lt = self.type_of_written(*lhs);
-                if lt.is_some_and(|t| matches!(self.out.types[t.0 as usize], Ty::Array { .. })) {
+                let lhs_is_array =
+                    lt.is_some_and(|t| matches!(self.out.types[t.0 as usize], Ty::Array { .. }));
+                if lhs_is_array {
                     self.error(span, "assignment to an array");
                 }
                 let l = self.type_expr(*lhs);
@@ -4292,6 +4367,12 @@ impl Cx<'_> {
                     // altogether was the first attempt and produced exactly that, on seven of
                     // the two hundred generated programs.
                     self.promote_node(r, *rhs, span)
+                } else if lhs_is_array {
+                    // **Already reported, so do not convert to it** (contract 20). `int a[2]; a
+                    // = 0;` drew "assignment to an array" and then "makes a pointer from an
+                    // integer without a cast", the second describing a conversion to a target
+                    // that cannot be assigned at all. gcc says one thing and stops.
+                    r
                 } else {
                     self.coerce(r, lty, Conversion::Assignment, *rhs)
                 };

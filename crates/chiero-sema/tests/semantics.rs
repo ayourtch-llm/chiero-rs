@@ -4207,12 +4207,26 @@ fn restrict_qualifies_only_a_pointer() {
         "struct S { int restrict a; };",
         "int f(int restrict x);",
         "typedef int T; T restrict x;",
+        // A typedef'd **array of non-pointers**, which is the only spelling that reaches the
+        // qualifier with an array type in hand: written `int restrict a[2];` the `restrict`
+        // lands on the `int` node instead, and never sees the array at all.
+        "typedef int A[2]; A restrict a;",
         "struct S { int a; }; struct S restrict s;",
         // On the `int`, not on the pointer.
         "int restrict *p;",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
+
+    // **Poison is not a non-pointer** (contract 20): a type that failed to resolve has already
+    // been reported, and this rule adds nothing about it. Asserted as the *absence of this
+    // rule's sentence* rather than as an exact list — the declaration also draws a standing
+    // note that `x`'s uses go unchecked, which is older than this wave and not its business.
+    let poisoned = diags("__typeof__(nope) restrict x;");
+    assert!(
+        !poisoned.is_empty() && !poisoned.iter().any(|m| m.contains("`restrict`")),
+        "poison draws no `restrict` complaint: {poisoned:?}"
+    );
 
     for good in [
         "int *restrict p;",
@@ -4221,6 +4235,10 @@ fn restrict_qualifies_only_a_pointer() {
         "typedef int *P; P restrict p;",
         // An array **of** restricted pointers, where the qualifier is on the element.
         "int *restrict a[2];",
+        // The same through a typedef, where the array *is* what the qualifier is handed — so
+        // the rule must look past it to the element. A version that asked about the array
+        // itself answered every other row here correctly.
+        "typedef int *PA[2]; PA restrict a;",
         "int f(int *restrict p, int *restrict q);",
         "int f(int *restrict);",
         "int f(void){ int a[2]; int *restrict p = a; return *p; }",
