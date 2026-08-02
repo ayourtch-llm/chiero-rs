@@ -5333,3 +5333,87 @@ fn string_literals_concatenate_only_with_a_compatible_prefix() {
         );
     }
 }
+
+/// **A designator names a member the record actually shows, and an index is not negative**
+/// (C 6.7.9p6–p7).
+///
+/// chiero reports `.b` on `struct S { int a; }` and stops reporting the moment the record
+/// contains a *nested* member of any kind. Three shapes fall out of that, and only the first is
+/// the anonymous-promotion gap wave 367 found on the member side:
+///
+/// - `.c` where the record's only members come from an anonymous union — nothing matches and
+///   nothing is said.
+/// - `.d` beside an anonymous struct *and* a named sibling — the sibling proves lookup works.
+/// - `.a` naming a member of a **named** nested struct, which the enclosing record does not show
+///   at all. That one is the opposite failure: too permissive rather than too quiet, and it is
+///   why the rule is "what the record shows" rather than "any member anywhere below".
+///
+/// `visible_names` already answers exactly that question — wave 367 built it for the duplicate
+/// check — so this is the same traversal asked a third time.
+#[test]
+fn a_designator_names_a_visible_member() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "struct S{int a;}; int f(void){ struct S s = { .b = 1 }; return s.a; }",
+            "no member named `b` to initialize",
+        ),
+        (
+            "struct S{ union { int a; int b; }; }; int f(void){ struct S s = { .c = 1 }; return s.a; }",
+            "no member named `c` to initialize",
+        ),
+        (
+            "struct S{ struct { int a; }; int c; }; int f(void){ struct S s = { .d = 1 }; return s.c; }",
+            "no member named `d` to initialize",
+        ),
+        (
+            "struct S{ struct { int a; } n; }; int f(void){ struct S s = { .a = 1 }; return s.n.a; }",
+            "no member named `a` to initialize",
+        ),
+        // **A negative index**, directly and under a member designator.
+        (
+            "int f(void){ int a[2] = { [-1] = 1 }; return a[0]; }",
+            "initializer index is negative",
+        ),
+        (
+            "struct S{int a[2];}; int f(void){ struct S s = { .a[-1] = 1 }; return s.a[0]; }",
+            "initializer index is negative",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **Every name the record shows**, promoted or not.
+        "struct S{ union { int a; int b; }; }; int f(void){ struct S s = { .b = 1 }; return s.a; }",
+        "struct S{ struct { int a; }; int c; }; int f(void){ struct S s = { .c = 1 }; return s.c; }",
+        "struct S{ struct { int a; }; int c; }; int f(void){ struct S s = { .a = 1 }; return s.c; }",
+        "struct S{int a;}; int f(void){ struct S s = { .a = 1 }; return s.a; }",
+        // A named nested member, designated **by its own name** and then descended into.
+        "struct S{ struct { int a; } n; }; int f(void){ struct S s = { .n = { .a = 1 } }; return s.n.a; }",
+        // Indices in range, and the ordinary shapes beside them.
+        "int f(void){ int a[2] = { [0] = 1, [1] = 2 }; return a[0]; }",
+        "int f(void){ int a[2] = { [1] = 1 }; return a[0]; }",
+        "struct S{int a[2];}; int f(void){ struct S s = { .a[1] = 1 }; return s.a[0]; }",
+        "int f(void){ char s[4] = { \"abc\" }; return s[0]; }",
+        "struct S{int a;}; int f(void){ struct S s = { .a = 1, .a = 2 }; return s.a; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

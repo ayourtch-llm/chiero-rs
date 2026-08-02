@@ -378,3 +378,44 @@ fn the_share_of_directive_violations_rejected_does_not_fall() {
         caught.len()
     );
 }
+
+/// **Two definitions of a macro agree only if their replacement lists are spelled alike**
+/// (C 6.10.3p2), *including* the white-space between tokens.
+///
+/// chiero compares token sequences, so `1 + 2` and `1+2` are the same definition to it and
+/// different ones to C. The rule exists because a replacement list is text: two headers that
+/// disagree only in spacing still disagree about what the macro is, and the standard would
+/// rather say so than pick one.
+///
+/// The legal half is the whole reason this is about *separation* and not about raw text:
+/// `#define A 1 + 2` twice is one definition however much leading or trailing space the line
+/// carries, because only the space **between tokens** counts.
+#[test]
+fn a_macro_redefinition_matches_its_spelling() {
+    let src = "#define A 1 + 2\n#define A 1+2\nint x = A;\n";
+    assert_eq!(
+        diags(src),
+        vec!["redefinition of macro `A`".to_string()],
+        "the message for `{src}`"
+    );
+
+    for good in [
+        // The same spelling twice, and the same spelling with different *surrounding* space.
+        "#define A 1 + 2\n#define A 1 + 2\nint x = A;\n",
+        "#define A   1 + 2\n#define A 1 + 2  \nint x = A;\n",
+        "#define A 1\n#define A 1\nint x = A;\n",
+        // A redefinition after `#undef` is a fresh definition and never compared.
+        "#define A 1 + 2\n#undef A\n#define A 1+2\nint x = A;\n",
+        // Function-like macros, whose parameter names must also match and do.
+        "#define F(x) x + 1\n#define F(x) x + 1\nint x = F(1);\n",
+        "#define F(a,...) a\n#define F(a,...) a\nint x = F(1,2);\n",
+        // An empty replacement list twice.
+        "#define A\n#define A\nint x = 1;\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
