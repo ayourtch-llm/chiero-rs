@@ -1148,3 +1148,95 @@ fn a_span_covers_what_the_message_is_about() {
         ragged.join("\n  ")
     );
 }
+
+/// **A span narrows to the enumerator that is wrong**, and **two faults produce two reports**.
+///
+/// Two claims, both from §9's list after the span audit, and they are in one test because both
+/// are about what a *corpus* of diagnostics looks like rather than about one rule.
+///
+/// **The span half is wave 374's "true and useless" failure mode, found by that audit and left
+/// for a wave with gcc open.** `enum E { A = 2147483648 }` names the whole enumeration: accurate,
+/// and no help in `enum E { A, B, …, Z = 2147483648 }`. gcc points at the enumerator — at the
+/// *value* when one is written and at the *name* when the value is implicit, which is the case
+/// wave 357 built the range check to catch and therefore the case that has no value to point at.
+///
+/// **The two-fault half is a regression gate for a property that already holds.** Nothing
+/// measured it: `one_mistake_produces_one_diagnostic` runs over `VIOLATIONS`, where every row is
+/// one fault by construction, so "two faults give two reports" and "neither is a consequence of
+/// the other" were untested in either direction. Thirty programs were tried while writing this —
+/// two faults in one expression, in one declarator, across functions, across *stages* — and every
+/// one was already right. The rows below are the ones worth keeping.
+#[test]
+fn a_span_narrows_and_two_faults_give_two_reports() {
+    let analyse = |src: &str| {
+        let tu = chiero_pp::preprocess_str("t.c", src, chiero_pp::Config::default());
+        let mut oracle = chiero_parse::ScopedTypedefs::new();
+        let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+        let names = harness::names_of(&parsed);
+        let analysis = chiero_sema::analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+        let out: Vec<(String, String)> = analysis
+            .diagnostics
+            .iter()
+            .map(|d| {
+                (
+                    d.message.clone(),
+                    tu.source_map.span_text(d.span).unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        out
+    };
+
+    for (src, want) in [
+        ("enum E { A = 2147483648 };", "2147483648"),
+        ("enum E { A = -2147483649 };", "-2147483649"),
+        // **The implicit successor**, which has no value written — so the enumerator's own name
+        // is the only thing to point at, and it is what gcc points at.
+        ("enum E { A = 2147483647, B };", "B"),
+        // The offender is not the first enumerator, which is the case the whole-enumeration span
+        // made useless.
+        ("enum E { A, B, C = 2147483648 };", "2147483648"),
+    ] {
+        let got = analyse(src);
+        assert_eq!(got.len(), 1, "one diagnostic for `{src}`: {got:?}");
+        assert_eq!(got[0].1, want, "the span for `{src}`");
+    }
+
+    // **Two independent faults, two reports, and nothing else.** The pairs are chosen so neither
+    // fault could produce the other: different functions, different declarations, different
+    // paragraphs of C.
+    for (src, wants) in [
+        (
+            "int f(void){ int *p=0; return p == 1; }\nint g(void){ double d=1; return (int)(d % 2); }",
+            [
+                "comparison between a pointer and an integer",
+                "`%` needs integer operands",
+            ],
+        ),
+        (
+            "int a[-1]; int b[-2];",
+            [
+                "array length of `a` is negative",
+                "array length of `b` is negative",
+            ],
+        ),
+        (
+            "struct S { float a:3; int f(void); };",
+            [
+                "bit-field `a` has a non-integer type",
+                "a member may not have a function type",
+            ],
+        ),
+        (
+            "struct I; struct I a[-1];",
+            [
+                "array has an incomplete element type",
+                "array length of `a` is negative",
+            ],
+        ),
+    ] {
+        let got = analyse(src);
+        let messages: Vec<&str> = got.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(messages, wants, "both faults, and only those, for `{src}`");
+    }
+}
