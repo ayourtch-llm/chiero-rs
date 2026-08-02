@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 364) — 1551 tests, 4 ignored, M1 219/219 by contract
+> ### ⏭️ START HERE (wave 365) — 1552 tests, 4 ignored, M1 226/226 by contract
 >
-> **Sema 219 of 219, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 226 of 226, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 364 closed 6.5.6 and finished 6.5.9.** Ten misses, and the wave **removed** two bad
+> diagnostics as well as adding six: `s + 1` used to report "a structure or union is copied only
+> from its own type" plus a cast complaint, neither naming the mistake.
+>
+> **A rule's phrasing is chosen by what must survive it.** The natural reading of 6.5.6 — "the
+> pointee is a complete object type" — would delete this project's declared `void *` and
+> function-pointer arithmetic. Asking instead what sits *beside* the pointer is a different
+> question that leaves the pointee alone. **Check the divergence list before phrasing a rule**,
+> not after the corpus fails.
 >
 > **Wave 363 built the identifier-meaning table** §9 had been holding since 362, and closed 6.7p3
 > with it — fourteen misses from one mechanism. `ScopedMeanings` is beside `ScopedNames` rather
@@ -566,12 +576,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.6/6.5.8/6.5.9's
->      additive and comparison constraints** (subtracting incompatible pointers, comparing a
->      pointer with an integer, relational operators on function pointers), and **6.5.16.1's
->      simple-assignment constraints beyond wave 359** (assigning between incompatible struct
->      types through a typedef, a `void *` to a function pointer). **Run the legal half every
->      time** — and read the corpus gate's failures as census results (waves 362 and 363), not as
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.2.1 and 6.5.3.1's
+>      subscript and increment constraints** (subscripting a non-pointer, `++` on a record or a
+>      function, `--` on a `_Bool`), and **6.7.10's `_Static_assert` and alignment constraints**
+>      (`_Alignas` on a parameter or a `typedef`, an alignment that is not a power of two).
+>
+>      **Four rows are deferred with evidence** from wave 364, all `-pedantic-errors`-only and all
+>      things real code does: a relational comparison between two function pointers, between a
+>      `void *` and an object pointer, and `<` mixing the two. Deciding them needs a count of VPP
+>      uses first (wave 357's criterion), not another census. One message is wrong rather than
+>      missing: `d == p` says "comparison between a pointer and an integer" of a `double`.
+>
+>      **Run the legal half every time** — and read the corpus gate's failures as census results (waves 362 and 363), not as
 >      breakage: each one named the exact construct to go and measure.
 >
 >      **`ScopedMeanings` now exists**, so a rule needing "what does this name mean here" has a
@@ -2903,6 +2919,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Check the divergence list before phrasing a rule** (wave 364). The obvious reading of 6.5.6
+> deletes `void *` arithmetic, which this project implements on purpose. The rule that survives
+> asks a *different question* — what sits beside the pointer, not what the pointee is — and needed
+> no exception. A rule needing an exception list for a declared divergence is usually the wrong
+> rule.
 >
 > **When a rule needs scopes, the boundaries are the work** (wave 363). The four-way match at the
 > centre of the identifier-meaning rule was written once and never changed; three scope boundaries
