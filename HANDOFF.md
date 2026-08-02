@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 369) — 1561 tests, 4 ignored, M1 250/250 by contract
+> ### ⏭️ START HERE (wave 370) — 1562 tests, 4 ignored, M1 250/250 by contract
 >
-> **Sema 250 of 250, `chiero-pp` 28 of 28, `chiero-parse` 5 constraint tests.**
+> **Sema 250 of 250, `chiero-pp` 34 of 34, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 369 closed 6.10.1.** Eleven misses in one place: the `#if` evaluator reported the token
+> it did not *know* and never the token it *needed*. Both arrive as `primary` having nothing to
+> return, which is why one had an arm and the other a silent `return ZERO`. **When a parser has an
+> error arm, check whether it covers running out as well as not recognising** — they are the same
+> line from inside and opposite from outside.
+>
+> **A rule killed only by someone else's fixture is a rule this wave did not pin.** The
+> hex-exponent mutant (`0xe` read as floating) was caught by a neighbouring differential test and
+> by nothing in the new one. Read the kill list, not just the verdict — wave 360's rule, paying
+> again.
 >
 > **Wave 368 closed §9's oldest item.** 6.10.3.5 had led this list since wave 333 and was already
 > right in seventeen of eighteen rows; the one miss was white-space separation, which chiero could
@@ -612,14 +623,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > **Next, in descending order of what they buy:**
 >   1. **Continue the census by reading C.** Waves 355–368 each found misses behind one cause, which
->      is the cheapest shape this method produces. Still unexamined: **6.10.1's `#if` expression
->      constraints** (a floating constant in `#if`, an unbalanced `defined`, `#if` with an empty
->      expression), **6.10.2's `#include` constraints** (a computed include that expands to
->      nothing, `#include` with more than one header name), and **6.11's obsolescent features**
->      (an unprototyped declarator's diagnosis, a `register` array).
+>      is the cheapest shape this method produces. Still unexamined: **6.10.6/6.10.7's `#pragma`
+>      and null directives** (an unknown pragma's diagnosis, `_Pragma` with a non-string operand),
+>      **6.10.8's predefined macros** (`__DATE__`/`__TIME__` shape, redefining `__STDC__`), and
+>      **6.11's obsolescent features** (an unprototyped declarator's diagnosis, a `register`
+>      array).
 >
->      **Every named section §9 has carried since wave 355 is now closed.** The list above is a
->      fresh reading of C, not a backlog.
+>      **One message is wrong rather than absent**, recorded in wave 369's RED so it is not
+>      re-found as a miss: `#include <stdio.h> extra` reports "invalid computed include", which
+>      is not what a reader needs. That is a message wave, not a census wave.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -2965,6 +2977,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An error arm for "did not recognise" is not one for "ran out"** (wave 369). The `#if`
+> evaluator had reported unsupported tokens since it was written and said nothing about truncated
+> input; both reach the same line in `primary`. Whenever a recursive-descent parser reports a
+> token it rejects, check the branch where there is no token at all.
 >
 > **A long-deferred item may be mostly done; measure before planning** (wave 368). 6.10.3.5 led
 > §9's list for thirty-five waves and needed one rule. The census cost twenty minutes and the
