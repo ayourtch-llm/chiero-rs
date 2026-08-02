@@ -194,3 +194,75 @@ fn a_parameter_is_not_a_typedef() {
         );
     }
 }
+
+/// **`static` and qualifiers inside `[]` belong to a parameter, and so does `[*]`**
+/// (C 6.7.6.2p1, p4).
+///
+/// The syntax is legal everywhere and the *meaning* exists only in a parameter: `int a[static 3]`
+/// promises the caller passes at least three elements, and an object declaration has no caller.
+/// 013 read these tokens and threw them away with the comment that they "carry no meaning for
+/// us" — true of 014, and a different thing from being unconstrained, which is why the rule is
+/// here rather than there.
+///
+/// The depth is a **counter and not a flag**: `int f(int g(int a[static 3]))` nests one parameter
+/// list inside another, and leaving on the way out of the inner one would make the outer look
+/// like file scope.
+#[test]
+fn array_decorations_belong_to_a_parameter() {
+    for (src, want) in [
+        (
+            "int a[static 3];",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "int f(void){ int a[const 3]; return a[0]; }",
+            "a qualifier in an array size belongs to a parameter",
+        ),
+        (
+            "struct S { int a[static 3]; };",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "typedef int T[static 3];",
+            "`static` in an array size belongs to a parameter",
+        ),
+        (
+            "int f(void){ int a[*]; return 0; }",
+            "`[*]` belongs to a function prototype",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **In a parameter**, where every decoration means something.
+        "int f(int a[static 3]);",
+        "int f(int a[static 3]){ return a[0]; }",
+        "int f(int a[const 3]);",
+        "int g(int a[const 3]){ return a[0]; }",
+        "int f(int a[volatile 3]);",
+        "int f(int a[]);",
+        "int f(int a[*]);",
+        "int f(int a[3][*]);",
+        // **A nested parameter list**, which is what makes the depth a counter — and the
+        // decoration *after* it, which is what makes the counter decrement rather than reset.
+        // A mutant that zeroed the depth on the way out survived the first spelling.
+        "int f(int g(int a[static 3]));",
+        "int f(int g(void), int a[static 3]);",
+        // Ordinary arrays, including the declared `int a[0]` divergence and a VLA.
+        "int f(void){ int a[3]; return a[0]; }",
+        "int a[2];",
+        "int a[0];",
+        "int f(int n){ int a[n]; return a[0]; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

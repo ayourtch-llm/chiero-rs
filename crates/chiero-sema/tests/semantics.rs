@@ -5105,6 +5105,15 @@ fn a_generic_association_names_a_complete_object_type() {
         );
     }
 
+    // **Poison draws no second sentence** (contract 20): a type that failed to resolve has
+    // already been reported, and calling it incomplete would be this rule inventing a fact about
+    // a type it made up. A mutant that dropped the exclusion survived every row above.
+    let poisoned = diags("int f(void){ return _Generic(1, __typeof__(nope): 1, default: 0); }");
+    assert!(
+        !poisoned.is_empty() && !poisoned.iter().any(|m| m.contains("`_Generic`")),
+        "poison draws no `_Generic` complaint: {poisoned:?}"
+    );
+
     for good in [
         "int f(void){ return _Generic(1, int: 1, default: 0); }",
         "int f(void){ return _Generic(1, int: 1); }",
@@ -5123,18 +5132,16 @@ fn a_generic_association_names_a_complete_object_type() {
     }
 }
 
-/// **`static` and qualifiers inside `[]` belong to a parameter, and so does `[*]`** (C 6.7.6.2p1,
-/// p4), and a **flexible array member needs a member before it** (6.7.2.1p18).
+/// **A flexible array member needs a member before it, and a union may not have one**
+/// (C 6.7.2.1p18).
 ///
-/// The first is the interesting one because the syntax is legal everywhere and the *meaning*
-/// exists only in a parameter: `int a[static 3]` as a parameter promises the caller passes at
-/// least three elements, and as an object declaration promises nothing, so C refuses it there.
-/// chiero parses all of it and asks nothing.
+/// chiero had the "must be last" half and neither of these. The decoration half of 6.7.6.2 lives
+/// in `chiero-parse`'s constraints test instead — `static` inside `[]` never reaches 014, which
+/// is the right layering and cost this wave a test-file move to notice.
 ///
-/// `int a[0]` stays legal — it is this project's declared divergence with 1777 uses in VPP — so
-/// the rule is about the *decorations* inside the brackets rather than about the size.
+/// `int a[0]` stays legal here, being this project's declared divergence with 1777 uses in VPP.
 #[test]
-fn array_decorations_belong_to_a_parameter() {
+fn a_flexible_array_member_needs_a_member_before_it() {
     let diags = |src: &str| {
         let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
         p.analysis
@@ -5145,26 +5152,6 @@ fn array_decorations_belong_to_a_parameter() {
     };
 
     for (src, want) in [
-        (
-            "int a[static 3];",
-            "`static` in an array size belongs to a parameter",
-        ),
-        (
-            "int f(void){ int a[const 3]; return a[0]; }",
-            "a qualifier in an array size belongs to a parameter",
-        ),
-        (
-            "struct S { int a[static 3]; };",
-            "`static` in an array size belongs to a parameter",
-        ),
-        (
-            "typedef int T[static 3];",
-            "`static` in an array size belongs to a parameter",
-        ),
-        (
-            "int f(void){ int a[*]; return 0; }",
-            "`[*]` belongs to a function prototype",
-        ),
         // **A flexible array member needs something before it**, and a union may not have one.
         (
             "struct S { int a[]; };",
@@ -5183,15 +5170,6 @@ fn array_decorations_belong_to_a_parameter() {
     }
 
     for good in [
-        // **In a parameter**, where every decoration means something.
-        "int f(int a[static 3]);",
-        "int f(int a[static 3]){ return a[0]; }",
-        "int f(int a[const 3]);",
-        "int g(int a[const 3]){ return a[0]; }",
-        "int f(int a[volatile 3]);",
-        "int f(int a[]);",
-        "int f(int a[*]);",
-        "int f(int a[3][*]);",
         // Ordinary arrays, including the declared `int a[0]` divergence and a VLA.
         "int f(void){ int a[3]; return a[0]; }",
         "int a[2];",

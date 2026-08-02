@@ -333,6 +333,18 @@ struct Parser<'a> {
     interner: IndexMap<Arc<str>, Symbol>,
     spellings: Vec<Arc<str>>,
     oracle: &'a mut dyn TypedefOracle,
+    /// How many parameter lists enclose the declarator being read.
+    ///
+    /// **C 6.7.6.2p1 and p4 are the only rules in the grammar that depend on this**: `static` and
+    /// qualifiers inside `[]`, and `[*]`, are legal syntax everywhere and *mean* something only
+    /// in a parameter — `int a[static 3]` promises the caller passes three elements, and an
+    /// object declaration has no caller. 013 discarded them as meaningless; they are meaningless
+    /// to 014, which is a different thing from being unconstrained.
+    ///
+    /// A counter rather than a flag, because a parameter's own declarator may contain another
+    /// parameter list: `int f(int g(int a[static 3]))` is legal, and leaving on the way out of
+    /// the inner one would make the outer look like file scope.
+    param_depth: u32,
     /// An asm label read by the declarator, waiting for the `DeclId` it belongs to.
     ///
     /// The declarator returns `(name, type)` and the declaration node does not exist yet,
@@ -372,6 +384,7 @@ impl<'a> Parser<'a> {
             interner: IndexMap::new(),
             spellings: Vec::new(),
             oracle,
+            param_depth: 0,
             pending_asm_label: None,
             local_labels: Vec::new(),
             local_label_seq: 0,
@@ -1687,17 +1700,43 @@ impl<'a> Parser<'a> {
                 // resolves.
                 let open = self.pos;
                 self.pos += 1;
-                // `static` and qualifiers inside an array declarator's brackets are
-                // legal C99 in a parameter and carry no meaning for us.
-                while self.eat_kw(Kw::Static)
-                    || self.eat_kw(Kw::Const)
-                    || self.eat_kw(Kw::Volatile)
-                    || self.eat_kw(Kw::Restrict)
-                {}
+                // `static` and qualifiers inside an array declarator's brackets are legal C99
+                // **in a parameter** and carry no meaning for us beyond that. Outside one they
+                // are a constraint violation (C 6.7.6.2p1) rather than merely useless, so the
+                // spelling is reported here and still discarded.
+                let deco = self.here();
+                let mut saw_static = false;
+                let mut saw_qual = false;
+                loop {
+                    if self.eat_kw(Kw::Static) {
+                        saw_static = true;
+                    } else if self.eat_kw(Kw::Const)
+                        || self.eat_kw(Kw::Volatile)
+                        || self.eat_kw(Kw::Restrict)
+                    {
+                        saw_qual = true;
+                    } else {
+                        break;
+                    }
+                }
+                if self.param_depth == 0 && (saw_static || saw_qual) {
+                    let what = if saw_static {
+                        "`static` in an array size belongs to a parameter"
+                    } else {
+                        "a qualifier in an array size belongs to a parameter"
+                    };
+                    self.error(deco, what);
+                }
                 let len = if self.is_punct(0, Punct::RBracket) {
                     // `int a[]` — a flexible array member or an unsized parameter.
                     ArrayLen::Unspecified
                 } else if self.is_punct(0, Punct::Star) && self.is_punct(1, Punct::RBracket) {
+                    // **`[*]` names an unspecified VLA size and exists only in a prototype**
+                    // (C 6.7.6.2p4). Kept as `Star` either way so 014 sees one shape.
+                    if self.param_depth == 0 {
+                        let sp = self.here();
+                        self.error(sp, "`[*]` belongs to a function prototype");
+                    }
                     self.pos += 1;
                     ArrayLen::Star
                 } else {
@@ -1823,6 +1862,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parameter_list(&mut self) -> (Vec<DeclId>, bool, bool, bool) {
+        self.param_depth += 1;
+        let r = self.parameter_list_inner();
+        self.param_depth -= 1;
+        r
+    }
+
+    fn parameter_list_inner(&mut self) -> (Vec<DeclId>, bool, bool, bool) {
         let mut params = Vec::new();
         let mut variadic = false;
         // `f(void)` is an empty parameter list, not one parameter of type void — and it is a

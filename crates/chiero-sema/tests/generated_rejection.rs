@@ -780,6 +780,28 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "_Alignas(3) int x;",
     ),
     ("an alignment weaker than the type", "_Alignas(1) int x;"),
+    // C 6.5.1.1 and 6.7.2.1, wave 366. All refused by gcc in both modes.
+    (
+        "`_Generic` association of `void` type",
+        "int f(void){ return _Generic(1, void: 1, default: 0); }",
+    ),
+    (
+        "`_Generic` association of incomplete type",
+        "struct I; int f(void){ return _Generic(1, struct I: 1, default: 0); }",
+    ),
+    (
+        "`_Generic` association of function type",
+        "int f(void){ return _Generic(1, int(void): 1, default: 0); }",
+    ),
+    (
+        "`_Generic` association variably modified",
+        "int f(int n){ return _Generic(1, int[n]: 1, default: 0); }",
+    ),
+    ("a lone flexible array member", "struct S { int a[]; };"),
+    (
+        "a flexible array member in a union",
+        "union U { int a; int b[]; };",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -832,7 +854,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 235;
+    const FLOOR: usize = 241;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

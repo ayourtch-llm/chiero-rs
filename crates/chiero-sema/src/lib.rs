@@ -2667,6 +2667,22 @@ impl Cx<'_> {
                 let span = self.ast.decl(m).span;
                 self.error(span, "a flexible array member must be the last member");
             }
+            // **...and it needs a member before it, and never appears in a union** (C 6.7.2.1p18).
+            // The three halves of one paragraph, and only the "last" one existed. Asked here,
+            // where `fields` holds the members seen so far, which is what makes "before it" a
+            // question this loop can answer without a second pass.
+            if matches!(
+                self.out.types[fty.0 as usize],
+                Ty::Array {
+                    len: ArrayLen::Flexible,
+                    ..
+                }
+            ) {
+                let span = self.ast.decl(m).span;
+                if is_union {
+                    self.error(span, "a union may not have a flexible array member");
+                }
+            }
             // **A member is never variably modified** (C 6.7.2.1p9), anywhere — not only at file
             // scope, which is merely where gcc's message says so. A record has one layout, and a
             // length that is not known until the declaration is reached has nowhere in it to
@@ -2932,6 +2948,19 @@ impl Cx<'_> {
         }
         if let Some(r) = self.aligned_attr(node) {
             align = align.max(r);
+        }
+        // **A flexible array member needs a member before it** (C 6.7.2.1p18), asked *after* the
+        // loop because "before it" and "after it" are the same paragraph and only one of them
+        // may speak. `struct S { int a[]; int b; }` has nothing before the flexible member and
+        // something after it; gcc says one thing, "not at end of struct", so that complaint —
+        // raised inside the loop — wins and this one is only reached when the flexible member is
+        // the record's *sole* field. Wave 361's rule: gcc's choice of message is the tiebreak.
+        if flexible_member == Some(0)
+            && fields.len() == 1
+            && let Some(&m) = members.first()
+        {
+            let span = self.ast.decl(m).span;
+            self.error(span, "a flexible array member needs a member before it");
         }
         let size = round_up(round_up(size_bits, 8) / 8, align);
         RecordLayout {
@@ -5173,6 +5202,36 @@ impl Cx<'_> {
                         }
                         Some(t) => {
                             let at = self.ty_of(t);
+                            // **6.5.1.1p2: the association names a complete object type, and not
+                            // a variably modified one.** The selection rules above are about
+                            // *matching*; this is about whether the type named is one an object
+                            // could have at all, and nothing was asking. `void`, an incomplete
+                            // tag and a function type are the three shapes that reach here.
+                            //
+                            // Reported and then matched anyway: a rejected association that
+                            // happens to match should not also produce "no association matches",
+                            // which is contract 20's cascade wearing a different hat.
+                            let ats = self.ast.ty(t).span;
+                            if matches!(self.out.types[at.0 as usize], Ty::Void | Ty::Func { .. })
+                                || (is_incomplete(&self.out, at)
+                                    && !matches!(self.out.types[at.0 as usize], Ty::Error))
+                            {
+                                self.error(
+                                    ats,
+                                    "a `_Generic` association needs a complete object type",
+                                );
+                            } else if matches!(
+                                self.out.types[at.0 as usize],
+                                Ty::Array {
+                                    len: ArrayLen::Vla(_),
+                                    ..
+                                }
+                            ) {
+                                self.error(
+                                    ats,
+                                    "a `_Generic` association may not be variably modified",
+                                );
+                            }
                             // Interned types compare by id, so this *is* the compatibility
                             // test for everything `_Generic` can name.
                             if at == self.bare(cty) {
