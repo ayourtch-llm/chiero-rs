@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 358) — 1539 tests, 4 ignored, M1 169/169 by contract
+> ### ⏭️ START HERE (wave 359) — 1541 tests, 4 ignored, M1 178/178 by contract
 >
-> **Sema 169 of 169, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 178 of 178, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -505,14 +505,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
 >
+> **Wave 358 closed 6.7.2.1 and 6.7.9.** Three rules, nine misses — and the largest was §9's
+> predicted shape twice over: the constant-initializer check *existed* and was keyed on
+> `Scope::File` rather than on storage duration, so every block-scope `static` went unchecked.
+> **When a check is missing, ask first whether it is instead mis-keyed** — the fix is one word and
+> the symptoms go together.
+>
 > **Next, in descending order of what they buy:**
->   1. **Continue the census by reading C.** Waves 355–357 each found misses behind one cause, which
+>   1. **Continue the census by reading C.** Waves 355–358 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.7.2.1's bit-field
->      constraints** (width past the type, width on a non-integer, a named zero-width field), and
->      **6.7.9's initializer constraints beyond wave 356** (a scalar braced twice, a static
->      initializer that is not a constant expression).
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.16's assignment
+>      constraints** (incompatible pointer types, a qualified pointee assigned to an unqualified
+>      one, assigning to an array or a function), and **6.7.6.3's function-declarator constraints**
+>      (a parameter of function type, `void` alongside another parameter, a definition whose
+>      declarator is not a prototype).
+>   2. **One row is deferred, not missed:** `int x = {}` — empty initializer braces — is a pedantic
+>      error under C11 and legal under `-std=gnu11` and C23. Wave 357's criterion applies: count
+>      real uses before forming an opinion. Do not re-find it as a defect.
 >   2. **Give `chiero-pp` and `chiero-parse` the contract-20 channel** (wave 353). Both measured
 >      clean, and wave 355 showed the gate earns its keep on *new* code.
 >   3. **`check_init` now has three callers** — declaration, compound literal, and the designator
@@ -2837,6 +2847,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A missing check is often a mis-keyed one** (wave 358). The constant-initializer rule existed
+> and asked `Scope::File` where C asks about storage duration, so five of eight census misses were
+> one word. Before writing a rule, grep for the message you would have written: if something like
+> it already exists, the question is what it is keyed on.
+>
+> **A predicate that answers a *related* question is the most expensive kind of near-miss** (wave
+> 358). `addr_of` answers "is this an address"; C 6.6p9 asks "is this the address of an object with
+> static storage duration". Everything looked right and `&x` of an automatic sailed through. When
+> reusing a fold as a check, write down the question it actually answers.
+>
+> **A mutant that survives because its code is unreachable is telling you to delete, not to test**
+> (wave 358). `addresses_an_automatic` grew an `InitList` arm that `check_static_init` never
+> reaches, having already recursed. The fixture to kill it cannot be written, because no program
+> takes that path.
+>
+> **Six of wave 358's sixteen kills needed a fixture written first.** The sweep — not the census —
+> found the untested `extern` half of a predicate, a `static` shadowing an automatic, a set leaking
+> from one function to the next, and arithmetic on an automatic address. **Mutate the guard you
+> just factored, not only the rule you just wrote.**
+>
+> **When a new rule makes an old one redundant, gcc's choice of message is the tiebreak** (wave
+> 358). `struct S { struct I a:3; }` drew both a bit-field complaint and an incompleteness one;
+> gcc prints only the first, because a bit-field could not have taken that type complete either.
+> Contract 20 says one of them must go, and which one is not a matter of taste.
+>
+> **`Ty::Error` does not mean "already reported"** (wave 358). chiero uses it for a type that
+> failed to resolve *and* for an `enum E;` with no definition. A contract-20 guard keyed on it
+> silences a genuine incompleteness; key on whether resolving the type emitted a diagnostic.
 >
 > **When a new rule reports code the project deliberately implements, require both halves rather
 > than choosing one** (wave 357). The wide enum had three tests asserting *silence*, which made the
