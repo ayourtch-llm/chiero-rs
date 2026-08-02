@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 365) — 1552 tests, 4 ignored, M1 226/226 by contract
+> ### ⏭️ START HERE (wave 366) — 1554 tests, 4 ignored, M1 235/235 by contract
 >
-> **Sema 226 of 226, `chiero-pp` 27 of 27, `chiero-parse` clean.**
+> **Sema 235 of 235, `chiero-pp` 27 of 27, `chiero-parse` clean.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 365 closed 6.5.2.1, 6.5.3.1 and 6.7.5.** Nine misses in three groups, and the wave needed
+> a **parser** change: 013 recorded `_Alignas` as an `aligned` attribute so 014 would have one
+> place to look, but C and GNU disagree about where each spelling may appear — `_Alignas` is
+> refused on a `typedef`, `__attribute__((aligned))` is not, and VPP writes the attribute on
+> typedefs throughout `vppinfra`. **When two spellings unify to one representation, check whether
+> their rules unify too** before relying on it.
+>
+> **The decay is not always the right place to ask.** Waves 360–364 all found it load-bearing;
+> here it would hide the mistake, because `++` writes back and a decayed array looks like ordinary
+> pointer arithmetic. The discriminator is whether the operation *modifies* its operand.
 >
 > **Wave 364 closed 6.5.6 and finished 6.5.9.** Ten misses, and the wave **removed** two bad
 > diagnostics as well as adding six: `s + 1` used to report "a structure or union is copied only
@@ -576,16 +587,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
 >      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
 >      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.2.1 and 6.5.3.1's
->      subscript and increment constraints** (subscripting a non-pointer, `++` on a record or a
->      function, `--` on a `_Bool`), and **6.7.10's `_Static_assert` and alignment constraints**
->      (`_Alignas` on a parameter or a `typedef`, an alignment that is not a power of two).
+>      `#undef` of a built-in, a function-like macro redefined object-like), **6.5.3.4 and 6.5.1.1's
+>      `sizeof` and generic-selection constraints** (`_Generic` with no matching association, two
+>      compatible association types, `sizeof` a bit-field member through a typedef), and
+>      **6.7.6.2's array-declarator constraints** (`static` or a qualifier in a non-parameter array
+>      size, a VLA at file scope, `[*]` outside a prototype).
 >
 >      **Four rows are deferred with evidence** from wave 364, all `-pedantic-errors`-only and all
 >      things real code does: a relational comparison between two function pointers, between a
->      `void *` and an object pointer, and `<` mixing the two. Deciding them needs a count of VPP
->      uses first (wave 357's criterion), not another census. One message is wrong rather than
->      missing: `d == p` says "comparison between a pointer and an integer" of a `double`.
+>      `void *` and an object pointer, and `<` mixing the two. Wave 365 tried to settle them and
+>      **found the instrument wrong**: a text search cannot count them, because `p < q` says nothing
+>      about whether either side is a `void *`. The honest method is chiero itself — implement the
+>      rule, run it over the corpus, count the hits, then decide. That is a wave, not a grep.
+>      One message is wrong rather than missing: `d == p` says "comparison between a pointer and an
+>      integer" of a `double`.
 >
 >      **Run the legal half every time** — and read the corpus gate's failures as census results (waves 362 and 363), not as
 >      breakage: each one named the exact construct to go and measure.
@@ -2919,6 +2934,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **When two spellings unify to one representation, check whether their rules unify too** (wave
+> 365). 013 folded `_Alignas` into the `aligned` attribute so 014 had one place to look, which was
+> right for computing an alignment and wrong for checking one: C refuses `_Alignas` on a `typedef`
+> and GNU takes the attribute there, which VPP relies on. The unification was still worth keeping —
+> the fix was a second *name*, not a second code path.
+>
+> **The decay is the right place to ask only when the operation reads** (wave 365, qualifying
+> 360–364). `++` writes back, and a decayed array looks like ordinary pointer arithmetic, so
+> asking after the decay hides `a++`. Ask before it whenever the operation modifies its operand.
 >
 > **Check the divergence list before phrasing a rule** (wave 364). The obvious reading of 6.5.6
 > deletes `void *` arithmetic, which this project implements on purpose. The rule that survives
