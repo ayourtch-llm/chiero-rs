@@ -3769,3 +3769,79 @@ fn a_compound_literal_is_initialized_like_an_object() {
         );
     }
 }
+
+/// **A designator list descends** (C 6.7.9p6) — wave 356's census over the half of 6.7.9 that
+/// wave 314 did not reach.
+///
+/// Twenty-four programs; the compound-assignment half came back clean but for one row, and the
+/// designator half gave **four misses behind one cause**: a designator list with more than one
+/// component is not walked. `[0][5]`, `[5][0]`, `.p.nope` and `[1].nope` all name a sub-object
+/// that does not exist, and each was accepted.
+///
+/// The accepted half is what makes it a *descent* rather than a longer loop:
+///
+///   - **`{[0][0] = 1, [1][1] = 2}` is legal**, so the walk has to enter the row and come back
+///     out with the outer cursor intact.
+///   - **`{1, [2] = 3}` and `{[0] = 1, 2, 3}` are legal**: a designator sets the cursor and
+///     positional elements resume from it, which is why the count check cannot simply be
+///     "elements ≤ capacity".
+///   - **`{.x = 1, 2}` is legal and `{.y = 1, 2}` is not** — the second positional element
+///     follows the *designated* one, so it lands past the end.
+///
+/// The stray from the other half is C 6.5.5p2 through 6.5.16.2: **`%=` needs integer operands**,
+/// so `d %= 2` on a `double` is a violation where `d *= 2` is fine.
+#[test]
+fn a_designator_list_descends_into_the_object() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for bad in [
+        // A nested index out of range, at either level.
+        "int a[2][2] = {[0][5] = 1};",
+        "int a[2][2] = {[5][0] = 1};",
+        // A nested member that does not exist, through a struct and through an array of them.
+        "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.nope = 1};",
+        "struct P { int x, y; }; struct P a[2] = {[1].nope = 3};",
+        // ...and the two the single-level walk already caught.
+        "int a[3] = {[0] = 1, 2, 3, 4};",
+        "struct P { int x, y; }; struct P p = {.y = 1, 2};",
+        // 6.5.5p2: `%` is an integer operation, so `%=` is too.
+        "int f(double d){ d %= 2; return (int)d; }",
+    ] {
+        assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
+    }
+
+    for good in [
+        // Nested designators that are in range, and the mixed forms around them.
+        "int a[2][2] = {[0][0] = 1, [1][1] = 2};",
+        "int a[2][2] = {[1][1] = 2};",
+        "int a[2][2] = {{1,2},{3,4}};",
+        "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.x = 1};",
+        "struct P { int x, y; }; struct Q { struct P p; }; struct Q q = {.p.y = 1};",
+        "struct P { int x, y; }; struct P a[2] = {[1].y = 3};",
+        "struct P { int x, y; }; struct P a[2] = {[0].x = 1, [1].y = 2};",
+        // A designator sets the cursor; positional elements resume from it.
+        "int a[3] = {1, [2] = 3};",
+        "int a[3] = {[0] = 1, 2, 3};",
+        "int a[3] = {[2] = 3, [0] = 1};",
+        "struct P { int x, y; }; struct P p = {.x = 1, 2};",
+        // The compound-assignment half, which the census found already right.
+        "int f(int *p){ p += 1; return *p; }",
+        "int f(int *p){ p -= 1; return *p; }",
+        "int f(int x){ x += 1; return x; }",
+        "int f(double d){ d *= 2; return (int)d; }",
+        "int f(int x){ x %= 2; return x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
