@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 368) — 1559 tests, 4 ignored, M1 246/246 by contract
+> ### ⏭️ START HERE (wave 369) — 1561 tests, 4 ignored, M1 250/250 by contract
 >
-> **Sema 246 of 246, `chiero-pp` 27 of 27, `chiero-parse` 5 constraint tests.**
+> **Sema 250 of 250, `chiero-pp` 28 of 28, `chiero-parse` 5 constraint tests.**
 >
 > **Wave 357 closed 6.5.15 and 6.7.2.2.** The conditional operator was already complete — twelve
 > rows, every one agreeing with gcc, no rule to write. Enumerations gave three misses in two rules,
@@ -504,6 +504,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 368 closed §9's oldest item.** 6.10.3.5 had led this list since wave 333 and was already
+> right in seventeen of eighteen rows; the one miss was white-space separation, which chiero could
+> not see because it compared token *sequences* while `leading_space` sat on the token. **An item
+> that has been deferred for thirty waves may be mostly done — measure it before planning it.**
+>
+> **All three initializer misses were `elides_braces`, short a second time.** Wave 356 narrowed it
+> to `designators.len() > 1`; one designator is the same argument, and a record whose first member
+> is an anonymous aggregate made every single-designator initializer skip the check. When a guard
+> has been found too broad once, **check whether the narrowing was itself too narrow.**
 >
 > **Wave 367 closed 6.7.2.1's remaining constraints and 6.4.5.** Eleven misses. Two of the three
 > rules were **already half-built for a different purpose**: `find_field` promoted an anonymous
@@ -601,14 +611,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > the symptoms go together.
 >
 > **Next, in descending order of what they buy:**
->   1. **Continue the census by reading C.** Waves 355–360 each found misses behind one cause, which
->      is the cheapest shape this method produces. Still unexamined: **6.10.3.5's
->      `#undef`/redefinition interaction beyond wave 333** (redefining a macro currently expanding,
->      `#undef` of a built-in, a function-like macro redefined object-like), **6.7.9's remaining
->      initializer constraints** (initializing a `static` from a compound literal, a designator
->      naming a member of an anonymous union, an initializer for a flexible array member), and
->      **6.3.2.1's lvalue conversions** (an array of incomplete element type used as a value,
->      taking the address of a bit-field through a macro).
+>   1. **Continue the census by reading C.** Waves 355–368 each found misses behind one cause, which
+>      is the cheapest shape this method produces. Still unexamined: **6.10.1's `#if` expression
+>      constraints** (a floating constant in `#if`, an unbalanced `defined`, `#if` with an empty
+>      expression), **6.10.2's `#include` constraints** (a computed include that expands to
+>      nothing, `#include` with more than one header name), and **6.11's obsolescent features**
+>      (an unprototyped declarator's diagnosis, a `register` array).
+>
+>      **Every named section §9 has carried since wave 355 is now closed.** The list above is a
+>      fresh reading of C, not a backlog.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -2954,6 +2965,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **A long-deferred item may be mostly done; measure before planning** (wave 368). 6.10.3.5 led
+> §9's list for thirty-five waves and needed one rule. The census cost twenty minutes and the
+> planning it displaced had been carried since 333. **Run the census on the oldest item before
+> assuming it is large.**
+>
+> **When a guard has been found too broad, check whether the narrowing was too narrow** (wave
+> 368). Wave 356 caught `elides_braces` swallowing nested designators and keyed the fix on
+> `len() > 1`; single designators kept slipping for twelve waves. The second finding was in the
+> same three lines as the first.
 >
 > **When the data is already computed for another reason, the rule is a second question about it**
 > (wave 367). `find_field` had promoted anonymous members' names for lookup since long before this
