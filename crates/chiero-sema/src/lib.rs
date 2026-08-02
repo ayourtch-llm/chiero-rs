@@ -8,8 +8,8 @@
 //! hand-written expectations: the expectations are exactly what a layout bug corrupts.
 
 use chiero_ast::{
-    Ast, BinOp, DeclId, DeclKind, ExprId, ExprKind, ForInit, StmtId, StmtKind, TypeId, TypeKind,
-    UnOp,
+    Ast, BinOp, DeclId, DeclKind, ExprId, ExprKind, ForInit, StmtId, StmtKind, Storage, TypeId,
+    TypeKind, UnOp,
 };
 pub mod strlit;
 
@@ -876,6 +876,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         read_only: Default::default(),
         read_only_pointee: Default::default(),
         register_objects: Default::default(),
+        automatic_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -928,6 +929,7 @@ pub fn const_eval(
         read_only: Default::default(),
         read_only_pointee: Default::default(),
         register_objects: Default::default(),
+        automatic_objects: Default::default(),
         loop_depth: 0,
         breakable_depth: 0,
         switches: Vec::new(),
@@ -1019,6 +1021,12 @@ struct Cx<'a> {
     /// Objects declared `register`, whose address may not be taken. Scoped like `read_only`, and
     /// for the same reason: a block may shadow one with an ordinary object.
     register_objects: indexmap::IndexSet<Symbol>,
+    /// Objects with **automatic** storage duration, so `&x` in a static initializer is not an
+    /// address constant. Scoped like `read_only` and `register_objects`, and for the same
+    /// reason — a block-scope `static y` may shadow an automatic `y`, and `&y` then *is*
+    /// constant. Recording the automatic ones rather than the static ones is what makes an
+    /// unknown name (a typo, a poisoned declaration) default to *not* reported.
+    automatic_objects: indexmap::IndexSet<Symbol>,
     /// How many *loops* enclose the statement being walked, and how many loops-or-switches.
     ///
     /// Two counters rather than one, because `break` and `continue` do not agree about what a
@@ -1389,7 +1397,7 @@ impl Cx<'_> {
                         len: ArrayLen::Vla(_),
                         ..
                     }
-                ) && (scope == Scope::File || storage.static_ || storage.extern_)
+                ) && Cx::has_static_storage(scope, &storage)
                 {
                     let where_ = if scope == Scope::File {
                         "at file scope"
@@ -1447,6 +1455,11 @@ impl Cx<'_> {
                         self.register_objects.insert(n);
                     } else {
                         self.register_objects.swap_remove(&n);
+                    }
+                    if Cx::has_static_storage(scope, &storage) {
+                        self.automatic_objects.swap_remove(&n);
+                    } else {
+                        self.automatic_objects.insert(n);
                     }
                     self.values.insert(n, t);
                     // Contract 14. `int x; int x;` is two **tentative** definitions and is
@@ -1513,9 +1526,12 @@ impl Cx<'_> {
                 };
                 if let Some(init) = init {
                     self.check_init(t, init);
-                    // **File scope only.** A local initializer may be any expression; only a
-                    // static storage duration needs a value the linker can write down.
-                    if scope == Scope::File {
+                    // **Static storage duration, not file scope.** A local initializer may be
+                    // any expression; only an object the linker writes down needs a constant.
+                    // Keying this on `Scope::File` — which it was until wave 358 — left every
+                    // block-scope `static` unchecked, and the identical initializer that was
+                    // refused one line outside a function was taken inside it.
+                    if Cx::has_static_storage(scope, &storage) {
                         self.check_static_init(init);
                     }
                     let node = self.type_expr(init);
@@ -1636,6 +1652,7 @@ impl Cx<'_> {
                     let saved_ro = self.read_only.clone();
                     let saved_rop = self.read_only_pointee.clone();
                     let saved_reg = self.register_objects.clone();
+                    let saved_auto = self.automatic_objects.clone();
                     let mut seen_params: indexmap::IndexSet<Symbol> = Default::default();
                     for p in params {
                         if let DeclKind::Var {
@@ -1677,6 +1694,11 @@ impl Cx<'_> {
                             } else {
                                 self.read_only_pointee.swap_remove(&pn);
                             }
+                            // **A parameter has automatic storage duration**, so `&n` is not
+                            // an address constant either. It reaches the set here rather than
+                            // through the declaration arm because a parameter is part of the
+                            // function's *type* and is never walked as an item.
+                            self.automatic_objects.insert(pn);
                             self.values.insert(pn, t);
                             self.out.decl_types.insert(p, t);
                         }
@@ -1742,6 +1764,7 @@ impl Cx<'_> {
                     self.read_only = saved_ro;
                     self.read_only_pointee = saved_rop;
                     self.register_objects = saved_reg;
+                    self.automatic_objects = saved_auto;
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -2375,7 +2398,15 @@ impl Cx<'_> {
             // which is exactly the class of defect this audit exists to remove. Introduced by the
             // mechanism two commits earlier and caught by a mutant on its own restore.
             let outer_declaring = std::mem::replace(&mut self.declaring, name);
+            // **Whether resolving the member's type said anything**, which is the only reliable
+            // reading of "already explained" here. `Ty::Error` is not one: chiero uses it both
+            // for a type that failed to resolve *and* for an `enum E;` whose tag has no
+            // definition, and the second is an incompleteness this record must still report.
+            // Keying on the diagnostic count separates them without inventing a distinction the
+            // type table does not carry.
+            let before_member_ty = self.out.diagnostics.len();
             let fty = self.ty_of(ty);
+            let member_ty_explained = self.out.diagnostics.len() > before_member_ty;
             self.declaring = outer_declaring;
             // **A flexible array member is the last one** (C 6.7.2.1p18). Checked by looking
             // *back*: an `ArrayLen::Flexible` already in `fields` means a member follows one, and
@@ -2428,7 +2459,23 @@ impl Cx<'_> {
             // reservation means `struct S { struct S s; }` now finds `S` in the tag table, and
             // what stops it is that the record it finds is still marked incomplete. A pointer to
             // the same tag is fine and is the whole point of the reservation.
-            if has_no_size(&self.out, fty) {
+            //
+            // **A bit-field of a non-integer type is not also reported as incomplete.** `struct
+            // S { struct I a:3; }` is one mistake, and gcc says one thing about it — "bit-field
+            // `a` has invalid type" — because a bit-field could not have taken that type
+            // complete either. Contract 20: the more specific sentence wins and the general one
+            // stands down. Poison is excused here for the same reason it is below: an
+            // unresolvable type already reported itself.
+            let bit_field_of_a_bad_type = self.ast.bitfield(m).is_some()
+                && !matches!(self.out.types[fty.0 as usize], Ty::Int { .. } | Ty::Error);
+            //
+            // **A type that already reported is not also an incomplete one** (contract 20).
+            // `struct S { __typeof__(nope) a; }` said `nope` was not declared *and* that `a` was
+            // incomplete — the second sentence about a type this code invented. Wave 358 found
+            // it while mutating the bit-field rule beside it, and the first attempt at the guard
+            // asked `Ty::Error`, which also suppressed `enum E; struct S { enum E m; };` — a
+            // genuinely incomplete member that nothing else reports.
+            if has_no_size(&self.out, fty) && !bit_field_of_a_bad_type && !member_ty_explained {
                 let what = match name {
                     Some(n) => format!("`{}`", self.text(n).unwrap_or("?")),
                     None => "an unnamed field".to_owned(),
@@ -2456,14 +2503,33 @@ impl Cx<'_> {
                 // `size_of_ty * 8` stood — and they differ for exactly one: a `_Bool` occupies a
                 // byte and holds a single bit, so `_Bool b : 2;` was accepted. `Ty::Int`'s `bits`
                 // is the number C means; the storage size is what `sizeof` reports.
+                // **C 6.7.2.1p5: a bit-field's type is an integer type.** The constraint's letter
+                // names `_Bool`, `signed int` and `unsigned int` and then permits
+                // implementation-defined types; gcc's implementation takes every integer type,
+                // including `char`, `short`, `long long`, an enumeration, and typedef and
+                // qualified spellings of those. Enforcing the letter would reject nine rows gcc
+                // compiles, so the line drawn here is the one gcc draws — integer or not.
+                //
+                // **Poison is not a non-integer type** (contract 20): a member whose type already
+                // failed to resolve is `Ty::Error`, and reporting it again would be a second
+                // sentence for one mistake.
+                if !matches!(self.out.types[fty.0 as usize], Ty::Int { .. } | Ty::Error) {
+                    let n = name
+                        .and_then(|n| self.text(n))
+                        .map(|t| format!(" `{t}`"))
+                        .unwrap_or_default();
+                    let span = self.ast.decl(m).span;
+                    self.error(span, format!("bit-field{n} has a non-integer type"));
+                }
                 let unit_bits = match self.out.types[fty.0 as usize] {
                     Ty::Int { bits, .. } => u64::from(bits),
-                    // **Unreached, and measured so.** Every type a bit-field may take is
-                    // `Ty::Int` — C allows `_Bool`, `int` and `unsigned int`, gcc extends that to
-                    // the other integer types, and an enumeration is `Ty::Int` here too. An
-                    // instrumented run over the whole suite, VPP corpus included, never took this
-                    // arm, so mutating it survives and no test can be written that would not.
-                    // It exists because the match must be exhaustive.
+                    // **Reached only after the diagnostic above**, as of wave 358. Every type a
+                    // bit-field may *legally* take is `Ty::Int`, and until that wave a
+                    // non-integer one was accepted silently and landed here, which is why the
+                    // comment used to read "unreached, and measured so". It now carries the
+                    // rejected declaration far enough to keep the member — the same choice the
+                    // width fallback makes, and for the same reason: one diagnostic about the
+                    // type beats a second about a field that vanished because of it.
                     _ => size_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8,
                 };
                 let unit_align_bits = align_of_ty(&self.out, &self.target, fty).unwrap_or(4) * 8;
@@ -4637,6 +4703,7 @@ impl Cx<'_> {
                 if matches!(self.out.types[operand_ty.0 as usize], Ty::Func { .. }) {
                     self.error(span, "`sizeof` applied to a function type");
                 }
+                self.check_not_a_bit_field(inner, span, "sizeof");
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -4652,6 +4719,7 @@ impl Cx<'_> {
             ExprKind::AlignofExpr(inner) => {
                 let inner = *inner;
                 self.type_expr(inner);
+                self.check_not_a_bit_field(inner, span, "_Alignof");
                 let ty = self.intern(Ty::Int {
                     signed: false,
                     bits: (self.target.sizes.long_ * 8) as u32,
@@ -5948,7 +6016,70 @@ impl Cx<'_> {
         }
     }
 
-    /// Whether an expression is a constant expression, for a file-scope initializer (C 6.7.9p4).
+    /// **`sizeof` and `_Alignof` do not apply to a bit-field** (C 6.5.3.4p1). It has no size of
+    /// its own — it shares a storage unit with its neighbours — which is the same reason `&s.a`
+    /// is refused, and the check is asked of the same `is_bit_field`.
+    ///
+    /// The operator is named in the message because the two arms are otherwise identical and a
+    /// reader with both in one expression would have to guess which one was meant.
+    fn check_not_a_bit_field(&mut self, operand: ExprId, span: Span, op: &str) {
+        if let ExprKind::Member { base, field, .. } = self.ast.expr(operand).kind
+            && self.is_bit_field(base, field)
+        {
+            let n = self.text(field).unwrap_or("?").to_owned();
+            self.error(span, format!("`{op}` applied to bit-field `{n}`"));
+        }
+    }
+
+    /// Whether an expression takes the address of an object with automatic storage duration.
+    ///
+    /// Walks the same shapes `addr_of` folds — `&x`, an array name, pointer arithmetic on
+    /// either, and casts — because a rule that only looked at a bare `&x` would take
+    /// `&a[1] + 0` and `(int *)&x` instead.
+    ///
+    /// **No initializer-list arm**, deliberately: `check_static_init` recurses into a list and
+    /// asks this of each element, so a list never reaches here. One was written and a mutant
+    /// that deleted it survived, which is what unreachable code looks like from the outside.
+    fn addresses_an_automatic(&mut self, e: ExprId) -> bool {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Unary {
+                op: UnOp::AddrOf,
+                operand,
+            } => self
+                .root_object(operand)
+                .is_some_and(|n| self.automatic_objects.contains(&n)),
+            ExprKind::Ident(sym) => self.automatic_objects.contains(&sym),
+            ExprKind::Binary {
+                op: BinOp::Add | BinOp::Sub,
+                lhs,
+                rhs,
+            } => self.addresses_an_automatic(lhs) || self.addresses_an_automatic(rhs),
+            ExprKind::Cast { operand, .. } => self.addresses_an_automatic(operand),
+            _ => false,
+        }
+    }
+
+    /// The name an lvalue designates, through members and indices: `a[2].b` roots at `a`.
+    fn root_object(&mut self, e: ExprId) -> Option<Symbol> {
+        match self.ast.expr(e).kind.clone() {
+            ExprKind::Ident(sym) => Some(sym),
+            ExprKind::Member { base, .. } => self.root_object(base),
+            ExprKind::Index { base, .. } => self.root_object(base),
+            _ => None,
+        }
+    }
+
+    /// Whether a declaration names an object with **static storage duration** (C 6.2.4).
+    ///
+    /// Everything at file scope has it, and inside a block only `static` and `extern` do. There
+    /// is deliberately no `thread_local` arm: C 6.7.1p3 requires block-scope `_Thread_local` to
+    /// be written with `static` or `extern` anyway, so every legal spelling already sets one of
+    /// these — and a bare one is a different diagnostic, not a case for this predicate to guess at.
+    fn has_static_storage(scope: Scope, storage: &Storage) -> bool {
+        scope == Scope::File || storage.static_ || storage.extern_
+    }
+
+    /// Whether an expression is a constant expression, for a static initializer (C 6.7.9p4).
     ///
     /// Asked of the *whole* initializer including its list elements, because `{f()}` is as
     /// non-constant as `f()` is. Both `eval` and `addr_of` count: `&y` and `"s"` are address
@@ -5998,6 +6129,19 @@ impl Cx<'_> {
                 if !constant && self.reads_an_object(init) {
                     let span = self.ast.expr(init).span;
                     self.error(span, "initializer element is not a constant expression");
+                } else if constant && self.addresses_an_automatic(init) {
+                    // **`addr_of` answers "is this an address", not "is this a constant".** An
+                    // address constant is the address of an object with static storage duration
+                    // (C 6.6p9); `&x` for an automatic `x` is an address that does not exist yet
+                    // when the initializer is written down. This arm is reached *because*
+                    // `addr_of` succeeded, which is why it is an `else` rather than another
+                    // condition on the first branch.
+                    let span = self.ast.expr(init).span;
+                    self.error(
+                        span,
+                        "initializer element is not a constant: the address of an object with \
+                         automatic storage duration",
+                    );
                 }
             }
         }

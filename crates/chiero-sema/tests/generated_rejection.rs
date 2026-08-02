@@ -318,6 +318,12 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "variably modified with static storage",
         "const int k = 1; int f(void){ static int a[k]; return a[0]; }",
     ),
+    // The `extern` half of "static storage duration", which wave 358 found untested when a
+    // mutant dropped `extern` from the predicate and nothing in the suite noticed.
+    (
+        "variably modified with external linkage",
+        "int f(int n){ extern int a[n]; return a[0]; }",
+    ),
     (
         "variably modified member",
         "const int k = 1; struct S { int a[k]; };",
@@ -562,6 +568,34 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "enumeration with no enumerators",
         "enum E { }; int f(void){ return 0; }",
     ),
+    // C 6.7.2.1 and 6.7.9, wave 358. All refused by gcc in both modes.
+    ("bit-field of floating type", "struct S { float a:3; };"),
+    ("bit-field of pointer type", "struct S { int *a:3; };"),
+    (
+        "bit-field of struct type",
+        "struct S { struct T { int x; } a:3; };",
+    ),
+    // The incomplete spelling, which used to draw a second sentence about incompleteness.
+    (
+        "bit-field of incomplete struct type",
+        "struct S { struct I a:3; };",
+    ),
+    (
+        "sizeof a bit-field",
+        "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof(s.a); }",
+    ),
+    (
+        "block-scope static initialized from a global",
+        "static int g = 1; int f(void){ static int x = g; return x; }",
+    ),
+    (
+        "block-scope static initialized from a parameter",
+        "int f(int n){ static int x = n; return x; }",
+    ),
+    (
+        "block-scope static holding the address of an automatic",
+        "int f(void){ int x; static int *p = &x; return *p; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -614,7 +648,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 169;
+    const FLOOR: usize = 178;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

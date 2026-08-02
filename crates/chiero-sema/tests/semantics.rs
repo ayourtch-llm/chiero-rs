@@ -3963,9 +3963,44 @@ fn a_bitfield_has_an_integer_type() {
         // **`sizeof` of a bit-field**, which has no size to report. `&s.a` is already refused,
         // and this is the same object with the same reason.
         "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof(s.a); }",
+        "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof s.a; }",
+        "struct S { int a:3; }; int f(void){ struct S s; return (int)_Alignof(s.a); }",
     ] {
         assert!(!diags(bad).is_empty(), "must be diagnosed: `{bad}`");
     }
+
+    // **Contract 20: one mistake, one sentence.** Both rows below reported twice before wave
+    // 358 — the incomplete-type complaint stacked on top of the more specific one. gcc says
+    // exactly one thing about each, and which one it says is the argument for suppressing the
+    // general sentence rather than the specific: for `struct I a:3` it prints "bit-field `a` has
+    // invalid type", because a bit-field could not have taken that type complete either.
+    for (src, want) in [
+        (
+            "struct S { struct I a:3; };",
+            "bit-field `a` has a non-integer type",
+        ),
+        (
+            "struct S { __typeof__(nope) a:3; };",
+            "`nope` was not declared",
+        ),
+        (
+            "struct S { __typeof__(nope) a; };",
+            "`nope` was not declared",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "one sentence for `{src}`"
+        );
+    }
+    // And the incompleteness that **is** the whole mistake still reports: an `enum` with no
+    // definition resolves to the same poison value internally, so a guard keyed on that value
+    // rather than on "did resolving the type say anything" silences this row too.
+    assert!(
+        !diags("enum E; struct S { enum E m; };").is_empty(),
+        "an incomplete enum member is still reported"
+    );
 
     for good in [
         // Every integer spelling gcc takes, including the ones C's letter does not name.
@@ -3982,6 +4017,9 @@ fn a_bitfield_has_an_integer_type() {
         // bit-fields rather than about the types.
         "struct S { float a; int *b; struct T { int x; } c; int d[2]; };",
         "struct S { int a:3; }; int f(void){ struct S s; return (int)sizeof(s); }",
+        // A **plain member beside a bit-field** keeps its size and its address, so the rule is
+        // about the field rather than about the struct that holds one.
+        "struct S { int a:3; int b; }; int f(void){ struct S s; return (int)sizeof(s.b)+(int)_Alignof(s.b); }",
     ] {
         assert!(
             diags(good).is_empty(),
@@ -4020,12 +4058,29 @@ fn a_static_initializer_is_a_constant_expression() {
         // An automatic, and a parameter — neither exists when the object is initialized.
         "int f(void){ int y=1; static int x = y; return x; }",
         "int f(int n){ static int x = n; return x; }",
-        // The address of an automatic, which is not an address constant.
+        // **The address of an automatic**, in each shape that reaches one: `&x`, a decayed
+        // array name, an element, a member, a cast, and a *parameter* — which is automatic too
+        // and arrives by a different path, being part of the function's type rather than an
+        // item in its body.
         "int f(void){ int x; static int *p = &x; return *p; }",
+        "int f(int n){ static int *p = &n; return *p; }",
+        "int f(void){ int a[2]; static int *p = a; return *p; }",
+        "int f(void){ int a[2]; static int *p = &a[1]; return *p; }",
+        "int f(void){ int x; static int *p = (int *)&x; return *p; }",
+        // **Offset from an automatic**, which arithmetic does not make constant.
+        "int f(void){ int a[2]; static int *p = a + 1; return *p; }",
+        "int f(void){ int x; static int *p = &x + 1; return *p; }",
+        "struct S { int m; }; int f(void){ struct S s; static int *p = &s.m; return *p; }",
+        // **An automatic shadowing a static**, which is the direction that must still report.
+        "int f(void){ static int y; { int y; static int *p = &y; return *p; } }",
         // Inside an aggregate initializer, array and struct alike — the element is where the
         // non-constant sits, not the initializer as a whole.
         "static int g; int f(void){ static int a[2] = {1,g}; return a[0]; }",
         "struct S { int a; }; static int gg; int f(void){ static struct S s = { gg }; return s.a; }",
+        // An automatic's address *inside* an aggregate. `check_static_init` recurses into the
+        // list and asks each element, which is why `addresses_an_automatic` needs no list arm
+        // of its own — a mutant that removed one survived, and deleting it was the fix.
+        "int f(void){ int x; static int *a[1] = { &x }; return *a[0]; }",
         // Declared `extern` in the block, so the name resolves to an object with no address
         // known here either.
         "int f(void){ extern int g; static int x = g; return x; }",
@@ -4040,6 +4095,25 @@ fn a_static_initializer_is_a_constant_expression() {
         // **Address constants**: the address of a static object is one, and so is a null pointer.
         "static int v = 3; int f(void){ static int *p = &v; return *p; }",
         "int f(void){ static int *p = 0; return p==0; }",
+        // The same six shapes rooted at a *static* object, which are address constants. This
+        // pairing is the whole discriminator: a rule that fired on `&` would pass the bad half
+        // above and fail every row here.
+        "static int a[2]; int f(void){ static int *p = &a[1]; return *p; }",
+        "static int a[2]; int f(void){ static int *p = a + 1; return *p; }",
+        "static int v; int f(void){ static int *p = (int *)&v; return *p; }",
+        "int f(void){ static int a[2]; static int *p = a; return *p; }",
+        "int f(void){ static int x = 0; static int *p = &x; return *p; }",
+        // **A static shadowing an automatic**, and a static declared after an inner block that
+        // used the same name for an automatic. Both are address constants, and both were taken
+        // by a version of this rule that only ever *added* names to the automatic set — the
+        // mutant that stopped removing them survived until these two rows existed.
+        "int f(void){ int y; { static int y = 0; static int *p = &y; return *p; } }",
+        "int f(void){ { int y; } static int y = 0; static int *p = &y; return *p; }",
+        // **A previous function's automatic does not leak into this one.** `f`'s local `y` is
+        // gone by the time `g` is walked, and the `y` whose address `g` takes is the file-scope
+        // object — an address constant. The mutant that dropped the per-function restore
+        // survived every other row here.
+        "int y;\nint f(void){ int y = 1; return y; }\nint g(void){ static int *p = &y; return *p; }",
         "int f(void){ static char s[4] = \"abc\"; return s[0]; }",
         "int f(void){ static int x = sizeof(int); return x; }",
         "enum E { A = 1 }; int f(void){ static int x = A; return x; }",
