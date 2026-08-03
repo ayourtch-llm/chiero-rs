@@ -487,7 +487,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 384) — 1585 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 385) — 1587 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 384 closed the rest of the enumeration item.** An enumeration tag now rides the interning
+> key with a parallel table — `Qual`'s trade made a second time, for the same reason: nothing
+> wants to *see* the tag, only `TyId` equality changes meaning. `types_conflict` gained the
+> two-sided rule (tags decide against another enumeration; the tag is dropped against anything
+> else). Tags are numbered per **definition**, since two anonymous enumerations are two types with
+> no name to number by.
+>
+> **The measurement-before-budgeting habit paid twice now.** Before writing anything, the tag went
+> into the key in a throwaway worktree: exactly one test failed. §9 had carried this as a
+> crate-wide audit for five waves. **A one-hour experiment retires a five-wave estimate** — and
+> the experiment is cheap precisely because a worktree costs nothing.
+>
+> **Five more false positives, all one habit: identity where C asks compatibility.** Three from
+> `types_conflict` having no `Ptr` arm, so two pointers fell to `_ => true` and
+> `extern int (*a)[]; int (*a)[3];` was refused — the flexible-array idiom wave 380 made legal in
+> its *plain* form, still broken one `*` deeper. **A rule installed in one arm is not installed in
+> the type system.** Two more from the function arm comparing return types with `!=` on bare ids.
+> That makes four consecutive waves (379-381, 384) finding this same habit; assume it is still
+> there and look wherever an id is compared.
+>
+> **A side table that computes its own index is a hazard the moment a second one exists.** The
+> interner filled `unqual` with `TyId(types.len())` read *before* the push — correct only while
+> nothing could intern in between, which adding `untagged` broke. `bare(enum E)` then answered
+> `unsigned int`, so every comparison reached through `bare` stopped seeing the enumeration and
+> the *parameter* path went silent while the plain object case worked. The mutant that restores
+> this is the most valuable one in the wave.
+>
+> **The remaining enum divergence is the widened one**, and it is narrow: gcc under `-std=gnu11`
+> gives `enum E { A = 0x80000000u }` a 4-byte `unsigned int`, chiero widens to `long`. Under
+> `-pedantic-errors` gcc refuses the enumerator outright and so does chiero, so the two agree at
+> this project's calibration and disagree only in GNU mode. Not yet censused.
 >
 > **Wave 383 closed most of §9's largest structural item with one line, and the lesson is about
 > the estimate, not the fix.** `enum_ty` answered `int` for every enumeration; gcc answers
