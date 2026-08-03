@@ -19,33 +19,43 @@ pub struct MacroFrame {
     /// macro's body, which is where a reader has to look to see why it was invoked.
     pub call_line: u32,
     pub call_col: u32,
+    /// The arguments this invocation was given, as written. Empty for an object-like macro,
+    /// which is a fact and not a gap: 060 contract 10 needs the *item* a list macro
+    /// generated, and the item is exactly the per-item macro's argument list.
+    pub args: Vec<String>,
 }
+
+/// One expansion chain, innermost first.
+pub type Chain = Vec<MacroFrame>;
 
 /// The expansion chain at a point, **innermost first** (050 contract 6).
 ///
 /// `file` matches either the full recorded path or its final component, because a caller
 /// asking about `vec.h` should not have to know which include path found it.
 ///
-/// **Depth picks the chain when the column is omitted.** Every expansion on the line
-/// resolves to the same written position through `expansion_loc`, so `vec_add1` and the
-/// `_vec_resize` nested inside it both match line 3 — they are one chain seen at two
-/// depths, and the deepest is the only one that contains the others. A line holding two
-/// *independent* calls is the case this cannot separate, which is what `column` is for.
+/// **One chain per leaf expansion, not one chain for the line.** Every expansion in a chain
+/// resolves to the same written position, so `vec_add1` and the `_vec_resize` in its body
+/// both match line 3 — those are one chain seen at two depths. But a list macro's items also
+/// share a position, and they are *different* chains: 47 invocations of a per-item macro from
+/// one `foreach_` token. Returning only the deepest answered with one arbitrary item and no
+/// way to reach the rest, which is the "expanded soup" 060 §3 exists to replace.
+///
+/// Chains are ordered by where the leaf invocation is written, so a list macro's items come
+/// back in source order.
 pub fn explain_macro_expansion(
     map: &SourceMap,
     file: &str,
     line: u32,
     column: Option<u32>,
-) -> Vec<MacroFrame> {
-    let mut best: Option<(usize, ExpnCtx)> = None;
+) -> Vec<Chain> {
+    let mut matching: Vec<ExpnCtx> = Vec::new();
     for i in 1..=map.expansion_count() {
         let ctx = ExpnCtx(i as u32);
         let Some(e) = map.expansion(ctx) else {
             continue;
         };
-        // The *written* position: an expansion nested in a macro body has a call site
-        // inside that body, and only resolving through the chain reaches the line the user
-        // is actually reading.
+        // The *written* position: an expansion nested in a macro body has a call site inside
+        // that body, and only resolving through the chain reaches the line the user reads.
         let Some(loc) = map.expansion_loc(e.call_site) else {
             continue;
         };
@@ -57,20 +67,46 @@ pub fn explain_macro_expansion(
         {
             continue;
         }
-        let depth = depth_of(map, ctx);
-        if best.is_none_or(|(d, _)| depth > d) {
-            best = Some((depth, ctx));
-        }
+        matching.push(ctx);
     }
 
-    let Some((_, leaf)) = best else {
-        return Vec::new();
-    };
+    // A match that some other match descends from is an inner frame of that chain, not a
+    // chain of its own. What is left are the leaves — one per generated item.
+    let interior: std::collections::BTreeSet<ExpnCtx> =
+        matching.iter().flat_map(|&c| ancestors(map, c)).collect();
+    let mut leaves: Vec<ExpnCtx> = matching
+        .into_iter()
+        .filter(|c| !interior.contains(c))
+        .collect();
+    leaves.sort_by_key(|&c| {
+        map.expansion(c)
+            .and_then(|e| map.lookup_loc(e.call_site.lo))
+            .map_or((0, 0), |l| (l.line, l.col))
+    });
 
+    leaves.into_iter().map(|c| chain_from(map, c)).collect()
+}
+
+/// Every context strictly above `ctx`.
+fn ancestors(map: &SourceMap, ctx: ExpnCtx) -> Vec<ExpnCtx> {
+    let mut out = Vec::new();
+    let mut cur = ctx;
+    for _ in 0..=map.expansion_count() {
+        let Some(e) = map.expansion(cur) else { break };
+        if e.parent.is_root() {
+            break;
+        }
+        out.push(e.parent);
+        cur = e.parent;
+    }
+    out
+}
+
+fn chain_from(map: &SourceMap, leaf: ExpnCtx) -> Chain {
     let mut frames = Vec::new();
     let mut ctx = leaf;
-    // Bounded: a malformed parent cycle must terminate with a short answer rather than
-    // hang, exactly as `expansion_backtrace` does.
+    // Bounded: a malformed parent cycle must terminate with a short answer rather than hang,
+    // exactly as `expansion_backtrace` does.
     for _ in 0..=map.expansion_count() {
         if ctx.is_root() {
             break;
@@ -86,34 +122,24 @@ pub fn explain_macro_expansion(
                     .def_file
                     .map(|f| map.file(f).path().display().to_string()),
                 def_line: info.def_line,
-                // No trim: `body_extent` runs from the first body token to the last, so it
-                // never carries surrounding whitespace. `#define A   1 + 2   ` yields
-                // `1 + 2` already. A `.trim()` here was unobservable under mutation, which
-                // is the signal that it was guarding against nothing.
                 body: map
                     .span_text(info.body_extent)
                     .unwrap_or_default()
                     .to_owned(),
                 call_line: call.map_or(0, |l| l.line),
                 call_col: call.map_or(0, |l| l.col),
+                // Trimmed: an argument span runs from the token after the comma, so
+                // `_(NONE, "none", 0x0)` yields a leading space on all but the first.
+                args: e
+                    .arg_spans
+                    .iter()
+                    .map(|&a| map.span_text(a).unwrap_or_default().trim().to_owned())
+                    .collect(),
             });
         }
         ctx = e.parent;
     }
     frames
-}
-
-fn depth_of(map: &SourceMap, mut ctx: ExpnCtx) -> usize {
-    let mut n = 0;
-    for _ in 0..=map.expansion_count() {
-        if ctx.is_root() {
-            break;
-        }
-        let Some(e) = map.expansion(ctx) else { break };
-        n += 1;
-        ctx = e.parent;
-    }
-    n
 }
 
 /// A caller says `vec.h`; the map holds whatever path the include search produced.
@@ -131,6 +157,11 @@ pub struct Site {
     pub file: String,
     pub line: u32,
     pub col: u32,
+    /// Where the invocation itself is written, which for a list macro's item is its line in
+    /// the list body. Two items of a `foreach_` list share `line`/`col` — they come from one
+    /// token — and this is what tells them apart.
+    pub item_line: u32,
+    pub item_col: u32,
 }
 
 /// A page of expansion sites (050 contract 7).
@@ -153,10 +184,11 @@ pub struct SiteSummary {
 /// almost always reached through `vec_end` or `vec_foreach`, and every one of those is a
 /// site of `vec_len` resolved to the line the user wrote.
 ///
-/// **Sorted and deduplicated by written position.** The same position can be reached by
-/// more than one recorded expansion — a header read under two configurations occupies two
-/// `FileId`s — and a caller paging a list that shifts under it would see a site twice and
-/// miss another.
+/// **Sorted and deduplicated by written position *and* invocation position.** Deduplicating
+/// on the user-facing position alone collapses a list macro's items into one site, because
+/// all 47 come from a single `foreach_` token — and 060 §3 requires that editing one line of
+/// the list impacts exactly what that line generated. The dedup still does its original job:
+/// a header read under two configurations occupies two `FileId`s and yields one site.
 pub fn expansion_sites(
     map: &SourceMap,
     name: &str,
@@ -180,10 +212,13 @@ pub fn expansion_sites(
         let Some(f) = map.try_file(loc.file) else {
             continue;
         };
+        let item = map.lookup_loc(e.call_site.lo);
         sites.push(Site {
             file: f.path().display().to_string(),
             line: loc.line,
             col: loc.col,
+            item_line: item.map_or(0, |l| l.line),
+            item_col: item.map_or(0, |l| l.col),
         });
     }
     sites.sort();

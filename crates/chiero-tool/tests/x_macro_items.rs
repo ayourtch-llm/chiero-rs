@@ -40,7 +40,11 @@ fn every_item_of_a_list_macro_gets_its_own_chain() {
     assert_eq!(
         items,
         vec![
-            vec!["NONE".to_string(), "\"none\"".to_string(), "0x0".to_string()],
+            vec![
+                "NONE".to_string(),
+                "\"none\"".to_string(),
+                "0x0".to_string()
+            ],
             vec![
                 "SET_DF".to_string(),
                 "\"set-df\"".to_string(),

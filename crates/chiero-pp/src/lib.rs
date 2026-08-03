@@ -2007,7 +2007,6 @@ fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-
 impl Engine {
     /// Whether a pending chunk ends inside an **open macro argument list** — the only reason
     /// to hold it across a directive.
@@ -2042,9 +2041,9 @@ impl Engine {
     }
 
     fn is_function_like_macro(&self, name: &str) -> bool {
-        self.by_name.get(name).is_some_and(|&i| {
-            matches!(self.macros[i].def.kind, MacroKind::FunctionLike { .. })
-        })
+        self.by_name
+            .get(name)
+            .is_some_and(|&i| matches!(self.macros[i].def.kind, MacroKind::FunctionLike { .. }))
     }
 }
 

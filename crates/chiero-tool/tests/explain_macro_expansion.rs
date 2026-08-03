@@ -22,8 +22,11 @@ fn the_chain_is_innermost_first_with_each_definition_site_and_body() {
     let tu = preprocess_str("vec.h", src, Config::default());
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
 
-    // Line 3, at the call site of `vec_add1`.
-    let chain = chiero_tool::explain_macro_expansion(&tu.source_map, "vec.h", 3, None);
+    // Line 3, at the call site of `vec_add1`. One chain: these two frames are one nesting,
+    // not two generated items.
+    let chains = chiero_tool::explain_macro_expansion(&tu.source_map, "vec.h", 3, None);
+    assert_eq!(chains.len(), 1);
+    let chain = &chains[0];
 
     let names: Vec<&str> = chain.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(
