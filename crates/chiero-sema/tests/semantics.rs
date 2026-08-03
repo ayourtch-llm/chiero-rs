@@ -6991,6 +6991,7 @@ fn a_void_parameter_is_three_rules() {
         // Not a `void` parameter at all.
         "int f(void *);",
         "int f(void *p, int q);",
+        "int f(void *restrict);",
     ] {
         assert!(
             diags(good).is_empty(),
@@ -7011,6 +7012,29 @@ fn a_void_parameter_is_three_rules() {
         (
             "typedef void V; int f(int, V);",
             "`void` must be the only parameter",
+        ),
+        // **A mix of named and unnamed still offends**, because an *unnamed* one is sharing the
+        // list. These are the rows a narrowing could wrongly let through, and gcc refuses all of
+        // them.
+        ("int f(void v, void);", "`void` must be the only parameter"),
+        ("int f(void, void v);", "`void` must be the only parameter"),
+        (
+            "int f(int, void, char);",
+            "`void` must be the only parameter",
+        ),
+        (
+            "typedef void V; int f(V, V);",
+            "`void` must be the only parameter",
+        ),
+        // Qualified *and* sharing: the sharing sentence wins, since the qualifier is only the
+        // fault when `void` really is the only parameter.
+        (
+            "int f(const void, int);",
+            "`void` must be the only parameter",
+        ),
+        (
+            "int f(volatile void);",
+            "`void` as the only parameter may not be qualified",
         ),
         // **Rule 2**, which must survive a fix aimed at rule 1.
         (

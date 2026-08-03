@@ -2411,21 +2411,39 @@ impl Cx<'_> {
                 self.defined_tags.leave();
                 // **`void` may be the whole parameter list, but not one of several**
                 // (C 6.7.6.3p10). `f(void)` never reaches here — the parser recognises it and
-                // returns an empty list — so any `Ty::Void` still standing is a genuine parameter
-                // declared `void`, which no argument could ever supply.
+                // returns an empty list.
+                //
+                // **A surviving `Ty::Void` is not by itself a mistake**, which is what this used
+                // to assume. Two legal shapes also survive the parser's folding: a *named* one,
+                // `int f(void v);`, which gcc accepts with a warning; and a *typedef'd* one,
+                // `typedef void V; int f(V);`, which the parser cannot fold because it does not
+                // know `V` is `void`. Both were refused, the second being ordinary C.
+                //
+                // So the special case is recognised here on the **type**, and the rule fires only
+                // on an **unnamed** `void`: gcc takes `int f(int a, void v);` too, so the
+                // spelling and not the count is what distinguishes the constraint from the
+                // warning. A named `void` parameter is left to the incomplete-parameter rule,
+                // which already refuses it in a *definition* and correctly permits it in a
+                // declaration.
                 //
                 // Reported once per list rather than once per offending parameter, because
                 // `f(void, void)` is one mistake about one list. Contract 20's spirit: one bad
                 // declaration, one diagnostic.
-                if ps
-                    .iter()
-                    .any(|&t| matches!(self.out.types[t.0 as usize], Ty::Void))
-                {
+                let unnamed_void = |cx: &Self, i: usize| {
+                    matches!(cx.out.types[ps[i].0 as usize], Ty::Void)
+                        && params.get(i).is_some_and(|&p| {
+                            matches!(cx.ast.decl(p).kind, DeclKind::Var { name: None, .. })
+                        })
+                };
+                let offending = (0..ps.len()).any(|i| unnamed_void(self, i));
+                if offending {
                     // **Two faults reached one sentence.** `f(void, int)` has a `void` among
                     // others; `f(const void)` has `void` *as* the only parameter and qualifies
                     // it — so the old message told a reader the opposite of what was wrong. The
                     // parser folds `(void)` into an empty list, so a single `Ty::Void` still
                     // standing means either shape, and the count tells them apart.
+                    // A *sole* unnamed `void` is the special case itself and legal — unless it
+                    // is qualified, which is its own sentence.
                     let qualified_only = ps.len() == 1
                         && params.first().is_some_and(|&p| {
                             matches!(self.ast.decl(p).kind, DeclKind::Var { ty, .. }
@@ -2434,12 +2452,14 @@ impl Cx<'_> {
                                 q.const_ || q.volatile_ || q.restrict_ || q.atomic
                             })
                         });
-                    let what = if qualified_only {
-                        "`void` as the only parameter may not be qualified"
-                    } else {
-                        "`void` must be the only parameter"
-                    };
-                    self.error(node.span, what);
+                    if qualified_only {
+                        self.error(
+                            node.span,
+                            "`void` as the only parameter may not be qualified",
+                        );
+                    } else if ps.len() > 1 {
+                        self.error(node.span, "`void` must be the only parameter");
+                    }
                 }
                 self.intern(Ty::Func {
                     ret: r,
