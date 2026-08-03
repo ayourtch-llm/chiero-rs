@@ -487,7 +487,45 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 407) — 1611 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 408) — 1611 tests, 4 ignored, M1 268/268 by contract
+>
+> ### `plugins` swept for the first time, and the picture is now unambiguous
+>
+> One more include path — **`-I src/plugins`**, which is how VPP builds them — took plugins from
+> ~0 to **69 of 100** sampled files compiling. Full recipe for any VPP sweep:
+>
+> ```
+> -I <vpp>/src  -I <vpp>/src/plugins  -I <gen>        # <gen> holds:
+> #   153 generated .api headers (python3 src/tools/vppapigen/vppapigen …)
+> #   vppinfra/config.h, vlib/config.h, vpp/app/version.h  (from config.h.in, CMake defaults)
+> ```
+>
+> Tallied over `acl`, `dhcp`, `lb`, `nsh`, `gtpu`, `vxlan`: **28 findings, of which 27 are the
+> `CLIB_PACKED` blocker** and 1 is the enumerator-range noise. Nothing else.
+>
+> ### One construct now accounts for nearly every finding outside vppinfra
+>
+> | subtree | findings | the blocker | other |
+> |---|---|---|---|
+> | `vnet/fib` | 29 | 28 | 1 |
+> | `plugins` (6 dirs) | 28 | 27 | 1 |
+> | `vnet/ethernet` | 9 | 0 (fixed in 404) | 9 noise |
+>
+> **`#define` inside macro arguments is the single thing standing between this project and
+> analysing most of VPP.** It is reported clearly since wave 406; supporting it is the decision.
+>
+> ### What that leaves for the owner
+>
+> 1. **Support directives inside macro arguments** — unblocks most of vnet and plugins. Highest
+>    value by a wide margin.
+> 2. **Pedantic mode for sema** — all 31 vppinfra findings, verdicts already correct.
+> 3. **`transparent_union`** — socket-calling TUs.
+>
+> ### The encouraging half
+>
+> Across ~80 newly-reachable files in `fib`, `dpo`, `adj` and six plugin trees, **no defect kind
+> was found beyond the known set**. Once chiero can parse VPP, it handles it. The sweep's
+> remaining value is concentrated behind decision 1.
 >
 > **Wave 406: an unterminated argument list is reported, not abandoned.** chiero pushed the macro
 > name through unexpanded and said nothing; it now gives gcc's sentence, naming the macro.
