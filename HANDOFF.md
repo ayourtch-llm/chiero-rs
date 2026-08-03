@@ -487,7 +487,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 406) — 1610 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 407) — 1611 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 406: an unterminated argument list is reported, not abandoned.** chiero pushed the macro
+> name through unexpanded and said nothing; it now gives gcc's sentence, naming the macro.
+>
+> **What §9 had wrong: this was filed as a scope decision and is not one.** gcc under `gnu11`
+> expands such a call, under `-pedantic-errors` it refuses — chiero did a *third* thing, processing
+> the directive **and** dropping the expansion, silently. A wrong token stream is wrong under
+> either choice, so reporting needed no owner's call. **Check whether a construct is mis-handled
+> before filing it as a policy question**; the two got entangled for three waves.
+>
+> ### The owner's queue is now two clean questions
+>
+> | item | reach | chiero today |
+> |---|---|---|
+> | **support directives inside macro arguments** | 28 of `vnet/fib`'s 29 findings; most of vnet | reports clearly, cannot analyse |
+> | **pedantic mode for sema** | all 31 vppinfra findings | verdicts correct, noise on the corpus |
+> | `transparent_union` | socket-calling TUs | refuses the call |
+>
+> No correctness bug is entangled in any of them now.
+>
+> ### Sweep reach, after wave 405
+>
+> `vppapigen` ships with VPP and runs — **153 of 153 `.api` files generated**, taking `vnet` from
+> 37% to **85%** compilable:
+>
+> ```
+> python3 src/tools/vppapigen/vppapigen --includedir src \
+>     --input <f>.api --outputdir <gen>/<dir> --output <gen>/<dir>/<f>.api.h
+> ```
+>
+> Plus stubs from `config.h.in` with CMake defaults: `vppinfra/config.h`, `vlib/config.h`,
+> `vpp/app/version.h`. Still missing: `vpp/vnet/config.h` (~6 files).
+>
+> **58 newly-unblocked files in `fib`/`dpo`/`adj` produced no finding outside the known set** —
+> the first evidence chiero handles a large body of unseen VPP cleanly once it can parse it.
+> `plugins` (780) is unswept and is the obvious next measurement.
+>
+> ### Anchoring mutants: read the formatted bytes
+>
+> Two waves running, anchoring cost more attempts than the fix. The cause is constant: the anchor
+> is written from what was *typed*, then `cargo fmt` reflows it. Read the formatted lines back
+> (`sed -n`), and generate the runner with `repr()` rather than hand-escaping.
 >
 > ### The `.api` headers **can** be generated — vnet reach went 37% → 85%
 >
