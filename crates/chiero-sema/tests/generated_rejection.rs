@@ -941,6 +941,17 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "extern with an initializer in a block",
         "void f(void){ extern int x = 1; (void)x; }",
     ),
+    // A member declaration that names only a type, wave 398 — the sentence the parser already
+    // carried, reaching the case it was worded for.
+    ("member names only a type", "struct S { int; };"),
+    (
+        "member names only a qualified type",
+        "struct S { const int; };",
+    ),
+    (
+        "member is a bare tag declaration",
+        "struct S { struct T; };",
+    ),
     ("atomic bit-field", "struct S { _Atomic int a : 2; };"),
     (
         "atomic unnamed bit-field",
@@ -1007,7 +1018,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 286;
+    const FLOOR: usize = 289;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

@@ -1397,7 +1397,37 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let specs = self.declaration_specifiers();
         if self.eat_punct(Punct::Semi) {
-            // An anonymous struct or union member.
+            // **Specifiers then `;` is two different declarations** (C 6.7.2.1p1). An *anonymous*
+            // struct or union — no tag, its own member list — declares those members into the
+            // enclosing record and is legal. Anything else declares nothing at all: `int;`,
+            // `const int;`, and `struct T;`, which is a tag declaration that puts no member here.
+            //
+            // Both used to take this branch, so `struct S { int; };` was accepted silently while
+            // the sentence for it, three lines above, fired only on a bare `;`. The rule was
+            // written for this case and reached its neighbour instead.
+            //
+            // The test is on the *specifier*: a `Tag` with no name and a member list. A check for
+            // "no declarator" would swallow the anonymous record too, and an unnamed bit-field —
+            // `int : 5;` — never reaches here, since it has a declarator-less colon and goes
+            // through the loop below.
+            // **A struct or a union, not an enum.** An anonymous *enum* member —
+            // `struct S { enum { A }; };` — puts its enumerators in the enclosing scope and
+            // declares no member, so gcc refuses it exactly as it refuses `int;`. The first
+            // version of this predicate omitted the kind and accepted it; a surviving mutant
+            // ("members ignored") is what sent me to measure the case.
+            let anonymous_record = matches!(
+                self.ast.ty(specs.ty).kind,
+                TypeKind::Tag {
+                    tag: TagKind::Struct | TagKind::Union,
+                    name: None,
+                    members: Some(_),
+                }
+            );
+            if !anonymous_record {
+                let span = self.span_from(start);
+                self.error(span, "a member declaration must declare a member");
+                return;
+            }
             let span = self.span_from(start);
             let d = self.ast.add_decl(
                 DeclKind::Var {

@@ -548,6 +548,28 @@ fn a_member_declaration_that_names_only_a_type_declares_nothing() {
             "struct S { int a; ; };\n",
             "a member declaration must declare a member",
         ),
+        // **A *named* record definition declares no member either**, and this is the row that
+        // says the predicate must check the name — a mutant ignoring it survived without this.
+        (
+            "struct S { struct T { int x; }; };\n",
+            "a member declaration must declare a member",
+        ),
+        (
+            "struct S { union U { int x; }; };\n",
+            "a member declaration must declare a member",
+        ),
+        // **An anonymous *enum* is not an anonymous record.** Its enumerators go into the
+        // enclosing scope and no member is declared, so gcc refuses it like `int;`. The first
+        // predicate here omitted the tag kind and accepted it — found by a surviving mutant, not
+        // by the census.
+        (
+            "struct S { enum { A }; };\n",
+            "a member declaration must declare a member",
+        ),
+        (
+            "struct S { enum E { A }; };\n",
+            "a member declaration must declare a member",
+        ),
     ] {
         assert_eq!(
             diags(src),
