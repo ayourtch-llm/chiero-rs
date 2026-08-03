@@ -414,7 +414,11 @@ pub fn tier1_sweep_with(
     cfg: &chiero_pp::Config,
     threads: usize,
 ) -> Tier1Report {
-    let threads = threads.clamp(1, files.len().max(1));
+    // Only the lower bound is needed. `per = ceil(len / threads)` already bounds the chunk
+    // count by *both* `threads` and `len`: chunks = ceil(len / per) <= threads, and <= len
+    // because `per >= 1`. An upper clamp to `files.len()` was unreachable — mutation removed
+    // it and nothing changed. The `max(1)` is real: `div_ceil(0)` divides by zero.
+    let threads = threads.max(1);
     // Contiguous chunks rather than a work queue: the merge below relies on chunk *k* holding
     // the k-th run of files, and a queue would make the merge order depend on scheduling.
     let per = files.len().div_ceil(threads);
