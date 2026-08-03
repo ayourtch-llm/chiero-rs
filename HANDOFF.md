@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 381) — 1581 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 382) — 1582 tests, 4 ignored, M1 268/268 by contract
 >
 > **Sema 268 of 268, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
@@ -508,6 +508,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 381 found six more false positives in the same function**, all from one habit:
+> `types_conflict` compared **interned ids** where C compares **compatibility**, which is a weaker
+> relation. Three waves running have found this in `types_conflict` (379 tags, 380 arrays, 381
+> qualifiers). **An interned id is an identity; C's questions are usually about compatibility.**
+> Anywhere else ids are compared to answer a C question is worth the same look.
+>
+> **Two misses stay recorded with their cost, deliberately.** `enum E a; int a;` and `int
+> f(enum E); int f(int);` need an enumeration type that this engine does not have — `enum_ty`
+> interns an enum *as* `Ty::Int` — and making one touches every `Ty::Int` comparison in the crate.
+> **That is the largest single item §9 now carries**, and it should be started as a structural
+> wave, not folded into a census.
 >
 > **Wave 380 found three false positives — the most any wave has.** `unsigned char a[4] = "abc"`,
 > `extern int a[]; int a[3];`, and `int f(int a[2]); int f(int a[3])`. All three are rules that
@@ -766,15 +778,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
 >      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
->      **6.7.6.2's qualified array element through a typedef**, **6.5.2.2p6's default argument
->      promotions for an unprototyped call**, and **6.4.2.2's `__func__` shape and scope**.
->      6.7.9p14, 6.5.16.2 and 6.2.7 are closed.
+>      **6.5.8p6's pointer comparison against a one-past-the-end address**, **6.7.1p7's `register`
+>      on a parameter of array type**, and **6.10.3.2p2's `#` producing a valid string literal**.
+>      6.7.6.2, 6.5.2.2p6 and 6.4.2.2 are closed.
 >
->      **Run the legal half first and widest.** Wave 380 found three false positives and one miss;
->      every earlier census found the reverse. `types_conflict` compares interned ids for
->      everything except functions and arrays — **the sibling sweep's next target is what else it
->      calls different that C calls compatible**: qualified pointees, enum against its underlying
->      integer, and two identical function types built in different orders.
+>      **Where else are interned ids compared to answer a C question?** That habit has now cost
+>      three waves of false positives in `types_conflict` alone. `assignable`, `common_type` and
+>      the `_Generic` association match all compare ids; only the first has ever been swept.
+>
+>   4. **The enumeration type is the largest structural item.** Recorded in wave 381 with its
+>      evidence and its cost: two known misses, and a fix that touches every `Ty::Int` comparison.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3120,6 +3133,12 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An interned id is an identity; C usually asks about compatibility** (wave 381). Three waves
+> running found false positives in `types_conflict` because it compared ids: tags, array lengths,
+> array parameters, and now top-level qualifiers. Identity is the stronger relation, so comparing
+> it rejects programs C accepts — always in the expensive direction. Wherever ids answer a C
+> question, ask which relation the standard actually names.
 >
 > **An asymmetry between two spellings of one concept is a mistake, not a rule** (wave 380).
 > `signed char a[4] = "abc"` was accepted and `unsigned char` refused. Nobody designs that; it
