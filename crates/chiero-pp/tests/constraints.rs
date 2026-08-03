@@ -828,9 +828,14 @@ fn stringize_produces_a_valid_string_literal() {
     assert_eq!(stringized("\\"), "\"\"");
     assert_eq!(stringized("a\\"), "\"a\"");
 
-    // **And an escaped one is not.** Two backslashes stringize to two, which is a valid literal.
+    // **And an escaped one is not.** Two backslashes stringize to two, which is a valid literal
+    // (the second is escaped by the first), so the run is even and nothing is dropped.
     assert_eq!(stringized("\\\\"), "\"\\\\\"");
-    assert_eq!(stringized("a\\b"), "\"a\\\\b\"");
+
+    // An *interior* backslash is left exactly as written — `S(a\b)` is `"a\b"` in gcc too, and
+    // whether `\b` is a sensible escape is the lexer's question, not this one. Only a backslash
+    // that would eat the closing quote is at issue here.
+    assert_eq!(stringized("a\\b"), "\"a\\b\"");
 
     // The ordinary shapes, unchanged.
     assert_eq!(stringized("a"), "\"a\"");

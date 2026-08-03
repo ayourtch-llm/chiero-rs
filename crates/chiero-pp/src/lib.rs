@@ -1758,6 +1758,15 @@ impl Engine {
                 inside.push(ch);
             }
         }
+        // C 6.10.3.2p2 leaves it undefined if the result is not a valid string literal, and a
+        // final backslash makes it one: it escapes the closing quote instead of standing for
+        // itself. Drop it, as gcc does. The count must be odd — the loop above already doubled
+        // any backslash inside a literal, and `S(\\)` is two tokens whose second is escaped by
+        // the first, so an even run is well formed and stays.
+        if (inside.len() - inside.trim_end_matches('\\').len()) % 2 == 1 {
+            inside.pop();
+        }
+
         let expn = self.source_map.add_expansion(
             parent,
             None,
