@@ -487,29 +487,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 417) — 1627 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 419) — 1632 tests, 4 ignored, M1 268/268 by contract
 >
-> ### M3: both provenance operations plus the recipe loader
+> ### M3: provenance pair done; recipe loader + tier-1 candidate filter done
 >
-> `chiero-tool` holds `explain_macro_expansion` (050 c6, 060 c10) and `expansion_sites`
-> (050 c7). **`chiero-recipe` is no longer a stub**: it loads 042 §4's example verbatim and
-> refuses a recipe its own fixtures could not adjudicate (042 c1, c3-load-half, §5).
+> `chiero-tool`: `explain_macro_expansion` (050 c6, 060 c10), `expansion_sites` (050 c7).
+> `chiero-recipe`: loads 042 §4's example verbatim, refuses a recipe its fixtures cannot
+> adjudicate (c1, c3-load-half, §5), and builds the tier-1 candidate set (§3.1).
 >
-> * **Leaves, not depth, decide what a chain is.** `vec_add1` and the `_vec_resize` in its
->   body share a written position and are *one* chain; two items of a `foreach_` list share a
->   position and are *two*.
-> * A frame carries `args`; `Site` carries `item_line`/`item_col`. Deduplicating on the
->   user-facing position alone collapsed 47 items into 1 site.
-> * Verified on a **real** chain from the vendored corpus: `_vec_len → vec_len → vec_end →
->   vec_foreach`, each frame with true definition file, line and body.
+> * **The candidate filter is a closure, not a conjunction.** "In `scope` *and* contains the
+>   acquisition" misses `show_or_clear_hw_interfaces` in `vnet/interface_cli.c` entirely — the
+>   handlers delegate in one line, the helper holds the acquisition and every free. Same shape
+>   in `plugins/vrrp/vrrp_cli.c`, `vnet/classify/in_out_acl.c`.
+> * **`is_bounded`, not the count, carries the honesty.** `excluded_by_bound` is the *fringe*
+>   one edge past the last escalated level; counting everything beyond means walking the whole
+>   graph, which is what the bound avoids. It understates by construction, and says so.
+> * The closure keys on **names, not `DeclId`s** — it crosses translation units.
 >
-> ### ⚠️ Recipe evaluation is absent, not stubbed — keep it that way until it is real
+> ### ⚠️ Recipe evaluation is absent, not stubbed — keep it that way
 >
-> A `good` fixture passes exactly when it produces **no** finding, so an evaluator returning
-> "no findings" satisfies 042 contract 2 for every recipe while covering nothing. That is the
-> silent under-matching §5 exists to catch, dressed as a green gate. Absent, the gap is
-> visible. The unread `scope`/`track`/`require` clauses are kept whole as `UnparsedClause` and
-> their **count is asserted**, so the slice is stated in the test rather than implied.
+> A `good` fixture passes exactly when it produces **no** finding, so a null evaluator
+> satisfies 042 c2 for every recipe while covering nothing: the silent under-matching §5 exists
+> to catch, dressed as a green gate. Unread `scope`/`track`/`require` clauses are kept whole as
+> `UnparsedClause` with their **count asserted**, so the slice is stated, not implied.
+>
+> ### Method note that has now recurred five times — read this one
+>
+> **A decision recorded in a commit message is a claim, not a test.** Five times in this
+> stretch prose asserted something no assertion covered:
+>
+> | wave | claim | truth |
+> |---|---|---|
+> | 411 | inner frame's call site is the written one | true, untested |
+> | 413 | trailing macro name defers, "gcc keeps looking" | **false** — gcc/clang do not |
+> | 414 | argument spans carry whitespace, so `.trim()` is load-bearing | **false** — they do not |
+> | 416 | rationale collapses its layout | true, untested (`starts_with` cannot see it) |
+> | 418 | fringe filtered against escalated handles a real case | **false** — unreachable state |
+>
+> Three of five were wrong, not merely uncovered. **Measure before writing the justification.**
+> And a corollary that keeps paying: a *survivor* has four readings in order — the code is
+> wrong; a row is missing; the code is dead; the mutant is equivalent. Waves 413 (mutant was
+> correct), 414 and 418 (dead) each landed on a different one.
 >
 > ### Next on this front
 >
