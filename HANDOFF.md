@@ -487,7 +487,54 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 389) — 1592 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 390) — 1593 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 389 removed four false positives from one wrong inference.** chiero recognised C's
+> `(void)` special case by the *parser* folding `(void)` into an empty list, then treated any
+> surviving `Ty::Void` as proof the program was wrong. Two legal shapes survive that folding: a
+> **named** one, `int f(void v);`, which gcc accepts with a warning, and a **typedef'd** one,
+> `typedef void V; int f(V);`, which the parser cannot fold because it does not know `V` is
+> `void`. The second is ordinary C refused outright, with a sentence that is not about what it
+> names.
+>
+> **Do not infer a semantic fact from an earlier stage's syntactic artifact.** "The parser folded
+> it, so anything left is wrong" was true when written and silently false for every spelling the
+> parser cannot see through. That is the sixteenth false positive this project has found, and the
+> third whose cause is a stale claim about *how* something was represented rather than about C.
+>
+> gcc's three rules, measured: an **unnamed** `void` sharing the list is the constraint — on the
+> *type*, so a typedef counts, and on the *spelling*, since `int f(int a, void v);` is only a
+> warning; a **sole unnamed `void`, qualified** has its own sentence; a **named** `void` parameter
+> belongs to the incomplete-parameter rule, which already refuses it in a definition and permits
+> it in a declaration. So the fix narrows a rule's reach rather than adding one.
+>
+> **The mutation split is now a reliable diagnostic of the gates.** The two mutants that *add*
+> false positives (the old rule restored; the sole unnamed `void` reported again) died only in the
+> semantics fixture; the three that *lose* rejections died in both it and the ratchet. Same
+> structure as wave 387. **If a mutant dies only in a fixture, it was a false positive; if in
+> both, it was a missing rejection.**
+>
+> **A row added after the mutation ran is unproven.** Seven measured rows went in after the
+> snapshot (mixed named/unnamed `void`s, `f(const void, int)`, `f(volatile void)`,
+> `f(void *restrict)`), so they got their own mutant — a rule demanding that *every* `void` be
+> unnamed, which every original row happened to satisfy. **A row no mutant can kill is
+> decoration**, and that applies to rows added late as much as to the fixture as a whole.
+>
+> **Next, measured and small: the array bound loses its declarator's name.** `void f(int a[-1]);`
+> says "array length is negative" where a local says "array length of `a` is negative". gcc names
+> it in *every* position — local, parameter, file, member, `int (*a)[-1]`, `int a[static -1]` —
+> with one separate wording for a truly unnamed parameter, "size of unnamed array is negative",
+> **and the same naming on the non-integer message** ("size of array 'a' has non-integer type"),
+> which a fix aimed only at the negative case would miss. Legal and easy to break: `f(int n, int
+> a[n])`, `f(int a[*])`, `f(int a[static 3])`, `f(int a[const 3])`. `int a[0]` stays accepted — a
+> declared divergence at 1777 VPP uses.
+>
+> **Also banked, censused**: `_Alignas` on a *function* — refused by gcc in every spelling
+> (declaration, definition, `static`, `inline`, the `_Alignas(double)` type form, and a function
+> *returning* a function pointer), while `_Alignas(8) void (*p[2])(void);` is legal because an
+> array of function pointers is an object. `check_alignment` has four call sites and a function
+> declaration reaches none, so it is one call site plus one arm; `StorageContext::Function`
+> already exists. The typedef and parameter spellings must keep their own existing messages.
 >
 > **Wave 388 fixed the duplicate reporting of a parameter's type.** The list is resolved up to
 > three times — the function's type, `decl_types`, then the body — and everything raised inside
