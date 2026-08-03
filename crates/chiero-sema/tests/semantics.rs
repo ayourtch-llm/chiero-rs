@@ -6236,3 +6236,149 @@ fn a_top_level_qualifier_is_not_part_of_a_function_type() {
         );
     }
 }
+
+/// **An enumeration is `unsigned int` unless an enumerator is negative** (C 6.7.2.2p4: the
+/// compatible type is implementation-defined; gcc picks by sign).
+///
+/// §9 has carried this as its largest structural item for four waves, on the reading that chiero
+/// "has no enumeration type to disagree with `int` about" and that making one would touch every
+/// `Ty::Int` comparison in the crate. Measurement says otherwise. gcc does not have a distinct
+/// enumeration type either, for almost every question: an enum object *is* its integer type. It
+/// promotes as one (`e + 0` is `unsigned`), compares as one (`e - 2 < 0` is false, exactly as for
+/// a genuine `unsigned`), and `_Generic(e, unsigned: ...)` selects it. What made this look
+/// structural is that the *enumerator constant* is a separate thing: `A` has type `int` by
+/// 6.4.4.3p2 whatever its enumeration is, which is why `-1 < A` is true while `-1 < e` is not.
+///
+/// So the whole of it is **which** integer type, and chiero always answers `int`. gcc answers
+/// `unsigned int` when no enumerator is negative and `int` when one is. That single choice is
+/// wrong in both directions at once here: it accepts `enum E a; int a;` (the miss wave 381 wrote
+/// down) and it *refuses* `enum E a; unsigned a;`, which is legal — a false positive, the class
+/// waves 376/380/381 found ten of.
+///
+/// **The residue is deliberate and named**: two *different* enumerations with the same sign are
+/// still one type here, so `enum E a; enum F a;` stays accepted where gcc refuses it. That needs
+/// an identity beside the type — the `Qual` mechanism this crate already has — and is the half of
+/// §9's item that really is structural. It is not in this fixture, so nothing here pretends to
+/// cover it.
+#[test]
+fn an_enumeration_is_unsigned_unless_an_enumerator_is_negative() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let repr = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        let id = p.decl_ty("a").expect("`a` is declared");
+        p.analysis.ty(id).clone()
+    };
+
+    // **The representation itself**, which everything below is a consequence of.
+    assert_eq!(
+        repr("enum E { A = 1 };\nenum E a;\n"),
+        Ty::Int {
+            signed: false,
+            bits: 32
+        },
+        "no enumerator is negative, so the type is `unsigned int`"
+    );
+    assert_eq!(
+        repr("enum N { M = -1 };\nenum N a;\n"),
+        Ty::Int {
+            signed: true,
+            bits: 32
+        },
+        "an enumerator is negative, so the type is `int`"
+    );
+    assert_eq!(
+        repr("enum Z { A = 0 };\nenum Z a;\n"),
+        Ty::Int {
+            signed: false,
+            bits: 32
+        },
+        "zero is not negative"
+    );
+
+    for good in [
+        // **The false positives.** An enumeration and its own compatible type are one type.
+        "enum E { A = 1 }; enum E a; unsigned a;",
+        "enum E { A = 1 }; unsigned a; enum E a;",
+        "enum E { A = 1 }; int f(enum E); int f(unsigned);",
+        "enum E { A = 1 }; enum E *a; unsigned *a;",
+        "enum E { A = 1 }; enum E f(void); unsigned f(void);",
+        // A negative enumerator makes it `int`, and then `int` is the compatible one.
+        "enum N { M = -1 }; enum N a; int a;",
+        "enum N { M = -1 }; int f(enum N); int f(int);",
+        // An enumeration against itself, however spelled.
+        "enum E { A = 1 }; enum E a; enum E a;",
+        "enum E { A = 1 }; typedef enum E T; enum E a; T a;",
+        // **The value questions, which must not move.** An enum is its integer type for all of
+        // these, and they are what a change of representation would break.
+        "enum E { A = 1 }; int x = A + 1;",
+        "enum E { A = 1 }; void g(enum E e) { switch (e) { case A: break; } }",
+        "enum E { A = 1 }; void g(void) { enum E x; x = 1; }",
+        "enum E { A = 1 }; void g(int *p, enum E e) { p[e] = 1; }",
+        "enum E { A = 1 }; struct S { enum E b : 2; };",
+        "enum E { A = 1 }; int v[A];",
+        "enum E { A = 1 }; int v[sizeof(enum E) == sizeof(int) ? 1 : -1];",
+        "enum E { A = 1 }; void g(void) { enum E x = A; int y = x; (void)y; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **The two misses wave 381 recorded.** `enum E` is `unsigned int`; `int` is not.
+        (
+            "enum E { A = 1 }; enum E a; int a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; int a; enum E a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; int f(enum E); int f(int);",
+            "conflicting types for `f`",
+        ),
+        (
+            "enum E { A = 1 }; int f(int); int f(enum E);",
+            "conflicting types for `f`",
+        ),
+        // The same disagreement seen through a pointer and through a return type.
+        (
+            "enum E { A = 1 }; enum E *a; int *a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; enum E f(void); int f(void);",
+            "conflicting types for `f`",
+        ),
+        (
+            "enum E { A = 1 }; int f(enum E *); int f(int *);",
+            "conflicting types for `f`",
+        ),
+        // **And the mirror**, which is what stops a fix that merely swaps one wrong answer for
+        // another: a negative enumerator makes it `int`, so now `unsigned` is the one that clashes.
+        (
+            "enum N { M = -1 }; enum N a; unsigned a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum N { M = -1 }; int f(enum N); int f(unsigned);",
+            "conflicting types for `f`",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
