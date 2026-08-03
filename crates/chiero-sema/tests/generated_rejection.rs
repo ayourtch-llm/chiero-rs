@@ -904,6 +904,13 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "a struct tag reused as an enum",
         "struct S { int a; }; enum S { A };",
     ),
+    // C 6.7.9p14 and 6.5.16.2, wave 380. Refused by gcc in both modes.
+    ("string literal into an `int` array", "int a[4] = \"abc\";"),
+    ("wide literal into a `char` array", "char a[4] = L\"abc\";"),
+    (
+        "a pointer offset by a floating value in place",
+        "int f(void){ int *p=0; double d=1; p += d; return p!=0; }",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -956,7 +963,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 265;
+    const FLOOR: usize = 268;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

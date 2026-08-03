@@ -6129,6 +6129,12 @@ fn a_string_initialiser_and_an_array_length_are_more_forgiving_than_this() {
         // A genuine length conflict is still one.
         ("int a[2]; int a[3];", "conflicting types for `a`"),
         ("extern int a[2]; int a[3];", "conflicting types for `a`"),
+        // **The element type still counts**, which the length rule must not swallow: two arrays
+        // of the same length and different elements conflict, and so do an unspecified length
+        // and a different element. A mutant that dropped the element comparison survived every
+        // other row.
+        ("int a[2]; char a[2];", "conflicting types for `a`"),
+        ("extern int a[]; char a[3];", "conflicting types for `a`"),
         // A string literal into an array of the wrong element type keeps being refused — the
         // message is gcc's shape, naming the array rather than a pointer nobody wrote.
         (

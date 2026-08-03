@@ -1707,7 +1707,17 @@ impl Cx<'_> {
                     let node = self.type_expr(init);
                     // 014 §5: the initializer arrives **as the declared type**, so
                     // lowering never has to work out what the assignment did.
-                    self.coerce(node, t, Conversion::Assignment, init);
+                    //
+                    // **A string initialising an array is not an assignment** (C 6.7.9p14 is its
+                    // own rule), so it does not go through `assignable`: doing so compared the
+                    // literal's decayed `char *` against the array and produced a complaint about
+                    // a pointer nobody wrote. `check_init` above owns that case entirely.
+                    let string_into_array =
+                        matches!(self.ast.expr(init).kind, ExprKind::Str { .. })
+                            && matches!(self.out.types[t.0 as usize], Ty::Array { .. });
+                    if !string_into_array {
+                        self.coerce(node, t, Conversion::Assignment, init);
+                    }
                 }
             }
             DeclKind::Typedef { name, ty, storage } => {
@@ -4719,6 +4729,18 @@ impl Cx<'_> {
                 if pointer_displacement && self.incomplete_pointee(lty) {
                     self.error(span, "arithmetic on a pointer to an incomplete type");
                 }
+                // **And the offset is an integer** (C 6.5.6p2), for the same reason: `p += d` is
+                // `p = p + d`, and wave 364 refuses `p + d`. The compound form spells the same
+                // fault and never asked — the binary arm does not see a compound assignment,
+                // which is exactly what the flag above exists to say.
+                if pointer_displacement {
+                    let rty = self.out.typed.ty_of(r);
+                    if !matches!(self.out.types[rty.0 as usize], Ty::Int { .. } | Ty::Error)
+                        && !is_incomplete(&self.out, rty)
+                    {
+                        self.error(span, "a pointer may only be offset by an integer");
+                    }
+                }
                 // **`b += e` with `b` a `_Bool` does not convert `e` to `_Bool`.** C11
                 // 6.5.16.2p3 makes it mean `b = b + e`, and 6.5p4 promotes both operands — so
                 // the addition happens in `int` and only the *result* is converted back.
@@ -6475,9 +6497,45 @@ impl Cx<'_> {
         if let ExprKind::Str { fragments } = self.ast.expr(init).kind.clone()
             && let Ty::Array {
                 len: ArrayLen::Fixed(n),
-                ..
+                elem,
             } = ty
         {
+            // **C 6.7.9p14: the element and the literal must agree in width**, and that is the
+            // whole test — signedness does not enter, which is why `char`, `signed char` and
+            // `unsigned char` all take a plain literal. Refusing the unsigned spelling was this
+            // rule written once for `char` with the sign forgotten, and it was reaching the
+            // reader as "initializing or assigning from an incompatible pointer type": of an
+            // array, from a literal, with no pointer written anywhere.
+            let lit_bits = fragments
+                .first()
+                .and_then(|f| self.text(f.spelling))
+                .map(|t| strlit::string_element(t).1)
+                .unwrap_or(8);
+            if let Ty::Int { bits, .. } = self.out.types[elem.0 as usize]
+                && bits != lit_bits
+            {
+                // **Named by width and sign**, because there is no type printer in this crate
+                // and gcc's sentence needs the element: `int`, `char`, `unsigned char`. The
+                // three the rule is about are the ones a reader will meet.
+                let name = match self.out.types[elem.0 as usize] {
+                    Ty::Int { signed, bits } => match (signed, bits) {
+                        (true, 8) => "char",
+                        (false, 8) => "unsigned char",
+                        (true, 16) => "short",
+                        (false, 16) => "unsigned short",
+                        (true, 32) => "int",
+                        (false, 32) => "unsigned int",
+                        (true, _) => "long",
+                        (false, _) => "unsigned long",
+                    },
+                    _ => "that type",
+                };
+                self.error(
+                    span,
+                    format!("cannot initialise an array of `{name}` from a string literal"),
+                );
+                return;
+            }
             let chars: usize = fragments
                 .iter()
                 .filter_map(|f| self.text(f.spelling).map(|t| t.to_owned()))
@@ -7210,6 +7268,21 @@ impl Cx<'_> {
     /// program is worse than missing an incorrect one — and comparing return types regardless
     /// keeps `int f(); long f();` caught, since even an old-style declaration commits to what it
     /// returns.
+    /// A parameter's type as the function actually has it, for comparison only.
+    ///
+    /// **An array parameter is adjusted to a pointer** (C 6.7.6.3p7), so `f(int a[2])`,
+    /// `f(int a[3])` and `f(int *a)` are one declaration and the written length is not part of
+    /// the type. Returned as a *shape* — "points at this, or is this" — rather than as an
+    /// interned pointer type, because `&self` cannot intern and the pointer form may never have
+    /// been built in the program being compiled.
+    fn param_shape(&self, t: TyId) -> (bool, TyId) {
+        match self.out.types[t.0 as usize] {
+            Ty::Array { elem, .. } => (true, elem),
+            Ty::Ptr(p) => (true, p),
+            _ => (false, t),
+        }
+    }
+
     fn types_conflict(&self, a: TyId, b: TyId) -> bool {
         if a == b {
             return false;
@@ -7246,7 +7319,28 @@ impl Cx<'_> {
                 if !q1 || !q2 {
                     return false;
                 }
-                p1 != p2 || v1 != v2
+                // **A parameter's array length is not part of the type** (C 6.7.6.3p7): an array
+                // parameter is adjusted to a pointer, so `f(int a[2])` and `f(int a[3])` and
+                // `f(int *a)` are one declaration. Comparing the interned ids called them three.
+                if p1.len() != p2.len() {
+                    return true;
+                }
+                p1.iter().zip(&p2).any(|(&x, &y)| {
+                    let (px, ex) = self.param_shape(x);
+                    let (py, ey) = self.param_shape(y);
+                    px != py || self.types_conflict(ex, ey)
+                }) || v1 != v2
+            }
+            // **An array of unspecified length is compatible with any length** (C 6.2.7p3), which
+            // is how a header declares what a translation unit sizes: `extern int a[];` then
+            // `int a[3];`. Refusing it broke the idiom the construct exists for, in both orders.
+            (Ty::Array { elem: e1, len: l1 }, Ty::Array { elem: e2, len: l2 }) => {
+                if self.types_conflict(e1, e2) {
+                    return true;
+                }
+                // `Flexible` is `int a[]` — the unspecified length. `Zero` is the GNU `int a[0]`,
+                // which *is* a length and does conflict with a different one.
+                !matches!(l1, ArrayLen::Flexible) && !matches!(l2, ArrayLen::Flexible) && l1 != l2
             }
             // Interned types, so anything else differing is a real difference.
             _ => true,
