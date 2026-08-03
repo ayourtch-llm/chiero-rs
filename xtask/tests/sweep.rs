@@ -516,3 +516,47 @@ fn a_parallel_sweep_agrees_exactly_with_a_serial_one() {
     assert_eq!(serial.unreadable, 1);
     assert_eq!(serial.tallies[0].matched, 11);
 }
+
+/// **The whole-tree sweep must fan out and stay identical.** `tier1_sweep` was parallelised
+/// and `sweep` was not, so the run the owner asked for over ~1550 files was spending hours
+/// single-threaded while twelve cores idled. The verdict list is an ordered report, so unlike
+/// the tier-1 counts this must agree **element by element, in order** — a set comparison would
+/// pass on a report whose rows had been shuffled by scheduling.
+#[test]
+fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
+    let tmp = std::env::temp_dir().join("chiero-sweep-parallel");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("sub")).unwrap();
+    for i in 0..9 {
+        std::fs::write(
+            tmp.join(format!("f{i:02}.c")),
+            format!("int fn_{i}(void) {{ return {i}; }}\n"),
+        )
+        .unwrap();
+    }
+    // A file neither compiler accepts, and one nested a directory down, so the walk order and
+    // the error path both cross a chunk boundary.
+    std::fs::write(tmp.join("bad.c"), "int oops(void) { return\n").unwrap();
+    std::fs::write(tmp.join("sub/deep.c"), "int deep(void){return 0;}\n").unwrap();
+
+    let flags = xtask::sweep::Flags {
+        dialect: chiero_ast::Dialect::pedantic(),
+        includes: Vec::new(),
+        defines: Vec::new(),
+        std: Some("gnu11".into()),
+    };
+    let system = xtask::sweep::system_include_paths();
+
+    let serial = xtask::sweep::sweep_with(&tmp, &flags, &system, 1).expect("serial");
+    assert_eq!(serial.len(), 11, "ten at the top plus one nested");
+    for threads in [2, 3, 8] {
+        let par = xtask::sweep::sweep_with(&tmp, &flags, &system, threads).expect("parallel");
+        assert_eq!(par.len(), serial.len(), "threads={threads}");
+        for (a, b) in par.iter().zip(serial.iter()) {
+            assert_eq!(a.path, b.path, "order changed at threads={threads}");
+            assert_eq!(a.bucket, b.bucket, "{} at threads={threads}", a.path.display());
+            assert_eq!(a.chiero, b.chiero);
+            assert_eq!(a.gcc, b.gcc);
+        }
+    }
+}
