@@ -992,12 +992,32 @@ impl<'a> Parser<'a> {
         // C11 requires the message; C23 and GNU allow omitting it. Accepting both is
         // free, and rejecting the shorter form would fail on modern headers.
         let msg = if self.eat_punct(Punct::Comma) {
-            match self.peek().map(|t| t.kind) {
-                Some(TokKind::Str(s)) => {
-                    self.pos += 1;
-                    Some(s)
-                }
-                _ => {
+            // **Adjacent literals are one literal** (C 6.4.5p5, phase 6). This read a single
+            // `Str` token, so `_Static_assert(1, "a" "b")` failed on the `)` that was never
+            // reached. Three other sites in this file already loop — the linker-name label, and
+            // two in the `asm` operands — and this one was written as a `match` beside them.
+            //
+            // VPP reaches it through `STATIC_ASSERT_SIZEOF`, whose message is two stringized
+            // arguments concatenated with three literals, so every use of it was refused;
+            // `_Static_assert` is at 140 uses in that tree.
+            //
+            // **The joined text is interned**, not the first token's symbol. sema prints this
+            // on a failed assertion — "static assertion failed: {text}" — and gcc prints the
+            // concatenation, `"ab"` for `"a" "b"`. Keeping the first symbol was the first version
+            // of this fix and a mutant caught it: the program was accepted and the message
+            // silently truncated, which is a wrong answer rather than a missing one.
+            //
+            // Interned as a quoted spelling, because that is what a `Str` symbol holds
+            // everywhere else and what `unquote` expects of it.
+            let mut parts: Option<String> = None;
+            while let Some(TokKind::Str(s)) = self.peek().map(|t| t.kind) {
+                self.pos += 1;
+                let text = unquote(self.spelling_of(s)).to_owned();
+                parts.get_or_insert_with(String::new).push_str(&text);
+            }
+            match parts {
+                Some(joined) => Some(self.intern(&format!("\"{joined}\""))),
+                None => {
                     let here = self.here();
                     self.error(here, "expected a string literal message");
                     None

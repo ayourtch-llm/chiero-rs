@@ -7496,3 +7496,34 @@ fn a_declaration_that_declares_nothing_may_not_be_initialized() {
         );
     }
 }
+
+/// **A failed assertion prints the *joined* message** (C 6.4.5p5 concatenation, then 6.7.10).
+///
+/// The parser gained a loop over adjacent literals in the same wave; keeping only the *first*
+/// literal accepted every legal program and silently truncated this text. A mutant caught it —
+/// the acceptance rows in `chiero-parse` could not, because they only ask whether the program
+/// parses. gcc prints `static assertion failed: "ab"` for `_Static_assert(0, "a" "b")`.
+#[test]
+fn a_failed_static_assertion_prints_the_joined_message() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        diags("_Static_assert(0, \"a\" \"b\");"),
+        vec!["static assertion failed: \"ab\"".to_string()]
+    );
+    // One literal is unchanged, and three join in order rather than by accident.
+    assert_eq!(
+        diags("_Static_assert(0, \"x\");"),
+        vec!["static assertion failed: \"x\"".to_string()]
+    );
+    assert_eq!(
+        diags("_Static_assert(0, \"a\" \"b\" \"c\");"),
+        vec!["static assertion failed: \"abc\"".to_string()]
+    );
+}

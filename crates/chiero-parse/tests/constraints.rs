@@ -483,3 +483,18 @@ fn a_static_assert_message_may_be_several_adjacent_literals() {
         );
     }
 }
+
+/// **A comma still needs a literal after it.**
+///
+/// A mutant that deleted the missing-message check survived every acceptance row above: nothing
+/// covered `_Static_assert(1, );`. The loop must make the message *repeatable*, not *optional*.
+#[test]
+fn a_static_assert_comma_still_needs_a_message() {
+    // gcc: "expected string literal before `)` token".
+    assert_eq!(
+        diags("_Static_assert(1, );\n"),
+        vec!["expected a string literal message".to_string()]
+    );
+    // The C23/GNU form with no comma at all stays legal.
+    assert!(diags("_Static_assert(1);\n").is_empty());
+}
