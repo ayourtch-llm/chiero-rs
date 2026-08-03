@@ -7411,3 +7411,95 @@ fn a_bitfield_may_not_have_atomic_type() {
         );
     }
 }
+
+/// **Three declaration constraints the parser census found missing**, all silent before this.
+///
+/// The census was 24 programs gcc refuses at declaration level, run against chiero for the first
+/// time — `chiero-parse` has 8 constraint tests against sema's 282-row corpus, so this looked
+/// like the thinnest surface in the pipeline. It is not: **20 of the 24 were already caught**,
+/// and almost all of them in *sema* rather than in the parser. The low parser test count measured
+/// where rules are tested, not whether they exist.
+///
+/// The three that were silent:
+///
+///   - **A `typedef` may not be initialized** (C 6.7p2 — a declaration with `typedef` declares no
+///     object, so there is nothing to initialize). Any declarator form.
+///   - **An array of functions** (C 6.7.6.2p1 — the element type may not be a function type).
+///     The discriminator is `int (*f[3])(void);`, an array of function *pointers*, which is both
+///     legal and the thing anyone actually writes.
+///   - **`extern` with an initializer inside a block** (C 6.7.9p5). Legal at *file* scope, where
+///     `extern int x = 1;` is a definition — so the rule is about block scope, not about `extern`.
+#[test]
+fn a_declaration_that_declares_nothing_may_not_be_initialized() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // **A `typedef` names a type, so there is nothing to initialize** — in every declarator
+        // form, since a fix keyed on the plain one would miss the others.
+        (
+            "typedef int T = 1;",
+            "typedef `T` may not have an initializer",
+        ),
+        (
+            "typedef int T[1] = {0};",
+            "typedef `T` may not have an initializer",
+        ),
+        (
+            "typedef int *T = 0;",
+            "typedef `T` may not have an initializer",
+        ),
+        // **An array of functions**, directly, two-dimensional, and through a typedef — the last
+        // is the one a check written against the syntax rather than the type would miss.
+        (
+            "int f[3](void);",
+            "declaration of `f` as an array of functions",
+        ),
+        (
+            "int f[2][3](void);",
+            "declaration of `f` as an array of functions",
+        ),
+        (
+            "typedef int F(void); F a[3];",
+            "declaration of `a` as an array of functions",
+        ),
+        // **`extern` and an initializer in a block.**
+        (
+            "void f(void){ extern int x = 1; (void)x; }",
+            "`x` has both `extern` and an initializer",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        "typedef int T;",
+        "typedef int F(void);",
+        // **An array of function pointers**, which is what the illegal row is nearly always a
+        // typo for, and is legal.
+        "int (*f[3])(void);",
+        "typedef int F(void); F *a[3];",
+        // `extern int x = 1;` at **file** scope is a definition, not a violation.
+        "extern int x = 1;",
+        "void f(void){ extern int x; (void)x; }",
+        // And an ordinary initialized object in a block.
+        "void f(void){ static int x = 1; (void)x; }",
+        "void f(void){ int x = 1; (void)x; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
