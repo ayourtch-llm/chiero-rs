@@ -6382,3 +6382,77 @@ fn an_enumeration_is_unsigned_unless_an_enumerator_is_negative() {
         );
     }
 }
+
+/// **A pointer's pointee is compared like any other type** (C 6.7.6.1p2: two pointer types are
+/// compatible when they are identically qualified and point to compatible types).
+///
+/// `types_conflict` has arms for functions and for arrays and nothing for pointers, so two
+/// pointers that are not the *same interned id* fall through to `_ => true`. That is right often
+/// enough to have gone unnoticed — `int *` against `char *` really does conflict — and wrong
+/// wherever the pointee's own compatibility rule is weaker than identity. There is exactly one
+/// such rule and the arm right above already implements it: an array of unspecified length is
+/// compatible with any length (6.2.7p3).
+///
+/// So `extern int (*a)[]; int (*a)[3];` is refused here and legal in gcc. Its plain form,
+/// `extern int a[]; int a[3];`, was the false positive wave 380 fixed — the same idiom one `*`
+/// deeper, which the array arm never sees because nothing takes it there.
+///
+/// This arm is also what stops the *next* change from introducing a false positive. Giving an
+/// enumeration its own interned identity makes `enum E *` and `unsigned *` different ids, and
+/// without a pointer arm they would start conflicting, which gcc accepts.
+#[test]
+fn a_pointers_pointee_is_compared_like_any_other_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // **The unspecified length, one and two pointers deep**, in both orders.
+        "extern int (*a)[]; int (*a)[3];",
+        "int (*a)[3]; extern int (*a)[];",
+        "extern int (**a)[]; int (**a)[3];",
+        // Only the outermost bound is unspecified; the inner one still has to agree.
+        "extern int (*a)[][4]; int (*a)[3][4];",
+        // Through a parameter, where `param_shape` already reached the array arm — kept so a
+        // change that moves the rule out of one path and into the other is caught.
+        "int f(int (*)[]); int f(int (*)[3]);",
+        // An incomplete pointee is compatible with itself.
+        "struct S; struct S *a; struct S *a;",
+        "int *a; int *a;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **A length that is specified twice must still agree** — this is the discriminator, and
+        // an arm that recursed without the `Flexible` check would lose it.
+        ("int (*a)[2]; int (*a)[3];", "conflicting types for `a`"),
+        (
+            "int f(int (*)[2]); int f(int (*)[3]);",
+            "conflicting types for `f`",
+        ),
+        // **A qualifier on the pointee is part of the type**, unlike a top-level one (6.7.6.3p15,
+        // wave 381). Recursion must reach the pointee and still say so.
+        ("const int *a; int *a;", "conflicting types for `a`"),
+        ("volatile int *a; int *a;", "conflicting types for `a`"),
+        // And the ordinary pointee differences the recursion must not swallow.
+        ("void *a; int *a;", "conflicting types for `a`"),
+        ("int *a; char *a;", "conflicting types for `a`"),
+        ("int **a; int *a;", "conflicting types for `a`"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
