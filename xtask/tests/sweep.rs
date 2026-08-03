@@ -169,4 +169,10 @@ fn the_grouping_key_is_the_kind_not_the_place() {
         k("sema: note: this is prose: with colons"),
         "sema: note: this is prose: with colons"
     );
+    // **Prose with three colons is the row that actually tests the shape check.** The two-colon
+    // row above cannot: the scan needs a third colon to reach the digit comparison at all, so it
+    // returns early, and a build with the check deleted passes that row happily. Mutation caught
+    // exactly this — the guard was unverified. A version without it mangles the input below into
+    // `sema: z`.
+    assert_eq!(k("sema: note: x: y: z"), "sema: note: x: y: z");
 }
