@@ -44,6 +44,15 @@ fn the_chain_is_innermost_first_with_each_definition_site_and_body() {
 
     // The call site of the outermost frame is the line asked about.
     assert_eq!(chain[1].call_line, 3);
+
+    // **And the inner frame reports where *it* is written — line 2, inside `vec_add1`'s
+    // body — not where the chain started.** Resolving every frame through to the user's
+    // line would make them all say 3 and throw away the answer to "why was this invoked".
+    // Asserting only the outermost frame cannot see that: at depth 0 the written and the
+    // resolved position are the same, so the whole distinction is invisible there. Mutation
+    // caught exactly this — the decision was recorded in prose and tested nowhere.
+    assert_eq!(chain[0].call_line, 2);
+    assert_eq!(chain[0].call_col, 25);
 }
 
 /// **A line with no macro on it answers empty, not an error and not a guess.** 050 §1 makes
@@ -51,7 +60,11 @@ fn the_chain_is_innermost_first_with_each_definition_site_and_body() {
 /// a nearby chain learns something false.
 #[test]
 fn a_line_with_no_expansion_has_an_empty_chain() {
-    let tu = preprocess_str("t.c", "#define A 1\nint x = A;\nint y = 2;\n", Config::default());
+    let tu = preprocess_str(
+        "t.c",
+        "#define A 1\nint x = A;\nint y = 2;\n",
+        Config::default(),
+    );
     assert!(chiero_tool::explain_macro_expansion(&tu.source_map, "t.c", 3, None).is_empty());
     assert!(!chiero_tool::explain_macro_expansion(&tu.source_map, "t.c", 2, None).is_empty());
     // A file that is not in the map is the same answer: nothing to say.

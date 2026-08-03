@@ -40,7 +40,9 @@ pub fn explain_macro_expansion(
     let mut best: Option<(usize, ExpnCtx)> = None;
     for i in 1..=map.expansion_count() {
         let ctx = ExpnCtx(i as u32);
-        let Some(e) = map.expansion(ctx) else { continue };
+        let Some(e) = map.expansion(ctx) else {
+            continue;
+        };
         // The *written* position: an expansion nested in a macro body has a call site
         // inside that body, and only resolving through the chain reaches the line the user
         // is actually reading.
@@ -80,12 +82,17 @@ pub fn explain_macro_expansion(
             let call = map.lookup_loc(e.call_site.lo);
             frames.push(MacroFrame {
                 name: info.name.to_string(),
-                def_file: info.def_file.map(|f| map.file(f).path().display().to_string()),
+                def_file: info
+                    .def_file
+                    .map(|f| map.file(f).path().display().to_string()),
                 def_line: info.def_line,
+                // No trim: `body_extent` runs from the first body token to the last, so it
+                // never carries surrounding whitespace. `#define A   1 + 2   ` yields
+                // `1 + 2` already. A `.trim()` here was unobservable under mutation, which
+                // is the signal that it was guarding against nothing.
                 body: map
                     .span_text(info.body_extent)
                     .unwrap_or_default()
-                    .trim()
                     .to_owned(),
                 call_line: call.map_or(0, |l| l.line),
                 call_col: call.map_or(0, |l| l.col),
