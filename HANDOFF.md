@@ -487,7 +487,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 385) — 1587 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 386) — 1589 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 385 found a regression wave 384 caused, by running the sweep §9 asked for.** `_Generic`
+> matched associations with `at == self.bare(cty)` under a comment saying interned ids *were* the
+> compatibility test for everything `_Generic` can name. That was true when written and stopped
+> being true the moment a second thing rode the interning key, so `_Generic(e, unsigned: 1,
+> default: 0)` silently took the `default`. **A comment asserting two things are the same is a
+> place to look after any change to either** — the stale comment was the tell, not the code.
+>
+> **A wrong answer, which wave 113 ranks worse than a missing diagnostic, and it survived a full
+> green suite.** Nothing graded `_Generic` selection against gcc; the differential rows added
+> here do.
+>
+> **The same comparison was doing two jobs, and one of them it could not do.** Duplicate
+> associations were detected by "a second one matched", which only ever finds pairs the selector
+> lands on — `_Generic(x, int: 1, int: 2)` with a `double` selector was accepted, a plain
+> 6.5.1.1p2 violation. The pair rule is now its own pass. **When one expression answers two
+> questions, check whether it can answer the second one at all.**
+>
+> **Compatibility is not transitive here, and that is what proves the two rules are separate.**
+> With an `unsigned` selector, `enum E` and `enum F` both match it and are not compatible with
+> each other. gcc reports the selector matching twice and nothing about the pair.
+>
+> **Mutation across two gates showed which gate covers what.** Seven mutants, all killed by the
+> sema fixture, but only the three *matching* mutants also died in the gcc differential — a test
+> that observes selection cannot see a rule about which associations may coexist. Worth reading
+> the split, not just the total: **a mutant surviving one gate and dying in another tells you what
+> each gate is for.**
+>
+> **Runner note:** `python3 run.py > log` block-buffers, so a long mutation run shows nothing until
+> it exits. Use `python3 -u`.
+>
+> **Next, and fully censused already**: gcc's GNU-mode enum widening is `unsigned int` while the
+> values fit it, then `long`/`unsigned long` by sign — measured at every boundary (INT_MAX,
+> UINT_MAX, INT_MIN-1, lo=-1/hi=UINT_MAX, LONG_MAX, ULONG_MAX). chiero always widens to `long`,
+> so two of the three shapes are wrong. Both compilers refuse these enumerators under
+> `-pedantic-errors`, but chiero reports *and keeps the type usable*, so the width still reaches
+> layout in a program it has already diagnosed. Small RED, already measured.
 >
 > **Wave 384 closed the rest of the enumeration item.** An enumeration tag now rides the interning
 > key with a parallel table — `Qual`'s trade made a second time, for the same reason: nothing
