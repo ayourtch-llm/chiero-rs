@@ -487,68 +487,74 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 410) — 1614 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 412) — 1616 tests, 4 ignored, M1 268/268 by contract
 >
-> ### The blocker fell, and the VPP sweep has converged
+> ### M2's headline exit gate is met; M3 has started
 >
-> **Wave 408: a macro call may span a directive, so the flush waits for its `)`.** VPP writes it
-> in **49 headers**, and it accounted for 28 of `vnet/fib`'s 29 findings and 27 of 28 across six
-> plugin trees. Those files now parse and reach sema for the first time.
+> `vec.h`, `pool.h`, `bitmap.h`, `clib.h` each preprocess, parse **and** analyse clean,
+> agreeing with gcc on all four — 080 M2's "vppinfra headers parse". Reproduce with:
 >
-> **The construct table settled the scope; three waves had wrongly filed this as an owner's
-> call.** The table rates a GNU extension by how much VPP depends on it — `__int128` at one file
-> is "required". A criterion already written down is not an open question, and re-asking it cost
-> three waves.
+> ```
+> cargo run -p xtask -- sweep --tree <dir-of-4-TUs> -I <vpp>/src -I <gen> --std gnu11
+> ```
 >
-> ### What the remaining findings are
+> **Wave 411: `explain_macro_expansion` (050 contract 6)** — the first line of `chiero-tool`
+> that is not a doc comment. Chain innermost-first; each frame carries name, definition site
+> and body text, so an answer needs no second lookup.
+>
+> * `SourceMap` gained **`expansion_count`**. `expansion_sites(m)` answered "where did this
+>   macro expand"; nothing answered "what expanded *here*".
+> * **Depth picks the chain when `column` is `None`.** Every frame in one chain resolves to the
+>   same written position, so `vec_add1` and its nested `_vec_resize` both match the line — one
+>   chain at two depths, deepest contains the rest. Two *independent* calls on one line is a
+>   **stated limit**, and what `column` is for.
+> * An inner frame's `call_line` is where it is **written** (inside the enclosing body), not
+>   where the chain started.
+>
+> ### Still open on this front
+>
+> * `expansion_sites` (050 contract 7): 1043 sites, `total/shown` summary + working cursor.
+> * `explain_macro_expansion` on a real `foreach_*` site — the other half of M3's exit gate.
+> * `chiero-recipe` tier-1 structural sweep; VPP parser-coverage percentage published.
+>
+> ### The VPP sweep converged — with one measurement outstanding
+>
+> Every finding reduced since the wave-408 blocker fell is the **same pedantic-vs-`gnu11`
+> question**, and chiero is already correct at the project's calibration in each:
 >
 > | subtree | findings | kind |
 > |---|---|---|
-> | `vnet/fib` | 29 | **all** enumerator-range |
+> | `vnet/fib` | 29 | all enumerator-range |
 > | `plugins/nsh` | 9 | all enumerator-range |
-> | `plugins/acl` | 5 | all a stray `;` in a struct |
+> | `plugins/acl` | 5 | all a stray `;` in a struct (`fa_node.h:112`) |
 >
-> Every finding reduced since the blocker fell is the **same pedantic-vs-`gnu11` question**, and
-> in each chiero is already correct at the project's calibration:
+> **A full `vnet` sweep was still running when this was written and has not been read.** If it
+> shows a kind outside that set, this conclusion reopens. Do not quote the convergence claim
+> without re-running it.
 >
-> * `enum { A = 0xffffffffu }` — gnu11 accepts, `-pedantic-errors`: "ISO C restricts enumerator
->   values to range of `int`".
-> * `} tcp_flags_seen; ;` (`acl/fa_node.h:112`) — `-pedantic-errors`: "extra semicolon in struct
->   or union specified".
->
-> **No new defect kind has appeared behind any unblocked file.** The sweep has converged on one
-> scope decision rather than a defect backlog.
->
-> ### The owner's queue is now two clean questions
+> ### The owner's queue is two clean questions
 >
 > | item | reach | chiero today |
 > |---|---|---|
 > | **pedantic mode for sema** | every remaining VPP finding | verdicts correct, noise on the corpus |
 > | `transparent_union` | socket-calling TUs | refuses the call |
 >
-> No correctness bug is entangled in either.
+> ### Method notes bought this stretch
 >
-> ### Wave 409: a finding says *where*, and still groups by *what*
->
-> The sweep printed a message and an example path, so acting on one meant hand-searching a
-> 62,000-line preprocessed TU — four reduction attempts died that way before the tool was fixed.
-> `describe` renders `path:line:col:`; `kind` strips it back off for the grouping key, or a group
-> of 29 becomes 29 groups of one. `acl` then reduced in a single lookup.
->
-> Two traps worth remembering:
->
-> * **`Span::DUMMY` resolves.** It is `BytePos(0)` and the first file starts at 0, so `lookup_loc`
->   *succeeds* and answers line 1 column 1. A fiction shaped exactly like a fact. Reject by name.
-> * **A survivor is worth re-reading as "did this mutate anything" first.** A mutant scored
->   SURVIVED had been written with its replacement identical to the original — a control wearing
->   a mutant's name.
->
-> ### A missing row hides behind an early return
->
-> Mutation left `kind`'s shape check surviving. The prose row meant to cover it has two colons;
-> the scan needs a third to reach the comparison at all, so it returned early and asserted the
-> right answer for the wrong reason. **When a mutant survives under a test that names it, check
-> the input reaches the line before concluding the mutant is equivalent.**
+> * **A criterion already written down is not an open question.** The construct table settles
+>   GNU-extension scope by VPP dependence; re-asking it as an owner's call cost three waves.
+> * **Writing a decision down is not testing it.** Wave 411's commit message argued the inner
+>   frame's call site is the written one; the test asserted only the outermost frame, where the
+>   distinction is invisible. A mutant is the only thing that tells prose and coverage apart.
+> * **A survivor has a fourth reading: dead code.** A `.trim()` that could never fire was not an
+>   equivalent mutant — it guarded nothing and was removed, not pinned.
+> * **Check the input reaches the line before calling a mutant equivalent.** One survivor was an
+>   early return; another was a "mutant" whose replacement text equalled the original.
+> * **`Span::DUMMY` resolves.** `BytePos(0)`, and the first file starts at 0 — the lookup
+>   succeeds and answers line 1 column 1. Reject it by name.
+> * **A report that names only *what* is not actionable.** Four reductions died guessing against
+>   a 62,000-line preprocessed TU before `describe`/`kind` added locations; `acl` then fell in
+>   one lookup.
 >
 > ### Sweep reach, after wave 405
 >
