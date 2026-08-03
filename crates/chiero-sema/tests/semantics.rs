@@ -7183,3 +7183,135 @@ fn a_bad_array_length_names_its_declarator() {
         );
     }
 }
+
+/// **An array size has integer type** (C 6.7.6.2p1), which chiero does not check at all.
+///
+/// A size that does not fold becomes a VLA whatever its type, so `int a[1.5];` is **silent** as a
+/// local and as a parameter, and at file scope and in a member it is reported as *variably
+/// modified* — a float bound mistaken for a variable one. Two misses and three wrong sentences.
+///
+/// **The discriminator is the expression's type, not whether it folds**, which is the axis the
+/// existing code does not have. `int a[2.0];` is refused although exact, so constness is
+/// irrelevant; `_Bool`, `char`, `enum` and a comma expression are *integer* types and stay
+/// ordinary VLAs. `int a[(int)1.5];` is legal while `int a[1.5];` is not, and
+/// `void f(double d){ int a[(int)d]; }` is a legal VLA — together those pin that the rule reads
+/// the type **after conversion**, so a check that looked at a cast's operand would both refuse
+/// legal code and accept illegal.
+///
+/// **The type check precedes the value check** (wave 361: gcc's choice of message is the
+/// tiebreak). `int a[-1.5];` is the type error, not "is negative", while `int a[-2147483649];` is
+/// the value error. Asking about the type first is also what keeps chiero's deliberate divergence
+/// on `int a[1/0];` intact — an *explained* fold failure stays poison rather than becoming a VLA.
+///
+/// The message reuses wave 390's named/unnamed pair, which gcc does too, in all eleven positions.
+#[test]
+fn an_array_size_has_integer_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // Every declarator position, named.
+        (
+            "void f(void){ int a[1.5]; (void)a; }",
+            "array length of `a` has a non-integer type",
+        ),
+        ("int a[1.5];", "array length of `a` has a non-integer type"),
+        (
+            "struct S { int a[1.5]; };",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "void f(int a[1.5]);",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "typedef int A[1.5];",
+            "array length of `A` has a non-integer type",
+        ),
+        (
+            "int (*f(void))[1.5];",
+            "array length of `f` has a non-integer type",
+        ),
+        (
+            "int a[2][1.5];",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "int (*a)[1.5];",
+            "array length of `a` has a non-integer type",
+        ),
+        // Unnamed, where there is no declarator to name.
+        ("void f(int [1.5]);", "array length has a non-integer type"),
+        (
+            "unsigned f(void){ return sizeof(int[1.5]); }",
+            "array length has a non-integer type",
+        ),
+        // **Not only floats**, and not only constants.
+        (
+            "double d; int a[d];",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "void f(void){ float g; int a[g]; (void)a; }",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "int *p; int a[p];",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "struct S{int x;} s; int a[s];",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "int a[\"xy\"];",
+            "array length of `a` has a non-integer type",
+        ),
+        // **Exact floats are still refused**, so this is about the type and not the value.
+        ("int a[2.0];", "array length of `a` has a non-integer type"),
+        ("int a[0.0];", "array length of `a` has a non-integer type"),
+        // **The type wins over the value**, and the value rule still fires on its own.
+        ("int a[-1.5];", "array length of `a` has a non-integer type"),
+        ("int a[-2147483649];", "array length of `a` is negative"),
+        ("int a[(_Bool)1 - 2];", "array length of `a` is negative"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    // **Every integer-typed VLA stays silent**, which is what a check written too broadly breaks.
+    for good in [
+        "void f(int n){ int a[n]; (void)a; }",
+        "void f(char c){ int a[c]; (void)a; }",
+        "void f(_Bool b){ int a[b]; (void)a; }",
+        "enum E{N=3}; void f(enum E e){ int a[e]; (void)a; }",
+        "void f(unsigned u){ int a[u]; (void)a; }",
+        "void f(long l){ int a[l]; (void)a; }",
+        "void f(int n){ int a[n*2+1]; (void)a; }",
+        "void f(int n, int a[n]);",
+        "void f(int n){ int a[(n,n)]; (void)a; }",
+        // **The cast makes it integer**, so this is a legal VLA and not a type error.
+        "void f(double d){ int a[(int)d]; (void)a; }",
+        // Integer constant expressions.
+        "enum E{N=3}; int a[N];",
+        "int a[(int)1.5];",
+        "int a[sizeof(int)];",
+        "int a['x'];",
+        "int a[1 && 1];",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
