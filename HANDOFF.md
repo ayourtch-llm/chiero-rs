@@ -487,7 +487,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 402) — 1609 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 403) — 1609 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 402 withdrew two claims wave 401 made.** Both were wrong, both from one cause.
+>
+> **1. The "two neighbouring misses" do not exist.** `int f(void); static int f(void);` and
+> `static int n; int n;` are reported correctly, as are `int n; static int n;`,
+> `extern int n; static int n;` and the typedef spelling. Five rows now pin them, plus the legal
+> direction `static int n; extern int n;`.
+>
+> **2. The "fourth reading of a surviving mutant" is withdrawn.** Wave 401 said its mutant was
+> *masked by a neighbouring miss*. With the misses shown not to exist, the real reason is plain
+> equivalence: `resolved_linkage` reads `deferring` only when `!now.internal`, so the flag on a
+> `static` declaration is never consulted. The clause is deleted. **Three readings stand: the code
+> is wrong, a missing row, an equivalent mutant.**
+>
+> ### The cause, and why a note was not enough
+>
+> A **fourth** instance of reading "not in the sweep's findings list" as "chiero said nothing".
+> Those programs are `BothRefused` — gcc rejects them too. §9 has carried this since wave 397; it
+> has since caused a retracted RED (398), a wrong claim (399), and two false §9 entries (401).
+>
+> **Use `scratchpad/one.sh '<program>' --std gnu11`.** It prints bucket counts and every section
+> for one program. Do not grep the findings section. A note that has been ignored four times is
+> not a control; the shorthand that caused it is gone.
+>
+> ### Where the real work is
+>
+> - **vppinfra**: 31 findings of 109 tested, **24 of them pedantic-calibration noise** (an owner's
+>   decision, not defects). Genuine remainder: 2 macro redefinitions, incompatible-pointer init
+>   (`hash.c`), incompatible-pointer return (`unformat.c`), "makes a pointer from an integer
+>   without a cast" (`test_bihash_template.c`).
+> - **vlib**: 44 of 47 tested, clean of real defects.
+> - **vnet**: sweeping all 452 produced no output in ~40 minutes. Split by subdirectory or run in
+>   a long background window. 22 of 60 sampled compile; the rest need `vppapigen` output.
+> - **plugins (780)**: unswept.
 >
 > **Wave 401: a declaration with no storage class adopts the prior linkage** (C 6.2.2p5 + 6.2.2p4),
 > however the function is spelled. `typedef int F(void); static int f(void){…} F f;` was refused;
