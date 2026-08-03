@@ -925,6 +925,12 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("union with no members", "union U { };"),
     ("struct with no named members", "struct S { int : 3; };"),
     ("union with no named members", "union U { int : 3; };"),
+    // An array size must have integer type, wave 391. gcc refuses all four; chiero was silent
+    // for the first two and called the others variably modified.
+    ("array size is a float", "int a[1.5];"),
+    ("array size is an exact float", "int a[2.0];"),
+    ("array size is a double object", "double d; int a[d];"),
+    ("array size is a pointer", "int *p; int a[p];"),
     ("tagless struct with no members", "struct { } x;"),
     (
         "tagless struct with no named members",
@@ -982,7 +988,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 276;
+    const FLOOR: usize = 280;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");

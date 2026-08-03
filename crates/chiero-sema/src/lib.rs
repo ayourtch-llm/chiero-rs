@@ -2329,7 +2329,49 @@ impl Cx<'_> {
                                 self.error(node.span, format!("array length{n} is negative"));
                                 ArrayLen::Fixed(0)
                             }
-                            None => ArrayLen::Vla(expr),
+                            None => {
+                                // **C 6.7.6.2p1: the size has integer type**, and that is a
+                                // question about the *type*, not about whether the size folded.
+                                // Everything that failed to fold used to become a VLA, so
+                                // `int a[1.5];` was silent as a local and a parameter, and at
+                                // file scope and in a member it was called variably modified.
+                                //
+                                // Asked here, in the arm that was about to say "VLA", so only an
+                                // expression that already failed to fold is typed at all — and
+                                // **quietly**, because these expressions were never typed before
+                                // and reporting from them now would be a new and much wider
+                                // change than this rule. The type is all that is wanted.
+                                //
+                                // `Ty::Error` counts as integer: something else already spoke.
+                                let t = self.re_resolving(|cx| {
+                                    let n = cx.type_expr(expr);
+                                    cx.out.typed.ty_of(n)
+                                });
+                                // **No `bare` here on purpose.** A qualifier lives in a table
+                                // beside `types`, not inside `Ty`, so `self.out.types[t]` already
+                                // yields the unqualified shape — `const double` matches
+                                // `Ty::Float` exactly as `double` does. A `bare` call was written
+                                // here first and mutation exposed it as an *equivalent* mutant:
+                                // replacing it with `t` changed nothing any test could see.
+                                // An equivalent mutant is dead code, not a missing row.
+                                if matches!(
+                                    self.out.types[t.0 as usize],
+                                    Ty::Int { .. } | Ty::Error
+                                ) {
+                                    ArrayLen::Vla(expr)
+                                } else {
+                                    let n = self
+                                        .declaring
+                                        .and_then(|n| self.text(n))
+                                        .map(|t| format!(" of `{t}`"))
+                                        .unwrap_or_default();
+                                    self.error(
+                                        node.span,
+                                        format!("array length{n} has a non-integer type"),
+                                    );
+                                    ArrayLen::Fixed(0)
+                                }
+                            }
                         }
                     }
                 };

@@ -7275,6 +7275,18 @@ fn an_array_size_has_integer_type() {
         ),
         // **Exact floats are still refused**, so this is about the type and not the value.
         ("int a[2.0];", "array length of `a` has a non-integer type"),
+        // **A qualifier does not hide the type.** These exist because a `bare` call was written
+        // into the check and mutation showed it was *equivalent* — a qualifier lives in a table
+        // beside `types`, so `const double` already matches `Ty::Float`. The rows pin the
+        // behaviour the removed call was supposed to guarantee.
+        (
+            "const double d; int a[d];",
+            "array length of `a` has a non-integer type",
+        ),
+        (
+            "void f(void){ const double d; int a[d]; (void)a; }",
+            "array length of `a` has a non-integer type",
+        ),
         ("int a[0.0];", "array length of `a` has a non-integer type"),
         // **The type wins over the value**, and the value rule still fires on its own.
         ("int a[-1.5];", "array length of `a` has a non-integer type"),
@@ -7307,6 +7319,9 @@ fn an_array_size_has_integer_type() {
         "int a[sizeof(int)];",
         "int a['x'];",
         "int a[1 && 1];",
+        // A *qualified integer* is still an integer, so these stay VLAs rather than type errors.
+        "void f(void){ const int n = 3; int a[n]; (void)a; }",
+        "void f(volatile int n){ int a[n]; (void)a; }",
     ] {
         assert!(
             diags(good).is_empty(),
