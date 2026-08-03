@@ -253,3 +253,42 @@ fn function_extraction_finds_definitions_and_not_declarations() {
     // crosses translation units so a bare name would be ambiguous.
     assert!(fns.iter().all(|f| f.file == "src/vnet/x.c"));
 }
+
+/// 042 contract 7: a tier-1 sweep reports candidate counts per recipe **and what it could not
+/// read**.
+#[test]
+fn a_tier_one_sweep_reports_counts_and_the_files_it_could_not_read() {
+    use xtask::sweep::tier1_sweep;
+    let tmp = std::env::temp_dir().join("chiero-tier1-fixture");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("a.c"), "int show_a(void){return 0;}\n").unwrap();
+    std::fs::write(
+        tmp.join("b.c"),
+        "int show_b(void){return 0;}\nint helper(void){return 1;}\n",
+    )
+    .unwrap();
+    // Does not parse. It must be *counted*, not quietly contribute zero functions.
+    std::fs::write(tmp.join("broken.c"), "int oops(void) { return \n").unwrap();
+
+    let recipe = chiero_recipe::load(
+        "recipe shows {\n  title \"t\"\n  scope fn $f where name matches \"^show_\"\n  \
+         fixture good \"g.c\"\n  fixture bad \"b.c\" expect 1 at \"b.c:1\"\n}\n",
+    )
+    .expect("loads");
+
+    let r = tier1_sweep(&translation_units(&tmp).expect("walk"), &[recipe]);
+
+    assert_eq!(r.files, 3);
+    assert_eq!(r.functions, 3, "two in b.c, one in a.c; none from broken.c");
+    assert_eq!(r.tallies[0].matched, 2, "show_a and show_b");
+
+    // **A file the sweep could not read makes the counts partial.** Reporting `2 candidates`
+    // over a tree where a file never parsed states a number the sweep did not earn — the same
+    // failure as a recipe that could not be evaluated reporting zero.
+    assert_eq!(r.unreadable, 1);
+    assert!(
+        !r.is_complete(),
+        "an unread file must forbid claiming a complete count"
+    );
+}
