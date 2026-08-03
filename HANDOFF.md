@@ -487,7 +487,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 382) — 1582 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 383) — 1583 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 382 closed 6.10.3.2p2: `#` now produces a string literal that exists.** `S(\)` was the
+> token `"\"` — three characters whose backslash escapes the closing quote — and *nothing objected
+> anywhere*: not the preprocessor, not the lexer reading the token back, not the parser, not sema.
+> A malformed token travelled the whole pipeline in silence. The fix pops a final backslash when
+> the trailing run is **odd**; even runs are already-escaped and must survive untouched.
+>
+> **The fix was a value, not a diagnostic, and that was the deliberate choice.** gcc warns here and
+> compiles — under `-pedantic-errors` too — so a report would reject a program gcc accepts. Wave
+> 314's calibration answers this: **report what gcc refuses, not what it mentions.** The test pins
+> the silence next to the token so a later wave cannot "improve" it into a false positive. When a
+> census row ends in a gcc *warning*, the deliverable is usually the output, not a message.
+>
+> **A wave with three leads that returns one finding has still done its job.** Two of wave 382's
+> came back empty and are written down so nobody pays for them twice (§9's rule from wave 375):
+> the sweep for interned-id comparisons beyond `types_conflict` (`assignable`, `common_type`,
+> `_Generic` matching — `_Generic` is *meant* to compare by compatibility and does), and the
+> censuses of 6.7.1p7 (`register` array parameter) and 6.5.8p6 (one-past-the-end comparison), ~30
+> programs each, chiero and gcc agreeing throughout.
+>
+> **Check the measurement before writing the assertion it came from.** Wave 382's RED demanded
+> `S(a\b)` produce a doubled backslash. It does not, in gcc or here — the gcc output saying so was
+> already on screen when the row was written. The code was right and the fixture was wrong, which
+> is the one failure mode red-green cannot catch by itself: a RED that fails for the wrong reason
+> still looks like progress.
 >
 > **Sema 268 of 268, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
