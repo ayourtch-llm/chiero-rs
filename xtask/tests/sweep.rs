@@ -375,3 +375,39 @@ fn a_macro_generated_function_belongs_to_the_file_that_invoked_it() {
         f.file
     );
 }
+
+/// **A function defined once is counted once, however many translation units include it.**
+/// Correcting the attribution to the defining file was only the precondition: each TU still
+/// contributes its own copy, so `vnet/fib` reported the same 186,623 functions after that fix
+/// as before it. Deduplication is what turns 042 c5d's per-recipe count into a property of
+/// the code rather than of the include graph.
+#[test]
+fn a_header_function_is_counted_once_across_translation_units() {
+    let tmp = std::env::temp_dir().join("chiero-dedup-fixture");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("shared.h"),
+        "static inline int shared_helper(void) { return 1; }\n",
+    )
+    .unwrap();
+    for (n, f) in [("a", "fn_a"), ("b", "fn_b")] {
+        std::fs::write(
+            tmp.join(format!("{n}.c")),
+            format!("#include \"shared.h\"\nint {f}(void){{return 0;}}\n"),
+        )
+        .unwrap();
+    }
+
+    let cfg = chiero_pp::Config {
+        include_paths: vec![tmp.clone()],
+        ..chiero_pp::Config::default()
+    };
+    let r = xtask::sweep::tier1_sweep(
+        &xtask::sweep::translation_units(&tmp).expect("walk"),
+        &[],
+        &cfg,
+    );
+    // `shared_helper` once, plus `fn_a` and `fn_b` — not four.
+    assert_eq!(r.functions, 3, "the header helper is one function, not two");
+}
