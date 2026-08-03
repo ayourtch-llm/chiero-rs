@@ -487,7 +487,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 404) — 1609 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 405) — 1610 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 404: a packed enumeration is as narrow as its range.** `__attribute__((packed))` was
+> ignored on enums — one byte in gcc, four here. **The sweep's first non-diagnostic defect**: a
+> wrong `sizeof` is an answer every consumer believes. It surfaced because VPP checks its own
+> layout — `STATIC_ASSERT_SIZEOF (ip_ecn_t, 1)` failed — so a program asserting its invariants
+> caught chiero's. Found only because wave 403 showed vppinfra was exhausted and pushed the sweep
+> into `vnet`, which it had never seen.
+>
+> ### A wave was started on a wrong premise and reverted
+>
+> `vnet/ethernet/pg.c` fails on a `#define` **inside a macro call's arguments** —
+> `CLIB_PACKED (struct { #define IP6_MLDP_ALERT_TYPE 0x5 … })` in `ip6_packet.h`. I assumed
+> chiero mangled the directive into the argument tokens and wrote a RED asserting a *diagnostic*.
+> Wrong: chiero processes the directive correctly (`K` becomes 5) and then **silently fails to
+> expand the macro**, leaving `typedef P ( struct { … } ) T ;`.
+>
+> **So it is a wrong expansion, not a missing message** — more serious than recorded, and fixing
+> it means implementing gcc's extension rather than wording a diagnostic. The RED was reverted
+> before commit. **Probe the actual output before assuming the mechanism**: one `println!` of the
+> token stream would have shown this at the start.
+>
+> ### Three scope decisions now gate further sweep value — all need an owner
+>
+> | item | reach in VPP | chiero today |
+> |---|---|---|
+> | **pedantic mode for sema** | all 31 vppinfra findings | correct at calibration, noise on the corpus |
+> | **`transparent_union`** | every TU calling a socket function | refuses the call |
+> | **directive inside macro arguments** | every TU including `ip6_packet.h` | **silently drops the expansion** |
+>
+> All three are GNU extensions or calibration questions, not defects. Until they are settled,
+> sweeping more of VPP mostly re-reports them.
+>
+> ### Sweep state
+>
+> **vppinfra** exhausted. **vlib** 44/47, clean. **vnet/ethernet** 9/14 — packed enum fixed, the
+> directive case above is the remainder. **vnet** as a whole (452) needs splitting by
+> subdirectory; **plugins** (780) unswept. `vnet/udp` compiles 0 of 11 — `.api` generated headers.
 >
 > ### vppinfra is exhausted: **all 31 findings are correct at this project's calibration**
 >
