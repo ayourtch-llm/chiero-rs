@@ -377,6 +377,40 @@ pub enum DeclKind {
     Error,
 }
 
+/// Which C dialect a stage enforces.
+///
+/// chiero calibrates constraint violations to `-pedantic-errors` (wave 314), which is the
+/// strictest reading and the right default for a checker. Real projects do not build that way:
+/// VPP compiles under `-std=gnu11`, where an extra `;` in a struct and an enumerator wider than
+/// `int` are accepted. `Dialect::gnu()` follows gcc's default so a sweep reports what a
+/// project's own compiler would.
+///
+/// **This is not a verbosity knob.** Only diagnostics measured to differ between
+/// `gcc -std=gnu11` and `gcc -std=gnu11 -pedantic-errors` may consult it; a syntax error is an
+/// error in both.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Dialect {
+    pub pedantic: bool,
+}
+
+impl Dialect {
+    /// `-pedantic-errors`: the project default since wave 314.
+    pub fn pedantic() -> Self {
+        Dialect { pedantic: true }
+    }
+
+    /// `-std=gnu11` with no `-pedantic`, which is how VPP builds.
+    pub fn gnu() -> Self {
+        Dialect { pedantic: false }
+    }
+}
+
+impl Default for Dialect {
+    fn default() -> Self {
+        Self::pedantic()
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Storage {
     pub extern_: bool,

@@ -671,11 +671,11 @@ fn a_failed_specifier_does_not_cascade_into_the_member_rule() {
 #[test]
 fn the_non_pedantic_dialect_accepts_what_gnu11_accepts() {
     let pedantic_only = [
-        "struct S { int a; ; };",       // stray semicolon — VPP's X-macro accumulators
-        "struct S { int; };",           // no declarator
+        "struct S { int a; ; };", // stray semicolon — VPP's X-macro accumulators
+        "struct S { int; };",     // no declarator
         "struct S { struct T { int x; }; int y; };", // nested tag definition
-        "struct S { ; };",              // empty body via a lone semicolon
-        "union U { int a; ; };",        // and in a union
+        "struct S { ; };",        // empty body via a lone semicolon
+        "union U { int a; ; };",  // and in a union
     ];
     for src in pedantic_only {
         assert!(
@@ -692,7 +692,11 @@ fn the_non_pedantic_dialect_accepts_what_gnu11_accepts() {
     // **The dialect must not become a way to accept broken C.** A genuine syntax error is
     // still an error in both dialects; a flag that silenced everything would make the sweep's
     // parser-coverage figure meaningless.
-    for src in ["struct S { int a };", "int f(void) { return }", "struct { ;"] {
+    for src in [
+        "struct S { int a };",
+        "int f(void) { return }",
+        "struct { ;",
+    ] {
         assert!(
             !diagnostics_with(src, chiero_ast::Dialect::gnu()).is_empty(),
             "not a dialect question, a syntax error: {src}"

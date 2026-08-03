@@ -122,9 +122,23 @@ impl ParsedTu {
     }
 }
 
-/// Parse a preprocessed TU (013 §§2, 5–7).
+/// Parse a preprocessed TU (013 §§2, 5–7), enforcing `-pedantic-errors` (wave 314).
 pub fn parse_tu(tu: &PreprocessedTu, oracle: &mut dyn TypedefOracle) -> ParsedTu {
+    parse_tu_with(tu, oracle, chiero_ast::Dialect::pedantic())
+}
+
+/// As [`parse_tu`], in a chosen dialect.
+///
+/// **Only rules measured to differ between `gnu11` and `-pedantic-errors` may consult it.** A
+/// syntax error is an error in both; a flag that widened into "report less" would inflate the
+/// parser-coverage figure a reader uses to judge the parser.
+pub fn parse_tu_with(
+    tu: &PreprocessedTu,
+    oracle: &mut dyn TypedefOracle,
+    dialect: chiero_ast::Dialect,
+) -> ParsedTu {
     let mut p = Parser::new(tu, oracle);
+    p.dialect = dialect;
     p.translation_unit();
     p.finish()
 }
@@ -325,6 +339,7 @@ enum Suffix {
 }
 
 struct Parser<'a> {
+    dialect: chiero_ast::Dialect,
     toks: Vec<Tok>,
     pos: usize,
     ast: Ast,
@@ -376,6 +391,7 @@ const MAX_DEPTH: u32 = 200;
 impl<'a> Parser<'a> {
     fn new(tu: &PreprocessedTu, oracle: &'a mut dyn TypedefOracle) -> Parser<'a> {
         let mut p = Parser {
+            dialect: chiero_ast::Dialect::pedantic(),
             toks: Vec::with_capacity(tu.tokens.len()),
             pos: 0,
             ast: Ast::new(),
@@ -1390,7 +1406,12 @@ impl<'a> Parser<'a> {
         // the specifier path below.
         if self.is_punct(0, Punct::Semi) {
             let here = self.here();
-            self.error(here, "a member declaration must declare a member");
+            // **Pedantic-only, measured.** `struct S { ; };`, `struct S { int; };` and a
+            // nested tag definition are all accepted by `gcc -std=gnu11` and refused by
+            // `-pedantic-errors`; none is refused by both.
+            if self.dialect.pedantic {
+                self.error(here, "a member declaration must declare a member");
+            }
             self.pos += 1;
             return;
         }
@@ -1441,7 +1462,9 @@ impl<'a> Parser<'a> {
             // is not a non-integer type", "an explained length is poison rather than a VLA".
             if !anonymous_record && !specs_failed {
                 let span = self.span_from(start);
-                self.error(span, "a member declaration must declare a member");
+                if self.dialect.pedantic {
+                    self.error(span, "a member declaration must declare a member");
+                }
                 return;
             }
             if specs_failed {

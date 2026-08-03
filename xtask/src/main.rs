@@ -177,6 +177,7 @@ fn sweep() -> ExitCode {
                 }
             }
             "--std" => flags.std = args.next(),
+            "--gnu" | "--no-pedantic" => flags.dialect = chiero_ast::Dialect::gnu(),
             other => {
                 eprintln!("sweep: unknown argument {other}");
                 return ExitCode::FAILURE;

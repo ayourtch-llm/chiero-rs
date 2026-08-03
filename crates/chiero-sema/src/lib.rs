@@ -901,7 +901,22 @@ impl GlobalTable {
 
 /// Analyse one TU's AST against a target (014 §§2–6).
 pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Analysis {
+    analyze_with(ast, target, names, chiero_ast::Dialect::pedantic())
+}
+
+/// As [`analyze`], in a chosen dialect.
+///
+/// **Only rules measured to differ between `gnu11` and `-pedantic-errors` may consult it.** A
+/// constraint gcc refuses in both modes stays refused, or the dialect becomes a way to hide
+/// defects rather than to match a project's compiler.
+pub fn analyze_with(
+    ast: &Ast,
+    target: &TargetConfig,
+    names: &dyn SymbolText,
+    dialect: chiero_ast::Dialect,
+) -> Analysis {
     let mut cx = Cx {
+        dialect,
         ast,
         target: target.clone(),
         names,
@@ -963,6 +978,9 @@ pub fn const_eval(
     // the TU's tag table and therefore needs `analyze`; that is a real limit and is why
     // this takes a target rather than pretending sizes are universal.
     let mut cx = Cx {
+        // A const-eval helper: no dialect-gated rule is reachable from here, so the strict
+        // default is the safe one.
+        dialect: chiero_ast::Dialect::pedantic(),
         ast,
         target: target.clone(),
         names,
@@ -1048,6 +1066,7 @@ struct Cx<'a> {
     /// Enum tag → its underlying integer type (014 contract 10).
     enums: IndexMap<Symbol, TyId>,
     /// Nesting depth of `re_resolving`; diagnostics are dropped while it is non-zero.
+    dialect: chiero_ast::Dialect,
     quiet: u32,
     /// Numbered per enumeration *definition*, so two anonymous ones differ. 0 means "none".
     next_enum_tag: u32,
@@ -2824,7 +2843,11 @@ impl Cx<'_> {
         // whether the message can name anything.
         let named = tag.map_or_else(|| kw.to_owned(), |t| format!("{kw} `{t}`"));
         if members.is_empty() {
-            self.error(span, format!("{named} has no members"));
+            // Pedantic-only, measured: `struct S { union { struct { } inner; } u; };` is
+            // accepted by `gcc -std=gnu11`, refused by `-pedantic-errors`.
+            if self.dialect.pedantic {
+                self.error(span, format!("{named} has no members"));
+            }
         } else if !members.iter().any(|&m| names_something(self, m)) {
             self.error(span, format!("{named} has no named members"));
         }
@@ -3059,10 +3082,16 @@ impl Cx<'_> {
                 .iter()
                 .find(|&&(v, _)| v < int_min || v >= int_max)
                 .map_or(span, |&(_, s)| s);
-            self.error(
-                blame,
-                "an enumerator's value is not representable as an `int`",
-            );
+            // **Pedantic-only, measured**: `enum { A = 0xffffffffu }` is accepted by
+            // `gcc -std=gnu11` and refused by `-pedantic-errors` ("ISO C restricts
+            // enumerator values to range of `int`"). VPP relies on it in 336 of
+            // `vnet`'s 348 findings.
+            if self.dialect.pedantic {
+                self.error(
+                    blame,
+                    "an enumerator's value is not representable as an `int`",
+                );
+            }
         }
         // **A fresh number per definition** (C 6.7.2.3p5), which is what makes `enum E` and
         // `enum F` two types even though the sign gives both the same integer type. Per

@@ -97,6 +97,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 /// module docs say why that must not be `-pedantic-errors`.
 #[derive(Debug, Clone, Default)]
 pub struct Flags {
+    /// `-pedantic-errors` (the wave-314 calibration) or gcc's `-std=gnu11` default.
+    pub dialect: chiero_ast::Dialect,
     /// `-I` paths, in order.
     pub includes: Vec<PathBuf>,
     /// `-D` definitions, as `NAME` or `NAME=VALUE`.
@@ -215,7 +217,7 @@ pub fn chiero_outcome(
         };
     }
     let mut oracle = chiero_parse::ScopedTypedefs::new();
-    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    let parsed = chiero_parse::parse_tu_with(&tu, &mut oracle, flags.dialect);
     if let Some(first) = parsed.diagnostics.first() {
         return Outcome::Diagnosed(format!(
             "parse: {}",
@@ -223,10 +225,11 @@ pub fn chiero_outcome(
         ));
     }
     let names = Names(parsed);
-    let analysis = chiero_sema::analyze(
+    let analysis = chiero_sema::analyze_with(
         &names.0.ast,
         &chiero_sema::TargetConfig::x86_64_linux(),
         &names,
+        flags.dialect,
     );
     match analysis.diagnostics.first() {
         Some(first) => Outcome::Diagnosed(format!(
