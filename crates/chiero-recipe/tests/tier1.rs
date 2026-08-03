@@ -49,7 +49,10 @@ fn an_unscoped_recipe_counts_every_function() {
 fn a_recipe_that_could_not_be_evaluated_is_distinguishable_from_one_that_matched_nothing() {
     let rs = [
         recipe("needs_ast", Some("registered_via VLIB_CLI_COMMAND")),
-        recipe("genuinely_empty", Some("name matches \"^nothing_matches_this\"")),
+        recipe(
+            "genuinely_empty",
+            Some("name matches \"^nothing_matches_this\""),
+        ),
     ];
     let t = tier1_counts(&rs, &fns());
 
@@ -59,7 +62,10 @@ fn a_recipe_that_could_not_be_evaluated_is_distinguishable_from_one_that_matched
     // ...and only one of them actually looked.
     assert_eq!(t[0].needs_ast, 3, "every function was undecidable");
     assert_eq!(t[1].needs_ast, 0);
-    assert!(!t[0].is_complete(), "an unevaluated recipe is not a clean result");
+    assert!(
+        !t[0].is_complete(),
+        "an unevaluated recipe is not a clean result"
+    );
     assert!(t[1].is_complete());
 }
 

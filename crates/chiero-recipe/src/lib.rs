@@ -572,3 +572,56 @@ pub fn candidates(graph: &CallGraph, roots: &[&str], max_depth: usize) -> Candid
         excluded_by_bound,
     }
 }
+
+/// One recipe's tier-1 result over a set of functions (042 contract 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeTally {
+    pub recipe: String,
+    /// Functions the scope selected.
+    pub matched: usize,
+    /// Functions the scope **could not decide** because the selector needs the typed AST.
+    ///
+    /// Kept apart from `matched` rather than folded into it either way. Counting these as
+    /// selected would inflate the candidate set with functions nothing checked; counting them
+    /// as unselected would publish `0 candidates` for every CLI recipe, a number that reads
+    /// exactly like a rule that ran and found nothing.
+    pub needs_ast: usize,
+}
+
+impl RecipeTally {
+    /// Whether this count describes the whole function set. A tally with undecidable
+    /// functions is a partial answer and must never be reported as a clean one.
+    pub fn is_complete(&self) -> bool {
+        self.needs_ast == 0
+    }
+}
+
+/// Tier-1 candidate counts, one per recipe, **in catalogue order**.
+///
+/// Order is the caller's, not sorted: 042 c5d makes the per-recipe count a tracked baseline
+/// that fails CI on a drop, and a baseline whose rows move between runs cannot be diffed.
+pub fn tier1_counts(recipes: &[Recipe], functions: &[FunctionRef]) -> Vec<RecipeTally> {
+    recipes
+        .iter()
+        .map(|r| {
+            let mut matched = 0;
+            let mut needs_ast = 0;
+            for f in functions {
+                match &r.scope {
+                    // 042 §4.2: no `scope` means the recipe applies to every function.
+                    None => matched += 1,
+                    Some(sc) => match sc.selects(f) {
+                        Selection::Yes => matched += 1,
+                        Selection::No => {}
+                        Selection::NeedsAst => needs_ast += 1,
+                    },
+                }
+            }
+            RecipeTally {
+                recipe: r.name.clone(),
+                matched,
+                needs_ast,
+            }
+        })
+        .collect()
+}
