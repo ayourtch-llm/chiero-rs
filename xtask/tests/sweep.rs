@@ -481,6 +481,16 @@ fn a_parallel_sweep_agrees_exactly_with_a_serial_one() {
     .expect("loads");
 
     let serial = xtask::sweep::tier1_sweep_with(&files, std::slice::from_ref(&recipe), &cfg, 1);
+    assert_eq!(serial.threads, 1);
+
+    // **Zero threads is clamped, not a panic.** `available_parallelism` can fail and a caller
+    // may pass a computed value; `files.len().div_ceil(0)` divides by zero. Nothing in the
+    // range below exercises the lower clamp, which is why it is asserted separately.
+    assert_eq!(
+        xtask::sweep::tier1_sweep_with(&files, std::slice::from_ref(&recipe), &cfg, 0).functions,
+        serial.functions
+    );
+
     for threads in [2, 4, 7, 16] {
         let par =
             xtask::sweep::tier1_sweep_with(&files, std::slice::from_ref(&recipe), &cfg, threads);
@@ -488,6 +498,16 @@ fn a_parallel_sweep_agrees_exactly_with_a_serial_one() {
         assert_eq!(par.functions, serial.functions, "threads={threads}");
         assert_eq!(par.unreadable, serial.unreadable, "threads={threads}");
         assert_eq!(par.tallies, serial.tallies, "threads={threads}");
+
+        // **Never more workers than asked for.** With 12 files and 7 requested, a chunk size
+        // computed by flooring gives chunks of 1 and spawns 12 — every file still gets
+        // scanned, so no output assertion can see it. The requested count is a resource
+        // contract, and 042 c7 wants the core count reported to document its time budget.
+        assert!(
+            par.threads <= threads.min(files.len()),
+            "threads={threads} spawned {}",
+            par.threads
+        );
     }
 
     // And the serial numbers are what they should be, so agreement is not agreement on junk:
