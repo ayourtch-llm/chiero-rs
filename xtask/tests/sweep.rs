@@ -296,3 +296,43 @@ fn a_tier_one_sweep_reports_counts_and_the_files_it_could_not_read() {
         "an unread file must forbid claiming a complete count"
     );
 }
+
+/// **A function's `file` is where it is *defined*, not the translation unit that pulled it
+/// in.** VPP's headers are full of `static inline` definitions, so a list keyed on the TU path
+/// counts one header function once per includer: the first real run over `vnet/fib` reported
+/// 186,623 functions from 36 translation units. A 042 c5d baseline built on that measures the
+/// include graph rather than the code.
+#[test]
+fn a_function_is_attributed_to_the_header_that_defines_it() {
+    let tmp = std::env::temp_dir().join("chiero-defining-file");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("shared.h"),
+        "static inline int shared_helper(void) { return 1; }\n",
+    )
+    .unwrap();
+    let tu = tmp.join("a.c");
+    std::fs::write(&tu, "#include \"shared.h\"\nint in_the_c_file(void){return 0;}\n").unwrap();
+
+    let cfg = chiero_pp::Config {
+        include_paths: vec![tmp.clone()],
+        ..chiero_pp::Config::default()
+    };
+    let src = std::fs::read_to_string(&tu).unwrap();
+    let fns = xtask::sweep::functions_in_cfg(&tu, &src, cfg).expect("parses");
+
+    let by = |n: &str| {
+        fns.iter()
+            .find(|f| f.name == n)
+            .unwrap_or_else(|| panic!("{n} not found in {fns:?}"))
+            .file
+            .clone()
+    };
+    assert!(
+        by("shared_helper").ends_with("shared.h"),
+        "the header defines it: {}",
+        by("shared_helper")
+    );
+    assert!(by("in_the_c_file").ends_with("a.c"));
+}
