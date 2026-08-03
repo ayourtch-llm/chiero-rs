@@ -26,7 +26,9 @@ fn the_candidate_set_is_the_callee_closure_not_the_scope_matches() {
     let c = candidates(&g, &["show_hw_interfaces", "clear_hw_interfaces"], 3);
 
     assert!(
-        c.escalated.iter().any(|f| f == "show_or_clear_hw_interfaces"),
+        c.escalated
+            .iter()
+            .any(|f| f == "show_or_clear_hw_interfaces"),
         "the helper holding the acquisition must be escalated: {:?}",
         c.escalated
     );
@@ -45,9 +47,17 @@ fn the_depth_bound_is_reported_rather_than_applied_silently() {
     g.add_call("d1", "d2");
     g.add_call("d2", "d3");
 
+    // **The count is the fringe we declined to follow, not everything beyond it.** `d3` is
+    // never reached at all: enumerating it would mean walking the whole graph, which is
+    // exactly what the bound exists to avoid. So the number understates the unexamined set
+    // by design, and `is_bounded` — not the count — is what carries the honesty.
     let shallow = candidates(&g, &["root"], 1);
     assert_eq!(shallow.escalated, ["root", "d1"]);
-    assert_eq!(shallow.excluded_by_bound, 2, "d2 and d3 are past the bound");
+    assert_eq!(
+        shallow.excluded_by_bound, 1,
+        "d2 is the fringe; d3 was never reached"
+    );
+    assert!(shallow.is_bounded());
 
     let deep = candidates(&g, &["root"], 3);
     assert_eq!(deep.escalated, ["root", "d1", "d2", "d3"]);

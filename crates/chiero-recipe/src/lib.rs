@@ -291,3 +291,97 @@ impl<'a> Parser<'a> {
         self.s[start..self.i].trim().to_owned()
     }
 }
+
+/// A call graph over function names — the input tier 1 needs to build a candidate set.
+///
+/// Names, not `DeclId`s: a candidate closure crosses translation units (a registered handler
+/// and the helper holding the acquisition are routinely in different files), and an id minted
+/// per TU cannot be followed across that boundary.
+#[derive(Debug, Default, Clone)]
+pub struct CallGraph {
+    edges: indexmap::IndexMap<String, Vec<String>>,
+}
+
+impl CallGraph {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_call(&mut self, caller: &str, callee: &str) {
+        let e = self.edges.entry(caller.to_owned()).or_default();
+        if !e.iter().any(|c| c == callee) {
+            e.push(callee.to_owned());
+        }
+    }
+
+    pub fn callees(&self, f: &str) -> &[String] {
+        self.edges.get(f).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// What tier 1 hands to tier 2, and what it had to leave behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidates {
+    /// Functions to analyse, in breadth-first order from the scope matches.
+    pub escalated: Vec<String>,
+    /// The **fringe** the bound declined to follow: functions one edge past the last
+    /// escalated level. Deliberately not "everything unexamined" — counting that would mean
+    /// walking the whole graph, which is what the bound exists to avoid. The number therefore
+    /// understates, and `is_bounded` rather than the count is what must be trusted.
+    pub excluded_by_bound: usize,
+}
+
+impl Candidates {
+    /// **Anything unexamined forces `Bounded`, however it was lost.** 042 §3.1: an earlier
+    /// draft counted only unescalated candidates, so a function dropped before escalation was
+    /// invisible and the recipe reported "conforms" over a set it never looked at. A function
+    /// the bound excluded is exactly as unexamined as one never escalated.
+    pub fn is_bounded(&self) -> bool {
+        self.excluded_by_bound > 0
+    }
+}
+
+/// The tier-1 candidate set: the **transitive callee closure** of the scope matches, bounded
+/// by `max_depth` (042 §3.1 default 3).
+///
+/// Not "in scope *and* contains the acquisition" — that conjunction has a demonstrated recall
+/// hole where a registered handler delegates to an unregistered helper, and neither end
+/// qualifies.
+pub fn candidates(graph: &CallGraph, roots: &[&str], max_depth: usize) -> Candidates {
+    let mut seen: indexmap::IndexSet<String> = roots.iter().map(|r| (*r).to_owned()).collect();
+    let mut escalated: Vec<String> = seen.iter().cloned().collect();
+    let mut frontier: Vec<String> = escalated.clone();
+    let mut excluded: indexmap::IndexSet<String> = indexmap::IndexSet::new();
+
+    for depth in 0..usize::MAX {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for f in &frontier {
+            for callee in graph.callees(f) {
+                if seen.contains(callee) {
+                    continue;
+                }
+                if depth >= max_depth {
+                    // Past the bound. Recorded, not dropped — and recorded in a set, so a
+                    // function reachable by two paths is one unexamined function, not two.
+                    excluded.insert(callee.clone());
+                    continue;
+                }
+                seen.insert(callee.clone());
+                escalated.push(callee.clone());
+                next.push(callee.clone());
+            }
+        }
+        frontier = next;
+    }
+
+    // A function excluded at the bound may also have been reached within it by a shorter
+    // path; then it *was* examined and is not a loss.
+    let excluded_by_bound = excluded.iter().filter(|f| !seen.contains(*f)).count();
+    Candidates {
+        escalated,
+        excluded_by_bound,
+    }
+}
