@@ -483,9 +483,25 @@ impl Engine {
                 t.token.bol && matches!(t.token.kind, PpTokenKind::Punct(Punct::Hash))
             }) {
                 // C11 §6.10.3 ¶10 operates on the preprocessing-token stream, not a
-                // physical line. A directive is the only boundary at which an active
-                // ordinary-token chunk must be complete.
-                output.extend(self.expand(std::mem::take(&mut ordinary)));
+                // physical line, so an ordinary-token chunk is normally completed here.
+                //
+                // **Unless a macro call is still open across it.** gcc keeps collecting a
+                // function-like macro's arguments over a directive — undefined by 6.10.3p11 and
+                // relied on throughout VPP, where `CLIB_PACKED (struct { #define … })` appears in
+                // 49 headers and transitively blocked most of `vnet` and `plugins`. Flushing here
+                // left the call unterminated: the macro went out unexpanded, which wave 406 made
+                // *say so* and this makes work.
+                //
+                // The test is an unbalanced `(` in the pending chunk, which is what "still inside
+                // an argument list" means at this level — the expander itself decides what is a
+                // call. Directives are still processed in order, so `#define K 5` inside the
+                // arguments takes effect exactly as it does for gcc; only the *flush* is deferred.
+                //
+                // A chunk that never closes is not deferred forever: `finish` expands whatever
+                // remains, and the unterminated-argument-list diagnostic still fires there.
+                if !has_open_paren(&ordinary) {
+                    output.extend(self.expand(std::mem::take(&mut ordinary)));
+                }
                 if active
                     && line.get(1).is_some_and(|token| {
                         matches!(token.text.as_str(), "include" | "include_next")
@@ -1989,6 +2005,22 @@ fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
         }
         body.drain(index..end);
     }
+}
+
+/// Whether a pending ordinary-token chunk is still inside a parenthesised construct.
+///
+/// Used at a directive boundary to decide whether the chunk may be expanded yet: a macro call
+/// whose arguments are still open must keep collecting across the directive, as gcc does.
+fn has_open_paren(toks: &[Tok]) -> bool {
+    let mut depth = 0i32;
+    for t in toks {
+        match t.token.kind {
+            PpTokenKind::Punct(Punct::LParen) => depth += 1,
+            PpTokenKind::Punct(Punct::RParen) => depth -= 1,
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 fn parse_args(input: &VecDeque<Tok>, open: usize) -> Option<(Vec<Vec<Tok>>, usize)> {
