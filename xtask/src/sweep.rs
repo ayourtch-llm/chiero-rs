@@ -204,7 +204,10 @@ pub fn chiero_outcome(
     if let Some(first) = tu.diagnostics.first() {
         // A `#include` that does not resolve means chiero never saw the C, exactly as a gcc
         // `fatal error` does — a tool gap, not a verdict.
-        let m = format!("pp: {}", first.message);
+        let m = format!(
+            "pp: {}",
+            describe(&tu.source_map, first.span, &first.message)
+        );
         return if first.message.contains("cannot open") || first.message.contains("not found") {
             Outcome::NotRun(m)
         } else {
@@ -214,7 +217,10 @@ pub fn chiero_outcome(
     let mut oracle = chiero_parse::ScopedTypedefs::new();
     let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
     if let Some(first) = parsed.diagnostics.first() {
-        return Outcome::Diagnosed(format!("parse: {}", first.message));
+        return Outcome::Diagnosed(format!(
+            "parse: {}",
+            describe(&tu.source_map, first.span, &first.message)
+        ));
     }
     let names = Names(parsed);
     let analysis = chiero_sema::analyze(
@@ -223,9 +229,68 @@ pub fn chiero_outcome(
         &names,
     );
     match analysis.diagnostics.first() {
-        Some(first) => Outcome::Diagnosed(format!("sema: {}", first.message)),
+        Some(first) => Outcome::Diagnosed(format!(
+            "sema: {}",
+            describe(&tu.source_map, first.span, &first.message)
+        )),
         None => Outcome::Clean,
     }
+}
+
+/// Render a diagnostic as `path:line:col: message`, the form an editor and a person both accept.
+///
+/// **A dummy span is rejected by name, not by a failed lookup.** `Span::DUMMY` is `BytePos(0)`
+/// and the first file in the global space starts at 0, so `lookup_loc` succeeds on it and
+/// answers line 1, column 1 — a location that looks real and is not. Everything else that fails
+/// to resolve falls back to the bare message for the same reason: a report is allowed to say
+/// less than it knows, never more.
+pub fn describe(map: &chiero_span::SourceMap, span: chiero_span::Span, message: &str) -> String {
+    if span.is_dummy() {
+        return message.to_owned();
+    }
+    match map.lookup_loc(span.lo) {
+        Some(loc) => format!(
+            "{}:{}:{}: {message}",
+            map.file(loc.file).path().display(),
+            loc.line,
+            loc.col
+        ),
+        None => message.to_owned(),
+    }
+}
+
+/// The grouping key: a diagnostic's *kind*, with any leading `path:line:col:` removed.
+///
+/// **Stripping is by shape, not by the first colon.** A message is full of colons — gcc writes
+/// `error: redefinition of 'f'`, sema writes prose — so the scan accepts a segment only when it
+/// is followed by two all-digit segments and then more text. That is a location; anything else
+/// is the message and passes through whole.
+pub fn kind(message: &str) -> String {
+    // An optional `tool: ` prefix that this module added, kept on the front of the key.
+    let (prefix, rest) = match message.split_once(": ") {
+        Some((p, r)) if matches!(p, "pp" | "parse" | "sema") => (format!("{p}: "), r),
+        _ => (String::new(), message),
+    };
+    // Find `<path>:<line>:<col>: ` at the front. The path may itself contain colons, so take the
+    // *last* candidate split that still leaves two numbers and a message.
+    let bytes: Vec<usize> = rest.match_indices(':').map(|(i, _)| i).collect();
+    for w in bytes.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let line = &rest[a + 1..b];
+        let after = &rest[b + 1..];
+        let Some(end) = after.find(':') else { continue };
+        let col = &after[..end];
+        let tail = &after[end + 1..];
+        if !line.is_empty()
+            && !col.is_empty()
+            && line.bytes().all(|c| c.is_ascii_digit())
+            && col.bytes().all(|c| c.is_ascii_digit())
+            && let Some(msg) = tail.strip_prefix(' ')
+        {
+            return format!("{prefix}{msg}");
+        }
+    }
+    format!("{prefix}{rest}")
 }
 
 /// One file's verdict.
@@ -312,13 +377,17 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         ),
         ("TOOL GAPS", Bucket::ToolGap, true),
     ] {
-        let mut groups: indexmap::IndexMap<String, (usize, PathBuf)> = indexmap::IndexMap::new();
+        let mut groups: indexmap::IndexMap<String, (usize, PathBuf, String)> =
+            indexmap::IndexMap::new();
         for v in verdicts.iter().filter(|v| v.bucket == bucket) {
             let msg = match if side { &v.chiero } else { &v.gcc } {
                 Outcome::Diagnosed(m) | Outcome::NotRun(m) => m.clone(),
                 Outcome::Clean => continue,
             };
-            let e = groups.entry(msg).or_insert((0, v.path.clone()));
+            // Group by kind; keep the first located text as the example.
+            let e = groups
+                .entry(kind(&msg))
+                .or_insert((0, v.path.clone(), msg.clone()));
             e.0 += 1;
         }
         if groups.is_empty() {
@@ -327,9 +396,16 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         let mut rows: Vec<_> = groups.into_iter().collect();
         rows.sort_by_key(|r| std::cmp::Reverse(r.1.0));
         println!("\n{title}");
-        for (msg, (n, example)) in rows.iter().take(25) {
+        for (msg, (n, example, located)) in rows.iter().take(25) {
             println!("  {n:5}  {msg}");
-            println!("         e.g. {}", example.display());
+            // The example is the *located* text when there was a location to render, so the
+            // reader has a place to open; otherwise the file is all we can offer, and offering
+            // the file is still better than offering nothing.
+            if located == msg {
+                println!("         e.g. {}", example.display());
+            } else {
+                println!("         e.g. {located}");
+            }
         }
         if rows.len() > 25 {
             println!("  … {} more distinct messages", rows.len() - 25);

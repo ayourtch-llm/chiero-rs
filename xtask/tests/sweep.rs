@@ -147,15 +147,26 @@ fn a_rendered_diagnostic_carries_the_place_it_happened() {
 fn the_grouping_key_is_the_kind_not_the_place() {
     let k = xtask::sweep::kind;
     assert_eq!(
-        k("parse: /vpp/src/plugins/acl/dataplane_node.c:1024:12: a member declaration must declare a member"),
+        k(
+            "parse: /vpp/src/plugins/acl/dataplane_node.c:1024:12: a member declaration must declare a member"
+        ),
         "parse: a member declaration must declare a member"
     );
     // Unlocated messages (a dummy span, a tool that could not run) pass through whole.
-    assert_eq!(k("pp: cannot include acl.api_enum.h"), "pp: cannot include acl.api_enum.h");
+    assert_eq!(
+        k("pp: cannot include acl.api_enum.h"),
+        "pp: cannot include acl.api_enum.h"
+    );
     // **gcc's own text is already `path:line:col:` and is grouped the same way** — otherwise the
     // BOTH REFUSED bucket, which is mostly one repeated flags mistake, never groups either.
-    assert_eq!(k("/vpp/src/vnet/fib/x.c:35:1: error: redefinition of 'f'"), "error: redefinition of 'f'");
+    assert_eq!(
+        k("/vpp/src/vnet/fib/x.c:35:1: error: redefinition of 'f'"),
+        "error: redefinition of 'f'"
+    );
     // A path containing a colon must not be mistaken for a location, and a bare `:` in prose
     // must not eat the message.
-    assert_eq!(k("sema: note: this is prose: with colons"), "sema: note: this is prose: with colons");
+    assert_eq!(
+        k("sema: note: this is prose: with colons"),
+        "sema: note: this is prose: with colons"
+    );
 }
