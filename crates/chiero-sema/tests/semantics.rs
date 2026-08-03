@@ -6942,3 +6942,100 @@ fn a_parameters_type_is_resolved_once() {
         assert_eq!(count(src), 0, "no report for `{src}`");
     }
 }
+
+/// **The `void` parameter is three rules, and chiero applies one of them to all three** (C
+/// 6.7.6.3p10).
+///
+/// The special case is an *unnamed* parameter of type `void` alone in the list. chiero detects it
+/// by the parser folding `(void)` into an empty list — so a surviving `Ty::Void` was taken to
+/// mean the program was wrong. Two shapes survive that folding without being wrong at all:
+///
+///   - **a named one**, `int f(void v);`, which gcc accepts with a warning; and
+///   - **a typedef'd one**, `typedef void V; int f(V);`, which the parser cannot fold because it
+///     does not know `V` is `void`, and which gcc accepts outright.
+///
+/// Four false positives, the class this project has now found sixteen of. The typedef row is the
+/// serious one: it is ordinary C refused outright.
+///
+/// gcc's three rules, measured:
+///
+///   1. **An unnamed `void` sharing the list** — "must be the only parameter". Keyed on the
+///      *type*, so a typedef counts, and on the *unnamed* spelling, since `int f(int a, void v);`
+///      is only a warning.
+///   2. **A sole unnamed `void`, qualified** — its own sentence, already implemented here.
+///   3. **A named `void` parameter** — legal in a declaration, and in a *definition* it is the
+///      ordinary incomplete-parameter rule, which already exists. Not this rule at all.
+#[test]
+fn a_void_parameter_is_three_rules() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // The special case itself, spelled directly.
+        "int f(void);",
+        "int f(void){ return 0; }",
+        // **Named**: gcc warns and accepts, so at this calibration it is silent.
+        "int f(void v);",
+        "int f(int a, void v);",
+        // **Through a typedef**, which the parser cannot fold — the rule is about the type.
+        "typedef void V; int f(V);",
+        "typedef void V; int f(V v);",
+        "typedef void V; int f(V){ return 0; }",
+        "typedef void V; typedef V W; int f(W);",
+        // Not a `void` parameter at all.
+        "int f(void *);",
+        "int f(void *p, int q);",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **Rule 1**, in both orders, twice over, and through a typedef.
+        ("int f(void, int);", "`void` must be the only parameter"),
+        ("int f(int, void);", "`void` must be the only parameter"),
+        ("int f(void, void);", "`void` must be the only parameter"),
+        (
+            "typedef void V; int f(V, int);",
+            "`void` must be the only parameter",
+        ),
+        (
+            "typedef void V; int f(int, V);",
+            "`void` must be the only parameter",
+        ),
+        // **Rule 2**, which must survive a fix aimed at rule 1.
+        (
+            "int f(const void);",
+            "`void` as the only parameter may not be qualified",
+        ),
+        (
+            "typedef void V; int f(const V);",
+            "`void` as the only parameter may not be qualified",
+        ),
+        // **Rule 3**: a named `void` in a *definition* is the incomplete-parameter rule, and only
+        // that. Today it also draws rule 1's sentence, which is the false positive.
+        (
+            "int f(void v){ return 0; }",
+            "parameter `v` has an incomplete type",
+        ),
+        (
+            "typedef void V; int f(V v){ return 0; }",
+            "parameter `v` has an incomplete type",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
