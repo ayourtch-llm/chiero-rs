@@ -487,7 +487,61 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 387) — 1590 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 388) — 1591 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 387 censused a section that was already finished, and that is why it found anything.**
+> The 6.7.2.1 bit-field census — 35 programs, half legal — reproduced gcc exactly on every width
+> and type rule. Two gaps stood out *because* everything around them agreed: `_Alignas` on a
+> bit-field (6.7.5p2, refused in both gcc modes) and a record with no named member (6.7.2.1p8, a
+> `-Wpedantic` promotion). Ratchet 268 → 276.
+>
+> **A measurement that is not in a test is not a constraint.** A mutant widening the bit-field
+> rule to `__attribute__((aligned))` **survived** — gcc accepts that spelling and refuses only
+> `_Alignas`, and the measurement sat in the commit message and the code comment, nowhere a test
+> could see. Wave 380 recorded the mirror; **narrowing a rule needs a row for the spelling left
+> out.**
+>
+> **Stop at the boundary of the rule, not of the thing you set out to fix.** The named-member
+> check was guarded on the tag, so every *tagless* record stayed silent — six programs, found by
+> carrying the census one question past the rule that prompted it. The tag decides what the
+> message can name, not whether the rule applies.
+>
+> **Read the mutation split, not the kill count.** Every mutant that made a rule fire *too
+> broadly* died in the semantics fixture and **survived the ratchet**. An over-firing rule
+> produces no missing rejection, so the ratchet is structurally blind to it — and to a wrong
+> message: disabling the empty-record branch survived there because `struct S { };` was still
+> rejected, with the other sentence. **The ratchet cannot see a false positive or a wrong
+> message; only a fixture can.**
+>
+> **A gate that shells out is only as reliable as the machine.** A no-op control was KILLED once:
+> the ratchet spawns gcc per row, three concurrent cargo runs made spawns fail, and `None` shared
+> a branch with `Some(false)` — so it reported "gcc accepts these, so they are bugs in this list"
+> about programs gcc never saw. Split into two branches with two messages; **023 §9 applies to a
+> test's own output.** Do not overlap mutation runs that include this test.
+>
+> **Wave 388 is measured and larger than it first looked.** *Any* diagnostic raised while
+> resolving a parameter's type repeats once per resolution pass: `void f(int a[-1]);` gives 2 and
+> the definition gives 3, where gcc gives 1. Records defined in a parameter list were only the
+> loudest instance (`duplicate member` ×2, ×3 in a definition). The cause is documented at
+> lib.rs:2340 — the list is resolved once for the function's type and again for the body — and
+> wave 359 fixed the tag symptom without stopping the second pass. `_Alignas`-on-a-parameter and
+> `duplicate parameter` report *once*, which locates it: everything inside `ty_of` repeats,
+> everything raised beside the call does not.
+>
+> **The discriminator is measured and rules out the obvious fix**: `void f(int a[-1], int b[-2]);`
+> must give **two** reports, so deduplicating by message text is wrong. Key on the pass.
+> `one_mistake_produces_one_diagnostic` missed all of this because no row in its corpus declares
+> a faulty parameter — **a gate is only as wide as its corpus.**
+>
+> Two smaller measured items ride along: a parameter's array bound loses the declarator's name
+> ("array length is negative" where a local says "array length of `a` is negative", and gcc says
+> "size of array `a` is negative"), and `void f(void v){}` emits `` `void` must be the only
+> parameter`` which gcc does not — gcc reserves that for a `void` sharing the list.
+>
+> **Also banked, censused**: `_Alignas` on a *function* (refused by gcc, accepted here; the
+> discriminator is that `_Alignas(8) void (*p)(void);` is legal, a pointer being an object);
+> designated initializers (6.7.9, **33,814** VPP uses — `{ .a = 1, .a = 2 }` is *legal*, last
+> wins); parser-level constraints (23 refused, against `chiero-parse`'s 7-test surface).
 >
 > **Wave 386 closed the enumeration work.** The fitting and widened branches are now one rule:
 > sign from `lo < 0`, width the narrowest of `int`/`long` that holds the range. The widened branch
