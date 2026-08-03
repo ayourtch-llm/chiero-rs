@@ -7527,3 +7527,78 @@ fn a_failed_static_assertion_prints_the_joined_message() {
         vec!["static assertion failed: \"abc\"".to_string()]
     );
 }
+
+/// **gcc declares three families of builtin intrinsically, and the exemption named one.**
+///
+/// The undeclared-name rule skips `__builtin_*`, and its comment says why: reporting
+/// `__builtin_va_start` undeclared "made **every variadic function in C** a sema error", since
+/// `stdarg.h` is `#define va_start(v,l) __builtin_va_start(v,l)` and nothing declares the target.
+/// The same is true of `__atomic_*` and `__sync_*` — gcc compiles them with no header — and they
+/// were left out.
+///
+/// Found by `cargo xtask sweep`: 16 of 112 vppinfra files, the largest actionable group in the
+/// queue. VPP uses **15 distinct `__atomic_*` names across 209 uses** and **17 distinct
+/// `__sync_*` across 22**, so this is not an edge case there.
+///
+/// Third wave running to find a guard written for one case with its neighbours left — after the
+/// `typedef` arm beside the function arm (393) and `_Static_assert` beside three concatenation
+/// loops (395).
+#[test]
+fn the_atomic_and_sync_builtins_are_declared_by_the_compiler() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // The two most used in VPP: 71 and 68 occurrences.
+        "void f(int *p){ __atomic_store_n(p, 1, 0); }",
+        "int f(int *p){ return __atomic_load_n(p, 0); }",
+        // The rest of the families that tree reaches for.
+        "int f(int *p){ return __atomic_exchange_n(p, 1, 0); }",
+        "int f(int *p){ return __atomic_fetch_add(p, 1, 0); }",
+        "int f(int *p, int *e){ return __atomic_compare_exchange_n(p, e, 1, 0, 0, 0); }",
+        "void f(void){ __atomic_thread_fence(0); }",
+        "int f(int *p){ return __sync_fetch_and_add(p, 1); }",
+        "int f(int *p){ return __sync_bool_compare_and_swap(p, 0, 1); }",
+        "int f(int *p){ return __sync_lock_test_and_set(p, 1); }",
+        "void f(void){ __sync_synchronize(); }",
+        // The family that already worked, kept so a fix cannot trade one for another.
+        "int f(int n){ return __builtin_expect(n, 0); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **The rule still fires on an ordinary undeclared name**, which is what stops the
+        // exemption from being widened into silence.
+        ("int f(void){ return nope(1); }", "`nope` was not declared"),
+        (
+            "int f(void){ return atomic_load_n(0); }",
+            "`atomic_load_n` was not declared",
+        ),
+        // A near-miss spelling is not a builtin: the prefix is the whole rule.
+        (
+            "int f(void){ return __atomi_load(0); }",
+            "`__atomi_load` was not declared",
+        ),
+        (
+            "int f(void){ return _sync_add(0); }",
+            "`_sync_add` was not declared",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
