@@ -205,6 +205,16 @@ fn integer_constant_expressions_fold() {
 /// exactly one match and exactly one `default`, so "first wins" and "last wins" are the same
 /// function. The only way to tell them apart is a program C forbids — at which point the
 /// interesting question is not which arm is picked but whether the program is reported at all.
+///
+/// **`int: 1, int: 2` violates two rules and gets the sentence about the pair.** It was written
+/// here expecting "associations match the controlling expression's type", which was the only rule
+/// that existed; 6.5.1.1p2 also forbids two associations naming compatible types, and that one
+/// holds whatever the selector is. Both sentences are true of this program and contract 20 allows
+/// one, so the pair wins — it explains the program without reference to what was selected. This
+/// fixture's own stated point is whether an invalid program is *reported*, and it still is; the
+/// other rule keeps its own coverage in
+/// [`no_two_generic_associations_may_name_compatible_types`], on the non-transitive program where
+/// it is the only rule that fires.
 #[test]
 fn a_generic_selection_reports_its_constraint_violations() {
     let dup_default = harness::parse_allowing_diagnostics(
@@ -230,7 +240,7 @@ fn a_generic_selection_reports_its_constraint_violations() {
             .analysis
             .diagnostics
             .iter()
-            .any(|d: &SemaDiagnostic| d.message.contains("two `_Generic` associations match")),
+            .any(|d: &SemaDiagnostic| d.message.contains("name compatible types")),
         "two matching associations is a constraint violation: {:?}",
         dup_type.analysis.diagnostics
     );

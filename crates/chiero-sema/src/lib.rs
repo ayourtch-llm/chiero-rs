@@ -5482,6 +5482,32 @@ impl Cx<'_> {
                 let c = self.decay(c, controlling);
                 let cty = self.out.typed.ty_of(c);
 
+                // **No two associations may name compatible types** (C 6.5.1.1p2) — a rule
+                // about the associations themselves, with nothing to do with the selector.
+                // Detecting duplicates by "a second one matched" only ever finds the pairs the
+                // selector happens to land on, so `_Generic(x, int: 1, int: 2)` with a `double`
+                // selector went unreported.
+                //
+                // **Reported once**, and reported *here* rather than inside the loop, so a
+                // program with a duplicate pair gets one sentence about the pair instead of one
+                // per association (contract 20). gcc emits this *and* "matches multiple
+                // associations" when both apply; the pair is the version that explains the
+                // program without reference to what was selected, so it is the one kept.
+                let named: Vec<(TyId, Span)> = assocs
+                    .iter()
+                    .filter_map(|a| a.ty.map(|t| (self.ty_of(t), self.ast.ty(t).span)))
+                    .collect();
+                let mut duplicated = false;
+                'pairs: for (i, &(ti, _)) in named.iter().enumerate() {
+                    for &(tj, sj) in &named[i + 1..] {
+                        if self.compatible(ti, tj) {
+                            self.error(sj, "two `_Generic` associations name compatible types");
+                            duplicated = true;
+                            break 'pairs;
+                        }
+                    }
+                }
+
                 let mut chosen: Option<(ExprId, TyId)> = None;
                 let mut fallback: Option<(ExprId, TyId)> = None;
                 let mut ops = vec![c];
@@ -5536,9 +5562,13 @@ impl Cx<'_> {
                                     "a `_Generic` association may not be variably modified",
                                 );
                             }
-                            // Interned types compare by id, so this *is* the compatibility
-                            // test for everything `_Generic` can name.
-                            if at == self.bare(cty) {
+                            // **Compatibility, not identity** (C 6.5.1.1p2). This read
+                            // `at == self.bare(cty)` under a comment saying interned ids *were*
+                            // the compatibility test for everything `_Generic` can name — true
+                            // until an enumeration tag joined the interning key, after which an
+                            // `unsigned` association stopped matching an `enum E` selector and
+                            // the `default` was taken silently.
+                            if self.compatible(at, self.bare(cty)) {
                                 // **Also 6.5.1.1p2: no two associations may name compatible
                                 // types.** Both of these guards survived mutation until they
                                 // were made to report, because only an *invalid* program can
@@ -5554,11 +5584,13 @@ impl Cx<'_> {
                                 // `.or()` so the code states a rule it cannot be tested on,
                                 // instead of implying one that mutation would contradict.
                                 if chosen.is_some() {
-                                    self.error(
-                                        span,
-                                        "two `_Generic` associations match the controlling \
-                                         expression's type",
-                                    );
+                                    if !duplicated {
+                                        self.error(
+                                            span,
+                                            "two `_Generic` associations match the controlling \
+                                             expression's type",
+                                        );
+                                    }
                                 } else {
                                     chosen = Some((a.value, vty));
                                 }
