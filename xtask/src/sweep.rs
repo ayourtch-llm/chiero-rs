@@ -293,6 +293,44 @@ pub fn kind(message: &str) -> String {
     format!("{prefix}{rest}")
 }
 
+/// The functions a translation unit **defines**, for tier 1 (042 c7).
+///
+/// Preprocessed with no include paths: the caller sweeping a real tree supplies its own via
+/// [`chiero_outcome`], while this entry point exists to be given source directly.
+///
+/// **Definitions, not declarations.** A prototype has no body for tier 2 to analyse, and
+/// counting it as a candidate would inflate a recipe's tally with functions nothing could
+/// examine. `static` definitions *are* included — 042 §3.1's recall hole is an unregistered
+/// helper, and in VPP those are routinely `static`.
+pub fn functions_in(path: &Path, src: &str) -> Result<Vec<chiero_recipe::FunctionRef>, String> {
+    let tu = chiero_pp::preprocess_str(path, src, chiero_pp::Config::default());
+    if let Some(first) = tu.diagnostics.first() {
+        return Err(format!("pp: {}", first.message));
+    }
+    let mut oracle = chiero_parse::ScopedTypedefs::new();
+    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    if let Some(first) = parsed.diagnostics.first() {
+        return Err(format!("parse: {}", first.message));
+    }
+    let file = path.display().to_string();
+    let mut out = Vec::new();
+    for &item in parsed.ast.items() {
+        if let chiero_ast::DeclKind::Func {
+            name,
+            body: Some(_),
+            ..
+        } = parsed.ast.decl(item).kind
+            && let Some(text) = parsed.text(name)
+        {
+            out.push(chiero_recipe::FunctionRef {
+                name: text.to_owned(),
+                file: file.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// One file's verdict.
 #[derive(Debug, Clone)]
 pub struct Verdict {

@@ -13,6 +13,7 @@ indexmap.workspace = true
 # allowed where it would not be between the crates themselves.
 chiero-pp.workspace = true
 chiero-parse.workspace = true
+chiero-ast.workspace = true
 chiero-sema.workspace = true
 chiero-recipe.workspace = true
 chiero-span.workspace = true
