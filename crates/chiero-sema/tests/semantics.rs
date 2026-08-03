@@ -6874,3 +6874,71 @@ fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
         ]
     );
 }
+
+/// **A parameter's type is resolved more than once, and every diagnostic from it repeats.**
+///
+/// `void f(int a[-1]);` says "array length is negative" twice, and the *definition* says it three
+/// times. gcc says it once. Contract 20 — one mistake, one diagnostic — and 023 §9, since two
+/// identical sentences give a reader nothing the first did not.
+///
+/// **The cause is already written down in this crate**, at the parameter-list scope guard: the
+/// list "is resolved once for the function's type and again when the body is walked". Wave 359
+/// met the same double pass from the other side — a tag defined in the list looked like a
+/// redefinition of itself on the second visit — and fixed that symptom by scoping the tag set
+/// without stopping the second resolution. Everything else raised inside `ty_of` has been
+/// doubling ever since.
+///
+/// **Where the second pass goes is visible in what does *not* double**: `_Alignas` on a parameter
+/// and `duplicate parameter `a`` report once each, because they are raised beside the call site
+/// rather than inside `ty_of`. So this is not "parameters are checked twice" — it is "a
+/// parameter's *type* is resolved twice".
+///
+/// **The obvious fix is wrong and the fixture says so.** `void f(int a[-1], int b[-2]);` must
+/// still produce **two** reports: two parameters wrong the same way are two mistakes. Only the
+/// repeat of a single resolution is the defect, so a fix that deduplicates by message text would
+/// pass every row above and break these. Key on the pass, not on the sentence.
+///
+/// `one_mistake_produces_one_diagnostic` did not catch any of this because no row in its corpus
+/// declares a faulty parameter — a gate is only as wide as its corpus, which is why this fixture
+/// counts rather than matching.
+#[test]
+fn a_parameters_type_is_resolved_once() {
+    let count = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis.diagnostics.len()
+    };
+
+    // **One mistake, one report** — in a declaration and in a definition, which doubles and
+    // triples respectively.
+    for src in [
+        "void f(int a[-1]);",
+        "void f(int a[-1]){}",
+        "void f(int (*a)[-1]);",
+        "void f(struct { int a; int a; } s);",
+        "void f(struct { int a; int a; } s){}",
+        "void f(struct { float a : 1; } s);",
+        "void f(struct { int : 3; } s);",
+    ] {
+        assert_eq!(count(src), 1, "exactly one report for `{src}`");
+    }
+
+    // **Two mistakes, two reports.** This is the half a text-deduplicating fix would break, and
+    // gcc agrees: two faulty parameters are two sentences.
+    for src in [
+        "void f(int a[-1], int b[-2]);",
+        "void f(struct { int a; int a; } s, struct { int b; int b; } t);",
+    ] {
+        assert_eq!(count(src), 2, "exactly two reports for `{src}`");
+    }
+
+    // **And silence stays silence**, so a fix cannot buy the counts above by reporting less.
+    for src in [
+        "void f(int a[3]);",
+        "void f(int a[]);",
+        "void f(int n, int a[n]);",
+        "void f(struct { int a; } s);",
+        "void f(int a, int b);",
+    ] {
+        assert_eq!(count(src), 0, "no report for `{src}`");
+    }
+}
