@@ -6669,3 +6669,79 @@ fn no_two_generic_associations_may_name_compatible_types() {
         );
     }
 }
+
+/// **An enumeration too wide for `int` still takes the smallest type that holds it** (gcc's GNU
+/// extension; C 6.7.2.2p2 forbids the program and both compilers say so).
+///
+/// Wave 383 fixed the fitting case and left the widened one, which had its own signedness rule
+/// written beside it: `signed: lo < 0 || hi < (1 << 63)`, and always `long`. Measured against gcc
+/// at every boundary, that is wrong in two of the three shapes — `enum E { A = 4294967295u }` is
+/// `unsigned int` in gcc and `long` here, and `enum E { A = 9223372036854775807 }` is `unsigned
+/// long` in gcc and `long` here.
+///
+/// **The census says the two branches were never two rules.** gcc picks the sign from whether any
+/// enumerator is negative, then the narrowest of `int`/`long` that holds the range — which is
+/// exactly wave 383's rule with the width no longer assumed. So this deletes a special case
+/// rather than adding one, and the fitting rows below are the same rule's other half.
+///
+/// **The diagnostic is unchanged and still fires.** 6.7.2.2p2 is about whether each value is
+/// representable as `int`, not about which type the implementation then chooses, so the condition
+/// stays and only the resulting type moves. These programs are refused by gcc under
+/// `-pedantic-errors` and by chiero — but chiero reports and *keeps the type usable* so nothing
+/// downstream cascades, which is why the width it picks is still observable and still has to be
+/// right.
+#[test]
+fn a_widened_enumeration_takes_the_narrowest_type_that_holds_it() {
+    let repr = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        let id = p.decl_ty("a").expect("`a` is declared");
+        p.analysis.ty(id).clone()
+    };
+    let widened = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("not representable as an `int`"))
+    };
+    let u = |bits| Ty::Int {
+        signed: false,
+        bits,
+    };
+    let i = |bits| Ty::Int { signed: true, bits };
+
+    // **Within `int`, and not reported** — wave 383's rule, kept here so the unification cannot
+    // move them.
+    assert_eq!(repr("enum E { A = 2147483647 }; enum E a;"), u(32));
+    assert_eq!(repr("enum E { A = -2147483648 }; enum E a;"), i(32));
+    assert_eq!(repr("enum E { Z = -1, A = 2147483647 }; enum E a;"), i(32));
+    assert!(!widened("enum E { A = 2147483647 }; enum E a;"));
+
+    // **Past `int`, non-negative: `unsigned int` while it fits**, which is the shape that was
+    // being widened to a 64-bit type for no reason.
+    assert_eq!(repr("enum E { A = 2147483648 }; enum E a;"), u(32));
+    assert_eq!(repr("enum E { A = 4294967295u }; enum E a;"), u(32));
+
+    // Past `unsigned int`: `unsigned long`.
+    assert_eq!(repr("enum E { A = 4294967296 }; enum E a;"), u(64));
+    assert_eq!(repr("enum E { A = 9223372036854775807 }; enum E a;"), u(64));
+    assert_eq!(
+        repr("enum E { A = 18446744073709551615u }; enum E a;"),
+        u(64)
+    );
+
+    // **A negative enumerator keeps it signed**, and then the width follows the range.
+    assert_eq!(repr("enum E { A = -2147483649 }; enum E a;"), i(64));
+    assert_eq!(repr("enum E { Z = -1, A = 4294967295u }; enum E a;"), i(64));
+
+    // Every one of those is still refused, which is the calibration and not a side effect.
+    for src in [
+        "enum E { A = 2147483648 }; enum E a;",
+        "enum E { A = 4294967295u }; enum E a;",
+        "enum E { A = 4294967296 }; enum E a;",
+        "enum E { A = -2147483649 }; enum E a;",
+        "enum E { Z = -1, A = 4294967295u }; enum E a;",
+    ] {
+        assert!(widened(src), "must still be reported: `{src}`");
+    }
+}
