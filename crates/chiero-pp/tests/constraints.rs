@@ -976,6 +976,14 @@ fn a_macro_call_may_span_a_directive() {
         expanded("#define Q(x) x\nint w = (\n#define R 7\n  Q(R)\n#undef R\n  );\n"),
         "int w = ( 7 ) ;"
     );
+    // **A function-like macro name with no `(` yet does NOT wait across the directive.**
+    // Measured: `gcc -E` and `clang -E` both leave this unexpanded as `int v = P (1);`. The
+    // wave-413 predicate deferred on a trailing macro name, guessing that the `(` might be
+    // the first token after the directive and that gcc would keep looking. It does not.
+    assert_eq!(
+        expanded("#define P(x) x\nint v = P\n#define K 5\n(1);\n"),
+        "int v = P ( 1 ) ;"
+    );
     // A conditional inside the list, which gcc also takes.
     assert_eq!(
         expanded("#define P(x) x\nint v = P(1\n#if 0\n+2\n#endif\n);\n"),
