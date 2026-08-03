@@ -19,5 +19,8 @@ chiero-vpp.workspace = true
 anyhow.workspace = true
 indexmap.workspace = true
 
+[dev-dependencies]
+chiero-pp.workspace = true
+
 [lints]
 workspace = true

@@ -229,6 +229,7 @@ dependencies = [
  "chiero-exec",
  "chiero-gcov",
  "chiero-opt",
+ "chiero-pp",
  "chiero-recipe",
  "chiero-select",
  "chiero-span",
