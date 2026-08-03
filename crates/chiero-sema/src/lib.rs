@@ -2735,7 +2735,7 @@ impl Cx<'_> {
             return already;
         }
         if tag == chiero_ast::TagKind::Enum {
-            return self.enum_ty(span, name, members);
+            return self.enum_ty(node, span, name, members);
         }
         // A reference to a tag, defined or not.
         if members.is_none() {
@@ -2856,7 +2856,13 @@ impl Cx<'_> {
     }
 
     /// 014 contract 10: the underlying type is `int` unless a value requires wider.
-    fn enum_ty(&mut self, span: Span, name: Option<Symbol>, members: Option<Vec<DeclId>>) -> TyId {
+    fn enum_ty(
+        &mut self,
+        node: TypeId,
+        span: Span,
+        name: Option<Symbol>,
+        members: Option<Vec<DeclId>>,
+    ) -> TyId {
         let Some(members) = members else {
             if let Some(&t) = name.and_then(|n| self.enums.get(&n)) {
                 return t;
@@ -3002,7 +3008,33 @@ impl Cx<'_> {
                 hi < (1i128 << bits)
             }
         };
-        let bits = if holds(int_bits) { int_bits } else { long_bits };
+        // **`packed` narrows an enumeration to the smallest width that holds its range** (the
+        // GNU attribute). gcc gives `{ A = 0, B = 3 }` one byte, `{ 0..300 }` two, and keeps the
+        // sign: `{ -1, 3 }` is a signed byte. Ignoring the attribute gave four bytes for all of
+        // them — a wrong *size*, which every consumer downstream believes, rather than a wrong
+        // message. VPP's `ip_ecn_t` asserts its own width, so the error surfaced as a failing
+        // `_Static_assert` on legal code.
+        //
+        // Read from the AST node, like `packed` on a record: it is a specifier attribute and
+        // never reaches the interned type.
+        let packed = self
+            .ast
+            .ty(node)
+            .attrs
+            .iter()
+            .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+        let bits = if packed {
+            // Smallest first; `long_bits` is the last resort and the existing answer for a range
+            // that needs it, so an over-wide enumeration is unaffected by the attribute.
+            [8, 16, 32, long_bits]
+                .into_iter()
+                .find(|&b| holds(b))
+                .unwrap_or(long_bits)
+        } else if holds(int_bits) {
+            int_bits
+        } else {
+            long_bits
+        };
         let t = Ty::Int { signed, bits };
         // **C 6.7.2.2p2: every enumerator is representable as `int`.** Anything wider is a GNU
         // extension, and this project calibrates constraint violations to `-pedantic-errors`
