@@ -7608,3 +7608,84 @@ fn the_atomic_and_sync_builtins_are_declared_by_the_compiler() {
         );
     }
 }
+
+/// **One declaration defines its tag once, however many declarators follow** (C 6.7p1: a
+/// declaration is specifiers followed by an *init-declarator-list*).
+///
+/// `struct S { int x; } a, b;` is ordinary C and chiero reports "redefinition of `struct S`" —
+/// the specifier is resolved once per declarator, so the second one finds the tag the first
+/// installed. All three tag kinds are affected, and the tagless form fails differently and worse:
+/// `struct { int x; } a, b; a = b;` mints a *fresh* anonymous record per declarator, so the two
+/// objects have different types and an ordinary struct assignment is refused with "a structure or
+/// union is copied only from its own type".
+///
+/// **Found by the sweep over vppinfra**, in `heap.c`:
+///
+/// ```c
+/// struct { u32 index; u32 bin; u32 bin_index; } f[3], g;
+/// ...
+/// g = f[i];
+/// ```
+///
+/// A census would have been unlikely to reach it: the construct is legal, so it belongs to a
+/// census's silent half, and the fault only shows when a *second* declarator exists — the shape
+/// nobody writes when hand-making a fixture for tags.
+#[test]
+fn one_declaration_defines_its_tag_once() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // **A tagged definition with several declarators**, in all three kinds.
+        "struct S { int x; } a, b;",
+        "union U { int x; } a, b;",
+        "enum E { A } x, y;",
+        // Declarators of different shapes, since each one re-enters the specifier.
+        "struct S { int x; } a, *p, c[2];",
+        "struct S { int x; } *p, a;",
+        // **The tagless form, and the assignment that proves the two share one type.**
+        "void h(void){ struct { int x; } a, b; a = b; }",
+        "void h(void){ struct { int x; } f[3], g; g = f[0]; }",
+        // What already worked, kept so a fix cannot trade one for the other.
+        "struct S { int x; } a;",
+        "typedef struct { int x; } T, *TP;",
+        "struct S { int x; }; struct S a, b;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **A genuine redefinition still is one** — two separate declarations, not one with two
+        // declarators, which is the distinction the fix has to keep.
+        (
+            "struct S { int x; }; struct S { int y; };",
+            "redefinition of `struct S`",
+        ),
+        (
+            "union U { int x; }; union U { int y; };",
+            "redefinition of `union U`",
+        ),
+        ("enum E { A }; enum E { B };", "redefinition of `enum E`"),
+        // And two *different* anonymous records are still two types.
+        (
+            "void h(void){ struct { int x; } a; struct { int x; } b; a = b; }",
+            "invalid initializer: a structure or union is copied only from its own type",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
