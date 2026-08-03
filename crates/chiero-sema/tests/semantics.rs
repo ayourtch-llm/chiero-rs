@@ -6569,3 +6569,93 @@ fn two_enumerations_are_the_same_type_only_if_they_are_the_same_enumeration() {
         );
     }
 }
+
+/// **No two `_Generic` associations may name compatible types** (C 6.5.1.1p2), which is a rule
+/// about the *associations* and not about the selector.
+///
+/// chiero has one comparison doing two jobs: `at == self.bare(cty)` decides which association
+/// matches, and "a second one matched" is how it detects duplicates. That detects only duplicates
+/// the selector happens to land on, so `_Generic(x, int: 1, int: 2, default: 0)` with a `double`
+/// selector is accepted — the plainest possible violation of the rule, silently.
+///
+/// gcc has two diagnostics here and they are genuinely two rules, which the non-transitive case
+/// proves: with an `unsigned` selector, `enum E` and `enum F` both match it and are **not**
+/// compatible with each other, so gcc reports the selector matching twice and not the pair. Both
+/// rules are needed; neither subsumes the other.
+///
+/// **Where gcc emits both, this emits one** (contract 20). Two associations that are compatible
+/// *and* both match are one mistake in a program, and the pair is the version that explains it
+/// without reference to what happens to be selected.
+#[test]
+fn no_two_generic_associations_may_name_compatible_types() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // Distinct types, whatever the selector does.
+        "int g(double x) { return _Generic(x, int: 1, unsigned: 2, default: 0); }",
+        "int g(double x) { return _Generic(x, int: 1, long: 2, default: 0); }",
+        "int g(double x) { return _Generic(x, int *: 1, char *: 2, default: 0); }",
+        // **Two enumerations are not compatible with each other**, so this is legal even though
+        // both are `unsigned int` — and it is what stops the fix from being "compare integer
+        // types and forget the tag".
+        "enum E { A = 1 }; enum F { B = 1 }; int g(double x) { return _Generic(x, enum E: 1, enum F: 2, default: 0); }",
+        // One association, however spelled.
+        "enum E { A = 1 }; int g(enum E x) { return _Generic(x, unsigned: 1, default: 0); }",
+        "typedef int I; int g(double x) { return _Generic(x, I: 1, default: 0); }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **The plainest violation**, and the one a rule tied to the selector cannot see.
+        (
+            "int g(double x) { return _Generic(x, int: 1, int: 2, default: 0); }",
+            "two `_Generic` associations name compatible types",
+        ),
+        (
+            "typedef int I; int g(double x) { return _Generic(x, int: 1, I: 2, default: 0); }",
+            "two `_Generic` associations name compatible types",
+        ),
+        (
+            "typedef int *IP; int g(double x) { return _Generic(x, int *: 1, IP: 2, default: 0); }",
+            "two `_Generic` associations name compatible types",
+        ),
+        // An enumeration against its own integer type — compatible, so the pair is illegal.
+        (
+            "enum E { A = 1 }; int g(double x) { return _Generic(x, unsigned: 1, enum E: 2, default: 0); }",
+            "two `_Generic` associations name compatible types",
+        ),
+        (
+            "enum N { M = -1 }; int g(double x) { return _Generic(x, int: 1, enum N: 2, default: 0); }",
+            "two `_Generic` associations name compatible types",
+        ),
+        // **The non-transitive case**: both match an `unsigned` selector, neither is compatible
+        // with the other, so this is the *other* rule and must keep its own message.
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; int g(unsigned x) { return _Generic(x, enum E: 1, enum F: 2); }",
+            "two `_Generic` associations match the controlling expression's type",
+        ),
+        // Where both rules apply, exactly one report (contract 20).
+        (
+            "int g(int x) { return _Generic(x, int: 1, int: 2); }",
+            "two `_Generic` associations name compatible types",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}

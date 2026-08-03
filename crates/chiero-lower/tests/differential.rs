@@ -5788,3 +5788,43 @@ fn an_enumerations_signedness_is_observable() {
         "enum Z e = Z0; return e - 1 < 0;",
     );
 }
+
+/// **`_Generic` selects on compatibility, and an enumeration is compatible with its integer
+/// type** (C 6.5.1.1p2).
+///
+/// Wave 384 gave each enumeration its own interned id, and `_Generic` matched associations with
+/// `at == self.bare(cty)` under a comment saying that interned ids *are* the compatibility test
+/// for everything `_Generic` can name. That was true when it was written and stopped being true
+/// the moment a second thing rode the interning key. The comment is the tell: **a claim about the
+/// representation ages the moment the representation changes.**
+///
+/// The result is a wrong answer rather than a missing diagnostic, which wave 113 ranks worse:
+/// `_Generic(e, unsigned: 1, default: 0)` silently takes the `default`.
+#[test]
+fn generic_selects_an_enumeration_by_its_integer_type() {
+    const P: &str = "enum E { A = 1 };\nenum N { M = -1 };\n";
+    // A non-negative enumeration is `unsigned int`, so that association matches and `int` does
+    // not. gcc is the oracle for both halves.
+    agree_with(
+        P,
+        "enum E e = A; return _Generic(e, unsigned: 1, default: 0);",
+    );
+    agree_with(P, "enum E e = A; return _Generic(e, int: 1, default: 0);");
+    // A negative one is `int`, and the pair answers the other way round.
+    agree_with(P, "enum N e = M; return _Generic(e, int: 1, default: 0);");
+    agree_with(
+        P,
+        "enum N e = M; return _Generic(e, unsigned: 1, default: 0);",
+    );
+    // The enumeration named directly still matches itself.
+    agree_with(
+        P,
+        "enum E e = A; return _Generic(e, enum E: 1, default: 0);",
+    );
+    // And a *different* enumeration does not, even though both are `unsigned int` — this is the
+    // half that keeps the fix from being "drop the tag everywhere".
+    agree_with(
+        "enum E { A = 1 };\nenum F { B = 1 };\n",
+        "enum E e = A; return _Generic(e, enum F: 1, default: 0);",
+    );
+}
