@@ -288,9 +288,10 @@ fn recipe_sweep() -> ExitCode {
     let elapsed = started.elapsed();
 
     println!(
-        "tier 1 over {} translation units in {:.1}s — {} functions, {} files unreadable",
+        "tier 1 over {} translation units in {:.1}s on {} workers — {} functions, {} files unreadable",
         report.files,
         elapsed.as_secs_f64(),
+        report.threads,
         report.functions,
         report.unreadable
     );

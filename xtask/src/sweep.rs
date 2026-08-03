@@ -371,6 +371,9 @@ pub struct Tier1Report {
     pub functions: usize,
     /// Translation units that did not preprocess or parse, so contributed no functions.
     pub unreadable: usize,
+    /// Workers actually used. Reported because 042 c7's budget is a time *on a core count*,
+    /// so a duration without it is not a measurement anyone can reproduce.
+    pub threads: usize,
 }
 
 impl Tier1Report {
@@ -452,6 +455,7 @@ pub fn tier1_sweep_with(
         files: files.len(),
         functions: functions.len(),
         unreadable,
+        threads: chunks.len(),
     }
 }
 
