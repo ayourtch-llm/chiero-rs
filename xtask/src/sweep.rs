@@ -359,6 +359,19 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         verdicts.len()
     );
 
+    // 080 M3 exit gate: the parser-coverage percentage, published on every run so it is
+    // tracked rather than recomputed by hand when someone remembers to ask.
+    let c = coverage(verdicts);
+    println!(
+        "\nCHIERO REACH — {} preprocessed, {} parsed, {} analysed, of {} files",
+        c.preprocessed, c.parsed, c.analysed, c.total
+    );
+    println!(
+        "  -> parser coverage {:.1}% of the {} translation units the parser was handed",
+        c.parser_percent(),
+        c.preprocessed
+    );
+
     for (title, bucket, side) in [
         (
             "FINDINGS — chiero complains where gcc is happy",
@@ -411,6 +424,77 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
             println!("  … {} more distinct messages", rows.len() - 25);
         }
     }
+}
+
+/// How far chiero got, per translation unit (080 M3 exit gate).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Coverage {
+    pub total: usize,
+    /// Got past the preprocessor — i.e. the parser was handed something.
+    pub preprocessed: usize,
+    /// Got past the parser.
+    pub parsed: usize,
+    /// Got past sema with nothing to say.
+    pub analysed: usize,
+}
+
+impl Coverage {
+    /// Percentage of the translation units **the parser was handed** that it parsed, to one
+    /// decimal place.
+    ///
+    /// The denominator is `preprocessed`, not `total`. Dividing by everything charges the
+    /// parser for headers the sweep could not resolve, and makes the published number move
+    /// when the include flags change rather than when the parser does — which would make it
+    /// untrackable across waves, the one thing a published metric must not be.
+    pub fn parser_percent(&self) -> f64 {
+        if self.preprocessed == 0 {
+            return 0.0;
+        }
+        let raw = self.parsed as f64 * 100.0 / self.preprocessed as f64;
+        (raw * 10.0).round() / 10.0
+    }
+}
+
+/// Classify each verdict by the furthest stage chiero reached.
+///
+/// **Reads the `pp:`/`parse:`/`sema:` prefix this module itself writes.** The alternative is
+/// threading a stage through `Outcome`, which would put a field on every construction site
+/// including the synthetic ones in tests; the prefix is produced in exactly one place, a few
+/// lines above, and is already the grouping key.
+pub fn coverage(verdicts: &[Verdict]) -> Coverage {
+    let mut c = Coverage {
+        total: verdicts.len(),
+        ..Coverage::default()
+    };
+    for v in verdicts {
+        let stage = match &v.chiero {
+            // Clean means it went all the way through.
+            Outcome::Clean => 3,
+            Outcome::Diagnosed(m) | Outcome::NotRun(m) => {
+                if m.starts_with("pp:") {
+                    0
+                } else if m.starts_with("parse:") {
+                    1
+                } else if m.starts_with("sema:") {
+                    2
+                } else {
+                    // Not one of ours — an unreadable file, say. The parser was never handed
+                    // it, so it counts against nothing rather than being charged to a stage.
+                    0
+                }
+            }
+        };
+        if stage >= 1 {
+            c.preprocessed += 1;
+        }
+        if stage >= 2 {
+            c.parsed += 1;
+        }
+        if stage >= 3 {
+            c.analysed += 1;
+        }
+    }
+    c
 }
 
 /// gcc's own system include paths, so chiero resolves `<stdio.h>` as the tree's compiler does.
