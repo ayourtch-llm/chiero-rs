@@ -487,74 +487,85 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 412) — 1616 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 415) — 1622 tests, 4 ignored, M1 268/268 by contract
 >
-> ### M2's headline exit gate is met; M3 has started
+> ### M3 provenance: both operations exist and are mutation-clean
 >
-> `vec.h`, `pool.h`, `bitmap.h`, `clib.h` each preprocess, parse **and** analyse clean,
-> agreeing with gcc on all four — 080 M2's "vppinfra headers parse". Reproduce with:
+> `chiero-tool` now holds `explain_macro_expansion` (050 c6, 060 c10) and `expansion_sites`
+> (050 c7). M2's headline gate was met first: `vec.h`, `pool.h`, `bitmap.h`, `clib.h` each
+> preprocess, parse **and** analyse clean, agreeing with gcc on all four.
 >
-> ```
-> cargo run -p xtask -- sweep --tree <dir-of-4-TUs> -I <vpp>/src -I <gen> --std gnu11
-> ```
->
-> **Wave 411: `explain_macro_expansion` (050 contract 6)** — the first line of `chiero-tool`
-> that is not a doc comment. Chain innermost-first; each frame carries name, definition site
-> and body text, so an answer needs no second lookup.
->
-> * `SourceMap` gained **`expansion_count`**. `expansion_sites(m)` answered "where did this
->   macro expand"; nothing answered "what expanded *here*".
-> * **Depth picks the chain when `column` is `None`.** Every frame in one chain resolves to the
->   same written position, so `vec_add1` and its nested `_vec_resize` both match the line — one
->   chain at two depths, deepest contains the rest. Two *independent* calls on one line is a
->   **stated limit**, and what `column` is for.
-> * An inner frame's `call_line` is where it is **written** (inside the enclosing body), not
->   where the chain started.
+> * **Leaves, not depth, decide what a chain is.** `vec_add1` and the `_vec_resize` in its
+>   body share a written position and are *one* chain; two items of a `foreach_` list share a
+>   position and are *two*. Depth cannot separate them — that bug answered a 47-item list with
+>   one arbitrary item.
+> * A frame carries `args`, so an answer names the list macro, the per-item macro **and the
+>   item** (060 c10).
+> * `Site` carries `item_line`/`item_col`. Deduplicating on the user-facing position alone
+>   collapsed 47 items into 1 site and broke the precision 060 §3 is built on.
+> * Verified on a **real** `foreach_` chain: `_vec_len → vec_len → vec_end → vec_foreach`,
+>   from the vendored corpus, each frame with true definition file, line and body.
 >
 > ### Still open on this front
 >
-> * `expansion_sites` (050 contract 7): 1043 sites, `total/shown` summary + working cursor.
-> * `explain_macro_expansion` on a real `foreach_*` site — the other half of M3's exit gate.
-> * `chiero-recipe` tier-1 structural sweep; VPP parser-coverage percentage published.
+> * `chiero-recipe` tier-1 structural sweep (stub); VPP parser-coverage percentage published.
+> * `explain_macro_expansion` has no column-less way to ask for *one* independent call among
+>   several on a line; it returns them all, which is now the documented behaviour.
 >
-> ### The VPP sweep converged — with one measurement outstanding
+> ### The `vnet` sweep landed and overturned the convergence claim
 >
-> Every finding reduced since the wave-408 blocker fell is the **same pedantic-vs-`gnu11`
-> question**, and chiero is already correct at the project's calibration in each:
+> 452 TUs, 348 findings. **345 are the two known pedantic categories.** Of the three new
+> kinds, two (`struct has no members`, `pointer from an integer without a cast`) are also
+> gnu11-accepted / pedantic-refused and join the calibration set. The third was a **regression
+> I introduced in wave 408** and did not detect for three waves — see below.
 >
-> | subtree | findings | kind |
-> |---|---|---|
-> | `vnet/fib` | 29 | all enumerator-range |
-> | `plugins/nsh` | 9 | all enumerator-range |
-> | `plugins/acl` | 5 | all a stray `;` in a struct (`fa_node.h:112`) |
+> ### ⚠️ The wave-408 regression, and why the tests missed it
 >
-> **A full `vnet` sweep was still running when this was written and has not been read.** If it
-> shows a kind outside that set, this conclusion reopens. Do not quote the convergence claim
-> without re-running it.
+> Wave 408 held a token chunk across a directive while a `(` was open. `has_open_paren` cannot
+> tell a macro's argument list from ordinary C, and VPP's X-macro accumulator opens one:
+>
+> ```c
+> const u8 MASK = (
+> #define _(a, b, c) FLAG_##a |
+>   foreach_tunnel_encap_decap_flag
+> #undef _
+>   0);
+> ```
+>
+> The deferral carried the uses past the `#undef`, so `_` was gone when they expanded. Fixed by
+> `in_open_macro_args`, which tracks **per unclosed paren** whether a function-like macro name
+> opened it.
+>
+> **Every wave-408 fixture put a macro name immediately before the `(`, so all of them agreed
+> with both the correct rule and the wrong one.** A predicate is only tested by an input where
+> the candidate rules *disagree*. Mutation missed it too: the mutants attacked whether the
+> deferral happened, never its criterion.
+>
+> ### Method notes — read these before trusting a green suite
+>
+> * **A justification is a claim; a claim in a commit message is not evidence.** Three times in
+>   this stretch prose asserted an unmeasured fact. Twice merely untested (the inner frame's
+>   call site; the trailing-macro-name rule); once **false** (argument spans do not carry
+>   whitespace, so that `.trim()` was dead, not load-bearing).
+> * **A surviving mutant has four readings**, in order: the code is wrong; a row is missing; the
+>   code is dead; the mutant is equivalent. The trailing-macro-name survivor was reading one —
+>   `gcc -E` and `clang -E` both leave `int v = P` / `#define K 5` / `(1);` unexpanded, so the
+>   *mutant* was correct. **Check a survivor against the oracle before writing it off.**
+> * **Check the input reaches the line** before calling a mutant equivalent; one survivor was an
+>   early return, another a "mutant" whose replacement equalled the original.
+> * A deliberate equivalent mutant is allowed if recorded: the chain sort is unobservable under
+>   today's expansion table and kept as an ordering promise, with the *guarantee* covered by a
+>   three-item test even though the line is not.
+> * **`Span::DUMMY` resolves** to line 1 col 1 of whichever file starts at offset 0. Reject by name.
+> * **A report that names only *what* is not actionable**: `describe`/`kind` turned "somewhere in
+>   452 files" into three exact lines, and all three reduced immediately.
 >
 > ### The owner's queue is two clean questions
 >
 > | item | reach | chiero today |
 > |---|---|---|
-> | **pedantic mode for sema** | every remaining VPP finding | verdicts correct, noise on the corpus |
+> | **pedantic mode for sema** | 345 of 348 `vnet` findings | verdicts correct, noise on the corpus |
 > | `transparent_union` | socket-calling TUs | refuses the call |
->
-> ### Method notes bought this stretch
->
-> * **A criterion already written down is not an open question.** The construct table settles
->   GNU-extension scope by VPP dependence; re-asking it as an owner's call cost three waves.
-> * **Writing a decision down is not testing it.** Wave 411's commit message argued the inner
->   frame's call site is the written one; the test asserted only the outermost frame, where the
->   distinction is invisible. A mutant is the only thing that tells prose and coverage apart.
-> * **A survivor has a fourth reading: dead code.** A `.trim()` that could never fire was not an
->   equivalent mutant — it guarded nothing and was removed, not pinned.
-> * **Check the input reaches the line before calling a mutant equivalent.** One survivor was an
->   early return; another was a "mutant" whose replacement text equalled the original.
-> * **`Span::DUMMY` resolves.** `BytePos(0)`, and the first file starts at 0 — the lookup
->   succeeds and answers line 1 column 1. Reject it by name.
-> * **A report that names only *what* is not actionable.** Four reductions died guessing against
->   a 62,000-line preprocessed TU before `describe`/`kind` added locations; `acl` then fell in
->   one lookup.
 >
 > ### Sweep reach, after wave 405
 >
