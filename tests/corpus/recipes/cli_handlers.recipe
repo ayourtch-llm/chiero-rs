@@ -1,0 +1,12 @@
+recipe cli_handler_naming {
+  title     "VPP CLI handlers are named *_command_fn or *_cli"
+  severity  note
+  tier      structural
+  rationale "A tier-1 recipe that needs no typed AST, so the sweep has something it can
+             actually evaluate end to end while `registered_via` waits on the frontend."
+
+  scope fn $f where name matches "_command_fn$|_cli$"
+
+  fixture good "fixtures/naming_ok.c"
+  fixture bad  "fixtures/naming_bad.c" expect 1 at "naming_bad.c:3"
+}

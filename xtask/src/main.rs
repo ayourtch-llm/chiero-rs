@@ -9,6 +9,7 @@ fn main() -> ExitCode {
         Some("contract-coverage") => contract_coverage(),
         Some("check-vpp-leak") => check_vpp_leak(),
         Some("sweep") => sweep(),
+        Some("recipe-sweep") => recipe_sweep(),
         Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
@@ -198,4 +199,111 @@ fn sweep() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `xtask recipe-sweep --tree <dir> --recipes <dir>` — 042 contract 7.
+///
+/// Reports per-recipe candidate counts and the elapsed time, and **never exits non-zero on
+/// what it found**: this is a measurement, and a gate that failed on a candidate count would
+/// make every new VPP file a build break.
+fn recipe_sweep() -> ExitCode {
+    let mut tree = None;
+    let mut recipe_dir = None;
+    let mut includes = Vec::new();
+    let mut defines = Vec::new();
+    let mut std_flag = None;
+    let mut args = std::env::args().skip(2);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--tree" => tree = args.next(),
+            "--recipes" => recipe_dir = args.next(),
+            "-I" => includes.extend(args.next().map(std::path::PathBuf::from)),
+            "-D" => defines.extend(args.next()),
+            "--std" => std_flag = args.next(),
+            other => eprintln!("recipe-sweep: ignoring `{other}`"),
+        }
+    }
+    let (Some(tree), Some(recipe_dir)) = (tree, recipe_dir) else {
+        eprintln!("usage: xtask recipe-sweep --tree <dir> --recipes <dir>");
+        return ExitCode::FAILURE;
+    };
+
+    let mut recipes = Vec::new();
+    let mut entries: Vec<_> = match std::fs::read_dir(&recipe_dir) {
+        Ok(d) => d.filter_map(Result::ok).map(|e| e.path()).collect(),
+        Err(e) => {
+            eprintln!("recipe-sweep: cannot read {recipe_dir}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    entries.sort();
+    for path in entries {
+        if path.extension().is_none_or(|e| e != "recipe") {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("recipe-sweep: cannot read {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        match chiero_recipe::load(&text) {
+            Ok(r) => recipes.push(r),
+            // **A recipe that does not load fails the run.** 042 §5 makes an unadjudicable
+            // recipe a load error; carrying on without it would sweep a smaller catalogue than
+            // the one the operator asked for and report the result as if it were whole.
+            Err(errs) => {
+                for e in errs {
+                    eprintln!("recipe-sweep: {}: {e}", path.display());
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let files = match xtask::sweep::translation_units(std::path::Path::new(&tree)) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("recipe-sweep: cannot walk {tree}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // The same configuration `sweep` uses: without gcc's predefines chiero takes `#if`
+    // branches gcc never compiles, and every VPP file fails on its first header.
+    let cfg = chiero_pp::Config {
+        include_paths: includes,
+        system_paths: xtask::sweep::system_include_paths(),
+        defines: xtask::sweep::gcc_predefines(std_flag.as_deref())
+            .into_iter()
+            .chain(defines.iter().map(|d| match d.split_once('=') {
+                Some((k, v)) => (k.to_owned(), v.to_owned()),
+                None => (d.clone(), "1".to_owned()),
+            }))
+            .collect(),
+        ..chiero_pp::Config::default()
+    };
+    let started = std::time::Instant::now();
+    let report = xtask::sweep::tier1_sweep(&files, &recipes, &cfg);
+    let elapsed = started.elapsed();
+
+    println!(
+        "tier 1 over {} translation units in {:.1}s — {} functions, {} files unreadable",
+        report.files,
+        elapsed.as_secs_f64(),
+        report.functions,
+        report.unreadable
+    );
+    for t in &report.tallies {
+        let note = if t.is_complete() {
+            String::new()
+        } else {
+            format!("  (+{} undecidable: selector needs the AST)", t.needs_ast)
+        };
+        println!("  {:5}  {}{note}", t.matched, t.recipe);
+    }
+    if !report.is_complete() {
+        println!("  -> PARTIAL: these counts are not a baseline until they are complete");
+    }
+    ExitCode::SUCCESS
 }

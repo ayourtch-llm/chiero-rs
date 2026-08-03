@@ -1,0 +1,12 @@
+recipe cli_line_input_freed {
+  title     "CLI line input must be freed on every path"
+  severity  error
+  tier      semantic
+  rationale "unformat_line_input allocates a line_input; VPP's CLI ritual requires
+             unformat_free on every return path. 407 acquisition sites, 140 files."
+
+  scope fn $f where registered_via VLIB_CLI_COMMAND
+
+  fixture good "fixtures/cli_ok.c"
+  fixture bad  "fixtures/cli_leak.c" expect 1 at "cli_leak.c:22"
+}

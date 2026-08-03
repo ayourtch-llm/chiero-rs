@@ -277,7 +277,11 @@ fn a_tier_one_sweep_reports_counts_and_the_files_it_could_not_read() {
     )
     .expect("loads");
 
-    let r = tier1_sweep(&translation_units(&tmp).expect("walk"), &[recipe]);
+    let r = tier1_sweep(
+        &translation_units(&tmp).expect("walk"),
+        &[recipe],
+        &chiero_pp::Config::default(),
+    );
 
     assert_eq!(r.files, 3);
     assert_eq!(r.functions, 3, "two in b.c, one in a.c; none from broken.c");

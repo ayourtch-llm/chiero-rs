@@ -303,7 +303,21 @@ pub fn kind(message: &str) -> String {
 /// examine. `static` definitions *are* included — 042 §3.1's recall hole is an unregistered
 /// helper, and in VPP those are routinely `static`.
 pub fn functions_in(path: &Path, src: &str) -> Result<Vec<chiero_recipe::FunctionRef>, String> {
-    let tu = chiero_pp::preprocess_str(path, src, chiero_pp::Config::default());
+    functions_in_cfg(path, src, chiero_pp::Config::default())
+}
+
+/// As [`functions_in`], with the caller's include paths and defines.
+///
+/// A sweep over a real tree needs gcc's predefines and the project's `-I` set for the same
+/// reason [`chiero_outcome`] does: without them chiero takes `#if` branches gcc never
+/// compiles, and every file fails to resolve its first header.
+pub fn functions_in_cfg(
+    path: &Path,
+    src: &str,
+    cfg: chiero_pp::Config,
+) -> Result<Vec<chiero_recipe::FunctionRef>, String> {
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(path, src, cfg, &mut Disk);
     if let Some(first) = tu.diagnostics.first() {
         return Err(format!("pp: {}", first.message));
     }
@@ -329,6 +343,58 @@ pub fn functions_in(path: &Path, src: &str) -> Result<Vec<chiero_recipe::Functio
         }
     }
     Ok(out)
+}
+
+/// What a tier-1 sweep found, and what it could not look at (042 c7).
+#[derive(Debug, Clone)]
+pub struct Tier1Report {
+    pub tallies: Vec<chiero_recipe::RecipeTally>,
+    pub files: usize,
+    pub functions: usize,
+    /// Translation units that did not preprocess or parse, so contributed no functions.
+    pub unreadable: usize,
+}
+
+impl Tier1Report {
+    /// Whether every file was read **and** every recipe could be evaluated.
+    ///
+    /// The two failures are different — an unread file and an undecidable selector — but a
+    /// caller publishing a candidate count may not claim completeness under either.
+    pub fn is_complete(&self) -> bool {
+        self.unreadable == 0
+            && self
+                .tallies
+                .iter()
+                .all(chiero_recipe::RecipeTally::is_complete)
+    }
+}
+
+/// Run tier 1 over a set of translation units (042 c7).
+pub fn tier1_sweep(
+    files: &[PathBuf],
+    recipes: &[chiero_recipe::Recipe],
+    cfg: &chiero_pp::Config,
+) -> Tier1Report {
+    let mut functions = Vec::new();
+    let mut unreadable = 0;
+    for path in files {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            unreadable += 1;
+            continue;
+        };
+        match functions_in_cfg(path, &src, cfg.clone()) {
+            Ok(fs) => functions.extend(fs),
+            // Counted, never skipped: a file that contributed no functions because it did not
+            // parse is not the same as one that defines none.
+            Err(_) => unreadable += 1,
+        }
+    }
+    Tier1Report {
+        tallies: chiero_recipe::tier1_counts(recipes, &functions),
+        files: files.len(),
+        functions: functions.len(),
+        unreadable,
+    }
 }
 
 /// One file's verdict.
