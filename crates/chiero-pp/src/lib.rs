@@ -1518,6 +1518,26 @@ impl Engine {
                         continue;
                     }
                     let Some((args, close)) = parse_args(&input, 0) else {
+                        // **An argument list that never closes is reported, not abandoned.** The
+                        // `(` was seen and no matching `)` follows, so this is gcc's
+                        // "unterminated argument list invoking macro" — and the macro name was
+                        // being pushed through unexpanded with nothing said, which is a wrong
+                        // token stream rather than a missing diagnostic.
+                        //
+                        // **A directive inside the arguments arrives here too**, and is why this
+                        // matters: `parse_args` scans the current line group and a directive ends
+                        // it, so the `)` is out of reach. Multi-line calls are unaffected — their
+                        // tokens are in one group — which is the line the six legal rows hold.
+                        //
+                        // gcc under `-std=gnu11` would expand it, processing the directive as an
+                        // extension; under `-pedantic-errors`, where this project calibrates, it
+                        // refuses. Supporting the extension is a scope decision for an owner;
+                        // reporting rather than silently mis-expanding is not.
+                        let name = token.text.clone();
+                        self.diagnostics.push(Diagnostic {
+                            span: token.token.span,
+                            message: format!("unterminated argument list invoking macro `{name}`"),
+                        });
                         output.push(token);
                         continue;
                     };
