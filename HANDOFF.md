@@ -487,7 +487,39 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 386) — 1589 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 387) — 1590 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 386 closed the enumeration work.** The fitting and widened branches are now one rule:
+> sign from `lo < 0`, width the narrowest of `int`/`long` that holds the range. The widened branch
+> had carried its own signedness test, `lo < 0 || hi < (1 << 63)`, which was reading `hi` to ask
+> "does this need 64 unsigned bits" and then using the answer as a *sign* — **two questions in one
+> expression**, the same shape wave 385 found in `_Generic`. That makes it twice in three waves;
+> when one expression is load-bearing for two decisions, split it before it is wrong for one.
+>
+> **A diagnostic must be guarded by its own question.** The 6.7.2.2p2 report rode the "did we
+> widen" branch, which was fine only while widening and non-representability coincided. After
+> unification they do not — `{ A = 4294967295u }` is `unsigned int` *and* still refused — so it
+> now has its own guard. Left attached, it would have made that program silently legal.
+>
+> **Two sections are censused and sized, ready to start.** Both measured against gcc under
+> `-pedantic-errors`, with VPP counts:
+>
+>   - **Bit-fields (6.7.2.1)** — 14 refused programs and a legal half; boundaries measured: the
+>     width limit is the *declared type's* width (`_Bool` 1, `char` 8, `int`/enum 32, `long long`
+>     64), an unnamed bit-field obeys every width rule but may be zero-width, and any integer
+>     constant expression is a valid width. **769 declarations in VPP**, 3 zero-width. gcc emits
+>     *two* reports for one bit-field wrong two ways (bad type + bad width) — consistent with
+>     contract 20, since those are two separate fixes, so assert counts and not presence.
+>   - **Designated initializers (6.7.9)** — 14 refused and a large legal half. Note the trap:
+>     `struct S s = { .a = 1, .a = 2 };` is **legal**, last wins (measured, prints 2), not a
+>     duplicate-designator violation. **33,814 uses in VPP** — the largest construct count this
+>     project has measured, against `int a[0]`'s 1777 — so the legal half dominates and the corpus
+>     silence channel is the gate that would catch a mistake.
+>
+> The GNU range designator `[0 ... 2]` is refused under `-pedantic-errors` exactly as
+> `case 1 ... 3` is, so wave 350's rule applies: **a rule about a GNU extension cannot live in the
+> ratchet at all.** Measured in VPP: range designators once, case ranges 23 times. One use is
+> still a use — the criterion that kept `int a[0]` — so support it, but its cost is one construct.
 >
 > **Wave 385 found a regression wave 384 caused, by running the sweep §9 asked for.** `_Generic`
 > matched associations with `at == self.bare(cty)` under a comment saying interned ids *were* the
