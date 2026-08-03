@@ -487,24 +487,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 415) — 1622 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 417) — 1627 tests, 4 ignored, M1 268/268 by contract
 >
-> ### M3 provenance: both operations exist and are mutation-clean
+> ### M3: both provenance operations plus the recipe loader
 >
-> `chiero-tool` now holds `explain_macro_expansion` (050 c6, 060 c10) and `expansion_sites`
-> (050 c7). M2's headline gate was met first: `vec.h`, `pool.h`, `bitmap.h`, `clib.h` each
-> preprocess, parse **and** analyse clean, agreeing with gcc on all four.
+> `chiero-tool` holds `explain_macro_expansion` (050 c6, 060 c10) and `expansion_sites`
+> (050 c7). **`chiero-recipe` is no longer a stub**: it loads 042 §4's example verbatim and
+> refuses a recipe its own fixtures could not adjudicate (042 c1, c3-load-half, §5).
 >
 > * **Leaves, not depth, decide what a chain is.** `vec_add1` and the `_vec_resize` in its
 >   body share a written position and are *one* chain; two items of a `foreach_` list share a
->   position and are *two*. Depth cannot separate them — that bug answered a 47-item list with
->   one arbitrary item.
-> * A frame carries `args`, so an answer names the list macro, the per-item macro **and the
->   item** (060 c10).
-> * `Site` carries `item_line`/`item_col`. Deduplicating on the user-facing position alone
->   collapsed 47 items into 1 site and broke the precision 060 §3 is built on.
-> * Verified on a **real** `foreach_` chain: `_vec_len → vec_len → vec_end → vec_foreach`,
->   from the vendored corpus, each frame with true definition file, line and body.
+>   position and are *two*.
+> * A frame carries `args`; `Site` carries `item_line`/`item_col`. Deduplicating on the
+>   user-facing position alone collapsed 47 items into 1 site.
+> * Verified on a **real** chain from the vendored corpus: `_vec_len → vec_len → vec_end →
+>   vec_foreach`, each frame with true definition file, line and body.
+>
+> ### ⚠️ Recipe evaluation is absent, not stubbed — keep it that way until it is real
+>
+> A `good` fixture passes exactly when it produces **no** finding, so an evaluator returning
+> "no findings" satisfies 042 contract 2 for every recipe while covering nothing. That is the
+> silent under-matching §5 exists to catch, dressed as a green gate. Absent, the gap is
+> visible. The unread `scope`/`track`/`require` clauses are kept whole as `UnparsedClause` and
+> their **count is asserted**, so the slice is stated in the test rather than implied.
+>
+> ### Next on this front
+>
+> * 042 c2/c3 in full — needs the tier-2 evaluator; the first real piece is tier-1 structural
+>   matching, which 080 M3 wants swept over all of VPP with candidate counts per recipe (c7).
+> * 042 c5d **match-count baseline**: fixtures pin the fixture; only the per-recipe match count
+>   over VPP catches a rule that silently stops covering a third of the tree.
+> * VPP parser-coverage percentage published and tracked (080 M3 exit).
 >
 > ### Still open on this front
 >
