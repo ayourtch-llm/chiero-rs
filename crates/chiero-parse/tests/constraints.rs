@@ -498,3 +498,80 @@ fn a_static_assert_comma_still_needs_a_message() {
     // The C23/GNU form with no comma at all stays legal.
     assert!(diags("_Static_assert(1);\n").is_empty());
 }
+
+/// **A member declaration that names only a type declares nothing** (C 6.7.2.1p1), and chiero
+/// accepted it silently.
+///
+/// `struct S { int; };` is refused by gcc under `-pedantic-errors` — "declaration does not
+/// declare anything" — which is where this project calibrates constraint violations (wave 314).
+/// The message the parser already carries, "a member declaration must declare a member", is
+/// worded for exactly this and fires only on a bare `;`.
+///
+/// **Found by inverting a wrong assumption.** The sweep over `vlib` flagged
+/// `struct S { int a; ; };` as a finding because gcc takes it under `-std=gnu11`. Reading that as
+/// a defect was the mistake: gcc refuses it under `-pedantic-errors` too ("extra semicolon in
+/// struct or union"), so chiero was already right, and the same census turned up the case chiero
+/// genuinely misses. **A sweep finding is only a defect once the pedantic question has been
+/// asked.**
+///
+/// The discriminators are the two shapes that also declare no *named* member and are not this
+/// rule: an unnamed bit-field, which declares a member and merely leaves it nameless, and an
+/// anonymous struct member, which declares its own members into the enclosing one. gcc separates
+/// them too — `struct S { int : 5; };` gets "struct has no named members", a different sentence.
+#[test]
+fn a_member_declaration_that_names_only_a_type_declares_nothing() {
+    for (src, want) in [
+        (
+            "struct S { int; };\n",
+            "a member declaration must declare a member",
+        ),
+        (
+            "struct S { const int; };\n",
+            "a member declaration must declare a member",
+        ),
+        (
+            "struct S { int a; unsigned; };\n",
+            "a member declaration must declare a member",
+        ),
+        (
+            "union U { int; };\n",
+            "a member declaration must declare a member",
+        ),
+        // A tag with no declarator is the same fault: `struct T;` inside a member list declares
+        // nothing into the enclosing record.
+        (
+            "struct S { struct T; };\n",
+            "a member declaration must declare a member",
+        ),
+        // The bare `;` this message used to be reserved for keeps it.
+        (
+            "struct S { int a; ; };\n",
+            "a member declaration must declare a member",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **An unnamed bit-field declares a member** and merely leaves it nameless.
+        "struct S { int : 5; };\n",
+        "struct S { int a; int : 0; int b; };\n",
+        // **An anonymous struct or union declares its members into the enclosing record.**
+        "struct S { struct { int x; }; };\n",
+        "struct S { union { int x; float y; }; int z; };\n",
+        // And the ordinary forms.
+        "struct S { int a; };\n",
+        "struct S { int a, b; };\n",
+        "struct S { struct T *p; };\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
