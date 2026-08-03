@@ -6153,3 +6153,82 @@ fn a_string_initialiser_and_an_array_length_are_more_forgiving_than_this() {
         );
     }
 }
+
+/// **A top-level qualifier is not part of a function's type** (C 6.7.6.3p15), which chiero reads
+/// six ways wrong.
+///
+/// §9 pointed this wave at `types_conflict`, which compares interned ids for everything except
+/// the shapes waves 378 and 380 taught it. Interned ids carry qualifiers, and C does not: in
+/// determining compatibility, each parameter's type is taken **unqualified**, and a qualifier on
+/// a return type is meaningless and likewise dropped.
+///
+/// So `int f(const int); int f(int);` is one declaration and chiero calls it two — in both
+/// orders, for `volatile` as well, through a typedef, and on the return type in both spellings.
+/// Six false positives from one comparison, which is the class wave 376 recorded as expensive and
+/// wave 380 found three of.
+///
+/// **The qualifier that is not top-level still counts**, and that is the whole discriminator:
+/// `int f(const int *)` against `int f(int *)` is a genuine conflict, because the `const` is on
+/// the pointee and travels with the type. A fix that stripped qualifiers recursively would accept
+/// it and lose a real rule.
+#[test]
+fn a_top_level_qualifier_is_not_part_of_a_function_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // A parameter's own qualifier, in both orders and both spellings.
+        "int f(const int); int f(int);",
+        "int f(int); int f(const int);",
+        "int f(volatile int); int f(int);",
+        "typedef const int C; int f(C); int f(int);",
+        // The return type's, likewise — a qualifier there has no meaning to drop.
+        "const int f(void); int f(void);",
+        "int f(void); const int f(void);",
+        "int *f(void); int * const f(void);",
+        // Already accepted, kept so a fix that trades one for another is caught.
+        "int f(int * const); int f(int *);",
+        "int f(register int); int f(int);",
+        "int f(const int); int f(const int);",
+        "int f(int a[static 3]); int f(int *a);",
+        "int f(int a[3][4]); int f(int (*a)[4]);",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **Not top-level**: the `const` is on the pointee and is part of the type.
+        (
+            "int f(const int *); int f(int *);",
+            "conflicting types for `f`",
+        ),
+        // A genuine difference in the pointee's own array bound.
+        (
+            "int f(int a[3][4]); int f(int (*a)[5]);",
+            "conflicting types for `f`",
+        ),
+        // And the ordinary conflicts, which the widening must not swallow.
+        (
+            "int f(char, int); int f(int, char);",
+            "conflicting types for `f`",
+        ),
+        ("int a[2]; char a[2];", "conflicting types for `a`"),
+        ("int a; double a;", "conflicting types for `a`"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
