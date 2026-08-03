@@ -487,7 +487,51 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 396) — 1604 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 397) — 1605 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 396 named all three builtin families and all three function-name spellings.** The
+> undeclared-name exemption said `__builtin_` only; gcc declares `__atomic_*` and `__sync_*`
+> intrinsically too (16 of 112 vppinfra files in the sweep; **209 + 22 VPP uses**). The prefix
+> match is deliberately exact — a `contains()` mutant that would swallow `__atomi_load` is
+> KILLED — because a loose exemption turns a missing diagnostic into a wrong answer.
+>
+> ### Searching for a *shape* works, and costs one grep
+>
+> §9 recorded, after three waves hit it by accident, that "a guard, arm or loop written for one
+> case with its neighbours left" was worth grepping for. Doing it produced **`__PRETTY_FUNCTION__`
+> immediately** — refused while `__func__` and `__FUNCTION__` were accepted. That is the first
+> finding this project has taken from a pattern rather than from a program.
+>
+> The same grep **cleared** two candidates, which is the half of a search worth writing down:
+> the preprocessor's `"__DATE__" | "__TIME__" | "__FILE__"` correctly separates string-valued
+> builtin macros from number-valued ones (`__LINE__`), and `packed`/`aligned` already name both
+> spellings.
+>
+> **The other recurring shape is now retired.** "Comparing interned ids where C asks
+> compatibility" was found by accident in waves 379, 380, 381 and 384. Grepping TyId equality
+> across sema produced one live candidate — the typedef redeclaration rule,
+> `(Meaning::Typedef(a), Meaning::Typedef(b)) if a == b` — and identity is **correct** there:
+> C 6.7p3 permits redeclaring a typedef only with the *same* type, stricter than compatible, and
+> gcc refuses `typedef enum E T; typedef unsigned T;` even though those types are compatible.
+> Five probe rows behave correctly. **Two shapes processed: one defect, one shape closed.**
+>
+> ### A hazard in reading sweep output
+>
+> The typedef rows first *appeared* to show chiero silent where gcc refuses. They did not: gcc
+> refuses them too, so they classify as **Agree**, and an ad-hoc `grep FINDINGS` shows only the
+> findings section. **"Not in the findings list" is not "chiero said nothing"** — read the bucket.
+> That misreading would have produced a whole wave against a rule that already works.
+>
+> ### The queue, from the sweep
+>
+> - **19 files: `an enumerator's value is not representable as an int`**, **3: `struct has no
+>   members`** — waves 386/387's rules, `-pedantic-errors`-only in gcc while VPP builds
+>   `-std=gnu11`. **Not defects**: lowering does not consult sema's diagnostics, so they are noise,
+>   and firing them is wave 314's calibration as designed. Whether sema gains a non-pedantic mode
+>   is an **owner's design decision**.
+> - 2: `invalid initializer: a structure or union is copied only from its own type` — unexamined.
+> - 1 each: incompatible pointer initialisation, two macro redefinitions, `#error "Unsupported OS"`.
+> - **Unswept**: `vnet` (452 .c), `vlib` (47), `plugins` (780). vppinfra alone has been run.
 >
 > **Waves 394-395 built `cargo xtask sweep --tree <path>` and it immediately paid.** It runs
 > chiero and gcc over an external C tree, buckets each file by the pair of outcomes, and groups
