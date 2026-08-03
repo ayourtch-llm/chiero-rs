@@ -487,7 +487,45 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 391) — 1594 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 392) — 1595 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 391 added the rule that an array size has integer type** (C 6.7.6.2p1), which chiero did
+> not have: anything that failed to fold became a VLA, so `int a[1.5];` was silent as a local and
+> a parameter and *variably modified* at file scope and in a member. Two misses, three wrong
+> sentences. Ratchet 276 → 280.
+>
+> **Placement was the design.** The check sits in the arm that was about to say "VLA" — so only an
+> already-unfoldable expression is typed — **before** the value check (`int a[-1.5];` is the type
+> error, `int a[-2147483649];` the value one), **after** the poison early-return (so
+> `int a[1/0];` keeps its contract-20 divergence), and **quietly**, because these expressions were
+> never typed before and reporting from them would be far wider than the rule.
+>
+> **An equivalent mutant means dead code, not a thin fixture.** "Qualifiers not stripped" survived
+> because `Qual` lives in a table beside `types`, so `self.out.types[id]` already yields the
+> unqualified shape — a `bare` call there could never change an answer, exactly as the `Qual` doc
+> says. The call was removed rather than tested around. **When a mutant survives, ask whether it
+> is equivalent before hunting for a row**; hunting first would have been unbounded.
+>
+> **Convergence, measured rather than assumed.** Re-censusing two sections this project has
+> already closed, with deliberately fresh programs:
+>
+>   - **enums** (closed by waves 383/384/386): **4** new candidates from 20 programs — an
+>     enumerator referring to itself (`enum E { A = A };`), to a later one (`{ A = B, B }`), an
+>     enumerator colliding with a typedef, and a trailing comma.
+>   - **bit-fields** (closed by wave 387): **1** from 13 — `struct S { _Atomic int a : 2; };`,
+>     which gcc gives its own message ("has atomic type"), distinct from "has invalid type".
+>
+> Both non-zero, so **a 30-program census samples a section rather than exhausting it**. But the
+> shapes differ: the bit-field yield is thin and its one candidate is a C11 feature, while the
+> enum yield is four core rules. Worth re-censusing closed sections periodically — the gcc half
+> costs minutes and needs no build. **chiero's side of both probes is unrun** and is the next
+> cheap thing to do.
+>
+> **Also banked, censused**: `_Alignas` on a *function* (refused by gcc in every spelling, while
+> `_Alignas(8) void (*p[2])(void);` is legal — an array of function pointers is an object);
+> designated initializers (6.7.9, **33,814** VPP uses — repeated designators *and* indices are
+> legal, last wins; there is no "already initialised" rule in C to invent); parser-level
+> constraints (23 refused, against `chiero-parse`'s 7-test surface, the thinnest in the pipeline).
 >
 > **Wave 390 gave a bad array bound its declarator's name in the three paths that had none.** The
 > name comes from `self.declaring`, which the object and member paths set; **parameters**,
