@@ -41,6 +41,21 @@ fn in_file_selects_by_glob() {
     // A literal `.` is escaped: without that, `*_cli.c` would also take `foo_cliXc`.
     assert_eq!(s.selects(&f("x", "src/vnet/bfd/bfd_cliXc")), Selection::No);
 
+    // **Both anchors need a row that only they reject.** Every case above fails for reasons
+    // other than anchoring, so an unanchored glob passed all of them — mutation showed the
+    // `^` and the `$` were each carrying no weight in the suite. A path with the pattern
+    // buried in the middle is the only input that tells an anchor from its absence.
+    assert_eq!(
+        s.selects(&f("x", "extra/src/vnet/bfd/bfd_cli.c")),
+        Selection::No,
+        "a glob is anchored at the start: a prefix must not be skipped"
+    );
+    assert_eq!(
+        s.selects(&f("x", "src/vnet/bfd/bfd_cli.c.bak")),
+        Selection::No,
+        "a glob is anchored at the end: an editor backup is not a source file"
+    );
+
     // **A single `*` does not cross a separator.** This is the row that distinguishes the two
     // wildcards; the `**` rows above pass under either reading.
     let one = scoped("in_file \"src/vnet/*_cli.c\"");
