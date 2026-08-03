@@ -487,7 +487,50 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 388) — 1591 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 389) — 1592 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 388 fixed the duplicate reporting of a parameter's type.** The list is resolved up to
+> three times — the function's type, `decl_types`, then the body — and everything raised inside
+> `ty_of` came out once per pass (2 for a declaration, 3 for a definition; gcc says 1). A `quiet`
+> counter and a `re_resolving` wrapper silence the later passes.
+>
+> **Suppression, not de-duplication — and measurement chose the mechanism.** The obvious fix is a
+> memo on `ty_of`, and it would have broken `int f(enum E { A } e){ return A; }`: a tag or
+> enumerator declared in a parameter list is visible in the body (6.9.1p9), and that works
+> *because* the later pass re-resolves and re-declares. The side effects still run; only the
+> reporting stops. **Before removing a repeated call, ask what the repeat is establishing.**
+>
+> **The tempting wrong fix was made a mutant instead of an argument.** Filtering duplicate message
+> text satisfies every one-report row; `void f(int a[-1], int b[-2]);` must still give two, and
+> since the parameter path drops the declarator's name both strings are identical, so a text
+> filter collapses them. That mutant is KILLED by the fixture's counting half. **When you can
+> name the wrong fix, put it in the mutation set.**
+>
+> **What did *not* double located the defect**: `_Alignas` on a parameter and `duplicate
+> parameter` report once, being raised beside the call rather than inside `ty_of`. Wave 359 met
+> this same double pass from the other side and fixed only its symptom.
+>
+> **Two measured findings ready to start, both small:**
+>
+>   - **The `void` parameter is three rules, not one.** gcc's "'void' must be the only parameter"
+>     is about an *unnamed* `void` sharing the list (`f(void, int)`, `f(int, void)`,
+>     `f(void, void)`). A *named* `void` parameter is legal in a **declaration** — warning only,
+>     even `f(int a, void v)` — and fails only in a **definition**, as the existing
+>     incomplete-parameter rule. A third message exists for `f(const void)`: "'void' as only
+>     parameter may not be qualified". chiero applies the sharing rule to a named `void`, so
+>     `void f(void v){}` emits a message gcc does not — a **false positive**, and removing it is
+>     not a de-duplication. Unchecked here: `int f(void v);`, `int f(int a, void v);`,
+>     `int f(const void);`.
+>   - **A parameter's array bound loses the declarator's name.** "array length is negative" where
+>     a local says "array length of `a` is negative". gcc names it in *every* position — local,
+>     parameter, file, member, `int (*a)[-1]` — with one separate wording for the truly unnamed
+>     parameter, "size of unnamed array is negative". So it is one message in two forms, not a
+>     special case per position. (`int a[0]` stays accepted — declared divergence, 1777 VPP uses.)
+>
+> **Still banked, censused**: `_Alignas` on a *function* (accepted here, refused by gcc; the
+> discriminator is that `_Alignas(8) void (*p)(void);` is legal, a pointer being an object);
+> designated initializers (6.7.9, **33,814** VPP uses — `{ .a = 1, .a = 2 }` is *legal*, last
+> wins); parser-level constraints (23 refused, against `chiero-parse`'s 7-test surface).
 >
 > **Wave 387 censused a section that was already finished, and that is why it found anything.**
 > The 6.7.2.1 bit-field census — 35 programs, half legal — reproduced gcc exactly on every width
