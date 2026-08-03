@@ -201,11 +201,22 @@ fn coverage_counts_how_far_chiero_got_on_each_translation_unit() {
         v(d("parse: expected `)`"), Outcome::Clean),
         // Never got past the preprocessor, so the parser was never asked.
         v(d("pp: cannot include foo.h"), Outcome::Clean),
+        // **A second preprocessor failure, so the fixture is asymmetric.** With one `pp:` row
+        // and one `parse:` row, swapping the two stages preserves every total and the test
+        // cannot tell the stages apart at all — mutation demonstrated exactly that.
+        v(d("pp: unterminated conditional"), Outcome::Clean),
+        // An outcome with none of this module's prefixes: an unreadable file. The parser was
+        // never handed it, so it must count toward no stage — charging it to sema would
+        // silently inflate every figure in the report.
+        v(
+            Outcome::NotRun("unreadable: permission denied".into()),
+            Outcome::Clean,
+        ),
     ];
 
     let c = coverage(&verdicts);
-    assert_eq!(c.total, 4);
-    assert_eq!(c.preprocessed, 3, "all but the pp failure");
+    assert_eq!(c.total, 6);
+    assert_eq!(c.preprocessed, 3, "the three that reached the parser");
     assert_eq!(c.parsed, 2, "the two that got past the parser");
     assert_eq!(c.analysed, 1);
 

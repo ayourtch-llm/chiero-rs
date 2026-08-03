@@ -457,6 +457,13 @@ impl Coverage {
 
 /// Classify each verdict by the furthest stage chiero reached.
 ///
+/// **This measures "got through without a diagnostic", not "the parser understood it".** A
+/// construct the parser reads correctly and then refuses on a constraint — VPP's extra
+/// semicolon in a struct, legal under `gnu11` and refused under `-pedantic-errors` — counts
+/// here as not parsed. So the published figure is bounded below by the project's calibration,
+/// and the owner's open pedantic-mode decision moves it. Read a shortfall as a lead to
+/// investigate, never as a count of parser gaps.
+///
 /// **Reads the `pp:`/`parse:`/`sema:` prefix this module itself writes.** The alternative is
 /// threading a stage through `Outcome`, which would put a field on every construction site
 /// including the synthetic ones in tests; the prefix is produced in exactly one place, a few
