@@ -3642,9 +3642,14 @@ fn a_storage_class_belongs_to_its_context() {
         let cases: [(&str, bool, String); 5] = [
             ("file scope", file, format!("{sc}int x;")),
             (
+                // **No initializer here on purpose.** This grid is about *storage classes in
+                // contexts*; the `= 1` it used to carry was scaffolding, and it made the
+                // `extern`/block cell illegal for an unrelated reason — C 6.7.9p5 forbids
+                // `extern int x = 1;` inside a function, while `extern int x;` there is exactly
+                // the legal thing this row means to assert. Found when that rule was added.
                 "block scope",
                 block,
-                format!("int f(void){{ {sc}int x = 1; return x; }}"),
+                format!("int f(void){{ {sc}int x; return x; }}"),
             ),
             (
                 "`for` initializer",
@@ -7422,8 +7427,10 @@ fn a_bitfield_may_not_have_atomic_type() {
 ///
 /// The three that were silent:
 ///
-///   - **A `typedef` may not be initialized** (C 6.7p2 — a declaration with `typedef` declares no
-///     object, so there is nothing to initialize). Any declarator form.
+///   - **A `typedef` may not be initialized** turned out to be unreachable from here: the parser
+///     *drops* a typedef's initializer, so the AST has nothing for sema to see. It lives in
+///     `chiero-parse`'s constraints test instead — the same defect the arm below it already
+///     fixes for functions.
 ///   - **An array of functions** (C 6.7.6.2p1 — the element type may not be a function type).
 ///     The discriminator is `int (*f[3])(void);`, an array of function *pointers*, which is both
 ///     legal and the thing anyone actually writes.
@@ -7441,20 +7448,6 @@ fn a_declaration_that_declares_nothing_may_not_be_initialized() {
     };
 
     for (src, want) in [
-        // **A `typedef` names a type, so there is nothing to initialize** — in every declarator
-        // form, since a fix keyed on the plain one would miss the others.
-        (
-            "typedef int T = 1;",
-            "typedef `T` may not have an initializer",
-        ),
-        (
-            "typedef int T[1] = {0};",
-            "typedef `T` may not have an initializer",
-        ),
-        (
-            "typedef int *T = 0;",
-            "typedef `T` may not have an initializer",
-        ),
         // **An array of functions**, directly, two-dimensional, and through a typedef — the last
         // is the one a check written against the syntax rather than the type would miss.
         (

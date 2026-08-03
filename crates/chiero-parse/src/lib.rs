@@ -920,6 +920,14 @@ impl<'a> Parser<'a> {
     ) -> DeclId {
         match (specs.is_typedef, name) {
             (true, Some(name)) => {
+                // **A `typedef` is not initialized** (C 6.7p2): the declaration declares a type
+                // and no object, so there is nothing for `= 1` to initialize. `DeclKind::Typedef`
+                // has no room for an initializer, so without this the expression was parsed and
+                // then silently discarded — the same wrong-answer-not-missing-diagnostic that the
+                // function arm below already guards against, in the arm beside it.
+                if init.is_some() {
+                    self.error(span, "a `typedef` cannot be initialized");
+                }
                 self.oracle.declare(name, true);
                 self.ast.add_decl(
                     DeclKind::Typedef {

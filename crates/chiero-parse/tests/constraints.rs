@@ -383,3 +383,55 @@ fn an_undeclared_old_style_parameter_defaults_to_int() {
         );
     }
 }
+
+/// **A `typedef` may not have an initializer** (C 6.7p2: a declaration with `typedef` declares no
+/// object, so there is nothing to initialize).
+///
+/// Found by running wave 387's 24-program declaration census against chiero for the first time.
+/// The rule has to live here rather than in sema because `finish_declarator_inner` **drops** the
+/// initializer when the specifiers say `typedef` — `DeclKind::Typedef` has no field for one — so
+/// `typedef int T = 1;` reached sema indistinguishable from `typedef int T;`.
+///
+/// That is the same defect the arm immediately below it already fixes for functions, whose
+/// comment says it exactly: "`DeclKind::Func` has no room for an initializer, so without this the
+/// `= 1` was parsed and then silently discarded — a wrong answer rather than a missing
+/// diagnostic". The neighbouring arm was left. **When a node has no room for something the
+/// grammar allows, every arm that builds it needs the same guard.**
+#[test]
+fn a_typedef_may_not_have_an_initializer() {
+    for (src, want) in [
+        ("typedef int T = 1;\n", "a `typedef` cannot be initialized"),
+        (
+            "typedef int T[1] = {0};\n",
+            "a `typedef` cannot be initialized",
+        ),
+        ("typedef int *T = 0;\n", "a `typedef` cannot be initialized"),
+        // A function typedef takes this sentence, not the function one beside it.
+        (
+            "typedef int F(void) = 1;\n",
+            "a `typedef` cannot be initialized",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        "typedef int T;\n",
+        "typedef int F(void);\n",
+        "typedef int A[3];\n",
+        "typedef int *P;\n",
+        // An ordinary initialized object is untouched.
+        "int x = 1;\n",
+        "static int y = 2;\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}

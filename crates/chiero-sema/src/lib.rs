@@ -1747,6 +1747,19 @@ impl Cx<'_> {
                     }
                 }
                 self.check_complete(id, t);
+                // **`extern` and an initializer do not go together in a block** (C 6.7.9p5). At
+                // *file* scope `extern int x = 1;` is a definition and perfectly legal, so the
+                // rule is about block scope rather than about `extern` — both halves are rows in
+                // the fixture. Inside a function the declaration refers to an object defined
+                // elsewhere, and there is nothing here to initialize.
+                if scope == Scope::Block && storage.extern_ && init.is_some() {
+                    let text = name.and_then(|n| self.text(n)).unwrap_or("?").to_owned();
+                    let span = self.ast.decl(id).span;
+                    self.error(
+                        span,
+                        format!("`{text}` has both `extern` and an initializer"),
+                    );
+                }
                 // **C 6.7.9p22: an array declared without a length takes its initializer's.**
                 // The length is not knowable where the *type* is built — `ty_of` sees the
                 // declarator and not the initializer — so the type is rebuilt here, at the one
@@ -2294,6 +2307,27 @@ impl Cx<'_> {
                 // unknown. The two unknowns are not the same unknown.
                 if has_no_size(&self.out, e) {
                     self.error(node.span, "array has an incomplete element type");
+                }
+                // **An array's element may not be a function** (C 6.7.6.2p1). `int f[3](void);`
+                // is nearly always a typo for `int (*f[3])(void);`, an array of function
+                // *pointers*, which is legal and unaffected — the pointer is the element there.
+                //
+                // Asked about the *resolved* element type rather than the syntax, so it also
+                // catches `typedef int F(void); F a[3];`, where nothing in the declarator looks
+                // like a function.
+                //
+                // Separate from `has_no_size` above: a function type has no size either, but
+                // "incomplete element type" sends a reader looking for a missing definition.
+                if matches!(self.out.types[e.0 as usize], Ty::Func { .. }) {
+                    let n = self
+                        .declaring
+                        .and_then(|n| self.text(n))
+                        .map(|t| format!(" `{t}`"))
+                        .unwrap_or_default();
+                    self.error(
+                        node.span,
+                        format!("declaration of{n} as an array of functions"),
+                    );
                 }
                 let l = match len {
                     chiero_ast::ArrayLen::Zero => ArrayLen::Zero,

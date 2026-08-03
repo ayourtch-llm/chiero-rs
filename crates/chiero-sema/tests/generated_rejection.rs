@@ -929,6 +929,18 @@ const VIOLATIONS: &[(&str, &str)] = &[
     // for the first two and called the others variably modified.
     // A bit-field may not have atomic type, wave 392 — found by re-censusing 6.7.2.1, which
     // wave 387 had left agreeing with gcc across 35 programs.
+    // Declaration constraints, wave 393 — from running wave 387's 24-program parser-level
+    // census against chiero for the first time. 20 of the 24 were already caught.
+    ("typedef with an initializer", "typedef int T = 1;"),
+    ("array of functions", "int f[3](void);"),
+    (
+        "array of functions via a typedef",
+        "typedef int F(void); F a[3];",
+    ),
+    (
+        "extern with an initializer in a block",
+        "void f(void){ extern int x = 1; (void)x; }",
+    ),
     ("atomic bit-field", "struct S { _Atomic int a : 2; };"),
     (
         "atomic unnamed bit-field",
@@ -995,7 +1007,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 282;
+    const FLOOR: usize = 286;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
