@@ -7689,3 +7689,61 @@ fn one_declaration_defines_its_tag_once() {
         );
     }
 }
+
+/// **A declaration with no storage class adopts the prior linkage, however the function is
+/// spelled** (C 6.2.2p5: a function declared with no storage-class specifier is as if `extern`;
+/// 6.2.2p4: `extern` takes the linkage of a prior visible declaration).
+///
+/// `static int f(void){...} int f(void);` is accepted, and the same program written through a
+/// function-type typedef — `typedef int F(void); static int f(void){...} F f;` — is refused with
+/// "non-static declaration of `f` follows static declaration". The rule reads the *declarator's
+/// shape* rather than the resolved type, so a function that does not look like one from the
+/// syntax is treated as an object and its missing storage class as external.
+///
+/// Same shape as wave 389's `void` parameter, where the special case was recognised by the
+/// parser's folding rather than by the type, and a typedef defeated it. **Ask the type, not the
+/// spelling.**
+///
+/// Found by the sweep over vppinfra: VPP declares its formatters this way —
+/// `format_function_t format_bihash_kvp_8_8;` after a `static inline` definition in the same
+/// header — so it fires on real code.
+#[test]
+fn a_declaration_with_no_storage_class_adopts_prior_linkage() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // The spellings that already worked.
+        "static int f(void); int f(void);",
+        "static int f(void){ return 0; } int f(void);",
+        "static inline int f(void){ return 0; } int f(void);",
+        "static int f(void); extern int f(void);",
+        // **Through a function-type typedef**, which is how VPP writes it.
+        "typedef int F(void); static int f(void){ return 0; } F f;",
+        "typedef int F(void); static int f(void); F f;",
+        // The typedef used first, then the ordinary spelling.
+        "typedef int F(void); static F f; int f(void);",
+        // A typedef'd declaration with no prior static is an ordinary external function.
+        "typedef int F(void); F f;",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    // **An object is not a function**, and 6.2.2p5 is about functions: `static int n; int n;` is
+    // a genuine conflict and stays one. This row is what stops the fix from making every missing
+    // storage class adopt.
+    assert_eq!(
+        diags("static int f(void){ return 0; } int f;"),
+        vec!["`f` is declared as a different kind of thing".to_string()]
+    );
+}
