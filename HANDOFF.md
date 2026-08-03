@@ -487,7 +487,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 397) — 1605 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 398) — 1605 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 397: the sweep reported "0 findings" for a subtree it had not tested.** `Agree` held two
+> opposite facts. *Both clean* means the file was tested and chiero matched gcc. *Both diagnosed*
+> means gcc refused it too — on a real tree almost always the flags, a generated header or a `-D`
+> the build passes — so gcc never judged the C and chiero refusing it proves nothing.
+>
+> `vlib` showed it: `findings: 0  misses: 0  agree: 45`, which reads as a clean subtree. gcc
+> compiles **none** of those 47 files under the flags used. All 45 were both-refused; the sweep
+> had learned nothing. Now the buckets are separate and the report states outright
+> `-> gcc accepted 0 of 47, so that is what this sweep could test`.
+>
+> **This is the failure the tool was built against, inside the tool.** Its own docs say a silent
+> skip is what makes a sweep lie about coverage, and the bucketing then hid 45 untested files
+> behind a number that looked like success. **Zero findings out of zero tested and zero findings
+> out of a hundred tested are the same number and opposite results** — a count is a report only
+> when it says what it could not measure.
+>
+> ### What that implies for the remaining sweep
+>
+> - **vppinfra** is the only subtree actually swept: gcc accepts most of it, findings 46.
+> - **vlib (47), vnet (452), plugins (780) are untested**, not clean. The three stub headers
+>   (`vppinfra/config.h`, `vlib/config.h`, `vpp/app/version.h`) are enough for vppinfra and not
+>   beyond it. Sorting the flags for one of those subtrees is worth more than another rule.
+> - Re-read any earlier sweep number with the new bucketing before trusting it.
+>
+> ### The queue, from vppinfra
+>
+> - **19: `an enumerator's value is not representable as an int`**, **3: `struct has no members`**
+>   — waves 386/387's rules, `-pedantic-errors`-only in gcc while VPP builds `-std=gnu11`. **Not
+>   defects**: lowering does not consult sema's diagnostics, so they are noise, and firing them is
+>   wave 314's calibration as designed. A non-pedantic sema mode is an **owner's decision**.
+> - 2: `invalid initializer: a structure or union is copied only from its own type` — unexamined,
+>   and the most likely real defect left in that subtree.
+> - 1 each: incompatible pointer initialisation, two macro redefinitions, `#error "Unsupported OS"`.
+>
+> ### Method notes carried forward
+>
+> - **Searching for a shape costs one grep** and either finds something or retires the shape. Two
+>   done: "a guard naming one case of several" → found `__PRETTY_FUNCTION__`; "identity where C
+>   asks compatibility" → **retired**, the one live candidate (typedef redeclaration) is correct.
+> - **"Not in the findings list" is not "chiero said nothing"** — read the bucket. That misreading
+>   nearly produced a wave against a rule that already works.
 >
 > **Wave 396 named all three builtin families and all three function-name spellings.** The
 > undeclared-name exemption said `__builtin_` only; gcc declares `__atomic_*` and `__sync_*`
