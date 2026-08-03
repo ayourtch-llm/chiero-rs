@@ -487,7 +487,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 399) — 1606 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 400) — 1607 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 399: a failed specifier no longer cascades into the member rule.**
+> `struct S { struct; };` gave two diagnostics where gcc gives one, the second being wave 398's
+> own rule firing on poison. Contract 20; the crate's existing pattern is "poison is not a
+> non-integer type".
+>
+> ### A surviving mutant has *three* readings, not two
+>
+> Wave 398's `members: Some(_)` clause had no killing test, and both readings applied to it in
+> sequence:
+>
+> 1. **The code is wrong.** The mutant that dropped the clause produced *gcc's* single message
+>    while the real code cascaded. Chasing a survivor changed the implementation, not the fixture.
+> 2. **The mutant is equivalent.** With the cascade fixed, it survives again — and now legitimately,
+>    since the only input the clause excludes is an unnamed tag with no member list, for which the
+>    specifier always reports and `specs_failed` returns first. The clause is removed (wave 391's
+>    rule).
+>
+> The second reading only became true because the first was acted on. **Ask "is the code wrong"
+> before "is the mutant equivalent"** — the reverse order would have deleted the clause and kept
+> the cascade.
+>
+> ### Read the bucket, not the findings list
+>
+> I misread the sweep **twice** in this wave, both times taking "not in the findings list" for
+> "chiero said nothing". `struct;`, `union;`, `enum;` and friends bucket as **BothRefused** —
+> gcc rejects them too, and chiero reports them correctly. §9 has carried this hazard since wave
+> 397 and repeating it cost a retracted RED in 398 and a wrong claim in 399. The ad-hoc
+> `grep FINDINGS` shorthand is the cause; use the bucket counts.
+>
+> ### The sweep, current state
+>
+> - **vppinfra**: 46 findings. **vlib**: sweepable since wave 398 (gcc 44 of 47); the two parse
+>   defects it found are now fixed.
+> - **vnet (452 .c), plugins (780)**: unswept. Expect the same pattern as vlib — one or two
+>   generated headers short — and regenerate stubs from `config.h.in` with CMake's defaults rather
+>   than guessing values.
+> - **Queue**: 2 files, `invalid initializer: a structure or union is copied only from its own
+>   type` — unexamined, the most likely real defect left in vppinfra. The 19 enumerator-range and
+>   3 no-named-member entries are **pedantic-calibration noise, not defects** (owner's decision).
 >
 > **Wave 398: a member declaration that names only a type declares nothing.** `struct S { int; };`
 > was accepted silently while the sentence written for it fired only on a bare `;`. Ratchet 289.
