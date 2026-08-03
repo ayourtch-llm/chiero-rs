@@ -487,7 +487,35 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 383) — 1583 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 384) — 1585 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 383 closed most of §9's largest structural item with one line, and the lesson is about
+> the estimate, not the fix.** `enum_ty` answered `int` for every enumeration; gcc answers
+> `unsigned int` unless an enumerator is negative (6.7.2.2p4, implementation-defined). `signed:
+> true` became `signed: lo < 0` and five census rows flipped at once — two of them **false
+> positives**, since `enum E a; unsigned a;` and `int f(enum E); int f(unsigned);` are legal C
+> that chiero refused.
+>
+> **The four-wave estimate was wrong because it measured the wrong thing.** An enumeration
+> *constant* is `int` by 6.4.4.3p2 whatever enumeration it belongs to, so `-1 < A` is true; an
+> *object* is its integer type outright, so `-1 < e` is false. Measuring the constant and
+> reasoning about the object is what turned one line into "every `Ty::Int` comparison in the
+> crate". **When an item has been deferred as structural for several waves, re-measure it before
+> budgeting it** — the census that sizes the work is cheaper than the wave that avoids it.
+>
+> **The suite could not observe an enum's signedness at all, and that is the more useful
+> finding.** Forty-odd enum rows in the differential corpus all return a *value*, and a value is
+> the same however its type is signed; what separates signed from unsigned is a **comparison or a
+> shift**, and no row had one. 1583 tests passed over a wrong integer type. **A corpus that
+> exercises a type only through its values cannot see its type** — worth asking of any other
+> attribute the engine chooses implicitly.
+>
+> **What is left of the item is genuinely structural but smaller than recorded**: two different
+> enumerations of the same sign are still one type, so `enum E a; enum F a;` is accepted where gcc
+> refuses. The mechanism already exists — `Qual` rides the interning key with a parallel table
+> (see its doc comment) precisely so that no `match` on `Ty` changes, and that comment records the
+> audit that justified it. An enum tag is the same shape: nothing wants to *see* the tag, only
+> `TyId` equality changes meaning.
 >
 > **Wave 382 closed 6.10.3.2p2: `#` now produces a string literal that exists.** `S(\)` was the
 > token `"\"` — three characters whose backslash escapes the closing quote — and *nothing objected
