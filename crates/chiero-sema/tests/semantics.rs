@@ -6745,3 +6745,98 @@ fn a_widened_enumeration_takes_the_narrowest_type_that_holds_it() {
         assert!(widened(src), "must still be reported: `{src}`");
     }
 }
+
+/// **Two bit-field rules the census found missing**, from a section that was otherwise complete.
+///
+/// Running the whole 6.7.2.1 census against chiero — 35 programs, half legal — reproduced gcc
+/// exactly on every width and type rule, including the boundary at each type's *own* width
+/// (`_Bool` 1, `char` 8, `int` 32, `long long` 64) and the two-faults-two-reports shape. That is
+/// the useful part of censusing a section that is already implemented: the two gaps are visible
+/// precisely because everything around them agrees.
+///
+/// **`_Alignas` on a bit-field** (C 6.7.5p2: an alignment specifier may not be applied to a
+/// bit-field). This is a hard error in gcc in *both* modes, not a `-Wpedantic` promotion, so it
+/// is a constraint violation at any calibration.
+///
+/// **A struct or union with no named member** (6.7.2.1p8). gcc separates two cases and so does
+/// this: nothing at all is "no members", while only unnamed bit-fields is "no *named* members".
+/// A reader fixes those differently — add a member, or name one — which is 023 §9's test for
+/// whether a distinction is worth drawing. Unlike the first rule this one is a `-Wpedantic`
+/// promotion, so it is reportable here only because wave 314 calibrated to `-pedantic-errors`.
+///
+/// **Neither construct appears in VPP** (measured: zero empty structs, zero `_Alignas` on a
+/// bit-field — the four grep hits were ternaries, not bit-fields), so both are free to report.
+/// The legal half below matters more: 769 bit-field declarations in VPP would notice a rule that
+/// fired one field too wide.
+#[test]
+fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // **The whole legal half of the census**, because 769 VPP declarations ride on it.
+        "struct S { int a : 1; int : 0; int b : 1; };",
+        "struct S { int a : 32; };",
+        "struct S { _Bool a : 1; };",
+        "struct S { char a : 8; };",
+        "struct S { long long a : 64; };",
+        "enum E { A = 1 }; struct S { enum E a : 2; };",
+        "struct S { const int a : 2; };",
+        "struct S { volatile int a : 2; };",
+        "typedef int I; struct S { I a : 2; };",
+        "union U { int a : 2; };",
+        "struct S { int : 3; int a : 1; };",
+        "enum E { W = 3 }; struct S { int a : W; };",
+        "struct S { int a : sizeof(int); };",
+        // **`_Alignas` on an ordinary member stays legal** — the rule is about bit-fields, and a
+        // fix that keyed on the specifier rather than on the member would break this.
+        "struct S { _Alignas(8) int a; };",
+        // An anonymous member supplies names, so the record has some.
+        "struct S { struct { int x; }; };",
+        // One named member is enough, wherever it sits.
+        "struct S { int : 3; int a; };",
+        "struct S { int a; int : 3; };",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **Any alignment, named or not** — including one no wider than the type, which is what
+        // stops a fix that only objects when the alignment would actually move something.
+        (
+            "struct S { _Alignas(8) int a : 2; };",
+            "alignment specified for bit-field `a`",
+        ),
+        (
+            "struct S { _Alignas(1) int a : 2; };",
+            "alignment specified for bit-field `a`",
+        ),
+        (
+            "struct S { _Alignas(8) int : 2; };",
+            "alignment specified for an unnamed bit-field",
+        ),
+        // **Nothing at all**, against **nothing named** — two messages, because they are two
+        // different fixes.
+        ("struct S { };", "struct `S` has no members"),
+        ("union U { };", "union `U` has no members"),
+        ("struct S { int : 3; };", "struct `S` has no named members"),
+        ("union U { int : 3; };", "union `U` has no named members"),
+        ("struct S { int : 0; };", "struct `S` has no named members"),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
