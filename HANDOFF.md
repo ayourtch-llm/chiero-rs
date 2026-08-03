@@ -569,6 +569,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   tail passes any test that looks at the kept set alone.
 > * **Three rows beat two** when the property is an ordering: two cannot distinguish an order
 >   from a coincidence.
+> * **A compound key needs one fixture per component.** `(file, name)` tested only with distinct
+>   names proves nothing about `file`; dedup-on-name-alone passed every row until a fixture with
+>   two same-named statics existed.
 > * **A negative row proves a guard only if that guard is the sole reason it fails.** Every glob
 >   fixture rejected its input for some other reason, so `^` and `$` were both unverified while
 >   looking covered. Rows that fail for several reasons at once are not coverage.
