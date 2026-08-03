@@ -80,6 +80,25 @@ fn anything_unexamined_forces_bounded_however_it_was_lost() {
     assert!(!candidates(&g, &["root"], 5).is_bounded());
 }
 
+/// **A function past the bound reachable by two paths is one unexamined function, not two.**
+/// The fringe is a set for this reason; counting insertions would inflate the loss whenever
+/// two callers share a helper, which in VPP is the common case rather than the exception.
+#[test]
+fn a_fringe_function_reached_twice_is_counted_once() {
+    let mut g = CallGraph::new();
+    g.add_call("root", "a");
+    g.add_call("root", "b");
+    g.add_call("a", "shared_helper");
+    g.add_call("b", "shared_helper");
+
+    let c = candidates(&g, &["root"], 1);
+    assert_eq!(c.escalated, ["root", "a", "b"]);
+    assert_eq!(
+        c.excluded_by_bound, 1,
+        "one helper, reached from both `a` and `b`"
+    );
+}
+
 /// A cyclic call graph terminates and reports each function once. VPP has recursion and
 /// mutual recursion; a closure that revisits would not finish the sweep.
 #[test]

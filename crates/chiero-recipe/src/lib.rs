@@ -377,9 +377,12 @@ pub fn candidates(graph: &CallGraph, roots: &[&str], max_depth: usize) -> Candid
         frontier = next;
     }
 
-    // A function excluded at the bound may also have been reached within it by a shorter
-    // path; then it *was* examined and is not a loss.
-    let excluded_by_bound = excluded.iter().filter(|f| !seen.contains(*f)).count();
+    // **No filtering against `seen` here, because nothing could ever be filtered.** `depth` is
+    // uniform across a BFS level and only increases, `seen` grows only while `depth <
+    // max_depth`, and `excluded` fills only once `depth >= max_depth` — so a name cannot move
+    // from excluded to escalated. An earlier version filtered anyway and its commit message
+    // described the case it handled; mutation showed the line was unreachable.
+    let excluded_by_bound = excluded.len();
     Candidates {
         escalated,
         excluded_by_bound,
