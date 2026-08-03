@@ -124,3 +124,79 @@ fn path_matches(map: &SourceMap, id: chiero_span::FileId, want: &str) -> bool {
     let p = f.path();
     p.as_os_str() == want || p.file_name().is_some_and(|n| n == want)
 }
+
+/// One place a macro expands, as the user wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Site {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+/// A page of expansion sites (050 contract 7).
+#[derive(Debug, Clone)]
+pub struct SiteSummary {
+    /// The whole population, not this page — a caller told only `shown` cannot tell a
+    /// complete answer from a truncated one, which 050 §1 forbids.
+    pub total: usize,
+    pub shown: usize,
+    pub sites: Vec<Site>,
+    /// Index to resume from, or `None` when this page ends the list. Never `Some` pointing
+    /// at an empty page: that reads as "more to come" and costs a caller a wasted round.
+    pub cursor: Option<usize>,
+}
+
+/// Every site where `name` expands, paged (050 contract 7).
+///
+/// **Sites come from the expansion table, not from a scan for the name.** A textual scan
+/// finds hand-written calls only, and in VPP that is nearly none of them: `vec_len` is
+/// almost always reached through `vec_end` or `vec_foreach`, and every one of those is a
+/// site of `vec_len` resolved to the line the user wrote.
+///
+/// **Sorted and deduplicated by written position.** The same position can be reached by
+/// more than one recorded expansion — a header read under two configurations occupies two
+/// `FileId`s — and a caller paging a list that shifts under it would see a site twice and
+/// miss another.
+pub fn expansion_sites(
+    map: &SourceMap,
+    name: &str,
+    cursor: Option<usize>,
+    limit: usize,
+) -> SiteSummary {
+    let mut sites: Vec<Site> = Vec::new();
+    for i in 1..=map.expansion_count() {
+        let Some(e) = map.expansion(ExpnCtx(i as u32)) else {
+            continue;
+        };
+        let Some(info) = e.macro_id.and_then(|m| map.macro_info(m)) else {
+            continue;
+        };
+        if &*info.name != name {
+            continue;
+        }
+        let Some(loc) = map.expansion_loc(e.call_site) else {
+            continue;
+        };
+        let Some(f) = map.try_file(loc.file) else {
+            continue;
+        };
+        sites.push(Site {
+            file: f.path().display().to_string(),
+            line: loc.line,
+            col: loc.col,
+        });
+    }
+    sites.sort();
+    sites.dedup();
+
+    let total = sites.len();
+    let start = cursor.unwrap_or(0).min(total);
+    let end = start.saturating_add(limit).min(total);
+    let page: Vec<Site> = sites[start..end].to_vec();
+    SiteSummary {
+        total,
+        shown: page.len(),
+        sites: page,
+        cursor: (end < total).then_some(end),
+    }
+}

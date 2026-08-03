@@ -24,7 +24,10 @@ fn paging_yields_every_site_exactly_once() {
     assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
 
     let first = chiero_tool::expansion_sites(&tu.source_map, "M", None, 50);
-    assert_eq!(first.total, n, "total is the whole population, not the page");
+    assert_eq!(
+        first.total, n,
+        "total is the whole population, not the page"
+    );
     assert_eq!(first.shown, 50);
     assert_eq!(first.sites.len(), 50);
 
