@@ -1395,7 +1395,13 @@ impl<'a> Parser<'a> {
             return;
         }
         let start = self.pos;
+        // **Whether the specifier itself failed**, which the member rule below must not add a
+        // second sentence to. Counted rather than inspected, because the specifier reports
+        // through several paths and the question here is only "did it already speak" — the same
+        // reading `ty_of` uses in sema for an explained array length.
+        let before_specs = self.diags.len();
         let specs = self.declaration_specifiers();
+        let specs_failed = self.diags.len() > before_specs;
         if self.eat_punct(Punct::Semi) {
             // **Specifiers then `;` is two different declarations** (C 6.7.2.1p1). An *anonymous*
             // struct or union — no tag, its own member list — declares those members into the
@@ -1415,17 +1421,30 @@ impl<'a> Parser<'a> {
             // declares no member, so gcc refuses it exactly as it refuses `int;`. The first
             // version of this predicate omitted the kind and accepted it; a surviving mutant
             // ("members ignored") is what sent me to measure the case.
+            // **No `members` clause here, deliberately.** An unnamed tag with no member list is
+            // the one input it would exclude, and the specifier reports "expected a tag name or a
+            // `{`" for exactly that condition — so `specs_failed` is set and the branch below
+            // returns either way. Mutation says so: dropping the clause survives, which makes it
+            // an *equivalent* mutant and the clause dead code (wave 391's rule — ask whether a
+            // survivor is equivalent before hunting for a row).
             let anonymous_record = matches!(
                 self.ast.ty(specs.ty).kind,
                 TypeKind::Tag {
                     tag: TagKind::Struct | TagKind::Union,
                     name: None,
-                    members: Some(_),
+                    ..
                 }
             );
-            if !anonymous_record {
+            // **Poison declares nothing by construction**, so the rule stands down when the
+            // specifier has already spoken: `struct S { struct; };` is one mistake and gcc gives
+            // it one sentence. Contract 20, and the pattern this crate uses elsewhere — "poison
+            // is not a non-integer type", "an explained length is poison rather than a VLA".
+            if !anonymous_record && !specs_failed {
                 let span = self.span_from(start);
                 self.error(span, "a member declaration must declare a member");
+                return;
+            }
+            if specs_failed {
                 return;
             }
             let span = self.span_from(start);
