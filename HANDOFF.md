@@ -487,56 +487,78 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 424) — 1642 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 429) — 1651 tests, 4 ignored, M1 268/268 by contract
 >
-> ### M3 status
+> ### 📊 Parser coverage across VPP — measured 2026-08
 >
-> | 080 M3 exit gate | state |
+> | subtree | coverage | of handed | shortfall |
+> |---|---|---|---|
+> | `vlibapi` | **100%** | 5 | — |
+> | `vlibmemory` | **100%** | 7 | — |
+> | `vnet/ethernet` | **100%** | 13 | — |
+> | `vnet/ip` | **100%** | 39 | — |
+> | `svm` | **100%** | 10 | — |
+> | `vppinfra` | 97.2% | 109 | stray `;` in struct |
+> | `vpp` | 92.9% | 14 | same |
+> | `vlib` | 87.0% | 46 | same |
+> | `vnet/session` | 50.0% | **2** | see below |
+>
+> **Every shortfall is one construct**: `a member declaration must declare a member` — the extra
+> semicolon `gnu11` accepts and `-pedantic-errors` refuses. Not a parser gap; the open
+> calibration decision. No new parse defect over ~150 further translation units.
+>
+> **`vnet/session`'s 50% is 1 of 2, not 1 of 21.** Nineteen files never reached the parser —
+> missing generated `.api` headers the `gen/` stub does not cover. A harness gap, and a
+> reminder that the denominator is *what the parser was handed*: the figure is honest and says
+> almost nothing about that subtree. **Widen `gen/` before quoting a number for it.**
+>
+> ```
+> cargo run -p xtask -- sweep --tree <dir> -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11
+> ```
+>
+> ### 042 c7: tier 1 runs end to end
+>
+> `xtask recipe-sweep --tree <dir> --recipes <dir> [-I … -D … --std …]`. On `vnet/fib`:
+> **36 TUs, 6903 functions, 110s, 6 unreadable, PARTIAL.**
+>
+> * **Time budget not met.** 110s for 36 files single-threaded; 042 c7 wants a budget on 12
+>   cores. **Parallelism is the next step**, and that number is the single-core baseline.
+> * `cli_line_input_freed` reports 6903 *undecidable*, not 0 — `registered_via` needs the AST.
+>
+> ### ⚠️ Three places where "did not look" must stay distinct from "found nothing"
+>
+> Same rule at three scales. Any one collapsing makes the published count worthless:
+>
+> | scale | mechanism |
 > |---|---|
-> | `explain_macro_expansion` for `vec_add1` **and** a `foreach_` site | **done** (050 c6, 060 c10) |
-> | VPP parser-coverage percentage published and tracked | **done** — printed every sweep |
-> | tier-1 recipe sweep over VPP within budget, per-recipe counts | **not started** (042 c7) |
-> | shipped catalogue passes its fixtures (042 c4) | needs the evaluator |
+> | selector | `Selection::NeedsAst` — **do not collapse to a bool when the AST lands** |
+> | recipe | `RecipeTally::needs_ast` + `is_complete()` |
+> | sweep | `Tier1Report::unreadable` + `is_complete()` |
 >
-> `chiero-recipe`: loads 042 §4's example verbatim; refuses a recipe its fixtures cannot
-> adjudicate (c1, c3-load-half, §5); reads `scope` into typed selectors; evaluates the two
-> that need no AST; builds the tier-1 candidate closure (§3.1).
+> It earned its keep on first contact: a `recipe-sweep` run with no `-I` reported *36 unreadable,
+> PARTIAL* rather than `0 candidates`, which would have read as a clean tree.
 >
-> ### 🆕 `regex` is now a workspace dependency — added 2026-08 at the owner's direction
+> ### The function list: two fixes, and why both were needed
 >
-> Chosen over `aho-corasick`, which is a multiple-**substring** searcher and cannot express an
-> anchor or a character class, so `^show_` (042 §4.2's own example) is out of reach. Decisive
-> property beyond expressiveness: **linear-time matching**. 042 §7 has recipes authored by an
-> LLM, and a backtracking engine would let a machine-written pattern hang a sweep over 1552
-> files. The workspace still carries only five third-party crates.
+> `vnet/fib` reported **186,623 functions from 36 TUs**. Fixing attribution to the defining file
+> **did not change the number at all** — every TU still contributed a copy, now carrying the
+> header's path. Deduplicating on `(defining file, name)` gave **6,903** and halved the runtime.
+> **A precondition fix that leaves the symptom identical is not the fix**; re-measure before
+> claiming one.
 >
-> ### Two rules this crate enforces against silent passes
->
-> Both are the same failure as a null evaluator, arriving by different doors:
->
-> * **An unknown `scope` selector is a load error, not a `_` arm.** `registered_by` (one letter
->   from `registered_via`) degrading to "matches nothing" reports zero violations tree-wide and
->   reads as a clean result.
-> * **`Scope::selects` is three-valued.** `registered_via`/`has_attribute`/`signature`/`calls`
->   return `NeedsAst`, never `No`. `No` would empty the scope of every CLI recipe and report a
->   clean tree. **Do not collapse this to a bool when the AST arrives.**
->
-> `**/` follows gitignore semantics (matches zero directories), because recipe authors will
-> expect git's dialect.
+> Attribution uses **`expansion_loc`, not `lookup_loc`**: a macro-generated function is written
+> by the file that *invokes* the macro, and its raw token position is the header holding the
+> macro body. VPP generates node functions this way constantly, so `lookup_loc` files every node
+> under one header. The first fixture had no macros and passed under both readings.
 >
 > ### ⚠️ Recipe evaluation is absent, not stubbed — keep it that way
 >
-> A `good` fixture passes exactly when it produces **no** finding, so a null evaluator
-> satisfies 042 c2 for every recipe while covering nothing. Unread `track`/`require` clauses
-> are kept whole as `UnparsedClause` with their **count asserted**, so the slice is stated.
+> A `good` fixture passes exactly when it produces **no** finding, so a null evaluator satisfies
+> 042 c2 for every recipe while covering nothing. Unread `track`/`require` clauses are kept whole
+> as `UnparsedClause` with their **count asserted**.
 >
-> ### 📊 Parser coverage — the tracked number
->
-> **`vppinfra`: 97.2%** — 106 of the 109 translation units the parser was handed, of 112 files.
-> The denominator is what the parser was *handed*, not every file. It measures "no diagnostic",
-> not "understood": the whole shortfall is `mem_dlmalloc.c:34`, an X-macro bit-field construct
-> with a trailing `;` that `gnu11` accepts and `-pedantic-errors` refuses. **Bounded below by
-> the open pedantic decision** — read a shortfall as a lead, never as a parser-gap count.
+> Two recipes are vendored in `tests/corpus/recipes/`: one structural and evaluable today, one
+> the 042 §4 CLI recipe waiting on the frontend, so both paths are exercised.
 >
 > ### Fixture design notes bought by mutation
 >
