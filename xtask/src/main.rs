@@ -8,6 +8,7 @@ fn main() -> ExitCode {
         Some("check-deps") => check_deps(),
         Some("contract-coverage") => contract_coverage(),
         Some("check-vpp-leak") => check_vpp_leak(),
+        Some("sweep") => sweep(),
         Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
@@ -30,7 +31,9 @@ fn usage() {
          check-deps       enforce the 001 §4 graph rules (1,2,3,5,6,7)\n  \
          check-vpp-leak   enforce 001 §4 rule 4 / contract 5\n  \
          check-proof-surface  enforce 023 contract 13a (a proof cannot be forged)\n  \
-         contract-coverage    report M1 exit coverage over 020-024 (080)"
+         contract-coverage    report M1 exit coverage over 020-024 (080)\n  \
+         sweep --tree P [-I dir] [-D name[=v]] [--std gnu11]\n                   \
+         report where chiero and gcc disagree over an external C tree"
     );
 }
 
@@ -148,6 +151,50 @@ fn contract_coverage() -> ExitCode {
         }
         Err(e) => {
             eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Sweep an external tree. **A report, never a gate** — it exits 0 whatever it finds, because
+/// the tree is not this project's to keep clean and the suite must not depend on one.
+fn sweep() -> ExitCode {
+    let mut args = std::env::args().skip(2);
+    let mut tree = None;
+    let mut flags = xtask::sweep::Flags::default();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--tree" => tree = args.next().map(std::path::PathBuf::from),
+            "-I" => {
+                if let Some(v) = args.next() {
+                    flags.includes.push(std::path::PathBuf::from(v));
+                }
+            }
+            "-D" => {
+                if let Some(v) = args.next() {
+                    flags.defines.push(v);
+                }
+            }
+            "--std" => flags.std = args.next(),
+            other => {
+                eprintln!("sweep: unknown argument {other}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let Some(tree) = tree else {
+        eprintln!("sweep: --tree <path> is required");
+        return ExitCode::FAILURE;
+    };
+    // gcc's own system paths, so chiero resolves `<stdio.h>` the way the tree's compiler does.
+    let system = xtask::sweep::system_include_paths();
+    match xtask::sweep::sweep(&tree, &flags, &system) {
+        Ok(v) => {
+            xtask::sweep::report(&v, &tree);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("sweep: {e}");
             ExitCode::FAILURE
         }
     }

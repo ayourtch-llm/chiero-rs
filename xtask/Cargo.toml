@@ -8,6 +8,13 @@ publish = false
 [dependencies]
 serde_json.workspace = true
 indexmap.workspace = true
+# **The sweep runs chiero's own frontend.** xtask is outside the §4 dependency rules
+# ("xtask and third-party crates are not part of the architecture"), so this edge is
+# allowed where it would not be between the crates themselves.
+chiero-pp.workspace = true
+chiero-parse.workspace = true
+chiero-sema.workspace = true
+chiero-span.workspace = true
 
 [lints]
 workspace = true

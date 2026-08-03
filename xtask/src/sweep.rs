@@ -65,6 +65,316 @@ pub fn classify(gcc: &Outcome, chiero: &Outcome) -> Bucket {
 ///
 /// Headers are not translation units and are swept only through the files that include them.
 pub fn translation_units(tree: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let _ = tree;
-    Ok(Vec::new())
+    let mut out = Vec::new();
+    walk(tree, &mut out)?;
+    // **Sorted, so two sweeps of one tree can be diffed.** `read_dir` order is whatever the
+    // filesystem gives, which differs between machines and after any file is rewritten.
+    out.sort();
+    Ok(out)
+}
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            walk(&path, out)?;
+        } else if path.extension().is_some_and(|e| e == "c") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// How to invoke both compilers over this tree.
+///
+/// **The tree's own flags, not the project's.** A sweep of VPP passes what VPP builds with; the
+/// module docs say why that must not be `-pedantic-errors`.
+#[derive(Debug, Clone, Default)]
+pub struct Flags {
+    /// `-I` paths, in order.
+    pub includes: Vec<PathBuf>,
+    /// `-D` definitions, as `NAME` or `NAME=VALUE`.
+    pub defines: Vec<String>,
+    /// The dialect, e.g. `gnu11`.
+    pub std: Option<String>,
+}
+
+impl Flags {
+    fn gcc_args(&self) -> Vec<String> {
+        let mut a = vec!["-fsyntax-only".to_owned()];
+        if let Some(s) = &self.std {
+            a.push(format!("-std={s}"));
+        }
+        // **Warnings off.** The oracle's question is "does this compile", and VPP builds with its
+        // own warning set — importing gcc's default noise would put clean files in the wrong
+        // bucket.
+        a.push("-w".to_owned());
+        for i in &self.includes {
+            a.push(format!("-I{}", i.display()));
+        }
+        for d in &self.defines {
+            a.push(format!("-D{d}"));
+        }
+        a
+    }
+}
+
+/// Run gcc over one file and say what it made of it.
+pub fn gcc_outcome(path: &Path, flags: &Flags) -> Outcome {
+    let mut cmd = std::process::Command::new("gcc");
+    cmd.args(flags.gcc_args()).arg(path);
+    match cmd.output() {
+        Err(e) => Outcome::NotRun(format!("gcc could not be run: {e}")),
+        Ok(out) if out.status.success() => Outcome::Clean,
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stderr);
+            // **A missing include is a tool gap, not a verdict on the file.** VPP generates some
+            // headers at build time; without them gcc has not judged the C at all, and putting
+            // such a file in `Miss` would invent a rule chiero is supposedly lacking.
+            let first = text
+                .lines()
+                .find(|l| l.contains("error:"))
+                .unwrap_or("(no error line)")
+                .trim()
+                .to_owned();
+            if text.contains("fatal error:") {
+                Outcome::NotRun(first)
+            } else {
+                Outcome::Diagnosed(first)
+            }
+        }
+    }
+}
+
+struct Disk;
+impl chiero_pp::FileLoader for Disk {
+    fn load(&mut self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+}
+
+struct Names(chiero_parse::ParsedTu);
+impl chiero_sema::SymbolText for Names {
+    fn text(&self, sym: chiero_span::Symbol) -> Option<&str> {
+        self.0.text(sym)
+    }
+}
+
+/// Run chiero's frontend over one file: preprocess, parse, analyse.
+///
+/// **The first stage to speak wins**, and the stage is named in the message. A parse error and a
+/// sema diagnostic are both "chiero complained", but a reader triaging a queue needs to know
+/// which — the fixes live in different crates.
+pub fn chiero_outcome(
+    path: &Path,
+    flags: &Flags,
+    system: &[PathBuf],
+    predefines: &[(String, String)],
+) -> Outcome {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => return Outcome::NotRun(format!("unreadable: {e}")),
+    };
+    let cfg = chiero_pp::Config {
+        // **Not pedantic.** The sweep asks what real code does that chiero mishandles, and the
+        // tree builds without `-pedantic-errors`; see the module docs.
+        pedantic: false,
+        include_paths: flags.includes.clone(),
+        system_paths: system.to_vec(),
+        // **gcc's predefines first, then the tree's own `-D`.** Without the predefines chiero
+        // takes `#if` branches gcc never compiles; see `gcc_predefines`.
+        defines: predefines
+            .iter()
+            .cloned()
+            .chain(flags.defines.iter().map(|d| match d.split_once('=') {
+                Some((k, v)) => (k.to_owned(), v.to_owned()),
+                None => (d.clone(), "1".to_owned()),
+            }))
+            .collect(),
+        ..chiero_pp::Config::default()
+    };
+    let session = chiero_pp::PreprocessorSession::new();
+    let tu = session.preprocess_with_loader(path, &src, cfg, &mut Disk);
+    if let Some(first) = tu.diagnostics.first() {
+        // A `#include` that does not resolve means chiero never saw the C, exactly as a gcc
+        // `fatal error` does — a tool gap, not a verdict.
+        let m = format!("pp: {}", first.message);
+        return if first.message.contains("cannot open") || first.message.contains("not found") {
+            Outcome::NotRun(m)
+        } else {
+            Outcome::Diagnosed(m)
+        };
+    }
+    let mut oracle = chiero_parse::ScopedTypedefs::new();
+    let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
+    if let Some(first) = parsed.diagnostics.first() {
+        return Outcome::Diagnosed(format!("parse: {}", first.message));
+    }
+    let names = Names(parsed);
+    let analysis = chiero_sema::analyze(
+        &names.0.ast,
+        &chiero_sema::TargetConfig::x86_64_linux(),
+        &names,
+    );
+    match analysis.diagnostics.first() {
+        Some(first) => Outcome::Diagnosed(format!("sema: {}", first.message)),
+        None => Outcome::Clean,
+    }
+}
+
+/// One file's verdict.
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub path: PathBuf,
+    pub bucket: Bucket,
+    pub gcc: Outcome,
+    pub chiero: Outcome,
+}
+
+/// Sweep a tree and return one verdict per translation unit.
+pub fn sweep(tree: &Path, flags: &Flags, system: &[PathBuf]) -> std::io::Result<Vec<Verdict>> {
+    let predefines = gcc_predefines(flags.std.as_deref());
+    let mut out = Vec::new();
+    for path in translation_units(tree)? {
+        let gcc = gcc_outcome(&path, flags);
+        let chiero = chiero_outcome(&path, flags, system, &predefines);
+        out.push(Verdict {
+            bucket: classify(&gcc, &chiero),
+            path,
+            gcc,
+            chiero,
+        });
+    }
+    Ok(out)
+}
+
+/// Print the report: counts, then the queue.
+///
+/// **The queue is the point** (023 §9: a report a person cannot act on is not a report). A bare
+/// count of findings says a number; grouping by *distinct message* with an example file turns it
+/// into work, and the grouping is what shows that fifty files often share one defect.
+pub fn report(verdicts: &[Verdict], tree: &Path) {
+    let count = |b: Bucket| verdicts.iter().filter(|v| v.bucket == b).count();
+    println!(
+        "swept {} translation units under {}",
+        verdicts.len(),
+        tree.display()
+    );
+    println!(
+        "  findings (gcc ok, chiero complained): {}",
+        count(Bucket::Finding)
+    );
+    println!(
+        "  misses   (gcc refused, chiero silent): {}",
+        count(Bucket::Miss)
+    );
+    println!(
+        "  agree:                                 {}",
+        count(Bucket::Agree)
+    );
+    println!(
+        "  tool gaps (one side could not run):    {}",
+        count(Bucket::ToolGap)
+    );
+
+    for (title, bucket, side) in [
+        (
+            "FINDINGS — chiero complains where gcc is happy",
+            Bucket::Finding,
+            true,
+        ),
+        (
+            "MISSES — gcc refuses where chiero is silent",
+            Bucket::Miss,
+            false,
+        ),
+        ("TOOL GAPS", Bucket::ToolGap, true),
+    ] {
+        let mut groups: indexmap::IndexMap<String, (usize, PathBuf)> = indexmap::IndexMap::new();
+        for v in verdicts.iter().filter(|v| v.bucket == bucket) {
+            let msg = match if side { &v.chiero } else { &v.gcc } {
+                Outcome::Diagnosed(m) | Outcome::NotRun(m) => m.clone(),
+                Outcome::Clean => continue,
+            };
+            let e = groups.entry(msg).or_insert((0, v.path.clone()));
+            e.0 += 1;
+        }
+        if groups.is_empty() {
+            continue;
+        }
+        let mut rows: Vec<_> = groups.into_iter().collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1.0));
+        println!("\n{title}");
+        for (msg, (n, example)) in rows.iter().take(25) {
+            println!("  {n:5}  {msg}");
+            println!("         e.g. {}", example.display());
+        }
+        if rows.len() > 25 {
+            println!("  … {} more distinct messages", rows.len() - 25);
+        }
+    }
+}
+
+/// gcc's own system include paths, so chiero resolves `<stdio.h>` as the tree's compiler does.
+///
+/// Empty when gcc cannot be run: the sweep then reports every file as a tool gap rather than
+/// pretending the headers were not needed.
+pub fn system_include_paths() -> Vec<PathBuf> {
+    let Ok(out) = std::process::Command::new("gcc")
+        .args(["-E", "-v", "-std=gnu11", "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stderr);
+    let mut paths = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("#include <...>") {
+            inside = true;
+        } else if line.starts_with("End of search list") {
+            break;
+        } else if inside {
+            paths.push(PathBuf::from(line.trim()));
+        }
+    }
+    paths
+}
+
+/// gcc's **predefined macros**, so chiero takes the same `#if` branches the tree's compiler does.
+///
+/// Without these the sweep is not measuring chiero against gcc at all: glibc's `bits/floatn.h`
+/// alone branches on a dozen `__HAVE_FLOAT*` and `__FLT16_*` macros, and a preprocessor that
+/// lacks them compiles code gcc never sees. The first run of this tool reported 101 findings that
+/// were entirely this — a reminder that a sweep's own configuration is part of its correctness.
+///
+/// Function-like macros and the ones the preprocessor must own (`__FILE__`, `__LINE__`, …) are
+/// dropped, matching the sema harness.
+pub fn gcc_predefines(std: Option<&str>) -> Vec<(String, String)> {
+    let dialect = format!("-std={}", std.unwrap_or("gnu11"));
+    let Ok(out) = std::process::Command::new("gcc")
+        .args(["-dM", "-E", &dialect, "-x", "c", "/dev/null"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.splitn(3, ' ');
+            if it.next() != Some("#define") {
+                return None;
+            }
+            let name = it.next()?;
+            if name.contains('(')
+                || matches!(
+                    name,
+                    "__FILE__" | "__LINE__" | "__DATE__" | "__TIME__" | "__COUNTER__"
+                )
+            {
+                return None;
+            }
+            Some((name.to_owned(), it.next().unwrap_or("1").to_owned()))
+        })
+        .collect()
 }
