@@ -794,3 +794,51 @@ fn a_stray_character_is_named_when_it_reaches_the_program() {
         );
     }
 }
+
+/// **`#` produces a valid string literal** (C 6.10.3.2p2).
+///
+/// An argument ending in a backslash stringizes to a token whose final `\` escapes the closing
+/// quote: `S(\)` became `"\"`, which is not a string literal at all. Nothing objected — not the
+/// preprocessor, not the lexer that later reads the token, not the parser — so the program
+/// compiled with a literal that does not exist.
+///
+/// gcc drops the offending backslash and *warns* ("invalid string literal, ignoring final `\`").
+/// This project reports what gcc **errors** on (wave 314's calibration), and gcc accepts this
+/// under `-pedantic-errors`, so the fix is the produced token and not a diagnostic: reporting
+/// would reject a program gcc compiles, which is the expensive direction.
+///
+/// The discriminator is **odd against even**: `S(\\)` is two backslashes, the second already
+/// escaped by the first, and its literal is well formed. Only a final *unescaped* backslash is
+/// dropped.
+#[test]
+fn stringize_produces_a_valid_string_literal() {
+    let stringized = |arg: &str| -> String {
+        let src = format!("#define S(x) #x\nconst char *p = S({arg});\n");
+        let tu = preprocess_str("t.c", &src, Config::default());
+        tu.tokens
+            .iter()
+            .filter_map(|t| tu.text(t))
+            .rev()
+            .find(|t| t.starts_with('"'))
+            .unwrap_or("<none>")
+            .to_owned()
+    };
+
+    // **The final backslash is dropped**, exactly as gcc drops it.
+    assert_eq!(stringized("\\"), "\"\"");
+    assert_eq!(stringized("a\\"), "\"a\"");
+
+    // **And an escaped one is not.** Two backslashes stringize to two, which is a valid literal.
+    assert_eq!(stringized("\\\\"), "\"\\\\\"");
+    assert_eq!(stringized("a\\b"), "\"a\\\\b\"");
+
+    // The ordinary shapes, unchanged.
+    assert_eq!(stringized("a"), "\"a\"");
+    assert_eq!(stringized("a b"), "\"a b\"");
+    assert_eq!(stringized("\"a\""), "\"\\\"a\\\"\"");
+    assert_eq!(stringized("'a'"), "\"'a'\"");
+
+    // Nothing is reported: gcc warns here and accepts, and this project reports what gcc refuses.
+    let src = "#define S(x) #x\nconst char *p = S(\\);\n";
+    assert!(diags(src).is_empty(), "{:?}", diags(src));
+}
