@@ -367,6 +367,13 @@ impl SourceMap {
         self.macros.get(m.0 as usize)
     }
 
+    /// How many expansions this map holds. Valid contexts are `ExpnCtx(1..=n)`; `0` is
+    /// ROOT. Needed to *enumerate* expansions — `expansion_sites` answers "where did this
+    /// macro expand", and the inverse question, "what expanded here", has no other entry.
+    pub fn expansion_count(&self) -> usize {
+        self.expansions.len()
+    }
+
     pub fn expansion(&self, ctx: ExpnCtx) -> Option<&Expansion> {
         if ctx.is_root() {
             return None;
