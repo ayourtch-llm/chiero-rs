@@ -313,7 +313,11 @@ fn a_function_is_attributed_to_the_header_that_defines_it() {
     )
     .unwrap();
     let tu = tmp.join("a.c");
-    std::fs::write(&tu, "#include \"shared.h\"\nint in_the_c_file(void){return 0;}\n").unwrap();
+    std::fs::write(
+        &tu,
+        "#include \"shared.h\"\nint in_the_c_file(void){return 0;}\n",
+    )
+    .unwrap();
 
     let cfg = chiero_pp::Config {
         include_paths: vec![tmp.clone()],
@@ -335,4 +339,39 @@ fn a_function_is_attributed_to_the_header_that_defines_it() {
         by("shared_helper")
     );
     assert!(by("in_the_c_file").ends_with("a.c"));
+}
+
+/// **A macro-generated function belongs to the file that invoked the macro**, not to the
+/// header that defines the macro body. VPP generates node functions this way constantly, and
+/// attributing them to `vlib/node_funcs.h` would file every node in the tree under one header
+/// — the opposite error to the one above, and invisible to a fixture with no macros in it.
+#[test]
+fn a_macro_generated_function_belongs_to_the_file_that_invoked_it() {
+    let tmp = std::env::temp_dir().join("chiero-macro-defining-file");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("gen.h"),
+        r"#define DEFINE_NODE(n) int n##_node(void) { return 0; }
+",
+    )
+    .unwrap();
+    let tu = tmp.join("user.c");
+    std::fs::write(&tu, "#include \"gen.h\"\nDEFINE_NODE(ip4)\n").unwrap();
+
+    let cfg = chiero_pp::Config {
+        include_paths: vec![tmp.clone()],
+        ..chiero_pp::Config::default()
+    };
+    let src = std::fs::read_to_string(&tu).unwrap();
+    let fns = xtask::sweep::functions_in_cfg(&tu, &src, cfg).expect("parses");
+    let f = fns
+        .iter()
+        .find(|f| f.name == "ip4_node")
+        .expect("generated");
+    assert!(
+        f.file.ends_with("user.c"),
+        "the invocation site owns it, not gen.h: {}",
+        f.file
+    );
 }
