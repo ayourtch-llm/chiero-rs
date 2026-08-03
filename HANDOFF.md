@@ -487,7 +487,55 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 403) — 1609 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 404) — 1609 tests, 4 ignored, M1 268/268 by contract
+>
+> ### vppinfra is exhausted: **all 31 findings are correct at this project's calibration**
+>
+> Wave 403 put every remaining category to gcc under *both* dialects. Each is accepted under
+> `-std=gnu11` (what VPP builds with) and **refused under `-pedantic-errors`** (wave 314's
+> calibration), so chiero reporting them is right and the sweep flags them only because it uses
+> the tree's flags:
+>
+> | finding | count | gnu11 | -pedantic-errors |
+> |---|---|---|---|
+> | enumerator not representable as `int` | 20 | ok | error |
+> | struct has no members | 3 | ok | error |
+> | pointer from an integer without a cast | 2 | ok | error |
+> | macro redefined with a different body | 2 | warning | **error** |
+> | incompatible pointer init / return | 2 | ok | error |
+> | stray `;` between members | 1 | ok | error |
+> | **transparent union** (below) | 1 | ok | error |
+>
+> **So there are no plain defects left in vppinfra.** 78 of 109 tested files are clean; the rest
+> is one design question, not a queue. Waves 395-402 fixed everything that was genuinely wrong
+> there: `_Static_assert` concatenation, the builtin families, per-declarator tag definitions,
+> linkage adoption through a typedef, and two parser rules.
+>
+> ### The one new thing: `__attribute__((transparent_union))`
+>
+> `int g(U u)` where `U` is a transparent union accepts a pointer of any member's type. glibc
+> declares `bind`, `connect`, `accept` and friends this way (`__SOCKADDR_ARG`), so **every TU
+> calling a socket function** hits it — far wider than the single VPP file that writes the
+> attribute itself. chiero refuses with "a structure or union is copied only from its own type",
+> which is correct under `-pedantic-errors` and wrong for the corpus.
+>
+> Four-line reproducer, and the discriminator is measured: **without** the attribute gcc gives
+> "incompatible type for argument 1", so the attribute is doing the work and a fix must key on it.
+>
+> **This is a scope decision, not a bug** — the same kind as the construct table's `case ranges`
+> (7 uses, supported), `int a[0]` (1777, divergence kept) and `__label__` (1, unsupported). It
+> needs an owner's call before a wave spends on it.
+>
+> ### The pedantic question is now the gate on further sweep value
+>
+> 24 of 31 vppinfra findings were already noise; wave 403 shows the remaining 7 are too. Until
+> sema can be told the dialect, sweeping more of VPP will mostly re-report these. **That decision
+> now blocks the sweep's usefulness**, and is the highest-value thing an owner could settle.
+>
+> ### Still unswept
+>
+> **vnet** (452 .c; 22 of 60 sampled compile, rest need `vppapigen`) and **plugins** (780).
+> Sweeping all of vnet produced no output in ~40 min — split by subdirectory.
 >
 > **Wave 402 withdrew two claims wave 401 made.** Both were wrong, both from one cause.
 >
