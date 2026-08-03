@@ -4,4 +4,5 @@
 pub mod contracts;
 pub mod deps;
 pub mod proof_surface;
+pub mod sweep;
 pub mod vpp_leak;
