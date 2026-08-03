@@ -2680,6 +2680,36 @@ impl Cx<'_> {
         members: Option<Vec<DeclId>>,
     ) -> TyId {
         let span = self.ast.ty(node).span;
+        // **A definition is resolved once per syntactic node, not once per declarator.**
+        // C 6.7p1: a declaration is specifiers followed by an init-declarator-*list*, so
+        // `struct S { int x; } a, b;` has one specifier and two declarators — and sema resolves
+        // the specifier for each of them. The second call found the tag the first installed and
+        // called it a redefinition; the tagless form was worse, minting a *fresh* anonymous
+        // record per declarator so that `struct { int x; } a, b; a = b;` compared two unrelated
+        // types.
+        //
+        // Keyed on the AST node, so it memoises exactly "this definition, already done" and not
+        // "this type, seen before" — two identical anonymous records written separately are
+        // still two types, which is a row in the fixture.
+        //
+        // **Only definitions, and that restriction is deliberately unproven.** A mutant that
+        // memoises *references* too survives the entire workspace — 1608 tests — and no case
+        // distinguishing the two could be constructed: a reference resolves through the scoped
+        // `tags` map, but the same AST node is only re-resolved on paths (a parameter list, wave
+        // 388) where the scope state is the same both times.
+        //
+        // It is kept narrow anyway, because absence of evidence is not equivalence. Wave 391
+        // removed a redundant `bare` call on the strength of the crate's own `Qual` documentation
+        // *proving* it could not matter; there is no such proof here, and a memo that caches an
+        // incomplete record for a tag defined later would be a wrong answer rather than a noisy
+        // one. Memoising less is the conservative direction.
+        //
+        // Recorded rather than silently left: this guard has no killing test.
+        if members.is_some()
+            && let Some(&already) = self.out.syntactic_types.get(&node)
+        {
+            return already;
+        }
         if tag == chiero_ast::TagKind::Enum {
             return self.enum_ty(span, name, members);
         }
