@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 379) — 1578 tests, 4 ignored, M1 263/263 by contract
+> ### ⏭️ START HERE (wave 380) — 1580 tests, 4 ignored, M1 265/265 by contract
 >
-> **Sema 263 of 263, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
+> **Sema 265 of 265, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
 > **All three crates have a span gate** (373, 374); the sema corpus is also checked for spans that
 > cover the *wrong* text, for messages carrying their own source formatting (374), and for
@@ -508,6 +508,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 379 swept the shared `Conversion` contexts** and found a variant the public API promises
+> and the engine never makes — `Condition`, declared and constructed by nothing. Deleted rather
+> than made reachable: the engine does not model a condition as a conversion.
+>
+> **A gate over a set of *outputs* is got wrong by writing the set down twice.** The first version
+> listed the variants it expected and passed by agreeing with itself — it omitted the only one
+> never produced. `Conversion::ALL` lives on the enum now, so it must change when the enum does.
+> **Enumerate from the thing under test, never from memory.**
 >
 > **Wave 378 ran the census by asking who else should have changed**, and it worked: the
 > multiplicative arm — the *oldest* of the operand-check family — had been skipped by both waves
@@ -743,14 +752,14 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
 >      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
->      **6.7.2.3's tag compatibility across translation units**, **6.3.1.8's usual arithmetic
->      conversions on a `_Bool` operand**, and **6.5.2.5's compound literal at file scope**.
->      6.5.15, 6.9.1p12 and 6.5.3.3/6.8.6.1/6.10.3.4 are closed.
+>      **6.7.9p14's string-literal initialisation of a non-char array**, **6.5.16.2's compound
+>      assignment on a pointer**, and **6.2.7's compatible-type rules for two arrays of different
+>      known lengths**. 6.7.2.3, 6.3.1.8 and 6.5.2.5 are closed.
 >
->      **The sibling sweep is the cheaper census** and has now paid twice (377, 378). Run it on
->      the rule this wave wrote — the conditional's own sentence — and ask which other *shared*
->      arms report in a caller's words. `Conversion::Condition` and `Conversion::Argument` exist;
->      nothing has checked what the remaining `_ =>` arm covers.
+>      **The sibling sweep is the cheaper census** and has now paid three times (377, 378, 379).
+>      The next target it suggests: `ScopedNames` now carries a kind for tags and
+>      `declared_enumerators` shares the type with a kind of 0 — nothing has asked whether the
+>      enumerator path wants the same distinction.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3096,6 +3105,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **Enumerate from the thing under test, never from memory** (wave 379). A gate asking "is every
+> variant produced?" was written with a hand-listed set and passed by omitting the one variant that
+> is never produced. The list belongs on the enum, where the compiler makes it move when the enum
+> does. Any gate over a *set* — variants, kinds, contexts — has this failure mode.
+>
+> **A public enum variant is a promise** (wave 379). `Conversion` is handed to consumers, so a
+> variant nothing constructs tells them this engine can distinguish a case it cannot. Deleting it
+> is the fix when the engine genuinely does not model the case; inventing a caller would be
+> making the promise true by pretending.
 >
 > **A channel only sees the rows it was given** (wave 378). `one_mistake_produces_one_diagnostic`
 > has run since wave 353 and never caught the multiplicative arm's triple report, because no
