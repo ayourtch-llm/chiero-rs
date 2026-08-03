@@ -517,7 +517,25 @@ pub struct Analysis {
     /// A qualified type is always interned *after* its unqualified form, so the entry always
     /// exists by the time anything can ask.
     pub(crate) unqual: Vec<TyId>,
-    pub(crate) interned: IndexMap<(Ty, Qual), TyId>,
+    /// Which **enumeration** each `TyId` is, parallel to `types`; 0 for a type that is not one.
+    ///
+    /// An enumeration is its integer type for every question but one: it is laid out, promoted,
+    /// converted, compared and lowered as that type, so nothing here wants to *see* this number.
+    /// What it changes is `TyId` equality, and C 6.7.2.3p5 needs it changed — each enumerator
+    /// list declares a **distinct** type, so `enum E` and `enum F` are two types even though the
+    /// sign that picks their integer type gives both the same one.
+    ///
+    /// Numbered per *definition* rather than per tag name, because two anonymous enumerations are
+    /// two types and have no name to be numbered by.
+    ///
+    /// This is [`Qual`]'s trade, made a second time for the same reason and measured the same
+    /// way: with the tag in the key and nothing else changed, one test in the workspace fails.
+    pub(crate) enum_tags: Vec<u32>,
+    /// Each `TyId` → the same type with no enumeration identity: its plain integer type.
+    ///
+    /// Precomputed for the same reason as `unqual` — compatibility holds `&self`.
+    pub(crate) untagged: Vec<TyId>,
+    pub(crate) interned: IndexMap<(Ty, Qual, u32), TyId>,
     pub(crate) records: Vec<RecordLayout>,
     pub(crate) by_tag: IndexMap<Symbol, RecordId>,
     pub(crate) decl_types: IndexMap<DeclId, TyId>,
@@ -698,7 +716,7 @@ impl Analysis {
     /// `TyId(0)` is whichever type was interned first, which is an arbitrary type wearing
     /// the name of an error.
     pub fn interned_error(&self) -> Option<TyId> {
-        self.interned.get(&(Ty::Error, Qual::NONE)).copied()
+        self.interned.get(&(Ty::Error, Qual::NONE, 0)).copied()
     }
 
     /// Any valid id, for a caller that must return *something*. Prefer
@@ -894,6 +912,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         typedefs: IndexMap::new(),
         tags: IndexMap::new(),
         enums: IndexMap::new(),
+        next_enum_tag: 0,
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
         current_ret: None,
@@ -950,6 +969,7 @@ pub fn const_eval(
         typedefs: IndexMap::new(),
         tags: IndexMap::new(),
         enums: IndexMap::new(),
+        next_enum_tag: 0,
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
         current_ret: None,
@@ -1025,6 +1045,8 @@ struct Cx<'a> {
     tags: IndexMap<Symbol, RecordId>,
     /// Enum tag → its underlying integer type (014 contract 10).
     enums: IndexMap<Symbol, TyId>,
+    /// Numbered per enumeration *definition*, so two anonymous ones differ. 0 means "none".
+    next_enum_tag: u32,
     /// Enumerator name → value, so `enum { A = 1, B = A + 1 }` and any later use of `A`
     /// in a constant expression resolve. 013 left every name unresolved on purpose.
     enumerators: IndexMap<Symbol, i128>,
@@ -1364,20 +1386,53 @@ impl Cx<'_> {
     /// The unqualified form is interned **first and unconditionally**, so `unqual` is populated
     /// before anything holding only `&self` can look the qualified id up.
     fn intern_qual(&mut self, ty: Ty, q: Qual) -> TyId {
-        if let Some(&id) = self.out.interned.get(&(ty.clone(), q)) {
+        self.intern_tagged(ty, q, 0)
+    }
+
+    /// Intern a type carrying qualifiers and an enumeration identity (`tag`, 0 for none).
+    ///
+    /// Both side tables follow `unqual`'s discipline: the simpler form is interned **first and
+    /// unconditionally**, so an entry always exists before anything holding `&self` looks it up.
+    fn intern_tagged(&mut self, ty: Ty, q: Qual, tag: u32) -> TyId {
+        if let Some(&id) = self.out.interned.get(&(ty.clone(), q, tag)) {
             return id;
         }
+        // **Both simpler forms are interned before this id is allocated**, and neither may be
+        // written as `TyId(types.len())` computed early. That shorthand was correct while
+        // `unqual` was the only side table — nothing could intern between reading the length and
+        // pushing — and interning `plain` here is exactly such a something. Read early, `bare`
+        // named the slot `plain` then took, so `bare(enum E)` answered `unsigned int` and every
+        // comparison that goes through `bare` stopped seeing the enumeration: the parameter path,
+        // which is how the function arm reaches a parameter's type.
         let bare = if q.is_none() {
-            TyId(self.out.types.len() as u32)
+            None
         } else {
-            self.intern(ty.clone())
+            Some(self.intern_tagged(ty.clone(), Qual::NONE, tag))
+        };
+        let plain = if tag == 0 {
+            None
+        } else {
+            Some(self.intern_qual(ty.clone(), q))
         };
         let id = TyId(self.out.types.len() as u32);
+        let (bare, plain) = (bare.unwrap_or(id), plain.unwrap_or(id));
         self.out.types.push(ty.clone());
         self.out.quals.push(q);
         self.out.unqual.push(bare);
-        self.out.interned.insert((ty, q), id);
+        self.out.enum_tags.push(tag);
+        self.out.untagged.push(plain);
+        self.out.interned.insert((ty, q, tag), id);
         id
+    }
+
+    /// Which enumeration `t` is, or 0.
+    fn enum_tag(&self, t: TyId) -> u32 {
+        self.out.enum_tags[t.0 as usize]
+    }
+
+    /// The same type with no enumeration identity — its plain integer type.
+    fn untagged(&self, t: TyId) -> TyId {
+        self.out.untagged[t.0 as usize]
     }
 
     /// The same type without its qualifiers.
@@ -2728,7 +2783,13 @@ impl Cx<'_> {
                 bits: (self.target.sizes.long_ * 8) as u32,
             }
         };
-        let id = self.intern(t);
+        // **A fresh number per definition** (C 6.7.2.3p5), which is what makes `enum E` and
+        // `enum F` two types even though the sign gives both the same integer type. Per
+        // definition and not per tag name: two anonymous enumerations are two types and have no
+        // name to be numbered by. A *reference* to an existing tag never reaches here — it
+        // returns the cached id from `enums` above — so `enum E a; enum E b;` is one number.
+        self.next_enum_tag += 1;
+        let id = self.intern_tagged(t, Qual::NONE, self.next_enum_tag);
         // **On the output**, so a consumer that outlives this context can ask — lowering
         // had no way to reach `Cx::enumerators` and lowered every use to `undef`.
         for (en, v) in pending {
@@ -7295,6 +7356,21 @@ impl Cx<'_> {
         if a == b {
             return false;
         }
+        // **An enumeration is a distinct type against another enumeration, and its integer type
+        // against everything else** (C 6.7.2.3p5 for the first, 6.7.2.2p4 for the second).
+        //
+        // gcc draws it exactly here: `enum E a; enum F a;` conflicts while `enum E a; unsigned
+        // a;` does not, even though that makes compatibility non-transitive. Following the
+        // compiler rather than the standard's transitivity is this project's calibration.
+        //
+        // Dropping the tag on one side is what keeps wave 383's rows legal, and it has to happen
+        // before the match below, whose `_` arm would call any two differing ids a conflict.
+        if self.enum_tag(a) != self.enum_tag(b) {
+            if self.enum_tag(a) != 0 && self.enum_tag(b) != 0 {
+                return true;
+            }
+            return self.types_conflict(self.untagged(a), self.untagged(b));
+        }
         match (
             self.out.types[a.0 as usize].clone(),
             self.out.types[b.0 as usize].clone(),
@@ -7318,7 +7394,12 @@ impl Cx<'_> {
                 // declaration, and so are `f(const int)` and `f(int)`. `bare` strips only the
                 // outermost, which is the whole distinction — `f(const int *)` against
                 // `f(int *)` is a real conflict, because that `const` is on the pointee.
-                if self.bare(r1) != self.bare(r2) {
+                //
+                // **Compared for compatibility, not identity.** `!=` on the two bare ids was the
+                // same habit waves 379-381 kept finding: it makes `enum E f(void)` and
+                // `unsigned f(void)` two declarations, though the enumeration *is* that integer
+                // type, and it would answer identity for a returned pointer-to-unsized-array too.
+                if self.types_conflict(self.bare(r1), self.bare(r2)) {
                     return true;
                 }
                 // **Parameters are compared when both declarations specified them.** This used to
