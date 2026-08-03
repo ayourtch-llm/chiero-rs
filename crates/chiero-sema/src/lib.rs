@@ -3169,13 +3169,32 @@ impl Cx<'_> {
                 // **Poison is not a non-integer type** (contract 20): a member whose type already
                 // failed to resolve is `Ty::Error`, and reporting it again would be a second
                 // sentence for one mistake.
+                let n = name
+                    .and_then(|n| self.text(n))
+                    .map(|t| format!(" `{t}`"))
+                    .unwrap_or_default();
                 if !matches!(self.out.types[fty.0 as usize], Ty::Int { .. } | Ty::Error) {
-                    let n = name
-                        .and_then(|n| self.text(n))
-                        .map(|t| format!(" `{t}`"))
-                        .unwrap_or_default();
                     let span = self.ast.decl(m).span;
                     self.error(span, format!("bit-field{n} has a non-integer type"));
+                } else if self.ast.ty(ty).quals.atomic {
+                    // **And not an atomic one** (C 6.7.2.1p5): a bit-field's type is a qualified
+                    // or unqualified *integer* type, and `_Atomic` is not a qualifier — an atomic
+                    // type is a different type, which a bit-field's addressless storage cannot
+                    // provide. gcc refuses it in both modes, so this is not calibration.
+                    //
+                    // **In the `else`, so the type rule wins**: `_Atomic float a : 2` is refused
+                    // for being a float, which is what gcc says too. Asking about `_Atomic` first
+                    // would pass every other row here and change that one sentence.
+                    //
+                    // On the *member*, not the specifier: `struct S { _Atomic int a; };` is an
+                    // ordinary atomic member and stays legal.
+                    //
+                    // Read from the **AST** node's qualifiers rather than from `qual_of`, because
+                    // sema's `Qual` carries only `const`/`volatile`/`restrict` — `_Atomic` is a
+                    // specifier that never reaches the interned type. That is also why an atomic
+                    // type is not distinguishable here by its `TyId`.
+                    let span = self.ast.decl(m).span;
+                    self.error(span, format!("bit-field{n} has an atomic type"));
                 }
                 let unit_bits = match self.out.types[fty.0 as usize] {
                     Ty::Int { bits, .. } => u64::from(bits),

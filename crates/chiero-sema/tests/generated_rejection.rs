@@ -927,6 +927,13 @@ const VIOLATIONS: &[(&str, &str)] = &[
     ("union with no named members", "union U { int : 3; };"),
     // An array size must have integer type, wave 391. gcc refuses all four; chiero was silent
     // for the first two and called the others variably modified.
+    // A bit-field may not have atomic type, wave 392 — found by re-censusing 6.7.2.1, which
+    // wave 387 had left agreeing with gcc across 35 programs.
+    ("atomic bit-field", "struct S { _Atomic int a : 2; };"),
+    (
+        "atomic unnamed bit-field",
+        "struct S { _Atomic int : 2; int b; };",
+    ),
     ("array size is a float", "int a[1.5];"),
     ("array size is an exact float", "int a[2.0];"),
     ("array size is a double object", "double d; int a[d];"),
@@ -988,7 +995,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 280;
+    const FLOOR: usize = 282;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
