@@ -382,8 +382,6 @@ pub enum Conversion {
     Argument,
     /// Conversion to the function's return type.
     Return,
-    /// The operand of a condition, converted to the scalar the branch tests.
-    Condition,
 }
 
 impl Conversion {
@@ -404,7 +402,6 @@ impl Conversion {
         Conversion::Conditional,
         Conversion::Argument,
         Conversion::Return,
-        Conversion::Condition,
     ];
 }
 
@@ -1223,7 +1220,7 @@ enum StorageContext {
 /// before the code did.
 #[derive(Default)]
 struct ScopedNames {
-    names: Vec<Symbol>,
+    names: Vec<(Symbol, u8)>,
     marks: Vec<usize>,
 }
 
@@ -1239,10 +1236,23 @@ impl ScopedNames {
 
     /// Whether `name` is already declared **in the innermost scope**, and record it either way.
     fn redeclares(&mut self, name: Symbol) -> bool {
+        self.redeclares_as(name, 0).is_some()
+    }
+
+    /// The same, remembering **what kind** the name was declared as.
+    ///
+    /// A tag reused as a different kind is not a redefinition — `union U { … }; struct U { … };`
+    /// says "redefinition of `struct U`" of something that was never a struct. Telling the two
+    /// apart needs the previous kind, and returning it is the smallest way to have it: the
+    /// caller compares and chooses its sentence.
+    fn redeclares_as(&mut self, name: Symbol, kind: u8) -> Option<u8> {
         let start = self.marks.last().copied().unwrap_or(0);
-        let again = self.names[start..].contains(&name);
-        self.names.push(name);
-        again
+        let before = self.names[start..]
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, k)| *k);
+        self.names.push((name, kind));
+        before
     }
 }
 
@@ -2494,12 +2504,22 @@ impl Cx<'_> {
         // **A tag is defined once per scope** (C 6.7.2.3p1). Registered on the *definition*
         // only: `struct S;` after `struct S { ... };` is how a forward declaration is written, so
         // a rule keyed on "seen this tag before" rejects the idiom it exists to permit.
+        // **Wrong kind and second definition are different faults** (C 6.7.2.3p1). `union U { …
+        // }; struct U { … };` is not a redefinition of `struct U` — there was never one — and
+        // saying so sends a reader looking for it. gcc keeps "redefinition" for a second
+        // definition of the *same* kind, and this now does too. The kinds are 0/1/2 for
+        // struct/union/enum, which is the whole of what the table has to remember.
+        let kind = u8::from(is_union);
         if let Some(name) = name
-            && self.defined_tags.redeclares(name)
+            && let Some(before) = self.defined_tags.redeclares_as(name, kind)
         {
             let n = self.text(name).unwrap_or("?").to_owned();
-            let kw = if is_union { "union" } else { "struct" };
-            self.error(span, format!("redefinition of `{kw} {n}`"));
+            if before == kind {
+                let kw = if is_union { "union" } else { "struct" };
+                self.error(span, format!("redefinition of `{kw} {n}`"));
+            } else {
+                self.error(span, format!("`{n}` is defined as the wrong kind of tag"));
+            }
         }
         let layout = self.lay_out(node, tag == chiero_ast::TagKind::Union, &members.unwrap());
         if name.is_some() {
@@ -2559,10 +2579,14 @@ impl Cx<'_> {
         // Registered on the **definition** only, exactly as for a struct: this arm is past the
         // `members.is_none()` return, so `enum E;` after a definition never reaches it.
         if let Some(name) = name
-            && self.defined_tags.redeclares(name)
+            && let Some(before) = self.defined_tags.redeclares_as(name, 2)
         {
             let n = self.text(name).unwrap_or("?").to_owned();
-            self.error(span, format!("redefinition of `enum {n}`"));
+            if before == 2 {
+                self.error(span, format!("redefinition of `enum {n}`"));
+            } else {
+                self.error(span, format!("`{n}` is defined as the wrong kind of tag"));
+            }
         }
         // **C 6.7.2.2p1: an enumeration has an enumerator list.** Unlike the range rule below,
         // gcc refuses `enum E { };` in GNU mode too — an empty enumeration has no values, so
@@ -5991,7 +6015,6 @@ impl Cx<'_> {
         let ctx = match why {
             Conversion::Argument => "passing an argument",
             Conversion::Return => "returning a value",
-            Conversion::Condition => "using a condition",
 
             _ => "initializing or assigning",
         };

@@ -895,6 +895,15 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "a jump past a variably-modified typedef",
         "int f(int n){ goto skip; typedef int T[n]; skip: return 0; }",
     ),
+    // C 6.7.2.3p1, wave 379. Refused by gcc in both modes.
+    (
+        "a tag reused as a different kind",
+        "union U { int a; }; struct U { int b; };",
+    ),
+    (
+        "a struct tag reused as an enum",
+        "struct S { int a; }; enum S { A };",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -947,7 +956,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 263;
+    const FLOOR: usize = 265;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
