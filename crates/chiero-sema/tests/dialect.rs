@@ -82,3 +82,36 @@ fn the_gnu_dialect_still_refuses_what_gcc_refuses_in_both_modes() {
         );
     }
 }
+
+/// **`1 << 31` is accepted by gcc in both modes, and chiero refused it.** Found by the first
+/// full-tree sweep: 871 of 884 findings across all 1552 VPP files were this one construct,
+/// reached through `vppinfra/elf.h`'s `1 << ELF_SECTION_FLAG_BIT_##f` and the many headers
+/// like it. Measured — `gcc -std=gnu11` and `gcc -std=gnu11 -pedantic-errors` both compile
+/// `(int)(1 << 31)` without complaint — so this is not a dialect question but an
+/// over-rejection, and it must be refused in **neither** dialect.
+///
+/// C 6.5.7p4 makes `1 << 31` undefined for a signed `E1`, which is why the rule existed. But
+/// the sweep's whole purpose is to agree with the compiler the project builds with, and every
+/// bit-flag enum in C is written this way.
+#[test]
+fn a_shift_into_the_sign_bit_is_not_an_overflow_diagnostic() {
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(
+            sema_messages("enum flags { A = 1 << 31 };\nint main(void){ return A ? 0 : 1; }\n", dialect),
+            Vec::<String>::new(),
+            "gcc accepts this in both modes"
+        );
+        assert_eq!(
+            sema_messages("int x = 1 << 31;\n", dialect),
+            Vec::<String>::new()
+        );
+    }
+
+    // **Arithmetic overflow is still diagnosed**, in both dialects: `0x7fffffff + 1` is a
+    // constraint violation gcc refuses under `-pedantic-errors`, and the point of the fix is
+    // to stop conflating a shift with an addition — not to stop checking.
+    assert!(
+        !sema_messages("enum e { B = 0x7fffffff + 1 };\n", Dialect::pedantic()).is_empty(),
+        "an overflowing addition is still an overflow"
+    );
+}
