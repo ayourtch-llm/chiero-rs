@@ -82,7 +82,10 @@ pub fn load(src: &str) -> Result<Recipe, Vec<String>> {
                 Some("error") => r.severity = Severity::Error,
                 Some("warning") => r.severity = Severity::Warning,
                 Some("note") => r.severity = Severity::Note,
-                other => say(&mut errs, format!("unknown severity `{}`", other.unwrap_or(""))),
+                other => say(
+                    &mut errs,
+                    format!("unknown severity `{}`", other.unwrap_or("")),
+                ),
             },
             "tier" => match p.word().as_deref() {
                 Some("structural") => r.tier = Tier::Structural,
@@ -100,7 +103,10 @@ pub fn load(src: &str) -> Result<Recipe, Vec<String>> {
                 },
                 other => say(
                     &mut errs,
-                    format!("a fixture is `good` or `bad`, not `{}`", other.unwrap_or("")),
+                    format!(
+                        "a fixture is `good` or `bad`, not `{}`",
+                        other.unwrap_or("")
+                    ),
                 ),
             },
             other => {
@@ -210,7 +216,9 @@ impl<'a> Parser<'a> {
     fn number(&mut self) -> Option<usize> {
         self.skip_ws();
         let rest = &self.s[self.i..];
-        let n = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let n = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         (n > 0).then(|| {
             self.i += n;
             rest[..n].parse().ok()

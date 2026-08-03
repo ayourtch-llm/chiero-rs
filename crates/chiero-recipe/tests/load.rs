@@ -44,9 +44,15 @@ fn the_example_recipe_from_the_spec_loads() {
     assert_eq!(r.title, "CLI line input must be freed on every path");
     assert_eq!(r.severity, Severity::Error);
     assert_eq!(r.tier, Tier::Semantic);
-    // A rationale spanning source lines is one string, not a line per row.
-    assert!(r.rationale.starts_with("unformat_line_input allocates"));
-    assert!(r.rationale.contains("407 acquisition sites"));
+    // **A rationale spanning source lines collapses to one sentence — asserted exactly.**
+    // `starts_with` plus `contains` cannot see this: both hold just as well when the second
+    // line keeps its thirteen spaces of indentation, so a build that never collapsed anything
+    // passed them. Mutation caught that; the whole string is the only assertion that pins it.
+    assert_eq!(
+        r.rationale,
+        "unformat_line_input allocates a line_input; VPP's CLI ritual requires \
+unformat_free on every return path. 407 acquisition sites, 140 files."
+    );
 
     assert_eq!(r.good, ["fixtures/cli_ok.c"]);
     assert_eq!(r.bad.len(), 1);
@@ -66,7 +72,8 @@ fn a_recipe_without_a_good_fixture_fails_to_load_naming_itself() {
     let src = EXAMPLE.replace("  fixture good \"fixtures/cli_ok.c\"\n", "");
     let errs = load(&src).expect_err("a recipe with no good fixture must not load");
     assert!(
-        errs.iter().any(|e| e.contains("cli_line_input_freed") && e.contains("good")),
+        errs.iter()
+            .any(|e| e.contains("cli_line_input_freed") && e.contains("good")),
         "diagnostic must name the recipe and the missing fixture kind: {errs:?}"
     );
 }
@@ -79,7 +86,10 @@ fn a_recipe_without_a_bad_fixture_fails_to_load() {
         "",
     );
     let errs = load(&src).expect_err("a recipe with no bad fixture must not load");
-    assert!(errs.iter().any(|e| e.contains("cli_line_input_freed") && e.contains("bad")));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("cli_line_input_freed") && e.contains("bad"))
+    );
 }
 
 /// 042 contract 3 says a `bad` fixture finding **at the wrong location** must fail the
@@ -89,7 +99,10 @@ fn a_recipe_without_a_bad_fixture_fails_to_load() {
 fn a_bad_fixture_must_declare_where_the_finding_is_expected() {
     let src = EXAMPLE.replace(" expect 1 at \"cli_leak.c:22\"", "");
     let errs = load(&src).expect_err("a bad fixture with no expected location must not load");
-    assert!(errs.iter().any(|e| e.contains("cli_line_input_freed") && e.contains("expect")));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("cli_line_input_freed") && e.contains("expect"))
+    );
 }
 
 /// Junk is refused with a diagnostic rather than accepted as an empty recipe — an empty
