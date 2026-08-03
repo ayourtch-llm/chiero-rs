@@ -499,7 +499,7 @@ impl Engine {
                 //
                 // A chunk that never closes is not deferred forever: `finish` expands whatever
                 // remains, and the unterminated-argument-list diagnostic still fires there.
-                if !has_open_paren(&ordinary) {
+                if !self.in_open_macro_args(&ordinary) {
                     output.extend(self.expand(std::mem::take(&mut ordinary)));
                 }
                 if active
@@ -2007,20 +2007,45 @@ fn strip_va_opt(body: &mut Vec<Tok>, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-/// Whether a pending ordinary-token chunk is still inside a parenthesised construct.
-///
-/// Used at a directive boundary to decide whether the chunk may be expanded yet: a macro call
-/// whose arguments are still open must keep collecting across the directive, as gcc does.
-fn has_open_paren(toks: &[Tok]) -> bool {
-    let mut depth = 0i32;
-    for t in toks {
-        match t.token.kind {
-            PpTokenKind::Punct(Punct::LParen) => depth += 1,
-            PpTokenKind::Punct(Punct::RParen) => depth -= 1,
-            _ => {}
+
+impl Engine {
+    /// Whether a pending chunk ends inside an **open macro argument list** — the only reason
+    /// to hold it across a directive.
+    ///
+    /// **Not "an unbalanced `(`".** That was wave 408's rule and it is wrong: VPP's X-macro
+    /// accumulator opens an ordinary C paren, defines `_`, uses it, and undefines it before
+    /// the closing paren. Deferring on that paren carries the uses past the `#undef`, and `_`
+    /// no longer exists when they finally expand. A paren counts only when a function-like
+    /// macro name opened it.
+    ///
+    /// A trailing function-like macro name with no `(` yet also defers, because the `(` may
+    /// be the first thing after the directive and gcc keeps looking.
+    fn in_open_macro_args(&self, toks: &[Tok]) -> bool {
+        // One entry per unclosed `(`: whether a function-like macro name opened it.
+        let mut opened_by_macro: Vec<bool> = Vec::new();
+        let mut prev_was_macro = false;
+        for t in toks {
+            match t.token.kind {
+                PpTokenKind::Punct(Punct::LParen) => {
+                    opened_by_macro.push(prev_was_macro);
+                    prev_was_macro = false;
+                }
+                PpTokenKind::Punct(Punct::RParen) => {
+                    opened_by_macro.pop();
+                    prev_was_macro = false;
+                }
+                PpTokenKind::Ident(_) => prev_was_macro = self.is_function_like_macro(&t.text),
+                _ => prev_was_macro = false,
+            }
         }
+        opened_by_macro.iter().any(|&m| m) || prev_was_macro
     }
-    depth > 0
+
+    fn is_function_like_macro(&self, name: &str) -> bool {
+        self.by_name.get(name).is_some_and(|&i| {
+            matches!(self.macros[i].def.kind, MacroKind::FunctionLike { .. })
+        })
+    }
 }
 
 fn parse_args(input: &VecDeque<Tok>, open: usize) -> Option<(Vec<Vec<Tok>>, usize)> {
