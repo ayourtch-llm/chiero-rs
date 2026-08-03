@@ -487,7 +487,51 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 401) — 1608 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 402) — 1609 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 401: a declaration with no storage class adopts the prior linkage** (C 6.2.2p5 + 6.2.2p4),
+> however the function is spelled. `typedef int F(void); static int f(void){…} F f;` was refused;
+> the declarator has no `()`, so it took the object arm where only an explicit `extern` deferred.
+> VPP writes exactly that — `format_function_t format_bihash_kvp_8_8;` after a `static inline`
+> definition, in two files.
+>
+> ### A surviving mutant has a **fourth** reading: a missing rule
+>
+> Dropping `&& !storage.static_` cannot be observed, because the case that would show it is
+> already unreported. The mutant is **masked by a neighbouring miss**. Readings so far, in the
+> order to try them: *the code is wrong* → *a missing row* → *a missing neighbouring rule* →
+> *equivalent mutant*.
+>
+> **Two misses in this area, measured, for the next wave**: `int f(void); static int f(void);` and
+> `static int n; int n;` — both refused by gcc, both silent here. Fixing the first makes wave
+> 401's surviving mutant killable.
+>
+> ### Searching for "reads a spelling where C reads a type" — empty
+>
+> Waves 389 and 401 both did it, and two instances was the threshold that made the last pattern
+> search pay. Six candidates in sema, all clear — including `points_to_const`, which reads
+> `TypeKind::Ptr` from the AST and looked certain to be defeated by a typedef but is not (all six
+> probe forms are correctly reported). **A coincidence of two, not a pattern**; do not re-grep.
+>
+> ### A note ignored twice is not a control
+>
+> Three times this session I read "not in the sweep's findings list" as "chiero said nothing".
+> Those inputs are `BothRefused` — gcc rejects them too. §9 recorded the hazard after the first
+> occurrence and it happened twice more, costing a retracted RED (398) and a wrong claim (399).
+> The shorthand is gone: `scratchpad/one.sh <program> [flags]` prints **bucket counts** and every
+> section for one program and cannot be misread that way. Use it instead of grepping.
+>
+> ### Sweep state
+>
+> - **vppinfra**: 31 findings of 109 tested; 24 of them pedantic-calibration noise (owner's
+>   decision). Real remainder: 2 macro redefinitions, 1 incompatible-pointer init (`hash.c`),
+>   1 incompatible-pointer return (`unformat.c`), and "makes a pointer from an integer without a
+>   cast" in `test_bihash_template.c`.
+> - **vlib**: 44 of 47 tested, its two parse defects fixed.
+> - **vnet**: a sweep of all 452 was started and had produced no output after ~40 minutes — it
+>   needs running in the background over a long window, or splitting by subdirectory. 22 of 60
+>   sampled compile; the rest need `vppapigen` output that cannot be hand-stubbed.
+> - **plugins (780)**: unswept.
 >
 > **Wave 400: one declaration defines its tag once.** `struct S { int x; } a, b;` reported
 > "redefinition of `struct S`" — sema resolved the specifier once per declarator. The tagless form
