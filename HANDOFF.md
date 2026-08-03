@@ -487,43 +487,64 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 429) — 1651 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 433) — 1657 tests, 4 ignored, M1 268/268 by contract
 >
-> ### 📊 Parser coverage across VPP — measured 2026-08
+> ### 🆕 The pedantic decision is made: `Dialect`, added 2026-08 at the owner's direction
 >
-> | subtree | coverage | of handed | shortfall |
+> `chiero_ast::Dialect { pedantic }`, threaded through `parse_tu_with` and `analyze_with`,
+> selected by `xtask sweep --gnu`. **Default is unchanged** — `-pedantic-errors`, the wave-314
+> calibration. `--gnu` follows gcc's default, which is how VPP builds.
+>
+> Gated, each measured against gcc both ways first:
+>
+> | rule | stage | gnu11 | -pedantic-errors |
 > |---|---|---|---|
-> | `vlibapi` | **100%** | 5 | — |
-> | `vlibmemory` | **100%** | 7 | — |
-> | `vnet/ethernet` | **100%** | 13 | — |
-> | `vnet/ip` | **100%** | 39 | — |
-> | `svm` | **100%** | 10 | — |
-> | `vppinfra` | 97.2% | 109 | stray `;` in struct |
-> | `vpp` | 92.9% | 14 | same |
-> | `vlib` | 87.0% | 46 | same |
-> | `vnet/session` | 50.0% | **2** | see below |
+> | member declaration declares nothing (all 5 forms) | parse | accepts | refuses |
+> | enumerator not representable as `int` | sema | accepts | refuses |
+> | record has no members | sema | accepts | refuses |
 >
-> **Every shortfall is one construct**: `a member declaration must declare a member` — the extra
-> semicolon `gnu11` accepts and `-pedantic-errors` refuses. Not a parser gap; the open
-> calibration decision. No new parse defect over ~150 further translation units.
+> **Not gated: "makes a pointer from an integer without a cast".** gcc's default *warns* rather
+> than accepting, and chiero has no warning level — gating it would delete a real bug class
+> rather than restate it at a lower severity. One finding in all of `vnet`; not worth it.
+> Revisit only if a warning level ever exists.
 >
-> **`vnet/session`'s 50% is 1 of 2, not 1 of 21.** Nineteen files never reached the parser —
-> missing generated `.api` headers the `gen/` stub does not cover. A harness gap, and a
-> reminder that the denominator is *what the parser was handed*: the figure is honest and says
-> almost nothing about that subtree. **Widen `gen/` before quoting a number for it.**
+> ⚠️ **A dialect is not a verbosity knob.** Only rules *measured* to differ between the two gcc
+> modes may consult it. Both crates' tests pin the other side: a syntax error, an undeclared
+> identifier, a negative array bound and a call to a non-function are still refused under
+> `--gnu`. Without those, the flag would inflate parser coverage — the very number it exists to
+> make meaningful.
 >
-> ```
-> cargo run -p xtask -- sweep --tree <dir> -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11
-> ```
+> ### ⚠️ Protocol failure worth not repeating
 >
-> ### 042 c7: tier 1 runs end to end
+> The dialect landed gating **three** rules with **one** test. The parser half was RED-first;
+> the two sema gates shipped with nothing but a claim in the commit message, and were covered
+> only afterwards as characterization tests. This is the same failure the table below records
+> five times, committed while writing that table. **Count the rules you changed and count the
+> assertions you added.**
 >
-> `xtask recipe-sweep --tree <dir> --recipes <dir> [-I … -D … --std …]`. On `vnet/fib`:
-> **36 TUs, 6903 functions, 110s, 6 unreadable, PARTIAL.**
+> ### 042 c7: tier 1 runs end to end, and fast enough
 >
-> * **Time budget not met.** 110s for 36 files single-threaded; 042 c7 wants a budget on 12
->   cores. **Parallelism is the next step**, and that number is the single-core baseline.
-> * `cli_line_input_freed` reports 6903 *undecidable*, not 0 — `registered_via` needs the AST.
+> `xtask recipe-sweep --tree <dir> --recipes <dir> [-I … -D … --std …]`.
+> `vnet/fib`: **36 TUs, 6903 functions, 21.5s on 12 workers**, 6 unreadable, PARTIAL.
+> 110s → 21.5s via `std::thread::scope`; no new dependency. Full tree extrapolates to ~15 min.
+>
+> * Workers **return** data; nothing accumulates in shared state. Contiguous chunks, not a
+>   queue — the merge relies on chunk *k* holding the k-th run of files (001 §5 determinism).
+> * Dedup happens **after** the join: two workers each dropping their own duplicates would both
+>   keep a header function, and the survivor would depend on scheduling.
+> * `Tier1Report::threads` is reported because 042 c7's budget is a time *on a core count*.
+>   It also made a resource contract testable — flooring the chunk size over-spawns (12 workers
+>   when 7 were asked) without changing any result.
+>
+> ### The function list: two fixes, and why both were needed
+>
+> `vnet/fib` reported **186,623 functions from 36 TUs**. Fixing attribution to the defining file
+> **did not change the number at all**. Deduplicating on `(defining file, name)` gave **6,903**
+> and halved the runtime. **A precondition fix that leaves the symptom identical is not the
+> fix** — re-measure before claiming one.
+>
+> Attribution uses **`expansion_loc`, not `lookup_loc`**: a macro-generated function is written
+> by the file that *invokes* the macro. The first fixture had no macros and passed under both.
 >
 > ### ⚠️ Three places where "did not look" must stay distinct from "found nothing"
 >
