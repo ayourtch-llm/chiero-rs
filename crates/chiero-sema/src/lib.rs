@@ -3754,7 +3754,19 @@ impl Cx<'_> {
                         (v, r)
                     }
                     // Shifts take the *left* operand's type, not the usual conversions.
-                    BinOp::Shl => (a.v.checked_shl(b.v.try_into().ok()?)?, a),
+                    //
+                    // **Truncated here, not left for `wrap`.** `1 << 31` does not fit a signed
+                    // `int`, and C 6.5.7p4 does make it undefined — but `gcc -std=gnu11` and
+                    // `gcc -std=gnu11 -pedantic-errors` both accept it silently, and every
+                    // bit-flag enum in C is written this way. The first full-tree sweep found
+                    // this one construct behind **871 of 884 findings** across VPP, reached
+                    // through `vppinfra/elf.h`. Truncating matches gcc and keeps the value
+                    // gcc computes; `wrap` would report a defect the project's own compiler
+                    // does not have. An overflowing *addition* is still diagnosed.
+                    BinOp::Shl => (
+                        truncate(a.v.checked_shl(b.v.try_into().ok()?)?, a.bits, a.signed).v,
+                        a,
+                    ),
                     BinOp::Shr => (a.v.checked_shr(b.v.try_into().ok()?)?, a),
                     // **Comparisons ask about the converted operands, not the written ones.**
                     // Values are carried as mathematical `i128`, so `-1` stays −1 even once the

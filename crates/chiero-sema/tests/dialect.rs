@@ -97,7 +97,10 @@ fn the_gnu_dialect_still_refuses_what_gcc_refuses_in_both_modes() {
 fn a_shift_into_the_sign_bit_is_not_an_overflow_diagnostic() {
     for dialect in [Dialect::pedantic(), Dialect::gnu()] {
         assert_eq!(
-            sema_messages("enum flags { A = 1 << 31 };\nint main(void){ return A ? 0 : 1; }\n", dialect),
+            sema_messages(
+                "enum flags { A = 1 << 31 };\nint main(void){ return A ? 0 : 1; }\n",
+                dialect
+            ),
             Vec::<String>::new(),
             "gcc accepts this in both modes"
         );
