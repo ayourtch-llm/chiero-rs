@@ -487,7 +487,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 405) — 1610 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 406) — 1610 tests, 4 ignored, M1 268/268 by contract
+>
+> ### The `.api` headers **can** be generated — vnet reach went 37% → 85%
+>
+> §9 recorded `.api_enum.h` / `.api_types.h` as un-stubbable because a real generator produces
+> them. It ships with VPP and runs:
+>
+> ```
+> python3 src/tools/vppapigen/vppapigen --includedir src \
+>     --input <file>.api --outputdir <gen>/<dir> --output <gen>/<dir>/<file>.api.h
+> ```
+>
+> **153 of 153 `.api` files generated, none failed.** gcc then compiles **102 of 120** sampled
+> `vnet` files, up from 22 of 60. Per-subtree: `fib` 4 → 29 of 36, `dpo` 4 → 17 of 18, `adj`
+> 2 → 12 of 12. The stubs still needed alongside are `vppinfra/config.h`, `vlib/config.h`,
+> `vpp/app/version.h` (from `config.h.in` with CMake's defaults) — `vpp/vnet/config.h` is the one
+> still missing, blocking ~6 files.
+>
+> ### That changes which scope decision matters most
+>
+> With vnet actually reachable, **28 of `fib`'s 29 findings are one defect**: `parse: expected a
+> type specifier`, from a **`#define` inside a macro call's arguments** (`ip6_packet.h`'s
+> `CLIB_PACKED (struct { #define IP6_MLDP_ALERT_TYPE 0x5 … })`). Every file including the ip
+> headers hits it.
+>
+> So it is no longer "a curiosity affecting `ip6_packet.h` includers" — **it is the dominant
+> blocker to sweeping VPP at all**, and chiero does not merely mis-report it: it processes the
+> directive correctly and then **silently drops the macro expansion** (wave 404's correction).
+> A wrong expansion, on most of vnet.
+>
+> **Priority among the three owner decisions is now clear:**
+>
+> | item | reach | effect |
+> |---|---|---|
+> | **directive inside macro arguments** | most of vnet (28/29 in `fib`) | **silently wrong expansion** |
+> | pedantic mode for sema | all vppinfra findings | noise, verdicts correct |
+> | `transparent_union` | socket-calling TUs | refuses the call |
+>
+> ### Where new defect kinds were *not* found
+>
+> 58 newly-unblocked files across `fib`, `dpo` and `adj` produced **no finding outside the known
+> set** — the first evidence that chiero handles a large body of unseen VPP cleanly once it can
+> parse it. Worth repeating on `plugins` (780) once the blocker above is settled.
 >
 > **Wave 404: a packed enumeration is as narrow as its range.** `__attribute__((packed))` was
 > ignored on enums — one byte in gcc, four here. **The sweep's first non-diagnostic defect**: a
