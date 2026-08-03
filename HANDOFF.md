@@ -487,9 +487,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 380) — 1580 tests, 4 ignored, M1 265/265 by contract
+> ### ⏭️ START HERE (wave 381) — 1581 tests, 4 ignored, M1 268/268 by contract
 >
-> **Sema 265 of 265, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
+> **Sema 268 of 268, `chiero-pp` 39 of 39, `chiero-parse` 7 and `chiero-lex` 3 constraint tests.**
 > **All four crates now have a constraints test and a span gate** (376 closed the last one).
 > **All three crates have a span gate** (373, 374); the sema corpus is also checked for spans that
 > cover the *wrong* text, for messages carrying their own source formatting (374), and for
@@ -508,6 +508,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > message named. Reach for it whenever a divergence becomes reportable — and note the criterion
 > that chose it, which was **measurement**: VPP has no enumerator wide enough to widen, so the
 > report costs no one anything. `int a[0]` went the other way on the same criterion (1777 uses).
+>
+> **Wave 380 found three false positives — the most any wave has.** `unsigned char a[4] = "abc"`,
+> `extern int a[]; int a[3];`, and `int f(int a[2]); int f(int a[3])`. All three are rules that
+> reject legal C, which wave 376 recorded as the expensive class, and **the census's legal half is
+> the only thing that finds them**. Two of the three came from comparing *interned ids* where C
+> compares compatibility.
+>
+> **An asymmetry between spellings is the tell.** `signed char` was accepted and `unsigned char`
+> refused — no rule intends that, and it meant the case had been written once for the plain
+> spelling. When a rule treats two spellings of one C concept differently, one of them is a
+> mistake.
+>
+> **Loosening a rule needs rows that pin how far.** A mutant that dropped the array element
+> comparison survived: nothing checked that `int a[2]; char a[2];` still conflicts.
 >
 > **Wave 379 swept the shared `Conversion` contexts** and found a variant the public API promises
 > and the engine never makes — `Condition`, declared and constructed by nothing. Deleted rather
@@ -752,14 +766,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 >   3. **Every crate is now audited.** 372 messages, 373–375 spans, 376 the lexer. The quality
 >      sweep §9 opened at wave 372 is finished, and the remaining leads are back to coverage:
->      **6.7.9p14's string-literal initialisation of a non-char array**, **6.5.16.2's compound
->      assignment on a pointer**, and **6.2.7's compatible-type rules for two arrays of different
->      known lengths**. 6.7.2.3, 6.3.1.8 and 6.5.2.5 are closed.
+>      **6.7.6.2's qualified array element through a typedef**, **6.5.2.2p6's default argument
+>      promotions for an unprototyped call**, and **6.4.2.2's `__func__` shape and scope**.
+>      6.7.9p14, 6.5.16.2 and 6.2.7 are closed.
 >
->      **The sibling sweep is the cheaper census** and has now paid three times (377, 378, 379).
->      The next target it suggests: `ScopedNames` now carries a kind for tags and
->      `declared_enumerators` shares the type with a kind of 0 — nothing has asked whether the
->      enumerator path wants the same distinction.
+>      **Run the legal half first and widest.** Wave 380 found three false positives and one miss;
+>      every earlier census found the reverse. `types_conflict` compares interned ids for
+>      everything except functions and arrays — **the sibling sweep's next target is what else it
+>      calls different that C calls compatible**: qualified pointees, enum against its underlying
+>      integer, and two identical function types built in different orders.
 >
 >      **`chiero-parse` now has a second constraints test** (wave 366's array decorations). When a
 >      census row's information is discarded by 013, that is where its rule goes.
@@ -3105,6 +3120,15 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >     that judgement has not been made and should be made before more fixtures are attempted.
 
 > ### Rules earned, most recent first
+>
+> **An asymmetry between two spellings of one concept is a mistake, not a rule** (wave 380).
+> `signed char a[4] = "abc"` was accepted and `unsigned char` refused. Nobody designs that; it
+> means the case was written once and the variants forgotten. When a census shows one spelling
+> passing and its sibling failing, look at the code before looking at the standard.
+>
+> **Loosening a rule needs rows that pin how far** (wave 380). Three fixes this wave made rules
+> accept more, and a mutant that removed the array element comparison survived — the fixture had
+> rows for what must now pass and none for what must still fail. Every widening needs both.
 >
 > **Enumerate from the thing under test, never from memory** (wave 379). A gate asking "is every
 > variant produced?" was written with a hand-listed set and passed by omitting the one variant that
