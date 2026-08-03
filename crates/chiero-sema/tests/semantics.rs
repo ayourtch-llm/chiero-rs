@@ -7785,3 +7785,71 @@ fn a_declaration_with_no_storage_class_adopts_prior_linkage() {
         vec!["conflicting types for `f`".to_string()]
     );
 }
+
+/// **A packed enumeration takes the smallest integer type holding its range** (the GNU
+/// `packed` attribute on an enum), and chiero ignored the attribute entirely.
+///
+/// `typedef enum { A = 0, B = 3 } __attribute__((packed)) E;` is one byte in gcc and was four
+/// here. VPP's `ip_ecn_t` is exactly this and asserts its own size —
+/// `STATIC_ASSERT_SIZEOF (ip_ecn_t, 1)` — so the wrong width turned into a **failing static
+/// assertion on legal code**, which is how the sweep surfaced it: `arp_packet.c` reported
+/// "static assertion failed: \"Size of ip_ecn_t must be 1 bytes\"".
+///
+/// **A wrong size is worse than a missing diagnostic**: it is a layout answer every consumer
+/// downstream believes. This is the first defect the sweep has found that is not about a
+/// diagnostic at all.
+///
+/// The width follows the *range*, not the signedness alone: 0..3 fits one byte, 0..300 needs two,
+/// and a negative enumerator makes it signed and still one byte if it fits. Waves 383 and 386
+/// settled the sign and the unpacked width; this is the same rule with the attribute honoured.
+#[test]
+fn a_packed_enumeration_is_as_narrow_as_its_range() {
+    let repr = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        let id = p.decl_ty("v").expect("`v` is declared");
+        p.analysis.ty(id).clone()
+    };
+    let u = |bits| Ty::Int {
+        signed: false,
+        bits,
+    };
+    let i = |bits| Ty::Int { signed: true, bits };
+
+    // **One byte when the range fits**, in both spellings of the attribute.
+    assert_eq!(
+        repr("typedef enum { A = 0, B = 3 } __attribute__((packed)) E; E v;"),
+        u(8)
+    );
+    assert_eq!(
+        repr("typedef enum { A = 0, B = 3 } __attribute__((__packed__)) E; E v;"),
+        u(8)
+    );
+    assert_eq!(
+        repr("enum __attribute__((packed)) T { A = 1 }; enum T v;"),
+        u(8)
+    );
+
+    // **Two bytes when it does not**, and four when it needs them.
+    assert_eq!(
+        repr("typedef enum { A = 0, B = 300 } __attribute__((packed)) E; E v;"),
+        u(16)
+    );
+    assert_eq!(
+        repr("typedef enum { A = 0, B = 70000 } __attribute__((packed)) E; E v;"),
+        u(32)
+    );
+
+    // **A negative enumerator keeps it signed**, and the width still follows the range.
+    assert_eq!(
+        repr("typedef enum { A = -1, B = 3 } __attribute__((packed)) E; E v;"),
+        i(8)
+    );
+    assert_eq!(
+        repr("typedef enum { A = -200, B = 3 } __attribute__((packed)) E; E v;"),
+        i(16)
+    );
+
+    // **Without the attribute nothing moves** — waves 383 and 386's rule, unchanged.
+    assert_eq!(repr("typedef enum { A = 0, B = 3 } E; E v;"), u(32));
+    assert_eq!(repr("typedef enum { A = -1, B = 3 } E; E v;"), i(32));
+}
