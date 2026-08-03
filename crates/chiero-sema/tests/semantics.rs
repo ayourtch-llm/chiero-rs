@@ -6224,6 +6224,10 @@ fn a_top_level_qualifier_is_not_part_of_a_function_type() {
         ),
         ("int a[2]; char a[2];", "conflicting types for `a`"),
         ("int a; double a;", "conflicting types for `a`"),
+        // **A return type that genuinely differs**, which the qualifier-stripping must not
+        // swallow. A mutant that stopped comparing return types was killed only by tests
+        // elsewhere until this row existed.
+        ("int f(void); double f(void);", "conflicting types for `f`"),
     ] {
         assert_eq!(
             diags(src),

@@ -7305,7 +7305,12 @@ impl Cx<'_> {
                     prototyped: q2,
                 },
             ) => {
-                if r1 != r2 {
+                // **A top-level qualifier is not part of the type** (C 6.7.6.3p15). Interned ids
+                // carry one and C drops it: `const int f(void)` and `int f(void)` are one
+                // declaration, and so are `f(const int)` and `f(int)`. `bare` strips only the
+                // outermost, which is the whole distinction — `f(const int *)` against
+                // `f(int *)` is a real conflict, because that `const` is on the pointee.
+                if self.bare(r1) != self.bare(r2) {
                     return true;
                 }
                 // **Parameters are compared when both declarations specified them.** This used to
@@ -7326,8 +7331,8 @@ impl Cx<'_> {
                     return true;
                 }
                 p1.iter().zip(&p2).any(|(&x, &y)| {
-                    let (px, ex) = self.param_shape(x);
-                    let (py, ey) = self.param_shape(y);
+                    let (px, ex) = self.param_shape(self.bare(x));
+                    let (py, ey) = self.param_shape(self.bare(y));
                     px != py || self.types_conflict(ex, ey)
                 }) || v1 != v2
             }
