@@ -487,7 +487,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 400) — 1607 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 401) — 1608 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 400: one declaration defines its tag once.** `struct S { int x; } a, b;` reported
+> "redefinition of `struct S`" — sema resolved the specifier once per declarator. The tagless form
+> was worse: `struct { int x; } a, b; a = b;` minted a fresh anonymous record each time, so an
+> ordinary struct assignment was refused by a message that never named the cause. Fixed with a
+> memo in `tag` keyed on the **AST node** (not the type — two separately written anonymous records
+> are still two types) and taken only for **definitions**.
+>
+> **A guard with no killing test, recorded rather than hidden.** Memoising *references* too
+> survives the whole workspace and no distinguishing case could be built. It is kept narrow
+> anyway: wave 391 deleted a redundant call on *proof* from the `Qual` docs, and there is no proof
+> here — a memo caching an incomplete record for a tag defined later would be a wrong answer, not
+> a noisy one. **Absence of evidence is not equivalence.**
+>
+> ### The sweep has now found three defects no census would have
+>
+> All three are *legal* constructs refused, which is a census's silent half: adjacent literals in
+> `_Static_assert` (140 VPP uses), the `__atomic_*`/`__sync_*` builtin families (231 uses), and a
+> declaration with more than one declarator. **Censuses find missing rules; sweeps find refused
+> code.**
+>
+> ### Sweep state and the vnet blocker
+>
+> - **vppinfra**: 31 findings of 109 tested — 20 enumerator-range + 3 no-named-member + 1 stray
+>   `;` are **pedantic-calibration noise, not defects** (owner's decision). Real remainder: 2 macro
+>   redefinitions, 1 incompatible-pointer init (`hash.c`), 1 incompatible-pointer return
+>   (`unformat.c`), 2 non-static-follows-static.
+> - **vlib**: gcc 44 of 47; its two parse defects are fixed.
+> - **vnet**: **22 of 60 sampled compile (37%)** — roughly 165 of 452 files. The other 38 need
+>   `.api_enum.h` / `.api_types.h`, produced by `vppapigen` from `.api` files. Those are a real
+>   generator's output (enum definitions with specific values) and **cannot be hand-stubbed** the
+>   way `config.h` was. Either run `vppapigen`, or sweep the 37% and accept the gap.
+> - **plugins (780)**: unswept.
 >
 > **Wave 399: a failed specifier no longer cascades into the member rule.**
 > `struct S { struct; };` gave two diagnostics where gcc gives one, the second being wave 398's
