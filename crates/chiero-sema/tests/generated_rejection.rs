@@ -911,6 +911,25 @@ const VIOLATIONS: &[(&str, &str)] = &[
         "a pointer offset by a floating value in place",
         "int f(void){ int *p=0; double d=1; p += d; return p!=0; }",
     ),
+    // Bit-fields and record members, wave 387. The 6.7.2.1 census found the section otherwise
+    // complete, so these are the two gaps rather than a new area.
+    (
+        "_Alignas on a bit-field",
+        "struct S { _Alignas(8) int a : 2; };",
+    ),
+    (
+        "_Alignas on an unnamed bit-field",
+        "struct S { _Alignas(8) int : 2; int b; };",
+    ),
+    ("struct with no members", "struct S { };"),
+    ("union with no members", "union U { };"),
+    ("struct with no named members", "struct S { int : 3; };"),
+    ("union with no named members", "union U { int : 3; };"),
+    ("tagless struct with no members", "struct { } x;"),
+    (
+        "tagless struct with no named members",
+        "struct { int : 3; } x;",
+    ),
 ];
 
 fn gcc_rejects(src: &str) -> Option<bool> {
@@ -963,7 +982,7 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     /// multiple-storage-class error, and `DeclKind::Typedef` carries no `Storage` in this AST, so
     /// the `static` is gone before sema looks. Listing it here would fail against a parser gap
     /// rather than a sema one.
-    const FLOOR: usize = 268;
+    const FLOOR: usize = 276;
 
     if gcc_rejects("int main(void){return 0;}") != Some(false) {
         eprintln!("skipping: gcc not usable here");
@@ -973,12 +992,23 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     let mut caught = Vec::new();
     let mut missed = Vec::new();
     let mut not_a_violation = Vec::new();
+    let mut gcc_unavailable = Vec::new();
     for (name, src) in VIOLATIONS {
         match gcc_rejects(src) {
             // **gcc disagreeing is a bug in this list, not a finding.** Dropped from the
             // denominator rather than counted as a miss.
-            Some(false) | None => {
+            Some(false) => {
                 not_a_violation.push(*name);
+                continue;
+            }
+            // **"gcc could not be run" is not "gcc accepted it."** These were the same branch,
+            // and the difference showed up the first time this test ran under load: a spawn
+            // failure landed the row in `not_a_violation` and the failure said "gcc accepts
+            // these, so they are bugs in this list" about a program gcc had never seen. 023 §9
+            // applies to a test's own output — a report a person cannot act on is not a report,
+            // and that one sends them to edit a correct row.
+            None => {
+                gcc_unavailable.push(*name);
                 continue;
             }
             Some(true) => {}
@@ -999,6 +1029,11 @@ fn the_share_of_violations_sema_rejects_does_not_fall() {
     assert!(
         not_a_violation.is_empty(),
         "gcc accepts these, so they are bugs in this list rather than missing checks: {not_a_violation:?}"
+    );
+    assert!(
+        gcc_unavailable.is_empty(),
+        "gcc could not be run for these, so they were graded against nothing — \
+         usually this machine being too busy to spawn it: {gcc_unavailable:?}"
     );
     eprintln!(
         "sema rejects {} of {} constraint violations; missing: {:?}",

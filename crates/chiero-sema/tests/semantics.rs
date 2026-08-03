@@ -6797,8 +6797,17 @@ fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
         // **`_Alignas` on an ordinary member stays legal** — the rule is about bit-fields, and a
         // fix that keyed on the specifier rather than on the member would break this.
         "struct S { _Alignas(8) int a; };",
+        // **And the `aligned` attribute on a bit-field stays legal**, which is the other half of
+        // the rule's scope: gcc refuses `_Alignas` here and accepts
+        // `__attribute__((aligned(8))) int a : 2`, the same spelling split `check_alignment`
+        // already draws for typedefs. Added because a mutant that widened the rule to both
+        // spellings **survived** — the measurement was in the commit message and the code
+        // comment, and nowhere a test could see it.
+        "struct S { __attribute__((aligned(8))) int a : 2; };",
+        "struct S { __attribute__((__aligned__(8))) int a : 2; };",
         // An anonymous member supplies names, so the record has some.
         "struct S { struct { int x; }; };",
+        "struct { int a; } x;",
         // One named member is enough, wherever it sits.
         "struct S { int : 3; int a; };",
         "struct S { int a; int : 3; };",
@@ -6821,8 +6830,10 @@ fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
             "struct S { _Alignas(1) int a : 2; };",
             "alignment specified for bit-field `a`",
         ),
+        // An unnamed bit-field needs a named member beside it, or the record's own rule fires
+        // too — see the two-fault row at the end.
         (
-            "struct S { _Alignas(8) int : 2; };",
+            "struct S { _Alignas(8) int : 2; int b; };",
             "alignment specified for an unnamed bit-field",
         ),
         // **Nothing at all**, against **nothing named** — two messages, because they are two
@@ -6832,6 +6843,18 @@ fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
         ("struct S { int : 3; };", "struct `S` has no named members"),
         ("union U { int : 3; };", "union `U` has no named members"),
         ("struct S { int : 0; };", "struct `S` has no named members"),
+        // **Tagless records too**, where the message has nothing to name. Missed at first because
+        // the check was guarded on the tag, which is the thing the *message* needs and not the
+        // thing the *rule* is about.
+        ("struct { } x;", "struct has no members"),
+        ("union { } x;", "union has no members"),
+        ("struct { int : 3; } x;", "struct has no named members"),
+        // An anonymous *member* is a record in its own right and obeys the rule as well.
+        ("struct S { struct { }; int a; };", "struct has no members"),
+        (
+            "struct S { struct { int : 3; }; int a; };",
+            "struct has no named members",
+        ),
     ] {
         assert_eq!(
             diags(src),
@@ -6839,4 +6862,15 @@ fn a_bitfield_takes_no_alignment_and_a_record_needs_a_named_member() {
             "the message for `{src}`"
         );
     }
+
+    // **Two faults, two reports** (the wave-375 gate), and gcc agrees: an unnamed bit-field
+    // carrying an alignment inside a record that has nothing else is wrong twice, and a reader
+    // has to fix both. In source order, which is gcc's order too.
+    assert_eq!(
+        diags("struct S { _Alignas(8) int : 2; };"),
+        vec![
+            "alignment specified for an unnamed bit-field".to_string(),
+            "struct `S` has no named members".to_string(),
+        ]
+    );
 }

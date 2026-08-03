@@ -2586,7 +2586,36 @@ impl Cx<'_> {
                 self.error(span, format!("`{n}` is defined as the wrong kind of tag"));
             }
         }
-        let layout = self.lay_out(node, tag == chiero_ast::TagKind::Union, &members.unwrap());
+        let members = members.unwrap();
+        let layout = self.lay_out(node, is_union, &members);
+        // **C 6.7.2.1p8: a record needs a named member.** gcc separates two cases and so does
+        // this, because they are two different fixes: nothing at all is "has no members", while
+        // only unnamed bit-fields is "has no *named* members" — add a member, or name one.
+        //
+        // **An anonymous record member supplies names**, so `struct S { struct { int x; }; };` is
+        // fine. It is recognised as a member with no name and no bit-field, which is exactly the
+        // shape: an unnamed *bit-field* is the only other way to write a member without a name.
+        //
+        // Unlike the `_Alignas` rule beside it this is a `-Wpedantic` promotion, reportable here
+        // only because wave 314 calibrated to `-pedantic-errors`. VPP has none of either.
+        let kw = if is_union { "union" } else { "struct" };
+        let tag = name.and_then(|n| self.text(n)).map(str::to_owned);
+        let names_something = |cx: &Self, m: DeclId| {
+            matches!(&cx.ast.decl(m).kind, DeclKind::Var { name, .. } if name.is_some())
+                || (matches!(&cx.ast.decl(m).kind, DeclKind::Var { name: None, .. })
+                    && cx.ast.bitfield(m).is_none())
+        };
+        // **A tagless record is a record too.** gcc reports `struct { } x;` and
+        // `struct S { struct { }; int a; };` exactly as it reports the tagged forms, and guarding
+        // this on the tag left the whole untagged half silent — six programs, found by carrying
+        // the census one question further than the rule that prompted it. The tag only decides
+        // whether the message can name anything.
+        let named = tag.map_or_else(|| kw.to_owned(), |t| format!("{kw} `{t}`"));
+        if members.is_empty() {
+            self.error(span, format!("{named} has no members"));
+        } else if !members.iter().any(|&m| names_something(self, m)) {
+            self.error(span, format!("{named} has no named members"));
+        }
         if name.is_some() {
             self.in_progress.pop();
         }
@@ -2857,7 +2886,35 @@ impl Cx<'_> {
             // the same node re-emits whatever the first said — an inline `struct T { … }` in the
             // member's own declaration was reported as a redefinition of itself. Wave 359's
             // parameter-list defect, in a new caller.
-            self.check_alignment(ty, fty, StorageContext::File);
+            // **C 6.7.5p2: an alignment specifier may not be applied to a bit-field.** gcc
+            // refuses this in *both* modes, unlike most of what this project reports, and it
+            // refuses **only the `_Alignas` spelling** — `__attribute__((aligned(8))) int a : 2`
+            // is accepted. That is the same split `check_alignment` already draws for typedefs
+            // and for weakening an alignment, so the attribute spelling is deliberately not
+            // included here; measuring it is what kept this rule from being one construct wider
+            // than gcc's.
+            //
+            // Reported instead of, not as well as, the value checks: `_Alignas(3)` on a
+            // bit-field has one thing wrong with it that a reader can act on (contract 20).
+            let alignas_attr = self.ast.bitfield(m).is_some().then(|| {
+                self.ast
+                    .ty(ty)
+                    .attrs
+                    .iter()
+                    .find(|a| matches!(self.text(a.name), Some("_Alignas")))
+                    .map(|a| a.span)
+            });
+            if let Some(Some(aspan)) = alignas_attr {
+                match name.and_then(|n| self.text(n)) {
+                    Some(text) => {
+                        let text = text.to_owned();
+                        self.error(aspan, format!("alignment specified for bit-field `{text}`"));
+                    }
+                    None => self.error(aspan, "alignment specified for an unnamed bit-field"),
+                }
+            } else {
+                self.check_alignment(ty, fty, StorageContext::File);
+            }
             self.declaring = outer_declaring;
             // **A flexible array member is the last one** (C 6.7.2.1p18). Checked by looking
             // *back*: an `ArrayLen::Flexible` already in `fields` means a member follows one, and
