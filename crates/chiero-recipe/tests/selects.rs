@@ -20,29 +20,38 @@ fn f(name: &str, file: &str) -> FunctionRef {
 #[test]
 fn name_matches_selects_by_regex() {
     let s = scoped("name matches \"^show_\"");
-    assert_eq!(
-        s.selects(&f("show_hw_interfaces", "a.c")),
-        Selection::Yes
-    );
+    assert_eq!(s.selects(&f("show_hw_interfaces", "a.c")), Selection::Yes);
     // Anchored: a literal-substring matcher would wrongly take this one, which is why the
     // dependency had to be a regex engine rather than a substring searcher.
-    assert_eq!(
-        s.selects(&f("clear_show_hw", "a.c")),
-        Selection::No
-    );
+    assert_eq!(s.selects(&f("clear_show_hw", "a.c")), Selection::No);
 }
 
 #[test]
 fn in_file_selects_by_glob() {
     let s = scoped("in_file \"src/vnet/**/*_cli.c\"");
+    assert_eq!(s.selects(&f("x", "src/vnet/bfd/bfd_cli.c")), Selection::Yes);
+    // **`**/` matches zero directories too**, as it does in git, globset and bash `globstar`:
+    // `a/**/b` matches `a/b`. Recipe authors will write these expecting gitignore semantics,
+    // and a dialect that differed only in this corner would mislead precisely the people who
+    // never read the glob documentation.
+    assert_eq!(s.selects(&f("x", "src/vnet/tunnel_cli.c")), Selection::Yes);
+    assert_eq!(s.selects(&f("x", "src/vppinfra/mem.c")), Selection::No);
+    // The suffix still has to match.
+    assert_eq!(s.selects(&f("x", "src/vnet/bfd/bfd.c")), Selection::No);
+    // A literal `.` is escaped: without that, `*_cli.c` would also take `foo_cliXc`.
+    assert_eq!(s.selects(&f("x", "src/vnet/bfd/bfd_cliXc")), Selection::No);
+
+    // **A single `*` does not cross a separator.** This is the row that distinguishes the two
+    // wildcards; the `**` rows above pass under either reading.
+    let one = scoped("in_file \"src/vnet/*_cli.c\"");
     assert_eq!(
-        s.selects(&f("x", "src/vnet/bfd/bfd_cli.c")),
+        one.selects(&f("x", "src/vnet/tunnel_cli.c")),
         Selection::Yes
     );
-    // `*` does not cross a separator, so a file directly under `src/vnet` is not matched by
-    // `**/` — the pattern asks for a subdirectory.
-    assert_eq!(s.selects(&f("x", "src/vnet/tunnel_cli.c")), Selection::No);
-    assert_eq!(s.selects(&f("x", "src/vppinfra/mem.c")), Selection::No);
+    assert_eq!(
+        one.selects(&f("x", "src/vnet/bfd/bfd_cli.c")),
+        Selection::No
+    );
 }
 
 /// **A selector this crate cannot yet evaluate answers `NeedsAst`, never `No`.** Returning
@@ -72,5 +81,8 @@ fn an_invalid_regex_fails_the_load() {
     let src = "recipe r {\n  title \"t\"\n  scope fn $f where name matches \"^show_(\"\n  \
                fixture good \"g.c\"\n  fixture bad \"b.c\" expect 1 at \"b.c:1\"\n}\n";
     let errs = load(src).expect_err("an unparseable regex must not load");
-    assert!(errs.iter().any(|e| e.contains('r') && e.contains("regex")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains('r') && e.contains("regex")),
+        "{errs:?}"
+    );
 }

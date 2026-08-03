@@ -53,11 +53,88 @@ pub enum Selector {
     Calls(String),
 }
 
+/// A function as tier 1 sees it before any AST is available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionRef {
+    pub name: String,
+    /// Path as the sweep records it, `/`-separated.
+    pub file: String,
+}
+
+/// **Three-valued on purpose.** A selector this crate cannot yet evaluate must not answer
+/// `No`: that would silently empty the scope of every recipe using it and report a clean
+/// tree, which is the failure 042 §5 exists to prevent wearing a different hat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    Yes,
+    No,
+    /// Needs the typed AST — `registered_via`, `has_attribute`, `signature`, `calls`.
+    NeedsAst,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
     /// The metavariable the rest of the recipe refers to, e.g. `$f`.
     pub var: String,
     pub selector: Selector,
+}
+
+impl Scope {
+    /// Does this scope select `f`, given only a name and a path?
+    pub fn selects(&self, f: &FunctionRef) -> Selection {
+        match &self.selector {
+            Selector::NameMatches(re) => match regex::Regex::new(re) {
+                // Validated at load, so a failure here cannot be reached by a loaded recipe;
+                // answering `NeedsAst` rather than `No` keeps that unreachable path honest.
+                Err(_) => Selection::NeedsAst,
+                Ok(r) => yes_no(r.is_match(&f.name)),
+            },
+            Selector::InFile(glob) => match regex::Regex::new(&glob_to_regex(glob)) {
+                Err(_) => Selection::NeedsAst,
+                Ok(r) => yes_no(r.is_match(&f.file)),
+            },
+            Selector::RegisteredVia(_)
+            | Selector::HasAttribute(_)
+            | Selector::Signature(_)
+            | Selector::Calls(_) => Selection::NeedsAst,
+        }
+    }
+}
+
+fn yes_no(b: bool) -> Selection {
+    if b { Selection::Yes } else { Selection::No }
+}
+
+/// Translate a path glob to an anchored regex.
+///
+/// `**` crosses separators, `*` does not, `?` is one non-separator character. Everything else
+/// is escaped: a `.` in `*_cli.c` must be a literal dot, or the glob would also match
+/// `foo_cliXc`.
+fn glob_to_regex(glob: &str) -> String {
+    let mut out = String::from("^");
+    let b: Vec<char> = glob.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            '*' if i + 1 < b.len() && b[i + 1] == '*' => {
+                // `**/` should also match zero directories, so the separator is optional.
+                if i + 2 < b.len() && b[i + 2] == '/' {
+                    out.push_str("(?:.*/)?");
+                    i += 3;
+                    continue;
+                }
+                out.push_str(".*");
+                i += 2;
+                continue;
+            }
+            '*' => out.push_str("[^/]*"),
+            '?' => out.push_str("[^/]"),
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    out.push('$');
+    out
 }
 
 /// A clause this loader has not learned to read yet, kept whole.
@@ -153,6 +230,20 @@ pub fn load(src: &str) -> Result<Recipe, Vec<String>> {
                 });
             }
         }
+    }
+
+    // **A regex is compiled at load, not at sweep time.** A catalogue running over 1552 files
+    // is the wrong place to discover that a pattern does not parse.
+    if let Some(Scope {
+        selector: Selector::NameMatches(re),
+        ..
+    }) = &r.scope
+        && let Err(e) = regex::Regex::new(re)
+    {
+        say(
+            &mut errs,
+            format!("`name matches` is not a valid regex: {e}"),
+        );
     }
 
     // 042 §5 — both kinds are mandatory, and they catch opposite failures: `good` catches
