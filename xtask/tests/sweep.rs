@@ -137,3 +137,25 @@ fn a_rendered_diagnostic_carries_the_place_it_happened() {
         "no place"
     );
 }
+
+/// **Locating a finding must not un-group the report.** The rows are grouped by message, and the
+/// whole value of the summary is `29  parse: a member declaration must declare a member` over one
+/// example path. Once each message carries its own `path:line:col:`, no two are equal and the
+/// group of 29 becomes 29 groups of one — the report would grow longer and say strictly less.
+/// So the grouping key is the *kind*, with the located text kept for the example.
+#[test]
+fn the_grouping_key_is_the_kind_not_the_place() {
+    let k = xtask::sweep::kind;
+    assert_eq!(
+        k("parse: /vpp/src/plugins/acl/dataplane_node.c:1024:12: a member declaration must declare a member"),
+        "parse: a member declaration must declare a member"
+    );
+    // Unlocated messages (a dummy span, a tool that could not run) pass through whole.
+    assert_eq!(k("pp: cannot include acl.api_enum.h"), "pp: cannot include acl.api_enum.h");
+    // **gcc's own text is already `path:line:col:` and is grouped the same way** — otherwise the
+    // BOTH REFUSED bucket, which is mostly one repeated flags mistake, never groups either.
+    assert_eq!(k("/vpp/src/vnet/fib/x.c:35:1: error: redefinition of 'f'"), "error: redefinition of 'f'");
+    // A path containing a colon must not be mistaken for a location, and a bare `:` in prose
+    // must not eat the message.
+    assert_eq!(k("sema: note: this is prose: with colons"), "sema: note: this is prose: with colons");
+}
