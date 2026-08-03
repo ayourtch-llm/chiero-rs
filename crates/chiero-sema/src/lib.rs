@@ -1751,6 +1751,14 @@ impl Cx<'_> {
                         // time this project has been caught reading a spelling where C reads a
                         // type (wave 389's `void` parameter was the first).
                         //
+                        // **No `&& !storage.static_` here**, though the first version had one.
+                        // `resolved_linkage` reads `deferring` only when `!now.internal`, so the
+                        // flag on a `static` declaration is never consulted and the extra clause
+                        // could not change an answer. A mutant dropping it survived, and the
+                        // reason is plain equivalence — not, as wave 401 recorded, a neighbouring
+                        // missing rule. That claim rested on a misreading of the sweep and the
+                        // rules concerned are all present and correct.
+                        //
                         // An *object* is unchanged: 6.2.2p5 is about functions, so
                         // `static int f(void){…} int f;` stays a conflict.
                         let is_function = matches!(self.out.types[t.0 as usize], Ty::Func { .. });
@@ -1758,7 +1766,7 @@ impl Cx<'_> {
                             ty: t,
                             defined: false,
                             internal: storage.static_,
-                            deferring: storage.extern_ || (is_function && !storage.static_),
+                            deferring: storage.extern_ || is_function,
                         };
                         self.check_redeclaration(n, now, self.ast.decl(id).span);
                     }

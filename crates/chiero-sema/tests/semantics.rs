@@ -7742,6 +7742,40 @@ fn a_declaration_with_no_storage_class_adopts_prior_linkage() {
     // **An object is not a function**, and 6.2.2p5 is about functions: `static int n; int n;` is
     // a genuine conflict and stays one. This row is what stops the fix from making every missing
     // storage class adopt.
+    // **The linkage rules this wave's census claimed were missing are all present.** Recorded
+    // here because wave 401's message and §9 said otherwise, on the strength of a misread sweep:
+    // every one of these is refused, matching gcc.
+    for (src, want) in [
+        (
+            "int f(void); static int f(void);",
+            "static declaration of `f` follows non-static declaration",
+        ),
+        (
+            "static int n; int n;",
+            "non-static declaration of `n` follows static declaration",
+        ),
+        (
+            "int n; static int n;",
+            "static declaration of `n` follows non-static declaration",
+        ),
+        (
+            "extern int n; static int n;",
+            "static declaration of `n` follows non-static declaration",
+        ),
+        (
+            "typedef int F(void); int f(void); static F f;",
+            "static declaration of `f` follows non-static declaration",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+    // `static` then `extern` is the legal direction — `extern` adopts internal linkage.
+    assert!(diags("static int n; extern int n;").is_empty());
+
     // gcc words this "redeclared as different kind of symbol", which names the category; chiero
     // reaches it through the type comparison, because a function and an object are both
     // `Meaning::Ordinary` and only their types differ. Both refuse, and the wording gap is
