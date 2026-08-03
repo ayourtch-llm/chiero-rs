@@ -2689,8 +2689,16 @@ impl Cx<'_> {
         let int_bits = (self.target.sizes.int_ * 8) as u32;
         let fits_int = lo >= -(1i128 << (int_bits - 1)) && hi < (1i128 << (int_bits - 1));
         let t = if fits_int {
+            // **C 6.7.2.2p4 leaves the compatible type to the implementation, and gcc picks it by
+            // sign**: `unsigned int` unless some enumerator is negative. Answering `int` always
+            // was wrong in both directions — it made `enum E a; int a;` agree and
+            // `enum E a; unsigned a;` conflict, and gcc says the opposite of each.
+            //
+            // This is the *object's* type, and it is the whole of the enumeration's type. The
+            // enumerator constant is separate and stays `int` (6.4.4.3p2), which is why `-1 < A`
+            // and `-1 < e` do not have to agree.
             Ty::Int {
-                signed: true,
+                signed: lo < 0,
                 bits: int_bits,
             }
         } else {

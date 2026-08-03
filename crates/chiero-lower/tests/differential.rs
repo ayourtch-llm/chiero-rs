@@ -5753,3 +5753,38 @@ fn an_extended_floating_suffix_names_its_type() {
     agree("return _Generic(0.0f, float:1, double:2, long double:3, default:9);");
     agree("return _Generic(0.0l, float:1, double:2, long double:3, default:9);");
 }
+
+/// **An enumeration's signedness, executed against gcc.**
+///
+/// The corpus mentioned enums in forty-odd places and not one of them could see this. Every row
+/// above returns a *value* — `A`, `B`, `A + C` — and a value is the same however the type is
+/// signed, so 1583 tests passed while `enum E { A = 1 }` was `int` instead of `unsigned int`.
+/// What distinguishes the two is a **comparison or a shift**, where the sign decides the answer
+/// rather than the representation, and there was no such row.
+///
+/// gcc is the oracle here rather than a written-down expectation, which matters because the
+/// choice is implementation-defined (C 6.7.2.2p4) and a written expectation would just be this
+/// author's reading of gcc a second time.
+#[test]
+fn an_enumerations_signedness_is_observable() {
+    // **Non-negative enumerators, so `unsigned int`**: the subtraction wraps instead of going
+    // negative, and `-1` converts up rather than the enum converting down.
+    const E: &str = "enum E { A = 1, B = 2 };\n";
+    agree_with(E, "enum E e = A; return e - 2 < 0;");
+    agree_with(E, "enum E e = A; return -1 < e;");
+    agree_with(E, "enum E e = A; return (e - 2) / 2 > 0;");
+    agree_with(E, "enum E e = A; return (int)((e - 2) >> 1);");
+
+    // **A negative enumerator, so `int`** — the same expressions, answered the other way. Without
+    // these a fix that made every enumeration unsigned would pass.
+    const N: &str = "enum N { M = -1, P = 1 };\n";
+    agree_with(N, "enum N e = M; return e < 0;");
+    agree_with(N, "enum N e = M; return e - 1 < 0;");
+    agree_with(N, "enum N e = M; return (int)(e >> 1);");
+
+    // Zero is not negative, so this one is unsigned too — the boundary of the rule.
+    agree_with(
+        "enum Z { Z0 = 0, Z1 };\n",
+        "enum Z e = Z0; return e - 1 < 0;",
+    );
+}
