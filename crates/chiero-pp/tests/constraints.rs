@@ -954,6 +954,28 @@ fn a_macro_call_may_span_a_directive() {
         expanded("#define P(x) x\nint P(\n#define K 5\n1) v;\nint w = K;\n"),
         "int 1 v ; int w = 5 ;"
     );
+    // **An ordinary C `(` is not an open argument list.** VPP's X-macro accumulator opens a
+    // paren, defines `_`, uses it, and undefines it before the closing paren:
+    //
+    //     const u8 MASK = (
+    //     #define _(a, b, c) FLAG_##a |
+    //       foreach_flag
+    //     #undef _
+    //       0);
+    //
+    // Deferring the flush here holds `foreach_flag` past the `#undef`, so `_` is gone by the
+    // time it expands and the tokens come out as `_ ( ... )` — which then fails to parse.
+    // The wave-408 predicate could not tell this `(` from a macro call's, and this shape is
+    // written in `vnet/tunnel` and across VPP.
+    assert_eq!(
+        expanded("int v = (\n#define _(a) a |\n  _(1) _(2)\n#undef _\n  0);\n"),
+        "int v = ( 1 | 2 | 0 ) ;"
+    );
+    // The same, one level simpler: a definition consumed before its `#undef`, inside parens.
+    assert_eq!(
+        expanded("#define Q(x) x\nint w = (\n#define R 7\n  Q(R)\n#undef R\n  );\n"),
+        "int w = ( 7 ) ;"
+    );
     // A conditional inside the list, which gcc also takes.
     assert_eq!(
         expanded("#define P(x) x\nint v = P(1\n#if 0\n+2\n#endif\n);\n"),
