@@ -847,3 +847,62 @@ fn stringize_produces_a_valid_string_literal() {
     let src = "#define S(x) #x\nconst char *p = S(\\);\n";
     assert!(diags(src).is_empty(), "{:?}", diags(src));
 }
+
+/// **An argument list that never closes is reported, not silently abandoned.**
+///
+/// `#define P(x) x` then `int v = P(1;` left `P ( 1 ;` in the output with no diagnostic — the
+/// macro name unexpanded and nothing said. gcc: "unterminated argument list invoking macro
+/// \"P\"".
+///
+/// **A directive inside the argument list reaches the same path**, and that is where it matters:
+/// `parse_args` runs over the tokens of the current line group, and a directive ends it, so the
+/// closing `)` is never found and the call is dropped. Multi-line calls are fine otherwise —
+/// `P (\n 1 \n)` expands — so it is the directive alone that breaks it.
+///
+/// **Silence is wrong under either reading of C.** gcc under `-std=gnu11` processes the directive
+/// and expands the macro; under `-pedantic-errors` — this project's calibration (wave 314) — it
+/// refuses with "embedding a directive within macro arguments is not portable". chiero did
+/// neither: it processed the directive and then dropped the expansion, which is a **wrong token
+/// stream, not a missing diagnostic**. Whether to *support* the extension is a scope decision for
+/// an owner; reporting instead of lying is not.
+///
+/// Found by the sweep once the `.api` headers were generated: **28 of `vnet/fib`'s 29 findings**
+/// are this, via `ip6_packet.h`'s `CLIB_PACKED (struct { #define IP6_MLDP_ALERT_TYPE 0x5 … })`.
+#[test]
+fn an_unterminated_argument_list_is_reported() {
+    for src in [
+        // Genuinely unterminated.
+        "#define P(x) x\nint v = P(1;\n",
+        "#define P(x) x\nint v = P(1\n",
+        // Interrupted by a directive — the shape VPP writes.
+        "#define P(x) x\nint P(\n#define K 5\n1) v;\n",
+        "#define P(x) x\nint v = P(1\n#define J 2\n);\n",
+        "#define P(x) x\ntypedef P (struct {\n#define K 5\n  int a;\n}) T;\n",
+    ] {
+        assert_eq!(
+            diags(src),
+            vec!["unterminated argument list invoking macro `P`".to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **Multi-line calls are legal and must keep expanding** — this is what stops the fix
+        // from reporting every call that spans a newline.
+        "#define P(x) x\nint v = P(\n1\n);\n",
+        "#define P(x) x\ntypedef P (struct {\n  int a;\n}) T;\n",
+        "#define P(x) x\nint v = P(1);\n",
+        // A macro name with no `(` at all is not an invocation and never was.
+        "#define P(x) x\nint P = 1;\n",
+        // An object-like macro takes no arguments, so a following `(` is ordinary punctuation.
+        "#define Q 1\nint v = Q;\nint w = (Q);\n",
+        // A directive between two complete calls is untouched.
+        "#define P(x) x\nint a = P(1);\n#define K 5\nint b = P(K);\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
