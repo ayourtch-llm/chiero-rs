@@ -18,6 +18,17 @@
 use chiero_parse::{ScopedTypedefs, parse_tu};
 use chiero_pp::{Config, preprocess_str};
 
+fn diagnostics_with(src: &str, dialect: chiero_ast::Dialect) -> Vec<String> {
+    let tu = preprocess_str("f.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    chiero_parse::parse_tu_with(&tu, &mut oracle, dialect)
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect()
+}
+
 fn diags(src: &str) -> Vec<String> {
     let tu = preprocess_str("f.c", src, Config::default());
     let mut oracle = ScopedTypedefs::new();
@@ -648,4 +659,43 @@ fn a_failed_specifier_does_not_cascade_into_the_member_rule() {
         diags("struct;\n"),
         vec!["expected a tag name or a `{`".to_string()]
     );
+}
+
+/// **The non-pedantic dialect, at the owner's direction (2026-08).**
+///
+/// Every form of "a member declaration must declare a member" was measured against gcc: a
+/// stray `;`, a declaration with no declarator, a nested tag definition, an empty struct body.
+/// `-std=gnu11` accepts all of them; `-pedantic-errors` refuses all of them. The rule is
+/// therefore **entirely** a pedantic-mode rule, and gating it is a dialect switch rather than
+/// a weakening — chiero still reports it under the calibration wave 314 set.
+#[test]
+fn the_non_pedantic_dialect_accepts_what_gnu11_accepts() {
+    let pedantic_only = [
+        "struct S { int a; ; };",       // stray semicolon — VPP's X-macro accumulators
+        "struct S { int; };",           // no declarator
+        "struct S { struct T { int x; }; int y; };", // nested tag definition
+        "struct S { ; };",              // empty body via a lone semicolon
+        "union U { int a; ; };",        // and in a union
+    ];
+    for src in pedantic_only {
+        assert!(
+            !diagnostics_with(src, chiero_ast::Dialect::pedantic()).is_empty(),
+            "pedantic mode must still refuse: {src}"
+        );
+        assert_eq!(
+            diagnostics_with(src, chiero_ast::Dialect::gnu()),
+            Vec::<String>::new(),
+            "gnu11 accepts this, so the non-pedantic dialect must too: {src}"
+        );
+    }
+
+    // **The dialect must not become a way to accept broken C.** A genuine syntax error is
+    // still an error in both dialects; a flag that silenced everything would make the sweep's
+    // parser-coverage figure meaningless.
+    for src in ["struct S { int a };", "int f(void) { return }", "struct { ;"] {
+        assert!(
+            !diagnostics_with(src, chiero_ast::Dialect::gnu()).is_empty(),
+            "not a dialect question, a syntax error: {src}"
+        );
+    }
 }
