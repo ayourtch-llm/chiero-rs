@@ -1184,6 +1184,21 @@ fn has_no_size(out: &Analysis, ty: TyId) -> bool {
 /// C 6.2.2p4: `static` is internal; a plain file-scope declaration is external; and `extern`
 /// takes whatever the prior declaration had. Only the last of those needs `was` at all, and it
 /// is the whole reason this is a function rather than a field.
+/// Whether a name is one gcc declares intrinsically, with no header.
+///
+/// **Three families, because gcc has three.** The exemption began as `__builtin_` alone, for the
+/// reason recorded at its only caller: `stdarg.h` is `#define va_start(v,l) __builtin_va_start(v,l)`
+/// and nothing declares the target, so reporting it undeclared made every variadic function a
+/// sema error. `__atomic_*` and `__sync_*` are declared the same way — gcc compiles
+/// `__atomic_load_n` and `__sync_fetch_and_add` with no header — and were simply not named.
+///
+/// **Prefix match, deliberately exact.** `atomic_load_n` without the leading underscores and
+/// `__atomi_load` are ordinary undeclared names, and a looser test would swallow the typo along
+/// with the builtin — turning a missing diagnostic into a wrong answer.
+fn is_compiler_builtin(name: &str) -> bool {
+    name.starts_with("__builtin_") || name.starts_with("__atomic_") || name.starts_with("__sync_")
+}
+
 fn resolved_linkage(was: Prior, now: Prior) -> bool {
     if now.internal {
         true
@@ -4754,7 +4769,15 @@ impl Cx<'_> {
                     // program that declares its own `__func__` keeps it — the predefined one is
                     // what the name means when nothing else has claimed it.
                     .or_else(|| {
-                        if !matches!(self.text(*sym), Some("__func__" | "__FUNCTION__")) {
+                        // **Three spellings, because gcc has three.** `__PRETTY_FUNCTION__` was
+                        // left out and reported undeclared. In C++ it names the signature; in C
+                        // gcc makes all three the unqualified function name, so only the spelling
+                        // was ever at stake. Found by grepping for the shape §9 records — a guard
+                        // naming one case of several — rather than by hitting it.
+                        if !matches!(
+                            self.text(*sym),
+                            Some("__func__" | "__FUNCTION__" | "__PRETTY_FUNCTION__")
+                        ) {
                             return None;
                         }
                         let n = self.text(self.current_fn?)?.len() as u64;
@@ -4787,7 +4810,7 @@ impl Cx<'_> {
                         // / `VaArg` / `VaEnd` instructions from the *call*, not from the
                         // callee's type, so the type is never consulted. What matters is
                         // that it is not a diagnostic.
-                        if !n.starts_with("__builtin_") && self.unknown_names.insert(*sym) {
+                        if !is_compiler_builtin(&n) && self.unknown_names.insert(*sym) {
                             self.error(span, format!("`{n}` was not declared"));
                         }
                         self.intern(Ty::Error)

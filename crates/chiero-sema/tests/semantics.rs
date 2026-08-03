@@ -7569,6 +7569,12 @@ fn the_atomic_and_sync_builtins_are_declared_by_the_compiler() {
         "void f(void){ __sync_synchronize(); }",
         // The family that already worked, kept so a fix cannot trade one for another.
         "int f(int n){ return __builtin_expect(n, 0); }",
+        // **The predefined function-name identifiers, all three spellings.**
+        // `__PRETTY_FUNCTION__` was refused while its two siblings were accepted — found by
+        // grepping for this wave's own shape rather than by hitting it in a corpus.
+        "const char *f(void){ return __func__; }",
+        "const char *f(void){ return __FUNCTION__; }",
+        "const char *f(void){ return __PRETTY_FUNCTION__; }",
     ] {
         assert!(
             diags(good).is_empty(),
