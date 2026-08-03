@@ -393,6 +393,11 @@ pub fn tier1_sweep(
     recipes: &[chiero_recipe::Recipe],
     cfg: &chiero_pp::Config,
 ) -> Tier1Report {
+    // **Keyed by defining file and name, so a header function is one function.** Each
+    // translation unit re-parses every header it includes, so without this a `static inline`
+    // in vppinfra is counted once per includer — 186,623 functions from 36 files in `vnet/fib`
+    // — and 042 c5d's baseline would track the include graph rather than the code.
+    let mut seen: indexmap::IndexSet<(String, String)> = indexmap::IndexSet::new();
     let mut functions = Vec::new();
     let mut unreadable = 0;
     for path in files {
@@ -401,7 +406,13 @@ pub fn tier1_sweep(
             continue;
         };
         match functions_in_cfg(path, &src, cfg.clone()) {
-            Ok(fs) => functions.extend(fs),
+            Ok(fs) => {
+                for f in fs {
+                    if seen.insert((f.file.clone(), f.name.clone())) {
+                        functions.push(f);
+                    }
+                }
+            }
             // Counted, never skipped: a file that contributed no functions because it did not
             // parse is not the same as one that defines none.
             Err(_) => unreadable += 1,
