@@ -487,7 +487,57 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 394) — 1598 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 396) — 1604 tests, 4 ignored, M1 268/268 by contract
+>
+> **Waves 394-395 built `cargo xtask sweep --tree <path>` and it immediately paid.** It runs
+> chiero and gcc over an external C tree, buckets each file by the pair of outcomes, and groups
+> findings by distinct message with an example path. Never a gate, never wired into `xtask gates`,
+> and its own tests use a synthetic tree — the suite must not depend on a checkout.
+>
+> **A sweep's own configuration is part of its correctness.** The first run said 101 findings
+> across 112 vppinfra files, all one message. Reducing (`clib.h` → `x86intrin.h` → `xmmintrin.h`
+> → `mm_malloc.h` → `stdlib.h` → `bits/floatn.h`) showed chiero was not at fault: the sweep passed
+> **no target predefines**, so chiero compiled `#if` branches gcc never sees. gcc's `-dM` output
+> is now passed ahead of the tree's `-D`. **A tool comparing two compilers must give them the same
+> world**, and the failure mode is a confident, uniform, entirely wrong queue.
+>
+> **Censuses find missing rules; sweeps find legal code that is refused.** Wave 395's defect —
+> `_Static_assert(1, "a" "b")` rejected, since adjacent literals are one literal (6.4.5p5) — sits
+> in the *silent* half of any census of 6.7.10, so no census would have surfaced it. It blocked
+> every use of VPP's `STATIC_ASSERT_SIZEOF`; `_Static_assert` is at 140 uses there.
+>
+> **The wave's first fix was wrong and only mutation saw it.** Keeping the first literal's symbol
+> accepted every legal program and silently truncated the failed-assertion message sema prints.
+> **A test belongs where the behaviour is visible** — the concatenation row is in sema, where the
+> message is printed; the comma-needs-a-literal row is in the parser.
+>
+> ### A shape worth hunting deliberately
+>
+> Three consecutive waves found **a guard, arm or loop written for one case with its neighbours
+> left**: wave 393's `typedef` arm beside the function arm that already guarded a dropped
+> initializer; wave 395's `_Static_assert` beside three literal-concatenation loops in the same
+> file; and wave 396's undeclared-name exemption below. Worth grepping for deliberately rather
+> than rediscovering.
+>
+> ### Wave 396 — measured, ready
+>
+> `if !n.starts_with("__builtin_")` exempts compiler builtins from "was not declared", with a
+> comment explaining that reporting `__builtin_va_start` made **every variadic function** a sema
+> error. gcc declares two more families intrinsically and they were left out: **`__atomic_*`
+> (15 distinct names, 209 VPP uses)** and **`__sync_*` (17 distinct, 22 uses)** — confirmed, gcc
+> compiles them with no header. 16 of 112 vppinfra files, the largest actionable group in the
+> sweep queue.
+>
+> ### The rest of the queue, from the sweep
+>
+> - **19 files: `an enumerator's value is not representable as an int`** and **3: `struct has no
+>   members`** — rules from waves 386/387 that are `-pedantic-errors`-only in gcc while VPP builds
+>   `-std=gnu11`. **Not a defect**: lowering does not consult sema's diagnostics, so these are
+>   noise rather than blockers, and firing them is wave 314's calibration working as designed.
+>   Whether sema should gain a non-pedantic mode is a **design decision for the owner**, not
+>   something to fix quietly.
+> - 2: `invalid initializer: a structure or union is copied only from its own type`; 1 each:
+>   incompatible pointer initialisation, two macro redefinitions, one `#error "Unsupported OS"`.
 >
 > **Wave 393 ran the parser-level census against chiero for the first time and it corrected a
 > prediction.** `chiero-parse` has 8 constraint tests against sema's 282-row corpus, so the parser
