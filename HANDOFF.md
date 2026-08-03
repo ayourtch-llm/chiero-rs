@@ -487,7 +487,46 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 398) — 1605 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 399) — 1606 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 398: a member declaration that names only a type declares nothing.** `struct S { int; };`
+> was accepted silently while the sentence written for it fired only on a bare `;`. Ratchet 289.
+>
+> **I got the previous wave backwards, and that is the lesson.** The `vlib` sweep flagged
+> `struct S { int a; ; };` because gcc takes it under `-std=gnu11`; I wrote a RED to *accept* it.
+> gcc refuses it under `-pedantic-errors` too, where this project calibrates, so chiero was
+> already right. **A sweep finding is only a defect once the pedantic question has been asked** —
+> which §9 already said, in my own words, two waves earlier. The RED was reverted; censusing the
+> area properly produced the real miss above.
+>
+> Two of that retracted RED's illegal rows were also false, neither measured before being
+> asserted. **Third fixture-example error this session** — put the illegal half to gcc first.
+>
+> **Mutation changed the code, not just the tests.** Two survivors: one a plain gap (a *named*
+> record definition as a member), one revealing the predicate was **wrong** — an anonymous *enum*
+> matches `Tag { name: None, members: Some }` and was accepted, where gcc refuses it because its
+> enumerators go to the enclosing scope and no member is declared. Four fixture rows came from
+> mutants; the census had supplied none that distinguish the predicate's three parts.
+>
+> ### Wave 399 — measured, from a surviving mutant
+>
+> **chiero accepts `struct S { struct; };`**, and `union;` and `struct *p;` likewise. gcc rejects
+> all three outright ("expected `{` before `;`"). The specifier parse takes a bare `struct`/`union`
+> keyword with neither tag nor member list. This is why wave 398's `members: Some(_)` check has no
+> killing test — the input never reaches it.
+>
+> ### The sweep, current state
+>
+> - **vppinfra**: gcc accepts most; 46 findings.
+> - **vlib**: now sweepable — gcc 44 of 47 after the stubs were regenerated from `config.h.in`
+>   with CMake's own defaults (`PRE_DATA_SIZE=128`, `VLIB_BUFFER_ALIGN=128`,
+>   `VLIB_PROCESS_LOG2_STACK_SIZE=15`, `LOG2_CACHE_LINE_BYTES=6`, `N_PREFETCHES=16`). It found the
+>   two parse defects above.
+> - **vnet (452), plugins (780)**: unswept. Expect the same pattern — a generated header or two
+>   short of compiling, and worth the same treatment before writing another rule.
+> - **Queue, after the pedantic items are set aside**: 2 files with `invalid initializer: a
+>   structure or union is copied only from its own type`, unexamined and the most likely real
+>   defect left in vppinfra.
 >
 > **Wave 397: the sweep reported "0 findings" for a subtree it had not tested.** `Agree` held two
 > opposite facts. *Both clean* means the file was tested and chiero matched gcc. *Both diagnosed*
