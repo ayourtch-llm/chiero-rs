@@ -441,3 +441,57 @@ int use(void){return format_trace();}
         "two `format_trace` and two `use`, one pair per file"
     );
 }
+
+/// **A parallel sweep must produce byte-identical results to a serial one** (001 §5:
+/// determinism is mandatory, and this report is an output path). 042 c7 wants the sweep inside
+/// a time budget on 12 cores, and the only safe way to get there is a fan-out whose answer
+/// cannot depend on how the work was split.
+///
+/// The fixture spans several chunk boundaries and includes a file that does not parse, because
+/// the unreadable count is the counter most likely to be lost or double-counted when the loop
+/// is split across threads.
+#[test]
+fn a_parallel_sweep_agrees_exactly_with_a_serial_one() {
+    let tmp = std::env::temp_dir().join("chiero-parallel-fixture");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("shared.h"),
+        "static inline int shared_helper(void) { return 1; }\n",
+    )
+    .unwrap();
+    for i in 0..11 {
+        std::fs::write(
+            tmp.join(format!("f{i:02}.c")),
+            format!("#include \"shared.h\"\nstatic int local(void){{return 0;}}\nint fn_{i}(void){{return 0;}}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(tmp.join("broken.c"), "int oops(void) { return \n").unwrap();
+
+    let cfg = chiero_pp::Config {
+        include_paths: vec![tmp.clone()],
+        ..chiero_pp::Config::default()
+    };
+    let files = xtask::sweep::translation_units(&tmp).expect("walk");
+    let recipe = chiero_recipe::load(
+        "recipe fns {\n  title \"t\"\n  scope fn $f where name matches \"^fn_\"\n  \
+         fixture good \"g.c\"\n  fixture bad \"b.c\" expect 1 at \"b.c:1\"\n}\n",
+    )
+    .expect("loads");
+
+    let serial = xtask::sweep::tier1_sweep_with(&files, &[recipe.clone()], &cfg, 1);
+    for threads in [2, 4, 7, 16] {
+        let par = xtask::sweep::tier1_sweep_with(&files, &[recipe.clone()], &cfg, threads);
+        assert_eq!(par.files, serial.files, "threads={threads}");
+        assert_eq!(par.functions, serial.functions, "threads={threads}");
+        assert_eq!(par.unreadable, serial.unreadable, "threads={threads}");
+        assert_eq!(par.tallies, serial.tallies, "threads={threads}");
+    }
+
+    // And the serial numbers are what they should be, so agreement is not agreement on junk:
+    // eleven `fn_N`, eleven file-local `local`, one `shared_helper`, one file unreadable.
+    assert_eq!(serial.functions, 23);
+    assert_eq!(serial.unreadable, 1);
+    assert_eq!(serial.tallies[0].matched, 11);
+}
