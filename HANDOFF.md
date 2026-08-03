@@ -487,22 +487,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 419) — 1632 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 421) — 1633 tests, 4 ignored, M1 268/268 by contract
 >
-> ### M3: provenance pair done; recipe loader + tier-1 candidate filter done
+> ### M3 status: three of four exit gates have landed
 >
-> `chiero-tool`: `explain_macro_expansion` (050 c6, 060 c10), `expansion_sites` (050 c7).
-> `chiero-recipe`: loads 042 §4's example verbatim, refuses a recipe its fixtures cannot
+> | 080 M3 exit gate | state |
+> |---|---|
+> | `explain_macro_expansion` for `vec_add1` **and** a `foreach_` site | **done** (050 c6, 060 c10) |
+> | VPP parser-coverage percentage published and tracked | **done** — printed every sweep |
+> | tier-1 recipe sweep over VPP within budget, per-recipe counts | **not started** (042 c7) |
+> | shipped catalogue passes its fixtures (042 c4) | needs the evaluator |
+>
+> `chiero-recipe` loads 042 §4's example verbatim, refuses a recipe its fixtures cannot
 > adjudicate (c1, c3-load-half, §5), and builds the tier-1 candidate set (§3.1).
 >
-> * **The candidate filter is a closure, not a conjunction.** "In `scope` *and* contains the
->   acquisition" misses `show_or_clear_hw_interfaces` in `vnet/interface_cli.c` entirely — the
->   handlers delegate in one line, the helper holds the acquisition and every free. Same shape
->   in `plugins/vrrp/vrrp_cli.c`, `vnet/classify/in_out_acl.c`.
-> * **`is_bounded`, not the count, carries the honesty.** `excluded_by_bound` is the *fringe*
->   one edge past the last escalated level; counting everything beyond means walking the whole
->   graph, which is what the bound avoids. It understates by construction, and says so.
-> * The closure keys on **names, not `DeclId`s** — it crosses translation units.
+> ### 📊 Parser coverage — the tracked number
+>
+> **`vppinfra`: 97.2%** — 106 of the 109 translation units the parser was handed, of 112 files.
+>
+> ```
+> cargo run -p xtask -- sweep --tree <dir> -I <vpp>/src -I <gen> --std gnu11
+> ```
+>
+> Two things about this figure, both load-bearing:
+>
+> * **The denominator is what the parser was handed**, not every file. Dividing by the total
+>   charges the parser for unresolved headers and makes the number move with the include flags
+>   rather than with the parser.
+> * **It measures "no diagnostic", not "understood".** The 2.8% shortfall in `vppinfra` is
+>   `mem_dlmalloc.c:34` — an X-macro generating bit-fields with a trailing `;`, which `gnu11`
+>   accepts and `-pedantic-errors` refuses. The parser reads it correctly and then correctly
+>   refuses it. **The figure is bounded below by the open pedantic-mode decision.** Read a
+>   shortfall as a lead, never as a count of parser gaps.
 >
 > ### ⚠️ Recipe evaluation is absent, not stubbed — keep it that way
 >
@@ -510,6 +526,16 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > satisfies 042 c2 for every recipe while covering nothing: the silent under-matching §5 exists
 > to catch, dressed as a green gate. Unread `scope`/`track`/`require` clauses are kept whole as
 > `UnparsedClause` with their **count asserted**, so the slice is stated, not implied.
+>
+> ### Fixture design notes bought by mutation
+>
+> * **A symmetric fixture cannot see a permutation.** One `pp:` row and one `parse:` row made
+>   swapping the two stages invisible — one file up, one down, every total unchanged. Give a
+>   fixture *unequal* counts per class whenever a mutant could exchange two categories.
+> * **Assert what a bound excluded, not only what survived**; a bound that silently drops the
+>   tail passes any test that looks at the kept set alone.
+> * **Three rows beat two** when the property is an ordering: two cannot distinguish an order
+>   from a coincidence.
 >
 > ### Method note that has now recurred five times — read this one
 >
