@@ -1828,7 +1828,13 @@ impl Cx<'_> {
                         self.ast.decl(id).span,
                     );
                 }
+                // **A `typedef` names itself too**, and gcc agrees: `typedef int A[-1];` is
+                // "size of array `A` is negative". Set for the same reason as on a parameter —
+                // a typedef is often used far from where it was written, so the name is the
+                // whole of what makes the report actionable.
+                let outer = self.declaring.replace(name);
                 let t = self.ty_of(ty);
+                self.declaring = outer;
                 self.check_alignment(ty, t, StorageContext::NotAnObject);
                 self.declare_ordinary(name, Meaning::Typedef(t), self.ast.decl(id).span);
                 // **A variably modified `typedef` opens a scope too** (C 6.8.6.1p1). `typedef int
@@ -1860,7 +1866,14 @@ impl Cx<'_> {
                 body,
                 storage,
             } => {
+                // **A function declarator names itself too.** `int (*f(void))[-1];` is
+                // "size of array `f` is negative" in gcc, and this arm was the third path — after
+                // parameters and typedefs — that resolved a type without saying which declarator
+                // it belonged to. Saved and restored like the others, because a parameter list
+                // inside sets and clears its own.
+                let outer = self.declaring.replace(name);
                 let t = self.ty_of(ty);
+                self.declaring = outer;
                 self.out.decl_types.insert(id, t);
                 // **A function is an ordinary identifier**, so `int f(void); typedef int f;`
                 // collides. Two *declarations* of the same function do not — they land in the
@@ -2375,9 +2388,17 @@ impl Cx<'_> {
                 let ps: Vec<TyId> = params
                     .iter()
                     .map(|&p| match &self.ast.decl(p).kind {
-                        DeclKind::Var { ty, .. } => {
-                            let ty = *ty;
+                        DeclKind::Var { name, ty, .. } => {
+                            let (name, ty) = (*name, *ty);
+                            // **A parameter is a declarator and names itself in a diagnostic.**
+                            // `declaring` is what "array length of `a`" reads, and only the
+                            // object and member paths were setting it — so a bad bound in a
+                            // parameter, which is the position a reader can least easily locate,
+                            // was the one that would not say which. Left `None` for an unnamed
+                            // parameter, where the unnamed wording is correct.
+                            let outer = std::mem::replace(&mut self.declaring, name);
                             let t = self.ty_of(ty);
+                            self.declaring = outer;
                             self.check_alignment(ty, t, StorageContext::Parameter);
                             t
                         }

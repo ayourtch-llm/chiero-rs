@@ -7126,6 +7126,39 @@ fn a_bad_array_length_names_its_declarator() {
             "unsigned f(void){ return sizeof(int[-1]); }",
             "array length is negative",
         ),
+        // **An unnamed parameter stays unnamed even when a name is in scope.** Every unnamed row
+        // above is resolved with nothing in `declaring`, so they pass whether the parameter path
+        // clears the name or merely leaves it — a mutant that let an unnamed parameter inherit
+        // the enclosing name survived them all. Here a member and a local *are* being declared,
+        // so the two behaviours differ, and gcc still says unnamed.
+        (
+            "struct S { void (*m)(int [-1]); };",
+            "array length is negative",
+        ),
+        (
+            "void f(void){ void (*q)(int [-1]); (void)q; }",
+            "array length is negative",
+        ),
+        ("typedef void F(int [-1]);", "array length is negative"),
+        // A *named* parameter in the same position names itself, not the member.
+        (
+            "struct S { void (*m)(int p[-1]); };",
+            "array length of `p` is negative",
+        ),
+        // **And the name is put back after the list.** `int (*f(int p))[-1]` has a parameter `p`
+        // resolved before the return type's bad bound, so a path that failed to restore
+        // `declaring` would blame `p` for `f`'s array. That mutant also survived every row above.
+        ("int (*f(int p))[-1];", "array length of `f` is negative"),
+        // **The name is put back after a parameter list, observed where it can be.** The row
+        // above turned out not to discriminate — a function's return type is resolved *before*
+        // its parameters, so a leaked name never reaches it. Here the element type is a function
+        // pointer with a named parameter and the array length is evaluated after it, so a path
+        // that failed to restore would blame `p` for `a`'s bound.
+        ("void (*a[-1])(int p);", "array length of `a` is negative"),
+        (
+            "void (*a[2][-1])(int p);",
+            "array length of `a` is negative",
+        ),
     ] {
         assert_eq!(
             diags(src),
