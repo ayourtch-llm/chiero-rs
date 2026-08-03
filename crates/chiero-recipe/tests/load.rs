@@ -62,7 +62,12 @@ unformat_free on every return path. 407 acquisition sites, 140 files."
 
     // The `track`/`require` clauses are kept whole and unparsed for now — recorded as a
     // deliberate slice, so a later wave can see exactly what has not been read yet.
-    assert_eq!(r.unparsed_clauses.len(), 3, "scope, track, require");
+    assert_eq!(
+        r.unparsed_clauses.len(),
+        2,
+        "track and require; scope is read now"
+    );
+    assert!(r.scope.is_some(), "scope is no longer swallowed whole");
 }
 
 /// 042 contract 1, and the diagnostic must **name the recipe** — a loader that says only

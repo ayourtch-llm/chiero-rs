@@ -32,6 +32,34 @@ pub struct BadFixture {
     pub at: String,
 }
 
+/// Which functions a recipe applies to (042 §4.2). Tier 1.
+///
+/// **One variant per selector, never a string.** Adding a selector must break the evaluator
+/// at compile time; a stringly-typed selector would let an unknown one fall through a `_` arm
+/// and quietly select nothing, which reads exactly like a rule that found no violations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selector {
+    /// `registered_via VLIB_CLI_COMMAND`
+    RegisteredVia(String),
+    /// `in_file "src/vnet/**/*_cli.c"`
+    InFile(String),
+    /// `name matches "^show_"`
+    NameMatches(String),
+    /// `has_attribute noreturn`
+    HasAttribute(String),
+    /// `signature "..."`
+    Signature(String),
+    /// `calls \`unformat_line_input($_)\``
+    Calls(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    /// The metavariable the rest of the recipe refers to, e.g. `$f`.
+    pub var: String,
+    pub selector: Selector,
+}
+
 /// A clause this loader has not learned to read yet, kept whole.
 ///
 /// Retained rather than discarded so the unread part of the language is *visible*: a later
@@ -49,6 +77,9 @@ pub struct Recipe {
     pub severity: Severity,
     pub tier: Tier,
     pub rationale: String,
+    /// `None` when the recipe applies to every function; 042 §4.2 makes `scope` a way to
+    /// narrow a rule, not a requirement.
+    pub scope: Option<Scope>,
     pub good: Vec<String>,
     pub bad: Vec<BadFixture>,
     pub unparsed_clauses: Vec<UnparsedClause>,
@@ -67,6 +98,7 @@ pub fn load(src: &str) -> Result<Recipe, Vec<String>> {
         severity: Severity::Error,
         tier: Tier::Semantic,
         rationale: String::new(),
+        scope: None,
         good: Vec::new(),
         bad: Vec::new(),
         unparsed_clauses: Vec::new(),
@@ -108,6 +140,10 @@ pub fn load(src: &str) -> Result<Recipe, Vec<String>> {
                         other.unwrap_or("")
                     ),
                 ),
+            },
+            "scope" => match p.scope_clause() {
+                Ok(sc) => r.scope = Some(sc),
+                Err(m) => say(&mut errs, m),
             },
             other => {
                 let text = p.clause_body();
@@ -243,6 +279,63 @@ impl<'a> Parser<'a> {
         self.i += "at".len();
         let at = self.string().ok_or("`at` needs a \"file:line\"")?;
         Ok(BadFixture { path, expect, at })
+    }
+
+    /// `scope fn $var where <selector>`.
+    fn scope_clause(&mut self) -> Result<Scope, String> {
+        self.skip_ws();
+        if !self.s[self.i..].starts_with("fn") {
+            return Err("`scope` expects `fn $var where <selector>`".into());
+        }
+        self.i += "fn".len();
+        self.skip_ws();
+        if !self.s[self.i..].starts_with('$') {
+            return Err("`scope fn` expects a metavariable like `$f`".into());
+        }
+        self.i += 1;
+        let var = format!("${}", self.word().unwrap_or_default());
+        self.skip_ws();
+        if !self.s[self.i..].starts_with("where") {
+            return Err(format!("`scope fn {var}` expects `where <selector>`"));
+        }
+        self.i += "where".len();
+
+        let head = self.word().unwrap_or_default();
+        // A selector's argument is a bare word or a quoted string depending on the selector;
+        // `name matches` is two words, which is why the head is not enough on its own.
+        let selector = match head.as_str() {
+            "registered_via" => Selector::RegisteredVia(self.word_or_string()?),
+            "in_file" => Selector::InFile(self.word_or_string()?),
+            "has_attribute" => Selector::HasAttribute(self.word_or_string()?),
+            "signature" => Selector::Signature(self.word_or_string()?),
+            "calls" => Selector::Calls(self.word_or_string()?),
+            "name" => {
+                self.skip_ws();
+                if !self.s[self.i..].starts_with("matches") {
+                    return Err("`name` expects `matches <regex>`".into());
+                }
+                self.i += "matches".len();
+                Selector::NameMatches(self.word_or_string()?)
+            }
+            // **Not a `_` arm that selects nothing.** An unknown selector that quietly matched
+            // no function would report zero violations over the whole tree and read as a clean
+            // result; a typo must be a load error instead.
+            unknown => {
+                return Err(format!(
+                    "unknown scope selector `{unknown}`; 042 §4.2 lists registered_via, \
+                     in_file, name matches, has_attribute, signature, calls"
+                ));
+            }
+        };
+        Ok(Scope { var, selector })
+    }
+
+    fn word_or_string(&mut self) -> Result<String, String> {
+        if let Some(s) = self.string() {
+            return Ok(s);
+        }
+        self.word()
+            .ok_or_else(|| "selector needs an argument".into())
     }
 
     /// The next clause keyword, or `None` at the recipe's closing brace.

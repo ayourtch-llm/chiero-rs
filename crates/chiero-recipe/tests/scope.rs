@@ -52,10 +52,13 @@ fn every_tier_one_selector_parses_to_its_own_variant() {
 /// mandatory to prevent. A typo in a selector name is exactly how that happens in practice.
 #[test]
 fn an_unknown_selector_fails_the_load_rather_than_matching_nothing() {
-    let errs = load(&with_scope("scope fn $f where registered_by VLIB_CLI_COMMAND"))
-        .expect_err("unknown selector must not load");
+    let errs = load(&with_scope(
+        "scope fn $f where registered_by VLIB_CLI_COMMAND",
+    ))
+    .expect_err("unknown selector must not load");
     assert!(
-        errs.iter().any(|e| e.contains("registered_by") && e.contains('r')),
+        errs.iter()
+            .any(|e| e.contains("registered_by") && e.contains('r')),
         "the diagnostic must name the offending selector and the recipe: {errs:?}"
     );
 }
