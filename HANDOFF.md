@@ -487,7 +487,54 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 393) — 1596 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 394) — 1598 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 393 ran the parser-level census against chiero for the first time and it corrected a
+> prediction.** `chiero-parse` has 8 constraint tests against sema's 282-row corpus, so the parser
+> looked like the weakest rejection surface. Of 24 censused programs gcc refuses, **20 were
+> already caught**, nearly all in *sema*. **A test count measures where rules are tested, not
+> whether they exist.**
+>
+> It had never been run because **no harness entry tolerates parse diagnostics** — `parse` and
+> `parse_allowing_diagnostics` both assert a clean parse, so a program that fails to parse cannot
+> be expressed from the sema tests. Driving pp → parse → sema directly is what made it executable.
+>
+> Three fixes: a `typedef` may not be initialized (**parser** — `finish_declarator_inner` *drops*
+> the initializer, so sema never sees it; the arm below already guards this for functions and the
+> neighbour was left), an array's element may not be a function (asked of the **resolved** type,
+> so `typedef int F(void); F a[3];` is caught), and `extern` with an initializer in a **block**
+> (legal at file scope, where it is a definition). Ratchet 282 → 286.
+>
+> **A storage-class grid asserted `extern int x = 1;` is legal in a block.** It is not; the cell's
+> claim was right and its example over-reached. Third fixture-example error this session.
+>
+> ### Next: `cargo xtask sweep --tree <path>` — the user's proposal
+>
+> Sweep an external C tree, bucket per file, then vendor only the *reduced* failing cases into the
+> hermetic tests. Design and feasibility are in the session scratchpad; the essentials:
+>
+> **Feasible without building VPP.** Measured: with three stub headers (`vppinfra/config.h`,
+> `vlib/config.h`, `vpp/app/version.h`) gcc compiles **83 of 120** sampled `.c` files (69%) — so
+> ~1000 of VPP's 1552 TUs are reachable. The rest need `.api_enum.h`/`.api_types.h` from a real
+> generator. Current hermetic corpus for scale: **28 vendored files**.
+>
+> **A CLI, not more vendoring** — `001 §4 rule 4 / contract 5` keeps VPP knowledge inside
+> `chiero-vpp`, and a runtime tree path puts none in any crate. `xtask` is already the pattern.
+>
+> **gcc is the per-file oracle, with VPP's own flags.** The trap: this project calibrates to
+> `-pedantic-errors`, VPP builds `-std=gnu11`. An oracle run pedantically reports all 1777
+> `int a[0]`s as findings. **The census asks what C forbids; the sweep asks what real code does
+> that chiero mishandles.** Different gcc invocations.
+>
+> **Three buckets, never a silent skip**: chiero cannot take the flag (tool gap); gcc rejected it
+> too (not our problem); gcc accepted and chiero did not (**the finding**).
+>
+> **A failing file is not a test** — reduce before vendoring; the reduction usually reveals the
+> rule. And the suite stays hermetic: the sweep is a reporting tool, never a gate.
+>
+> **Preprocessor defines are the coverage lever**, not just plumbing: VPP is dense with `#ifdef`,
+> so one define set exercises one slice. Sweeping the same files under two or three sets is the
+> cheapest real increase in quirk coverage.
 >
 > **Wave 392: a bit-field may not have atomic type** (C 6.7.2.1p5), refused by gcc in both modes.
 > It sits in the **`else`** of the integer-type check, because gcc refuses `_Atomic float a : 2`
