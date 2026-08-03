@@ -1738,11 +1738,27 @@ impl Cx<'_> {
                         // repeat-tentative case is handled by the branch below, which is about
                         // initializers rather than linkage, so `defined` here is about linkage
                         // alone and an initializer is not consulted.
+                        // **A function with no storage class defers, however it is spelled**
+                        // (C 6.2.2p5: it is as if `extern`, so 6.2.2p4's adoption applies).
+                        // `typedef int F(void); F f;` is a *function* declaration that reaches
+                        // this arm because its declarator has no `()` — the function path below
+                        // already says `deferring: !storage.static_` and this one said only
+                        // `storage.extern_`, so the same program written through a typedef
+                        // conflicted with a prior `static` definition. VPP writes exactly that:
+                        // `format_function_t format_bihash_kvp_8_8;` after a `static inline` one.
+                        //
+                        // **Asked of the resolved type, not the declarator's shape** — the second
+                        // time this project has been caught reading a spelling where C reads a
+                        // type (wave 389's `void` parameter was the first).
+                        //
+                        // An *object* is unchanged: 6.2.2p5 is about functions, so
+                        // `static int f(void){…} int f;` stays a conflict.
+                        let is_function = matches!(self.out.types[t.0 as usize], Ty::Func { .. });
                         let now = Prior {
                             ty: t,
                             defined: false,
                             internal: storage.static_,
-                            deferring: storage.extern_,
+                            deferring: storage.extern_ || (is_function && !storage.static_),
                         };
                         self.check_redeclaration(n, now, self.ast.decl(id).span);
                     }

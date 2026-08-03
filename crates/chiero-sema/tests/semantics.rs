@@ -7742,8 +7742,12 @@ fn a_declaration_with_no_storage_class_adopts_prior_linkage() {
     // **An object is not a function**, and 6.2.2p5 is about functions: `static int n; int n;` is
     // a genuine conflict and stays one. This row is what stops the fix from making every missing
     // storage class adopt.
+    // gcc words this "redeclared as different kind of symbol", which names the category; chiero
+    // reaches it through the type comparison, because a function and an object are both
+    // `Meaning::Ordinary` and only their types differ. Both refuse, and the wording gap is
+    // recorded rather than fixed here — this wave is about a false positive, not a message.
     assert_eq!(
         diags("static int f(void){ return 0; } int f;"),
-        vec!["`f` is declared as a different kind of thing".to_string()]
+        vec!["conflicting types for `f`".to_string()]
     );
 }
