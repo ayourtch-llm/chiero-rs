@@ -874,10 +874,6 @@ fn an_unterminated_argument_list_is_reported() {
         // Genuinely unterminated.
         "#define P(x) x\nint v = P(1;\n",
         "#define P(x) x\nint v = P(1\n",
-        // Interrupted by a directive — the shape VPP writes.
-        "#define P(x) x\nint P(\n#define K 5\n1) v;\n",
-        "#define P(x) x\nint v = P(1\n#define J 2\n);\n",
-        "#define P(x) x\ntypedef P (struct {\n#define K 5\n  int a;\n}) T;\n",
     ] {
         assert_eq!(
             diags(src),
@@ -903,6 +899,80 @@ fn an_unterminated_argument_list_is_reported() {
             diags(good).is_empty(),
             "must be accepted: `{good}` -> {:?}",
             diags(good)
+        );
+    }
+}
+
+/// **A macro call may span a directive** (the GNU behaviour C 6.10.3p11 leaves undefined), and
+/// the construct table settles that it must be supported.
+///
+/// The driver flushed and expanded the pending ordinary tokens at every directive, on the stated
+/// assumption that "a directive is the only boundary at which an active ordinary-token chunk must
+/// be complete". It is not: gcc keeps collecting a macro's arguments across one, which is why
+/// `CLIB_PACKED (struct { #define … })` compiles for it.
+///
+/// **Decided by the project's own criterion, not by preference.** HANDOFF's construct table rates
+/// GNU extensions by VPP usage — `__int128` at one file is "required", `case ranges` at seven is
+/// "required", `__label__` at one is "not supported" only because it can be diagnosed and skipped.
+/// This construct is in **49 header files** and transitively blocks **27 of 28 plugin findings and
+/// 28 of 29 in `vnet/fib`**. The precedent decides it.
+///
+/// Wave 406 made the failure honest (it had been a silent wrong expansion); this makes it work.
+/// The genuinely unterminated cases keep that diagnostic — they are the discriminator, and a fix
+/// that simply never flushed would lose them.
+#[test]
+fn a_macro_call_may_span_a_directive() {
+    let expanded = |src: &str| -> String {
+        let tu = preprocess_str("f.c", src, Config::default());
+        assert!(
+            tu.diagnostics.is_empty(),
+            "unexpected: {:?}",
+            tu.diagnostics
+        );
+        tu.tokens
+            .iter()
+            .filter_map(|t| tu.text(t))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    // The shapes VPP writes: a definition inside the argument list, before and after the value.
+    assert_eq!(
+        expanded("#define P(x) x\nint P(\n#define K 5\n1) v;\n"),
+        "int 1 v ;"
+    );
+    assert_eq!(
+        expanded("#define P(x) x\nint v = P(1\n#define J 2\n);\n"),
+        "int v = 1 ;"
+    );
+    assert_eq!(
+        expanded("#define P(x) x\ntypedef P (struct {\n#define K 5\n  int a;\n}) T;\n"),
+        "typedef struct { int a ; } T ;"
+    );
+    // The directive still takes effect — this is not "skip it", it is "process it and carry on".
+    assert_eq!(
+        expanded("#define P(x) x\nint P(\n#define K 5\n1) v;\nint w = K;\n"),
+        "int 1 v ; int w = 5 ;"
+    );
+    // A conditional inside the list, which gcc also takes.
+    assert_eq!(
+        expanded("#define P(x) x\nint v = P(1\n#if 0\n+2\n#endif\n);\n"),
+        "int v = 1 ;"
+    );
+
+    // **Still unterminated is still reported** — nothing closes these, so deferring forever is
+    // not the answer.
+    for src in [
+        "#define P(x) x\nint v = P(1;\n",
+        "#define P(x) x\nint v = P(1\n",
+    ] {
+        assert_eq!(
+            preprocess_str("f.c", src, Config::default())
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>(),
+            vec!["unterminated argument list invoking macro `P`".to_string()]
         );
     }
 }
