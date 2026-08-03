@@ -27,9 +27,13 @@ fn the_pair_of_outcomes_decides_the_bucket() {
         Bucket::Miss
     );
 
-    // Agreement, either way round.
+    // **Agreement is two different facts and must not share a bucket.** Both clean means the
+    // file was tested and chiero matched gcc. Both *diagnosed* means gcc refused the file too —
+    // on a real tree that is the flags being wrong, not the code — so chiero refusing it is no
+    // evidence of anything. Sweeping `vlib` produced 45 of the second kind and reported
+    // "0 findings", which reads as success and meant nothing was tested at all.
     assert_eq!(classify(&Outcome::Clean, &Outcome::Clean), Bucket::Agree);
-    assert_eq!(classify(&d("x"), &d("y")), Bucket::Agree);
+    assert_eq!(classify(&d("x"), &d("y")), Bucket::BothRefused);
 
     // **A tool gap is never a skip.** Whichever side could not run, the file is reported.
     assert_eq!(

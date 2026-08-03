@@ -40,8 +40,15 @@ pub enum Bucket {
     /// gcc refused and chiero was silent — a missing rule. Lower priority: gcc's reason may
     /// need flags this sweep does not pass.
     Miss,
-    /// Both said the same kind of thing. Nothing to do.
+    /// Both were clean: the file was tested and chiero matched gcc. **The only bucket that is
+    /// evidence of agreement.**
     Agree,
+    /// Both produced diagnostics. On a real tree this almost always means the *flags* are wrong
+    /// for this file — a generated header, a `-D` the build passes — so gcc never judged the C
+    /// and chiero refusing it too says nothing. Kept apart from `Agree` because merging them lets
+    /// a sweep that tested nothing report `0 findings`, which reads as success: `vlib` gave 45 of
+    /// these while gcc compiled **none** of its 47 files under the flags used.
+    BothRefused,
     /// One of the two could not be run. Reported as its own bucket rather than skipped.
     ToolGap,
 }
@@ -55,9 +62,8 @@ pub fn classify(gcc: &Outcome, chiero: &Outcome) -> Bucket {
         (Outcome::NotRun(_), _) | (_, Outcome::NotRun(_)) => Bucket::ToolGap,
         (Outcome::Clean, Outcome::Diagnosed(_)) => Bucket::Finding,
         (Outcome::Diagnosed(_), Outcome::Clean) => Bucket::Miss,
-        (Outcome::Clean, Outcome::Clean) | (Outcome::Diagnosed(_), Outcome::Diagnosed(_)) => {
-            Bucket::Agree
-        }
+        (Outcome::Clean, Outcome::Clean) => Bucket::Agree,
+        (Outcome::Diagnosed(_), Outcome::Diagnosed(_)) => Bucket::BothRefused,
     }
 }
 
@@ -269,12 +275,23 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         count(Bucket::Miss)
     );
     println!(
-        "  agree:                                 {}",
+        "  agree, both clean:                     {}",
         count(Bucket::Agree)
+    );
+    println!(
+        "  both refused (usually wrong flags):    {}",
+        count(Bucket::BothRefused)
     );
     println!(
         "  tool gaps (one side could not run):    {}",
         count(Bucket::ToolGap)
+    );
+    // **What was actually tested.** A sweep where gcc refused everything has findings of zero
+    // and has learned nothing; saying so here is the difference between a report and a number.
+    let tested = count(Bucket::Agree) + count(Bucket::Finding);
+    println!(
+        "  -> gcc accepted {tested} of {}, so that is what this sweep could test",
+        verdicts.len()
     );
 
     for (title, bucket, side) in [
@@ -286,6 +303,11 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         (
             "MISSES — gcc refuses where chiero is silent",
             Bucket::Miss,
+            false,
+        ),
+        (
+            "BOTH REFUSED — usually the flags, not the code",
+            Bucket::BothRefused,
             false,
         ),
         ("TOOL GAPS", Bucket::ToolGap, true),
