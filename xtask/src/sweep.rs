@@ -520,10 +520,15 @@ pub fn sweep_with(
     // would add a process launch per chunk for an answer that cannot differ between them.
     let predefines = gcc_predefines(flags.std.as_deref());
     let threads = threads.max(1);
-    let per = files.len().div_ceil(threads);
-    if per == 0 {
+    // **The empty tree is checked as an empty tree, not as `per == 0`.** With `div_ceil` the
+    // chunk size is zero only when there are no files, so the guard was stating a consequence
+    // rather than the condition — and a chunk size computed any other way would silently
+    // return "no files swept" for a tree full of them. `chunks(0)` panics, which is the right
+    // failure for arithmetic that cannot be right.
+    if files.is_empty() {
         return Ok(Vec::new());
     }
+    let per = files.len().div_ceil(threads);
 
     let chunks: Vec<&[PathBuf]> = files.chunks(per).collect();
     let results: Vec<Vec<Verdict>> = std::thread::scope(|scope| {

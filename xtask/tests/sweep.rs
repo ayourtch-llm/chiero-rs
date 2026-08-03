@@ -549,7 +549,10 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
 
     let serial = xtask::sweep::sweep_with(&tmp, &flags, &system, 1).expect("serial");
     assert_eq!(serial.len(), 11, "ten at the top plus one nested");
-    for threads in [2, 3, 8] {
+    // **0 and 16 are the rows that matter.** Nothing between 2 and 8 reaches the lower clamp
+    // (`div_ceil(0)` divides by zero) or the case where workers outnumber files — where a
+    // chunk size computed by flooring is zero and the sweep would report an empty tree.
+    for threads in [0, 2, 3, 8, 16] {
         let par = xtask::sweep::sweep_with(&tmp, &flags, &system, threads).expect("parallel");
         assert_eq!(par.len(), serial.len(), "threads={threads}");
         for (a, b) in par.iter().zip(serial.iter()) {
