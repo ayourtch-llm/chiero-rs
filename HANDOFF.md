@@ -487,7 +487,65 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 390) — 1593 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 391) — 1594 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 390 gave a bad array bound its declarator's name in the three paths that had none.** The
+> name comes from `self.declaring`, which the object and member paths set; **parameters**,
+> **typedefs** and **function declarators** each resolved a type without recording whose it was.
+> gcc names it in every position and reserves a separate wording for a genuine absence of a
+> declarator — an unnamed parameter, a cast's type name, a `sizeof` type name — so it is one
+> message in two forms with no position-specific branches.
+>
+> **The two surviving mutants were the wave's most productive part.** "An unnamed parameter
+> inherits the enclosing name" and "the outer name is never restored" both survived every row
+> written from the census. The reason is worth keeping: all three unnamed rows are resolved with
+> `declaring` already `None`, so they pass whether the path clears the name or merely leaves it.
+> **A row that exercises the absent case only proves the case is absent** — to test clearing you
+> need a name genuinely in scope:
+>
+>   - `struct S { void (*m)(int [-1]); };` and `void f(void){ void (*q)(int [-1]); }` — a member
+>     and a local are being declared, so "cleared" and "left alone" differ, and gcc still says
+>     unnamed.
+>   - `int (*f(int p))[-1];` — a parameter is resolved before the return type's bad bound, so a
+>     path that fails to restore blames `p` for `f`'s array.
+>
+> **Writing that last row found the third gap.** Function declarations go through `DeclKind::Func`,
+> which never set `declaring` at all, so `int (*f(void))[-1];` was unnamed — while `int (*a)[-1];`,
+> the same type as an *object*, named `a` correctly. That asymmetry is what hid it: the gap is
+> invisible until a function declarator is the thing carrying the bad bound. Two paths came from
+> the census; the third came only from a mutant forcing a row I would not have written.
+>
+> **Next, fully censused: an array size must have integer type** (C 6.7.6.2p1), which chiero does
+> not check at all — a size that does not fold becomes a VLA whatever its type. Two silent misses
+> (`int a[1.5];` as a local and as a parameter) and three wrong messages (at file scope and in a
+> member it is called *variably modified*, as is `double d; int a[d];`).
+>
+> **The discriminator is the expression's type, not whether it folds** — the axis the current code
+> lacks. Float, double, pointer and struct are the type error regardless of constness
+> (`int a[2.0];` is refused though exact); `_Bool`, `char`, `enum` and a comma expression are
+> *integer* types and are ordinary VLAs. `int a[(int)1.5];` is legal while `int a[1.5];` is not,
+> which pins that the rule reads the type **after conversion** rather than the literal's spelling
+> — and `void f(double d){ int a[(int)d]; }` is a legal VLA for the same reason, so a check that
+> looked at a cast's *operand* would lose a real construct.
+>
+> **The type check precedes the value check** (wave 361's tiebreak — gcc's choice of message
+> decides): `int a[-1.5];` is "non-integer type", not "is negative", while `int a[-2147483649];`
+> is "is negative". Ten VLA shapes must stay silent: `int n`, `char`, `_Bool`, `enum`, `unsigned`,
+> `long`, `n*2+1`, a parameter VLA, `(n,n)`, and the cast above.
+>
+> **Also banked, censused**: `_Alignas` on a *function* (refused by gcc in every spelling
+> including a function returning a function pointer, while `_Alignas(8) void (*p[2])(void);` is
+> legal — an array of function pointers is an object; the typedef and parameter spellings keep
+> their own existing messages); designated initializers (6.7.9, **33,814** VPP uses — repeated
+> designators *and* repeated indices are legal, last wins, and there is no "already initialised"
+> rule in C to invent); parser-level constraints (23 refused, against `chiero-parse`'s 7-test
+> surface).
+>
+> **A row written to catch a mutant is not evidence until the mutant dies.** The restore-check row
+> `int (*f(int p))[-1];` was written for exactly that mutant and does not discriminate — a
+> function's return type is resolved *before* its parameters, so a leaked name never reaches the
+> bad bound. `void (*a[-1])(int p);` does: the element type is resolved first and the length after.
+> Two rounds of re-running were needed to find out.
 >
 > **Wave 389 removed four false positives from one wrong inference.** chiero recognised C's
 > `(void)` special case by the *parser* folding `(void)` into an empty list, then treated any
