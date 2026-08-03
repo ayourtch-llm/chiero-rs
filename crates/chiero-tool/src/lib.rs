@@ -78,6 +78,11 @@ pub fn explain_macro_expansion(
         .into_iter()
         .filter(|c| !interior.contains(c))
         .collect();
+    // **An ordering promise, not an observed need.** `chiero-pp` records expansions as it
+    // performs them, so the table is already in source order and deleting this sort changes
+    // no test — it is an equivalent mutant *under today's table*. It stays because the order
+    // is part of what this function promises a caller, and the alternative is for that
+    // promise to rest on an undocumented invariant of another crate.
     leaves.sort_by_key(|&c| {
         map.expansion(c)
             .and_then(|e| map.lookup_loc(e.call_site.lo))
@@ -128,12 +133,13 @@ fn chain_from(map: &SourceMap, leaf: ExpnCtx) -> Chain {
                     .to_owned(),
                 call_line: call.map_or(0, |l| l.line),
                 call_col: call.map_or(0, |l| l.col),
-                // Trimmed: an argument span runs from the token after the comma, so
-                // `_(NONE, "none", 0x0)` yields a leading space on all but the first.
+                // No trim: an argument span covers the argument's tokens and nothing else,
+                // so `_(NONE, "none", 0x0)` yields `NONE`, `"none"`, `0x0` with no
+                // surrounding space. Measured — the previous commit claimed the opposite.
                 args: e
                     .arg_spans
                     .iter()
-                    .map(|&a| map.span_text(a).unwrap_or_default().trim().to_owned())
+                    .map(|&a| map.span_text(a).unwrap_or_default().to_owned())
                     .collect(),
             });
         }

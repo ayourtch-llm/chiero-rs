@@ -57,6 +57,30 @@ fn every_item_of_a_list_macro_gets_its_own_chain() {
     assert!(chains[0].last().expect("outermost").args.is_empty());
 }
 
+/// **A list macro's items come back in source order**, so a caller can line up chain *n*
+/// with item *n* of the list it is reading. Three items, because two cannot tell an ordering
+/// from a coincidence.
+#[test]
+fn items_are_returned_in_source_order() {
+    let src = "#define foreach_flag \\\n  _(A, 0x1) \\\n  _(B, 0x2) \\\n  _(C, 0x4)\n\
+               int v = (\n#define _(n, b) FLAG_##n |\n  foreach_flag\n#undef _\n  0);\n";
+    let tu = preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let chains = chiero_tool::explain_macro_expansion(&tu.source_map, "t.c", 7, None);
+    assert_eq!(
+        chains
+            .iter()
+            .map(|c| c[0].args[0].as_str())
+            .collect::<Vec<_>>(),
+        ["A", "B", "C"]
+    );
+    // Each item is written on its own line of the list body, ascending.
+    assert_eq!(
+        chains.iter().map(|c| c[0].call_line).collect::<Vec<_>>(),
+        [2, 3, 4]
+    );
+}
+
 /// **Items are distinct sites even though they share a written position.** 060 §3 requires
 /// that editing one line of a `foreach_` list impacts exactly what that line generated. A
 /// site list that collapses 47 items into 1 cannot support that at all.
