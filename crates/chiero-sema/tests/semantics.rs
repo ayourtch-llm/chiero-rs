@@ -7330,3 +7330,84 @@ fn an_array_size_has_integer_type() {
         );
     }
 }
+
+/// **A bit-field may not have atomic type** (C 6.7.2.1p5 — a bit-field's type is a qualified or
+/// unqualified integer type, and `_Atomic` is not a qualifier there).
+///
+/// Found by **re-censusing a section this project had already closed**. Wave 387 ran 35 programs
+/// over 6.7.2.1 and left it agreeing with gcc everywhere; thirteen fresh programs later turned up
+/// this one. So a census samples a section rather than exhausting it — worth knowing before
+/// treating any section as finished.
+///
+/// gcc refuses it in **both** modes, so it is not a `-pedantic-errors` promotion, and it has its
+/// own sentence rather than reusing "has invalid type" — which the fixture pins, because
+/// `_Atomic float a : 2` gets *that* message instead. The type rule wins; atomicity is only asked
+/// about once the type is otherwise a legal bit-field type.
+///
+/// `_Atomic` on an **ordinary member** stays legal, which is the row that stops a fix keying on
+/// the specifier rather than on the bit-field.
+#[test]
+fn a_bitfield_may_not_have_atomic_type() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        (
+            "struct S { _Atomic int a : 2; };",
+            "bit-field `a` has an atomic type",
+        ),
+        (
+            "struct S { _Atomic unsigned a : 2; };",
+            "bit-field `a` has an atomic type",
+        ),
+        (
+            "struct S { _Atomic _Bool a : 1; };",
+            "bit-field `a` has an atomic type",
+        ),
+        // **Unnamed takes the unnamed form**, as everywhere else in this crate.
+        (
+            "struct S { _Atomic int : 2; int b; };",
+            "bit-field has an atomic type",
+        ),
+        (
+            "struct S { _Atomic int : 0; int b; };",
+            "bit-field has an atomic type",
+        ),
+        // **The type rule wins.** `_Atomic float` is refused for being a float, not for being
+        // atomic — so a fix that asked about `_Atomic` first would change this sentence.
+        (
+            "struct S { _Atomic float a : 2; };",
+            "bit-field `a` has a non-integer type",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    for good in [
+        // **An ordinary member may be atomic** — the rule is about bit-fields.
+        "struct S { _Atomic int a; };",
+        "struct S { _Atomic int a; int b : 2; };",
+        // And an ordinary bit-field is still fine.
+        "struct S { int a : 2; };",
+        "struct S { unsigned a : 2; };",
+        "struct S { _Bool a : 1; };",
+        "struct S { const int a : 2; };",
+        "struct S { volatile int a : 2; };",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
