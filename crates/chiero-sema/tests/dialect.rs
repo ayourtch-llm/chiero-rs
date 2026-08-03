@@ -16,7 +16,11 @@ fn sema_messages(src: &str, dialect: Dialect) -> Vec<String> {
     assert!(tu.diagnostics.is_empty(), "pp: {:?}", tu.diagnostics);
     let mut oracle = ScopedTypedefs::new();
     let parsed = parse_tu_with(&tu, &mut oracle, dialect);
-    assert!(parsed.diagnostics.is_empty(), "parse: {:?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse: {:?}",
+        parsed.diagnostics
+    );
     analyze_with(
         &parsed.ast,
         &TargetConfig::x86_64_linux(),

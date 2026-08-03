@@ -554,7 +554,12 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
         assert_eq!(par.len(), serial.len(), "threads={threads}");
         for (a, b) in par.iter().zip(serial.iter()) {
             assert_eq!(a.path, b.path, "order changed at threads={threads}");
-            assert_eq!(a.bucket, b.bucket, "{} at threads={threads}", a.path.display());
+            assert_eq!(
+                a.bucket,
+                b.bucket,
+                "{} at threads={threads}",
+                a.path.display()
+            );
             assert_eq!(a.chiero, b.chiero);
             assert_eq!(a.gcc, b.gcc);
         }

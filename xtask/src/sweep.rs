@@ -499,19 +499,62 @@ pub struct Verdict {
 
 /// Sweep a tree and return one verdict per translation unit.
 pub fn sweep(tree: &Path, flags: &Flags, system: &[PathBuf]) -> std::io::Result<Vec<Verdict>> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    sweep_with(tree, flags, system, threads)
+}
+
+/// As [`sweep`], with an explicit worker count.
+///
+/// **The verdict list is an ordered report and stays in walk order.** Each worker takes a
+/// contiguous run of files and returns its own verdicts; concatenating the chunks in chunk
+/// order reproduces the serial sequence exactly. A work queue would return verdicts in
+/// completion order, and 001 §5 forbids an output that depends on scheduling.
+pub fn sweep_with(
+    tree: &Path,
+    flags: &Flags,
+    system: &[PathBuf],
+    threads: usize,
+) -> std::io::Result<Vec<Verdict>> {
+    let files = translation_units(tree)?;
+    // Hoisted out of the workers: `gcc -dM` is a subprocess, and running it once per thread
+    // would add a process launch per chunk for an answer that cannot differ between them.
     let predefines = gcc_predefines(flags.std.as_deref());
-    let mut out = Vec::new();
-    for path in translation_units(tree)? {
-        let gcc = gcc_outcome(&path, flags);
-        let chiero = chiero_outcome(&path, flags, system, &predefines);
-        out.push(Verdict {
-            bucket: classify(&gcc, &chiero),
-            path,
-            gcc,
-            chiero,
-        });
+    let threads = threads.max(1);
+    let per = files.len().div_ceil(threads);
+    if per == 0 {
+        return Ok(Vec::new());
     }
-    Ok(out)
+
+    let chunks: Vec<&[PathBuf]> = files.chunks(per).collect();
+    let results: Vec<Vec<Verdict>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                let predefines = &predefines;
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|path| {
+                            let gcc = gcc_outcome(path, flags);
+                            let chiero = chiero_outcome(path, flags, system, predefines);
+                            Verdict {
+                                bucket: classify(&gcc, &chiero),
+                                path: path.clone(),
+                                gcc,
+                                chiero,
+                            }
+                        })
+                        .collect()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+
+    Ok(results.into_iter().flatten().collect())
 }
 
 /// Print the report: counts, then the queue.
