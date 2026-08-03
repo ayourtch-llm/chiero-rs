@@ -912,6 +912,7 @@ pub fn analyze(ast: &Ast, target: &TargetConfig, names: &dyn SymbolText) -> Anal
         typedefs: IndexMap::new(),
         tags: IndexMap::new(),
         enums: IndexMap::new(),
+        quiet: 0,
         next_enum_tag: 0,
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
@@ -969,6 +970,7 @@ pub fn const_eval(
         typedefs: IndexMap::new(),
         tags: IndexMap::new(),
         enums: IndexMap::new(),
+        quiet: 0,
         next_enum_tag: 0,
         enumerators: IndexMap::new(),
         in_progress: Vec::new(),
@@ -1045,6 +1047,8 @@ struct Cx<'a> {
     tags: IndexMap<Symbol, RecordId>,
     /// Enum tag → its underlying integer type (014 contract 10).
     enums: IndexMap<Symbol, TyId>,
+    /// Nesting depth of `re_resolving`; diagnostics are dropped while it is non-zero.
+    quiet: u32,
     /// Numbered per enumeration *definition*, so two anonymous ones differ. 0 means "none".
     next_enum_tag: u32,
     /// Enumerator name → value, so `enum { A = 1, B = A + 1 }` and any later use of `A`
@@ -1463,10 +1467,32 @@ impl Cx<'_> {
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
+        // **Silent while re-resolving something already resolved.** See `re_resolving`.
+        if self.quiet > 0 {
+            return;
+        }
         self.out.diagnostics.push(SemaDiagnostic {
             span,
             message: message.into(),
         });
+    }
+
+    /// Run `f` with diagnostics suppressed, for a **second** resolution of a node the first pass
+    /// already reported on.
+    ///
+    /// A parameter list is resolved up to three times — once for the function's type, once to
+    /// record `decl_types`, and once more when a body is walked — and every diagnostic raised
+    /// inside `ty_of` came out once per pass. The passes cannot simply be removed: a tag or an
+    /// enumerator declared in the list is visible in the body (C 6.9.1p9), and that visibility is
+    /// established by re-resolving. So the side effects still run and only the reporting stops.
+    ///
+    /// **Suppression, not de-duplication.** Two parameters wrong the same way are two mistakes
+    /// and must still produce two sentences, which a filter on message text would destroy.
+    fn re_resolving<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.quiet += 1;
+        let out = f(self);
+        self.quiet -= 1;
+        out
     }
 
     fn text(&self, sym: Symbol) -> Option<&str> {
@@ -1905,7 +1931,7 @@ impl Cx<'_> {
                 self.declared_enumerators.enter();
                 for p in &params {
                     if let DeclKind::Var { ty: pty, .. } = self.ast.decl(*p).kind.clone() {
-                        let t = self.ty_of(pty);
+                        let t = self.re_resolving(|cx| cx.ty_of(pty));
                         self.out.decl_types.insert(*p, t);
                     }
                 }
@@ -1939,7 +1965,7 @@ impl Cx<'_> {
                             ..
                         } = self.ast.decl(p).kind.clone()
                         {
-                            let t = self.ty_of(pty);
+                            let t = self.re_resolving(|cx| cx.ty_of(pty));
                             // **A parameter of a definition needs a size**: the function has to
                             // receive the object. A *declaration* may name an incomplete
                             // parameter type — `struct T; int s(struct T t);` is legal, since
