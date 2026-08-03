@@ -176,3 +176,44 @@ fn the_grouping_key_is_the_kind_not_the_place() {
     // `sema: z`.
     assert_eq!(k("sema: note: x: y: z"), "sema: note: x: y: z");
 }
+
+/// 080 M3 exit: **the VPP parser-coverage percentage is published and tracked.**
+///
+/// The sweep already says how many files gcc accepted. It never said how far *chiero* got,
+/// which is the number the milestone asks for — and the two are different questions: a file
+/// gcc refused tells us nothing, while a file chiero preprocessed but could not parse is a
+/// parser gap and belongs in the denominator of a parser metric.
+#[test]
+fn coverage_counts_how_far_chiero_got_on_each_translation_unit() {
+    use xtask::sweep::{Verdict, coverage};
+    let v = |chiero: Outcome, gcc: Outcome| Verdict {
+        path: PathBuf::from("t.c"),
+        bucket: classify(&gcc, &chiero),
+        gcc,
+        chiero,
+    };
+    let verdicts = vec![
+        // Reached sema and was clean: full coverage.
+        v(Outcome::Clean, Outcome::Clean),
+        // Preprocessed and parsed; sema complained. The parser handled it.
+        v(d("sema: struct has no members"), Outcome::Clean),
+        // Preprocessed; the parser did not. This is the parser gap the metric exists for.
+        v(d("parse: expected `)`"), Outcome::Clean),
+        // Never got past the preprocessor, so the parser was never asked.
+        v(d("pp: cannot include foo.h"), Outcome::Clean),
+    ];
+
+    let c = coverage(&verdicts);
+    assert_eq!(c.total, 4);
+    assert_eq!(c.preprocessed, 3, "all but the pp failure");
+    assert_eq!(c.parsed, 2, "the two that got past the parser");
+    assert_eq!(c.analysed, 1);
+
+    // **Parser coverage is out of what the parser was actually handed.** Dividing by `total`
+    // would blame the parser for headers the sweep could not resolve, and the number would
+    // move whenever the include flags changed rather than when the parser did.
+    assert_eq!(c.parser_percent(), 66.7);
+
+    // A sweep that ran nothing reports 0, not a division by zero.
+    assert_eq!(coverage(&[]).parser_percent(), 0.0);
+}
