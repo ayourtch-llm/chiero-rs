@@ -228,3 +228,28 @@ fn coverage_counts_how_far_chiero_got_on_each_translation_unit() {
     // A sweep that ran nothing reports 0, not a division by zero.
     assert_eq!(coverage(&[]).parser_percent(), 0.0);
 }
+
+/// 042 contract 7: the sweep must be able to hand tier 1 the functions a translation unit
+/// **defines**.
+#[test]
+fn function_extraction_finds_definitions_and_not_declarations() {
+    use xtask::sweep::functions_in;
+    let src = "int defined_here(void) { return 0; }\n\
+               extern int only_declared(int);\n\
+               static int static_definition(void) { return 1; }\n\
+               int a_variable;\n\
+               typedef int not_a_function;\n";
+    let fns = functions_in(Path::new("src/vnet/x.c"), src).expect("parses");
+
+    // **Definitions only.** A prototype has no body to analyse, and counting it as a candidate
+    // would inflate every recipe's tally with functions tier 2 could never examine — the same
+    // dishonesty as counting an undecidable function as matched.
+    assert_eq!(
+        fns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        ["defined_here", "static_definition"]
+    );
+
+    // The path travels with the function: `in_file` selects on it, and a candidate closure
+    // crosses translation units so a bare name would be ambiguous.
+    assert!(fns.iter().all(|f| f.file == "src/vnet/x.c"));
+}

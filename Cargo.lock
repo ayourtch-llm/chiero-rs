@@ -411,6 +411,7 @@ version = "0.1.0"
 dependencies = [
  "chiero-parse",
  "chiero-pp",
+ "chiero-recipe",
  "chiero-sema",
  "chiero-span",
  "indexmap",
