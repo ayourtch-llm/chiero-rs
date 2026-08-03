@@ -480,9 +480,10 @@ fn a_parallel_sweep_agrees_exactly_with_a_serial_one() {
     )
     .expect("loads");
 
-    let serial = xtask::sweep::tier1_sweep_with(&files, &[recipe.clone()], &cfg, 1);
+    let serial = xtask::sweep::tier1_sweep_with(&files, std::slice::from_ref(&recipe), &cfg, 1);
     for threads in [2, 4, 7, 16] {
-        let par = xtask::sweep::tier1_sweep_with(&files, &[recipe.clone()], &cfg, threads);
+        let par =
+            xtask::sweep::tier1_sweep_with(&files, std::slice::from_ref(&recipe), &cfg, threads);
         assert_eq!(par.files, serial.files, "threads={threads}");
         assert_eq!(par.functions, serial.functions, "threads={threads}");
         assert_eq!(par.unreadable, serial.unreadable, "threads={threads}");

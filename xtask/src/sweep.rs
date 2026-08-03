@@ -388,17 +388,79 @@ impl Tier1Report {
 }
 
 /// Run tier 1 over a set of translation units (042 c7).
+/// Run tier 1 over a set of translation units (042 c7), fanned out across the machine.
 pub fn tier1_sweep(
     files: &[PathBuf],
     recipes: &[chiero_recipe::Recipe],
     cfg: &chiero_pp::Config,
 ) -> Tier1Report {
-    // **Keyed by defining file and name, so a header function is one function.** Each
-    // translation unit re-parses every header it includes, so without this a `static inline`
-    // in vppinfra is counted once per includer — 186,623 functions from 36 files in `vnet/fib`
-    // — and 042 c5d's baseline would track the include graph rather than the code.
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    tier1_sweep_with(files, recipes, cfg, threads)
+}
+
+/// As [`tier1_sweep`], with an explicit thread count.
+///
+/// **The answer does not depend on the split.** Each worker returns its own results and the
+/// merge happens afterwards, in file order — nothing is accumulated into shared state, so the
+/// only thing threading changes is when the work happens. 001 §5 makes that mandatory: this
+/// report is an output path, and 042 c5d wants the counts as a CI baseline, which a figure
+/// that wobbled with core count could never be.
+pub fn tier1_sweep_with(
+    files: &[PathBuf],
+    recipes: &[chiero_recipe::Recipe],
+    cfg: &chiero_pp::Config,
+    threads: usize,
+) -> Tier1Report {
+    let threads = threads.clamp(1, files.len().max(1));
+    // Contiguous chunks rather than a work queue: the merge below relies on chunk *k* holding
+    // the k-th run of files, and a queue would make the merge order depend on scheduling.
+    let per = files.len().div_ceil(threads);
+    let chunks: Vec<&[PathBuf]> = if per == 0 {
+        Vec::new()
+    } else {
+        files.chunks(per).collect()
+    };
+
+    let mut results: Vec<(Vec<chiero_recipe::FunctionRef>, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| scope.spawn(move || scan_chunk(chunk, cfg)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| (Vec::new(), 0)))
+            .collect()
+    });
+
+    // **Dedup after the join, never inside a worker.** Two workers that each dropped their own
+    // duplicates would still both keep a header function, and the survivor would depend on
+    // which chunk saw it first.
     let mut seen: indexmap::IndexSet<(String, String)> = indexmap::IndexSet::new();
     let mut functions = Vec::new();
+    let mut unreadable = 0;
+    for (found, bad) in results.drain(..) {
+        unreadable += bad;
+        for f in found {
+            if seen.insert((f.file.clone(), f.name.clone())) {
+                functions.push(f);
+            }
+        }
+    }
+
+    Tier1Report {
+        tallies: chiero_recipe::tier1_counts(recipes, &functions),
+        files: files.len(),
+        functions: functions.len(),
+        unreadable,
+    }
+}
+
+/// One worker's share: the functions it found and the files it could not read.
+fn scan_chunk(
+    files: &[PathBuf],
+    cfg: &chiero_pp::Config,
+) -> (Vec<chiero_recipe::FunctionRef>, usize) {
+    let mut found = Vec::new();
     let mut unreadable = 0;
     for path in files {
         let Ok(src) = std::fs::read_to_string(path) else {
@@ -406,24 +468,13 @@ pub fn tier1_sweep(
             continue;
         };
         match functions_in_cfg(path, &src, cfg.clone()) {
-            Ok(fs) => {
-                for f in fs {
-                    if seen.insert((f.file.clone(), f.name.clone())) {
-                        functions.push(f);
-                    }
-                }
-            }
+            Ok(fs) => found.extend(fs),
             // Counted, never skipped: a file that contributed no functions because it did not
             // parse is not the same as one that defines none.
             Err(_) => unreadable += 1,
         }
     }
-    Tier1Report {
-        tallies: chiero_recipe::tier1_counts(recipes, &functions),
-        files: files.len(),
-        functions: functions.len(),
-        unreadable,
-    }
+    (found, unreadable)
 }
 
 /// One file's verdict.
