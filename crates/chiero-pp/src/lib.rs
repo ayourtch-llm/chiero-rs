@@ -2017,8 +2017,9 @@ impl Engine {
     /// no longer exists when they finally expand. A paren counts only when a function-like
     /// macro name opened it.
     ///
-    /// A trailing function-like macro name with no `(` yet also defers, because the `(` may
-    /// be the first thing after the directive and gcc keeps looking.
+    /// A trailing function-like macro name with **no `(` yet does not defer**: measured, both
+    /// `gcc -E` and `clang -E` leave `int v = P` / `#define K 5` / `(1);` unexpanded. Only a
+    /// paren that is already open holds the chunk.
     fn in_open_macro_args(&self, toks: &[Tok]) -> bool {
         // One entry per unclosed `(`: whether a function-like macro name opened it.
         let mut opened_by_macro: Vec<bool> = Vec::new();
@@ -2037,7 +2038,7 @@ impl Engine {
                 _ => prev_was_macro = false,
             }
         }
-        opened_by_macro.iter().any(|&m| m) || prev_was_macro
+        opened_by_macro.iter().any(|&m| m)
     }
 
     fn is_function_like_macro(&self, name: &str) -> bool {
