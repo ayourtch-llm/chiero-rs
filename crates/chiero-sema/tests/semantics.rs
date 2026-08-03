@@ -7063,3 +7063,90 @@ fn a_void_parameter_is_three_rules() {
         );
     }
 }
+
+/// **A bad array length names its declarator, wherever the declarator is** (023 §9: a report a
+/// person cannot act on is not a report).
+///
+/// `int a[-1];` and `struct S { int a[-1]; };` say "array length of `a` is negative"; a
+/// *parameter* and a *typedef* say only "array length is negative". The name comes from
+/// `self.declaring`, which object and member declarations set and the parameter and typedef paths
+/// never did — so the two positions where a reader is least able to guess which declarator is
+/// meant are exactly the two that do not say.
+///
+/// gcc names it in **every** position — local, file scope, member, parameter, through a
+/// pointer-to-array, under `static`, and a typedef gets the typedef's own name — and reserves a
+/// separate wording for the case where there genuinely is no declarator: a cast, a `sizeof` type
+/// name, and an unnamed parameter. So this is one message in two forms and **no position-specific
+/// branches at all**, which is what the fixture pins.
+#[test]
+fn a_bad_array_length_names_its_declarator() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (src, want) in [
+        // Already named, and must stay so.
+        (
+            "void f(void){ int b[-1]; (void)b; }",
+            "array length of `b` is negative",
+        ),
+        ("int a[-1];", "array length of `a` is negative"),
+        (
+            "struct S { int a[-1]; };",
+            "array length of `a` is negative",
+        ),
+        // **The parameter path**, in every shape gcc names: plain, second in the list, two
+        // dimensions, through a pointer-to-array, and with `static`.
+        ("void f(int a[-1]);", "array length of `a` is negative"),
+        (
+            "void f(int x, int a[-1]);",
+            "array length of `a` is negative",
+        ),
+        ("void f(int a[2][-1]);", "array length of `a` is negative"),
+        ("void f(int (*a)[-1]);", "array length of `a` is negative"),
+        (
+            "void f(int a[static -1]);",
+            "array length of `a` is negative",
+        ),
+        // **A typedef names the typedef.**
+        ("typedef int A[-1];", "array length of `A` is negative"),
+        // **And where there is genuinely no declarator, the unnamed form** — an unnamed
+        // parameter, a cast's type name, and a `sizeof` type name.
+        ("void f(int [-1]);", "array length is negative"),
+        (
+            "void f(void){ (void)(int(*)[-1])0; }",
+            "array length is negative",
+        ),
+        (
+            "unsigned f(void){ return sizeof(int[-1]); }",
+            "array length is negative",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+
+    // **The legal shapes stay silent**, so naming cannot be bought by reporting more.
+    for good in [
+        "void f(int n, int a[n]);",
+        "void f(int a[*]);",
+        "void f(int a[static 3]);",
+        "void f(int a[const 3]);",
+        "void f(int a[3]);",
+        "typedef int A[3];",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
