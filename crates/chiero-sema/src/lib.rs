@@ -7355,6 +7355,17 @@ impl Cx<'_> {
                 // which *is* a length and does conflict with a different one.
                 !matches!(l1, ArrayLen::Flexible) && !matches!(l2, ArrayLen::Flexible) && l1 != l2
             }
+            // **A pointer is compatible when its pointee is** (C 6.7.6.1p2). Without this arm two
+            // pointers that are not the same id fall through to `_ => true`, which is the right
+            // answer for every pointee whose own rule is identity and the wrong one for the
+            // single pointee rule that is weaker: the array arm just above, where an unspecified
+            // length is compatible with any length. `extern int (*a)[]; int (*a)[3];` is that
+            // idiom one `*` deeper than the plain form wave 380 fixed.
+            //
+            // Qualifiers are *not* stripped on the way down: a top-level qualifier is not part of
+            // a type (6.7.6.3p15) but a pointee's is, so `const int *` and `int *` reach the
+            // fallthrough below and conflict, exactly as before.
+            (Ty::Ptr(x), Ty::Ptr(y)) => self.types_conflict(x, y),
             // Interned types, so anything else differing is a real difference.
             _ => true,
         }
