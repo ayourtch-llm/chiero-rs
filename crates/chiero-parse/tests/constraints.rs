@@ -435,3 +435,51 @@ fn a_typedef_may_not_have_an_initializer() {
         );
     }
 }
+
+/// **`_Static_assert`'s message is a string literal, and adjacent literals are one literal**
+/// (C 6.4.5p5: in translation phase 6, adjacent string literal tokens are concatenated).
+///
+/// `_Static_assert(1, "a" "b");` was refused with "expected `)` to close `_Static_assert`" — the
+/// parser took a single string token and stopped. Legal C, and gcc compiles it.
+///
+/// **Found by `cargo xtask sweep` over VPP**, not by a census. It appeared as four files failing
+/// to parse, and reduced to five lines through VPP's own idiom:
+///
+/// ```c
+/// #define STATIC_ASSERT(truth,...) _Static_assert(truth, __VA_ARGS__)
+/// #define STATIC_ASSERT_SIZEOF(d, s) \
+///   STATIC_ASSERT (sizeof (d) == s, "Size of " #d " must be " # s " bytes")
+/// ```
+///
+/// The message is built by stringizing two macro arguments and concatenating them with three
+/// literals, so *every* use of `STATIC_ASSERT_SIZEOF` hits it — and HANDOFF's construct table
+/// records `_Static_assert` (VPP's `STATIC_ASSERT`) at **140 uses**. A census of 6.7.10 would not
+/// have found this: the construct under test is legal, and the fault is in a neighbouring rule
+/// about how string literals are spelled.
+#[test]
+fn a_static_assert_message_may_be_several_adjacent_literals() {
+    for good in [
+        // The plain form, which already worked — kept so a fix cannot trade one for the other.
+        "_Static_assert(1, \"x\");\n",
+        // Two and three adjacent literals.
+        "_Static_assert(1, \"a\" \"b\");\n",
+        "_Static_assert(1, \"a\" \"b\" \"c\");\n",
+        // Built by a macro, which is how VPP reaches it: stringize between two literals.
+        "#define M(x) \"p\" #x \"q\"\n_Static_assert(1, M(z));\n",
+        // VPP's own shape, reduced.
+        "#define SA(t,...) _Static_assert(t, __VA_ARGS__)\n\
+         #define SASZ(d, s) SA (sizeof (d) == s, \"Size of \" #d \" must be \" # s \" bytes\")\n\
+         struct foo { int a; };\n\
+         SASZ (struct foo, 4);\n",
+        // Adjacent literals elsewhere must keep working — this is a lexer-level rule, not a
+        // `_Static_assert` one, and a fix that special-cased the assertion would say otherwise.
+        "const char *p = \"a\" \"b\";\n",
+        "void f(void){ const char *q = \"a\" \"b\" \"c\"; (void)q; }\n",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+}
