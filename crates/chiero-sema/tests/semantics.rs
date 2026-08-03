@@ -6061,3 +6061,89 @@ fn every_conversion_kind_is_reachable() {
         "declared but never produced: {missing:?} (produced: {seen:?})"
     );
 }
+
+/// **Three false positives and a miss**, from C 6.7.9p14, 6.5.16.2 and 6.2.7.
+///
+/// Wave 376's rule says to run the legal half first because a rule that rejects legal code costs
+/// more than one that misses illegal code. This census found three such rules, which is the most
+/// any wave has turned up.
+///
+/// - **`unsigned char a[4] = "abc";`** is refused. C 6.7.9p14 says an array of *character type*
+///   takes a string literal, and character type is `char`, `signed char` and `unsigned char`.
+///   chiero accepts the signed spelling and refuses the unsigned one, which is not a rule anyone
+///   could have intended — it is the plain `char` case written once and the sign forgotten.
+/// - **`extern int a[]; int a[3];`** is refused. An array of unspecified length is *compatible*
+///   with one of any length (6.2.7p3); that is how a header declares what a translation unit
+///   sizes, and refusing it breaks the idiom the construct exists for.
+/// - **`int f(int a[2]); int f(int a[3]) { … }`** is refused. An array parameter is a pointer,
+///   so its written length is not part of the function's type at all and cannot conflict.
+///
+/// The miss is `p += d` on a floating operand: `+=` on a pointer means `p = p + d`, and wave
+/// 364's additive rule refuses `p + d` — the compound form never asks.
+#[test]
+fn a_string_initialiser_and_an_array_length_are_more_forgiving_than_this() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // **Every character type**, which is what 6.7.9p14 says.
+        "char a[4] = \"abc\";",
+        "signed char a[4] = \"abc\";",
+        "unsigned char a[4] = \"abc\";",
+        "typedef unsigned char U; U a[4] = \"abc\";",
+        // A wide literal into an array of its own element type.
+        "int a[4] = L\"abc\";",
+        // **An unspecified length is compatible with any length**, in either order.
+        "extern int a[]; int a[3]; int f(void){ return a[0]; }",
+        "extern int a[3]; int a[];",
+        // **An array parameter is a pointer**, so its length is not part of the type.
+        "int f(int a[2]); int f(int a[3]){ return a[0]; }",
+        "int f(int a[2]); int f(int *a){ return a[0]; }",
+        // The shapes that already worked, kept so a fix that widens too far is caught.
+        "char *p = \"abc\";",
+        "char a[] = \"abc\";",
+        "int a[2]; int a[2];",
+        "int f(void){ int *p=0; p += 1; return p!=0; }",
+        "int f(void){ int *p=0; p -= 1; return p!=0; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **The miss.** `p += d` is `p = p + d`, and `p + d` is refused; the compound form
+        // never asked.
+        (
+            "int f(void){ int *p=0; double d=1; p += d; return p!=0; }",
+            "a pointer may only be offset by an integer",
+        ),
+        // A genuine length conflict is still one.
+        ("int a[2]; int a[3];", "conflicting types for `a`"),
+        ("extern int a[2]; int a[3];", "conflicting types for `a`"),
+        // A string literal into an array of the wrong element type keeps being refused — the
+        // message is gcc's shape, naming the array rather than a pointer nobody wrote.
+        (
+            "int a[4] = \"abc\";",
+            "cannot initialise an array of `int` from a string literal",
+        ),
+        (
+            "char a[4] = L\"abc\";",
+            "cannot initialise an array of `char` from a string literal",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
