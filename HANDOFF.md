@@ -487,7 +487,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 392) — 1595 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 393) — 1596 tests, 4 ignored, M1 268/268 by contract
+>
+> **Wave 392: a bit-field may not have atomic type** (C 6.7.2.1p5), refused by gcc in both modes.
+> It sits in the **`else`** of the integer-type check, because gcc refuses `_Atomic float a : 2`
+> for being a *float* — the mutant that asks about atomicity first passes every other row and only
+> swaps one true sentence for another, so it dies in the fixture and **survives the ratchet**.
+> It reads the **AST node's** qualifiers: sema's `Qual` has `const`/`volatile`/`restrict` only, so
+> `_Atomic` never reaches the interned type and is not visible by `TyId`. Ratchet 280 → 282.
+>
+> **Re-censusing closed sections is now a measured practice, with a rate.** Fresh programs over
+> sections this project already worked:
+>
+> | section | waves of work | fresh programs | gcc-refuses rows | **chiero misses** |
+> |---|---|---|---|---|
+> | enums 6.7.2.2 | 3 | 20 | 8 | **0** |
+> | `_Generic` 6.5.1.1 | 1 | 10 | 2 | **0** |
+> | bit-fields 6.7.2.1 | 1 | 13 | 3 | **1** (`_Atomic`) |
+> | conditional 6.5.15 | 1 | 10 | 4 | *unrun* |
+>
+> **The gcc half of a census lists rows; only chiero's half produces findings.** Eight enum rows
+> gcc refuses looked like eight candidates and were zero. Sections worked twice or more are
+> converging; the residue is C11 corners rather than core rules.
+>
+> **The conditional operator's two unrun candidates**, both `-Wpedantic` promotions and so
+> reportable here: `void g(void); c ? g() : 1` ("conditional expr with only one void side") and
+> `c ? fnptr : voidptr` ("between `void *` and a function pointer").
+>
+> ### The parser is the thinnest surface, and is next
+>
+> `chiero-parse` has 8 constraint tests, `chiero-pp` 15, `chiero-lex` 4 — against sema's 282-row
+> corpus. **23 parser-level programs gcc refuses are censused and chiero's side has never been
+> run**: label at end of block, a declaration after a label, `case`/`default` outside a switch,
+> `break`/`continue` outside a loop, `return 1;` from `void`, `return;` from non-`void`, a `goto`
+> to an undefined label, a duplicate label, `int ;`, `static extern int x;`,
+> `typedef int T = 1;`, a nested function *definition*, implicit-int K&R parameters,
+> `int f[3](void);`, `int f(void)[3];`, `int f(void)(void);`, `int f(void, int);`, `int f(...);`,
+> `int f(int a, int a);`, `extern int x = 1;` in a block, `&a` on a `register` array, and a stray
+> `;` at file scope. A ready probe with five legal controls is written and reports parser *and*
+> sema diagnostics per row, so it shows which stage catches what.
+>
+> **Also banked**: `_Alignas` on a *function*; designated initializers (6.7.9, **33,814** VPP uses
+> — repeated designators *and* indices are legal, last wins, and there is no "already initialised"
+> rule in C to invent).
 >
 > **Wave 391 added the rule that an array size has integer type** (C 6.7.6.2p1), which chiero did
 > not have: anything that failed to fold became a VLA, so `int a[1.5];` was silent as a local and
