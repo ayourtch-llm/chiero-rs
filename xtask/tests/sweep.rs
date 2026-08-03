@@ -103,3 +103,37 @@ fn the_walk_of_an_empty_tree_is_empty_and_of_a_missing_one_is_an_error() {
     assert!(translation_units(&tmp).expect("walk").is_empty());
     assert!(translation_units(Path::new("/definitely/not/here")).is_err());
 }
+
+/// **A finding without a location is not actionable** (023 §9: "a report a person cannot act on
+/// is not a report"). The sweep kept only the diagnostic's text and dropped its span, so a
+/// finding read `e.g. /path/to/dataplane_node.c` and left the reader to search a 62,000-line
+/// preprocessed translation unit by hand. Every diagnostic already carries a span; this renders
+/// it.
+#[test]
+fn a_rendered_diagnostic_carries_the_place_it_happened() {
+    let mut map = chiero_span::SourceMap::new();
+    let src = "int a;\nstruct S { int; };\n";
+    let file = map.add_file("/vpp/src/t.c", src);
+    let start = map.file(file).start_pos.0;
+
+    // The span of `int;` on line 2 — column 12, 1-based.
+    let off = src.find("int;").expect("fixture") as u32;
+    let sp = chiero_span::Span::new(
+        chiero_span::BytePos(start + off),
+        chiero_span::BytePos(start + off + 4),
+        chiero_span::ExpnCtx(0),
+    );
+    assert_eq!(
+        xtask::sweep::describe(&map, sp, "a member declaration must declare a member"),
+        "/vpp/src/t.c:2:12: a member declaration must declare a member"
+    );
+
+    // **A span with no source must not be given one.** `Span::DUMMY` is `BytePos(0)` and the
+    // first file in the global space starts at 0, so the lookup *succeeds* and reports line 1
+    // column 1 — a real-looking place that is a fiction. It has to be rejected by name, not by
+    // trusting the lookup to fail.
+    assert_eq!(
+        xtask::sweep::describe(&map, chiero_span::Span::DUMMY, "no place"),
+        "no place"
+    );
+}
