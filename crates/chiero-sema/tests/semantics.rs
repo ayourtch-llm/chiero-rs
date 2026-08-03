@@ -6456,3 +6456,116 @@ fn a_pointers_pointee_is_compared_like_any_other_type() {
         );
     }
 }
+
+/// **Two enumerations are the same type only if they are the same enumeration** (C 6.7.2.3p5:
+/// each declaration of an enumeration with an enumerator list declares a *distinct* type).
+///
+/// Wave 383 gave an enumeration the right integer type and left this: `enum E` and `enum F` are
+/// both `unsigned int`, so they intern to one id and `enum E a; enum F a;` is accepted where gcc
+/// refuses. That is the half of §9's item that really is structural, and the crate already has
+/// the mechanism — `Qual` rides the interning key with a parallel table so that no `match` on
+/// `Ty` has to change, and its doc comment records the audit that chose it.
+///
+/// **An enumeration tag is the same shape as a qualifier**: nothing wants to *see* it, only
+/// `TyId` equality changes meaning. Measured rather than assumed — with the tag in the key and no
+/// other change, exactly one test in the workspace fails, and it is the one that says an
+/// enumeration and its own integer type are compatible.
+///
+/// So the rule is two-sided, and both sides are gcc's:
+///
+///   - **Against another enumeration**, the tags decide. Different enumerations conflict even
+///     when they have the same integer type — which is always, since the sign is all that picks
+///     it — and that includes two anonymous ones behind separate typedefs.
+///   - **Against anything else**, the tag is dropped and the integer type answers. `enum E a;
+///     unsigned a;` is one declaration, and so is `enum E *` against `unsigned *`.
+///
+/// **Values never see it.** Assigning, comparing, passing and `?:` between `enum E` and `enum F`
+/// are all legal in gcc — they are two integer types and convert like any others. Those rows are
+/// here because a tag that leaked into the value paths would break them, and nothing else in the
+/// suite would say so.
+#[test]
+fn two_enumerations_are_the_same_type_only_if_they_are_the_same_enumeration() {
+    let diags = |src: &str| {
+        let p = harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux());
+        p.analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for good in [
+        // **An enumeration against itself**, however it is reached.
+        "enum E { A = 1 }; enum E a; enum E a;",
+        "enum E { A = 1 }; typedef enum E T; enum E a; T a;",
+        "typedef enum { X = 1 } T; T a; T a;",
+        "enum E { A = 1 }; enum E *a; enum E *a;",
+        // **Against its own integer type the tag is dropped** — these are wave 383's rows, and
+        // they are the ones the tag would break if it were compared unconditionally.
+        "enum E { A = 1 }; enum E a; unsigned a;",
+        "enum E { A = 1 }; enum E *a; unsigned *a;",
+        "enum E { A = 1 }; enum E a[3]; unsigned a[3];",
+        "enum E { A = 1 }; int f(enum E); int f(unsigned);",
+        "enum E { A = 1 }; int f(enum E *); int f(unsigned *);",
+        "enum N { M = -1 }; enum N a; int a;",
+        // **Values, where two enumerations mix freely.** Both are integer types and convert.
+        "enum E { A = 1 }; enum F { B = 1 }; void g(void) { enum E x = A; enum F y = B; x = y; }",
+        "enum E { A = 1 }; enum F { B = 1 }; int g(int c) { enum E x = A; enum F y = B; return c ? x : y; }",
+        "enum E { A = 1 }; enum F { B = 1 }; int g(void) { enum E x = A; enum F y = B; return x == y; }",
+        "enum E { A = 1 }; enum F { B = 1 }; void h(enum E); void g(void) { enum F y = B; h(y); }",
+        "enum E { A = 1 }; enum F { B = 1 }; int g(void) { enum E x = A; enum F y = B; return x + y; }",
+    ] {
+        assert!(
+            diags(good).is_empty(),
+            "must be accepted: `{good}` -> {:?}",
+            diags(good)
+        );
+    }
+
+    for (src, want) in [
+        // **The miss wave 383 recorded**, and the same disagreement through every construct that
+        // carries a type: a parameter, a return type, a pointer, an array.
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; enum E a; enum F a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; int f(enum E); int f(enum F);",
+            "conflicting types for `f`",
+        ),
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; enum E f(void); enum F f(void);",
+            "conflicting types for `f`",
+        ),
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; enum E *a; enum F *a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; enum F { B = 1 }; enum E a[3]; enum F a[3];",
+            "conflicting types for `a`",
+        ),
+        // **Two anonymous enumerations are two types**, which is where a tag keyed on the *name*
+        // rather than on the definition would quietly agree with the old behaviour.
+        (
+            "typedef enum { X = 1 } T; typedef enum { Y = 1 } U; T a; U a;",
+            "conflicting types for `a`",
+        ),
+        (
+            "enum E { A = 1 }; typedef enum { X = 1 } T; enum E a; T a;",
+            "conflicting types for `a`",
+        ),
+        // **Same sign, same width, still distinct** — with both negative the integer type is
+        // `int` for each, so nothing but the tag separates them.
+        (
+            "enum E { A = -1 }; enum F { B = -1 }; enum E a; enum F a;",
+            "conflicting types for `a`",
+        ),
+    ] {
+        assert_eq!(
+            diags(src),
+            vec![want.to_string()],
+            "the message for `{src}`"
+        );
+    }
+}
