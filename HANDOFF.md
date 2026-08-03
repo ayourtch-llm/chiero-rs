@@ -487,64 +487,68 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 408) — 1611 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 410) — 1614 tests, 4 ignored, M1 268/268 by contract
 >
-> ### `plugins` swept for the first time, and the picture is now unambiguous
+> ### The blocker fell, and the VPP sweep has converged
 >
-> One more include path — **`-I src/plugins`**, which is how VPP builds them — took plugins from
-> ~0 to **69 of 100** sampled files compiling. Full recipe for any VPP sweep:
+> **Wave 408: a macro call may span a directive, so the flush waits for its `)`.** VPP writes it
+> in **49 headers**, and it accounted for 28 of `vnet/fib`'s 29 findings and 27 of 28 across six
+> plugin trees. Those files now parse and reach sema for the first time.
 >
-> ```
-> -I <vpp>/src  -I <vpp>/src/plugins  -I <gen>        # <gen> holds:
-> #   153 generated .api headers (python3 src/tools/vppapigen/vppapigen …)
-> #   vppinfra/config.h, vlib/config.h, vpp/app/version.h  (from config.h.in, CMake defaults)
-> ```
+> **The construct table settled the scope; three waves had wrongly filed this as an owner's
+> call.** The table rates a GNU extension by how much VPP depends on it — `__int128` at one file
+> is "required". A criterion already written down is not an open question, and re-asking it cost
+> three waves.
 >
-> Tallied over `acl`, `dhcp`, `lb`, `nsh`, `gtpu`, `vxlan`: **28 findings, of which 27 are the
-> `CLIB_PACKED` blocker** and 1 is the enumerator-range noise. Nothing else.
+> ### What the remaining findings are
 >
-> ### One construct now accounts for nearly every finding outside vppinfra
+> | subtree | findings | kind |
+> |---|---|---|
+> | `vnet/fib` | 29 | **all** enumerator-range |
+> | `plugins/nsh` | 9 | all enumerator-range |
+> | `plugins/acl` | 5 | all a stray `;` in a struct |
 >
-> | subtree | findings | the blocker | other |
-> |---|---|---|---|
-> | `vnet/fib` | 29 | 28 | 1 |
-> | `plugins` (6 dirs) | 28 | 27 | 1 |
-> | `vnet/ethernet` | 9 | 0 (fixed in 404) | 9 noise |
+> Every finding reduced since the blocker fell is the **same pedantic-vs-`gnu11` question**, and
+> in each chiero is already correct at the project's calibration:
 >
-> **`#define` inside macro arguments is the single thing standing between this project and
-> analysing most of VPP.** It is reported clearly since wave 406; supporting it is the decision.
+> * `enum { A = 0xffffffffu }` — gnu11 accepts, `-pedantic-errors`: "ISO C restricts enumerator
+>   values to range of `int`".
+> * `} tcp_flags_seen; ;` (`acl/fa_node.h:112`) — `-pedantic-errors`: "extra semicolon in struct
+>   or union specified".
 >
-> ### What that leaves for the owner
->
-> 1. **Support directives inside macro arguments** — unblocks most of vnet and plugins. Highest
->    value by a wide margin.
-> 2. **Pedantic mode for sema** — all 31 vppinfra findings, verdicts already correct.
-> 3. **`transparent_union`** — socket-calling TUs.
->
-> ### The encouraging half
->
-> Across ~80 newly-reachable files in `fib`, `dpo`, `adj` and six plugin trees, **no defect kind
-> was found beyond the known set**. Once chiero can parse VPP, it handles it. The sweep's
-> remaining value is concentrated behind decision 1.
->
-> **Wave 406: an unterminated argument list is reported, not abandoned.** chiero pushed the macro
-> name through unexpanded and said nothing; it now gives gcc's sentence, naming the macro.
->
-> **What §9 had wrong: this was filed as a scope decision and is not one.** gcc under `gnu11`
-> expands such a call, under `-pedantic-errors` it refuses — chiero did a *third* thing, processing
-> the directive **and** dropping the expansion, silently. A wrong token stream is wrong under
-> either choice, so reporting needed no owner's call. **Check whether a construct is mis-handled
-> before filing it as a policy question**; the two got entangled for three waves.
+> **No new defect kind has appeared behind any unblocked file.** The sweep has converged on one
+> scope decision rather than a defect backlog.
 >
 > ### The owner's queue is now two clean questions
 >
 > | item | reach | chiero today |
 > |---|---|---|
-> | **support directives inside macro arguments** | 28 of `vnet/fib`'s 29 findings; most of vnet | reports clearly, cannot analyse |
-> | **pedantic mode for sema** | all 31 vppinfra findings | verdicts correct, noise on the corpus |
+> | **pedantic mode for sema** | every remaining VPP finding | verdicts correct, noise on the corpus |
 > | `transparent_union` | socket-calling TUs | refuses the call |
 >
-> No correctness bug is entangled in any of them now.
+> No correctness bug is entangled in either.
+>
+> ### Wave 409: a finding says *where*, and still groups by *what*
+>
+> The sweep printed a message and an example path, so acting on one meant hand-searching a
+> 62,000-line preprocessed TU — four reduction attempts died that way before the tool was fixed.
+> `describe` renders `path:line:col:`; `kind` strips it back off for the grouping key, or a group
+> of 29 becomes 29 groups of one. `acl` then reduced in a single lookup.
+>
+> Two traps worth remembering:
+>
+> * **`Span::DUMMY` resolves.** It is `BytePos(0)` and the first file starts at 0, so `lookup_loc`
+>   *succeeds* and answers line 1 column 1. A fiction shaped exactly like a fact. Reject by name.
+> * **A survivor is worth re-reading as "did this mutate anything" first.** A mutant scored
+>   SURVIVED had been written with its replacement identical to the original — a control wearing
+>   a mutant's name.
+>
+> ### A missing row hides behind an early return
+>
+> Mutation left `kind`'s shape check surviving. The prose row meant to cover it has two colons;
+> the scan needs a third to reach the comparison at all, so it returned early and asserted the
+> right answer for the wrong reason. **When a mutant survives under a test that names it, check
+> the input reaches the line before concluding the mutant is equivalent.**
 >
 > ### Sweep reach, after wave 405
 >
