@@ -2742,47 +2742,55 @@ impl Cx<'_> {
             pending.push((en, v));
         }
         let int_bits = (self.target.sizes.int_ * 8) as u32;
-        let fits_int = lo >= -(1i128 << (int_bits - 1)) && hi < (1i128 << (int_bits - 1));
-        let t = if fits_int {
-            // **C 6.7.2.2p4 leaves the compatible type to the implementation, and gcc picks it by
-            // sign**: `unsigned int` unless some enumerator is negative. Answering `int` always
-            // was wrong in both directions — it made `enum E a; int a;` agree and
-            // `enum E a; unsigned a;` conflict, and gcc says the opposite of each.
-            //
-            // This is the *object's* type, and it is the whole of the enumeration's type. The
-            // enumerator constant is separate and stays `int` (6.4.4.3p2), which is why `-1 < A`
-            // and `-1 < e` do not have to agree.
-            Ty::Int {
-                signed: lo < 0,
-                bits: int_bits,
+        let long_bits = (self.target.sizes.long_ * 8) as u32;
+        // **One rule, not two** (C 6.7.2.2p4 leaves the choice to the implementation; this is
+        // gcc's). The sign comes from whether any enumerator is negative, and the width is the
+        // narrowest of `int`/`long` that holds the range at that sign. The fitting and widened
+        // cases used to be written as separate branches with separate signedness rules, and the
+        // widened one was wrong twice over: it always chose `long`, so `{ A = 4294967295u }` was
+        // 64 bits where gcc uses `unsigned int`, and its sign test `lo < 0 || hi < (1 << 63)`
+        // made a non-negative `{ A = LONG_MAX }` *signed* where gcc uses `unsigned long`.
+        //
+        // The enumerator constant is separate and stays `int` (6.4.4.3p2), which is why `-1 < A`
+        // and `-1 < e` do not have to agree.
+        let signed = lo < 0;
+        let holds = |bits: u32| {
+            if signed {
+                lo >= -(1i128 << (bits - 1)) && hi < (1i128 << (bits - 1))
+            } else {
+                hi < (1i128 << bits)
             }
-        } else {
-            // **C 6.7.2.2p2: every enumerator is representable as `int`.** The widening below is
-            // a GNU extension, and this project calibrates constraint violations to
-            // `-pedantic-errors` (wave 314), so the widening happens *and* is reported — the type
-            // stays usable so nothing downstream cascades, exactly as an out-of-range array bound
-            // is reported and then clamped.
-            //
-            // Reported from the *range* rather than from each initializer, which is what catches
-            // the implicit successor: `{A = 2147483647, B}` names no value for `B` and overflows
-            // on it.
-            // **The enumerator, not the enumeration.** Naming the whole `enum { … }` is true and
-            // useless once there is more than one constant in it; the first value outside the
-            // range is the one a reader has to change.
+        };
+        let bits = if holds(int_bits) { int_bits } else { long_bits };
+        let t = Ty::Int { signed, bits };
+        // **C 6.7.2.2p2: every enumerator is representable as `int`.** Anything wider is a GNU
+        // extension, and this project calibrates constraint violations to `-pedantic-errors`
+        // (wave 314), so the widening happens *and* is reported — the type stays usable so
+        // nothing downstream cascades, exactly as an out-of-range array bound is reported and
+        // then clamped.
+        //
+        // **This asks about `int`, not about the type chosen above**, and the two differ: an
+        // enumeration of `{ A = 4294967295u }` is `unsigned int` here and is still refused,
+        // because the constraint is on each value's representability as `int` and not on how
+        // wide the implementation's choice turned out to be.
+        //
+        // Reported from the *range* rather than from each initializer, which is what catches the
+        // implicit successor: `{A = 2147483647, B}` names no value for `B` and overflows on it.
+        // **The enumerator, not the enumeration.** Naming the whole `enum { … }` is true and
+        // useless once there is more than one constant in it; the first value outside the range
+        // is the one a reader has to change.
+        let int_min = -(1i128 << (int_bits - 1));
+        let int_max = 1i128 << (int_bits - 1);
+        if lo < int_min || hi >= int_max {
             let blame = values
                 .iter()
-                .find(|&&(v, _)| v < -(1i128 << (int_bits - 1)) || v >= (1i128 << (int_bits - 1)))
+                .find(|&&(v, _)| v < int_min || v >= int_max)
                 .map_or(span, |&(_, s)| s);
             self.error(
                 blame,
                 "an enumerator's value is not representable as an `int`",
             );
-            // gcc widens to `long` (64-bit here) rather than to an arbitrary width.
-            Ty::Int {
-                signed: lo < 0 || hi < (1i128 << 63),
-                bits: (self.target.sizes.long_ * 8) as u32,
-            }
-        };
+        }
         // **A fresh number per definition** (C 6.7.2.3p5), which is what makes `enum E` and
         // `enum F` two types even though the sign gives both the same integer type. Per
         // definition and not per tag name: two anonymous enumerations are two types and have no
