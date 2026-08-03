@@ -597,3 +597,55 @@ fn a_member_declaration_that_names_only_a_type_declares_nothing() {
         );
     }
 }
+
+/// **A specifier that already failed does not also declare nothing** (contract 20).
+///
+/// `struct S { struct; };` produces two diagnostics — "expected a tag name or a `{`", which is
+/// the real fault, and then "a member declaration must declare a member" from the rule wave 398
+/// added. gcc gives one. The second is a cascade: the specifier is poison, so of course it
+/// declares no member, and saying so tells a reader nothing the first sentence did not.
+///
+/// **Found by a surviving mutant.** Wave 398's predicate has three parts and the `members` one
+/// had no killing test. Chasing it showed the mutant that drops that check is not merely
+/// equivalent — it is *more correct*, because without it this input gets exactly gcc's one
+/// message. The fix is therefore not to add a row proving the check fires, but to stand the rule
+/// down when the specifier already spoke, which is what this crate does elsewhere: "poison is not
+/// a non-integer type", "an explained length is poison rather than a VLA".
+///
+/// The rule itself is unchanged for every input that reaches it with a *valid* specifier, which
+/// is the whole illegal half of `a_member_declaration_that_names_only_a_type_declares_nothing`.
+#[test]
+fn a_failed_specifier_does_not_cascade_into_the_member_rule() {
+    // One mistake, one sentence — the specifier's.
+    for src in [
+        "struct S { struct; };\n",
+        "struct S { union; };\n",
+        "struct S { enum; };\n",
+    ] {
+        assert_eq!(
+            diags(src),
+            vec!["expected a tag name or a `{`".to_string()],
+            "one sentence for `{src}`"
+        );
+    }
+
+    // **The member rule still fires when the specifier is fine**, which is what stops the fix
+    // from being "stop reporting".
+    for src in [
+        "struct S { int; };\n",
+        "struct S { struct T; };\n",
+        "struct S { enum { A }; };\n",
+    ] {
+        assert_eq!(
+            diags(src),
+            vec!["a member declaration must declare a member".to_string()],
+            "the member rule still applies to `{src}`"
+        );
+    }
+
+    // And a bad specifier outside a member list is unaffected: it was never this rule's business.
+    assert_eq!(
+        diags("struct;\n"),
+        vec!["expected a tag name or a `{`".to_string()]
+    );
+}
