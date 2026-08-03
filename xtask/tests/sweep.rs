@@ -411,3 +411,33 @@ fn a_header_function_is_counted_once_across_translation_units() {
     // `shared_helper` once, plus `fn_a` and `fn_b` — not four.
     assert_eq!(r.functions, 3, "the header helper is one function, not two");
 }
+
+/// **Two `static` functions sharing a name in different files are two functions.** The dedup
+/// key is `(defining file, name)`, and the file half needs a fixture of its own: every other
+/// case here has distinct names, so a key on the name alone passed them all. VPP is full of
+/// same-named file-local helpers — `format_trace`, `init`, `show_command_fn` — and collapsing
+/// them would silently under-count every recipe that scopes over them.
+#[test]
+fn same_named_statics_in_different_files_are_distinct() {
+    let tmp = std::env::temp_dir().join("chiero-samename-fixture");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    for n in ["a", "b"] {
+        std::fs::write(
+            tmp.join(format!("{n}.c")),
+            "static int format_trace(void) { return 0; }
+int use(void){return format_trace();}
+",
+        )
+        .unwrap();
+    }
+    let r = xtask::sweep::tier1_sweep(
+        &xtask::sweep::translation_units(&tmp).expect("walk"),
+        &[],
+        &chiero_pp::Config::default(),
+    );
+    assert_eq!(
+        r.functions, 4,
+        "two `format_trace` and two `use`, one pair per file"
+    );
+}
