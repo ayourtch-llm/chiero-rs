@@ -487,40 +487,74 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 433) — 1657 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 436) — 1659 tests, 4 ignored, M1 268/268 by contract
 >
-> ### 🆕 The pedantic decision is made: `Dialect`, added 2026-08 at the owner's direction
+> ### 🎯 FULL VPP SWEEP — all 1552 files, 2026-08
 >
-> `chiero_ast::Dialect { pedantic }`, threaded through `parse_tu_with` and `analyze_with`,
-> selected by `xtask sweep --gnu`. **Default is unchanged** — `-pedantic-errors`, the wave-314
-> calibration. `--gnu` follows gcc's default, which is how VPP builds.
+> ```
+> cargo run --release -p xtask -- sweep --tree <vpp>/src \
+>     -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11 --gnu
+> ```
 >
-> Gated, each measured against gcc both ways first:
+> | | |
+> |---|---|
+> | translation units | 1552 |
+> | **parser coverage** | **99.4%** — 1016 of the 1022 handed to the parser |
+> | reached sema | 127 |
+> | findings | 884, of which **871 were one construct** (now fixed) |
+> | misses (gcc refused, chiero silent) | **0** |
+> | tool gaps | 528 — missing generated `.api` headers; widen `gen/` |
 >
-> | rule | stage | gnu11 | -pedantic-errors |
-> |---|---|---|---|
-> | member declaration declares nothing (all 5 forms) | parse | accepts | refuses |
-> | enumerator not representable as `int` | sema | accepts | refuses |
-> | record has no members | sema | accepts | refuses |
+> **`1 << 31` was 871 of the 884.** `vppinfra/elf.h`'s `1 << ELF_SECTION_FLAG_BIT_##f` and
+> every bit-flag enum like it. Measured: `gnu11` **and** `-pedantic-errors` both accept it, so
+> it was an over-rejection, not a calibration question, and it is refused in **neither** dialect
+> now. C 6.5.7p4 does make it undefined — the rule was right about ISO C and wrong about the
+> job. Fixed by truncating in the `Shl` arm rather than letting `wrap` diagnose.
 >
-> **Not gated: "makes a pointer from an integer without a cast".** gcc's default *warns* rather
-> than accepting, and chiero has no warning level — gating it would delete a real bug class
-> rather than restate it at a lower severity. One finding in all of `vnet`; not worth it.
-> Revisit only if a warning level ever exists.
+> **`--gnu` is what uncovered it.** The enumerator rule fired first on the same files and the
+> report shows only the first diagnostic per file, so gating that rule revealed a far larger
+> defect underneath. **Expect this again**: silencing a dominant category exposes the next one,
+> so re-sweep after every gate rather than assuming the tail is unchanged.
+>
+> ### What the remaining findings are (post-fix, unverified — re-sweep to confirm)
+>
+> A long tail of singletons, each now individually investigable:
+> `pointer from an integer without a cast` ×4 (`bihash_template.h:207`), one parse failure
+> (`plugins/acl/hash_lookup.c:63` — "expected a declarator name"), two `pp: redefinition of
+> macro` against *system* headers (`/usr/include/elf.h`, `linux/memfd.h`), plus one each of
+> incompatible-pointer init, `return` with a value in a `void` function, undeclared
+> `clib_memset`/`exit`, and a struct-copy initializer.
+>
+> ### 🆕 `Dialect` — the pedantic decision, made 2026-08 at the owner's direction
+>
+> `chiero_ast::Dialect { pedantic }` through `parse_tu_with`/`analyze_with`; `sweep --gnu`.
+> Default unchanged (`-pedantic-errors`, wave 314). Gated, each measured against gcc both ways:
+> member-declaration-declares-nothing (all 5 forms, parse), enumerator-not-representable
+> (sema), record-has-no-members (sema). **Not** gated: pointer-from-integer — gcc *warns*
+> rather than accepting, and chiero has no warning level, so gating would delete a bug class.
 >
 > ⚠️ **A dialect is not a verbosity knob.** Only rules *measured* to differ between the two gcc
-> modes may consult it. Both crates' tests pin the other side: a syntax error, an undeclared
-> identifier, a negative array bound and a call to a non-function are still refused under
-> `--gnu`. Without those, the flag would inflate parser coverage — the very number it exists to
-> make meaningful.
+> modes may consult it. Tests pin the other side: syntax errors, undeclared identifiers,
+> negative array bounds and calls to non-functions are still refused under `--gnu`.
 >
 > ### ⚠️ Protocol failure worth not repeating
 >
-> The dialect landed gating **three** rules with **one** test. The parser half was RED-first;
-> the two sema gates shipped with nothing but a claim in the commit message, and were covered
-> only afterwards as characterization tests. This is the same failure the table below records
-> five times, committed while writing that table. **Count the rules you changed and count the
-> assertions you added.**
+> The dialect landed gating **three** rules with **one** test; the two sema gates shipped on a
+> commit-message claim and were covered only afterwards. Same failure as the table below
+> records five times, committed while extending that table. **Count the rules you changed and
+> count the assertions you added.**
+>
+> ### Mutation-runner guards — all three failures report *success* without them
+>
+> | failure | symptom | guard |
+> |---|---|---|
+> | replacement == original | a control wearing a mutant's name | `NOT-APPLIED (no-op)` |
+> | anchor matches nothing (`cargo fmt` reflow) | mutant never applied | `NOT-APPLIED (count=0)` |
+> | anchor matches twice (duplicated fan-out code) | **mutates the wrong function** | `NOT-APPLIED (count=2)` |
+>
+> The third bit this wave: `sweep_with` and `tier1_sweep_with` share their clamp/chunk lines, so
+> two mutants had scored KILLED against code they never touched. **A mutation score is only as
+> good as the diff actually applied.**
 >
 > ### 042 c7: tier 1 runs end to end, and fast enough
 >
