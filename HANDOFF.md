@@ -549,6 +549,23 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
+> **The verifier's message decoded**, so the next wave starts from fact rather than the wording:
+> `require_ty(f, a, from, types, "cast source", …)` in `chiero-cir/src/verify.rs:1169` formats
+> `"{what} operand is {got}, declared {want}"` with **`got` = the operand value's registered
+> type** and **`want` = the cast's declared `from`**. So the value really is `Int(16)` while the
+> cast says it takes `Int(32)`: something has *already* narrowed the builtin's result before the
+> explicit cast is applied, and the explicit cast then re-narrows from the original width.
+>
+> That points at a double conversion — sema's implicit conversion on the cast's operand being
+> lowered by the typed-AST walk, and then the AST `Cast` arm converting again from the
+> pre-conversion type. Why a call to an *ordinary* declared function does not hit the same thing
+> is the question to answer first; `long f(int x){ return (long) g(x); }` with `extern int g(int)`
+> is clean, and diffing those two CIRs is the shortest path.
+>
+> **To see the CIR you must first stop 015 §7 discarding it** — the function is refused, so
+> `lower_maybe` returns `None` and there is nothing to print. Temporarily skip the truncate at
+> `chiero-lower/src/lib.rs:1209` and dump both reproducers.
+>
 > **Narrowed, and one hypothesis already refuted.** An *implicit* conversion is fine
 > (`unsigned short r = __builtin_ctz(x);` is clean); only an explicit cast fails, in **both**
 > directions — narrowing to `unsigned short` and widening to `long`. The obvious explanation was
