@@ -549,7 +549,36 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
-> ### 🚧 BLOCKING (2026-08-04): builtin **signatures** are now required, not optional
+> ### 📍 WHERE THE BUILTIN WORK STANDS (46e6f3d)
+>
+> `builtin_signature` in sema is a per-name table of **measured** return types, interned
+> *unprototyped* so nothing is claimed about parameters. A name absent from it keeps `Ty::Error`
+> and lowers to an opaque effect — the floor, and the honest answer until someone measures it.
+> A made-up name in `unmodeled_builtin.rs` pins that, so the table cannot drift into guesses.
+>
+> Measured so far (gcc 13.3.0, `_Generic` over the call): `ctz`/`clz`/`popcount`/`ffs` + `l`/`ll`
+> forms and `constant_p` → `int`; `expect` → `long`; `bswap16/32/64` → unsigned at width;
+> `ia32_rdpmc`, `ia32_rdtsc` → `unsigned long long`; `alloca` → `void *`.
+>
+> **Verified by probe after that commit:**
+>
+> | shape | result |
+> |---|---|
+> | `(unsigned short) __builtin_ia32_ptestmd512(a,b,1)` — the AVX *mask* shape | ✅ lowers |
+> | `__builtin_ia32_rdtsc()` | ✅ lowers |
+> | `v16 f(…) { return __builtin_ia32_paddd512(a,b); }` — a **vector-returning** intrinsic | ❌ `copy source must be pointer-typed, got Int(32)` |
+>
+> The mask shape was the 29-of-35 cause and is gone. What remains is a builtin whose value is an
+> **aggregate**: the opaque's result is a scalar fallback where the return needs a memory copy.
+>
+> ⏭️ **NEXT, and scope it before starting:** the `__builtin_ia32_*` vector family is hundreds of
+> names, so a hand-measured row each is not the answer. Decide between (a) signatures only for
+> the ones VPP actually reaches — a subagent enumeration was in flight for exactly this, and its
+> count should drive the call — or (b) teaching the opaque lowering to produce an aggregate
+> result when the context needs one, which fixes the whole family at once but needs the type to
+> come from somewhere. Do not hand-write hundreds of rows.
+>
+> ### 🚧 SUPERSEDED (kept for the refuted approaches): builtin signatures required
 >
 > Tier 1/2 of the plan below were "nice to have". They are now the blocking item, because every
 > remaining `not-run` traces to one fact: **an unmodeled builtin's value has no type.**
