@@ -170,14 +170,15 @@ fn a_type_is_named_using_the_targets_widths() {
     );
 
     // And unchanged on the default target, where 32 bits is `int`.
-    let msgs = harness::parse_allowing_diagnostics(
-        "int a[3] = \"xy\";\n",
-        TargetConfig::x86_64_linux(),
-    )
-    .analysis
-    .diagnostics
-    .iter()
-    .map(|d| d.message.clone())
-    .collect::<Vec<_>>();
-    assert!(msgs.iter().any(|m| m.contains("array of `int`")), "{msgs:?}");
+    let msgs =
+        harness::parse_allowing_diagnostics("int a[3] = \"xy\";\n", TargetConfig::x86_64_linux())
+            .analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>();
+    assert!(
+        msgs.iter().any(|m| m.contains("array of `int`")),
+        "{msgs:?}"
+    );
 }

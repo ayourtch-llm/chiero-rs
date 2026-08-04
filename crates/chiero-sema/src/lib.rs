@@ -6995,17 +6995,45 @@ impl Cx<'_> {
                 // **Named by width and sign**, because there is no type printer in this crate
                 // and gcc's sentence needs the element: `int`, `char`, `unsigned char`. The
                 // three the rule is about are the ones a reader will meet.
+                // **Named against the target's widths, not fixed ones.** `int` is 16 bits on
+                // some targets and `long` is 32 on others, so a table keyed on 32 = `int`
+                // reports a type the source does not contain. Widest-first, because several
+                // C types share a width on any given target (`long` and `long long` on LP64)
+                // and the narrowest match is the one a reader will have written.
+                let sizes = &self.target.sizes;
                 let name = match self.out.types[elem.0 as usize] {
-                    Ty::Int { signed, bits } => match (signed, bits) {
-                        (true, 8) => "char",
-                        (false, 8) => "unsigned char",
-                        (true, 16) => "short",
-                        (false, 16) => "unsigned short",
-                        (true, 32) => "int",
-                        (false, 32) => "unsigned int",
-                        (true, _) => "long",
-                        (false, _) => "unsigned long",
-                    },
+                    Ty::Int { signed, bits } => {
+                        let bytes = u64::from(bits / 8);
+                        // **Exact match, `int` first.** Several C types share a width on any
+                        // given target — `short` and `int` are both 2 bytes where `int` is
+                        // 16-bit, `long` and `long long` are both 8 on LP64 — and a width
+                        // cannot tell them apart. Ties resolve to `int`, the one a reader is
+                        // likeliest to have written; naming is a genuine approximation here
+                        // because sema keeps no spelling for a type.
+                        let base = if bytes == sizes.int_ {
+                            "int"
+                        } else if bytes == 1 {
+                            "char"
+                        } else if bytes == sizes.short_ {
+                            "short"
+                        } else if bytes == sizes.long_ {
+                            "long"
+                        } else if bytes == sizes.long_long {
+                            "long long"
+                        } else if bytes < sizes.int_ {
+                            "short"
+                        } else {
+                            "long long"
+                        };
+                        match (signed, base) {
+                            (true, b) => b,
+                            (false, "char") => "unsigned char",
+                            (false, "short") => "unsigned short",
+                            (false, "int") => "unsigned int",
+                            (false, "long") => "unsigned long",
+                            (false, _) => "unsigned long long",
+                        }
+                    }
                     _ => "that type",
                 };
                 self.error(
