@@ -584,3 +584,44 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
         }
     }
 }
+
+/// **A gcc warning is not gcc accepting.** `gcc_outcome` reads the exit status, so a file gcc
+/// compiled *with warnings* counted as clean and every chiero diagnostic on it was filed as an
+/// over-rejection. Two of the second sweep's findings are exactly that: VPP redefines
+/// `MFD_CLOEXEC` and `ELF_NOTE_ABI` non-identically, which C 6.10.3p2 makes a constraint
+/// violation. gcc warns, chiero errors — **both diagnosed it**, and the sweep called it a
+/// chiero defect.
+///
+/// The distinction is worth a bucket of its own because the two demand opposite work: an
+/// over-rejection is a bug to fix in chiero, a severity mismatch is a policy question about
+/// warning levels.
+#[test]
+fn a_gcc_warning_is_distinguished_from_gcc_silence() {
+    // gcc said nothing and chiero complained: chiero is wrong.
+    assert_eq!(
+        classify(&Outcome::Clean, &d("signed overflow")),
+        Bucket::Finding
+    );
+
+    // gcc warned and chiero complained: they agree on the code, not on the severity.
+    assert_eq!(
+        classify(&Outcome::Warned("redefined".into()), &d("redefinition of macro `X`")),
+        Bucket::SeverityMismatch
+    );
+
+    // gcc warned and chiero said nothing: chiero missed what gcc saw. A warning is a
+    // diagnostic, so this must not be filed as agreement.
+    assert_eq!(
+        classify(&Outcome::Warned("redefined".into()), &Outcome::Clean),
+        Bucket::Miss
+    );
+
+    // And a warning still means the file compiled, so the parser was handed it.
+    let v = Verdict {
+        path: PathBuf::from("t.c"),
+        bucket: Bucket::SeverityMismatch,
+        gcc: Outcome::Warned("w".into()),
+        chiero: d("sema: x"),
+    };
+    assert_eq!(coverage(&[v]).preprocessed, 1);
+}
