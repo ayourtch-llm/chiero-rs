@@ -492,11 +492,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > ### 🎯 WHERE THINGS STAND
 >
 > **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
-> full VPP build: **1871 translation units, 1856 clean (99.2%)**, 15 findings over 11 kinds.
+> full VPP build: **1871 translation units, 1861 clean (99.5%)**, 10 findings over 9 kinds.
 >
-> Wave 479 cleared the two largest kinds — 11 `a cast names a scalar type or void` (GNU
-> cast-to-union) and 6 `makes a pointer from an integer` (a null pointer constant reaching an
-> array-typed parameter). Both confirmed by cache-cold corpus runs; nothing new appeared.
+> Wave 479 cleared four kinds, each confirmed by its own cache-cold corpus run, none of which
+> introduced a finding: 11 `a cast names a scalar type or void` (GNU cast-to-union), 6 `makes a
+> pointer from an integer` (a null pointer constant reaching an array-typed parameter), 3
+> `expected a type specifier` (`__attribute__ ((fallthrough));` as a statement) and 2
+> `comparison between a pointer and an integer` (`p > 0` is pedantic-only).
+>
+> **What remains is 1 sema site and 8 singletons.** The sema site is the array-parameter
+> adjustment — see the ⚠️ backlog note. The singletons have never been examined; each is one
+> finding, and on this wave's evidence each is as likely to be an over-rejection as a real
+> defect. Read the site before characterising any of them.
 >
 > ### 📌 METHOD NOTE from wave 479: the message kind is not the finding
 >
