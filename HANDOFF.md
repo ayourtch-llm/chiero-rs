@@ -604,7 +604,48 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    strictly better) and timings were again unchanged. It is not the hot spot.
 > 3. Calls are **linear**: 1 function with 250/500/1000 call sites costs 3/10/20 ms.
 >
-> ⏭️ **Where to look next.** The cost is inside lowering a *body*, is ~3 ms for `return x + 1;`
+> ### 🔬 CALLGRIND, first run (2026-08-04) — trustworthy parts and a trap
+>
+> `valgrind --tool=callgrind` on 500 trivial functions, 6.35 G instructions total.
+>
+> **Confirmed:** `lower_tu` is **99.31 % inclusive**, so the earlier phase timing was right and
+> lowering is the cost. `chiero_lower`'s own **self** cost is ~0.01 % — all of it is in callees.
+>
+> **The self-cost profile is hashing and allocation, not algorithms:**
+>
+> ```
+> 590 M (9.3%)  core::hash::sip::Hasher::write
+> 375 M (5.9%)  _int_free          158 M (2.5%)  _int_malloc
+> 282 M (4.5%)  malloc             185 M (2.9%)  free
+> 386 M (6.1%)  Cx::declare_ordinary   (incl. a linear scan via slice/iter/macros.rs)
+> ~337 M (5.3%) hash_one::<&chiero_ast::DeclId>  (three entries)
+> 122 M (1.9%)  Cx::intern_tagged
+> ```
+>
+> ⚠️ **Do not trust the function names.** `declare_ordinary` and `intern_tagged` exist **only in
+> chiero-sema**, and lowering never constructs a sema `Cx` — `lower_tu` takes `&Analysis`. Release
+> builds fold identical functions, so these are almost certainly *other* code wearing a merged
+> symbol. The **file** attributions are the real signal: sip hashing, `slice/iter/macros.rs`
+> scans, and malloc/free traffic.
+>
+> ⏭️ **Next step, and do this before theorising further: re-profile a build with folding and
+> inlining off**, so the symbols mean something:
+>
+> ```
+> RUSTFLAGS="-C codegen-units=1 -C lto=off -C inline-threshold=0 -C debuginfo=2" \
+>   cargo build --release -p xtask
+> ```
+>
+> A debug build also works and is more trustworthy still, just slower under valgrind — use 250
+> functions rather than 500 if so.
+>
+> **The lead from the trustworthy half:** something on the per-body path is doing a great deal of
+> hashing against `DeclId`-keyed maps and allocating heavily. `Analysis::ty_of_decl` is an
+> `IndexMap<DeclId, TyId>` lookup, which is O(1) but hashed, so a *count* explosion rather than a
+> per-lookup cost is what to look for — and remember the measured shape: cost per body is
+> proportional to the module's function count but flat within a run.
+>
+> ⏭️ **Superseded note.** The cost is inside lowering a *body*, is ~3 ms for `return x + 1;`
 > at F=1000, and scales with F. Something on the per-expression or per-statement path consults
 > something module-sized. `sym()`/`text()` were checked and are O(1) indexed lookups. A profiler
 > would settle it in minutes. Neither `perf` nor `gdb` nor `valgrind` is installed here, which is
