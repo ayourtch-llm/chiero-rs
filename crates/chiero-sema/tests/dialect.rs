@@ -1181,3 +1181,65 @@ fn a_statement_expression_is_an_lvalue() {
         );
     }
 }
+
+/// **A null pointer constant reaches a parameter declared as an array.**
+///
+/// `clib_socket_sendmsg (cs, &msg, sizeof (msg), 0, 0)` — the fourth parameter is `int fds[]`,
+/// and `0` is a null pointer constant, so gcc compiles it silently in **both** modes. chiero
+/// said "passing an argument makes a pointer from an integer without a cast". All 6 of the
+/// remaining findings of that kind are this one shape, across `vppinfra/socket.h`'s
+/// `clib_socket_sendmsg`/`recvmsg`, `vlib_register_errors` (`char *error_strings[]`,
+/// `vlib_error_desc_t counters[]`) and `vlib_pci_device_open` (`pci_device_id_t ids[]`).
+///
+/// **The handoff carried this as a severity question — "gcc warns" — and that was the wrong
+/// diagnosis.** gcc does warn about `g(1)` and errors on it under `-pedantic-errors`; it says
+/// nothing at all about `g(0)`. The queue entry was written from the *kind* of the message
+/// rather than from the sites, and the sites all pass `0`.
+///
+/// The cause is C 6.7.6.3p7: a parameter declared "array of T" is adjusted to "pointer to T".
+/// chiero keeps the array type — deliberately, and `compatible` normalises pointer and array on
+/// both sides for exactly that reason — but `assignable`'s null-pointer-constant arm asked only
+/// about `Ty::Ptr`, so the one rule that tests the destination's *kind* rather than its pointee
+/// fell through. See the backlog note in HANDOFF §9 on adjusting the parameter type properly.
+#[test]
+fn a_null_pointer_constant_reaches_an_array_typed_parameter() {
+    for src in [
+        // The three real spellings: unsized, sized, and an array of pointers.
+        "void g(int p[]);\nvoid f(void){ g(0); }\n",
+        "void g(int p[4]);\nvoid f(void){ g(0); }\n",
+        "void g(char *p[]);\nvoid f(void){ g(0); }\n",
+        // The `clib_socket_sendmsg` shape, with the array parameter in the middle.
+        "typedef struct { int x; } sock_t;\n\
+         int send(sock_t *s, void *m, int len, int fds[], int nfds);\n\
+         int f(sock_t *s, void *m){ return send(s, m, 4, 0, 0); }\n",
+        // A pointer parameter already worked, and must keep working.
+        "void g(int *p);\nvoid f(void){ g(0); }\n",
+        // An explicit `(void *)0` reaches it through the pointee arm, not this one.
+        "void g(int p[]);\nvoid f(void){ g((void *)0); }\n",
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(src, dialect),
+                Vec::<String>::new(),
+                "gcc compiles this in both modes: {src}"
+            );
+        }
+    }
+
+    // **`1` is not a null pointer constant** (C 6.3.2.3p3), and this is the half the fix must
+    // not take with it. gcc warns under `gnu11` and errors under `-pedantic-errors`; chiero
+    // calibrates constraint violations to the latter, so it reports in both.
+    for src in [
+        "void g(int p[]);\nvoid f(void){ g(1); }\n",
+        "void g(int *p);\nvoid f(void){ g(1); }\n",
+        "void g(int p[]);\nvoid f(int n){ g(n); }\n",
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(src, dialect),
+                vec!["passing an argument makes a pointer from an integer without a cast".to_string()],
+                "only `0` is the null pointer constant: {src}"
+            );
+        }
+    }
+}
