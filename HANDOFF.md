@@ -549,7 +549,42 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
-> ### 📍 WHERE THE BUILTIN WORK STANDS (46e6f3d)
+> ### 📍 WHERE THE BUILTIN WORK STANDS (9f7e575)
+>
+> `crates/chiero-sema/src/builtins.rs` is **generated** — 3196 measured return types, from a
+> sweep whose method is recorded in that file's header. Source TSV: `/tmp/bi/builtin_types.tsv`
+> (3278 rows, name/files/occurrences/return/params/flags/notes). **If that scratch file is gone,
+> the sweep must be redone before editing the table** — do not hand-patch rows into it.
+>
+> Verified after the commit: the AVX mask shape, vector-returning intrinsics
+> (`__builtin_ia32_paddd512_mask`), `ia32_rdpmc`, and `void (void)` builtins like `ia32_pause`
+> all lower clean.
+>
+> ### ⏭️ TWO GAPS LEFT, both known and neither hidden
+>
+> **(1) The type-generic families are still opaque — and they are VPP's own code.** 46 names
+> carry no constant signature because their result is the *pointee's* type, resolved per call
+> site: `__atomic_load_n(T*, int) -> T` with qualifiers stripped, the
+> `__atomic_{add,sub,and,or,xor,nand}_{fetch,}` family, `__atomic_exchange_n`,
+> `__atomic_compare_exchange{,_n} -> _Bool`, and the `__sync_*` equivalents. Measured rules are
+> in the subagent report and reproduced in the TSV's notes column.
+>
+> These are the ones VPP writes directly — `__atomic_store_n` in 38 files, `__atomic_load_n` in
+> 32 — where the 3196 in the table come almost entirely from gcc's headers. **This is the
+> largest remaining gap and it needs per-call resolution in sema, not a table.**
+>
+> **(2) The prefix exemption swallows genuine undeclared names.** sema exempts anything matching
+> `__builtin_*`/`__atomic_*`/`__sync_*` from "was not declared". Ten such names in VPP's
+> compilation are **not builtins at all**: `__atomic_wide_counter` is a glibc *struct type*, and
+> `__atomic_load_ptr`/`_tmp`, `__atomic_store_ptr`/`_tmp`, `__atomic_exchange_ptr`/`_tmp`/`_val`,
+> `__atomic_compare_exchange_ptr`/`_tmp` are macro-internal identifiers. A typo in that namespace
+> is therefore silent.
+>
+> Now that a measured table exists the exemption could be narrowed to "present in the table, or
+> in the type-generic list" and everything else reported. **Needs its own RED** — it turns
+> silence into diagnostics, so it must be measured against the corpus gate before landing.
+>
+> ### 📍 SUPERSEDED — where the builtin work stood at 46e6f3d
 >
 > `builtin_signature` in sema is a per-name table of **measured** return types, interned
 > *unprototyped* so nothing is claimed about parameters. A name absent from it keeps `Ty::Error`
