@@ -458,3 +458,45 @@ fn only_the_silently_accepted_escapes_are_a_pedantic_rule() {
         }
     }
 }
+
+/// **A GNU extension is supported *and* reported under the strict dialect.**
+///
+/// The first strict-dialect sweep found **104 misses** — files `gcc -pedantic-errors` refuses
+/// and chiero accepts in silence. 100 of them are `__int128`, reached through
+/// `vppinfra/types.h:28`. No `--gnu` sweep could ever have shown these, because the sweep ran
+/// permissive on both sides; this class was structurally invisible for six rounds.
+///
+/// 013's construct table lists `__int128` as **required** at VPP scale, so support stays. The
+/// wave-314 calibration says the default dialect answers `-pedantic-errors`, so it is also
+/// reported there — exactly the arrangement `\e` now has.
+#[test]
+fn an_int128_is_supported_and_reported_under_the_strict_dialect() {
+    let src = "__int128 wide;\nunsigned __int128 uwide;\n";
+    assert!(
+        sema_messages(src, Dialect::pedantic())
+            .iter()
+            .any(|m| m.contains("__int128")),
+        "`-pedantic-errors` refuses it, so the calibration default reports it"
+    );
+    assert_eq!(
+        sema_messages(src, Dialect::gnu()),
+        Vec::<String>::new(),
+        "gnu11 accepts it silently"
+    );
+
+    // **The type still works in both dialects.** Reporting an extension must not stop
+    // supporting it — 013 calls `__int128` required, and a report that broke `sizeof` would
+    // trade 100 misses for a defect. The value is asserted because a message-only test cannot
+    // see a type quietly becoming something else.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages(
+                "_Static_assert(sizeof(__int128) == 16, \"still 128 bits\");\n",
+                dialect
+            )
+            .iter()
+            .any(|m| m.contains("static assertion failed")),
+            "the extension keeps working while being reported"
+        );
+    }
+}
