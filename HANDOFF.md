@@ -487,184 +487,66 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 466) — 1683 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 478) — 1690 tests, 4 ignored, M1 268/268 by contract
 >
-> ### 🎯 FULL VPP SWEEP — 1552 files, four rounds
+> ### 🎯 WHERE THINGS STAND
+>
+> **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
+> full VPP build: **1871 translation units, 1839 clean (98.3%)**, 32 findings over 13 kinds.
 >
 > ```
-> cargo run --release -p xtask -- sweep --tree <vpp>/src \
->     -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11 --gnu
+> cd <build-dir>            # cmake -G Ninja -DCMAKE_C_COMPILER=<shim> <vpp>/src
+> CCACHE_DISABLE=1 CHIERO_REAL_CC=gcc ninja -j 12
+> cargo run --release -p xtask -- cc-report --tree <build-dir>
 > ```
 >
-> | round | findings | agree | coverage | dominant kind, and what it was |
-> |---|---|---|---|---|
-> | 1 | 884 | 127 | 99.4% | **871** `1 << 31` — real defect |
-> | 2 | 879 | 132 | 99.4% | **867** inner-block declaration escaping — real defect |
-> | 3 | 755 | 256 | 99.5% | **735** `return void_expr;` in a `void` fn — pedantic |
-> | 4 | 60 | 951 | 99.5% | no lid left — a genuine long tail |
-> | 5 | **49** | **962** | 99.5% | tail confirmed flat: 8, 5, 5, 4, 3, 3, 2 |
+> ⚠️ **`CCACHE_DISABLE=1` is mandatory.** VPP's cmake wraps the compiler in ccache; a warm cache
+> serves the object and the compiler — hence the observer — is never invoked. A "fresh" build
+> then reports *3 translation units observed* and looks like a catastrophic regression. Cost is
+> ~1s per TU, roughly doubling build time.
 >
-> **misses: 0 throughout.** 528 tool gaps (missing generated `.api` headers — widen `gen/`).
+> ### The remaining queue (measured, largest first)
 >
-> **Round 4 is the milestone: 951 of the 1011 files gcc accepted now analyse completely clean**,
-> and 0 severity mismatches. The remaining 60 are a long tail of distinct kinds, largest 11 —
-> no dominant category is hiding anything any more. Top of the queue:
->
-> | n | kind | example |
+> | n | kind | note |
 > |---|---|---|
-> | 8 | passing an argument from an incompatible pointer type | `plugins/ioam/analyse/ip6/node.c:442` |
-> | 5 | `clib_crc32c_with_init` was not declared | `plugins/cnat/cnat_node.h:226` |
-> | 5 | unknown escape sequence `\%` | `plugins/perfmon/arm/bundle/branch_pred.c:95` |
-> | 4 | passing an argument makes a pointer from an integer | `plugins/memif/socket.c:98` |
-> | 3+3 | conflicting types for `clib_bihash_add_with_overwrite_cb_*` | `vppinfra/bihash_template.c:299` |
-> | 3 | a cast names a scalar type or `void` | `vnet/ipsec/ipsec_output.h:23` |
+> | 11 | `a cast names a scalar type or void` | **next up**, unexamined |
+> | 6 | `passing an argument makes a pointer from an integer` | gcc *warns*; severity question |
+> | 3 | `parse: expected a type specifier` | check in `--gnu` first (see below) |
+> | 2 | `assignment to an array` | |
+> | 2 | `comparison between a pointer and an integer` | |
+> | 1 each | escape `\\(`, signed overflow, incomplete deref, `void` value used, duplicate decl, `++` on non-scalar, 2× macro redefinition | |
 >
-> ⚠️ **The `ioam` reduction is unsolved.** The obvious shape —
-> `int mine(void*, u8*, unsigned)` passed where `int (*)(void*, u8*)` is wanted — makes gcc
-> **warn** under `gnu11`, which would classify as `SeverityMismatch`. The sweep reports it as a
-> `Finding` with **0 severity mismatches**, so gcc is *silent* on the real file and the
-> synthetic is not faithful. Reduce from the preprocessed TU before deciding anything.
+> **Method for each**: run gcc in *both* modes on a faithful reduction before deciding whether
+> it is a chiero defect, a calibration question, or a severity mismatch.
 >
-> **Measure each against gcc both ways before touching it** — the four rounds produced two real
-> defects and two calibration questions, and they were indistinguishable until measured.
+> ### What was fixed this stretch, and what each cost
 >
-> ### ⚠️ The oracle must be asked the same question as chiero
->
-> `gcc_args` had two faults that made whole classes of defect **unobservable**, not merely
-> missed. Both were found by reading it, after one conclusion too many rested on it:
->
-> * **`-w` suppressed every gcc warning**, so `Outcome::Warned` could never fire and every
->   `severity mismatch: 0` was a constant dressed as a measurement. `vppinfra` reports 1 now.
->   The suppression was justified by a comment that had been falsified two waves earlier, when
->   warnings stopped being `Finding`s and got a bucket. **A comment describing a trade-off is
->   only as current as the design it describes** — and I read that one while adding the bucket.
-> * **The dialect reached chiero only**, so a default sweep compared strict chiero against
->   permissive gcc, and a `--gnu` sweep could never show chiero being too *permissive* under the
->   strict dialect. `"\e"` lived in that blind spot — silent in both modes where
->   `-pedantic-errors` refuses — and was found by reading the escape table, not by any sweep.
->
-> **`misses: 0` was measured under `--gnu` only**, and the first strict-dialect sweep found
-> **104 misses** — code `gcc -pedantic-errors` refuses and chiero accepted in silence:
->
-> | n | kind |
-> |---|---|
-> | 100 | `ISO C does not support '__int128' types` — **fixed**: reported, support unchanged |
-> | 4 | `ISO C forbids an empty translation unit` (C 6.9p1) — **fixed**: reported under strict |
->
-> Both follow the same pattern as `\e`: **accept the extension, report it under the strict
-> dialect.** That pattern is the general answer for a GNU extension — accepting silently in both
-> modes is what made 104 files invisible, and refusing outright would break VPP, which 013 calls
-> required.
->
-> **Third strict sweep, measured: `misses: 0`.** The class that six `--gnu` rounds could not see
-> is closed.
->
-> ### ⏭️ The one strict finding left: gcc exempts system headers from `-pedantic`
->
-> ```
-> 1  sema: ISO C does not support `__int128` types
->    e.g. /usr/include/linux/types.h:12:1
-> ```
->
-> chiero reports it; `gcc -pedantic-errors` does not, because **a diagnostic from a system
-> header is suppressed** — that is gcc behaviour, not a chiero bug in the rule itself. Closing
-> it needs "is this span in a system header?" plumbed from `chiero-pp` (which knows
-> `system_paths`) to sema, which is a cross-crate change rather than a one-line gate. Not
-> started; it is the whole of the strict-dialect queue.
->
-> **Run both dialects.** `--gnu` finds chiero being too strict; the default finds it being too
-> permissive. Six rounds of the first said nothing about the second.
->
-> ### ⚠️ A verdict that is printed rather than earned
->
-> Two in one wave, and they are the same bug:
->
-> * **`-w` in `gcc_args`** made `Bucket::SeverityMismatch` unreachable, so `severity mismatch:
->   0` was a constant.
-> * **`gates.sh` ended in an unconditional `echo gates-ok`** — it said "ok" while three tests
->   failed. The counts line beside it was real and is what I had been reading, but the script's
->   own verdict meant nothing. It now exits non-zero and names what failed.
->
-> **Ask of any green signal: what input would make it red?** If there is none, it is decoration.
->
-> ### ⚠️ A harness has a dialect whether or not it says so
->
-> Three harnesses analysed with the default, which stopped being neutral once the strict dialect
-> began reporting extensions. They did **not** all want the same answer:
->
-> * the vendored VPP corpus and the lowering fixtures are **GNU C** — their clean-sema
->   assertions exist so the stage under test is not graded on a tree sema already rejected;
-> * the **divergence** harness must stay strict, because its subject is a diagnostic sema is
->   expected to emit, and several are exactly the rules `--gnu` gates.
->
-> A blanket conversion of all seven call sites broke the third. **One change, several sites,
-> not all alike.**
->
-> ### 🆕 `Outcome::Warned` / `Bucket::SeverityMismatch`
->
-> `gcc_outcome` read the **exit status**, so a file gcc compiled *with warnings* counted as
-> `Clean` and every chiero diagnostic on it looked like an over-rejection. Two findings were
-> that: VPP redefines `MFD_CLOEXEC` (`0x0001U` vs glibc `1U`) and `ELF_NOTE_ABI` (`1` vs
-> `NT_GNU_ABI_TAG`) non-identically — C 6.10.3p2 forbids it, **both compilers were right**.
->
-> * gcc silent + chiero complained → `Finding` (a bug to fix in chiero)
-> * gcc **warned** + chiero complained → `SeverityMismatch` (a warning-level policy question)
-> * gcc **warned** + chiero silent → `Miss` — a warning is a diagnostic
->
-> ### ⚠️ Why that bucket had to exist before the next gate
->
-> The 735 `return` findings split: `return void_expr;` is accepted **silently** by `gnu11`;
-> `return 5;` is **warned** about. Gating the whole rule removes all 735 either way and *looks
-> identical*. But chiero has no warning level, so silencing the value case says nothing where
-> gcc speaks — turning a finding into a **`Miss`**, spending the sweep's strongest claim to buy
-> a number. Only the void-typed half is gated.
->
-> **Before `Warned` existed, "gcc exits zero" and "gcc is silent" were the same observation.**
-> Whenever a gate is proposed, check which of the two it actually rests on.
->
-> ### ⚠️ Test the artefact, not a proxy for it — four layers, four waves
->
-> One problem, found four times, each fix exposing the next. Mutation caught every layer; none
-> was visible by reading:
->
-> | layer | what was wrong | mutant that survived |
+> | fix | cleared | the trap |
 > |---|---|---|
-> | 1 | helper correct and **never called** (`in_system_header`) | filter not applied |
-> | 2 | caller **returns nothing** to observe (`report` printed) | pairing switched off |
-> | 3 | caller's **arguments unchecked** (`report_sections`) | wrong bucket / wrong side |
-> | 4 | caller **free to ignore** the table | `side` hardcoded at the loop |
+> | `-march` reaches `gcc -dM` predefines | ~13 | headers took the scalar branch; findings were accurate about a program no build compiles |
+> | vector compatible across `aligned`/`may_alias` | **1849** | only visible *after* the `-march` fix let SIMD headers compile at all |
+> | `transparent_union` (+ member recorded) | 67 | glibc's socket API, not VPP's code |
+> | `enum E : u8` (C23 underlying type) | 35 | invisible to every sweep — those files were unreachable |
+> | zero-size array, `__int128`, empty TU, `\\e` reported under strict | 104 strict misses | accept the extension, **report it under the strict dialect** |
 >
-> Each time the instinct was "now it is covered", and each time it was covered one level too
-> shallow. **A test should read the artefact the program actually produces** — here
-> `report_lines`, because nothing is downstream of it. Every layer short of that is a proxy,
-> and a proxy can be true while the artefact is wrong.
+> ### ⚠️ Reduce *toward* the real headers, not away
 >
-> The fixture trick that makes it bite: give each side a sentence **only it could produce**
-> (`gcc-only-sentence` vs `chiero-only-sentence`), so a section quoting the wrong side fails on
-> content. A row that merely *exists* proves nothing about which message it took.
+> Three times this stretch a minimal reduction passed while the real code failed:
+> `transparent_union` (needs glibc's attributed declaration), the alignment mismatch (needs
+> `__may_alias__` + `__aligned__(1)`), and the `ioam` pointer case. **A reduction that drops a
+> system header's attributes drops the defect.** Reduce by deleting *code*, not by re-declaring
+> the library.
 >
-> ### 🆕 `CC=` shim — chiero observing a real build (added 2026-08, owner's idea)
+> ### 🆕 Side tables for later stages (owner's constraint: keep it usable, do not just accept)
 >
-> ```
-> CHIERO_REAL_CC=gcc make -j CC=<path>/chiero-cc     # build runs; chiero observes
-> cargo run -p xtask -- cc-report --tree <build-dir>  # read it back
-> ```
->
-> **Why it beats the standalone sweep**: it inherits the build's own `-I` set and `-D`s, and
-> generated headers already exist when included — the root cause of the sweep's **528 of 1552**
-> tool gaps.
->
-> * **Observe, then hand over.** Delegating is a process replacement, so there is no "after".
->   Observing first also records a TU the real compiler then rejects.
-> * **The real compiler's exit status is returned unchanged and every internal failure is
->   swallowed** (`catch_unwind` included). A build that breaks because of the observer stops
->   being run with the observer.
-> * **One `<output>.chiero` sidecar per TU**, keyed on `-o` rather than the source: VPP compiles
->   one `.c` into several objects with different `-march` (060 §4.12), and source-keyed records
->   would overwrite each other **silently**. Fallback `<source>.chiero` when no `-o` (configure
->   probes) or when several sources share one (a link).
-> * Judges in `--gnu` by default — the project is compiling with GNU extensions.
->   `CHIERO_CC_PEDANTIC=1` asks the strict question.
+> * `Analysis::transparent_union_arg(expr)` → `(member index, symbol)`. gcc passes the argument
+>   as the *first* member while the callee sees the union, so "it was allowed" is not enough to
+>   lower it.
+> * `Analysis::pointee_alignment_changes()` → `(expr, from, to)`. **The direction is the
+>   information**: 16→1 is safe, 1→16 is where a misaligned access comes from.
+>   **Not a diagnostic** — measured, gcc is silent in `gnu11`, `-pedantic-errors` *and*
+>   `-Wcast-align=strict`. The strict dialect means gcc-parity (wave 314); this hazard belongs
+>   to a **checker (040)**, chiero's own opinion. The table is what that checker will need.
 >
 > ### 💡 BACKLOG (owner, behind everything else): multi-platform analysis in one run
 >
