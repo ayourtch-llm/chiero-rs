@@ -615,10 +615,17 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > honest):
 >
 > ```
-> 1,519,396,962 (96.65%)  chiero_sema::const_eval (62,500x)
+> 1,519,396,962 (96.65%)  chiero_sema::const_eval   <- INCLUSIVE
+>       302,000 ( 0.02%)  chiero_sema::const_eval   <- self
 > ```
 >
-> **62,500 = 250².** `chiero-lower`'s `const_of` (lib.rs:5965) calls `chiero_sema::const_eval`
+> ⚠️ **Read the inclusive figure, and only that.** `const_eval`'s own body is 0.02%; all of the
+> cost is in what it calls. An earlier version of this note said "const_eval (62,500x)" — that
+> count belongs to a *callee* (the per-item declaration work, 250 calls x 250 items), not to
+> `const_eval`, which is entered roughly 500 times. The conclusion is unchanged; the number was
+> misattributed.
+>
+> `chiero-lower`'s `const_of` (lib.rs:5965) calls `chiero_sema::const_eval`
 > per expression; `const_eval` (sema lib.rs:1023) builds a throwaway `Cx` and then does
 > `for &item in ast.items()` — **processing every declaration in the translation unit on every
 > call.** With F functions that is O(F²), which is exactly the measured shape: cost per body
