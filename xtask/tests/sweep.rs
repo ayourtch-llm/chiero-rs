@@ -675,3 +675,44 @@ fn gcc_is_asked_the_same_question_as_chiero() {
         );
     }
 }
+
+/// **A diagnostic from a system header is not the project's defect.** gcc suppresses
+/// `-pedantic` diagnostics originating in a system header, which is why the last strict-dialect
+/// finding was chiero reporting `__int128` inside `/usr/include/linux/types.h` where gcc says
+/// nothing.
+///
+/// Filtered here rather than in sema, which holds no `SourceMap` and so cannot tell which file
+/// a span came from. Recorded as a placement, not a preference: modelling gcc's rule properly
+/// belongs where diagnostics are produced.
+#[test]
+fn a_diagnostic_from_a_system_header_is_suppressed() {
+    use xtask::sweep::in_system_header;
+    let mut map = chiero_span::SourceMap::new();
+    let sys = std::path::PathBuf::from("/usr/include");
+    let user = std::path::PathBuf::from("/home/x/proj");
+
+    let f_sys = map.add_file("/usr/include/linux/types.h", "int a;\n");
+    let f_user = map.add_file("/home/x/proj/main.c", "int b;\n");
+    let at = |f: chiero_span::FileId| {
+        let start = map.file(f).start_pos.0;
+        chiero_span::Span::new(
+            chiero_span::BytePos(start),
+            chiero_span::BytePos(start + 3),
+            chiero_span::ExpnCtx(0),
+        )
+    };
+
+    assert!(in_system_header(&map, at(f_sys), &[sys.clone()]));
+    assert!(!in_system_header(&map, at(f_user), &[sys.clone()]));
+
+    // **A user path that merely starts with the same characters is not inside it.** With a
+    // string prefix test, `/usr/includes-mine/x.h` would be swallowed; the comparison is over
+    // path components.
+    let f_near = map.add_file("/usr/includes-mine/x.h", "int c;\n");
+    assert!(!in_system_header(&map, at(f_near), &[sys.clone()]));
+
+    // No system paths configured means nothing is suppressed — a sweep run without gcc must
+    // not silently drop findings.
+    assert!(!in_system_header(&map, at(f_sys), &[]));
+    let _ = user;
+}
