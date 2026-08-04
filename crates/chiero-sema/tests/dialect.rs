@@ -293,3 +293,37 @@ fn returning_a_void_expression_from_a_void_function_is_a_pedantic_rule_only() {
         );
     }
 }
+
+/// **An enumerator folded from a floating constant.** Top of the queue after sweep round 4:
+/// 11 findings through `plugins/wireguard/wireguard_messages.h`, where
+/// `#define WHZ (u32)(1/WG_TICK)` with `WG_TICK 0.01` feeds `REKEY_TIMEOUT_JITTER = WHZ / 3`.
+///
+/// Measured: `gnu11` folds it silently; `-pedantic-errors` says "enumerator value for `X` is
+/// not an integer constant expression", tagged `[-Wpedantic]` — the same sentence chiero
+/// emits. A calibration question, so it is gated rather than fixed.
+///
+/// C 6.7.2.2p2 requires an integer constant expression, and 6.6p6 excludes a cast from a
+/// floating type, so the rule is right about ISO C; gcc's default folds the cast anyway.
+#[test]
+fn an_enumerator_folded_from_a_float_is_a_pedantic_rule_only() {
+    let src = "#define TICK 0.01\n\
+               #define HZ (unsigned)(1/TICK)\n\
+               enum limits { REKEY = 5, JITTER = HZ / 3 };\n\
+               int use(void) { return JITTER; }\n";
+    assert!(
+        sema_messages(src, Dialect::pedantic())
+            .iter()
+            .any(|m| m.contains("integer constant expression")),
+        "the calibration default still reports it"
+    );
+    assert_eq!(sema_messages(src, Dialect::gnu()), Vec::<String>::new());
+
+    // **An enumerator that is not constant at all is still refused in both dialects**, because
+    // gcc refuses it in both too — a variable is not a folding question.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages("int v;\nenum e { A = v };\n", dialect).is_empty(),
+            "a variable in an enumerator is an error under gnu11 as well"
+        );
+    }
+}
