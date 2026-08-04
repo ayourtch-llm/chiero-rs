@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 452) — 1670 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 466) — 1683 tests, 4 ignored, M1 268/268 by contract
 >
 > ### 🎯 FULL VPP SWEEP — 1552 files, four rounds
 >
@@ -642,6 +642,44 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > The fixture trick that makes it bite: give each side a sentence **only it could produce**
 > (`gcc-only-sentence` vs `chiero-only-sentence`), so a section quoting the wrong side fails on
 > content. A row that merely *exists* proves nothing about which message it took.
+>
+> ### 🆕 `CC=` shim — chiero observing a real build (added 2026-08, owner's idea)
+>
+> ```
+> CHIERO_REAL_CC=gcc make -j CC=<path>/chiero-cc     # build runs; chiero observes
+> cargo run -p xtask -- cc-report --tree <build-dir>  # read it back
+> ```
+>
+> **Why it beats the standalone sweep**: it inherits the build's own `-I` set and `-D`s, and
+> generated headers already exist when included — the root cause of the sweep's **528 of 1552**
+> tool gaps.
+>
+> * **Observe, then hand over.** Delegating is a process replacement, so there is no "after".
+>   Observing first also records a TU the real compiler then rejects.
+> * **The real compiler's exit status is returned unchanged and every internal failure is
+>   swallowed** (`catch_unwind` included). A build that breaks because of the observer stops
+>   being run with the observer.
+> * **One `<output>.chiero` sidecar per TU**, keyed on `-o` rather than the source: VPP compiles
+>   one `.c` into several objects with different `-march` (060 §4.12), and source-keyed records
+>   would overwrite each other **silently**. Fallback `<source>.chiero` when no `-o` (configure
+>   probes) or when several sources share one (a link).
+> * Judges in `--gnu` by default — the project is compiling with GNU extensions.
+>   `CHIERO_CC_PEDANTIC=1` asks the strict question.
+>
+> ### ⚠️ Read `BothRefused` pairs in `--gnu`, not under the strict dialect
+>
+> Under `-pedantic-errors` gcc's **first** message is usually the pedantic one, which masks its
+> real complaint and makes an agreeing pair look like a disagreement.
+>
+> Worked example: 3 files paired as `gcc: __int128 || parse: expected a type specifier`, which
+> reads as a chiero parse defect. In `--gnu` the same files pair as
+> `gcc: unknown type name 'mc_main_t' || parse: expected a type specifier` — **both failing on
+> the same missing type**. No defect. Each side reports one message; whichever mode makes that
+> message the *substantive* one is the mode to read.
+>
+> Full-tree strict `BothRefused` (1018 files): 949 genuine `__int128` agreement, 55 paired with
+> the stray-semicolon rule, 3 the above, and single rows for the macro-redefinition and
+> empty-TU cases.
 >
 > ### ⚠️ `BothRefused` is not agreement — and it is the biggest bucket
 >
