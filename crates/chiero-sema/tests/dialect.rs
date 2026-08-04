@@ -211,3 +211,48 @@ fn a_type_is_named_using_the_targets_widths() {
         "{msgs:?}"
     );
 }
+
+/// **A declaration in an inner block does not outlive it** (C 6.2.1p4).
+///
+/// The dominant finding of the second full-tree sweep — 867 of 879 — all reaching
+/// `vlib/node_funcs.h:661`, where `vlib_process_yield` does exactly this:
+///
+/// ```c
+/// uword r;
+/// r = clib_setjmp (...);
+/// if (r == ...) { vlib_process_restore_t r = { ... }; ... }
+/// return r;                 /* the outer `uword r` */
+/// ```
+///
+/// chiero resolved the `return` to the *inner* struct and reported "a structure or union is
+/// copied only from its own type". The shape is ordinary C, and shadowing a name in a nested
+/// block is common enough that this reached 867 translation units through one header.
+#[test]
+fn an_inner_block_declaration_does_not_escape_its_block() {
+    let src = "struct S { int a; };\n\
+               unsigned long f(unsigned long x) {\n\
+               \x20 unsigned long r = x;\n\
+               \x20 if (r) { struct S r = { .a = 2 }; (void)r.a; }\n\
+               \x20 return r;\n\
+               }\n";
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(sema_messages(src, dialect), Vec::<String>::new());
+    }
+
+    // **The inner declaration is still in force inside its own block.** A fix that simply
+    // ignored nested declarations would pass the assertion above and break this one: `r.a` is
+    // only valid because the inner `r` is a struct there.
+    assert!(
+        sema_messages(
+            "struct S { int a; };\n\
+             unsigned long g(void) {\n\
+             \x20 unsigned long r = 0;\n\
+             \x20 { struct S r = { .a = 1 }; return r; }\n\
+             }\n",
+            Dialect::pedantic()
+        )
+        .iter()
+        .any(|m| m.contains("structure or union")),
+        "returning the inner struct as `unsigned long` is still wrong"
+    );
+}
