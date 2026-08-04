@@ -120,10 +120,16 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
             );
         }
     }
-    let mut gids: Vec<GlobalId> = Vec::new();
-    let mut gnames: Vec<&str> = Vec::new();
+    // **Sets, not vectors.** These were `Vec` with `contains`, which is O(n^2) — invisible while
+    // a module held dozens of entities. Once 9f7e575 stopped discarding the `always_inline`
+    // wrappers in gcc's x86 headers, a VPP translation unit carries thousands of functions, and
+    // one measured 673 s against ~1 s before. The scaling was the giveaway: 250 functions 303 ms,
+    // 500 850 ms, 1000 3237 ms, with *no calls at all* — so the cost was per function, not per
+    // call site, which ruled out the call-resolution scans that look like the obvious suspect.
+    let mut gids: std::collections::HashSet<GlobalId> = std::collections::HashSet::new();
+    let mut gnames: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for g in &m.globals {
-        if gids.contains(&g.id) {
+        if !gids.insert(g.id) {
             err(
                 out,
                 &anon,
@@ -132,7 +138,7 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
                 format!("{:?} is declared more than once", g.id),
             );
         }
-        if gnames.contains(&&*g.name) {
+        if !gnames.insert(&g.name) {
             err(
                 out,
                 &anon,
@@ -141,12 +147,10 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
                 format!("global `{}` is declared more than once", g.name),
             );
         }
-        gids.push(g.id);
-        gnames.push(&g.name);
         // Rule 7 applies to globals too.
         check_align(&anon, g.align, g.span, out);
     }
-    let mut fnames: Vec<&str> = Vec::new();
+    let mut fnames: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for f in &m.funcs {
         // **No duplicate-*id* check here, and that is not an omission.** The rule above requires
         // `funcs[i].id == FuncId(i)`, so two functions can only share an id if one of them also
@@ -160,7 +164,7 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         //
         // A duplicate *name* is a different matter and is checked: name resolution takes the
         // first, so a `.cir` file naming the other simply calls something else.
-        if fnames.contains(&&*f.name) {
+        if !fnames.insert(&f.name) {
             err(
                 out,
                 f,
@@ -169,7 +173,6 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
                 format!("function `{}` is declared more than once", f.name),
             );
         }
-        fnames.push(&f.name);
     }
 }
 

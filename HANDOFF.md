@@ -573,20 +573,47 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > came back poison — cheap, and wrong. Now they all lower. The work is real work; the question is
 > why it is ~600× and not ~10×.
 >
-> ⏭️ **Investigate before anything else, in this order:**
+> ### 🔬 NARROWED (2026-08-04) — measured, and **two obvious suspects refuted**
 >
-> 1. **Is it lowering or sema?** Time the same TU against 46e6f3d (eight hand-written rows, so
->    most wrappers still discarded) and against 9f7e575. That isolates the new work from a
->    pre-existing hot spot the discarding used to hide.
-> 2. **Look for quadratic behaviour** — 6000 functions is not intrinsically 11 minutes of work.
->    Suspect anything that scans `module.funcs` per function: `callee_of` does a linear
->    `iter().find()` over it per call site, and `declare` does the same
->    `iter().any()` before pushing. With ~6000 functions and several calls each that is
->    ~10⁷–10⁸ string comparisons on `Arc<str>`.
-> 3. **Only then consider not lowering unused `gnu_inline` wrappers.** `extern __inline
->    __attribute__((__gnu_inline__))` emits no out-of-line definition unless called, so lowering
->    all 6000 is work no compiler does. That is a real optimisation, but it is a *scope* change —
->    make it after the constant factor is understood, not instead of understanding it.
+> Scaling on `N` trivial `static int f(int x){ return x+i; }` definitions, timed with the release
+> shim:
+>
+> | N | total | per function |
+> |---|---|---|
+> | 250 | 303 ms | 1.2 ms |
+> | 500 | 850 ms | 1.7 ms |
+> | 1000 | 3237 ms | 3.2 ms |
+>
+> **Per-function cost is proportional to the module's total function count** — so the shape is
+> O(F²) overall. Crucially it is *flat within a run*: instrumenting every 200th function in the
+> N=1000 case gives 591/631/630/602/605 ms per chunk. So nothing *accumulates* as lowering
+> proceeds; each function pays a cost fixed by how many functions exist, which were all
+> registered by the `declare` pass before the loop starts.
+>
+> **Stage timings** (`CHIERO_PHASE_MS`, instrumentation since reverted) at N=1000:
+> `pp=7ms parse=1ms sema=2ms lower=3061ms`. Within lowering: `declare=0ms item=3086ms`,
+> `verify=2ms`, `finish_blocks=128us`, `compute_gcov_lines=187us`. **It is the body walk.**
+>
+> ⛔ **Refuted, do not re-try these:**
+>
+> 1. **The linear scans over `module.funcs`.** `callee_of`, `declare` and three others were
+>    replaced with an `IndexMap<Symbol, FuncId>`; timings were *identical* (410/2941/18197 ms).
+>    Reverted, since it added a field for no measured gain.
+> 2. **`check_module_identity`'s duplicate detection.** It used `Vec::contains` for global ids,
+>    global names and function names — genuinely O(n²). Replaced with `HashSet` (kept: it is
+>    strictly better) and timings were again unchanged. It is not the hot spot.
+> 3. Calls are **linear**: 1 function with 250/500/1000 call sites costs 3/10/20 ms.
+>
+> ⏭️ **Where to look next.** The cost is inside lowering a *body*, is ~3 ms for `return x + 1;`
+> at F=1000, and scales with F. Something on the per-expression or per-statement path consults
+> something module-sized. `sym()`/`text()` were checked and are O(1) indexed lookups. A profiler
+> would settle it in minutes — `perf` is **not installed** on this machine and `gdb` could not
+> attach, which is why this was bisected by hand; installing one is the cheapest next step.
+>
+> **Only after that**, consider not lowering unused `gnu_inline` wrappers. `extern __inline
+> __attribute__((__gnu_inline__))` emits no out-of-line definition unless called, so lowering all
+> 6000 is work no compiler does — a real optimisation, but a *scope* change that would mask
+> whatever is actually quadratic.
 >
 > ⚠️ **Do not revert 9f7e575 to make this go away.** Discarding those functions was the defect;
 > the analysis was silently missing 5973 functions per TU. Slow and correct is recoverable, fast
