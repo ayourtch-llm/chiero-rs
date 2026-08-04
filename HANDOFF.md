@@ -596,6 +596,53 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   `-Wcast-align=strict`. The strict dialect means gcc-parity (wave 314); this hazard belongs
 >   to a **checker (040)**, chiero's own opinion. The table is what that checker will need.
 >
+> ### 📋 THE PLAN (from the 2026-08-04 architecture review) — five commits, green after each
+>
+> **Adjust at declaration, one helper, three call sites.** `adjusted_param_ty(&mut self, TyId)`:
+> `Func → Ptr(t)`, `Array{elem} → Ptr(elem)` (+ bracket quals), else `t`. Called from
+> sema/lib.rs **2647-2681** (the `ps` map, replacing the inline p8 `if`), **2103-2108** (declaration
+> pass → `decl_types`), **2134-2183** (body pass → `values`). The two stores *must* agree: the
+> first is what a call's arguments are checked against, the second is what the body and lower
+> read; D4 above is the measured consequence of their diverging.
+>
+> **At-use was rejected on evidence, not taste:** types are interned, so a parameter's
+> `Array{int,4}` is the *same `TyId`* as a local `int a[4]`'s. `size_of_ty` takes a `TyId` and has
+> no context to compensate with.
+>
+> **One type, the adjusted one — do not add a "declared type" to sema.** chiero-sema has no type
+> printer (its own comment, 7306); the one rule needing a spelling reads the AST (`syn_elem`,
+> 7319). The declared form already lives in `chiero_ast` and is untouched by this.
+>
+> 1. **Refactor + p8 fix.** RED: `sizeof g == 8` for a function-typed parameter. Introduce the
+>    helper with only the existing `Func → Ptr` arm; call it from all three sites. Fixes D4 and
+>    builds the choke point so step 3 is a one-arm diff. Near-zero blast radius.
+> 2. **RED for the array class.** One fixture per component: sema silence for `argv++`,
+>    `ops += i`, `argv = argv + 1`; `sizeof p == 8`; `sizeof q == 8` and `sizeof q[0] == 16` for
+>    `int q[3][4]`; `&p` is `int **`; **a differential fixture that *writes* through the parameter
+>    and reads the caller's array back** — this is the one that pins the 021 aliasing fix and the
+>    one today's read-only fixture cannot see; a `char *argv[]` subscript differential.
+> 3. **GREEN — the flip.** Add the `Array → Ptr` arm. ⚠️ **This is the risky commit**: a one-arm
+>    sema diff whose behavioural reach is every rule that ever saw a parameter's array-ness, plus
+>    a silent change to lower's prologue shape. CIR signatures do NOT change (`cty(Array)` is
+>    already `CTy::Ptr`, lower/lib.rs:1408). Expected corpus delta −3, +0.
+> 4. **Bracket qualifiers — fold into 3, do not ship separately.** `int p[const 4]; p = 0;` is a
+>    gcc error in both modes; today chiero refuses it with the wrong sentence and after step 3 it
+>    goes **silent**. That is the one way this wave can regress against gcc. The parser discards
+>    bracket quals (parse/lib.rs:1928-1950) and its comment saying they "carry no meaning" is now
+>    wrong. `restrict`/`static` recorded, no behaviour.
+> 5. **Cleanup, mutation-arbitrated.** Delete `param_shape`'s Array arm (8131) and `assignable`'s
+>    Array in the null-constant arm (8065) — both become dead compensations. ⚠️ **Leave the
+>    pointee closures** (8046, 6831, 8027, 4978, 4431): they still serve genuine decayed array
+>    *objects*, since chiero does not materialise decay in typed nodes (comment at 4424).
+>
+> ### 🐛 DRIVE-BY (found by the review, own wave): array initializers are under-checked
+>
+> `int a[2] = 0;` — gcc "invalid initializer" in both modes, chiero **silent**. `int a[2] = 1;`
+> draws "initializing or assigning makes a pointer from an integer", where gcc says "invalid
+> initializer". Cause: `check_init` bails on any non-`InitList`, non-string initializer
+> (sema/lib.rs:7380-7382), so it never reaches `assignable`. Unrelated to 316c782, but it means
+> that neighbourhood is under-tested — worth a fixture wave of its own.
+>
 > ### 🧾 BACKLOG (wave 479): the misplaced-`fallthrough` rule — a *known* false acceptance
 >
 > 7ec9de7 made chiero parse `__attribute__ ((fallthrough));` as a statement. It does **not**
@@ -630,8 +677,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > That is two compensations for one missing adjustment, and the second was a live corpus defect
 > for as long as it went unwritten. A third site will eventually be missed the same way.
 >
-> ⚠️⚠️ **UPGRADED: this is not debt, it is a wrong answer.** Measured 2026-08-04, gcc 13.3.0
-> against chiero at a46bf70:
+> ⚠️⚠️⚠️ **A fable architecture review (2026-08-04) found this is worse than a wrong `sizeof`,
+> and produced the implementation plan. Read the plan section below before touching anything.**
+>
+> **The lowering is already executing a wrong program.** `is_aggregate` (lower/lib.rs:4145)
+> matches `Ty::Array`, so an array parameter gets a private slot and a prologue `CopyMem`.
+> `int f(int p[4]){ p[0] = 5; }` writes the **copy**, not the caller's array — every write
+> through an array parameter is silently non-aliasing in 021. For `char *argv[]`
+> (`ArrayLen::Flexible`, size 0) the slot is **1 byte** and `argv[0]` loads 8 bytes from it.
+> Nothing pins this: the only differential fixture with an array parameter
+> (lower/tests/differential.rs:3550) merely *reads*, and a read-only copy has the right contents.
+>
+> **The C 6.7.6.3p8 function→pointer adjustment is itself half-applied, and proves the failure
+> mode.** It exists only in `ty_of_inner`'s `TypeKind::Func` `ps` map (sema/lib.rs:2673-2677).
+> The declaration loop (2103) and body-binding loop (2134) record the *unadjusted* type.
+> Measured: `int f(int g(void)){ sizeof g }` — gcc **8**, chiero ``​`sizeof` applied to a function
+> type``. That is a partial adjustment visible to argument checking and invisible to the body —
+> exactly what a partial p7 fix would reproduce. It settles "where": **all three sites or none.**
+>
+> **Correction to an earlier note in this file:** gcc is *not* silent on `sizeof p`. It warns
+> `-Wsizeof-array-argument`, on by default in **both** modes. chiero's defect is the **value**
+> (16 vs 8), returned with no diagnostic. The value is the non-negotiable part; the warning is a
+> separate rule that could be added later and is the one thing needing the declared spelling.
+>
+> Measured 2026-08-04, gcc 13.3.0, against chiero at a46bf70:
 >
 > | source | gcc gnu11 + pedantic | chiero |
 > |---|---|---|
