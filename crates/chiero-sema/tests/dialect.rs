@@ -748,18 +748,35 @@ fn an_alignment_attribute_does_not_break_pointer_compatibility() {
         assert_eq!(sema_messages(src, dialect), Vec::<String>::new());
     }
 
-    // **A genuinely different element type is still incompatible.** The attributes are
-    // ignored for compatibility; the vector's shape is not.
+    // **The shape is still checked, and each half needs its own row.** `vector_size(16)` of
+    // `long long` against `vector_size(16)` of `int` differs in *both* element and lane count,
+    // so it cannot say which half is doing the work — mutation dropped each in turn and that
+    // single row passed both times. A compound condition needs one fixture per component.
+
+    // Same lanes (2), different element: `long long` against `double`.
     assert!(
         !sema_messages(
-            "typedef long long m128 __attribute__((__vector_size__(16)));\n\
-             typedef int m128i __attribute__((__vector_size__(16), __aligned__(1)));\n\
-             int store(m128i *p);\n\
-             int f(void *p) { return store((m128 *) p); }\n",
+            "typedef long long a2 __attribute__((__vector_size__(16)));\n\
+             typedef double d2 __attribute__((__vector_size__(16), __aligned__(1)));\n\
+             int store(d2 *p);\n\
+             int f(void *p) { return store((a2 *) p); }\n",
             Dialect::pedantic()
         )
         .is_empty(),
-        "a different element type is a different vector"
+        "same lanes, different element type"
+    );
+
+    // Same element (`int`), different lanes: 4 against 8.
+    assert!(
+        !sema_messages(
+            "typedef int i4 __attribute__((__vector_size__(16)));\n\
+             typedef int i8 __attribute__((__vector_size__(32), __aligned__(1)));\n\
+             int store(i8 *p);\n\
+             int f(void *p) { return store((i4 *) p); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "same element type, different lane count"
     );
 }
 
@@ -794,7 +811,10 @@ fn a_pointee_alignment_change_is_recorded_with_its_direction() {
     );
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
 
-    let changes: Vec<(u64, u64)> = a.pointee_alignment_changes().map(|(_, f, t)| (f, t)).collect();
+    let changes: Vec<(u64, u64)> = a
+        .pointee_alignment_changes()
+        .map(|(_, f, t)| (f, t))
+        .collect();
     assert_eq!(
         changes,
         vec![(16, 1), (1, 16)],
@@ -803,4 +823,23 @@ fn a_pointee_alignment_change_is_recorded_with_its_direction() {
     // The hazardous one is the *increase*: a 1-aligned object reached through a pointer that
     // promises 16. Recorded so a checker can find it without re-deriving the types.
     assert!(a.pointee_alignment_changes().any(|(_, f, t)| t > f));
+
+    // **A conversion that changes nothing is not recorded.** `m16 *` to `m16 *` has equal
+    // alignment; logging it would fill the table with non-events and a checker reading it
+    // would report conversions where nothing moved. Mutation recorded every conversion and
+    // the assertion above could not see it — the source had no equal-alignment pointer
+    // conversion to notice.
+    let same = "typedef long long m16 __attribute__((__vector_size__(16)));\n\
+                int takes(m16 *p);\n\
+                int g(m16 *p) { return takes(p); }\n";
+    let tu2 = chiero_pp::preprocess_str("t.c", same, Config::default());
+    let mut o2 = ScopedTypedefs::new();
+    let p2 = parse_tu_with(&tu2, &mut o2, Dialect::gnu());
+    let a2 = analyze_with(
+        &p2.ast,
+        &TargetConfig::x86_64_linux(),
+        &harness::names_of(&p2),
+        Dialect::gnu(),
+    );
+    assert_eq!(a2.pointee_alignment_changes().count(), 0);
 }
