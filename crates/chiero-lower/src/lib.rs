@@ -1721,7 +1721,8 @@ impl Lowerer<'_> {
                     message: "`case` or `default` outside a switch".into(),
                 });
             }
-            StmtKind::Empty | StmtKind::Error => {}
+            // An attribute statement has no effect to lower — see `StmtKind::Attr`.
+            StmtKind::Empty | StmtKind::Attr(_) | StmtKind::Error => {}
             other => {
                 // 015 §7: refuse rather than lower wrongly. A construct this slice does
                 // not cover leaves a diagnostic and an `Unreachable(LoweringGap)`, which
@@ -6639,7 +6640,14 @@ impl OrderScan<'_> {
                     self.full_expr(op.expr);
                 }
             }
-            K::Return(None) | K::Goto(_) | K::Break | K::Continue | K::Empty | K::Error => {}
+            // An attribute statement contains no expression, so it opens no sequencing region.
+            K::Return(None)
+            | K::Goto(_)
+            | K::Break
+            | K::Continue
+            | K::Empty
+            | K::Attr(_)
+            | K::Error => {}
         }
     }
 

@@ -9162,7 +9162,9 @@ impl Cx<'_> {
                     self.error(span, "`continue` outside a loop");
                 }
             }
-            StmtKind::Empty | StmtKind::Error => {}
+            // An attribute statement executes nothing; the misplaced-`fallthrough` rule that
+            // would read its attributes is a 040 checker, not a 014 constraint (HANDOFF §9).
+            StmtKind::Empty | StmtKind::Attr(_) | StmtKind::Error => {}
         }
     }
 

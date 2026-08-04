@@ -291,6 +291,16 @@ pub enum StmtKind {
     Continue,
     Return(Option<ExprId>),
     Empty,
+    /// `__attribute__ ((fallthrough));` — a bare attribute specifier standing where a statement
+    /// belongs, which the C grammar has no production for and gcc accepts in both modes.
+    ///
+    /// **Distinct from `Empty` so the attribute survives.** It executes nothing, so folding it
+    /// into `Empty` would lower identically and pass any test written about behaviour — but gcc
+    /// refuses a *misplaced* `fallthrough` ("not preceding a case label or default label", and
+    /// "invalid use of attribute" outside a switch), and a checker for that has to know which
+    /// attribute was written and where. Discarding it here would make that rule unimplementable
+    /// without re-parsing.
+    Attr(Vec<Attr>),
     /// `asm`/`__asm__`, **parsed but not modeled** (013 §4). Lowering turns it into an
     /// opaque effect that clobbers its outputs and marks the path `Approximated`.
     /// Treating asm as a no-op would be unsound in the direction that produces confident

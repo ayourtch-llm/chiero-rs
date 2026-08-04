@@ -601,3 +601,78 @@ fn a_sized_array_member_is_not_confused_with_a_flexible_one() {
         "`int a[8]` is a fixed-length array: {len:?}"
     );
 }
+
+/// **`__attribute__ ((fallthrough));` as a statement** — 013 §4's attribute positions, in the
+/// one place the C grammar has no production for it at all: where a statement belongs.
+///
+/// All 3 of VPP's remaining `expected a type specifier` findings are this construct, in
+/// `plugins/http/http.c:633`, `http2/http2.c:817` and `http3/qpack.c:981`. Each marks a
+/// deliberate `switch` fallthrough, and gcc compiles all three silently in **both** modes —
+/// measured, `-std=gnu11` and `-std=c11 -pedantic-errors`.
+///
+/// **The attribute is kept, not discarded into `Empty`.** gcc refuses a misplaced
+/// `fallthrough` — "not preceding a case label or default label", and "invalid use of
+/// attribute" outside a switch entirely — and a checker for that needs to know which
+/// attribute was written. Folding this to `Empty` would parse the corpus and throw away the
+/// only thing the rule needs. See the backlog note in HANDOFF §9: the position rule is not
+/// implemented here because gcc decides it during gimplification and accepts the attribute at
+/// the end of an `if` body inside a switch, so a syntactic approximation would over-reject.
+#[test]
+fn an_attribute_may_stand_where_a_statement_belongs() {
+    // The `qpack.c` shape: a statement, the attribute, then the next label.
+    let (_, p) = parse(
+        "int f(int x){ int r = 0; switch (x) { case 7: r = 1; __attribute__ ((fallthrough));\n\
+         case 5: r += 2; break; } return r; }\n",
+    );
+    no_diagnostics(&p, "an attribute statement before a case label");
+
+    // gcc's reserved spelling is equally valid and VPP uses both forms elsewhere.
+    let (_, p) = parse(
+        "int f(int x){ int r = 0; switch (x) { case 7: r = 1; __attribute__ ((__fallthrough__));\n\
+         case 5: r += 2; break; } return r; }\n",
+    );
+    no_diagnostics(&p, "the reserved spelling");
+
+    // **The attribute survives into the AST.** A `StmtKind::Empty` here would pass every
+    // assertion above while destroying what a position checker must read.
+    let (_, p) = parse(
+        "int f(int x){ int r = 0; switch (x) { case 1: r = 1; __attribute__ ((fallthrough));\n\
+         case 2: break; } return r; }\n",
+    );
+    let named: Vec<String> = p
+        .ast
+        .stmts()
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Attr(attrs) => Some(attrs.clone()),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|a| p.text(a.name).map(str::to_owned))
+        .collect();
+    assert_eq!(
+        named,
+        vec!["fallthrough".to_string()],
+        "the attribute is recorded, not discarded"
+    );
+
+    // **Two attributes and an empty list**, so the arm is not written for exactly one.
+    let (_, p) = parse(
+        "int f(int x){ int r = 0; switch (x) { case 1: r = 1;\n\
+         __attribute__ ((fallthrough)) __attribute__ ((unused));\n\
+         case 2: break; } return r; }\n",
+    );
+    no_diagnostics(&p, "two attribute specifiers in one statement");
+
+    // **A declaration starting with an attribute is still a declaration**, which is the case
+    // this arm must not steal: `__attribute__((unused)) int y = 1;` declares `y`.
+    let (_, p) = parse("int f(void){ __attribute__ ((unused)) int y = 1; return y; }\n");
+    no_diagnostics(&p, "an attributed declaration is not an attribute statement");
+    assert!(
+        p.ast
+            .stmts()
+            .iter()
+            .any(|s| matches!(&s.kind, StmtKind::Decl(_))),
+        "the declaration is still a declaration"
+    );
+}
