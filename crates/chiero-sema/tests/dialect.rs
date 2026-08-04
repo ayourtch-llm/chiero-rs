@@ -762,3 +762,45 @@ fn an_alignment_attribute_does_not_break_pointer_compatibility() {
         "a different element type is a different vector"
     );
 }
+
+/// **An alignment change across an assignment is recorded** (owner's request).
+///
+/// Compatibility ignores the attribute — gcc does — but the *change* is real information and
+/// the direction matters: passing a 16-aligned pointer where 1-aligned is wanted is safe,
+/// while the reverse is where a misaligned access comes from. A later stage cannot recover
+/// this once compatibility has been decided, so sema records it.
+///
+/// **Not a pedantic-mode error**, and that was measured rather than assumed: gcc reports
+/// nothing for either direction under `gnu11`, `-pedantic-errors`, or `-Wcast-align=strict`.
+/// This project's strict dialect means "what `gcc -pedantic-errors` says"; a rule gcc does not
+/// have belongs to a checker (040), not to the dialect, or `--gnu` and the default stop
+/// meaning what §9 says they mean.
+#[test]
+fn a_pointee_alignment_change_is_recorded_with_its_direction() {
+    let src = "typedef long long m16 __attribute__((__vector_size__(16)));\n\
+               typedef long long m1 __attribute__((__vector_size__(16), __aligned__(1)));\n\
+               int wants_lax(m1 *p);\n\
+               int wants_strict(m16 *p);\n\
+               int safe(m16 *p) { return wants_lax(p); }\n\
+               int risky(m1 *p) { return wants_strict(p); }\n";
+    let tu = chiero_pp::preprocess_str("t.c", src, Config::default());
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu_with(&tu, &mut oracle, Dialect::gnu());
+    let a = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &harness::names_of(&parsed),
+        Dialect::gnu(),
+    );
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+
+    let changes: Vec<(u64, u64)> = a.pointee_alignment_changes().map(|(_, f, t)| (f, t)).collect();
+    assert_eq!(
+        changes,
+        vec![(16, 1), (1, 16)],
+        "both directions recorded, in source order"
+    );
+    // The hazardous one is the *increase*: a 1-aligned object reached through a pointer that
+    // promises 16. Recorded so a checker can find it without re-deriving the types.
+    assert!(a.pointee_alignment_changes().any(|(_, f, t)| t > f));
+}

@@ -8158,6 +8158,27 @@ impl Cx<'_> {
             // a type (6.7.6.3p15) but a pointee's is, so `const int *` and `int *` reach the
             // fallthrough below and conflict, exactly as before.
             (Ty::Ptr(x), Ty::Ptr(y)) => self.types_conflict(x, y),
+            // **`aligned` and `may_alias` do not make a distinct vector for compatibility.**
+            // gcc's `__m128i_u` is `__m128i` with `__may_alias__` and `__aligned__(1)`, and its
+            // own `emmintrin.h` passes one where the other is wanted — silently, in every mode
+            // including `-pedantic-errors` and `-Wcast-align=strict`. The attributes change
+            // placement and aliasing, not type identity.
+            //
+            // `align` stays in the interning key because layout genuinely differs; only
+            // *compatibility* ignores it. 1849 of 1871 VPP translation units depend on this,
+            // and they became visible only once `-march` reached the predefines.
+            (
+                Ty::Vector {
+                    elem: ex,
+                    lanes: lx,
+                    ..
+                },
+                Ty::Vector {
+                    elem: ey,
+                    lanes: ly,
+                    ..
+                },
+            ) => lx != ly || self.types_conflict(ex, ey),
             // Interned types, so anything else differing is a real difference.
             _ => true,
         }
