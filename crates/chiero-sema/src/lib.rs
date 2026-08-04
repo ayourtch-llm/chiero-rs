@@ -952,7 +952,7 @@ pub fn analyze_with(
         next_vla_scope: 0,
         label_scopes: Default::default(),
         prior: Default::default(),
-        values: IndexMap::new(),
+        values: ScopedTypes::default(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
     };
@@ -1013,7 +1013,7 @@ pub fn const_eval(
         next_vla_scope: 0,
         label_scopes: Default::default(),
         prior: Default::default(),
-        values: IndexMap::new(),
+        values: ScopedTypes::default(),
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
     };
@@ -1175,7 +1175,7 @@ struct Cx<'a> {
     prior: indexmap::IndexMap<Symbol, Prior>,
     /// Ordinary identifiers in scope → their type. C's five namespaces are separate
     /// (014 §4), and this is the one expressions read.
-    values: IndexMap<Symbol, TyId>,
+    values: ScopedTypes,
     /// Names already reported as undeclared, so the complaint is per name and not per
     /// use — contract 20.
     unknown_names: indexmap::IndexSet<Symbol>,
@@ -1337,6 +1337,42 @@ enum Meaning {
 /// The same shape as [`ScopedNames`] and deliberately not merged with it: that one answers
 /// "again, here?" for tags, which have their own namespace, and a shared table would make
 /// `struct S { int a; }; int S;` a redeclaration. Four census rows turn on exactly that.
+/// Object names to types, scoped like `ScopedMeanings` beside it.
+///
+/// **A flat map was the bug.** An inner block's declaration overwrote the outer entry and
+/// nothing restored it, so `uword r; if (..) { vlib_process_restore_t r = {..}; } return r;`
+/// resolved the `return` to the struct. C 6.2.1p4 ends the inner declaration with its block.
+/// That shape reached 867 of 879 findings in a full VPP sweep through one header.
+#[derive(Debug, Default)]
+struct ScopedTypes {
+    entries: Vec<(Symbol, TyId)>,
+    marks: Vec<usize>,
+}
+
+impl ScopedTypes {
+    fn enter(&mut self) {
+        self.marks.push(self.entries.len());
+    }
+
+    fn leave(&mut self) {
+        let mark = self.marks.pop().unwrap_or(0);
+        self.entries.truncate(mark);
+    }
+
+    fn insert(&mut self, name: Symbol, ty: TyId) {
+        self.entries.push((name, ty));
+    }
+
+    /// Innermost wins, so a shadow is found before the name it shadows.
+    fn get(&self, name: &Symbol) -> Option<&TyId> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t)
+    }
+}
+
 #[derive(Default)]
 struct ScopedMeanings {
     names: Vec<(Symbol, Meaning)>,
@@ -2031,7 +2067,7 @@ impl Cx<'_> {
                         chiero_ast::TypeKind::Func { params, .. } => params.clone(),
                         _ => Vec::new(),
                     };
-                    let saved = self.values.clone();
+                    self.values.enter();
                     // An `enum` declared inside the body is local to it, exactly as a
                     // parameter is, and was leaking into the rest of the TU.
                     let saved_enums = self.enumerators.clone();
@@ -2042,6 +2078,8 @@ impl Cx<'_> {
                     // **One scope for the parameters and the body**, per C 6.9.1p9. Opened here
                     // rather than by the body's `Compound`, which is told to reuse it.
                     self.meanings.enter();
+                self.values.enter();
+                    self.values.enter();
                     for p in params {
                         if let DeclKind::Var {
                             name: Some(pn),
@@ -2150,13 +2188,15 @@ impl Cx<'_> {
                     self.current_fn = saved_fn;
                     // A parameter does not outlive its function; restoring rather than
                     // removing also undoes any shadowing the body introduced.
-                    self.values = saved;
+                    self.values.leave();
                     self.enumerators = saved_enums;
                     self.read_only = saved_ro;
                     self.read_only_pointee = saved_rop;
                     self.register_objects = saved_reg;
                     self.automatic_objects = saved_auto;
                     self.meanings.leave();
+                self.values.leave();
+                    self.values.leave();
                 }
             }
             DeclKind::TagDef { ty } => {
@@ -8380,12 +8420,16 @@ impl Cx<'_> {
                 let own_scope = !std::mem::take(&mut self.body_scope_open);
                 if own_scope {
                     self.meanings.enter();
+                self.values.enter();
+                    self.values.enter();
                 }
                 for s in ss {
                     self.type_stmt(s);
                 }
                 if own_scope {
                     self.meanings.leave();
+                self.values.leave();
+                    self.values.leave();
                 }
                 self.declared_enumerators.leave();
                 self.defined_tags.leave();
@@ -8420,6 +8464,7 @@ impl Cx<'_> {
                 // draft of the meanings table called the second `i` a redeclaration. Found by
                 // the corpus and by an existing fixture in the same run.
                 self.meanings.enter();
+                self.values.enter();
                 match init {
                     Some(ForInit::Decl(ds)) => {
                         for d in ds {
@@ -8456,6 +8501,7 @@ impl Cx<'_> {
                 }
                 self.in_loop(|cx| cx.type_stmt(body));
                 self.meanings.leave();
+                self.values.leave();
             }
             StmtKind::Switch { cond, body } => {
                 let c = self.type_expr(cond);
