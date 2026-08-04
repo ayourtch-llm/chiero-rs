@@ -622,6 +622,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **Before `Warned` existed, "gcc exits zero" and "gcc is silent" were the same observation.**
 > Whenever a gate is proposed, check which of the two it actually rests on.
 >
+> ### ⚠️ `BothRefused` is not agreement — and it is the biggest bucket
+>
+> Both sides diagnosing a file says **nothing** about whether they diagnosed the *same thing*.
+> `chiero_outcome` and `gcc_outcome` each report their **first** message, so a file where
+> chiero complains about X and gcc about Y lands in `BothRefused` and looks settled.
+>
+> Measured: suppressing system-header diagnostics moved `vcl/vppcom.h`'s TU from `BothRefused`
+> to `Miss` — chiero had been reporting `__int128` (from `/usr/include`) while gcc was reporting
+> a zero-size array. **The two had never agreed about anything**; the bucket only recorded that
+> each had something to say.
+>
+> Under the strict dialect **1017 of 1552 files sit in `BothRefused`**, and that bucket is
+> entirely unexamined. Every one of them could be masking a miss the same way.
+>
+> ⚠️ **I first recorded this as "a finding hid a miss".** The bucket counts disprove it:
+> `findings 1→0` with `agree 5→6` is one file, and `both refused 1018→1017` with `misses 0→1`
+> is a *different* file. Check which buckets moved before naming the mechanism.
+>
 > ### ⚠️ A dominant finding is a lid, not a summary
 >
 > The report shows **one diagnostic per file**, so the largest category hides everything under
