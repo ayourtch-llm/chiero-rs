@@ -158,7 +158,7 @@ fn a_type_is_named_using_the_targets_widths() {
     narrow.sizes.int_ = 2;
     narrow.sizes.short_ = 2;
 
-    let msgs = harness::parse_allowing_diagnostics("int a[3] = \"xy\";\n", narrow)
+    let msgs = harness::parse_allowing_diagnostics("int a[3] = \"xy\";\n", narrow.clone())
         .analysis
         .diagnostics
         .iter()
@@ -167,6 +167,35 @@ fn a_type_is_named_using_the_targets_widths() {
     assert!(
         msgs.iter().any(|m| m.contains("array of `int`")),
         "a 16-bit `int` is still an `int` on this target: {msgs:?}"
+    );
+
+    // **`short` and `int` are the same width here, and must still be named apart.** Width
+    // alone cannot do it — that is why the first fix guessed. The AST carries the written
+    // spelling (`TypeKind::Builtin`, `TypeKind::Named`), so nothing needs to be guessed at all.
+    let msgs = harness::parse_allowing_diagnostics("short b[3] = \"xy\";\n", narrow)
+        .analysis
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        msgs.iter().any(|m| m.contains("array of `short`")),
+        "written `short`, same width as `int` on this target: {msgs:?}"
+    );
+
+    // A typedef is reported as the name the source used, not as what it resolves to.
+    let msgs = harness::parse_allowing_diagnostics(
+        "typedef int myint;\nmyint c[3] = \"xy\";\n",
+        TargetConfig::x86_64_linux(),
+    )
+    .analysis
+    .diagnostics
+    .iter()
+    .map(|d| d.message.clone())
+    .collect::<Vec<_>>();
+    assert!(
+        msgs.iter().any(|m| m.contains("array of `myint`")),
+        "the reader wrote `myint`: {msgs:?}"
     );
 
     // And unchanged on the default target, where 32 bits is `int`.
