@@ -605,7 +605,10 @@ fn a_gcc_warning_is_distinguished_from_gcc_silence() {
 
     // gcc warned and chiero complained: they agree on the code, not on the severity.
     assert_eq!(
-        classify(&Outcome::Warned("redefined".into()), &d("redefinition of macro `X`")),
+        classify(
+            &Outcome::Warned("redefined".into()),
+            &d("redefinition of macro `X`")
+        ),
         Bucket::SeverityMismatch
     );
 
@@ -617,11 +620,11 @@ fn a_gcc_warning_is_distinguished_from_gcc_silence() {
     );
 
     // And a warning still means the file compiled, so the parser was handed it.
-    let v = Verdict {
+    let v = xtask::sweep::Verdict {
         path: PathBuf::from("t.c"),
         bucket: Bucket::SeverityMismatch,
         gcc: Outcome::Warned("w".into()),
         chiero: d("sema: x"),
     };
-    assert_eq!(coverage(&[v]).preprocessed, 1);
+    assert_eq!(xtask::sweep::coverage(&[v]).preprocessed, 1);
 }

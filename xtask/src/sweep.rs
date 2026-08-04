@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 /// What one compiler made of one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    /// The compiler accepted the file but said something about it.
+    ///
+    /// Kept apart from `Clean` because a warning *is* a diagnostic: gcc and chiero agreeing
+    /// that code is wrong, at different severities, is not chiero being wrong.
+    Warned(String),
     /// Compiled or analysed with nothing to say.
     Clean,
     /// Produced diagnostics — the first is kept for the report.
@@ -35,6 +40,8 @@ pub enum Outcome {
 /// Where a file lands once both compilers have spoken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bucket {
+    /// gcc warned and chiero diagnosed: they agree on the code, not on how loudly to say so.
+    SeverityMismatch,
     /// gcc accepted and chiero did not — the finding, and the top of the queue.
     Finding,
     /// gcc refused and chiero was silent — a missing rule. Lower priority: gcc's reason may
@@ -60,10 +67,18 @@ pub enum Bucket {
 pub fn classify(gcc: &Outcome, chiero: &Outcome) -> Bucket {
     match (gcc, chiero) {
         (Outcome::NotRun(_), _) | (_, Outcome::NotRun(_)) => Bucket::ToolGap,
-        (Outcome::Clean, Outcome::Diagnosed(_)) => Bucket::Finding,
+        // **A warning is a diagnostic.** gcc noticing something chiero did not is a miss
+        // however quietly gcc said it, and gcc and chiero both noticing is agreement about
+        // the code — a severity question, not a defect in either.
+        (Outcome::Warned(_), Outcome::Clean) => Bucket::Miss,
+        (Outcome::Warned(_), _) => Bucket::SeverityMismatch,
+        // chiero has no warning level, so its side is never `Warned` today. Handled beside
+        // `Diagnosed` rather than left to a `_` arm, so adding one later is a compile error
+        // here and not a silent reclassification.
+        (Outcome::Clean, Outcome::Diagnosed(_) | Outcome::Warned(_)) => Bucket::Finding,
         (Outcome::Diagnosed(_), Outcome::Clean) => Bucket::Miss,
         (Outcome::Clean, Outcome::Clean) => Bucket::Agree,
-        (Outcome::Diagnosed(_), Outcome::Diagnosed(_)) => Bucket::BothRefused,
+        (Outcome::Diagnosed(_), Outcome::Diagnosed(_) | Outcome::Warned(_)) => Bucket::BothRefused,
     }
 }
 
@@ -133,7 +148,17 @@ pub fn gcc_outcome(path: &Path, flags: &Flags) -> Outcome {
     cmd.args(flags.gcc_args()).arg(path);
     match cmd.output() {
         Err(e) => Outcome::NotRun(format!("gcc could not be run: {e}")),
-        Ok(out) if out.status.success() => Outcome::Clean,
+        // **Exit zero is not silence.** gcc warns and still succeeds, and a warning is a
+        // diagnostic: filing such a file as `Clean` made every chiero complaint on it look
+        // like an over-rejection. The first `warning:` line stands for the lot, matching how
+        // the diagnosed path reports the first `error:`.
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stderr);
+            match text.lines().find(|l| l.contains("warning:")) {
+                None => Outcome::Clean,
+                Some(w) => Outcome::Warned(w.trim().to_owned()),
+            }
+        }
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stderr);
             // **A missing include is a tool gap, not a verdict on the file.** VPP generates some
@@ -591,6 +616,10 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         count(Bucket::BothRefused)
     );
     println!(
+        "  severity mismatch (gcc warned):        {}",
+        count(Bucket::SeverityMismatch)
+    );
+    println!(
         "  tool gaps (one side could not run):    {}",
         count(Bucket::ToolGap)
     );
@@ -631,13 +660,18 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
             Bucket::BothRefused,
             false,
         ),
+        (
+            "SEVERITY MISMATCH — gcc warned, chiero refused; both saw it",
+            Bucket::SeverityMismatch,
+            true,
+        ),
         ("TOOL GAPS", Bucket::ToolGap, true),
     ] {
         let mut groups: indexmap::IndexMap<String, (usize, PathBuf, String)> =
             indexmap::IndexMap::new();
         for v in verdicts.iter().filter(|v| v.bucket == bucket) {
             let msg = match if side { &v.chiero } else { &v.gcc } {
-                Outcome::Diagnosed(m) | Outcome::NotRun(m) => m.clone(),
+                Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),
                 Outcome::Clean => continue,
             };
             // Group by kind; keep the first located text as the example.
@@ -720,6 +754,8 @@ pub fn coverage(verdicts: &[Verdict]) -> Coverage {
         let stage = match &v.chiero {
             // Clean means it went all the way through.
             Outcome::Clean => 3,
+            // A warning means the file compiled, so every stage was reached.
+            Outcome::Warned(_) => 3,
             Outcome::Diagnosed(m) | Outcome::NotRun(m) => {
                 if m.starts_with("pp:") {
                     0
