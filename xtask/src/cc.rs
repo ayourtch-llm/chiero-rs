@@ -102,6 +102,7 @@ pub fn record_line(source: &Path, outcome: &crate::sweep::Outcome, millis: u128)
 pub fn flags_from_args(args: &[String], dialect: chiero_ast::Dialect) -> crate::sweep::Flags {
     let mut f = crate::sweep::Flags {
         dialect,
+        machine: Vec::new(),
         includes: Vec::new(),
         defines: Vec::new(),
         std: None,
@@ -126,6 +127,10 @@ pub fn flags_from_args(args: &[String], dialect: chiero_ast::Dialect) -> crate::
             }
         } else if let Some(v) = a.strip_prefix("--std=").or_else(|| a.strip_prefix("-std=")) {
             f.std = Some(v.to_owned());
+        } else if a.starts_with("-m") && !a.starts_with("-M") {
+            // **`-m…` but not `-M…`.** `-MD`, `-MF`, `-MT` are dependency options; handing
+            // one to `gcc -dM` makes it write a dependency file instead of predefines.
+            f.machine.push(a.clone());
         }
     }
     f
@@ -181,7 +186,7 @@ fn observe_with_paths(args: &[String]) -> Vec<(PathBuf, String)> {
     };
     let flags = flags_from_args(args, dialect);
     let system = crate::sweep::system_include_paths();
-    let predefines = crate::sweep::gcc_predefines(flags.std.as_deref());
+    let predefines = crate::sweep::gcc_predefines_with(flags.std.as_deref(), &flags.machine);
     sources
         .iter()
         .map(|src| {

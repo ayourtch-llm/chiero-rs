@@ -114,6 +114,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 pub struct Flags {
     /// `-pedantic-errors` (the wave-314 calibration) or gcc's `-std=gnu11` default.
     pub dialect: chiero_ast::Dialect,
+    /// `-march=`, `-mavx2`, … — the flags that decide which predefines exist, and therefore
+    /// which branch of a project's headers is compiled at all.
+    pub machine: Vec<String>,
     /// `-I` paths, in order.
     pub includes: Vec<PathBuf>,
     /// `-D` definitions, as `NAME` or `NAME=VALUE`.
@@ -939,9 +942,20 @@ pub fn system_include_paths() -> Vec<PathBuf> {
 /// Function-like macros and the ones the preprocessor must own (`__FILE__`, `__LINE__`, …) are
 /// dropped, matching the sema harness.
 pub fn gcc_predefines(std: Option<&str>) -> Vec<(String, String)> {
+    gcc_predefines_with(std, &[])
+}
+
+/// As [`gcc_predefines`], with the invocation's machine flags.
+///
+/// **`-march` changes the predefine set, and the predefine set changes the program.** VPP
+/// gates `vector_sse42.h` on `__SSE4_2__`, so predefines gathered without the build's `-m`
+/// flags describe a translation unit the build never compiles.
+pub fn gcc_predefines_with(std: Option<&str>, machine: &[String]) -> Vec<(String, String)> {
     let dialect = format!("-std={}", std.unwrap_or("gnu11"));
     let Ok(out) = std::process::Command::new("gcc")
-        .args(["-dM", "-E", &dialect, "-x", "c", "/dev/null"])
+        .args(["-dM", "-E", &dialect])
+        .args(machine)
+        .args(["-x", "c", "/dev/null"])
         .output()
     else {
         return Vec::new();

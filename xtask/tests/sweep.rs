@@ -541,6 +541,7 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
 
     let flags = xtask::sweep::Flags {
         dialect: chiero_ast::Dialect::pedantic(),
+        machine: Vec::new(),
         includes: Vec::new(),
         defines: Vec::new(),
         std: Some("gnu11".into()),
@@ -647,6 +648,7 @@ fn gcc_is_asked_the_same_question_as_chiero() {
     let args = |dialect| {
         xtask::sweep::Flags {
             dialect,
+            machine: Vec::new(),
             includes: Vec::new(),
             defines: Vec::new(),
             std: Some("gnu11".into()),
@@ -748,6 +750,7 @@ fn chiero_outcome_drops_a_system_header_diagnostic() {
 
     let flags = xtask::sweep::Flags {
         dialect: chiero_ast::Dialect::pedantic(),
+        machine: Vec::new(),
         includes: Vec::new(),
         defines: Vec::new(),
         std: Some("gnu11".into()),
