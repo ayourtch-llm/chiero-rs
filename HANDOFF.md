@@ -487,43 +487,57 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 436) — 1659 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 439) — 1662 tests, 4 ignored, M1 268/268 by contract
 >
-> ### 🎯 FULL VPP SWEEP — all 1552 files, 2026-08
+> ### 🎯 FULL VPP SWEEP — 1552 files. Three real defects found, all fixed
 >
 > ```
 > cargo run --release -p xtask -- sweep --tree <vpp>/src \
 >     -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11 --gnu
 > ```
 >
-> | | |
-> |---|---|
-> | translation units | 1552 |
-> | **parser coverage** | **99.4%** — 1016 of the 1022 handed to the parser |
-> | reached sema | 127 |
-> | findings | 884, of which **871 were one construct** (now fixed) |
-> | misses (gcc refused, chiero silent) | **0** |
-> | tool gaps | 528 — missing generated `.api` headers; widen `gen/` |
+> | sweep | findings | dominant kind |
+> |---|---|---|
+> | 1st | 884 | **871** × `1 << 31` "signed overflow" |
+> | 2nd (after fix) | 879 | **867** × inner-block declaration escaping its block |
+> | 3rd | *not yet run* — **run it** |
 >
-> **`1 << 31` was 871 of the 884.** `vppinfra/elf.h`'s `1 << ELF_SECTION_FLAG_BIT_##f` and
-> every bit-flag enum like it. Measured: `gnu11` **and** `-pedantic-errors` both accept it, so
-> it was an over-rejection, not a calibration question, and it is refused in **neither** dialect
-> now. C 6.5.7p4 does make it undefined — the rule was right about ISO C and wrong about the
-> job. Fixed by truncating in the `Shl` arm rather than letting `wrap` diagnose.
+> **parser coverage 99.4%** (1016 of 1022 handed), **0 misses**, 528 tool gaps (missing
+> generated `.api` headers — widen `gen/`).
 >
-> **`--gnu` is what uncovered it.** The enumerator rule fired first on the same files and the
-> report shows only the first diagnostic per file, so gating that rule revealed a far larger
-> defect underneath. **Expect this again**: silencing a dominant category exposes the next one,
-> so re-sweep after every gate rather than assuming the tail is unchanged.
+> Fixed this stretch:
 >
-> ### What the remaining findings are (post-fix, unverified — re-sweep to confirm)
+> 1. **`1 << 31` is not an overflow.** `gnu11` *and* `-pedantic-errors` both accept it; C
+>    6.5.7p4 makes it UB, so the rule was right about ISO C and wrong about the job. Truncate
+>    in the `Shl` arm. Refused in **neither** dialect — gating would have hidden it under
+>    `--gnu` and left 871 false findings in the default mode.
+> 2. **Object names were not block-scoped.** `Cx::values` was a flat `IndexMap`, so an inner
+>    declaration overwrote the outer and nothing restored it. Now `ScopedTypes`, matching the
+>    `ScopedMeanings`/`ScopedNames` beside it. *The tell was a `values.clone()` per function* —
+>    a clone is what you write when the structure cannot express the operation.
+> 3. **`declare_outer` discarded the prototype scope.** Pop-declare-push threw away every
+>    parameter, so a parameter shadowing a typedef stopped shadowing it when the body began —
+>    the only parse failure in 1552 files (`plugins/acl/hash_lookup.c`, `u64 word` against
+>    `typedef i64 word`). `TypedefOracle` gained `declare_enclosing`.
 >
-> A long tail of singletons, each now individually investigable:
-> `pointer from an integer without a cast` ×4 (`bihash_template.h:207`), one parse failure
-> (`plugins/acl/hash_lookup.c:63` — "expected a declarator name"), two `pp: redefinition of
-> macro` against *system* headers (`/usr/include/elf.h`, `linux/memfd.h`), plus one each of
-> incompatible-pointer init, `return` with a value in a `void` function, undeclared
-> `clib_memset`/`exit`, and a struct-copy initializer.
+> ### ⚠️ A dominant finding is a lid, not a summary
+>
+> The report shows **one diagnostic per file**, so the largest category hides everything under
+> it. Three times now: the enumerator rule hid `1 << 31`, which hid the block-scoping bug.
+> **Re-sweep after every fix or gate.** Assume the tail is unknown, never unchanged.
+>
+> ### ⚠️ A test can pass for the wrong reason
+>
+> Twice in two waves, in the same shape:
+>
+> * Diagnosing the shadowing bug, three of four probes passed — `(void)word` does not begin
+>   with an identifier, a *local* shadow lives in its own scope, and with no typedef there is
+>   nothing to shadow. Only an assignment whose left operand is the shadowed name shows it.
+> * The row written to kill "function name declared in the wrong scope" used `g()`; the
+>   expression path never asks whether a callee names a type, so it passed under the mutant.
+>   `g * 1;` — C's declaration/expression ambiguity — is the only observable difference.
+>
+> **Reading cannot catch this; a mutant catches it immediately.**
 >
 > ### 🆕 `Dialect` — the pedantic decision, made 2026-08 at the owner's direction
 >
