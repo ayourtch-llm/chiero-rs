@@ -318,6 +318,21 @@ fn an_enumerator_folded_from_a_float_is_a_pedantic_rule_only() {
     );
     assert_eq!(sema_messages(src, Dialect::gnu()), Vec::<String>::new());
 
+    // **And the value must be right, or silence is worse than the diagnostic.** chiero could
+    // not fold the cast and fell back to "one more than the previous enumerator", giving
+    // `JITTER == 6` where gcc gives 33. Gating the message alone satisfies the assertion
+    // above and hides a wrong constant — the failure wave 435 named: an assertion that a
+    // diagnostic is absent does not test the value computed instead.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        let with_assert = format!("{src}_Static_assert(JITTER == 33, \"gcc folds this\");\n");
+        assert!(
+            !sema_messages(&with_assert, dialect)
+                .iter()
+                .any(|m| m.contains("static assertion failed")),
+            "the folded value must match gcc's"
+        );
+    }
+
     // **An enumerator that is not constant at all is still refused in both dialects**, because
     // gcc refuses it in both too — a variable is not a folding question.
     for dialect in [Dialect::pedantic(), Dialect::gnu()] {
