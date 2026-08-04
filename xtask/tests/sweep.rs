@@ -908,3 +908,46 @@ fn each_report_section_asks_for_its_own_bucket_and_side() {
     seen.dedup();
     assert_eq!(seen.len(), n, "a bucket is listed twice");
 }
+
+/// **What the report prints is the thing to assert.** The section table pins the choices and
+/// the loop can ignore them: mutation hardcoded `side = true` at the call site and every
+/// existing test passed, because they read the table rather than the output.
+///
+/// This is the fourth layer of one problem — helper unwired, caller unobservable, caller's
+/// arguments unchecked, and now the caller free to disregard them. Each fix moved the risk one
+/// step; asserting the rendered lines is where it stops, because there is nothing downstream
+/// of them.
+#[test]
+fn the_rendered_report_names_the_right_side_per_section() {
+    use xtask::sweep::{Verdict, report_lines};
+    let v = |path: &str, gcc: Outcome, chiero: Outcome| Verdict {
+        path: PathBuf::from(path),
+        bucket: classify(&gcc, &chiero),
+        gcc,
+        chiero,
+    };
+    let verdicts = vec![
+        // A miss: only gcc spoke, and the row must quote gcc.
+        v("m.c", d("/m.c:1:1: error: gcc-only-sentence"), Outcome::Clean),
+        // A finding: only chiero spoke, and the row must quote chiero.
+        v("f.c", Outcome::Clean, d("sema: /f.c:2:2: chiero-only-sentence")),
+    ];
+    let text = report_lines(&verdicts, Path::new("/tree")).join("\n");
+
+    let section = |name: &str| {
+        text.split("\n\n")
+            .find(|s| s.starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} section in:\n{text}"))
+            .to_owned()
+    };
+    assert!(
+        section("MISSES").contains("gcc-only-sentence"),
+        "misses quote gcc: {}",
+        section("MISSES")
+    );
+    assert!(
+        section("FINDINGS").contains("chiero-only-sentence"),
+        "findings quote chiero: {}",
+        section("FINDINGS")
+    );
+}
