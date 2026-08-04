@@ -2103,6 +2103,7 @@ impl Cx<'_> {
                 for p in &params {
                     if let DeclKind::Var { ty: pty, .. } = self.ast.decl(*p).kind.clone() {
                         let t = self.re_resolving(|cx| cx.ty_of(pty));
+                        let t = self.adjusted_param_ty(t);
                         self.out.decl_types.insert(*p, t);
                     }
                 }
@@ -2139,6 +2140,7 @@ impl Cx<'_> {
                         } = self.ast.decl(p).kind.clone()
                         {
                             let t = self.re_resolving(|cx| cx.ty_of(pty));
+                            let t = self.adjusted_param_ty(t);
                             // **A parameter of a definition needs a size**: the function has to
                             // receive the object. A *declaration* may name an incomplete
                             // parameter type — `struct T; int s(struct T t);` is legal, since
@@ -2659,22 +2661,7 @@ impl Cx<'_> {
                             let t = self.ty_of(ty);
                             self.declaring = outer;
                             self.check_alignment(ty, t, StorageContext::Parameter);
-                            // **A parameter declared as a function becomes a pointer to it**
-                            // (C 6.7.6.3p8), the same adjustment 6.7.6.3p7 makes for an array.
-                            // VPP writes callback parameters this way — `int options (u32,
-                            // ip6_hop_by_hop_option_t *, u16)` in
-                            // `ip6_ioam_analyse_register_hbh_handler` — and without the
-                            // adjustment the argument, which *has* decayed to a pointer, is
-                            // compared against a function type and called incompatible.
-                            //
-                            // Done here rather than in `param_shape`: that answers "do two
-                            // declarations agree", while this is the parameter's actual type
-                            // and is what an argument is checked against.
-                            if matches!(self.out.types[t.0 as usize], Ty::Func { .. }) {
-                                self.intern(Ty::Ptr(t))
-                            } else {
-                                t
-                            }
+                            self.adjusted_param_ty(t)
                         }
                         _ => self.intern(Ty::Error),
                     })
@@ -8666,6 +8653,35 @@ impl Cx<'_> {
             return false;
         }
         true
+    }
+
+    /// **A parameter's declared type, adjusted** — C 6.7.6.3p8 for now, p7 to follow.
+    ///
+    /// A parameter declared as a function becomes a pointer to it. VPP writes callback
+    /// parameters this way — `int options (u32, ip6_hop_by_hop_option_t *, u16)` in
+    /// `ip6_ioam_analyse_register_hbh_handler` — and without the adjustment the argument, which
+    /// *has* decayed to a pointer, is compared against a function type and called incompatible.
+    ///
+    /// **It is a function because there are three places a parameter's type is recorded, and
+    /// they must agree.** The interned `Ty::Func`'s parameter list is what a call's arguments are
+    /// checked against and what two declarations are compared through; `decl_types` and `values`
+    /// are what the body and 015's lowering read. This adjustment lived inline in the first of
+    /// those and was absent from the other two, so a function-typed parameter was a pointer to
+    /// its caller and a function to its own body — `sizeof g` was refused where gcc says 8.
+    /// One helper at all three call sites is the whole fix, and it is also what makes the p7
+    /// array adjustment a one-arm change rather than a third place to get out of step.
+    ///
+    /// Applied **after** `ty_of` returns, so every diagnostic the declared form owns — an
+    /// incomplete element type, a negative or zero bound, qualifier redistribution through a
+    /// typedef — has already fired on the type as written.
+    ///
+    /// Not `param_shape`'s job: that answers "do two declarations agree", while this is the
+    /// parameter's actual type.
+    fn adjusted_param_ty(&mut self, t: TyId) -> TyId {
+        match self.out.types[t.0 as usize] {
+            Ty::Func { .. } => self.intern(Ty::Ptr(t)),
+            _ => t,
+        }
     }
 
     /// C 6.2.7p3's extra condition when an **unprototyped** function type meets a prototyped one:
