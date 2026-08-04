@@ -568,8 +568,13 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > wrongly-typed cast. **Do not revert the guard** — converting poison was wrong; this is the same
 > defect one step earlier.
 >
-> ⚠️ **`__rdpmc` may have been failing before 91a50fa for this same reason rather than because of
-> it — unverified.** Check by measuring one file against 5e1de70 before assuming either.
+> ✅ **Verified 2026-08-04: `__rdpmc` failed before 91a50fa too, identically.** Disabling the
+> poison guard and re-lowering
+> `unsigned long long f(int s) { return __builtin_ia32_rdpmc(s); }` gives the *same* diagnostic,
+> so the guard neither caused nor exposed this — it is an independent, pre-existing consequence
+> of the missing signature. (Done with a debug test rather than a release rebuild, because the
+> corpus build in flight executes `target/release/xtask` and swapping that binary mid-run would
+> corrupt the measurement.)
 >
 > **Blanket implicit-`int` is refuted** (see `convert`'s comment): `__builtin_alloca` returns a
 > pointer and the `__builtin_ia32_*` family return vectors, so it made `vppinfra`'s own headers
