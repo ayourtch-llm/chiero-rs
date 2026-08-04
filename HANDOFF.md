@@ -551,7 +551,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > |---|---|---|
 > | ~~11~~ 0 | ~~`a cast names a scalar type or void`~~ | **DONE wave 479** — GNU cast-to-union |
 > | ~~6~~ 0 | ~~`passing an argument makes a pointer from an integer`~~ | **DONE wave 479** (316c782) — was never a severity question: all 6 passed `0` to an array-typed parameter |
-> | 3 | `parse: expected a type specifier` | **next up.** All 3 are `__attribute__ ((fallthrough));` as a *statement* — `http.c:633`, `http2/http2.c:817`, `http3/qpack.c:981`. gcc accepts in both modes. See the note below on the two adjacent behaviours |
+> | ~~3~~ 0 | ~~`parse: expected a type specifier`~~ | **DONE wave 479** (7ec9de7) — `__attribute__ ((fallthrough));` as a statement. Left a known false acceptance; see the backlog note |
+> | 2 | `assignment to an array` | **next up**, unexamined |
 > | 2 | `assignment to an array` | |
 > | 2 | `comparison between a pointer and an integer` | |
 > | 1 each | escape `\\(`, signed overflow, incomplete deref, `void` value used, duplicate decl, `++` on non-scalar, 2× macro redefinition | |
@@ -587,6 +588,30 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   **Not a diagnostic** — measured, gcc is silent in `gnu11`, `-pedantic-errors` *and*
 >   `-Wcast-align=strict`. The strict dialect means gcc-parity (wave 314); this hazard belongs
 >   to a **checker (040)**, chiero's own opinion. The table is what that checker will need.
+>
+> ### 🧾 BACKLOG (wave 479): the misplaced-`fallthrough` rule — a *known* false acceptance
+>
+> 7ec9de7 made chiero parse `__attribute__ ((fallthrough));` as a statement. It does **not**
+> check the attribute's position, so chiero now silently accepts two things gcc refuses.
+> Measured on gcc 13.3.0:
+>
+> | source | gnu11 | -pedantic-errors |
+> |---|---|---|
+> | before a `case`/`default` label | silent | silent |
+> | before an ordinary statement | warning | **error** — `attribute 'fallthrough' not preceding a case label or default label` |
+> | last statement in the switch body | warning | **error** — same sentence |
+> | anywhere outside a switch | **error** — `invalid use of attribute 'fallthrough'` | **error** |
+> | at the end of an `if` body inside a switch | silent | silent |
+>
+> **That last row is why it was not implemented in 7ec9de7.** gcc decides this during
+> gimplification, against the next *executable* thing, not the next sibling in the block. A
+> syntactic "the following statement is a case label" check refuses the `if`-body form, which is
+> legal and which real code writes. Over-rejecting valid VPP code is the failure this corpus
+> began with — one such rule produced 871 of the first sweep's 884 findings.
+>
+> `StmtKind::Attr` carries the attribute list rather than folding into `Empty` **for this rule
+> specifically**, so implementing it needs no re-parse. It wants the CFG, which makes it a 040
+> checker rather than a 014 constraint.
 >
 > ### 🧾 BACKLOG (wave 479): adjust an array-typed parameter to a pointer, properly
 >
