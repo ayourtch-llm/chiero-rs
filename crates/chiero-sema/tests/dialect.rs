@@ -843,3 +843,153 @@ fn a_pointee_alignment_change_is_recorded_with_its_direction() {
     );
     assert_eq!(a2.pointee_alignment_changes().count(), 0);
 }
+
+/// **A cast to a union type** — `(ip4_address_t) la` where `ip4_address_t` is a union with a
+/// `u32` member. The GNU extension: the result is a union object with that member set. 11 of
+/// the 32 remaining VPP findings, and the largest kind left — VPP writes it in `ipsec_input.c`,
+/// `ipsec_output.h`, `http3.c` and `iavf/rx_node.c`, three of them inside an aggregate
+/// initializer and one as `((iavf_rx_desc_qw1_t) qw1).length`.
+///
+/// **Measured in both modes**, which is what makes it a dialect rule rather than an
+/// over-rejection: `gnu11` compiles all four silently, `-pedantic-errors` says "ISO C forbids
+/// casts to union type" at each. So chiero accepts the construct and only the sentence follows
+/// the dialect — the pattern `__int128`, `char d[0]` and `\e` already set.
+///
+/// **The member match is by type, not by conversion**, and this is the half that keeps the
+/// extension from swallowing real defects. gcc refuses `(U)x` for an `int` x against a union
+/// whose member is `unsigned int` — "cast to union type from type not present in union" — in
+/// *both* modes. A rule written with `assignable`, as `transparent_union`'s member search
+/// correctly is, would take that one and go quiet on a genuine mismatch.
+#[test]
+fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
+    // The four shapes VPP writes, reduced: a bare cast, a member access on one, an
+    // initializer, and a union whose matching member is a struct.
+    let u = "typedef union { unsigned char b[4]; unsigned int u; } U;\n";
+    for src in [
+        &format!("{u}unsigned int f(unsigned int x){{ return ((U)x).u; }}\n"),
+        &format!("{u}U f(unsigned int x){{ U a = (U)x; return a; }}\n"),
+        &format!("{u}unsigned int f(unsigned int x){{ U a = {{ .u = ((U)x).u }}; return a.u; }}\n"),
+        // A pointer member, and a `const` operand: gcc matches the member unqualified.
+        &format!(
+            "union P {{ int *p; long l; }};\nlong f(int *q){{ return ((union P)q).l; }}\n"
+        ),
+        &format!(
+            "{u}unsigned int f(const unsigned int x){{ return ((U)x).u; }}\n"
+        ),
+        // A struct member matches too — `((union U)s).s.a` compiles under gnu11.
+        "struct S { int a; };\nunion V { struct S s; int i; };\n\
+         int f(struct S s){ return ((union V)s).s.a; }\n",
+    ] {
+        assert_eq!(
+            sema_messages(src, Dialect::gnu()),
+            Vec::<String>::new(),
+            "gnu11 compiles this silently: {src}"
+        );
+        assert_eq!(
+            sema_messages(src, Dialect::pedantic()),
+            vec!["ISO C forbids casts to union type".to_string()],
+            "the calibration default still reports it: {src}"
+        );
+    }
+
+    // **What the extension does not excuse**, refused in *both* modes. Each row is a
+    // measured gcc error, not a guess.
+    //
+    // **Each row carries the sentence it must draw**, not merely a count. The two rules meet
+    // here — a union target that finds no member, and a target that is not a union at all —
+    // and counting alone lets either one answer for the other.
+    let no_member = "a cast to a union names a type no member has";
+    let not_scalar = "a cast names a scalar type or `void`";
+    for (src, expect, why) in [
+        // No member has the operand's type — and `int` against an `unsigned int` member is
+        // exactly the row that separates "compatible type" from "assignable".
+        (
+            format!("{u}unsigned int f(int x){{ return ((U)x).u; }}\n"),
+            no_member,
+            "signedness is not a member match",
+        ),
+        (
+            format!("{u}unsigned int f(double x){{ return ((U)x).u; }}\n"),
+            no_member,
+            "no member is a double",
+        ),
+        (
+            "union P { int *p; long l; };\nlong f(char *q){ return ((union P)q).l; }\n".to_string(),
+            no_member,
+            "a pointer to another type is not a member match",
+        ),
+        // An incomplete union has no members to match against.
+        (
+            "union V;\nint f(int x){ return ((union V)x) != 0; }\n".to_string(),
+            no_member,
+            "an incomplete union names no member",
+        ),
+        // **A struct target is still refused**, in both modes — the extension is unions only,
+        // and gcc keeps saying "conversion to non-scalar type requested" for a struct. It keeps
+        // chiero's existing sentence, because the union rule never applies to it.
+        (
+            "struct S { int a; };\nint f(int x){ return ((struct S)x).a; }\n".to_string(),
+            not_scalar,
+            "the extension does not extend to structs",
+        ),
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(&src, dialect),
+                vec![expect.to_string()],
+                "gcc refuses this in both modes ({why}): {src}"
+            );
+        }
+    }
+
+    // **The result is not an lvalue.** gcc refuses `((U)x).u = 1` under `gnu11` too, so
+    // accepting the cast must not also make it assignable.
+    assert_eq!(
+        sema_messages(
+            &format!("{u}int f(unsigned int x){{ ((U)x).u = 1; return 0; }}\n"),
+            Dialect::gnu()
+        )
+        .len(),
+        1,
+        "a cast is not an lvalue, extension or not"
+    );
+}
+
+/// **A cast to the operand's own non-scalar type** — `(struct S)s` — is the second half of the
+/// same measurement, and a separate gcc extension with its own sentence: `gnu11` accepts it,
+/// `-pedantic-errors` says "ISO C forbids casting nonscalar to the same type". It applies to a
+/// struct as well as a union, which is what makes it *not* the union rule above.
+///
+/// No VPP finding is this shape. It is here because the union work measured it in passing and
+/// leaving it refused would be a known-wrong rejection sitting one row from a rule that now
+/// accepts its neighbour.
+#[test]
+fn a_cast_to_the_operands_own_record_type_is_a_pedantic_rule_only() {
+    for src in [
+        "struct S { int a; };\nint f(struct S s){ return ((struct S)s).a; }\n",
+        "union U { int a; char c; };\nint f(union U u){ return ((union U)u).a; }\n",
+    ] {
+        assert_eq!(
+            sema_messages(src, Dialect::gnu()),
+            Vec::<String>::new(),
+            "gnu11 compiles this silently: {src}"
+        );
+        assert_eq!(
+            sema_messages(src, Dialect::pedantic()),
+            vec!["ISO C forbids casting nonscalar to the same type".to_string()],
+            "the calibration default still reports it: {src}"
+        );
+    }
+
+    // **Another record of the same shape is not the same type**, and stays refused in both
+    // modes — gcc: "conversion to non-scalar type requested".
+    let other = "struct S { int a; };\nstruct T { int a; };\n\
+                 int f(struct T t){ return ((struct S)t).a; }\n";
+    for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+        assert_eq!(
+            sema_messages(other, dialect),
+            vec!["a cast names a scalar type or `void`".to_string()],
+            "a different record type is not the same type"
+        );
+    }
+}
