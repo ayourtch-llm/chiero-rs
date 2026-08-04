@@ -5177,7 +5177,10 @@ impl Cx<'_> {
                         if !is_compiler_builtin(&n) && self.unknown_names.insert(*sym) {
                             self.error(span, format!("`{n}` was not declared"));
                         }
-                        self.intern(Ty::Error)
+                        match self.builtin_signature(&n) {
+                            Some(t) => t,
+                            None => self.intern(Ty::Error),
+                        }
                     });
                 self.push_typed(TypedNode::Value {
                     expr,
@@ -8730,6 +8733,81 @@ impl Cx<'_> {
             }
             _ => t,
         }
+    }
+
+    /// The type of a compiler builtin chiero has **measured**, or `None` to leave it poison.
+    ///
+    /// gcc declares these itself and no header names them, so sema exempts them from
+    /// "was not declared" — but an exemption is not a type. Without one the call's value has no
+    /// width, and `unsigned long long __rdpmc (int) { return __builtin_ia32_rdpmc (__S); }` from
+    /// gcc's own `ia32intrin.h` produced a 32-bit result where 64 was declared, so the verifier
+    /// rejected the function and 015 §7 discarded it.
+    ///
+    /// **Only the return type is claimed.** The signature is interned *unprototyped*, which is C's
+    /// way of saying the parameters are unspecified — and that is exactly what is known here.
+    /// Asserting parameter types nobody measured would turn every call into a false diagnostic.
+    ///
+    /// **Every row is measured against gcc 13.3.0 on this machine**, with `_Generic` over the call
+    /// expression, not read from documentation. A wrong signature is worse than none: chiero
+    /// trusts this. A blanket implicit-`int` fallback was tried and refuted — `__builtin_alloca`
+    /// returns a pointer and the `__builtin_ia32_*` family return vectors, so it made `vppinfra`'s
+    /// own headers report "returning a value makes a pointer from an integer".
+    ///
+    /// A name absent from this table keeps `Ty::Error` and lowers to an opaque effect. That floor
+    /// works, and is the right answer until someone measures the name.
+    fn builtin_signature(&mut self, name: &str) -> Option<TyId> {
+        let int_bits = (self.target.sizes.int_ * 8) as u32;
+        let long_bits = (self.target.sizes.long_ * 8) as u32;
+        let ret = match name {
+            // Bit counting: `int` regardless of the operand's width, including the `l`/`ll` forms.
+            "__builtin_ctz"
+            | "__builtin_ctzl"
+            | "__builtin_ctzll"
+            | "__builtin_clz"
+            | "__builtin_clzl"
+            | "__builtin_clzll"
+            | "__builtin_popcount"
+            | "__builtin_popcountl"
+            | "__builtin_popcountll"
+            | "__builtin_ffs"
+            | "__builtin_ffsl"
+            | "__builtin_ffsll"
+            | "__builtin_constant_p" => self.intern(Ty::Int {
+                signed: true,
+                bits: int_bits,
+            }),
+            // `__builtin_expect` returns its first argument's type, and every caller passes
+            // `long` — gcc's own `__glibc_unlikely` casts to it. Measured `long`.
+            "__builtin_expect" => self.intern(Ty::Int {
+                signed: true,
+                bits: long_bits,
+            }),
+            "__builtin_bswap16" => self.intern(Ty::Int {
+                signed: false,
+                bits: 16,
+            }),
+            "__builtin_bswap32" => self.intern(Ty::Int {
+                signed: false,
+                bits: 32,
+            }),
+            "__builtin_bswap64" | "__builtin_ia32_rdpmc" | "__builtin_ia32_rdtsc" => {
+                self.intern(Ty::Int {
+                    signed: false,
+                    bits: 64,
+                })
+            }
+            "__builtin_alloca" | "__builtin_alloca_with_align" => {
+                let v = self.intern(Ty::Void);
+                self.intern(Ty::Ptr(v))
+            }
+            _ => return None,
+        };
+        Some(self.intern(Ty::Func {
+            ret,
+            params: Vec::new(),
+            variadic: false,
+            prototyped: false,
+        }))
     }
 
     /// C 6.2.7p3's extra condition when an **unprototyped** function type meets a prototyped one:

@@ -335,3 +335,45 @@ fn an_explicit_cast_of_a_builtin_call_lowers() {
         );
     }
 }
+
+/// **A builtin with a known return type gets one**, so its value has a width.
+///
+/// gcc's `ia32intrin.h` writes `unsigned long long __rdpmc (int __S) { return
+/// __builtin_ia32_rdpmc (__S); }`. With the builtin untyped, the opaque effect's result fell back
+/// to `Int(32)` and the return declared `Int(64)`, so the verifier rejected the function and it
+/// was discarded — measured as the dominant remaining cause, and **not** caused by the
+/// poison-conversion guard: disabling that guard reproduces it identically.
+///
+/// Every type here is measured on gcc 13.3.0 with `_Generic` over the call, never read from
+/// documentation — a wrong signature is worse than none, because chiero will trust it. A blanket
+/// implicit-`int` was tried and refuted: `__builtin_alloca` returns a pointer and the
+/// `__builtin_ia32_*` family return vectors.
+///
+/// **Only the return type is claimed.** The signature is interned unprototyped, so nothing is
+/// asserted about the parameters — which is exactly what is known, and what C's unprototyped
+/// form means.
+#[test]
+fn a_builtin_with_a_measured_return_type_lowers() {
+    for src in [
+        "unsigned long long f(int s) { return __builtin_ia32_rdpmc(s); }",
+        "long f(int x) { return __builtin_ctz(x); }",
+        "unsigned int f(unsigned int x) { return __builtin_bswap32(x); }",
+        "void *f(int n) { return __builtin_alloca(n); }",
+    ] {
+        let raw = lower_raw(src);
+        assert!(
+            raw.diagnostics.is_empty(),
+            "the builtin's result has the width its signature gives it: {src} -> {:?}",
+            raw.diagnostics
+        );
+    }
+
+    // **A builtin with no signature keeps `Ty::Error` and stays opaque**, which is the floor.
+    // Claiming a type for a name nobody measured is the failure this test guards against.
+    let raw = lower_raw("int f(int x) { return __builtin_totally_made_up_zz(x); }");
+    assert!(
+        raw.diagnostics.is_empty(),
+        "an unlisted builtin is still opaque, not fatal: {:?}",
+        raw.diagnostics
+    );
+}
