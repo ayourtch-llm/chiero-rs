@@ -415,3 +415,46 @@ fn a_function_typed_parameter_adjusts_to_a_pointer() {
         "a mismatched callback is still an error"
     );
 }
+
+/// **Only the escapes gcc accepts *silently* are a dialect question.**
+///
+/// 5 findings from `plugins/perfmon/arm/bundle/branch_pred.c`, which writes `"\%"` in a table
+/// of format-string fragments. Measured, and the rule splits four ways under one sentence:
+///
+/// | escape | `gnu11` | `-pedantic-errors` |
+/// |---|---|---|
+/// | `\%` | **silent** | error |
+/// | `\e` | **silent** | error (GNU's ESC) |
+/// | `\q` | warns | error |
+/// | `\8` | warns | error |
+///
+/// So `\%` and `\e` are gated and the rest are not. Gating the whole rule would silence `\q`
+/// and `\8`, where gcc still speaks — turning two findings into `Miss`es, which is the trade
+/// the `return` rule refused two waves ago.
+#[test]
+fn only_the_silently_accepted_escapes_are_a_pedantic_rule() {
+    for esc in ["\\%", "\\e"] {
+        let src = format!("const char *s = \"a{esc}b\";\n");
+        assert!(
+            sema_messages(&src, Dialect::pedantic())
+                .iter()
+                .any(|m| m.contains("escape")),
+            "the calibration default still reports {esc}"
+        );
+        assert_eq!(
+            sema_messages(&src, Dialect::gnu()),
+            Vec::<String>::new(),
+            "gnu11 accepts {esc} silently"
+        );
+    }
+
+    for esc in ["\\q", "\\8"] {
+        let src = format!("const char *s = \"a{esc}b\";\n");
+        for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+            assert!(
+                !sema_messages(&src, dialect).is_empty(),
+                "gcc warns about {esc} under gnu11, so chiero must not go silent"
+            );
+        }
+    }
+}
