@@ -6604,9 +6604,17 @@ impl Cx<'_> {
             // test against zero, and a comparison converts nothing.
             //
             // **Equality admits a null pointer constant and a relational operator does not.**
-            // `p == 0` is legal, `p > 0` is not; that pair is the whole difference between the
-            // two paragraphs, which is why `equality` is asked separately rather than folded into
-            // `comparison`.
+            // `p == 0` is legal and `p > 0` is a constraint violation; that pair is the whole
+            // difference between the two paragraphs, which is why `equality` is asked separately
+            // rather than folded into `comparison`.
+            //
+            // **But gcc only enforces the relational half pedantically**, and this arm reported
+            // it flatly. Measured: `p > 0` is silent under `-std=gnu11` and is "ordered
+            // comparison of pointer with integer zero [-Wpedantic]" under `-pedantic-errors`,
+            // while `p > 1` is refused in *both*. So the null constant decides the dialect here,
+            // not the legality — an earlier comment said "`p > 0` is not legal" and stopped,
+            // which is right about the standard and wrong about the compiler the corpus is
+            // measured against. Both of VPP's findings of this kind were the zero form.
             if comparison && is_ptr(self, aty) != is_ptr(self, bty) {
                 let equality = matches!(op, BinOp::Eq | BinOp::Ne);
                 let null = if is_ptr(self, aty) {
@@ -6614,7 +6622,11 @@ impl Cx<'_> {
                 } else {
                     self.is_null_constant(ae)
                 };
-                if !(equality && null) {
+                if !equality && null {
+                    if self.dialect.pedantic {
+                        self.error(span, "ordered comparison of a pointer with integer zero");
+                    }
+                } else if !(equality && null) {
                     // **Name the operand that is actually there.** This arm fires whenever
                     // exactly one side is a pointer, and said "an integer" of whatever the other
                     // side was — including a `double`, which is not one. One arm, two cases, one
