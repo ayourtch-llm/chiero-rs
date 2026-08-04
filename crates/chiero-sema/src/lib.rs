@@ -1847,7 +1847,7 @@ impl Cx<'_> {
                     _ => t,
                 };
                 if let Some(init) = init {
-                    self.check_init(t, init);
+                    self.check_init(t, Some(ty), init);
                     // **Static storage duration, not file scope.** A local initializer may be
                     // any expression; only an object the linker writes down needs a constant.
                     // Keying this on `Scope::File` — which it was until wave 358 — left every
@@ -5687,7 +5687,7 @@ impl Cx<'_> {
                     // for one fault. Contract 20, and wave 353's channel caught it on this
                     // wave's own new row — its first live catch.
                     if usable {
-                        self.check_init(t, *operand);
+                        self.check_init(t, None, *operand);
                     }
                 }
                 let inner = self.type_expr(*operand);
@@ -6966,9 +6966,18 @@ impl Cx<'_> {
     /// **Positions, not counts.** A designator moves the cursor, so `{[0]=1,[2]=3}` has two items
     /// and a highest index of 2. The cursor is what both the range check and the excess check
     /// read.
-    fn check_init(&mut self, target: TyId, init: ExprId) {
+    /// `syn` is the *written* type, when the caller still has it. Sema's interned `TyId`
+    /// cannot name a type — `short` and `int` share a width where `int` is 16-bit, and a
+    /// typedef resolves away entirely — so a diagnostic that names one reads it from the AST
+    /// instead of guessing from the width.
+    fn check_init(&mut self, target: TyId, syn: Option<chiero_ast::TypeId>, init: ExprId) {
         let span = self.ast.expr(init).span;
         let ty = self.out.types[target.0 as usize].clone();
+        // The written element type, for the array recursions below and for naming.
+        let syn_elem = syn.and_then(|t| match self.ast.ty(t).kind {
+            chiero_ast::TypeKind::Array { elem, .. } => Some(elem),
+            _ => None,
+        });
 
         // A string may initialise a character array directly, with the terminator dropped when it
         // is the only thing that does not fit: `char s[3] = "abc"` is legal and `"abcd"` is not.
@@ -7000,42 +7009,52 @@ impl Cx<'_> {
                 // reports a type the source does not contain. Widest-first, because several
                 // C types share a width on any given target (`long` and `long long` on LP64)
                 // and the narrowest match is the one a reader will have written.
+                // **The written spelling first.** The AST keeps it — `TypeKind::Builtin`
+                // and `TypeKind::Named` — and it is the only thing that can tell `short` from
+                // `int` where they share a width, or report a typedef as the name the source
+                // used. The width-based fallback below is for callers that no longer hold the
+                // syntactic type (a nested member, a compound literal).
+                let written = syn_elem.and_then(|e| match self.ast.ty(e).kind {
+                    chiero_ast::TypeKind::Builtin(b) => Some(builtin_spelling(b).to_owned()),
+                    chiero_ast::TypeKind::Named(sym) => self.text(sym).map(str::to_owned),
+                    _ => None,
+                });
                 let sizes = &self.target.sizes;
-                let name = match self.out.types[elem.0 as usize] {
-                    Ty::Int { signed, bits } => {
-                        let bytes = u64::from(bits / 8);
-                        // **Exact match, `int` first.** Several C types share a width on any
-                        // given target — `short` and `int` are both 2 bytes where `int` is
-                        // 16-bit, `long` and `long long` are both 8 on LP64 — and a width
-                        // cannot tell them apart. Ties resolve to `int`, the one a reader is
-                        // likeliest to have written; naming is a genuine approximation here
-                        // because sema keeps no spelling for a type.
-                        let base = if bytes == sizes.int_ {
-                            "int"
-                        } else if bytes == 1 {
-                            "char"
-                        } else if bytes == sizes.short_ {
-                            "short"
-                        } else if bytes == sizes.long_ {
-                            "long"
-                        } else if bytes == sizes.long_long {
-                            "long long"
-                        } else if bytes < sizes.int_ {
-                            "short"
-                        } else {
-                            "long long"
-                        };
-                        match (signed, base) {
-                            (true, b) => b,
-                            (false, "char") => "unsigned char",
-                            (false, "short") => "unsigned short",
-                            (false, "int") => "unsigned int",
-                            (false, "long") => "unsigned long",
-                            (false, _) => "unsigned long long",
+                let name = written.unwrap_or_else(|| {
+                    let by_width = match self.out.types[elem.0 as usize] {
+                        Ty::Int { signed, bits } => {
+                            let bytes = u64::from(bits / 8);
+                            // Exact match, `int` first: several C types share a width on any given
+                            // target, and a width cannot tell them apart. Only reached when the
+                            // written type was not available.
+                            let base = if bytes == sizes.int_ {
+                                "int"
+                            } else if bytes == 1 {
+                                "char"
+                            } else if bytes == sizes.short_ {
+                                "short"
+                            } else if bytes == sizes.long_ {
+                                "long"
+                            } else if bytes == sizes.long_long {
+                                "long long"
+                            } else if bytes < sizes.int_ {
+                                "short"
+                            } else {
+                                "long long"
+                            };
+                            match (signed, base) {
+                                (true, b) => b,
+                                (false, "char") => "unsigned char",
+                                (false, "short") => "unsigned short",
+                                (false, "int") => "unsigned int",
+                                (false, "long") => "unsigned long",
+                                (false, _) => "unsigned long long",
+                            }
                         }
-                    }
-                    _ => "that type",
-                };
+                        _ => "that type",
+                    };
+                    by_width.to_owned()
+                });
                 self.error(
                     span,
                     format!("cannot initialise an array of `{name}` from a string literal"),
@@ -7129,7 +7148,7 @@ impl Cx<'_> {
                             continue;
                         };
                         at = pos.unwrap_or(at);
-                        self.check_init(inner, item.value);
+                        self.check_init(inner, None, item.value);
                         at += 1;
                         continue;
                     }
@@ -7162,7 +7181,7 @@ impl Cx<'_> {
                         self.error(dspan, msg);
                         break;
                     }
-                    self.check_init(elem, item.value);
+                    self.check_init(elem, syn_elem, item.value);
                     at += 1;
                 }
             }
@@ -7192,7 +7211,7 @@ impl Cx<'_> {
                             continue;
                         };
                         at = pos.unwrap_or(at as u64) as usize;
-                        self.check_init(inner, item.value);
+                        self.check_init(inner, None, item.value);
                         at += 1;
                         continue;
                     }
@@ -7226,7 +7245,7 @@ impl Cx<'_> {
                         self.error(dspan, format!("excess elements in {what} initializer"));
                         break;
                     }
-                    self.check_init(fields[at].ty, item.value);
+                    self.check_init(fields[at].ty, None, item.value);
                     at += 1;
                 }
             }
@@ -7240,7 +7259,7 @@ impl Cx<'_> {
                         self.error(dspan, "excess elements in a vector initializer");
                         break;
                     }
-                    self.check_init(elem, item.value);
+                    self.check_init(elem, syn_elem, item.value);
                 }
             }
             // **A scalar takes one value, braced at most once.** `int x = {1}` is legal and
@@ -8770,5 +8789,31 @@ impl Cx<'_> {
             }
             _ => None,
         }
+    }
+}
+
+/// The C spelling of a builtin, for diagnostics that name a written type.
+fn builtin_spelling(b: chiero_ast::Builtin) -> &'static str {
+    use chiero_ast::Builtin as B;
+    match b {
+        B::Void => "void",
+        B::Bool => "_Bool",
+        B::Char => "char",
+        B::SChar => "signed char",
+        B::UChar => "unsigned char",
+        B::Short => "short",
+        B::UShort => "unsigned short",
+        B::Int => "int",
+        B::UInt => "unsigned int",
+        B::Long => "long",
+        B::ULong => "unsigned long",
+        B::LongLong => "long long",
+        B::ULongLong => "unsigned long long",
+        B::Int128 => "__int128",
+        B::UInt128 => "unsigned __int128",
+        B::Float => "float",
+        B::Double => "double",
+        B::LongDouble => "long double",
+        _ => "that type",
     }
 }
