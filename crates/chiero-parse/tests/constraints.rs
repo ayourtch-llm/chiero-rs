@@ -703,3 +703,52 @@ fn the_non_pedantic_dialect_accepts_what_gnu11_accepts() {
         );
     }
 }
+
+/// **A parameter shadows a typedef of the same name inside the body** (C 6.2.1p4: the
+/// parameter's scope is the function body, and the typedef is hidden there).
+///
+/// The only parse failure in a sweep of all 1552 VPP files was this, in
+/// `plugins/acl/hash_lookup.c`:
+///
+/// ```c
+/// static int count_bits (u64 word) { ... word >>= 1; ... }
+/// ```
+///
+/// `vppinfra/types.h` has `typedef i64 word;`, so with the typedef still visible the parser
+/// reads `word >>= 1` as a declaration and reports "expected a declarator name" at the `>>=`.
+/// The name is ordinary in C — VPP also has `u8`, `word`, `uword` used as parameter names.
+#[test]
+fn a_parameter_shadows_a_typedef_of_the_same_name() {
+    assert_eq!(
+        diags(
+            "typedef int word;\n\
+             static int count_bits(unsigned long word) {\n\
+             \x20 int counter = 0;\n\
+             \x20 while (word) { counter += word & 1; word >>= 1; }\n\
+             \x20 return counter;\n\
+             }\n"
+        ),
+        Vec::<String>::new()
+    );
+
+    // A local variable shadows it too, and the typedef is visible again afterwards.
+    assert_eq!(
+        diags(
+            "typedef int word;\n\
+             void f(void) { int word = 0; word += 1; }\n\
+             word g;\n"
+        ),
+        Vec::<String>::new()
+    );
+
+    // **And the shadow ends with the function.** A second function must still see the typedef
+    // as a type, or the fix would have traded one failure for a worse one.
+    assert_eq!(
+        diags(
+            "typedef int word;\n\
+             void f(unsigned long word) { (void)word; }\n\
+             word h(word x) { return x; }\n"
+        ),
+        Vec::<String>::new()
+    );
+}
