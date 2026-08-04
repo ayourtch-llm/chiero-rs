@@ -549,6 +549,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
+> ### 🔧 ROOT CAUSE (2026-08-04): sema types an undeclared builtin call as **`Ty::Error`**
+>
+> Measured by printing every expression's type and conversions for the two shapes:
+>
+> | expr | `(long) __builtin_ctz(x)` | `(long) g(x)`, `g` declared |
+> |---|---|---|
+> | callee ident | **`Error`** | `Ptr(Func)` + `FunctionDecay` |
+> | the call | **`Error`** | `Int(32)` |
+> | the cast | `Int(64)`, convs **`[Return]`** | `Int(64)`, convs `[]` |
+>
+> `is_compiler_builtin` exempts the name from "was not declared" but nothing gives it a type, so
+> the call is **poison**. Poison then propagates: the cast over it takes a `Return` conversion the
+> ordinary shape does not, and lowering emits a second `zext` on top of the one `raw_expr`
+> already produced — the two-cast CIR above.
+>
+> **The fix is to give the call a type, not to touch lowering.** C's implicit-`int` is the
+> obvious candidate and matches what the rest of the pipeline expects. Doing that also unblocks
+> Tier 1/2 of the builtin plan, which need signatures anyway — and `void` is the first thing a
+> signature says.
+>
+> ⚠️ **Correction to an earlier note in this file and in
+> `chiero-lower/tests/unmodeled_builtin.rs`:** I recorded that sema "types every builtin call
+> `int` via the implicit-int rule". **It types them `Error`.** The observable I checked — an
+> `Opaque` with one `dst` — matched by coincidence, because `cty(Error)` falls back to `Int(32)`.
+> The test comment saying otherwise is wrong and should be fixed with the same change.
+>
 > ### ✅ DIAGNOSED (2026-08-04): the cast is emitted **twice**
 >
 > CIR dumped for `long f(int x) { return (long) __builtin_ctz(x); }`, with both discard paths
