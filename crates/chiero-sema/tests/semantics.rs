@@ -7864,3 +7864,79 @@ fn a_packed_enumeration_is_as_narrow_as_its_range() {
     assert_eq!(repr("typedef enum { A = 0, B = 3 } E; E v;"), u(32));
     assert_eq!(repr("typedef enum { A = -1, B = 3 } E; E v;"), i(32));
 }
+
+/// **C 6.7.6.3p7: a parameter declared "array of T" has type "pointer to T".**
+///
+/// chiero kept the array type and compensated at each site that noticed — `compatible`
+/// normalising pointer against array, and `assignable`'s null-constant arm naming `Ty::Array`.
+/// Two compensations for one missing adjustment, and the third would have been a fix at the
+/// assignment site for `aes_cbc.c:77`.
+///
+/// **Every row is gcc 13.3.0, measured in `-std=gnu11` and `-std=c11 -pedantic-errors` alike.**
+/// The corpus supplies two of them: `ops += i` where the parameter is `vnet_crypto_op_t *ops[]`
+/// (`crypto_engines/native/aes_cbc.c:77`) and `argv++` on `main (int argc, char *argv[])`
+/// (`vpp/app/vppctl.c:191`) — two diagnostic kinds, one cause, which is why the queue table
+/// showed them as unrelated singletons.
+///
+/// **The `sizeof` rows are the ones that matter.** The others are spurious diagnostics, which
+/// announce themselves. `sizeof p` returned 16 where gcc returns 8 — a wrong *value*, with no
+/// diagnostic, feeding layout and 021's memory model. A corpus sweep cannot see it, because a
+/// sweep only reports diagnostics.
+#[test]
+fn an_array_typed_parameter_is_a_pointer() {
+    let diags = |src: &str| {
+        harness::parse_allowing_diagnostics(src, TargetConfig::x86_64_linux())
+            .analysis
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for src in [
+        // **The value, asserted rather than the absence of a message.** "No diagnostic" cannot
+        // tell 8 from 16; a `_Static_assert` fails loudly.
+        "int f(int p[4]){ _Static_assert(sizeof p == 8, \"a pointer\"); return 0; }",
+        // **Only the outermost dimension is adjusted.** `int q[3][4]` becomes `int (*)[4]`, so
+        // the parameter is 8 and a *row* is still 16. An adjustment that recursed would make
+        // `q[0]` a pointer too and this row is what catches it.
+        "int f(int q[3][4]){ _Static_assert(sizeof q == 8, \"a pointer to a row\");\n\
+         _Static_assert(sizeof q[0] == 16, \"and the row is still an array\"); return 0; }",
+        // The two corpus shapes, and the assignment form behind one of them.
+        "int f(int argc, char *argv[]){ argv++; return **argv; }",
+        "typedef struct { int x; } op_t;\nint f(op_t *ops[], int i){ ops += i; return ops[0]->x; }",
+        "int f(int argc, char *argv[]){ argv = argv + 1; return **argv; }",
+        // `&p` is a pointer to the adjusted type, not to an array.
+        "int f(int p[4]){ int **q = &p; return **q; }",
+        // An unsized parameter is the same adjustment; VPP writes both spellings.
+        "int f(int p[]){ _Static_assert(sizeof p == 8, \"unsized too\"); return p[0]; }",
+    ] {
+        assert_eq!(
+            diags(src),
+            Vec::<String>::new(),
+            "gcc compiles this in both modes: {src}"
+        );
+    }
+
+    // **A local array is untouched**, which is the half the adjustment must not reach: the
+    // parameter's type changes, the object's does not. gcc refuses both of these in both modes.
+    for (src, expect) in [
+        (
+            "void f(void){ int a[2], b[2]; a = b; }",
+            "assignment to an array",
+        ),
+        ("void f(void){ int a[2]; a++; }", "`++` needs a scalar operand"),
+    ] {
+        assert!(
+            diags(src).iter().any(|m| m == expect),
+            "a local array is still an array: {src} -> {:?}",
+            diags(src)
+        );
+    }
+
+    // And its `sizeof` is still the array's.
+    assert_eq!(
+        diags("void f(void){ int a[4]; _Static_assert(sizeof a == 16, \"the object is an array\"); (void)a; }"),
+        Vec::<String>::new()
+    );
+}

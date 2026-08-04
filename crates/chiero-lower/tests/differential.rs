@@ -3555,6 +3555,39 @@ fn a_multidimensional_array_keeps_its_dimension_order() {
         "struct S { int m[2][3]; };",
         "struct S s = {{{1,2,3},{4,5,6}}}; return s.m[1][2];",
     );
+
+    // **A write *through* an array parameter reaches the caller's array.** C 6.7.6.3p7 makes
+    // the parameter a pointer, so `a[0] = 7` in the callee is a write to the caller's object.
+    //
+    // **The read-only fixture above cannot see this, and that is the point.** chiero treated an
+    // array parameter as an aggregate — a private slot plus a prologue `CopyMem` — so the callee
+    // wrote to its own copy. A callee that only *reads* gets the right answer from a copy, so
+    // every existing fixture agreed with gcc while the model was wrong. Nothing in a corpus
+    // sweep could see it either: a wrong value is not a diagnostic.
+    agree_with(
+        "void bump(int a[3]) { a[0] = 7; a[2] = 9; }",
+        "int a[3] = {1,2,3}; bump(a); return a[0]*100 + a[1]*10 + a[2];",
+    );
+    // Unsized, and through two levels — the `char *argv[]` shape, whose slot was one byte.
+    agree_with(
+        "void set(int a[]) { a[1] = 5; }",
+        "int a[3] = {1,2,3}; set(a); return a[0]*100 + a[1]*10 + a[2];",
+    );
+    agree_with(
+        "int first(char *v[]) { return v[0][0]; }",
+        "char *s = \"A\"; char *v[2] = {s, 0}; return first(v);",
+    );
+    // A row written through a parameter of array-of-array type: only the outer dimension
+    // adjusts, so `a[1]` is still a row and `a[1][2]` still scales by the row's size.
+    agree_with(
+        "void poke(int a[2][3]) { a[1][2] = 8; }",
+        "int a[2][3] = {{1,2,3},{4,5,6}}; poke(a); return a[1][2]*10 + a[0][0];",
+    );
+    // **The parameter itself is assignable**, and moving it does not disturb the caller.
+    agree_with(
+        "int second(int a[3]) { a++; return a[0]; }",
+        "int a[3] = {4,5,6}; return second(a)*10 + a[0];",
+    );
 }
 
 /// **GNU's `__label__` does not parse, and it is the only keyword left with no production.**
