@@ -623,10 +623,21 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > That is two compensations for one missing adjustment, and the second was a live corpus defect
 > for as long as it went unwritten. A third site will eventually be missed the same way.
 >
-> **Not done now because the blast radius is real and unmeasured**: the parameter's type is read
-> by layout, by `sizeof`, and by 015's lowering, and `sizeof p` inside `g(int p[4])` must become
-> `sizeof(int *)` — which is what the adjustment gives and what gcc does, but nothing currently
-> pins it. Worth its own wave, with a fable architecture review before the first edit.
+> ⚠️ **This is no longer speculative debt — it has a corpus finding forcing it.** The note below
+> was written predicting "a third site will eventually be missed the same way". The third site
+> was already in the queue when that sentence was written: `crypto_engines/native/aes_cbc.c:77`
+> does `ops += i` where the parameter is `vnet_crypto_op_t *ops[]`, and chiero calls it
+> "assignment to an array". It is the **last remaining sema finding on the corpus**.
+>
+> **Do not patch it at the assignment site.** A third compensation is exactly the wrong move,
+> and the temptation will be strong because it is one arm and the corpus would go green.
+>
+> **Still deferred because the blast radius is real and unmeasured**: the parameter's type is
+> read by layout, by `sizeof`, and by 015's lowering, and `sizeof p` inside `g(int p[4])` must
+> become `sizeof(int *)` — which is what the adjustment gives and what gcc does, but nothing
+> currently pins it. Its own wave, with a fable architecture review before the first edit, and
+> the review should be asked specifically whether the adjustment belongs at parameter
+> declaration or at each use.
 >
 > ### 💡 BACKLOG (owner, behind everything else): multi-platform analysis in one run
 >
