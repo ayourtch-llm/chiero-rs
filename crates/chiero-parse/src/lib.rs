@@ -75,6 +75,13 @@ impl TypedefOracle for ScopedTypedefs {
 
     fn declare_enclosing(&mut self, sym: Symbol, is_typedef: bool) {
         // Second from the top, or the file scope when there is nothing above it.
+        //
+        // **`scopes.len() - 2` and `0` are the same thing for every input C can produce**, and
+        // mutation confirms it: a function definition is only ever at file scope, so the scope
+        // enclosing its prototype scope *is* the file scope. That mutant is equivalent, not
+        // untested. It stops being equivalent the day GNU nested functions are supported —
+        // 013's construct table lists them as unsupported, at one VPP file — so this is
+        // written relative to the top of the stack rather than to its bottom.
         let at = self.scopes.len().saturating_sub(2);
         if let Some(scope) = self.scopes.get_mut(at) {
             scope.insert(sym, is_typedef);

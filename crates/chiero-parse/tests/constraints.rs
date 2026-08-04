@@ -741,6 +741,22 @@ fn a_parameter_shadows_a_typedef_of_the_same_name() {
         Vec::<String>::new()
     );
 
+    // **The function's own name is declared, and in the enclosing scope.** Mutation showed
+    // nothing tested this: dropping the declaration, or putting it in the prototype scope
+    // that is about to be discarded, changed no result. Here `g` is a typedef until the
+    // definition hides it, and the call afterwards only parses if that happened at file
+    // scope.
+    // `g * 1;` is the discriminator: with `g` a typedef it is a declaration of a pointer and
+    // the parser wants a declarator name; with `g` an object it is a multiplication. A call
+    // `g()` does *not* discriminate — the expression path never asks whether the callee names
+    // a type — which is why the first attempt at this row passed under the mutant too.
+    assert_eq!(
+        diags(
+            "typedef int g;\n             int g(void) { return 0; }\n             void use(void) { g * 1; }\n"
+        ),
+        Vec::<String>::new()
+    );
+
     // **And the shadow ends with the function.** A second function must still see the typedef
     // as a type, or the fix would have traded one failure for a worse one.
     assert_eq!(

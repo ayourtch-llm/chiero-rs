@@ -2078,7 +2078,7 @@ impl Cx<'_> {
                     // **One scope for the parameters and the body**, per C 6.9.1p9. Opened here
                     // rather than by the body's `Compound`, which is told to reuse it.
                     self.meanings.enter();
-                self.values.enter();
+                    self.values.enter();
                     self.values.enter();
                     for p in params {
                         if let DeclKind::Var {
@@ -2195,7 +2195,7 @@ impl Cx<'_> {
                     self.register_objects = saved_reg;
                     self.automatic_objects = saved_auto;
                     self.meanings.leave();
-                self.values.leave();
+                    self.values.leave();
                     self.values.leave();
                 }
             }
@@ -8420,7 +8420,7 @@ impl Cx<'_> {
                 let own_scope = !std::mem::take(&mut self.body_scope_open);
                 if own_scope {
                     self.meanings.enter();
-                self.values.enter();
+                    self.values.enter();
                     self.values.enter();
                 }
                 for s in ss {
@@ -8428,7 +8428,7 @@ impl Cx<'_> {
                 }
                 if own_scope {
                     self.meanings.leave();
-                self.values.leave();
+                    self.values.leave();
                     self.values.leave();
                 }
                 self.declared_enumerators.leave();
