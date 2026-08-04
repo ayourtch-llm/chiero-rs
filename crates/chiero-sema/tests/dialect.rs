@@ -1246,3 +1246,72 @@ fn a_null_pointer_constant_reaches_an_array_typed_parameter() {
         }
     }
 }
+
+/// **`p > 0` is a pedantic-only rule; `p > 1` is an error in both modes.**
+///
+/// Measured on gcc 13: `v[i] > 0` where `v` is `int **` compiles silently under `-std=gnu11`
+/// and draws "ordered comparison of pointer with integer zero [-Wpedantic]" under
+/// `-pedantic-errors`. Replace the `0` with a `1` and it is "comparison between pointer and
+/// integer" in *both* modes.
+///
+/// chiero drew its flat both-modes sentence for the zero form. Both of VPP's remaining
+/// `comparison between a pointer and an integer` findings are that form, and both are a null
+/// check written with the wrong operator — `flowprobe.c:1390` on `u32 **` and `pvti_if.c:125`
+/// on `index_t **`, the latter inside an `ALWAYS_ASSERT` guarding a `vec_len (…) == 0` branch.
+///
+/// **A null pointer constant is what the two operators disagree about** (C 6.5.9p2 vs 6.5.8p2):
+/// `p == 0` is legal outright, `p > 0` is a constraint violation the standard states and gcc
+/// declines to enforce outside pedantic mode. The comment on this arm said "`p > 0` is not
+/// legal" and stopped there, which is true of the standard and wrong about the compiler the
+/// corpus is measured against.
+#[test]
+fn an_ordered_comparison_with_a_null_constant_is_a_pedantic_rule_only() {
+    let ordered = "ordered comparison of a pointer with integer zero";
+    for src in [
+        "int f(int **v, int i){ return v[i] > 0; }\n",
+        "int f(int **v, int i){ return v[i] >= 0; }\n",
+        "int f(int **v, int i){ return 0 < v[i]; }\n",
+    ] {
+        assert_eq!(
+            sema_messages(src, Dialect::gnu()),
+            Vec::<String>::new(),
+            "gnu11 compiles this silently: {src}"
+        );
+        assert_eq!(
+            sema_messages(src, Dialect::pedantic()),
+            vec![ordered.to_string()],
+            "the calibration default still reports it: {src}"
+        );
+    }
+
+    // **Equality with a null constant stays legal in both**, which is the row the fix must not
+    // sweep up: `p == 0` is not a constraint violation at all.
+    for src in [
+        "int f(int **v, int i){ return v[i] == 0; }\n",
+        "int f(int **v, int i){ return v[i] != 0; }\n",
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(src, dialect),
+                Vec::<String>::new(),
+                "`p == 0` is legal C: {src}"
+            );
+        }
+    }
+
+    // **A non-zero integer is refused in both modes**, ordered or not — the half that keeps this
+    // from becoming "a pointer may be compared with anything".
+    for src in [
+        "int f(int **v, int i){ return v[i] > 1; }\n",
+        "int f(int **v, int i){ return v[i] == 1; }\n",
+        "int f(int **v, int i, int n){ return v[i] > n; }\n",
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(src, dialect),
+                vec!["comparison between a pointer and an integer".to_string()],
+                "a non-null integer is refused in both modes: {src}"
+            );
+        }
+    }
+}
