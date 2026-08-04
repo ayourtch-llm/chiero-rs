@@ -494,10 +494,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
 > full VPP build: **1871 translation units, 1839 clean (98.3%)**, 32 findings over 13 kinds.
 >
+> **Concrete paths** (a previous session's scratchpad; still on disk, and a fresh session gets a
+> *different* scratchpad, so these are written out rather than left as placeholders):
+>
 > ```
-> cd <build-dir>            # cmake -G Ninja -DCMAKE_C_COMPILER=<shim> <vpp>/src
-> CCACHE_DISABLE=1 CHIERO_REAL_CC=gcc ninja -j 12
-> cargo run --release -p xtask -- cc-report --tree <build-dir>
+> SHIM=/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/5be48d05-e3eb-47c4-9e5e-8c0807f62504/scratchpad/chiero-cc
+> BUILD=/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/5be48d05-e3eb-47c4-9e5e-8c0807f62504/scratchpad/vppbuild
+>
+> cargo build --release -p xtask          # the shim execs target/release/xtask cc
+> find $BUILD -name '*.chiero' -delete    # stale records are not re-measured
+> (cd $BUILD && ninja -t clean)
+> (cd $BUILD && CCACHE_DISABLE=1 CHIERO_REAL_CC=gcc ninja -j 12)
+> cargo run --release -p xtask -- cc-report --tree $BUILD
+> ```
+>
+> If `$BUILD` is gone, re-create it — `cmake` takes ~11s, the build ~30 min:
+>
+> ```
+> mkdir -p $BUILD && cd $BUILD
+> cmake -G Ninja -DCMAKE_C_COMPILER=$SHIM -DCMAKE_BUILD_TYPE=release /home/ubuntu/vpp/src
+> ```
+>
+> The shim is a two-line script; re-create it anywhere if missing:
+>
+> ```
+> #!/bin/bash
+> exec /home/ubuntu/rust/chiero-rs/target/release/xtask cc "$@"
 > ```
 >
 > ⚠️ **`CCACHE_DISABLE=1` is mandatory.** VPP's cmake wraps the compiler in ccache; a warm cache
