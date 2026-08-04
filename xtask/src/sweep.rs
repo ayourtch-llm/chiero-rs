@@ -553,6 +553,22 @@ pub fn in_system_header(
     system.iter().any(|dir| path.starts_with(dir))
 }
 
+/// A `BothRefused` grouping key naming **both** sides.
+///
+/// Both compilers objecting says nothing about whether they objected to the same thing — each
+/// reports only its first message. Grouped by kinds rather than located text, so files that
+/// disagree the same way collapse into one row; 1018 rows one per file is not a report.
+///
+/// Empty when either side is not a diagnosis, which cannot be part of a disagreement.
+pub fn disagreement_key(gcc: &Outcome, chiero: &Outcome) -> String {
+    match (gcc, chiero) {
+        (Outcome::Diagnosed(g), Outcome::Diagnosed(c)) => {
+            format!("gcc: {}  ||  {}", kind(g), kind(c))
+        }
+        _ => String::new(),
+    }
+}
+
 /// One file's verdict.
 #[derive(Debug, Clone)]
 pub struct Verdict {
@@ -710,6 +726,22 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         let mut groups: indexmap::IndexMap<String, (usize, PathBuf, String)> =
             indexmap::IndexMap::new();
         for v in verdicts.iter().filter(|v| v.bucket == bucket) {
+            // **`BothRefused` names both sides.** Grouped by gcc alone it read as agreement,
+            // which it is not: each tool reports only its first message, so a file where they
+            // object to different things looked settled. That is how `vcl/vppcom.h` hid a miss.
+            if bucket == Bucket::BothRefused {
+                let key = disagreement_key(&v.gcc, &v.chiero);
+                if !key.is_empty() {
+                    let e = groups
+                        .entry(key)
+                        .or_insert((0, v.path.clone(), String::new()));
+                    e.0 += 1;
+                    if e.2.is_empty() {
+                        e.2 = v.path.display().to_string();
+                    }
+                    continue;
+                }
+            }
             let msg = match if side { &v.chiero } else { &v.gcc } {
                 Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),
                 Outcome::Clean => continue,

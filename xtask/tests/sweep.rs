@@ -798,9 +798,12 @@ fn a_both_refused_row_names_both_sides() {
     // **Two files disagreeing the same way group together.** Otherwise 1018 rows arrive one
     // per file and the section is unreadable, which is why it was grouped by one side to begin
     // with.
+    // The real shapes: gcc writes `path:line:col: error: …`, and `chiero_outcome` writes
+    // `sema: path:line:col: …`. Written the way each tool actually emits them, because `kind`
+    // strips a *leading* location and a fixture with the path at the end tests nothing.
     assert_eq!(
-        disagreement_key(&d("error: A at /x/a.c:1:1"), &d("sema: /x/a.c:1:1: B")),
-        disagreement_key(&d("error: A at /y/b.c:9:9"), &d("sema: /y/b.c:9:9: B")),
+        disagreement_key(&d("/x/a.c:1:1: error: A"), &d("sema: /x/a.c:1:1: B")),
+        disagreement_key(&d("/y/b.c:9:9: error: A"), &d("sema: /y/b.c:9:9: B")),
         "the key is the kinds, not the locations"
     );
 
