@@ -110,6 +110,30 @@ fn a_shift_into_the_sign_bit_is_not_an_overflow_diagnostic() {
         );
     }
 
+    // **The shift's width comes from the *left* operand, and only a wider left operand can
+    // show it.** In `1 << 31` both sides are 32-bit signed `int`, so truncating to the right
+    // operand's type is indistinguishable — mutation proved it. These rows also assert a
+    // *value* rather than the absence of a message: a `_Static_assert` fails loudly if the
+    // result was truncated to the wrong width, where "no diagnostic" could not tell.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(
+            sema_messages(
+                "_Static_assert((1L << 40) == 1099511627776L, \"64-bit shift keeps its width\");\n",
+                dialect
+            ),
+            Vec::<String>::new()
+        );
+        // And the signedness is the left operand's: `1u << 31` is positive, not the negative
+        // value a signed truncation would give.
+        assert_eq!(
+            sema_messages(
+                "_Static_assert((1u << 31) > 0, \"an unsigned shift stays unsigned\");\n",
+                dialect
+            ),
+            Vec::<String>::new()
+        );
+    }
+
     // **Arithmetic overflow is still diagnosed**, in both dialects: `0x7fffffff + 1` is a
     // constraint violation gcc refuses under `-pedantic-errors`, and the point of the fix is
     // to stop conflating a shift with an addition — not to stop checking.
