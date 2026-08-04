@@ -262,7 +262,15 @@ pub fn chiero_outcome(
         &names,
         flags.dialect,
     );
-    match analysis.diagnostics.first() {
+    // **A diagnostic from a system header is not the project's defect**, and gcc does not
+    // report one: it suppresses `-pedantic` diagnostics originating in a system header. Without
+    // this the strict sweep's last finding was `__int128` inside `/usr/include/linux/types.h`,
+    // which no reader could act on and gcc never mentions.
+    match analysis
+        .diagnostics
+        .iter()
+        .find(|d| !in_system_header(&tu.source_map, d.span, system))
+    {
         Some(first) => Outcome::Diagnosed(format!(
             "sema: {}",
             describe(&tu.source_map, first.span, &first.message)
@@ -517,6 +525,32 @@ fn scan_chunk(
         }
     }
     (found, unreadable)
+}
+
+/// Whether `span` resolves into one of the `system` include directories.
+///
+/// **Compared over path components, not as a string prefix.** `/usr/includes-mine/x.h` starts
+/// with `/usr/include` and is not inside it; `Path::starts_with` is component-wise and
+/// `str::starts_with` is not.
+///
+/// An empty `system` list suppresses nothing: a sweep run where gcc could not be found must
+/// not quietly drop findings, the same reason `Outcome::NotRun` never counts as agreement.
+pub fn in_system_header(
+    map: &chiero_span::SourceMap,
+    span: chiero_span::Span,
+    system: &[PathBuf],
+) -> bool {
+    if span.is_dummy() || system.is_empty() {
+        return false;
+    }
+    let Some(loc) = map.lookup_loc(span.lo) else {
+        return false;
+    };
+    let Some(file) = map.try_file(loc.file) else {
+        return false;
+    };
+    let path = file.path();
+    system.iter().any(|dir| path.starts_with(dir))
 }
 
 /// One file's verdict.

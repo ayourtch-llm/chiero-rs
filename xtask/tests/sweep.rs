@@ -693,6 +693,9 @@ fn a_diagnostic_from_a_system_header_is_suppressed() {
 
     let f_sys = map.add_file("/usr/include/linux/types.h", "int a;\n");
     let f_user = map.add_file("/home/x/proj/main.c", "int b;\n");
+    // Added before the closure borrows the map: a near-miss path whose *string* starts with
+    // the system directory but whose components do not.
+    let f_near = map.add_file("/usr/includes-mine/x.h", "int c;\n");
     let at = |f: chiero_span::FileId| {
         let start = map.file(f).start_pos.0;
         chiero_span::Span::new(
@@ -702,14 +705,25 @@ fn a_diagnostic_from_a_system_header_is_suppressed() {
         )
     };
 
-    assert!(in_system_header(&map, at(f_sys), &[sys.clone()]));
-    assert!(!in_system_header(&map, at(f_user), &[sys.clone()]));
+    assert!(in_system_header(
+        &map,
+        at(f_sys),
+        std::slice::from_ref(&sys)
+    ));
+    assert!(!in_system_header(
+        &map,
+        at(f_user),
+        std::slice::from_ref(&sys)
+    ));
 
     // **A user path that merely starts with the same characters is not inside it.** With a
     // string prefix test, `/usr/includes-mine/x.h` would be swallowed; the comparison is over
     // path components.
-    let f_near = map.add_file("/usr/includes-mine/x.h", "int c;\n");
-    assert!(!in_system_header(&map, at(f_near), &[sys.clone()]));
+    assert!(!in_system_header(
+        &map,
+        at(f_near),
+        std::slice::from_ref(&sys)
+    ));
 
     // No system paths configured means nothing is suppressed — a sweep run without gcc must
     // not silently drop findings.
