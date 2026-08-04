@@ -376,3 +376,42 @@ fn an_enumerator_folded_from_a_float_is_a_pedantic_rule_only() {
         );
     }
 }
+
+/// **A parameter declared as a function is adjusted to a pointer to function** (C 6.7.6.3p8),
+/// exactly as an array parameter adjusts to a pointer.
+///
+/// Top of the queue after sweep round 5: 8 findings, from
+/// `plugins/ioam/analyse/ip6/node.c`, where the registration function writes its callback
+/// parameter as a *function type* rather than a pointer:
+///
+/// ```c
+/// int ip6_ioam_analyse_register_hbh_handler (u8 option,
+///                                            int options (u32 flow_id, …, u16 len));
+/// ```
+///
+/// Measured: `gcc -std=gnu11` and `gcc -std=gnu11 -pedantic-errors` both accept it with no
+/// diagnostic at all, so this is a defect rather than a dialect question and must be silent in
+/// **both** dialects.
+#[test]
+fn a_function_typed_parameter_adjusts_to_a_pointer() {
+    let src = "int reg(int h(int a, int b));\n\
+               int mine(int a, int b) { return a + b; }\n\
+               void f(void) { reg(mine); }\n";
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(sema_messages(src, dialect), Vec::<String>::new());
+    }
+
+    // **The adjustment does not make every function acceptable.** A callback with the wrong
+    // signature is still refused: the parameter becomes `int (*)(int, int)`, and that is a
+    // type, not a wildcard.
+    assert!(
+        !sema_messages(
+            "int reg(int h(int a, int b));\n\
+             int wrong(char *s) { return *s; }\n\
+             void f(void) { reg(wrong); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "a mismatched callback is still an error"
+    );
+}
