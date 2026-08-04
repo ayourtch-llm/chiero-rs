@@ -776,3 +776,34 @@ fn chiero_outcome_drops_a_system_header_diagnostic() {
         "the rule still fires when the header is not a system header"
     );
 }
+
+/// **`BothRefused` must show what each side said, not that both said something.**
+///
+/// Under the strict dialect 1018 of 1552 files land here, and the bucket is grouped by gcc's
+/// message alone — so a file where chiero objects to X and gcc to Y reads as settled. That is
+/// exactly how `vcl/vppcom.h` hid a miss: chiero reporting `__int128`, gcc reporting a
+/// zero-size array, neither ever agreeing about anything.
+#[test]
+fn a_both_refused_row_names_both_sides() {
+    use xtask::sweep::disagreement_key;
+
+    // Different constructs: the pair is the point, and both halves appear.
+    let k = disagreement_key(
+        &d("error: ISO C forbids zero-size array 'data'"),
+        &d("sema: ISO C does not support `__int128` types"),
+    );
+    assert!(k.contains("zero-size array"), "{k}");
+    assert!(k.contains("__int128"), "{k}");
+
+    // **Two files disagreeing the same way group together.** Otherwise 1018 rows arrive one
+    // per file and the section is unreadable, which is why it was grouped by one side to begin
+    // with.
+    assert_eq!(
+        disagreement_key(&d("error: A at /x/a.c:1:1"), &d("sema: /x/a.c:1:1: B")),
+        disagreement_key(&d("error: A at /y/b.c:9:9"), &d("sema: /y/b.c:9:9: B")),
+        "the key is the kinds, not the locations"
+    );
+
+    // An outcome that is not `Diagnosed` cannot be part of a disagreement pair.
+    assert_eq!(disagreement_key(&Outcome::Clean, &d("sema: B")), "");
+}
