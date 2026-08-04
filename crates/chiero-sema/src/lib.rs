@@ -582,6 +582,14 @@ pub struct Analysis {
     /// the argument expression, like `enum_refs` and `generic_selections` beside it, and for
     /// the same reason: the question is about types, so it is answered once, here.
     pub(crate) transparent_union_args: IndexMap<ExprId, (usize, Symbol)>,
+    /// Each conversion whose pointee alignment changed → `(from, to)`.
+    ///
+    /// **Compatibility ignores the attribute; the change is still information.** An increase
+    /// is the hazard — a 1-aligned object reached through a pointer promising 16 — and the
+    /// direction cannot be recovered downstream once compatibility has been decided. Not a
+    /// diagnostic: gcc reports nothing here in any mode, so it belongs to a checker rather
+    /// than to the dialect.
+    pub(crate) pointee_alignment_changes: IndexMap<ExprId, (u64, u64)>,
     /// Each declaration → the alignment its declarator asked for, when it asked for more than
     /// the type's own.
     ///
@@ -672,6 +680,14 @@ impl Analysis {
     /// The value of one enumerator *reference*, resolved in its own scope.
     pub fn enum_ref(&self, e: ExprId) -> Option<(i128, TyId)> {
         self.enum_refs.get(&e).copied()
+    }
+
+    /// Conversions whose pointee alignment changed: `(expression, from, to)`. An increase is
+    /// the hazardous direction.
+    pub fn pointee_alignment_changes(&self) -> impl Iterator<Item = (ExprId, u64, u64)> + '_ {
+        self.pointee_alignment_changes
+            .iter()
+            .map(|(e, (f, t))| (*e, *f, *t))
     }
 
     /// The transparent-union member an argument was widened to, if it was.
@@ -6714,6 +6730,22 @@ impl Cx<'_> {
         // the union's *first* member while the callee sees the union, so a later stage told
         // only "this was allowed" knows neither which member the value is nor that a
         // conversion happened. Answered here, once, where the types are.
+        // **Record a pointee alignment change** (see `pointee_alignment_changes`). Done before
+        // the compatibility verdict, because a compatible conversion is exactly the case that
+        // produces no diagnostic and would otherwise leave no trace at all.
+        let pointee = |cx: &Self, t: TyId| match cx.out.types[t.0 as usize] {
+            Ty::Ptr(p) => Some(p),
+            _ => None,
+        };
+        if let (Some(fp), Some(tp)) = (pointee(self, from), pointee(self, to))
+            && let (Some(fa), Some(ta)) = (
+                align_of_ty(&self.out, &self.target, fp),
+                align_of_ty(&self.out, &self.target, tp),
+            )
+            && fa != ta
+        {
+            self.out.pointee_alignment_changes.insert(expr, (fa, ta));
+        }
         if let Some((idx, name)) = self.transparent_member_for(from, to, null_constant) {
             self.out.transparent_union_args.insert(expr, (idx, name));
             return node;
