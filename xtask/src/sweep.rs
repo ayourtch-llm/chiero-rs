@@ -128,10 +128,16 @@ impl Flags {
         if let Some(s) = &self.std {
             a.push(format!("-std={s}"));
         }
-        // **Warnings off.** The oracle's question is "does this compile", and VPP builds with its
-        // own warning set — importing gcc's default noise would put clean files in the wrong
-        // bucket.
-        a.push("-w".to_owned());
+        // **The dialect goes to gcc too, or the two are answering different questions.** A
+        // default sweep otherwise compared strict chiero against permissive gcc, and a `--gnu`
+        // sweep could never show chiero being too *permissive* under the strict dialect.
+        if self.dialect.pedantic {
+            a.push("-pedantic-errors".to_owned());
+        }
+        // **Warnings stay on.** They were suppressed with `-w` under the argument that gcc's
+        // default noise would "put clean files in the wrong bucket" — true while a warning made
+        // a file a `Finding`, and false since `Bucket::SeverityMismatch` exists. With `-w` the
+        // severity bucket was unreachable and its count was a constant, not a measurement.
         for i in &self.includes {
             a.push(format!("-I{}", i.display()));
         }

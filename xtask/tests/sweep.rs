@@ -669,6 +669,9 @@ fn gcc_is_asked_the_same_question_as_chiero() {
     // Warnings stay on in both, or the severity bucket is unreachable and its count is a
     // constant dressed as a measurement.
     for a in [&strict, &gnu] {
-        assert!(!a.iter().any(|x| x == "-w"), "warnings must reach us: {a:?}");
+        assert!(
+            !a.iter().any(|x| x == "-w"),
+            "warnings must reach us: {a:?}"
+        );
     }
 }
