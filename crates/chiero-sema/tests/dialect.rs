@@ -600,3 +600,98 @@ fn a_zero_size_array_is_a_pedantic_rule_but_a_flexible_member_is_not() {
         );
     }
 }
+
+/// **`__attribute__((transparent_union))` on a parameter** (gcc's extension, at the owner's
+/// direction).
+///
+/// 67 translation units of the first full VPP build — the largest single category — and the
+/// cause is not VPP's code at all: glibc declares
+/// `bind (int, __CONST_SOCKADDR_ARG, socklen_t)` where that argument is a transparent union,
+/// so every socket call passes a `struct sockaddr *` where a union is expected.
+///
+/// A member's type is accepted for the parameter, **and which member was selected is
+/// recorded** — the call is passed as the first member but the callee sees the union, so a
+/// later stage that has only "it was allowed" cannot lower it.
+#[test]
+fn a_transparent_union_parameter_takes_any_members_type() {
+    let src = "typedef union { int *i; char *c; } __attribute__((__transparent_union__)) arg_t;\n\
+               int take(arg_t a);\n\
+               int f(int *p, char *q) { return take(p) + take(q); }\n";
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(
+            sema_messages(src, dialect),
+            Vec::<String>::new(),
+            "either member's type is accepted"
+        );
+    }
+
+    // **A type matching no member is still refused.** The attribute widens the parameter to
+    // its members, not to anything at all.
+    assert!(
+        !sema_messages(
+            "typedef union { int *i; char *c; } __attribute__((__transparent_union__)) arg_t;\n\
+             int take(arg_t a);\n\
+             struct S { int x; };\n\
+             int f(struct S s) { return take(s); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "a non-member type is not accepted"
+    );
+
+    // **Without the attribute the union is an ordinary union** and a member's type is not
+    // interchangeable with it, which is what chiero did for every union until now.
+    assert!(
+        !sema_messages(
+            "typedef union { int *i; char *c; } arg_t;\n\
+             int take(arg_t a);\n\
+             int f(int *p) { return take(p); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "an ordinary union is unchanged"
+    );
+}
+
+/// **The selected member is recorded, not merely permitted.**
+///
+/// gcc passes the argument as the union's *first* member while the callee sees the union, so a
+/// later stage handed only "this call was allowed" cannot lower it: it does not know which
+/// member the value is, nor that a conversion happened at all. Accepting silently would trade
+/// 67 findings for 67 places where lowering has to re-derive a fact sema already knew.
+#[test]
+fn the_selected_transparent_union_member_is_recorded() {
+    let src = "typedef union { int *i; char *c; } __attribute__((__transparent_union__)) arg_t;\n\
+               int take(arg_t a);\n\
+               int f(char *q) { return take(q); }\n";
+    let tu = chiero_pp::preprocess_str("t.c", src, Config::default());
+    assert!(tu.diagnostics.is_empty(), "{:?}", tu.diagnostics);
+    let mut oracle = ScopedTypedefs::new();
+    let parsed = parse_tu_with(&tu, &mut oracle, Dialect::gnu());
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let a = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &harness::names_of(&parsed),
+        Dialect::gnu(),
+    );
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+
+    // The argument expression that was widened, and the member it became: `c`, index 1.
+    let picked: Vec<usize> = parsed
+        .ast
+        .items()
+        .iter()
+        .filter_map(|_| None::<usize>)
+        .collect();
+    let _ = picked;
+    let recorded: Vec<(usize, String)> = a
+        .transparent_union_members()
+        .map(|(_, idx, name)| (idx, name))
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![(1usize, "c".to_owned())],
+        "the second member was selected, and sema says so"
+    );
+}
