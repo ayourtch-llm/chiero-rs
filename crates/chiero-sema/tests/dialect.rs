@@ -538,7 +538,13 @@ fn an_empty_translation_unit_is_a_pedantic_rule_only() {
     // modes. Testing only `""` would let "the TU declares no *object or function*" pass, which
     // is a different and wrong rule.
     for dialect in [Dialect::pedantic(), Dialect::gnu()] {
-        assert_eq!(sema_messages("typedef int t;\n", dialect), Vec::<String>::new());
-        assert_eq!(sema_messages("struct S { int a; };\n", dialect), Vec::<String>::new());
+        assert_eq!(
+            sema_messages("typedef int t;\n", dialect),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            sema_messages("struct S { int a; };\n", dialect),
+            Vec::<String>::new()
+        );
     }
 }

@@ -956,6 +956,16 @@ pub fn analyze_with(
         unknown_names: Default::default(),
         defined_with_init: Default::default(),
     };
+    // **C 6.9p1: a translation unit contains at least one external declaration.** `gnu11`
+    // accepts an empty one and `-pedantic-errors` refuses it, so this follows the dialect. The
+    // last 4 of the first strict sweep's 104 misses, all `vppinfra/test/` files whose whole
+    // body sits behind an `#ifdef` that configuration leaves off.
+    //
+    // `items()` is the test, not "declares an object or a function": a `typedef` or a bare
+    // `struct S { … };` *is* an external declaration and gcc accepts a unit holding only one.
+    if cx.dialect.pedantic && ast.items().is_empty() {
+        cx.error(Span::DUMMY, "ISO C forbids an empty translation unit");
+    }
     for &item in ast.items() {
         cx.item(item);
     }
