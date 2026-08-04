@@ -515,3 +515,30 @@ fn an_int128_is_supported_and_reported_under_the_strict_dialect() {
         );
     }
 }
+
+/// **A translation unit contains at least one external declaration** (C 6.9p1).
+///
+/// The last 4 of the strict sweep's 104 misses, all under `vppinfra/test/` — files whose whole
+/// body sits behind an `#ifdef` that the sweep's configuration leaves off, so what reaches the
+/// parser is empty.
+///
+/// Measured: `gnu11` accepts an empty translation unit, `-pedantic-errors` refuses it. A
+/// dialect question, so it is reported under the strict dialect only.
+#[test]
+fn an_empty_translation_unit_is_a_pedantic_rule_only() {
+    assert!(
+        sema_messages("", Dialect::pedantic())
+            .iter()
+            .any(|m| m.contains("empty translation unit")),
+        "`-pedantic-errors` refuses it"
+    );
+    assert_eq!(sema_messages("", Dialect::gnu()), Vec::<String>::new());
+
+    // **A typedef is an external declaration**, so this is not empty — gcc accepts it in both
+    // modes. Testing only `""` would let "the TU declares no *object or function*" pass, which
+    // is a different and wrong rule.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(sema_messages("typedef int t;\n", dialect), Vec::<String>::new());
+        assert_eq!(sema_messages("struct S { int a; };\n", dialect), Vec::<String>::new());
+    }
+}
