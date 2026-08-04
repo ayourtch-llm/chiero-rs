@@ -256,3 +256,37 @@ fn an_inner_block_declaration_does_not_escape_its_block() {
         "returning the inner struct as `unsigned long` is still wrong"
     );
 }
+
+/// **`return f();` where `f` returns `void`, inside a `void` function.** The dominant finding
+/// of the third full sweep — 735 of 755 — through `vnet/interface_funcs.h` and the many
+/// wrappers like it.
+///
+/// Measured, and the two halves of this rule differ:
+///
+/// * `return void_expr;` — `gnu11` accepts **silently**, `-pedantic-errors` refuses ("ISO C
+///   forbids `return` with expression, in function returning void").
+/// * `return 5;` — `gnu11` **warns**, `-pedantic-errors` refuses.
+///
+/// So only the first is gated. The second stays diagnosed in both dialects: gcc warns rather
+/// than accepting, and chiero has no warning level, so silencing it would turn a diagnostic
+/// gcc still issues into a `Miss` against the sweep's `misses: 0`.
+#[test]
+fn returning_a_void_expression_from_a_void_function_is_a_pedantic_rule_only() {
+    let void_expr = "static void a(void){}\nstatic void b(void){ return a(); }\n";
+    assert!(
+        sema_messages(void_expr, Dialect::pedantic())
+            .iter()
+            .any(|m| m.contains("return")),
+        "the calibration default still reports it"
+    );
+    assert_eq!(sema_messages(void_expr, Dialect::gnu()), Vec::<String>::new());
+
+    // A *value* is a different rule and stays diagnosed in both: gcc only warns, and chiero
+    // matching that would mean saying nothing where gcc says something.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages("void f(void){ return 5; }\n", dialect).is_empty(),
+            "a non-void value is not the gated case"
+        );
+    }
+}
