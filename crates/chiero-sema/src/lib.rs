@@ -8442,7 +8442,14 @@ impl Cx<'_> {
     /// do differently.
     fn check_literal_content(&mut self, content: &str, bits: u32, span: Span) {
         let mut bad = Vec::new();
-        strlit::string_units_reporting(content, &mut bad);
+        let mut gnu_only = Vec::new();
+        strlit::string_units_split(content, &mut bad, &mut gnu_only);
+        // **Only the escapes gcc accepts *silently* follow the dialect.** `\%` and `\e` are
+        // silent under `gnu11`; `\q` and `\8` warn, so going quiet on those would say
+        // nothing where gcc speaks. 5 findings from `perfmon/arm/bundle/branch_pred.c`.
+        if self.dialect.pedantic {
+            bad.extend(gnu_only);
+        }
         if let Some(first) = bad.first() {
             self.error(span, first.clone());
             return;

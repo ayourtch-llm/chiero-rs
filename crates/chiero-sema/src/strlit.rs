@@ -104,7 +104,27 @@ pub fn string_units(content: &str) -> Vec<StrUnit> {
 ///
 /// **Shape only.** Whether a value fits is not decidable here, because it depends on the element
 /// width and this walk does not know the prefix — see [`escape_range_defect`].
+/// Escapes `gcc -std=gnu11` accepts with **no diagnostic at all**, as against the ones it
+/// warns about.
+///
+/// Measured, because the set is not guessable: `\%` is accepted so a format-string fragment
+/// may be written literally. `\q` and `\8` warn, and every other unknown escape behaves like
+/// them. `\e` is GNU's ESC and is handled in its own arm, since it also decodes to a value.
+pub fn gnu_accepts_escape(c: char) -> bool {
+    matches!(c, '%')
+}
+
 pub fn string_units_reporting(content: &str, bad: &mut Vec<String>) -> Vec<StrUnit> {
+    string_units_split(content, bad, &mut Vec::new())
+}
+
+/// As [`string_units_reporting`], separating escapes gcc refuses only under
+/// `-pedantic-errors` (`gnu_only`) from those it warns about in every mode (`bad`).
+pub fn string_units_split(
+    content: &str,
+    bad: &mut Vec<String>,
+    gnu_only: &mut Vec<String>,
+) -> Vec<StrUnit> {
     let mut out = Vec::with_capacity(content.len());
     let mut it = content.chars().peekable();
     while let Some(c) = it.next() {
@@ -127,7 +147,15 @@ pub fn string_units_reporting(content: &str, bad: &mut Vec<String>) -> Vec<StrUn
             'b' => out.push(StrUnit::Raw(8)),
             'f' => out.push(StrUnit::Raw(12)),
             'v' => out.push(StrUnit::Raw(11)),
-            'e' => out.push(StrUnit::Raw(27)), // a GNU extension gcc accepts
+            // **A GNU extension: ESC.** `gnu11` takes it silently and `-pedantic-errors`
+            // refuses it, so it is reported like `\%` — under the strict dialect only — while
+            // still decoding to 27 in both. Chiero previously accepted it in *both* modes,
+            // which was a `Miss` against `-pedantic-errors` that no VPP sweep could show
+            // because the sweep runs `--gnu`.
+            'e' => {
+                gnu_only.push("unknown escape sequence `\\e`".to_owned());
+                out.push(StrUnit::Raw(27));
+            }
             '\\' => out.push(StrUnit::Raw(92)),
             '\'' => out.push(StrUnit::Raw(39)),
             '"' => out.push(StrUnit::Raw(34)),
@@ -203,7 +231,11 @@ pub fn string_units_reporting(content: &str, bad: &mut Vec<String>) -> Vec<StrUn
             // An unknown escape keeps the escaped character, which is what gcc does for
             // the ones it warns about.
             other => {
-                bad.push(format!("unknown escape sequence `\\{other}`"));
+                if !gnu_accepts_escape(other) {
+                    bad.push(format!("unknown escape sequence `\\{other}`"));
+                } else {
+                    gnu_only.push(format!("unknown escape sequence `\\{other}`"));
+                }
                 out.push(StrUnit::Char(other as u32));
             }
         }

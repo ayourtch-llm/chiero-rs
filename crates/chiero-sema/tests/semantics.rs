@@ -2397,7 +2397,11 @@ fn an_escape_sequence_is_constrained() {
     for good in [
         // Every escape C defines, and the one gcc adds.
         "const char *s = \"\\n\\t\\r\\f\\v\\b\\a\\?\\\\\\\"\\'\";",
-        "const char *s = \"\\e\";",
+        // `"\\e"` moved to `dialect.rs`: it is GNU's ESC, accepted silently by `gnu11` and
+        // refused by `-pedantic-errors`, so it belongs with the other dialect-dependent
+        // escapes rather than in a list of things accepted unconditionally. It was here
+        // because chiero accepted it in *both* modes, which was a miss against the
+        // calibration wave 314 set.
         // The largest values that fit one narrow element.
         "const char *s = \"\\377\";",
         "const char *s = \"\\xFF\";",
