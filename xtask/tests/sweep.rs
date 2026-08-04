@@ -825,9 +825,21 @@ fn the_report_groups_both_refused_by_the_pair() {
         chiero,
     };
     let verdicts = vec![
-        v("a.c", d("/a.c:1:1: error: zero-size array"), d("sema: /a.c:2:2: no `__int128`")),
-        v("b.c", d("/b.c:3:3: error: zero-size array"), d("sema: /b.c:4:4: no `__int128`")),
-        v("c.c", d("/c.c:5:5: error: unknown type"), d("parse: /c.c:6:6: expected a type")),
+        v(
+            "a.c",
+            d("/a.c:1:1: error: zero-size array"),
+            d("sema: /a.c:2:2: no `__int128`"),
+        ),
+        v(
+            "b.c",
+            d("/b.c:3:3: error: zero-size array"),
+            d("sema: /b.c:4:4: no `__int128`"),
+        ),
+        v(
+            "c.c",
+            d("/c.c:5:5: error: unknown type"),
+            d("parse: /c.c:6:6: expected a type"),
+        ),
     ];
 
     let rows = grouped_rows(&verdicts, Bucket::BothRefused, false);
@@ -835,7 +847,11 @@ fn the_report_groups_both_refused_by_the_pair() {
     assert_eq!(rows.len(), 2, "{rows:?}");
     let two = rows.iter().find(|r| r.1 == 2).expect("the pair of two");
     assert!(two.0.contains("zero-size array"), "{}", two.0);
-    assert!(two.0.contains("__int128"), "names chiero's side too: {}", two.0);
+    assert!(
+        two.0.contains("__int128"),
+        "names chiero's side too: {}",
+        two.0
+    );
 
     // **A finding row still names one side only.** Applying the pair everywhere would make
     // every bucket unreadable, and is the other half of what mutation could switch freely.

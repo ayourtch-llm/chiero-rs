@@ -643,6 +643,60 @@ pub fn sweep_with(
     Ok(results.into_iter().flatten().collect())
 }
 
+/// The rows the report prints for one bucket: `(key, count, example)`, grouped.
+///
+/// Extracted from `report` so the grouping is observable. `report` returns nothing, so a
+/// mutation that switched the `BothRefused` pairing off — or applied it to every bucket —
+/// changed no test outcome; the helpers were verified and their use was not.
+pub fn grouped_rows(
+    verdicts: &[Verdict],
+    bucket: Bucket,
+    side: bool,
+) -> Vec<(String, usize, String)> {
+    let mut groups: indexmap::IndexMap<String, (usize, PathBuf, String)> =
+        indexmap::IndexMap::new();
+    for v in verdicts.iter().filter(|v| v.bucket == bucket) {
+        // **`BothRefused` names both sides.** Grouped by gcc alone it read as agreement,
+        // which it is not: each tool reports only its first message, so a file where they
+        // object to different things looked settled. That is how `vcl/vppcom.h` hid a miss.
+        if bucket == Bucket::BothRefused {
+            let key = disagreement_key(&v.gcc, &v.chiero);
+            if !key.is_empty() {
+                let e = groups
+                    .entry(key)
+                    .or_insert((0, v.path.clone(), String::new()));
+                e.0 += 1;
+                if e.2.is_empty() {
+                    e.2 = v.path.display().to_string();
+                }
+                continue;
+            }
+        }
+        let msg = match if side { &v.chiero } else { &v.gcc } {
+            Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),
+            Outcome::Clean => continue,
+        };
+        // Group by kind; keep the first located text as the example.
+        let e = groups
+            .entry(kind(&msg))
+            .or_insert((0, v.path.clone(), msg.clone()));
+        e.0 += 1;
+    }
+    // Emptiness is the caller's business: `report` skips a section with no rows, and a helper
+    // that returned early on it could not be asked "what would this bucket print".
+    groups
+        .into_iter()
+        .map(|(k, (n, path, located))| {
+            let example = if located.is_empty() || located == k {
+                path.display().to_string()
+            } else {
+                located
+            };
+            (k, n, example)
+        })
+        .collect()
+}
+
 /// Print the report: counts, then the queue.
 ///
 /// **The queue is the point** (023 §9: a report a person cannot act on is not a report). A bare
@@ -723,51 +777,18 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         ),
         ("TOOL GAPS", Bucket::ToolGap, true),
     ] {
-        let mut groups: indexmap::IndexMap<String, (usize, PathBuf, String)> =
-            indexmap::IndexMap::new();
-        for v in verdicts.iter().filter(|v| v.bucket == bucket) {
-            // **`BothRefused` names both sides.** Grouped by gcc alone it read as agreement,
-            // which it is not: each tool reports only its first message, so a file where they
-            // object to different things looked settled. That is how `vcl/vppcom.h` hid a miss.
-            if bucket == Bucket::BothRefused {
-                let key = disagreement_key(&v.gcc, &v.chiero);
-                if !key.is_empty() {
-                    let e = groups
-                        .entry(key)
-                        .or_insert((0, v.path.clone(), String::new()));
-                    e.0 += 1;
-                    if e.2.is_empty() {
-                        e.2 = v.path.display().to_string();
-                    }
-                    continue;
-                }
-            }
-            let msg = match if side { &v.chiero } else { &v.gcc } {
-                Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),
-                Outcome::Clean => continue,
-            };
-            // Group by kind; keep the first located text as the example.
-            let e = groups
-                .entry(kind(&msg))
-                .or_insert((0, v.path.clone(), msg.clone()));
-            e.0 += 1;
-        }
-        if groups.is_empty() {
+        let mut rows = grouped_rows(verdicts, bucket, side);
+        if rows.is_empty() {
             continue;
         }
-        let mut rows: Vec<_> = groups.into_iter().collect();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.1.0));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         println!("\n{title}");
-        for (msg, (n, example, located)) in rows.iter().take(25) {
+        for (msg, n, example) in rows.iter().take(25) {
             println!("  {n:5}  {msg}");
             // The example is the *located* text when there was a location to render, so the
             // reader has a place to open; otherwise the file is all we can offer, and offering
             // the file is still better than offering nothing.
-            if located == msg {
-                println!("         e.g. {}", example.display());
-            } else {
-                println!("         e.g. {located}");
-            }
+            println!("         e.g. {example}");
         }
         if rows.len() > 25 {
             println!("  … {} more distinct messages", rows.len() - 25);
