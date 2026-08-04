@@ -13,6 +13,8 @@ use chiero_ast::{
 };
 pub mod strlit;
 
+mod builtins;
+
 use chiero_span::{Span, Symbol};
 use indexmap::IndexMap;
 
@@ -8756,51 +8758,54 @@ impl Cx<'_> {
     /// A name absent from this table keeps `Ty::Error` and lowers to an opaque effect. That floor
     /// works, and is the right answer until someone measures the name.
     fn builtin_signature(&mut self, name: &str) -> Option<TyId> {
-        let int_bits = (self.target.sizes.int_ * 8) as u32;
-        let long_bits = (self.target.sizes.long_ * 8) as u32;
-        let ret = match name {
-            // Bit counting: `int` regardless of the operand's width, including the `l`/`ll` forms.
-            "__builtin_ctz"
-            | "__builtin_ctzl"
-            | "__builtin_ctzll"
-            | "__builtin_clz"
-            | "__builtin_clzl"
-            | "__builtin_clzll"
-            | "__builtin_popcount"
-            | "__builtin_popcountl"
-            | "__builtin_popcountll"
-            | "__builtin_ffs"
-            | "__builtin_ffsl"
-            | "__builtin_ffsll"
-            | "__builtin_constant_p" => self.intern(Ty::Int {
-                signed: true,
-                bits: int_bits,
-            }),
-            // `__builtin_expect` returns its first argument's type, and every caller passes
-            // `long` — gcc's own `__glibc_unlikely` casts to it. Measured `long`.
-            "__builtin_expect" => self.intern(Ty::Int {
-                signed: true,
-                bits: long_bits,
-            }),
-            "__builtin_bswap16" => self.intern(Ty::Int {
-                signed: false,
-                bits: 16,
-            }),
-            "__builtin_bswap32" => self.intern(Ty::Int {
-                signed: false,
-                bits: 32,
-            }),
-            "__builtin_bswap64" | "__builtin_ia32_rdpmc" | "__builtin_ia32_rdtsc" => {
-                self.intern(Ty::Int {
-                    signed: false,
-                    bits: 64,
+        use builtins::{B, Ret};
+        let scalar = |cx: &mut Self, b: B| -> TyId {
+            let int_ = |signed, bits| Ty::Int { signed, bits };
+            let w = |n: u64| (n * 8) as u32;
+            let t = match b {
+                B::Void => Ty::Void,
+                B::Bool => int_(false, 1),
+                B::Char => int_(cx.target.char_signed, 8),
+                B::I8 => int_(true, 8),
+                B::U8 => int_(false, 8),
+                B::I16 => int_(true, 16),
+                B::U16 => int_(false, 16),
+                B::I32 => int_(true, 32),
+                B::U32 => int_(false, 32),
+                B::ILong => int_(true, w(cx.target.sizes.long_)),
+                B::ULong => int_(false, w(cx.target.sizes.long_)),
+                B::I64 => int_(true, 64),
+                B::U64 => int_(false, 64),
+                B::F16 => Ty::Float(FloatKind::Binary16),
+                B::F32 => Ty::Float(FloatKind::F32),
+                B::F64 => Ty::Float(FloatKind::F64),
+                B::F80 => Ty::Float(FloatKind::X87_80),
+                B::F128 => Ty::Float(FloatKind::Binary128),
+                B::BF16 => Ty::Float(FloatKind::BFloat16),
+                B::F32Ext => Ty::Float(FloatKind::Float32Ext),
+                B::F64Ext => Ty::Float(FloatKind::Float64Ext),
+                B::F32xExt => Ty::Float(FloatKind::Float32xExt),
+                B::F64xExt => Ty::Float(FloatKind::Float64xExt),
+            };
+            cx.intern(t)
+        };
+        let ret = match builtins::measured_return(name)? {
+            Ret::Scalar(b) => scalar(self, b),
+            Ret::Ptr(b) => {
+                let e = scalar(self, b);
+                self.intern(Ty::Ptr(e))
+            }
+            // **A vector return is what the `__builtin_ia32_*` bulk is** — 2499 of the measured
+            // names — and it is why this table exists rather than a handful of hand-written rows.
+            Ret::Vector { elem, lanes } => {
+                let e = scalar(self, elem);
+                let bytes = size_of_ty(&self.out, &self.target, e).unwrap_or(0) * u64::from(lanes);
+                self.intern(Ty::Vector {
+                    elem: e,
+                    lanes,
+                    align: bytes.max(1),
                 })
             }
-            "__builtin_alloca" | "__builtin_alloca_with_align" => {
-                let v = self.intern(Ty::Void);
-                self.intern(Ty::Ptr(v))
-            }
-            _ => return None,
         };
         Some(self.intern(Ty::Func {
             ret,

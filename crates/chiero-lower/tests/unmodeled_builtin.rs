@@ -81,42 +81,38 @@ fn an_unmodeled_builtin_reads_its_arguments_and_defines_its_result() {
     assert_eq!(op.1.len(), 1, "and it reads its one argument");
 }
 
-/// **`dsts` follows the expression's type rather than being a constant one** — and the type it
-/// follows is currently always `int`.
+/// **`dsts` follows the builtin's measured return type**, and the `void` arm is live.
 ///
-/// gcc gives `__builtin_prefetch` the type `void (const void *, ...)`, so this ought to define
-/// nothing. chiero types it `int`: sema exempts an undeclared `__builtin_*` from the
-/// undeclared-identifier rule but has **no signatures for the builtins**, so the call takes C's
-/// implicit-`int` result like any other undeclared call.
+/// This test previously asserted the opposite — that `__builtin_prefetch` defines a result —
+/// and explained it by saying sema typed every builtin `int` via the implicit-`int` rule. Both
+/// halves were wrong: sema typed them `Ty::Error`, and the single `dst` came from `cty(Error)`
+/// falling back to `Int(32)`. The observable matched the prediction by coincidence, which is why
+/// the comment survived being read several times.
 ///
-/// So the `void` arm in lowering is correct and **not yet reachable**, and this test says so
-/// rather than asserting a property the system cannot exhibit. The consequence is mild — a
-/// value nothing reads — but it is a real gap, recorded in HANDOFF §9: modelling the builtins
-/// exactly (Tier 1/2) needs their signatures, and `void` is the first thing a signature says.
+/// gcc gives `__builtin_prefetch` the type `void (const void *, ...)` — measured — so with the
+/// signature table it defines nothing, and `__builtin_ctz` defines one `int`.
 #[test]
 fn the_result_follows_the_expressions_type() {
     let dsts_of = |src: &str| {
-        lower_maybe(src).expect("lowers").funcs[0]
-            .blocks
+        lower_maybe(src)
+            .expect("lowers")
+            .funcs
             .iter()
+            .flat_map(|f| f.blocks.iter())
             .flat_map(|b| b.insts.iter())
             .find_map(|i| match &i.kind {
-                InstKind::Opaque {
-                    dsts,
-                    why: OpaqueReason::UnmodeledBuiltin(_),
-                    ..
-                } => Some(dsts.len()),
+                InstKind::Opaque { dsts, why: OpaqueReason::UnmodeledBuiltin(_), .. } => {
+                    Some(dsts.len())
+                }
                 _ => None,
             })
             .expect("an opaque effect")
     };
-    // Both are `int` to sema today, the second only because it has no signature to say
-    // otherwise. When signatures land, this row becomes 0 and the `void` arm goes live.
     assert_eq!(dsts_of("int f(int x) { return __builtin_ctz(x); }"), 1);
     assert_eq!(
         dsts_of("void f(void *p) { __builtin_prefetch(p); }"),
-        1,
-        "sema has no builtin signatures, so even a `void` builtin is typed `int`"
+        0,
+        "`__builtin_prefetch` returns `void`, so the effect defines nothing"
     );
 }
 

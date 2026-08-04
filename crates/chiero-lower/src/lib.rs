@@ -2896,27 +2896,41 @@ impl Lowerer<'_> {
                         }
                         _ => Vec::new(),
                     };
+                    // **Conservative on memory, deliberately.** A builtin taking a pointer may
+                    // write through it; claiming otherwise is the unsound direction, and unsound
+                    // here means a confident wrong answer rather than a gap.
+                    let writes: Vec<chiero_cir::OpaqueWrite> = reads
+                        .iter()
+                        .zip(args.iter())
+                        .filter(|(_, a)| {
+                            self.type_of(**a).is_some_and(|t| {
+                                matches!(self.analysis.ty(t), chiero_sema::Ty::Ptr(_))
+                            })
+                        })
+                        .map(|(op, _)| chiero_cir::OpaqueWrite {
+                            addr: op.clone(),
+                            size: Operand::Const(Const::Undef(CTy::Int(64))),
+                        })
+                        .collect();
+                    let dsts_len = dsts.len();
                     let out = dsts.first().map(|(v, _)| Operand::Value(*v));
+                    // **An effect that declares nothing is a no-op, and the verifier says so.**
+                    // `__builtin_ia32_pause()` takes no arguments and returns `void`, so without
+                    // this the `Opaque` had no dsts, no reads and no writes and the function was
+                    // rejected. A builtin with nothing to show for itself still *does* something
+                    // — that is why it is a builtin — so it clobbers an unknown address of
+                    // unknown size, exactly as a `volatile` asm does.
+                    let mut writes = writes;
+                    if dsts_len == 0 && reads.is_empty() && writes.is_empty() {
+                        writes.push(chiero_cir::OpaqueWrite {
+                            addr: Operand::Const(Const::Undef(CTy::Ptr)),
+                            size: Operand::Const(Const::Undef(CTy::Int(64))),
+                        });
+                    }
                     self.emit(
                         InstKind::Opaque {
                             dsts,
-                            // **Conservative on memory, deliberately.** A builtin taking a
-                            // pointer may write through it; claiming otherwise is the unsound
-                            // direction, and unsound here means a confident wrong answer rather
-                            // than a gap. Every pointer argument is treated as clobbered.
-                            writes: reads
-                                .iter()
-                                .zip(args.iter())
-                                .filter(|(_, a)| {
-                                    self.type_of(**a).is_some_and(|t| {
-                                        matches!(self.analysis.ty(t), chiero_sema::Ty::Ptr(_))
-                                    })
-                                })
-                                .map(|(op, _)| chiero_cir::OpaqueWrite {
-                                    addr: op.clone(),
-                                    size: Operand::Const(Const::Undef(CTy::Int(64))),
-                                })
-                                .collect(),
+                            writes,
                             reads,
                             why: chiero_cir::OpaqueReason::UnmodeledBuiltin(std::sync::Arc::from(
                                 &*name,
