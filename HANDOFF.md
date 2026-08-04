@@ -560,6 +560,38 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > (`__builtin_ia32_paddd512_mask`), `ia32_rdpmc`, and `void (void)` builtins like `ia32_pause`
 > all lower clean.
 >
+> ### 🛑 BLOCKING REGRESSION (2026-08-04, found immediately after 9f7e575): 673 s per TU
+>
+> Measured on the first corpus run with the generated table: **one translation unit took 673
+> seconds**, against ~1 s before. A direct one-line `__builtin_ia32_rdpmc` call is clean and
+> instant; `#include <x86intrin.h>` plus one `__rdpmc(s)` did not finish in 2 minutes. At this
+> rate the 1871-TU sweep is ~14 days, so **the sweep is currently unusable and the corpus number
+> is unobtainable.** The run was stopped rather than left going.
+>
+> **The cause is the fix working.** gcc's x86 headers hold 5973 `always_inline` wrappers that
+> call a builtin, and until 9f7e575 every one was *discarded* by 015 §7 the moment its builtin
+> came back poison — cheap, and wrong. Now they all lower. The work is real work; the question is
+> why it is ~600× and not ~10×.
+>
+> ⏭️ **Investigate before anything else, in this order:**
+>
+> 1. **Is it lowering or sema?** Time the same TU against 46e6f3d (eight hand-written rows, so
+>    most wrappers still discarded) and against 9f7e575. That isolates the new work from a
+>    pre-existing hot spot the discarding used to hide.
+> 2. **Look for quadratic behaviour** — 6000 functions is not intrinsically 11 minutes of work.
+>    Suspect anything that scans `module.funcs` per function: `callee_of` does a linear
+>    `iter().find()` over it per call site, and `declare` does the same
+>    `iter().any()` before pushing. With ~6000 functions and several calls each that is
+>    ~10⁷–10⁸ string comparisons on `Arc<str>`.
+> 3. **Only then consider not lowering unused `gnu_inline` wrappers.** `extern __inline
+>    __attribute__((__gnu_inline__))` emits no out-of-line definition unless called, so lowering
+>    all 6000 is work no compiler does. That is a real optimisation, but it is a *scope* change —
+>    make it after the constant factor is understood, not instead of understanding it.
+>
+> ⚠️ **Do not revert 9f7e575 to make this go away.** Discarding those functions was the defect;
+> the analysis was silently missing 5973 functions per TU. Slow and correct is recoverable, fast
+> and wrong is what this whole session has been undoing.
+>
 > ### ⏭️ TWO GAPS LEFT, both known and neither hidden
 >
 > **(1) The type-generic families are still opaque — and they are VPP's own code.** 46 names
