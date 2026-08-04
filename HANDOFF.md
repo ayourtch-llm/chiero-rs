@@ -607,8 +607,20 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > ⏭️ **Where to look next.** The cost is inside lowering a *body*, is ~3 ms for `return x + 1;`
 > at F=1000, and scales with F. Something on the per-expression or per-statement path consults
 > something module-sized. `sym()`/`text()` were checked and are O(1) indexed lookups. A profiler
-> would settle it in minutes — `perf` is **not installed** on this machine and `gdb` could not
-> attach, which is why this was bisected by hand; installing one is the cheapest next step.
+> would settle it in minutes. Neither `perf` nor `gdb` nor `valgrind` is installed here, which is
+> why this was bisected by hand — and note `/proc/sys/kernel/perf_event_paranoid` is **4**, so
+> `perf` needs the sysctl loosened as well as the package.
+>
+> **Use callgrind, not perf**: it is pure user-space instrumentation, needs no kernel permission,
+> and counts instructions deterministically — so "this helper runs F times per body" shows up as
+> an exact call count, which is the shape being hunted.
+>
+> ```
+> sudo apt-get install valgrind
+> valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out \
+>   target/release/xtask cc -c s.c -o s.o
+> callgrind_annotate /tmp/cg.out | head -40
+> ```
 >
 > **Only after that**, consider not lowering unused `gnu_inline` wrappers. `extern __inline
 > __attribute__((__gnu_inline__))` emits no out-of-line definition unless called, so lowering all
