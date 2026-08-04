@@ -628,3 +628,47 @@ fn a_gcc_warning_is_distinguished_from_gcc_silence() {
     };
     assert_eq!(xtask::sweep::coverage(&[v]).preprocessed, 1);
 }
+
+/// **The oracle must be asked the same question chiero is.**
+///
+/// Two faults in `gcc_args`, found by reading it after concluding "gcc is silent on that file"
+/// once too often.
+///
+/// 1. **`-w` suppressed every warning**, so `Outcome::Warned` could never fire and
+///    `severity mismatch: 0` was guaranteed rather than measured. Its comment argued that
+///    gcc's default warnings would "put clean files in the wrong bucket" — true when a warning
+///    made a file a `Finding`, and false since warnings got a bucket of their own.
+/// 2. **The dialect reached chiero only.** A default (pedantic) sweep compared strict chiero
+///    against permissive gcc, which is why it reported hundreds of findings; and a `--gnu`
+///    sweep can never show a case where chiero is *too permissive* under the strict dialect —
+///    `"\e"` was exactly that, and no sweep could have surfaced it.
+#[test]
+fn gcc_is_asked_the_same_question_as_chiero() {
+    let args = |dialect| {
+        xtask::sweep::Flags {
+            dialect,
+            includes: Vec::new(),
+            defines: Vec::new(),
+            std: Some("gnu11".into()),
+        }
+        .gcc_args()
+    };
+
+    let strict = args(chiero_ast::Dialect::pedantic());
+    assert!(
+        strict.iter().any(|a| a == "-pedantic-errors"),
+        "the strict dialect must ask gcc the strict question: {strict:?}"
+    );
+
+    let gnu = args(chiero_ast::Dialect::gnu());
+    assert!(
+        !gnu.iter().any(|a| a == "-pedantic-errors"),
+        "`--gnu` must not: {gnu:?}"
+    );
+
+    // Warnings stay on in both, or the severity bucket is unreachable and its count is a
+    // constant dressed as a measurement.
+    for a in [&strict, &gnu] {
+        assert!(!a.iter().any(|x| x == "-w"), "warnings must reach us: {a:?}");
+    }
+}

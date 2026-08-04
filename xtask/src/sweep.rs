@@ -123,7 +123,7 @@ pub struct Flags {
 }
 
 impl Flags {
-    fn gcc_args(&self) -> Vec<String> {
+    pub fn gcc_args(&self) -> Vec<String> {
         let mut a = vec!["-fsyntax-only".to_owned()];
         if let Some(s) = &self.std {
             a.push(format!("-std={s}"));
