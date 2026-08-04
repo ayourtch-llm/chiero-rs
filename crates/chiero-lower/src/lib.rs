@@ -1723,6 +1723,75 @@ impl Lowerer<'_> {
             }
             // An attribute statement has no effect to lower — see `StmtKind::Attr`.
             StmtKind::Empty | StmtKind::Attr(_) | StmtKind::Error => {}
+            // **Inline asm is an opaque effect that clobbers its outputs** — 013 §4's design,
+            // written down when the parser learned asm and never wired up here. It fell to the
+            // catch-all below and 015 §7 discarded the function; `OpaqueReason::InlineAsm` has
+            // been in CIR with no producer, exactly as `UnmodeledBuiltin` was.
+            //
+            // 013 §4 names the failure this avoids: "treating asm as a no-op would be unsound in
+            // the direction that produces confident wrong answers". An output left unwritten
+            // reads as undef at every later use.
+            //
+            // Measured 2026-08-04: once `__builtin_ctz` was modelled, asm was the next dominant
+            // cause of lost functions — gcc's `pconfigintrin.h` defines `_pconfig_u32` as a
+            // four-output `__asm__`, and 31 VPP files write asm directly.
+            StmtKind::Asm(a) => {
+                // Inputs first and in order: they are ordinary expressions and may have effects.
+                let reads: Vec<Operand> = a.inputs.iter().map(|o| self.expr(o.expr)).collect();
+                // **An output is an lvalue, so the effect writes through its address** rather
+                // than defining an SSA value. `+` constraints appear in `outputs` and are read
+                // by the asm as well; the write alone is the conservative half and the one that
+                // matters, since claiming an output *unwritten* is the unsound direction.
+                let writes: Vec<chiero_cir::OpaqueWrite> = a
+                    .outputs
+                    .iter()
+                    .filter_map(|o| {
+                        let size = self
+                            .type_of(o.expr)
+                            .and_then(|t| self.analysis.size_of(t))
+                            .unwrap_or(0);
+                        self.lvalue_addr(o.expr, span)
+                            .map(|addr| chiero_cir::OpaqueWrite {
+                                addr,
+                                size: Operand::Const(Const::Int {
+                                    bits: 64,
+                                    val: size as i128,
+                                }),
+                            })
+                    })
+                    .collect();
+                // **`volatile`, or a `memory` clobber, writes somewhere this cannot name.**
+                // `__asm__ __volatile__ ("nop")` has no operands at all, and the verifier
+                // rightly refuses an `Opaque` that declares nothing — an effect that reads
+                // nothing and writes nothing *is* a no-op. But a volatile asm is precisely the
+                // one gcc may not delete, so "nothing" is the wrong description: an unknown
+                // address of unknown size is the honest one, and it over-approximates in the
+                // safe direction.
+                let opaque_memory = a.volatile
+                    || a.clobbers
+                        .iter()
+                        .any(|c| self.sym(*c).is_some_and(|t| &*t == "memory"));
+                let mut writes = writes;
+                if opaque_memory {
+                    writes.push(chiero_cir::OpaqueWrite {
+                        addr: Operand::Const(Const::Undef(CTy::Ptr)),
+                        size: Operand::Const(Const::Undef(CTy::Int(64))),
+                    });
+                }
+                // **A plain asm with no operands and no clobbers really is removable**, which is
+                // what gcc does with it, so emitting nothing is exact rather than lazy.
+                if !writes.is_empty() || !reads.is_empty() {
+                    self.emit(
+                        InstKind::Opaque {
+                            dsts: Vec::new(),
+                            writes,
+                            reads,
+                            why: chiero_cir::OpaqueReason::InlineAsm,
+                        },
+                        span,
+                    );
+                }
+            }
             other => {
                 // 015 §7: refuse rather than lower wrongly. A construct this slice does
                 // not cover leaves a diagnostic and an `Unreachable(LoweringGap)`, which

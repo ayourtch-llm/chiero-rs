@@ -152,3 +152,73 @@ fn the_atomic_and_sync_families_are_opaque_too() {
         );
     }
 }
+
+/// **Inline asm is an opaque effect too, and 013 §4 already said so.**
+///
+/// "Lowering turns it into an opaque effect that clobbers its outputs and marks the path
+/// `Approximated`. Modelling x86 semantics is out of scope, and treating asm as a no-op would be
+/// unsound in the direction that produces confident wrong answers." That is the documented
+/// design; lowering instead fell through to `statement not lowered yet: asm` and 015 §7 discarded
+/// the function. `OpaqueReason::InlineAsm` has been in CIR with no producer, exactly as
+/// `UnmodeledBuiltin` was.
+///
+/// Measured 2026-08-04: with `__builtin_ctz` fixed, asm became the **new** dominant cause —
+/// 12 of the first 18 translation units, through gcc's `pconfigintrin.h`, whose `_pconfig_u32`
+/// is a `__asm__` with four outputs. 31 VPP files use asm directly (013 §4).
+#[test]
+fn inline_asm_is_opaque_rather_than_fatal() {
+    for src in [
+        "void f(void) { __asm__ __volatile__ (\"nop\"); }",
+        "int f(int x) { int r; __asm__ (\"mov %1,%0\" : \"=r\"(r) : \"r\"(x)); return r; }",
+        "void f(void) { __asm__ __volatile__ (\"nop\" ::: \"memory\"); }",
+    ] {
+        let raw = lower_raw(src);
+        assert!(
+            raw.diagnostics.is_empty(),
+            "asm is approximated, not fatal: {src} -> {:?}",
+            raw.diagnostics
+        );
+        let m = lower_maybe(src).expect("the function lowers");
+        assert!(
+            m.funcs[0]
+                .blocks
+                .iter()
+                .flat_map(|b| b.insts.iter())
+                .any(|i| matches!(
+                    &i.kind,
+                    InstKind::Opaque {
+                        why: OpaqueReason::InlineAsm,
+                        ..
+                    }
+                )),
+            "the effect is present and names itself: {src}"
+        );
+    }
+}
+
+/// **An output operand is clobbered.** `r` is uninitialized before the asm and defined after it,
+/// so an effect that did not write it would leave every later read of `r` reading undef — a
+/// confident wrong answer, which is the failure 013 §4 names explicitly.
+#[test]
+fn an_asm_output_is_written() {
+    let m = lower_maybe(
+        "int f(int x) { int r; __asm__ (\"m %1,%0\" : \"=r\"(r) : \"r\"(x)); return r; }",
+    )
+    .expect("lowers");
+    let (writes, reads) = m.funcs[0]
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .find_map(|i| match &i.kind {
+            InstKind::Opaque {
+                writes,
+                reads,
+                why: OpaqueReason::InlineAsm,
+                ..
+            } => Some((writes.len(), reads.len())),
+            _ => None,
+        })
+        .expect("an opaque effect");
+    assert_eq!(writes, 1, "the one output is clobbered");
+    assert_eq!(reads, 1, "and the one input is read");
+}
