@@ -569,6 +569,15 @@ pub struct Analysis {
     /// 6.5.1.1 also says the unselected arms are not evaluated, and a recorded answer makes
     /// that automatic — lowering never sees them.
     pub(crate) generic_selections: IndexMap<ExprId, ExprId>,
+    /// Each argument widened by `__attribute__((transparent_union))` → the member it became:
+    /// `(index, name)`.
+    ///
+    /// **Recorded, not merely permitted.** gcc passes such an argument as the union's *first*
+    /// member while the callee sees the union, so a later stage told only "this was allowed"
+    /// knows neither which member the value is nor that a conversion happened at all. Keyed by
+    /// the argument expression, like `enum_refs` and `generic_selections` beside it, and for
+    /// the same reason: the question is about types, so it is answered once, here.
+    pub(crate) transparent_union_args: IndexMap<ExprId, (usize, Symbol)>,
     /// Each declaration → the alignment its declarator asked for, when it asked for more than
     /// the type's own.
     ///
@@ -659,6 +668,11 @@ impl Analysis {
     /// The value of one enumerator *reference*, resolved in its own scope.
     pub fn enum_ref(&self, e: ExprId) -> Option<(i128, TyId)> {
         self.enum_refs.get(&e).copied()
+    }
+
+    /// The transparent-union member an argument was widened to, if it was.
+    pub fn transparent_union_arg(&self, e: ExprId) -> Option<(usize, Symbol)> {
+        self.transparent_union_args.get(&e).copied()
     }
 
     /// The alignment `d`'s declarator asked for, if it asked for more than its type's own.

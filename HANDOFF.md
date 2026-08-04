@@ -666,6 +666,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > * Judges in `--gnu` by default — the project is compiling with GNU extensions.
 >   `CHIERO_CC_PEDANTIC=1` asks the strict question.
 >
+> ### 💡 BACKLOG (owner, behind everything else): multi-platform analysis in one run
+>
+> Configure and parse several target platforms at once and **compare the behaviours**, rather
+> than analysing one `-march` at a time.
+>
+> The idea came out of the `-march` finding: VPP compiles one `.c` into several objects
+> (`_sse42`, `_avx2`, `_hsw`, NEON …), and the predefines change which branch of the headers is
+> even compiled. Chiero currently sees whichever variant the build happened to hand it, so a
+> defect present only in the AVX-512 branch is invisible when the SSE branch is analysed. The
+> machinery is already close: `Flags::machine` carries the flags, `gcc_predefines_with` turns
+> them into predefines, and the sidecar is keyed on the **output**, so the variants are already
+> recorded separately rather than overwriting each other.
+>
+> Value beyond coverage: a *difference* between platforms is itself a finding — the same source
+> behaving differently on two targets is where portability defects live, and nothing else in
+> the plan looks for those.
+>
+> **Not started, and deliberately behind the rest of the queue.**
+>
 > ### 🔍 `transparent_union` identified: it is glibc's socket API, not VPP's code
 >
 > The finding reads `invalid initializer: a structure or union is copied only from its own
