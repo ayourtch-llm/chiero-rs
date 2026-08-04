@@ -622,6 +622,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **Before `Warned` existed, "gcc exits zero" and "gcc is silent" were the same observation.**
 > Whenever a gate is proposed, check which of the two it actually rests on.
 >
+> ### ⚠️ Test the artefact, not a proxy for it — four layers, four waves
+>
+> One problem, found four times, each fix exposing the next. Mutation caught every layer; none
+> was visible by reading:
+>
+> | layer | what was wrong | mutant that survived |
+> |---|---|---|
+> | 1 | helper correct and **never called** (`in_system_header`) | filter not applied |
+> | 2 | caller **returns nothing** to observe (`report` printed) | pairing switched off |
+> | 3 | caller's **arguments unchecked** (`report_sections`) | wrong bucket / wrong side |
+> | 4 | caller **free to ignore** the table | `side` hardcoded at the loop |
+>
+> Each time the instinct was "now it is covered", and each time it was covered one level too
+> shallow. **A test should read the artefact the program actually produces** — here
+> `report_lines`, because nothing is downstream of it. Every layer short of that is a proxy,
+> and a proxy can be true while the artefact is wrong.
+>
+> The fixture trick that makes it bite: give each side a sentence **only it could produce**
+> (`gcc-only-sentence` vs `chiero-only-sentence`), so a section quoting the wrong side fails on
+> content. A row that merely *exists* proves nothing about which message it took.
+>
 > ### ⚠️ `BothRefused` is not agreement — and it is the biggest bucket
 >
 > Both sides diagnosing a file says **nothing** about whether they diagnosed the *same thing*.
