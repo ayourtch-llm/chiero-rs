@@ -678,16 +678,9 @@ fn the_selected_transparent_union_member_is_recorded() {
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
 
     // The argument expression that was widened, and the member it became: `c`, index 1.
-    let picked: Vec<usize> = parsed
-        .ast
-        .items()
-        .iter()
-        .filter_map(|_| None::<usize>)
-        .collect();
-    let _ = picked;
     let recorded: Vec<(usize, String)> = a
-        .transparent_union_members()
-        .map(|(_, idx, name)| (idx, name))
+        .transparent_union_args()
+        .map(|(_, idx, name)| (idx, parsed.text(name).unwrap_or("?").to_owned()))
         .collect();
     assert_eq!(
         recorded,

@@ -284,6 +284,10 @@ pub struct RecordLayout {
     /// Index into `fields` of a flexible array member, if any.
     pub flexible_member: Option<usize>,
     pub packed: bool,
+    /// `__attribute__((transparent_union))`: a parameter of this union type accepts any
+    /// member's type (gcc's extension). glibc declares `bind`/`connect`/`sendto` this way, so
+    /// every socket-calling translation unit depends on it.
+    pub transparent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -673,6 +677,13 @@ impl Analysis {
     /// The transparent-union member an argument was widened to, if it was.
     pub fn transparent_union_arg(&self, e: ExprId) -> Option<(usize, Symbol)> {
         self.transparent_union_args.get(&e).copied()
+    }
+
+    /// Every widened argument: `(expression, member index, member symbol)`.
+    pub fn transparent_union_args(&self) -> impl Iterator<Item = (ExprId, usize, Symbol)> + '_ {
+        self.transparent_union_args
+            .iter()
+            .map(|(e, (i, n))| (*e, *i, *n))
     }
 
     /// The alignment `d`'s declarator asked for, if it asked for more than its type's own.
@@ -3256,6 +3267,15 @@ impl Cx<'_> {
             .attrs
             .iter()
             .any(|a| matches!(self.text(a.name), Some("packed" | "__packed__")));
+        // **Only a union can be transparent** (gcc rejects the attribute on a struct), and the
+        // flag is read here beside `packed` because both are attributes of the definition.
+        let transparent = is_union
+            && self.ast.ty(node).attrs.iter().any(|a| {
+                matches!(
+                    self.text(a.name),
+                    Some("transparent_union" | "__transparent_union__")
+                )
+            });
 
         let mut fields: Vec<FieldLayout> = Vec::new();
         let mut bit_cursor: u64 = 0; // bits from the start of the record
@@ -3688,6 +3708,7 @@ impl Cx<'_> {
             is_union,
             flexible_member,
             packed,
+            transparent,
             complete: true,
         }
     }
@@ -4296,6 +4317,9 @@ fn incomplete_layout(is_union: bool) -> RecordLayout {
         align: 1,
         fields: Vec::new(),
         is_union,
+        // **False for a placeholder.** The attribute lives on the definition, and a reference
+        // seen before it must not claim transparency the definition may not grant.
+        transparent: false,
         flexible_member: None,
         packed: false,
         complete: false,
@@ -6622,6 +6646,37 @@ impl Cx<'_> {
 
     /// Convert `node` to `to`, decaying first and recording the outermost node for
     /// `expr` so `conversions_of` sees the whole chain.
+    /// If `to` is a transparent union and `from` matches one of its members, which member.
+    ///
+    /// Only widens a *union* carrying the attribute, and only to a member it actually matches:
+    /// the extension widens a parameter to its members, not to anything at all.
+    fn transparent_member_for(
+        &mut self,
+        from: TyId,
+        to: TyId,
+        null_constant: bool,
+    ) -> Option<(usize, Symbol)> {
+        let Ty::Record(r) = self.out.types[to.0 as usize] else {
+            return None;
+        };
+        let layout = self.out.layout(r);
+        if !layout.transparent {
+            return None;
+        }
+        // Cloned because `assignable` takes `&mut self`: the fields are needed after the
+        // borrow ends, and a union's member list is short.
+        let fields: Vec<(Option<Symbol>, TyId)> =
+            layout.fields.iter().map(|f| (f.name, f.ty)).collect();
+        // An argument already of the union's own type is an ordinary assignment, not a
+        // widening, and must not be recorded as one.
+        if from == to {
+            return None;
+        }
+        fields.into_iter().enumerate().find_map(|(i, (name, ty))| {
+            (self.assignable(from, ty, null_constant)).then_some((i, name?))
+        })
+    }
+
     fn coerce(&mut self, node: TypedId, to: TyId, why: Conversion, expr: ExprId) -> TypedId {
         let node = self.decay(node, expr);
         let span = self.ast.expr(expr).span;
@@ -6651,6 +6706,19 @@ impl Cx<'_> {
         // check lives where they meet rather than at each of them.
         let from = self.out.typed.ty_of(node);
         let null_constant = self.is_null_constant(expr);
+        // **`__attribute__((transparent_union))`**: a parameter of such a union takes any
+        // member's type (gcc's extension). glibc declares `bind`/`connect`/`sendto` this way,
+        // which is 67 of VPP's translation units — the largest single category of the first
+        // full build.
+        //
+        // **The selected member is recorded, not just permitted.** gcc passes the argument as
+        // the union's *first* member while the callee sees the union, so a later stage told
+        // only "this was allowed" knows neither which member the value is nor that a
+        // conversion happened. Answered here, once, where the types are.
+        if let Some((idx, name)) = self.transparent_member_for(from, to, null_constant) {
+            self.out.transparent_union_args.insert(expr, (idx, name));
+            return node;
+        }
         if !self.assignable(from, to, null_constant) {
             let why = self.conversion_defect(from, to, why);
             self.error(span, why);
