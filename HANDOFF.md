@@ -528,6 +528,24 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > **Measure each against gcc both ways before touching it** — the four rounds produced two real
 > defects and two calibration questions, and they were indistinguishable until measured.
 >
+> ### ⚠️ The oracle must be asked the same question as chiero
+>
+> `gcc_args` had two faults that made whole classes of defect **unobservable**, not merely
+> missed. Both were found by reading it, after one conclusion too many rested on it:
+>
+> * **`-w` suppressed every gcc warning**, so `Outcome::Warned` could never fire and every
+>   `severity mismatch: 0` was a constant dressed as a measurement. `vppinfra` reports 1 now.
+>   The suppression was justified by a comment that had been falsified two waves earlier, when
+>   warnings stopped being `Finding`s and got a bucket. **A comment describing a trade-off is
+>   only as current as the design it describes** — and I read that one while adding the bucket.
+> * **The dialect reached chiero only**, so a default sweep compared strict chiero against
+>   permissive gcc, and a `--gnu` sweep could never show chiero being too *permissive* under the
+>   strict dialect. `"\e"` lived in that blind spot — silent in both modes where
+>   `-pedantic-errors` refuses — and was found by reading the escape table, not by any sweep.
+>
+> **`misses: 0` was measured under `--gnu` only.** A strict-dialect sweep is the first thing
+> that can test the other direction; run it and read its `misses` column.
+>
 > ### 🆕 `Outcome::Warned` / `Bucket::SeverityMismatch`
 >
 > `gcc_outcome` read the **exit status**, so a file gcc compiled *with warnings* counted as
