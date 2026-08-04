@@ -534,6 +534,32 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > memset, constant_p, trap, clzll, add_overflow, types_compatible_p. `__builtin_alloca` is a
 > **second, distinct** gap with its own message.
 >
+> ### ⏭️ NEXT: an **explicit cast** of an unmodeled-builtin call rejects the CIR
+>
+> Three lowering gaps are closed (5e1de70 builtins, a726689 asm, db4c43d block-scope function
+> declarations) and the fourth measurement's ratio improved sharply — 2 not-run in the first 8
+> records, against 12-in-18 and 24-in-30 before. The remaining cause:
+>
+> ```
+> unsigned short f(int x){ return (unsigned short) __builtin_ctz(x); }
+> lower: `f` lowered to CIR the verifier rejects
+>        (cast source operand is Int(16), declared Int(32))
+> ```
+>
+> Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
+> `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
+>
+> **Narrowed, and one hypothesis already refuted.** An *implicit* conversion is fine
+> (`unsigned short r = __builtin_ctz(x);` is clean); only an explicit cast fails, in **both**
+> directions — narrowing to `unsigned short` and widening to `long`. The obvious explanation was
+> that the `Opaque`'s `dsts` type and the `Cast` arm's `from` disagreed, since `InstKind::Call`
+> declares no result type and so never exposed a mismatch. **Instrumented: they agree.** Both
+> report `Int(32)` for the same `ExprId(2)`. So the offending cast is a *different* one —
+> most likely the conversion node sema inserts around the explicit cast — and the next wave
+> should start by dumping the CIR for that one-line function rather than re-deriving this.
+>
+> Only the explicit-cast shape is affected; the builtin fix itself is sound and measured.
+>
 > ### 🎯 THE PLAN, revised at the owner's suggestion (2026-08-04): model, don't approximate
 >
 > The owner's point: **the builtins have semantics — lower them as if an equivalent expression
