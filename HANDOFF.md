@@ -492,10 +492,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > ### 🎯 WHERE THINGS STAND
 >
 > **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
-> full VPP build: **1871 translation units, 1850 clean (98.9%)**, 21 findings over 12 kinds.
+> full VPP build: **1871 translation units, 1856 clean (99.2%)**, 15 findings over 11 kinds.
 >
-> Wave 479 cleared the largest kind — 11 `a cast names a scalar type or void` — and has a fix
-> for the next 6 landed but **not yet corpus-measured** (see the queue table).
+> Wave 479 cleared the two largest kinds — 11 `a cast names a scalar type or void` (GNU
+> cast-to-union) and 6 `makes a pointer from an integer` (a null pointer constant reaching an
+> array-typed parameter). Both confirmed by cache-cold corpus runs; nothing new appeared.
 >
 > ### 📌 METHOD NOTE from wave 479: the message kind is not the finding
 >
@@ -549,8 +550,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | n | kind | note |
 > |---|---|---|
 > | ~~11~~ 0 | ~~`a cast names a scalar type or void`~~ | **DONE wave 479** — GNU cast-to-union |
-> | 6 | `passing an argument makes a pointer from an integer` | **fix landed (316c782), awaiting corpus run.** Not a severity question: all 6 pass `0` to an array-typed parameter, which gcc accepts silently in both modes |
-> | 3 | `parse: expected a type specifier` | **next up after the above confirms**; check in `--gnu` first (see below) |
+> | ~~6~~ 0 | ~~`passing an argument makes a pointer from an integer`~~ | **DONE wave 479** (316c782) — was never a severity question: all 6 passed `0` to an array-typed parameter |
+> | 3 | `parse: expected a type specifier` | **next up.** All 3 are `__attribute__ ((fallthrough));` as a *statement* — `http.c:633`, `http2/http2.c:817`, `http3/qpack.c:981`. gcc accepts in both modes. See the note below on the two adjacent behaviours |
 > | 2 | `assignment to an array` | |
 > | 2 | `comparison between a pointer and an integer` | |
 > | 1 each | escape `\\(`, signed overflow, incomplete deref, `void` value used, duplicate decl, `++` on non-scalar, 2× macro redefinition | |
