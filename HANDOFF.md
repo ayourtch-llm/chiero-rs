@@ -491,8 +491,22 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > ### 🎯 WHERE THINGS STAND
 >
+> ⚠️ **EVERY CORPUS NUMBER BEFORE 7e9501e MEANT "SEMA-CLEAN", NOT "ANALYSABLE".** The sweep ran
+> pp → parse → sema and stopped. Lowering never ran, so a translation unit containing a function
+> that lowers to CIR the verifier rejects — which chiero handles by **dropping that function** —
+> was counted `Clean`. 98.3%, 98.9%, 99.2%, 99.4%, 99.5% and 1864 are all that weaker measure.
+> The *deltas* between them are sound (one yardstick throughout, each fix independently
+> verified); the absolute claim was stronger than the evidence.
+>
+> 7e9501e runs lowering and reports a dropped function as `NotRun` with a `lower:` prefix —
+> `NotRun` rather than `Diagnosed` because a verifier rejection is a chiero gap, not a verdict on
+> VPP, and filing it as a finding would let suppressing it look like a fix to the tree.
+>
 > **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
-> full VPP build: **1871 translation units, 1861 clean (99.5%)**, 10 findings over 9 kinds.
+> full VPP build **through sema only** (pre-7e9501e): 1871 TUs, **1864 clean**, 7 findings —
+> the array-parameter adjustment cleared its 3 and introduced none. The first honest
+> sema+lowering number is being measured; **expect it to be worse, and record it as the real
+> baseline.**
 >
 > Wave 479 cleared four kinds, each confirmed by its own cache-cold corpus run, none of which
 > introduced a finding: 11 `a cast names a scalar type or void` (GNU cast-to-union), 6 `makes a
