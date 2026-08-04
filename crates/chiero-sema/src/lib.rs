@@ -2574,7 +2574,22 @@ impl Cx<'_> {
                             let t = self.ty_of(ty);
                             self.declaring = outer;
                             self.check_alignment(ty, t, StorageContext::Parameter);
-                            t
+                            // **A parameter declared as a function becomes a pointer to it**
+                            // (C 6.7.6.3p8), the same adjustment 6.7.6.3p7 makes for an array.
+                            // VPP writes callback parameters this way — `int options (u32,
+                            // ip6_hop_by_hop_option_t *, u16)` in
+                            // `ip6_ioam_analyse_register_hbh_handler` — and without the
+                            // adjustment the argument, which *has* decayed to a pointer, is
+                            // compared against a function type and called incompatible.
+                            //
+                            // Done here rather than in `param_shape`: that answers "do two
+                            // declarations agree", while this is the parameter's actual type
+                            // and is what an argument is checked against.
+                            if matches!(self.out.types[t.0 as usize], Ty::Func { .. }) {
+                                self.intern(Ty::Ptr(t))
+                            } else {
+                                t
+                            }
                         }
                         _ => self.intern(Ty::Error),
                     })
