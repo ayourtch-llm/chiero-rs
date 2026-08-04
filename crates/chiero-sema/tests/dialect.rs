@@ -726,3 +726,39 @@ fn the_selected_transparent_union_member_is_recorded() {
         "the second member was selected, and sema says so"
     );
 }
+
+/// **An alignment attribute does not make a distinct type for compatibility.**
+///
+/// `1849 of 1871` translation units in the first *cache-cold* full VPP build, and the largest
+/// finding this project has produced. It appeared only once `-march` reached the predefines:
+/// before that `__SSE4_2__` was undefined, VPP took its scalar branch, and Intel's intrinsic
+/// headers were never compiled at all.
+///
+/// gcc's `emmintrin.h` declares
+/// `_mm_storeu_si128 (__m128i_u *, …)` where `__m128i_u` is `__m128i` plus `__may_alias__` and
+/// `__aligned__(1)`, and VPP passes `(__m128i *) p`. gcc accepts that silently: the attributes
+/// change alignment and aliasing, not type identity for assignment.
+#[test]
+fn an_alignment_attribute_does_not_break_pointer_compatibility() {
+    let src = "typedef long long m128 __attribute__((__vector_size__(16)));\n\
+               typedef long long m128u __attribute__((__vector_size__(16), __may_alias__, __aligned__(1)));\n\
+               int store(m128u *p);\n\
+               int f(void *p) { return store((m128 *) p); }\n";
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(sema_messages(src, dialect), Vec::<String>::new());
+    }
+
+    // **A genuinely different element type is still incompatible.** The attributes are
+    // ignored for compatibility; the vector's shape is not.
+    assert!(
+        !sema_messages(
+            "typedef long long m128 __attribute__((__vector_size__(16)));\n\
+             typedef int m128i __attribute__((__vector_size__(16), __aligned__(1)));\n\
+             int store(m128i *p);\n\
+             int f(void *p) { return store((m128 *) p); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "a different element type is a different vector"
+    );
+}
