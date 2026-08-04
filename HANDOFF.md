@@ -552,7 +552,25 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | 4 | `ISO C forbids an empty translation unit` (C 6.9p1) — **fixed**: reported under strict |
 >
 > Both follow the same pattern as `\e`: **accept the extension, report it under the strict
-> dialect.** A third strict sweep should show `misses: 0`; re-run before quoting it.
+> dialect.** That pattern is the general answer for a GNU extension — accepting silently in both
+> modes is what made 104 files invisible, and refusing outright would break VPP, which 013 calls
+> required.
+>
+> **Third strict sweep, measured: `misses: 0`.** The class that six `--gnu` rounds could not see
+> is closed.
+>
+> ### ⏭️ The one strict finding left: gcc exempts system headers from `-pedantic`
+>
+> ```
+> 1  sema: ISO C does not support `__int128` types
+>    e.g. /usr/include/linux/types.h:12:1
+> ```
+>
+> chiero reports it; `gcc -pedantic-errors` does not, because **a diagnostic from a system
+> header is suppressed** — that is gcc behaviour, not a chiero bug in the rule itself. Closing
+> it needs "is this span in a system header?" plumbed from `chiero-pp` (which knows
+> `system_paths`) to sema, which is a cross-crate change rather than a one-line gate. Not
+> started; it is the whole of the strict-dialect queue.
 >
 > **Run both dialects.** `--gnu` finds chiero being too strict; the default finds it being too
 > permissive. Six rounds of the first said nothing about the second.
