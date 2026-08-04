@@ -175,7 +175,10 @@ fn a_sidecar_is_keyed_on_the_output_it_describes() {
     use xtask::cc::sidecar_path;
 
     assert_eq!(
-        sidecar_path(&args("-c foo.c -o build/x86/foo.o"), &PathBuf::from("foo.c")),
+        sidecar_path(
+            &args("-c foo.c -o build/x86/foo.o"),
+            &PathBuf::from("foo.c")
+        ),
         PathBuf::from("build/x86/foo.o.chiero")
     );
 

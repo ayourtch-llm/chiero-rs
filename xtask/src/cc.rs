@@ -110,13 +110,17 @@ pub fn flags_from_args(args: &[String], dialect: chiero_ast::Dialect) -> crate::
     while let Some(a) = it.next() {
         if let Some(v) = a.strip_prefix("-I") {
             if v.is_empty() {
-                it.next().map(|n| f.includes.push(PathBuf::from(n)));
+                if let Some(n) = it.next() {
+                    f.includes.push(PathBuf::from(n));
+                }
             } else {
                 f.includes.push(PathBuf::from(v));
             }
         } else if let Some(v) = a.strip_prefix("-D") {
             if v.is_empty() {
-                it.next().map(|n| f.defines.push(n.clone()));
+                if let Some(n) = it.next() {
+                    f.defines.push(n.clone());
+                }
             } else {
                 f.defines.push(v.to_owned());
             }
@@ -142,11 +146,15 @@ pub fn run(args: &[String]) -> i32 {
     // **Every failure here is swallowed.** A panic, an unreadable file, a missing log directory
     // — none of them may cost the build. `catch_unwind` because a frontend bug on somebody
     // else's source is a real possibility and must not surface as a compiler crash.
-    if let Some(path) = out {
-        let recorded = std::panic::catch_unwind(|| observe(args));
-        if let Ok(lines) = recorded {
-            for line in lines {
-                append_record(std::path::Path::new(&path), &line);
+    // **A sidecar per translation unit**, keyed on the output it describes. One writer per
+    // file by construction, so a parallel build needs no locking and no atomic-append
+    // discipline. `CHIERO_CC_LOG` remains for a caller that wants everything in one stream.
+    let recorded = std::panic::catch_unwind(|| observe_with_paths(args));
+    if let Ok(records) = recorded {
+        for (path, line) in records {
+            write_sidecar(&path, &line);
+            if let Some(log) = &out {
+                append_record(std::path::Path::new(log), &line);
             }
         }
     }
@@ -158,7 +166,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// Analyse whatever this invocation compiles, returning one record per translation unit.
-fn observe(args: &[String]) -> Vec<String> {
+fn observe_with_paths(args: &[String]) -> Vec<(PathBuf, String)> {
     let sources = sources_to_analyse(args);
     if sources.is_empty() {
         return Vec::new();
@@ -179,7 +187,8 @@ fn observe(args: &[String]) -> Vec<String> {
         .map(|src| {
             let started = std::time::Instant::now();
             let outcome = crate::sweep::chiero_outcome(src, &flags, &system, &predefines);
-            record_line(src, &outcome, started.elapsed().as_millis())
+            let line = record_line(src, &outcome, started.elapsed().as_millis());
+            (sidecar_path(args, src), line)
         })
         .collect()
 }
@@ -249,4 +258,72 @@ fn between(s: &str, open: &str, close: &str) -> Option<String> {
     let i = s.find(open)? + open.len();
     let j = s[i..].find(close)? + i;
     Some(s[i..j].to_owned())
+}
+
+/// Where the record for `source` in this invocation goes.
+///
+/// `<output>.chiero` when the invocation names one output for one source; `<source>.chiero`
+/// otherwise. Keyed on the output because VPP compiles one `.c` into several objects with
+/// different `-march` flags, and source-keyed records would overwrite each other silently.
+pub fn sidecar_path(args: &[String], source: &Path) -> PathBuf {
+    let sources = sources_to_analyse(args);
+    let output = output_path(args);
+    match output {
+        // One source, one output: the output names this translation unit uniquely.
+        Some(o) if sources.len() == 1 => PathBuf::from(format!("{}.chiero", o.display())),
+        // A link, or no output named. The source is the only name that distinguishes them.
+        _ => PathBuf::from(format!("{}.chiero", source.display())),
+    }
+}
+
+fn output_path(args: &[String]) -> Option<PathBuf> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "-o" {
+            return it.next().map(PathBuf::from);
+        }
+        if let Some(v) = a.strip_prefix("-o")
+            && !v.is_empty()
+        {
+            return Some(PathBuf::from(v));
+        }
+    }
+    None
+}
+
+/// Write one record, replacing any previous one for the same output.
+///
+/// A plain create-truncate write: one writer per file by construction, so there is nothing to
+/// serialise. Silent on failure — this runs inside somebody else's build.
+pub fn write_sidecar(path: &Path, line: &str) {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{line}\n"));
+}
+
+/// Collect every `*.chiero` record under `root`.
+pub fn collect_sidecars(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "chiero")
+                && let Ok(t) = std::fs::read_to_string(&p)
+            {
+                out.extend(t.lines().filter(|l| !l.is_empty()).map(str::to_owned));
+            }
+        }
+    }
+    // Sorted, so two runs over one tree produce the same report and can be diffed (001 §5).
+    out.sort();
+    out
 }

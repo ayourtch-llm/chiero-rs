@@ -324,30 +324,37 @@ fn recipe_sweep() -> ExitCode {
 /// `xtask cc-report --log <file>` — what a build collected.
 fn cc_report() -> ExitCode {
     let mut log = std::env::var("CHIERO_CC_LOG").ok();
+    let mut tree = None;
     let mut args = std::env::args().skip(2);
     while let Some(a) = args.next() {
-        if a == "--log" {
-            log = args.next();
+        match a.as_str() {
+            "--log" => log = args.next(),
+            "--tree" => tree = args.next(),
+            _ => {}
         }
     }
-    let Some(log) = log else {
-        eprintln!("usage: xtask cc-report --log <file>   (or set CHIERO_CC_LOG)");
-        return ExitCode::FAILURE;
-    };
-    let text = match std::fs::read_to_string(&log) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("cc-report: cannot read {log}: {e}");
+    // **A tree of sidecars is the default**, since that is what the shim writes: one
+    // `<output>.chiero` per translation unit, no shared file to contend for.
+    let lines: Vec<String> = match (&tree, &log) {
+        (Some(t), _) => xtask::cc::collect_sidecars(std::path::Path::new(t)),
+        (None, Some(l)) => match std::fs::read_to_string(l) {
+            Ok(t) => t.lines().map(str::to_owned).collect(),
+            Err(e) => {
+                eprintln!("cc-report: cannot read {l}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        (None, None) => {
+            eprintln!("usage: xtask cc-report --tree <build-dir>   [or --log <file>]");
             return ExitCode::FAILURE;
         }
     };
-    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let s = xtask::cc::summarise(&lines);
     println!("{} translation units observed, {} clean", s.total, s.clean);
     // **A build the shim never saw is not a clean build.** Saying so beats printing a
     // reassuring pair of zeroes at someone who set the variable wrongly.
     if s.total == 0 {
-        println!("  -> nothing recorded: was CHIERO_CC_LOG set for the build itself?");
+        println!("  -> nothing recorded: did the build actually run with CC set to the shim?");
         return ExitCode::SUCCESS;
     }
     for (kind, n) in s.kinds.iter().take(25) {
