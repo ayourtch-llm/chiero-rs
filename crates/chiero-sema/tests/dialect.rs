@@ -484,6 +484,21 @@ fn an_int128_is_supported_and_reported_under_the_strict_dialect() {
         "gnu11 accepts it silently"
     );
 
+    // **Each spelling needs its own row.** The fixture above declares both, so a gate that
+    // fired for `__int128` alone still produced a message and satisfied the assertion —
+    // mutation showed exactly that. `unsigned __int128` is a separate `Builtin` variant and
+    // `vppinfra/types.h` uses it, so a signed-only gate would leave those files silently
+    // missed all over again.
+    for one in ["__int128 a;\n", "unsigned __int128 b;\n"] {
+        assert!(
+            sema_messages(one, Dialect::pedantic())
+                .iter()
+                .any(|m| m.contains("__int128")),
+            "each spelling reports on its own: {one}"
+        );
+        assert_eq!(sema_messages(one, Dialect::gnu()), Vec::<String>::new());
+    }
+
     // **The type still works in both dialects.** Reporting an extension must not stop
     // supporting it — 013 calls `__int128` required, and a report that broke `sizeof` would
     // trade 100 misses for a defect. The value is asserted because a message-only test cannot
