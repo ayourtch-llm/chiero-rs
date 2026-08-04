@@ -142,3 +142,42 @@ fn a_shift_into_the_sign_bit_is_not_an_overflow_diagnostic() {
         "an overflowing addition is still an overflow"
     );
 }
+
+/// **A type is named from the target's widths, not from fixed ones.**
+///
+/// Raised by the owner: platforms differ on `sizeof(int)`. The arithmetic is target-driven
+/// throughout — every width comes from `target.sizes` — but this diagnostic named types from a
+/// hardcoded table, so on a 16-bit-`int` target it called `int` a `short`. Semantics were never
+/// affected; the sentence was.
+///
+/// Both shipped targets are LP64, so no existing fixture could see this. The test builds a
+/// target with a 16-bit `int` rather than waiting for one to be added.
+#[test]
+fn a_type_is_named_using_the_targets_widths() {
+    let mut narrow = TargetConfig::x86_64_linux();
+    narrow.sizes.int_ = 2;
+    narrow.sizes.short_ = 2;
+
+    let msgs = harness::parse_allowing_diagnostics("int a[3] = \"xy\";\n", narrow)
+        .analysis
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        msgs.iter().any(|m| m.contains("array of `int`")),
+        "a 16-bit `int` is still an `int` on this target: {msgs:?}"
+    );
+
+    // And unchanged on the default target, where 32 bits is `int`.
+    let msgs = harness::parse_allowing_diagnostics(
+        "int a[3] = \"xy\";\n",
+        TargetConfig::x86_64_linux(),
+    )
+    .analysis
+    .diagnostics
+    .iter()
+    .map(|d| d.message.clone())
+    .collect::<Vec<_>>();
+    assert!(msgs.iter().any(|m| m.contains("array of `int`")), "{msgs:?}");
+}
