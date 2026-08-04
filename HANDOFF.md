@@ -604,6 +604,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    strictly better) and timings were again unchanged. It is not the hot spot.
 > 3. Calls are **linear**: 1 function with 250/500/1000 call sites costs 3/10/20 ms.
 >
+> ⚠️ **`target/release/xtask` on disk was built for profiling** — `-C lto=off
+> -C inline-threshold=0 -C debuginfo=2` — so it is slower than a real release build. Rebuild with
+> a plain `cargo build --release -p xtask` before any timing or corpus measurement, or the
+> numbers will be wrong in a way that looks like a regression.
+>
 > ### ✅ ROOT CAUSE FOUND (2026-08-04): `const_eval` re-walks the whole TU, once per call
 >
 > Callgrind on a build with `-C lto=off -C inline-threshold=0` (folding off, so the symbols are
