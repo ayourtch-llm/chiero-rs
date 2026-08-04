@@ -10,6 +10,16 @@ fn main() -> ExitCode {
         Some("check-vpp-leak") => check_vpp_leak(),
         Some("sweep") => sweep(),
         Some("recipe-sweep") => recipe_sweep(),
+        // `CC=...` shim: everything after `cc` is the compiler's own argument list.
+        Some("cc") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let code = xtask::cc::run(&args);
+            if code == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(u8::try_from(code).unwrap_or(1))
+            }
+        }
         Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
