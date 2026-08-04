@@ -543,8 +543,41 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   strict dialect. `"\e"` lived in that blind spot — silent in both modes where
 >   `-pedantic-errors` refuses — and was found by reading the escape table, not by any sweep.
 >
-> **`misses: 0` was measured under `--gnu` only.** A strict-dialect sweep is the first thing
-> that can test the other direction; run it and read its `misses` column.
+> **`misses: 0` was measured under `--gnu` only**, and the first strict-dialect sweep found
+> **104 misses** — code `gcc -pedantic-errors` refuses and chiero accepted in silence:
+>
+> | n | kind |
+> |---|---|
+> | 100 | `ISO C does not support '__int128' types` — now reported (support unchanged) |
+> | 4 | `ISO C forbids an empty translation unit` — **open** |
+>
+> **Run both dialects.** `--gnu` finds chiero being too strict; the default finds it being too
+> permissive. Six rounds of the first said nothing about the second.
+>
+> ### ⚠️ A verdict that is printed rather than earned
+>
+> Two in one wave, and they are the same bug:
+>
+> * **`-w` in `gcc_args`** made `Bucket::SeverityMismatch` unreachable, so `severity mismatch:
+>   0` was a constant.
+> * **`gates.sh` ended in an unconditional `echo gates-ok`** — it said "ok" while three tests
+>   failed. The counts line beside it was real and is what I had been reading, but the script's
+>   own verdict meant nothing. It now exits non-zero and names what failed.
+>
+> **Ask of any green signal: what input would make it red?** If there is none, it is decoration.
+>
+> ### ⚠️ A harness has a dialect whether or not it says so
+>
+> Three harnesses analysed with the default, which stopped being neutral once the strict dialect
+> began reporting extensions. They did **not** all want the same answer:
+>
+> * the vendored VPP corpus and the lowering fixtures are **GNU C** — their clean-sema
+>   assertions exist so the stage under test is not graded on a tree sema already rejected;
+> * the **divergence** harness must stay strict, because its subject is a diagnostic sema is
+>   expected to emit, and several are exactly the rules `--gnu` gates.
+>
+> A blanket conversion of all seven call sites broke the third. **One change, several sites,
+> not all alike.**
 >
 > ### 🆕 `Outcome::Warned` / `Bucket::SeverityMismatch`
 >
