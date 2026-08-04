@@ -962,3 +962,65 @@ fn the_rendered_report_names_the_right_side_per_section() {
         section("FINDINGS")
     );
 }
+
+/// **A translation unit chiero cannot lower is not `Clean`.**
+///
+/// The sweep ran preprocessing, parsing and sema and stopped. Lowering never ran, so a function
+/// that lowers to CIR the verifier rejects — which chiero handles by **dropping that function
+/// from analysis** — was counted as a clean file. The corpus headline said "1861 clean" while
+/// meaning "1861 sema-clean", and no number anywhere said how much of the tree was actually
+/// analysable.
+///
+/// `Outcome::NotRun`'s own doc already states the rule this broke: *"Never silently dropped,
+/// because a silent skip is how a sweep lies about its coverage."* A skip inside lowering is
+/// the same lie one stage further down.
+///
+/// **The fixture is a real defect, not a synthetic one.** `char *v[2] = {s, 0}` — a null pointer
+/// constant in an array-of-pointers initializer — lowers to a store of `Int(32)` into a `Ptr`
+/// slot, and the verifier refuses the function. It is recorded in HANDOFF §9 as its own bug;
+/// this test asserts only that the sweep *notices*, so it keeps passing once the initializer is
+/// fixed — at which point the row below stops being a lowering failure and the assertion moves
+/// to whatever the next unlowerable shape is.
+#[test]
+fn chiero_outcome_reports_a_translation_unit_it_cannot_lower() {
+    let tmp = std::env::temp_dir().join("chiero-lower-skip");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let tu = tmp.join("unlowerable.c");
+    std::fs::write(
+        &tu,
+        "int first(char *v[]) { return v[0][0]; }\n\
+         int probe(void) { char *s = \"A\"; char *v[2] = {s, 0}; return first(v); }\n",
+    )
+    .unwrap();
+
+    let flags = xtask::sweep::Flags {
+        dialect: chiero_ast::Dialect::gnu(),
+        machine: Vec::new(),
+        includes: Vec::new(),
+        defines: Vec::new(),
+        std: Some("gnu11".into()),
+    };
+    let outcome = xtask::sweep::chiero_outcome(&tu, &flags, &[], &[]);
+    assert_ne!(
+        outcome,
+        Outcome::Clean,
+        "a file with a function chiero dropped is not clean"
+    );
+    match &outcome {
+        Outcome::NotRun(m) => assert!(
+            m.contains("lower:"),
+            "the report must say which stage gave up: {m}"
+        ),
+        other => panic!("a lowering gap is a coverage gap, not a verdict on the code: {other:?}"),
+    }
+
+    // **A file that lowers cleanly is still `Clean`**, so the new stage cannot pass by
+    // reporting everything.
+    let ok = tmp.join("fine.c");
+    std::fs::write(&ok, "int f(int a[3]) { a[0] = 7; return a[0]; }\n").unwrap();
+    assert_eq!(
+        xtask::sweep::chiero_outcome(&ok, &flags, &[], &[]),
+        Outcome::Clean
+    );
+}

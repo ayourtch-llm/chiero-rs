@@ -269,13 +269,33 @@ pub fn chiero_outcome(
     // report one: it suppresses `-pedantic` diagnostics originating in a system header. Without
     // this the strict sweep's last finding was `__int128` inside `/usr/include/linux/types.h`,
     // which no reader could act on and gcc never mentions.
-    match analysis
+    if let Some(first) = analysis
         .diagnostics
         .iter()
         .find(|d| !in_system_header(&tu.source_map, d.span, system))
     {
-        Some(first) => Outcome::Diagnosed(format!(
+        return Outcome::Diagnosed(format!(
             "sema: {}",
+            describe(&tu.source_map, first.span, &first.message)
+        ));
+    }
+    // **Lowering runs, and a function it gives up on is reported.**
+    //
+    // The sweep used to stop at sema, so "clean" meant "sema-clean" and every corpus headline
+    // silently excluded the question of whether the file could be *analysed*. When lowering
+    // rejects its own output the function is dropped from the CIR — and a dropped function is
+    // invisible to every later stage, which is exactly the coverage lie `Outcome::NotRun`
+    // exists to prevent. Found because a `char *v[2] = {s, 0}` fixture made a whole function
+    // vanish and nothing in the sweep noticed.
+    //
+    // **`NotRun`, not `Diagnosed`.** The distinction this enum draws is between something said
+    // about the *code* and something chiero could not do; a verifier rejection is the second.
+    // Filing it as a finding would put a chiero defect in the list of VPP defects and,
+    // worse, let a fix that suppressed the diagnostic look like a fix to the tree.
+    let lowered = chiero_lower::lower_tu(&names.0.ast, &analysis, &names);
+    match lowered.diagnostics.first() {
+        Some(first) => Outcome::NotRun(format!(
+            "lower: {}",
             describe(&tu.source_map, first.span, &first.message)
         )),
         None => Outcome::Clean,
