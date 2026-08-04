@@ -549,6 +549,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
+> ### 🚧 BLOCKING (2026-08-04): builtin **signatures** are now required, not optional
+>
+> Tier 1/2 of the plan below were "nice to have". They are now the blocking item, because every
+> remaining `not-run` traces to one fact: **an unmodeled builtin's value has no type.**
+>
+> After 91a50fa the failure moved rather than vanished:
+>
+> ```c
+> unsigned long long __rdpmc (int __S) { return __builtin_ia32_rdpmc (__S); }
+> lower: `__rdpmc` lowered to CIR the verifier rejects
+>        (returns Int(32) but `__rdpmc` is declared -> Int(64))
+> ```
+>
+> The `Opaque`'s `dst` is typed from `Ty::Error`, and `cty(Error)` falls back to `Int(32)`; the
+> return wants `i64`. The poison-conversion guard correctly stops sema bridging that with a
+> conversion *from poison*, so the mismatch is now visible instead of being papered over by a
+> wrongly-typed cast. **Do not revert the guard** — converting poison was wrong; this is the same
+> defect one step earlier.
+>
+> ⚠️ **`__rdpmc` may have been failing before 91a50fa for this same reason rather than because of
+> it — unverified.** Check by measuring one file against 5e1de70 before assuming either.
+>
+> **Blanket implicit-`int` is refuted** (see `convert`'s comment): `__builtin_alloca` returns a
+> pointer and the `__builtin_ia32_*` family return vectors, so it made `vppinfra`'s own headers
+> report "returning a value makes a pointer from an integer". The corpus sema gate caught it.
+>
+> So the signatures have to be **per name**. Start with the ones VPP actually reaches — the
+> `__builtin_ia32_*` family via `ia32intrin.h`/`avx512fintrin.h`, plus `alloca`, and the Tier 1
+> table below. A name with no signature keeps `Ty::Error` and stays opaque; that is the floor and
+> it works, provided the *value* is not used where a width is required.
+>
 > ### 🔧 ROOT CAUSE (2026-08-04): sema types an undeclared builtin call as **`Ty::Error`**
 >
 > Measured by printing every expression's type and conversions for the two shapes:

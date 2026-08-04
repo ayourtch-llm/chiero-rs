@@ -8061,17 +8061,13 @@ impl Cx<'_> {
             // **`0` is a null pointer constant, `1` is not** (C 6.3.2.3p3). The distinction is the
             // value rather than the type, which is why this is a parameter and not a type test.
             //
-            // **An array destination counts, and only a parameter can be one.** C 6.7.6.3p7
-            // adjusts a parameter declared "array of T" to "pointer to T"; chiero keeps the array
-            // type, which is why the arms below normalise pointer against array on both sides.
-            // This arm asks about the destination's *kind* rather than its pointee, so it is the
-            // one place that adjustment has to be spelled out — and until it was, all 6 of VPP's
-            // remaining `makes a pointer from an integer` findings were `clib_socket_sendmsg (…,
-            // 0, 0)` against `int fds[]`, which gcc compiles silently in both modes.
-            //
-            // Assigning `0` to an array *object* does not reach here: `a = 0` is already refused
-            // as "assignment to an array" and contract 20 suppresses the conversion behind it.
-            (_, Ty::Ptr(_) | Ty::Array { .. }) if null_constant => true,
+            // **`Ty::Array` used to be named here too, and no longer needs to be.** A parameter
+            // declared "array of T" was the only destination that could reach this arm as an
+            // array, and C 6.7.6.3p7 now adjusts it to a pointer at declaration (b5e163d), so it
+            // arrives as `Ty::Ptr` like everything else. Assigning `0` to an array *object* never
+            // reached here: `a = 0` is refused as "assignment to an array" and contract 20
+            // suppresses the conversion behind it.
+            (_, Ty::Ptr(_)) if null_constant => true,
             // A function converts to a pointer to itself.
             (Ty::Func { .. }, Ty::Ptr(b)) => self.compatible(from, *b),
             _ => match (pointee(&f), pointee(&t)) {
@@ -8137,7 +8133,10 @@ impl Cx<'_> {
     /// been built in the program being compiled.
     fn param_shape(&self, t: TyId) -> (bool, TyId) {
         match self.out.types[t.0 as usize] {
-            Ty::Array { elem, .. } => (true, elem),
+            // **No `Ty::Array` arm.** A parameter is the only place two declarations could differ
+            // by array-versus-pointer, and 6.7.6.3p7 adjusts it before this is ever asked
+            // (b5e163d), so `f(int p[4])` and `f(int *p)` now agree by interned identity rather
+            // than by being normalised here.
             Ty::Ptr(p) => (true, p),
             _ => (false, t),
         }
