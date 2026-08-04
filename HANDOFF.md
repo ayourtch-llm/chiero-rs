@@ -14104,6 +14104,27 @@ regression test. Also verified: gcno magic `oncg` / gcda `adcg`, version tag `*3
 ~~Re-verify clang/z3~~ — done, both verified working (§3). `070`'s oracle section can
 assume gcc 13.3 + clang 18.1.3 + z3 4.8.12 are all present.
 
+## 9.9 ⏰ RE-ARM THE HEARTBEAT AFTER A CONTEXT REFRESH
+
+`mcp__tttt__tttt_clear_and_read_handoff_md` does a `/clear`, which **destroys the heartbeat**:
+`CronCreate` jobs are session-only, held in memory, and wiped along with the context. This
+already happened once this session — the owner had to point out the heartbeat was gone.
+
+**Re-arm it immediately after refreshing**, with `CronCreate`:
+
+- cron: `13,43 * * * *` — every 30 minutes, off the `:00`/`:30` marks
+- recurring: `true` (auto-expires after 7 days)
+- prompt: *"Heartbeat. Continue autonomous work on chiero-rs per HANDOFF.md §9 'Next actions' —
+  read it if you don't have it in context. Full autonomy was granted 2026-07-27; don't ask
+  permission, just continue the queue in red-green TDD and commit. If you are mid-task, ignore
+  this and keep going. Before any context refresh, update §7/§9 of HANDOFF.md and commit it."*
+
+30 minutes was chosen deliberately: a cache-cold corpus run is ~30 min and a full workspace run
+2–3 min, so a shorter tick interrupts mid-task more often than it produces work.
+
+⚠️ **Check `CronList` before creating** — if a heartbeat is already there, a second one just
+doubles the wake-ups.
+
 ## 10. Standing reminders
 
 - Don't re-ask the three §2 decisions.
