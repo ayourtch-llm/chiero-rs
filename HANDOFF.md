@@ -534,7 +534,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > memset, constant_p, trap, clzll, add_overflow, types_compatible_p. `__builtin_alloca` is a
 > **second, distinct** gap with its own message.
 >
-> **The fix has a precedent in this codebase and it is not "model every builtin".** `asm` is
+> ### 🎯 THE PLAN, revised at the owner's suggestion (2026-08-04): model, don't approximate
+>
+> The owner's point: **the builtins have semantics — lower them as if an equivalent expression
+> had been written.** That is better than an opaque effect for a reason beyond precision:
+> several have **undefined behaviour chiero exists to find**. `__builtin_ctz(0)` is UB and VPP
+> calls it. An opaque effect silently discards that defect class; an exact model can report it.
+>
+> So Opaque is the **floor**, not the destination. Three tiers:
+>
+> **Tier 1 — exact, straight-line, no new CIR, no new blocks.** Everything it needs exists:
+>
+> | builtin | lowers to |
+> |---|---|
+> | `__builtin_expect(x, c)` | `x` — gcc documents the result as `x` |
+> | `__builtin_prefetch(p, …)` | evaluate the arguments, no effect (a pure hint) |
+> | `__builtin_constant_p(x)` | `0` conservatively |
+> | `__builtin_unreachable()` | `Terminator::Unreachable(…)` |
+> | `__builtin_trap()` | the same, with its own reason |
+> | `__builtin_memcpy` / `memmove` / `memset` | `InstKind::CopyMem` / `SetMem` |
+> | `__builtin_bswap16/32/64` | shifts and ors — exact, no branches |
+>
+> **Tier 2 — exact, but wants new CIR ops (a 020 change, so its own wave).** `ctz`, `clz`,
+> `popcount`, `ffs` and their `l`/`ll` variants. Desugaring these to a *loop* instead is
+> possible and is the wrong trade: it invents blocks corresponding to no source line, and
+> 015 §5 owns `Block::gcov_lines` — coverage is a first-class output here, so synthesised
+> control flow corrupts a deliverable. Add the ops.
+>
+> **Their UB is the point, not a detail.** `ctz(0)` and `clz(0)` are undefined; `ffs(0)` is
+> defined and returns 0. Modelling them is what lets a 040 checker report the first two.
+>
+> **Tier 3 — `OpaqueReason::UnmodeledBuiltin`** for everything else, so a function is **never
+> discarded** for containing a builtin. RED committed at ead0701.
+>
+> **The precedent Tier 3 follows** — and it is not "model every builtin": `asm` is
 > lowered as an opaque effect that clobbers its outputs and marks the path `Approximated`
 > (013 §4, and the `StmtKind::Asm` doc). A builtin lowering cannot model should do the same:
 > **an opaque call, not a discarded function.** Dropping the function is the unsound-looking
