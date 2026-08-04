@@ -2287,6 +2287,9 @@ impl<'a> Parser<'a> {
         {
             return self.statement();
         }
+        if let Some(st) = self.attribute_statement() {
+            return st;
+        }
         if self.starts_declaration() {
             return self.local_declaration();
         }
@@ -2337,6 +2340,41 @@ impl<'a> Parser<'a> {
         }
         let span = self.span_from(start);
         self.ast.add_stmt(StmtKind::Decl(decls), span)
+    }
+
+    /// **`__attribute__ ((fallthrough));` — an attribute specifier where a statement belongs.**
+    ///
+    /// 013 §4's position list with no grammar production behind it: C has none, and gcc accepts
+    /// it in both `gnu11` and `-pedantic-errors`. VPP marks every deliberate switch fallthrough
+    /// this way, and all 3 of the corpus's remaining `expected a type specifier` findings were
+    /// this construct reaching the declaration path and failing there.
+    ///
+    /// **Decided by trying it and backtracking**, the same way `call_argument` decides a type
+    /// name, and for the same reason: `__attribute__((unused)) int y = 1;` also starts here and
+    /// is a declaration. Only the `;` tells the two apart, and it sits past the attributes. The
+    /// diagnostics roll back with the cursor — a speculative parse that leaves its complaints
+    /// behind reports errors for a reading the parser itself rejected.
+    ///
+    /// **Called from `block_item` as well as from `statement_inner`**, because those are two
+    /// different arrivals and the corpus uses the first: `starts_declaration` is true of
+    /// `__attribute__`, so a fallthrough marker standing among a case's statements is claimed by
+    /// the declaration path before `statement_inner` ever sees it. Only a marker written
+    /// directly after a label reaches the statement path. Both spellings appear in VPP.
+    fn attribute_statement(&mut self) -> Option<StmtId> {
+        if !self.is_kw(0, Kw::Attribute) {
+            return None;
+        }
+        let start = self.pos;
+        let before = self.diags.len();
+        let mut attrs = Vec::new();
+        self.attribute_specifiers(&mut attrs);
+        if self.eat_punct(Punct::Semi) {
+            let span = self.span_from(start);
+            return Some(self.ast.add_stmt(StmtKind::Attr(attrs), span));
+        }
+        self.pos = start;
+        self.diags.truncate(before);
+        None
     }
 
     fn statement(&mut self) -> StmtId {
@@ -2494,6 +2532,9 @@ impl<'a> Parser<'a> {
         if self.eat_punct(Punct::Semi) {
             let span = self.span_from(start);
             return self.ast.add_stmt(StmtKind::Empty, span);
+        }
+        if let Some(st) = self.attribute_statement() {
+            return st;
         }
         if self.eat_kw(Kw::Return) {
             let value = if self.is_punct(0, Punct::Semi) {

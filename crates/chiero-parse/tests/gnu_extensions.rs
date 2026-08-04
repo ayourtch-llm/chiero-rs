@@ -667,7 +667,10 @@ fn an_attribute_may_stand_where_a_statement_belongs() {
     // **A declaration starting with an attribute is still a declaration**, which is the case
     // this arm must not steal: `__attribute__((unused)) int y = 1;` declares `y`.
     let (_, p) = parse("int f(void){ __attribute__ ((unused)) int y = 1; return y; }\n");
-    no_diagnostics(&p, "an attributed declaration is not an attribute statement");
+    no_diagnostics(
+        &p,
+        "an attributed declaration is not an attribute statement",
+    );
     assert!(
         p.ast
             .stmts()
