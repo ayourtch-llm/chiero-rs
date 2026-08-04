@@ -809,6 +809,21 @@ fn an_enum_may_specify_its_underlying_type() {
         Vec::<String>::new()
     );
 
+    // **Only an enum takes one.** `struct S : u8 { … }` is C++, and gcc refuses it in C
+    // ("expected identifier or `(` before `:`"). Mutation widened the parse to every tag kind
+    // and no fixture noticed, because every row here used `enum` — a rule tested only on the
+    // case it permits cannot see itself over-permitting.
+    for tag in ["struct", "union"] {
+        assert!(
+            !diagnostics_with(
+                &format!("typedef unsigned char u8;\n{tag} S : u8 {{ int a; }};\n"),
+                chiero_ast::Dialect::gnu()
+            )
+            .is_empty(),
+            "`{tag} S : u8` is not C"
+        );
+    }
+
     // **A bit-field is still a bit-field.** `enum E x : 3;` inside a record names a width, not
     // an underlying type, and reading the `:` the same way in both places would break every
     // enum-typed bit-field in the tree.

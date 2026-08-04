@@ -202,3 +202,53 @@ fn a_sidecar_is_keyed_on_the_output_it_describes() {
     let b = sidecar_path(&args("a.c b.c -o prog"), &PathBuf::from("b.c"));
     assert_ne!(a, b, "one sidecar per translation unit");
 }
+
+/// **Machine flags decide which headers a project even sees.**
+///
+/// VPP defines `u8x16_word_shift_left` in `vector_sse42.h` behind `__SSE4_2__`, and compiles
+/// each SIMD variant with its own `-march`. The shim collected `-I` and `-D` and dropped
+/// `-march`, so `gcc -dM` was asked for predefines *without* them: `__SSE4_2__` never appeared,
+/// VPP's headers took the scalar branch, and the intrinsics looked undeclared.
+///
+/// 13 findings across four names — `u8x16_word_shift_left`, `u64x2_is_all_zero`,
+/// `u32x4_sum_elts`, `u32x4_gather` — all one cause, and none of them a chiero defect.
+#[test]
+fn machine_flags_reach_the_predefines() {
+    let f = xtask::cc::flags_from_args(
+        &args("-c n.c -march=haswell -mavx2 -msse4.2 -mno-red-zone -O2 -Wall -I/x"),
+        chiero_ast::Dialect::gnu(),
+    );
+    assert_eq!(
+        f.machine,
+        ["-march=haswell", "-mavx2", "-msse4.2", "-mno-red-zone"],
+        "every `-m` flag, since any of them can gate a header"
+    );
+
+    // **Not everything that starts with `-m`.** `-MD`, `-MF` and `-MT` are dependency options,
+    // and passing them to `gcc -dM` would make it write a dependency file instead of
+    // predefines.
+    let f = xtask::cc::flags_from_args(
+        &args("-c n.c -MD -MF dep.d -MT n.o -mavx2"),
+        chiero_ast::Dialect::gnu(),
+    );
+    assert_eq!(f.machine, ["-mavx2"]);
+}
+
+/// The predefines actually differ, or the flag would be collected and ignored — the wiring
+/// failure this codebase has now hit three times.
+#[test]
+fn predefines_differ_with_machine_flags() {
+    let plain = xtask::sweep::gcc_predefines_with(Some("gnu11"), &[]);
+    if plain.is_empty() {
+        eprintln!("skipping: gcc not on PATH");
+        return;
+    }
+    let avx = xtask::sweep::gcc_predefines_with(
+        Some("gnu11"),
+        &["-mavx2".to_owned(), "-msse4.2".to_owned()],
+    );
+    let has = |v: &[(String, String)], k: &str| v.iter().any(|(n, _)| n == k);
+    assert!(!has(&plain, "__AVX2__"), "baseline has no AVX2");
+    assert!(has(&avx, "__AVX2__"), "`-mavx2` defines __AVX2__");
+    assert!(has(&avx, "__SSE4_2__"), "`-msse4.2` defines __SSE4_2__");
+}
