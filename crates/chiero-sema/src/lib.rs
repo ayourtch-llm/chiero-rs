@@ -6667,11 +6667,10 @@ impl Cx<'_> {
         // borrow ends, and a union's member list is short.
         let fields: Vec<(Option<Symbol>, TyId)> =
             layout.fields.iter().map(|f| (f.name, f.ty)).collect();
-        // An argument already of the union's own type is an ordinary assignment, not a
-        // widening, and must not be recorded as one.
-        if from == to {
-            return None;
-        }
+        // **No `from == to` guard: the member loop already excludes it.** A union type is
+        // never `assignable` to one of its own member types, so passing the union itself finds
+        // no member and is not recorded. A guard for it was written here and mutation could
+        // not falsify it — dead, not defensive.
         fields.into_iter().enumerate().find_map(|(i, (name, ty))| {
             (self.assignable(from, ty, null_constant)).then_some((i, name?))
         })

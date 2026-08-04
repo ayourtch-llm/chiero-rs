@@ -639,6 +639,44 @@ fn a_transparent_union_parameter_takes_any_members_type() {
         "a non-member type is not accepted"
     );
 
+    // **Passing the union's own type is not a widening.** It is accepted — it always was —
+    // but it must not appear in the table, or every ordinary union argument would be recorded
+    // as a conversion that never happened, and a later stage would insert one.
+    {
+        let src = "typedef union { int *i; char *c; } __attribute__((__transparent_union__)) arg_t;\n\
+                   int take(arg_t a);\n\
+                   int f(arg_t u) { return take(u); }\n";
+        let tu = chiero_pp::preprocess_str("t.c", src, Config::default());
+        let mut oracle = ScopedTypedefs::new();
+        let parsed = parse_tu_with(&tu, &mut oracle, Dialect::gnu());
+        let a = analyze_with(
+            &parsed.ast,
+            &TargetConfig::x86_64_linux(),
+            &harness::names_of(&parsed),
+            Dialect::gnu(),
+        );
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert_eq!(
+            a.transparent_union_args().count(),
+            0,
+            "the union's own type is passed, not widened"
+        );
+    }
+
+    // **Only a union may be transparent.** gcc rejects the attribute on a struct, and a
+    // `struct` carrying it must not widen — every row above uses a union, so a rule that
+    // ignored the tag kind passed all of them.
+    assert!(
+        !sema_messages(
+            "typedef struct { int *i; char *c; } __attribute__((__transparent_union__)) s_t;\n\
+             int take(s_t a);\n\
+             int f(int *p) { return take(p); }\n",
+            Dialect::pedantic()
+        )
+        .is_empty(),
+        "a struct does not take the attribute"
+    );
+
     // **Without the attribute the union is an ordinary union** and a member's type is not
     // interchangeable with it, which is what chiero did for every union until now.
     assert!(
