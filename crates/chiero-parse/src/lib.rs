@@ -30,6 +30,13 @@ pub trait TypedefOracle {
     fn enter_scope(&mut self);
     fn exit_scope(&mut self);
     fn declare(&mut self, sym: Symbol, is_typedef: bool);
+
+    /// Declare in the scope *enclosing* the current one, without disturbing the current one.
+    ///
+    /// A function definition needs this: its name belongs to the file scope while the parser
+    /// is inside the prototype scope holding the parameters, and the parameters must survive
+    /// into the body. Popping and re-pushing loses them.
+    fn declare_enclosing(&mut self, sym: Symbol, is_typedef: bool);
 }
 
 /// A scope stack of names, sufficient for standalone parsing and for tests.
@@ -64,6 +71,14 @@ impl TypedefOracle for ScopedTypedefs {
 
     fn enter_scope(&mut self) {
         self.scopes.push(IndexMap::new());
+    }
+
+    fn declare_enclosing(&mut self, sym: Symbol, is_typedef: bool) {
+        // Second from the top, or the file scope when there is nothing above it.
+        let at = self.scopes.len().saturating_sub(2);
+        if let Some(scope) = self.scopes.get_mut(at) {
+            scope.insert(sym, is_typedef);
+        }
     }
 
     fn exit_scope(&mut self) {
@@ -897,10 +912,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Declare a name in the scope *outside* the prototype scope we are currently in.
+    ///
+    /// **Not by popping and re-pushing.** That discarded every parameter the declarator had
+    /// just declared and handed the body a fresh empty scope, so a parameter shadowing a
+    /// typedef stopped shadowing it the moment the body began: `void f(u64 word)` with
+    /// `typedef i64 word;` in scope read `word >>= 1` as a declaration. It was the only parse
+    /// failure in a sweep of all 1552 VPP files.
     fn declare_outer(&mut self, name: Symbol, is_typedef: bool) {
-        self.oracle.exit_scope();
-        self.oracle.declare(name, is_typedef);
-        self.oracle.enter_scope();
+        self.oracle.declare_enclosing(name, is_typedef);
     }
 
     /// Build the declaration node and tell the oracle about the name.
