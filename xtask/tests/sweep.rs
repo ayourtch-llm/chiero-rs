@@ -730,3 +730,49 @@ fn a_diagnostic_from_a_system_header_is_suppressed() {
     assert!(!in_system_header(&map, at(f_sys), &[]));
     let _ = user;
 }
+
+/// **The filter must be wired in, not merely correct.** Mutation replaced
+/// `chiero_outcome`'s use of `in_system_header` with a predicate that keeps everything, and
+/// nothing failed: every row above tests the helper directly, so a helper that is never called
+/// passes all of them. This runs the real path.
+#[test]
+fn chiero_outcome_drops_a_system_header_diagnostic() {
+    let tmp = std::env::temp_dir().join("chiero-sysheader");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    // `__int128` is reported under the strict dialect, and this header stands in for
+    // `/usr/include/linux/types.h`, which was the last strict finding over all of VPP.
+    std::fs::write(tmp.join("sysheader.h"), "__int128 wide_thing;\n").unwrap();
+    let tu = tmp.join("user.c");
+    std::fs::write(&tu, "#include <sysheader.h>\nint main(void){return 0;}\n").unwrap();
+
+    let flags = xtask::sweep::Flags {
+        dialect: chiero_ast::Dialect::pedantic(),
+        includes: Vec::new(),
+        defines: Vec::new(),
+        std: Some("gnu11".into()),
+    };
+
+    // Treated as a system directory: the diagnostic is gcc's to suppress, and ours.
+    assert_eq!(
+        xtask::sweep::chiero_outcome(&tu, &flags, std::slice::from_ref(&tmp), &[]),
+        Outcome::Clean,
+        "a diagnostic from a system header must not reach the report"
+    );
+
+    // **The same file, not treated as a system directory, still reports.** Without this the
+    // assertion above would also pass if the rule had simply stopped firing.
+    let elsewhere = std::env::temp_dir().join("chiero-not-a-sysdir");
+    let _ = std::fs::create_dir_all(&elsewhere);
+    let with_include = xtask::sweep::Flags {
+        includes: vec![tmp.clone()],
+        ..flags
+    };
+    assert!(
+        matches!(
+            xtask::sweep::chiero_outcome(&tu, &with_include, std::slice::from_ref(&elsewhere), &[]),
+            Outcome::Diagnosed(m) if m.contains("__int128")
+        ),
+        "the rule still fires when the header is not a system header"
+    );
+}

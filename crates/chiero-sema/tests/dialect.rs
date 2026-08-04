@@ -548,3 +548,55 @@ fn an_empty_translation_unit_is_a_pedantic_rule_only() {
         );
     }
 }
+
+/// **A zero-size array is a GNU extension; a flexible array member is standard C.**
+///
+/// Surfaced when system-header suppression cleared the `__int128` finding that had been
+/// masking it: `vcl/vppcom.h:64` bucketed as a *finding* on one message, and only once that
+/// message went away did the file's real status — a **miss** — become visible. The lid effect,
+/// in the misses direction.
+///
+/// Measured, and the two spellings differ:
+///
+/// | form | `gnu11` | `-pedantic-errors` |
+/// |---|---|---|
+/// | `char data[0]` | accepts | refuses — "ISO C forbids zero-size array" |
+/// | `char data[]` | accepts | **accepts** — C99 flexible array member |
+///
+/// 013's construct table puts `[0]` arrays in 1165 VPP files and calls them required, so
+/// support is unconditional and only the sentence follows the dialect.
+#[test]
+fn a_zero_size_array_is_a_pedantic_rule_but_a_flexible_member_is_not() {
+    let zero = "struct S { int n; char data[0]; };\nstruct S s;\n";
+    assert!(
+        sema_messages(zero, Dialect::pedantic())
+            .iter()
+            .any(|m| m.contains("zero-size array")),
+        "`-pedantic-errors` refuses it"
+    );
+    assert_eq!(sema_messages(zero, Dialect::gnu()), Vec::<String>::new());
+
+    // **A flexible array member is C99 and accepted by gcc in both modes.** Gating on "an
+    // array with no elements" would take this too, and every VPP structure that ends in one.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert_eq!(
+            sema_messages("struct F { int n; char data[]; };\nstruct F f;\n", dialect),
+            Vec::<String>::new(),
+            "a flexible array member is standard C"
+        );
+    }
+
+    // The extension keeps working: the member contributes nothing to the size, as gcc has it.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages(
+                "struct S { int n; char data[0]; };\n\
+                 _Static_assert(sizeof(struct S) == sizeof(int), \"the array adds nothing\");\n",
+                dialect
+            )
+            .iter()
+            .any(|m| m.contains("static assertion failed")),
+            "reporting an extension must not stop supporting it"
+        );
+    }
+}
