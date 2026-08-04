@@ -893,6 +893,10 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
         // **An enumeration is compatible with its underlying type**, and gcc takes it.
         "enum e { A = 1 };\nunion U { unsigned int u; char c; };\n\
          unsigned int f(enum e x){ return ((union U)x).u; }\n",
+        // **The promoting half of C 6.2.7p3.** `double` is unchanged by the default argument
+        // promotions, so an unprototyped member *does* take this prototype — the row that keeps
+        // the fix for the refused `char` pair from becoming "unprototyped never matches".
+        "union F { int (*g)(); long l; };\nlong f(int (*h)(double)){ return ((union F)h).l; }\n",
     ] {
         assert_eq!(
             sema_messages(src, Dialect::gnu()),
@@ -964,6 +968,34 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
             no_member,
             "an incomplete union names no member",
         ),
+        // **A bit-field is not a member of its declared type for this search.** `layout.fields`
+        // records a bit-field's `ty` as what it was declared with, so a match on it is a false
+        // acceptance — precisely the "extension swallows a gcc error" failure the rule above is
+        // written to prevent, and the gnu sweep is where it would go silent.
+        (
+            "union B { unsigned int whole : 8; unsigned long l; };\n\
+             unsigned long f(unsigned int q){ return ((union B)q).l; }\n"
+                .to_string(),
+            no_member,
+            "a bit-field member is not a member of that type",
+        ),
+        // **An unprototyped function type is not compatible with an arbitrary prototype**
+        // (C 6.2.7p3): only one whose parameters are all unchanged by the default argument
+        // promotions. `char` is changed, so both directions are refused — and `types_conflict`,
+        // which is calibrated for *redeclarations* where leniency is the safe error, says
+        // compatible for either. For this search leniency inverts into a swallowed gcc error.
+        (
+            "union F { int (*g)(); long l; };\nlong f(int (*h)(char)){ return ((union F)h).l; }\n"
+                .to_string(),
+            no_member,
+            "an unprototyped member does not take a non-promoting prototype",
+        ),
+        (
+            "union F { int (*g)(char); long l; };\nlong f(int (*h)()){ return ((union F)h).l; }\n"
+                .to_string(),
+            no_member,
+            "a non-promoting prototype member does not take an unprototyped argument",
+        ),
         // **A struct target is still refused**, in both modes — the extension is unions only,
         // and gcc keeps saying "conversion to non-scalar type requested" for a struct. It keeps
         // chiero's existing sentence, because the union rule never applies to it.
@@ -1009,6 +1041,30 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
         ],
         "one sentence per cast, not one per translation unit"
     );
+
+    // **An already-reported operand gets no second sentence** (contract 20). gcc says
+    // "undeclared" once and stops; chiero said that and then added "a cast names a scalar type
+    // or `void`", which is not merely extra but *false* — `U` is a union one may cast to. The
+    // same holds for an operand of incomplete type, which the scalar path below already excuses
+    // and this one did not.
+    for (src, why) in [
+        (
+            format!("{u}unsigned int f(void){{ return ((U)undeclared_x).u; }}\n"),
+            "a poisoned operand",
+        ),
+        (
+            format!("union V;\n{u}unsigned int f(union V *p){{ return ((U)*p).u; }}\n"),
+            "an operand of incomplete type",
+        ),
+    ] {
+        for dialect in [Dialect::gnu(), Dialect::pedantic()] {
+            assert_eq!(
+                sema_messages(&src, dialect).len(),
+                1,
+                "one diagnostic, not two ({why}): {src}"
+            );
+        }
+    }
 
     // **The result is not an lvalue.** gcc refuses `((U)x).u = 1` under `gnu11` too, so
     // accepting the cast must not also make it assignable — and the sentence is pinned, because
@@ -1077,6 +1133,51 @@ fn a_cast_to_the_operands_own_record_type_is_a_pedantic_rule_only() {
             sema_messages(other, dialect),
             vec!["a cast names a scalar type or `void`".to_string()],
             "a different record type is not the same type"
+        );
+    }
+}
+
+/// **A statement expression is an lvalue, and `not_an_lvalue` said it was not.**
+///
+/// Measured on gcc 13: `({ x; }) = 1` and `({ s; }).m = 1` both compile under `-std=gnu11`, and
+/// the only thing `-pedantic-errors` says about either is "ISO C forbids braced-groups within
+/// expressions" — a complaint about the construct, never about the assignment. chiero refused
+/// both with "not an lvalue".
+///
+/// The entry was unmeasured and nothing pinned it. It surfaced when `not_an_lvalue` gained its
+/// `Member` arm — `({ s; }).m = 1` began recursing into the `StmtExpr` entry and inheriting a
+/// refusal that had until then only been reachable directly. The arm did not create the divergence;
+/// it widened it, which is what made it visible.
+///
+/// **The pedantic sentence is deliberately not asserted.** chiero has no braced-group rule, and
+/// inventing one here would pin a rule this test did not measure a need for.
+#[test]
+fn a_statement_expression_is_an_lvalue() {
+    for src in [
+        "int f(void){ int x = 0; ({ x; }) = 1; return x; }\n",
+        "struct S { int m; };\nvoid f(struct S s){ ({ s; }).m = 1; }\n",
+        "struct S { int m; };\nvoid f(struct S s){ ({ s; }).m++; }\n",
+    ] {
+        assert_eq!(
+            sema_messages(src, Dialect::gnu()),
+            Vec::<String>::new(),
+            "gcc compiles this under gnu11: {src}"
+        );
+    }
+
+    // **The rest of `not_an_lvalue` still refuses what gcc refuses**, so this is not a licence
+    // to write to anything. Each is a measured gcc "lvalue required".
+    for src in [
+        "int f(void){ int x = 0; (x + 1) = 1; return x; }\n",
+        "int f(void){ int x = 0; x++ = 1; return x; }\n",
+        "enum e { A };\nint f(void){ A = 1; return 0; }\n",
+        "struct S { int m; };\nstruct S g(void);\nvoid f(void){ g().m = 1; }\n",
+    ] {
+        assert!(
+            sema_messages(src, Dialect::gnu())
+                .iter()
+                .any(|m| m.contains("not an lvalue")),
+            "gcc refuses this: {src}"
         );
     }
 }

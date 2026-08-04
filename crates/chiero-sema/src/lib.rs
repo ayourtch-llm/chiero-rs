@@ -7585,6 +7585,16 @@ impl Cx<'_> {
     /// cannot designate an object and treats everything else as an lvalue, so a shape nobody
     /// thought of is accepted rather than refused. Wave 303's rule.
     ///
+    /// **A statement expression is not listed, and used to be.** `({ x; }) = 1` and
+    /// `({ s; }).m = 1` both compile under `gcc -std=gnu11`; the only thing `-pedantic-errors`
+    /// says about either is "ISO C forbids braced-groups within expressions", which is about the
+    /// construct and not about the write. The entry was never measured and nothing pinned it.
+    ///
+    /// It went unnoticed while it was reachable only by writing to a braced group directly.
+    /// Adding the `Member` arm below made `({ s; }).m = 1` recurse into it, which turned one
+    /// unlikely over-rejection into a shape real code writes — the arm widened the divergence
+    /// rather than creating it, and that is what made it visible.
+    ///
     /// Two entries are not what they look like:
     ///
     ///   - **`Cast` is only disqualifying when its operand is not an initializer list.** A
@@ -7607,7 +7617,6 @@ impl Cx<'_> {
             | ExprKind::Cond { .. }
             | ExprKind::Assign { .. }
             | ExprKind::Comma { .. }
-            | ExprKind::StmtExpr(_)
             | ExprKind::SizeofExpr(_)
             | ExprKind::SizeofType(_)
             | ExprKind::AlignofExpr(_)
@@ -8531,23 +8540,34 @@ impl Cx<'_> {
             // in the VPP queue: `(ip4_address_t) la`, `((iavf_rx_desc_qw1_t) qw1).length` and
             // two more, 11 findings over four sites.
             //
-            // **Poison is excluded from both arms.** An `Error` operand is `compatible` with
-            // everything (contract 20), so letting it reach either arm would turn an
-            // already-reported fault into a silently accepted extension. It falls through to the
-            // sentence below, exactly as it did before this arm existed.
-            let poisoned = matches!(self.out.types[operand.0 as usize], Ty::Error);
+            // **An already-reported operand ends the question here** (contract 20). `Ty::Error`
+            // is `compatible` with everything, so letting it reach either arm would launder a
+            // reported fault into a silently accepted extension — but falling *through* to the
+            // sentence below is no better, and that is what the first draft did: `(U)undeclared`
+            // said "a cast names a scalar type or `void`" after the undeclared-identifier
+            // message, a second sentence that is also false, since `U` is a union one may cast
+            // to. gcc says one thing and stops.
+            //
+            // An **incomplete** operand is excused the same way and refused the same way — false
+            // rather than true, matching the scalar path below, so the caller poisons the result
+            // and the member access on it stays quiet too.
+            if matches!(self.out.types[operand.0 as usize], Ty::Error) {
+                return true;
+            }
+            if is_incomplete(&self.out, operand) {
+                return false;
+            }
             // **A cast to the operand's own record type**: `(struct S)s`. gcc says "ISO C
             // forbids casting nonscalar to the same type", and it says *that* rather than the
             // union sentence for `(union U)u` — which is why this arm is tested first and not
             // folded into the member search below.
-            if !poisoned && self.compatible(self.bare(target), self.bare(operand)) {
+            if self.compatible(self.bare(target), self.bare(operand)) {
                 if self.dialect.pedantic {
                     self.error(span, "ISO C forbids casting nonscalar to the same type");
                 }
                 return true;
             }
             if let Ty::Record(r) = self.out.types[target.0 as usize]
-                && !poisoned
                 && self.out.layout(r).is_union
             {
                 // **The member match is by compatibility, not by conversion**, and that is the
@@ -8568,9 +8588,24 @@ impl Cx<'_> {
                 //
                 // Cloned because `compatible` borrows `self` while the layout is still held, and
                 // a union's member list is short.
-                let members: Vec<TyId> = self.out.layout(r).fields.iter().map(|f| f.ty).collect();
+                // **A bit-field is not a member of its declared type for this search.**
+                // `FieldLayout.ty` records what the bit-field was declared with, so an
+                // unfiltered list matches `unsigned int whole : 8` against an `unsigned int`
+                // operand — a false acceptance of a cast gcc refuses in both modes, which is the
+                // exact failure this whole rule is written to avoid.
+                let members: Vec<TyId> = self
+                    .out
+                    .layout(r)
+                    .fields
+                    .iter()
+                    .filter(|f| f.bits.is_none())
+                    .map(|f| f.ty)
+                    .collect();
                 let from = self.bare(operand);
-                if members.iter().any(|&m| self.compatible(self.bare(m), from)) {
+                if members
+                    .iter()
+                    .any(|&m| self.compatible(self.bare(m), from) && self.prototypes_agree(m, from))
+                {
                     if self.dialect.pedantic {
                         self.error(span, "ISO C forbids casts to union type");
                     }
@@ -8608,6 +8643,65 @@ impl Cx<'_> {
             return false;
         }
         true
+    }
+
+    /// C 6.2.7p3's extra condition when an **unprototyped** function type meets a prototyped one:
+    /// compatible only if the prototype has no ellipsis and every parameter is unchanged by the
+    /// default argument promotions.
+    ///
+    /// **`types_conflict` deliberately does not ask this**, and is right not to: it answers about
+    /// *redeclarations*, where an unspecified parameter list means "says nothing" and
+    /// over-rejection is the worse error. The cast-to-union member search inverts the risk — there,
+    /// leniency turns a gcc error into silence — so it asks the paragraph directly.
+    ///
+    /// Measured, both directions: gcc takes `int (*)(double)`, `int (*)(_Float16)` and
+    /// `int (*)(_Float32)` against an `int (*)()` member, and refuses `char`, `short` and `float`.
+    /// Answers `true` for every type that is not a pair of function types disagreeing about
+    /// prototypedness, so it is a filter on `compatible` rather than a second opinion.
+    fn prototypes_agree(&self, a: TyId, b: TyId) -> bool {
+        let peel = |cx: &Self, t: TyId| match cx.out.types[cx.bare(t).0 as usize] {
+            Ty::Ptr(p) => cx.bare(p),
+            _ => cx.bare(t),
+        };
+        let (
+            Ty::Func {
+                params: pa,
+                variadic: va,
+                prototyped: qa,
+                ..
+            },
+            Ty::Func {
+                params: pb,
+                variadic: vb,
+                prototyped: qb,
+                ..
+            },
+        ) = (
+            &self.out.types[peel(self, a).0 as usize],
+            &self.out.types[peel(self, b).0 as usize],
+        )
+        else {
+            return true;
+        };
+        if qa == qb {
+            return true;
+        }
+        let (params, variadic) = if *qa { (pa, va) } else { (pb, vb) };
+        !variadic && params.iter().all(|&p| self.promotion_stable(p))
+    }
+
+    /// Whether the **default argument promotions** leave `t` alone (C 6.5.2.2p6).
+    ///
+    /// Narrower-than-`int` integers become `int` and `float` becomes `double`; everything else,
+    /// `_Float16` and `_Float32` included, arrives as itself. The float list is measured against
+    /// gcc rather than reasoned from width — `_Float16` is narrower than `double` and is still
+    /// not promoted.
+    fn promotion_stable(&self, t: TyId) -> bool {
+        match self.out.types[self.bare(t).0 as usize] {
+            Ty::Int { bits, .. } => bits >= (self.target.sizes.int_ * 8) as u32,
+            Ty::Float(k) => !matches!(k, FloatKind::F32),
+            _ => true,
+        }
     }
 
     /// **`<<`, `>>`, `&`, `^` and `|` take integer operands** (C 6.5.7p2, 6.5.10–6.5.12p2).
