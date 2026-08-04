@@ -16,7 +16,7 @@
 mod harness;
 
 use chiero_sema::{ArrayLen, RecordId, TargetConfig, Ty};
-use harness::{Parsed, gcc_available, parse};
+use harness::{Parsed, gcc_available, parse, parse_allowing_diagnostics};
 
 fn layout_of<'a>(p: &'a Parsed, tag: &str) -> (&'a chiero_sema::Analysis, RecordId) {
     let sym = p.symbol(tag).unwrap_or_else(|| panic!("no symbol `{tag}`"));
@@ -229,7 +229,11 @@ fn a_union_sizes_to_its_largest_member_and_aligns_to_the_strictest() {
 /// use `long`", the first assertion would pass on its own.
 #[test]
 fn an_enum_widens_its_underlying_type_only_when_a_value_requires_it() {
-    let wide = parse(
+    // **`parse_allowing_diagnostics`, because this test's subject is the diagnostic.** `parse`
+    // judges fixtures in the `gnu` dialect, where the enumerator-range rule is gated; asserting
+    // the message there would assert that a diagnostic appears in the mode built to suppress
+    // it.
+    let wide = parse_allowing_diagnostics(
         "enum E { A = 0x100000000 }; enum E e;",
         TargetConfig::x86_64_linux(),
     );

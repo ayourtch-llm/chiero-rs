@@ -2451,7 +2451,28 @@ impl Cx<'_> {
                     );
                 }
                 let l = match len {
-                    chiero_ast::ArrayLen::Zero => ArrayLen::Zero,
+                    chiero_ast::ArrayLen::Zero => {
+                        // **A zero-size array is a GNU extension, a flexible member is not.**
+                        // Measured: `gnu11` accepts `char d[0]` and `-pedantic-errors` refuses
+                        // it ("ISO C forbids zero-size array"), while `char d[]` — C99's
+                        // flexible array member, `ArrayLen::Unspecified` below — is accepted by
+                        // both. The AST already keeps them apart, which is what lets the rule
+                        // name the extension without taking every VPP struct that ends in one.
+                        //
+                        // 013 puts `[0]` arrays in 1165 VPP files and calls them required, so
+                        // support is unconditional and only the sentence follows the dialect.
+                        if self.dialect.pedantic {
+                            // Named the way the neighbouring array rules name a declarator, so
+                            // a reader gets `data` rather than a bare sentence about arrays.
+                            let n = self
+                                .declaring
+                                .and_then(|n| self.text(n))
+                                .map(|t| format!(" `{t}`"))
+                                .unwrap_or_default();
+                            self.error(node.span, format!("ISO C forbids zero-size array{n}"));
+                        }
+                        ArrayLen::Zero
+                    }
                     chiero_ast::ArrayLen::Unspecified | chiero_ast::ArrayLen::Star => {
                         ArrayLen::Flexible
                     }

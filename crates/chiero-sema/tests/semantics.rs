@@ -2805,12 +2805,18 @@ fn a_width_diagnostic_names_its_declarator() {
     says("struct S { int bad[-1]; } x;", "`bad`");
     says("struct S { int bad[-1]; };", "`bad`");
 
-    // **A zero-length array stays accepted**, and this is where that is recorded: gcc refuses it
-    // under `-pedantic-errors` as a GNU extension, and the VPP tree contains **1777** of them —
-    // the pre-flexible-array idiom for a trailing variable-length member. Rejecting it would fail
-    // on the corpus this project exists to read.
-    assert!(diags("int a[0];").is_empty());
-    assert!(diags("struct S { int n; int a[0]; };").is_empty());
+    // **A zero-length array stays *supported*, and is now reported under the strict dialect.**
+    // The reasoning recorded here originally — gcc refuses it under `-pedantic-errors`, the VPP
+    // tree contains 1777 of them, rejecting it would fail the corpus this project exists to
+    // read — still holds, and is now served by `Dialect::gnu()`, which did not exist when it
+    // was written. Under `--gnu` the corpus is accepted exactly as before; under the wave-314
+    // calibration the extension is named. Both halves live in `dialect.rs`.
+    assert!(
+        diags("int a[0];")
+            .iter()
+            .any(|m| m.contains("zero-size array")),
+        "the calibration default names the extension"
+    );
 }
 
 /// **The audit's fourth method again** (§9): enumerate the cases a message claims to cover, and
@@ -5217,8 +5223,9 @@ fn a_flexible_array_member_needs_a_member_before_it() {
         // Ordinary arrays, including the declared `int a[0]` divergence and a VLA.
         "int f(void){ int a[3]; return a[0]; }",
         "int a[2];",
-        "int a[0];",
-        "int f(void){ int a[0]; return 0; }",
+        // `int a[0];` and its in-function form moved to `dialect.rs`: a zero-size array is a
+        // GNU extension, accepted under `--gnu` and named under the strict dialect, so it no
+        // longer belongs in a list of things accepted unconditionally.
         "int f(int n){ int a[n]; return a[0]; }",
         // A flexible array member with a member before it, declared and used.
         "struct S { int a; int b[]; };",

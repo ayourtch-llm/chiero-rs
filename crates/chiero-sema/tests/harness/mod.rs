@@ -66,7 +66,17 @@ pub fn parse(src: &str, target: TargetConfig) -> Parsed {
         "and parse cleanly, or sema is being graded on a broken tree: {:?}",
         parsed.diagnostics
     );
-    let analysis = analyze(&parsed.ast, &target, &Names(&parsed));
+    // **Fixtures that must analyse cleanly are judged in the dialect they are written in.**
+    // They are GNU C — `vector_size`, `[0]` arrays — and the strict dialect now reports the
+    // extensions it still supports, which is a statement about ISO C rather than about these
+    // fixtures. Tests whose *subject* is a diagnostic use `parse_allowing_diagnostics`, which
+    // stays strict.
+    let analysis = analyze_with(
+        &parsed.ast,
+        &target,
+        &Names(&parsed),
+        chiero_ast::Dialect::gnu(),
+    );
     Parsed { parsed, analysis }
 }
 
