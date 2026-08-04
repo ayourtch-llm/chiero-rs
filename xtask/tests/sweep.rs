@@ -875,9 +875,18 @@ fn each_report_section_asks_for_its_own_bucket_and_side() {
     // The side decides whose message a row names: findings and tool gaps are about chiero,
     // misses and both-refused are read from gcc's side.
     let by_bucket = |b| s.iter().find(|(_, bucket, _)| *bucket == b).copied();
-    assert_eq!(by_bucket(Bucket::Finding).expect("findings").2, true);
-    assert_eq!(by_bucket(Bucket::Miss).expect("misses").2, false);
-    assert_eq!(by_bucket(Bucket::ToolGap).expect("tool gaps").2, true);
+    assert!(
+        by_bucket(Bucket::Finding).expect("findings").2,
+        "findings name chiero"
+    );
+    assert!(
+        !by_bucket(Bucket::Miss).expect("misses").2,
+        "misses name gcc"
+    );
+    assert!(
+        by_bucket(Bucket::ToolGap).expect("tool gaps").2,
+        "tool gaps name chiero"
+    );
 
     // Every diagnosing bucket has a section, or a whole class of result is silently unprinted.
     for b in [

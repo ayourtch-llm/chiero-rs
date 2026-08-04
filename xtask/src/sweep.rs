@@ -699,6 +699,38 @@ pub fn grouped_rows(
         .collect()
 }
 
+/// The report's sections: `(title, bucket, side)`, where `side` is true when the row should
+/// name **chiero's** message and false when it should name gcc's.
+///
+/// A table rather than a literal inside `report`, so the choices are assertable. Mutation could
+/// otherwise make every section read one side, or group the wrong bucket, and the report would
+/// look plausible and be wrong.
+pub fn report_sections() -> Vec<(&'static str, Bucket, bool)> {
+    vec![
+        (
+            "FINDINGS — chiero complains where gcc is happy",
+            Bucket::Finding,
+            true,
+        ),
+        (
+            "MISSES — gcc refuses where chiero is silent",
+            Bucket::Miss,
+            false,
+        ),
+        (
+            "BOTH REFUSED — usually the flags, not the code",
+            Bucket::BothRefused,
+            false,
+        ),
+        (
+            "SEVERITY MISMATCH — gcc warned, chiero refused; both saw it",
+            Bucket::SeverityMismatch,
+            true,
+        ),
+        ("TOOL GAPS", Bucket::ToolGap, true),
+    ]
+}
+
 /// Print the report: counts, then the queue.
 ///
 /// **The queue is the point** (023 §9: a report a person cannot act on is not a report). A bare
@@ -756,29 +788,7 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
         c.preprocessed
     );
 
-    for (title, bucket, side) in [
-        (
-            "FINDINGS — chiero complains where gcc is happy",
-            Bucket::Finding,
-            true,
-        ),
-        (
-            "MISSES — gcc refuses where chiero is silent",
-            Bucket::Miss,
-            false,
-        ),
-        (
-            "BOTH REFUSED — usually the flags, not the code",
-            Bucket::BothRefused,
-            false,
-        ),
-        (
-            "SEVERITY MISMATCH — gcc warned, chiero refused; both saw it",
-            Bucket::SeverityMismatch,
-            true,
-        ),
-        ("TOOL GAPS", Bucket::ToolGap, true),
-    ] {
+    for (title, bucket, side) in report_sections() {
         let mut rows = grouped_rows(verdicts, bucket, side);
         if rows.is_empty() {
             continue;
