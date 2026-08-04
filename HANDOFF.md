@@ -613,29 +613,45 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > printer (its own comment, 7306); the one rule needing a spelling reads the AST (`syn_elem`,
 > 7319). The declared form already lives in `chiero_ast` and is untouched by this.
 >
-> 1. **Refactor + p8 fix.** RED: `sizeof g == 8` for a function-typed parameter. Introduce the
+> **STATUS: steps 1–4 done (391904d, b5e163d). Step 5 (cleanup) remains.**
+>
+> 1. ✅ **Refactor + p8 fix.** RED: `sizeof g == 8` for a function-typed parameter. Introduce the
 >    helper with only the existing `Func → Ptr` arm; call it from all three sites. Fixes D4 and
 >    builds the choke point so step 3 is a one-arm diff. Near-zero blast radius.
-> 2. **RED for the array class.** One fixture per component: sema silence for `argv++`,
+> 2. ✅ **RED for the array class.** One fixture per component: sema silence for `argv++`,
 >    `ops += i`, `argv = argv + 1`; `sizeof p == 8`; `sizeof q == 8` and `sizeof q[0] == 16` for
 >    `int q[3][4]`; `&p` is `int **`; **a differential fixture that *writes* through the parameter
 >    and reads the caller's array back** — this is the one that pins the 021 aliasing fix and the
 >    one today's read-only fixture cannot see; a `char *argv[]` subscript differential.
-> 3. **GREEN — the flip.** Add the `Array → Ptr` arm. ⚠️ **This is the risky commit**: a one-arm
+> 3. ✅ **GREEN — the flip.** Add the `Array → Ptr` arm. ⚠️ **This is the risky commit**: a one-arm
 >    sema diff whose behavioural reach is every rule that ever saw a parameter's array-ness, plus
 >    a silent change to lower's prologue shape. CIR signatures do NOT change (`cty(Array)` is
 >    already `CTy::Ptr`, lower/lib.rs:1408). Expected corpus delta −3, +0.
-> 4. **Bracket qualifiers — fold into 3, do not ship separately.** `int p[const 4]; p = 0;` is a
+> 4. ✅ **Bracket qualifiers — folded into 3, as planned.** `int p[const 4]; p = 0;` is a
 >    gcc error in both modes; today chiero refuses it with the wrong sentence and after step 3 it
 >    goes **silent**. That is the one way this wave can regress against gcc. The parser discards
 >    bracket quals (parse/lib.rs:1928-1950) and its comment saying they "carry no meaning" is now
 >    wrong. `restrict`/`static` recorded, no behaviour.
-> 5. **Cleanup, mutation-arbitrated.** Delete `param_shape`'s Array arm (8131) and `assignable`'s
+> 5. ⏭️ **NEXT — cleanup, mutation-arbitrated.** Delete `param_shape`'s Array arm (8131) and `assignable`'s
 >    Array in the null-constant arm (8065) — both become dead compensations. ⚠️ **Leave the
 >    pointee closures** (8046, 6831, 8027, 4978, 4431): they still serve genuine decayed array
 >    *objects*, since chiero does not materialise decay in typed nodes (comment at 4424).
 >
-> ### 🐛 DRIVE-BY (found by the review, own wave): array initializers are under-checked
+> ### 🐛 DRIVE-BY (own wave): array initializers are under-checked — now two defects
+>
+> **(a) A null pointer constant in an array-of-pointers initializer lowers to bad CIR.**
+> `char *s = "A"; char *v[2] = {s, 0};` — the verifier rejects the function: *"store value
+> operand is Int(32), declared Ptr"*, so `probe` is **skipped entirely**. Verified pre-existing
+> by stashing b5e163d and re-running: identical failure. Found because a `char *argv[]`
+> differential fixture walked into it; the fixture now uses two string pointers to route around
+> it, so **nothing pins this** — write the fixture when the wave starts.
+>
+> **(b)** `int a[2] = 0;` — gcc "invalid initializer" in both modes, chiero **silent**.
+> `int a[2] = 1;` draws "initializing or assigning makes a pointer from an integer" where gcc
+> says "invalid initializer".
+>
+> Both are `check_init` bailing on any non-`InitList`, non-string initializer
+> (sema/lib.rs:7380-7382), so neither reaches `assignable`. One wave should take both.
 >
 > `int a[2] = 0;` — gcc "invalid initializer" in both modes, chiero **silent**. `int a[2] = 1;`
 > draws "initializing or assigning makes a pointer from an integer", where gcc says "invalid
