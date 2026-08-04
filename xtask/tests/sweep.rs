@@ -928,9 +928,17 @@ fn the_rendered_report_names_the_right_side_per_section() {
     };
     let verdicts = vec![
         // A miss: only gcc spoke, and the row must quote gcc.
-        v("m.c", d("/m.c:1:1: error: gcc-only-sentence"), Outcome::Clean),
+        v(
+            "m.c",
+            d("/m.c:1:1: error: gcc-only-sentence"),
+            Outcome::Clean,
+        ),
         // A finding: only chiero spoke, and the row must quote chiero.
-        v("f.c", Outcome::Clean, d("sema: /f.c:2:2: chiero-only-sentence")),
+        v(
+            "f.c",
+            Outcome::Clean,
+            d("sema: /f.c:2:2: chiero-only-sentence"),
+        ),
     ];
     let text = report_lines(&verdicts, Path::new("/tree")).join("\n");
 

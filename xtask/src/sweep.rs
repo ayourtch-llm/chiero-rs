@@ -736,57 +736,64 @@ pub fn report_sections() -> Vec<(&'static str, Bucket, bool)> {
 /// **The queue is the point** (023 §9: a report a person cannot act on is not a report). A bare
 /// count of findings says a number; grouping by *distinct message* with an example file turns it
 /// into work, and the grouping is what shows that fifty files often share one defect.
-pub fn report(verdicts: &[Verdict], tree: &Path) {
+/// The report as lines, so what it prints can be asserted.
+///
+/// `report` printed directly, so a mutation that made every section read the wrong side passed
+/// every test — they read `report_sections()` rather than the output. Nothing is downstream of
+/// these lines, which is why the risk stops here.
+pub fn report_lines(verdicts: &[Verdict], tree: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
     let count = |b: Bucket| verdicts.iter().filter(|v| v.bucket == b).count();
-    println!(
+    out.push(format!(
         "swept {} translation units under {}",
         verdicts.len(),
         tree.display()
-    );
-    println!(
+    ));
+    out.push(format!(
         "  findings (gcc ok, chiero complained): {}",
         count(Bucket::Finding)
-    );
-    println!(
+    ));
+    out.push(format!(
         "  misses   (gcc refused, chiero silent): {}",
         count(Bucket::Miss)
-    );
-    println!(
+    ));
+    out.push(format!(
         "  agree, both clean:                     {}",
         count(Bucket::Agree)
-    );
-    println!(
+    ));
+    out.push(format!(
         "  both refused (usually wrong flags):    {}",
         count(Bucket::BothRefused)
-    );
-    println!(
+    ));
+    out.push(format!(
         "  severity mismatch (gcc warned):        {}",
         count(Bucket::SeverityMismatch)
-    );
-    println!(
+    ));
+    out.push(format!(
         "  tool gaps (one side could not run):    {}",
         count(Bucket::ToolGap)
-    );
+    ));
     // **What was actually tested.** A sweep where gcc refused everything has findings of zero
     // and has learned nothing; saying so here is the difference between a report and a number.
     let tested = count(Bucket::Agree) + count(Bucket::Finding);
-    println!(
+    out.push(format!(
         "  -> gcc accepted {tested} of {}, so that is what this sweep could test",
         verdicts.len()
-    );
+    ));
 
     // 080 M3 exit gate: the parser-coverage percentage, published on every run so it is
     // tracked rather than recomputed by hand when someone remembers to ask.
     let c = coverage(verdicts);
-    println!(
+    out.push(format!(
         "\nCHIERO REACH — {} preprocessed, {} parsed, {} analysed, of {} files",
         c.preprocessed, c.parsed, c.analysed, c.total
-    );
-    println!(
+    ));
+    out.push(format!(
         "  -> parser coverage {:.1}% of the {} translation units the parser was handed",
         c.parser_percent(),
         c.preprocessed
-    );
+    ));
 
     for (title, bucket, side) in report_sections() {
         let mut rows = grouped_rows(verdicts, bucket, side);
@@ -794,17 +801,25 @@ pub fn report(verdicts: &[Verdict], tree: &Path) {
             continue;
         }
         rows.sort_by_key(|r| std::cmp::Reverse(r.1));
-        println!("\n{title}");
+        out.push(format!("\n{title}"));
         for (msg, n, example) in rows.iter().take(25) {
-            println!("  {n:5}  {msg}");
+            out.push(format!("  {n:5}  {msg}"));
             // The example is the *located* text when there was a location to render, so the
             // reader has a place to open; otherwise the file is all we can offer, and offering
             // the file is still better than offering nothing.
-            println!("         e.g. {example}");
+            out.push(format!("         e.g. {example}"));
         }
         if rows.len() > 25 {
-            println!("  … {} more distinct messages", rows.len() - 25);
+            out.push(format!("  … {} more distinct messages", rows.len() - 25));
         }
+    }
+    out
+}
+
+/// Print the report.
+pub fn report(verdicts: &[Verdict], tree: &Path) {
+    for line in report_lines(verdicts, tree) {
+        println!("{line}");
     }
 }
 
