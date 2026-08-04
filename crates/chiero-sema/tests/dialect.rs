@@ -855,30 +855,44 @@ fn a_pointee_alignment_change_is_recorded_with_its_direction() {
 /// casts to union type" at each. So chiero accepts the construct and only the sentence follows
 /// the dialect — the pattern `__int128`, `char d[0]` and `\e` already set.
 ///
-/// **The member match is by type, not by conversion**, and this is the half that keeps the
-/// extension from swallowing real defects. gcc refuses `(U)x` for an `int` x against a union
-/// whose member is `unsigned int` — "cast to union type from type not present in union" — in
-/// *both* modes. A rule written with `assignable`, as `transparent_union`'s member search
+/// **The member match is by type compatibility, not by conversion**, and this is the half that
+/// keeps the extension from swallowing real defects. gcc refuses `(U)x` for an `int` x against a
+/// union whose member is `unsigned int` — "cast to union type from type not present in union" —
+/// in *both* modes. A rule written with `assignable`, as `transparent_union`'s member search
 /// correctly is, would take that one and go quiet on a genuine mismatch.
+///
+/// Compatibility, though, is not type *identity*: an `enum e` operand matches an `unsigned int`
+/// member, because C makes an enumeration compatible with its underlying type. A strict-identity
+/// rule refuses that and diverges from gcc, so the row is here even though no VPP site has one.
+///
+/// **gcc does not look inside anonymous members.** Two of the three real target unions are
+/// `union { struct { …bitfields… }; uN as_uN; }`, and the match is on `as_uN` alone — a union
+/// whose *only* candidate is a field of an anonymous struct is refused in both modes. That is a
+/// live trap rather than a hypothetical: the member access `.length` on the result **does** see
+/// through the anonymous struct, so an implementation that reuses that lookup for the cast is
+/// wrong in a way every naive fixture would miss.
 #[test]
 fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
-    // The four shapes VPP writes, reduced: a bare cast, a member access on one, an
-    // initializer, and a union whose matching member is a struct.
     let u = "typedef union { unsigned char b[4]; unsigned int u; } U;\n";
     for src in [
         &format!("{u}unsigned int f(unsigned int x){{ return ((U)x).u; }}\n"),
         &format!("{u}U f(unsigned int x){{ U a = (U)x; return a; }}\n"),
-        &format!("{u}unsigned int f(unsigned int x){{ U a = {{ .u = ((U)x).u }}; return a.u; }}\n"),
-        // A pointer member, and a `const` operand: gcc matches the member unqualified.
-        &format!(
-            "union P {{ int *p; long l; }};\nlong f(int *q){{ return ((union P)q).l; }}\n"
-        ),
-        &format!(
-            "{u}unsigned int f(const unsigned int x){{ return ((U)x).u; }}\n"
-        ),
-        // A struct member matches too — `((union U)s).s.a` compiles under gnu11.
+        // **The `iavf_rx_desc_qw1_t` shape**, which is `((iavf_rx_desc_qw1_t) qw1).length` at
+        // `drivers/iavf/rx_node.c:166`: an anonymous struct of bitfields beside the scalar
+        // member the cast actually matches. `http_req_handle_t` is the same shape.
+        "union T { struct { unsigned long ptype : 8; unsigned long length : 26; }; unsigned long as_u64; };\n\
+         unsigned long f(unsigned long q){ return ((union T)q).length; }\n",
+        // A pointer member. The `const` row below matches because lvalue conversion drops the
+        // *operand's* top-level qualifier — not because members are compared unqualified, which
+        // they are not: see the two refused qualified-pointer rows further down.
+        "union P { int *p; long l; };\nlong f(int *q){ return ((union P)q).l; }\n",
+        &format!("{u}unsigned int f(const unsigned int x){{ return ((U)x).u; }}\n"),
+        // A struct member matches too — `((union V)s).s.a` compiles under gnu11.
         "struct S { int a; };\nunion V { struct S s; int i; };\n\
          int f(struct S s){ return ((union V)s).s.a; }\n",
+        // **An enumeration is compatible with its underlying type**, and gcc takes it.
+        "enum e { A = 1 };\nunion U { unsigned int u; char c; };\n\
+         unsigned int f(enum e x){ return ((union U)x).u; }\n",
     ] {
         assert_eq!(
             sema_messages(src, Dialect::gnu()),
@@ -918,9 +932,35 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
             no_member,
             "a pointer to another type is not a member match",
         ),
-        // An incomplete union has no members to match against.
+        // **A member's own qualifiers are part of the match**, both ways round. This is the pair
+        // the accepted `const`-operand row above would otherwise be read as licensing.
         (
-            "union V;\nint f(int x){ return ((union V)x) != 0; }\n".to_string(),
+            "union P { const int *p; long l; };\nlong f(int *q){ return ((union P)q).l; }\n"
+                .to_string(),
+            no_member,
+            "a `const int *` member does not take an `int *`",
+        ),
+        (
+            "union P { int *p; long l; };\nlong f(const int *q){ return ((union P)q).l; }\n"
+                .to_string(),
+            no_member,
+            "an `int *` member does not take a `const int *`",
+        ),
+        // **Anonymous members are not searched.** The member access on the result sees through
+        // an anonymous struct; the cast's match does not, and reusing one lookup for both is the
+        // mutant this row exists to kill.
+        (
+            "union A { struct { unsigned int a; unsigned int b; }; unsigned long l; };\n\
+             unsigned int f(unsigned int x){ return ((union A)x).a; }\n"
+                .to_string(),
+            no_member,
+            "a field of an anonymous struct is not a member of the union",
+        ),
+        // An incomplete union has no members to match against. Reached through `(void)` rather
+        // than `!= 0` so the row cannot pass by way of cascade suppression on a second
+        // diagnostic about the failed cast's type.
+        (
+            "union V;\nvoid f(int x){ (void)(union V)x; }\n".to_string(),
             no_member,
             "an incomplete union names no member",
         ),
@@ -942,16 +982,54 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
         }
     }
 
-    // **The result is not an lvalue.** gcc refuses `((U)x).u = 1` under `gnu11` too, so
-    // accepting the cast must not also make it assignable.
+    // **The real `ipsec` shape: the cast result initializes a union-typed member of an
+    // aggregate.** `ipsec_output.h:23` writes `.ip4_addr = { (ip4_address_t) la,
+    // (ip4_address_t) ra }` and `ipsec_input.c:52` writes `.ip4_src_addr = (ip4_address_t) sa` —
+    // the cast in *union* position, not the scalar position a `.u = ((U)x).u` reduction puts it
+    // in. Three of the four real sites are this, so reducing away from it drops what is being
+    // measured.
+    //
+    // **Two casts, two sentences.** The count is the assertion: a report-once-per-translation-
+    // unit dedup would satisfy every single-cast row above and fail here, and gcc emits one per
+    // cast.
+    let two_casts = format!(
+        "{u}struct T {{ U s; U d; }};\n\
+         struct T f(unsigned int a, unsigned int b){{ struct T t = {{ .s = (U)a, .d = (U)b }}; return t; }}\n"
+    );
     assert_eq!(
-        sema_messages(
-            &format!("{u}int f(unsigned int x){{ ((U)x).u = 1; return 0; }}\n"),
-            Dialect::gnu()
-        )
-        .len(),
-        1,
+        sema_messages(&two_casts, Dialect::gnu()),
+        Vec::<String>::new(),
+        "gnu11 compiles the initializer shape silently"
+    );
+    assert_eq!(
+        sema_messages(&two_casts, Dialect::pedantic()),
+        vec![
+            "ISO C forbids casts to union type".to_string(),
+            "ISO C forbids casts to union type".to_string(),
+        ],
+        "one sentence per cast, not one per translation unit"
+    );
+
+    // **The result is not an lvalue.** gcc refuses `((U)x).u = 1` under `gnu11` too, so
+    // accepting the cast must not also make it assignable — and the sentence is pinned, because
+    // a count alone is satisfied by any complaint at all about that line.
+    //
+    // Under the strict dialect gcc draws *both*: the cast sentence first, then the lvalue one.
+    // That order is the assertion's other half — it was reversed, and doubled, until the
+    // assignment stopped typing its target twice.
+    let lvalue = format!("{u}int f(unsigned int x){{ ((U)x).u = 1; return 0; }}\n");
+    assert_eq!(
+        sema_messages(&lvalue, Dialect::gnu()),
+        vec!["assignment to something that is not an lvalue".to_string()],
         "a cast is not an lvalue, extension or not"
+    );
+    assert_eq!(
+        sema_messages(&lvalue, Dialect::pedantic()),
+        vec![
+            "ISO C forbids casts to union type".to_string(),
+            "assignment to something that is not an lvalue".to_string(),
+        ],
+        "the cast is reported once, and before the write it does not license"
     );
 }
 
@@ -960,9 +1038,18 @@ fn a_cast_to_a_union_type_is_a_pedantic_rule_only() {
 /// `-pedantic-errors` says "ISO C forbids casting nonscalar to the same type". It applies to a
 /// struct as well as a union, which is what makes it *not* the union rule above.
 ///
-/// No VPP finding is this shape. It is here because the union work measured it in passing and
-/// leaving it refused would be a known-wrong rejection sitting one row from a rule that now
-/// accepts its neighbour.
+/// **`(union U)u` is why this rule is not optional.** The union rule above refuses it — a union
+/// has no member of its own type — while gcc accepts it, through *this* extension and with this
+/// sentence. So the two interlock: implementing cast-to-union without this one produces a
+/// measured divergence on the very next row.
+///
+/// The struct half has no such forcing argument, and the adversarial review argued for dropping
+/// it: no corpus finding in 1552 files, gcc-13 phrasing pinned for a rule with no user, pure
+/// maintenance surface. Kept anyway, and the reason is that the *implementation* cannot be
+/// narrowed to unions without becoming wrong: the same-type arm is reached for any record, gcc
+/// gives structs the identical sentence, and restricting the arm to unions would trade an
+/// untested-but-correct branch for a tested-and-wrong one. An accepted construct with no test is
+/// the worse of the two.
 #[test]
 fn a_cast_to_the_operands_own_record_type_is_a_pedantic_rule_only() {
     for src in [

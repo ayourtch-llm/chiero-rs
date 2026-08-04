@@ -5192,18 +5192,21 @@ impl Cx<'_> {
                 )
             }
             ExprKind::Unary { op, operand } => {
+                // **Typed before the operand is judged**, so it is typed exactly once — see the
+                // note on `check_writable`. Both checks want the type as written, which is what
+                // `type_expr` gives; neither decays.
+                let inner = self.type_expr(*operand);
+                let ity = self.out.typed.ty_of(inner);
                 if matches!(op, UnOp::PreInc | UnOp::PreDec) {
                     // `++x` modifies its operand exactly as `x += 1` does.
-                    self.check_writable(*operand, "increment or decrement of");
+                    self.check_writable(*operand, ity, "increment or decrement of");
                     let op = if matches!(op, UnOp::PreInc) {
                         "++"
                     } else {
                         "--"
                     };
-                    self.check_incdec_pointee(*operand, span, op);
+                    self.check_incdec_pointee(ity, span, op);
                 }
-                let inner = self.type_expr(*operand);
-                let ity = self.out.typed.ty_of(inner);
                 let (ty, inner) = match op {
                     UnOp::AddrOf => {
                         // **A `register` object has no address** (C 6.7.1p6). Only the pair is an
@@ -5355,16 +5358,17 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Postfix { operand, op } => {
+                // Typed once, before the checks — see the note on `check_writable`.
+                let inner = self.type_expr(*operand);
+                let ty = self.out.typed.ty_of(inner);
                 // `x++` and `x--` modify their operand exactly as `x += 1` does.
-                self.check_writable(*operand, "increment or decrement of");
+                self.check_writable(*operand, ty, "increment or decrement of");
                 let name = if matches!(op, chiero_ast::PostfixOp::Inc) {
                     "++"
                 } else {
                     "--"
                 };
-                self.check_incdec_pointee(*operand, span, name);
-                let inner = self.type_expr(*operand);
-                let ty = self.out.typed.ty_of(inner);
+                self.check_incdec_pointee(ty, span, name);
                 self.push_typed(TypedNode::Value {
                     expr,
                     ty,
@@ -5372,20 +5376,19 @@ impl Cx<'_> {
                 })
             }
             ExprKind::Assign { op, lhs, rhs } => {
-                self.check_writable(*lhs, "assignment to");
+                // Typed once, before the checks — see the note on `check_writable`.
+                let l = self.type_expr(*lhs);
+                let lty = self.out.typed.ty_of(l);
+                self.check_writable(*lhs, lty, "assignment to");
                 // **An array is not assignable** (C 6.5.16p2: the left operand must be a
                 // modifiable lvalue, and an array type is not one). Checked on the *left* operand
                 // only: `a[0] = b[0]` is an element, and a `struct` holding an array assigns
                 // whole — which is how one copies an array in C, so rejecting arrays wherever
                 // they appear in an assignment would remove the only way to do it.
-                let lt = self.type_of_written(*lhs);
-                let lhs_is_array =
-                    lt.is_some_and(|t| matches!(self.out.types[t.0 as usize], Ty::Array { .. }));
+                let lhs_is_array = matches!(self.out.types[lty.0 as usize], Ty::Array { .. });
                 if lhs_is_array {
                     self.error(span, "assignment to an array");
                 }
-                let l = self.type_expr(*lhs);
-                let lty = self.out.typed.ty_of(l);
                 let r = self.type_expr(*rhs);
                 // **`p += n` does not convert `n` to a pointer.** C11 6.5.16.2p1: for `+=`
                 // and `-=` with a pointer lvalue, the right operand stays an integer and
@@ -7617,6 +7620,15 @@ impl Cx<'_> {
                 !matches!(self.ast.expr(operand).kind, ExprKind::InitList(_))
             }
             ExprKind::Ident(n) => self.enumerators.contains_key(&n),
+            // **`s.m` is an lvalue exactly when `s` is; `p->m` always is** (C 6.5.2.3p3–4).
+            // `->` dereferences, and a dereference designates an object however the pointer was
+            // computed, which is why only the dot arm asks about its base.
+            //
+            // Added when cast-to-union began accepting `(U)x`: gcc refuses `((U)x).u = 1` under
+            // `gnu11` too, and without this arm accepting the cast would also have made its
+            // result assignable. The arm is not specific to that extension — `f().m = 1` on a
+            // struct-returning call is the same rule, and was accepted here before.
+            ExprKind::Member { base, arrow, .. } => !arrow && self.not_an_lvalue(base),
             _ => false,
         }
     }
@@ -7950,11 +7962,6 @@ impl Cx<'_> {
     ///
     /// `type_expr` is what records it, and it must run first — the assignment arm calls this
     /// before typing the operands only because typing them is what fills the table this reads.
-    fn type_of_written(&mut self, e: ExprId) -> Option<TyId> {
-        let node = self.type_expr(e);
-        Some(self.out.typed.ty_of(node))
-    }
-
     /// Reject a write to an object declared `const`.
     ///
     /// **Only when the target is the name itself.** `*p = 1` and `a[i] = 1` are writes through a
@@ -8270,10 +8277,7 @@ impl Cx<'_> {
     /// `p++`, `p--`, `++p`, `--p` — pointer arithmetic by another name (C 6.5.2.4p1, 6.5.3.1p1).
     ///
     /// Reported where the operand is *typed*, so the one predicate serves this and `p + 1` alike.
-    fn check_incdec_pointee(&mut self, operand: ExprId, span: Span, op: &str) {
-        let Some(t) = self.type_of_written(operand) else {
-            return;
-        };
+    fn check_incdec_pointee(&mut self, t: TyId, span: Span, op: &str) {
         if self.incomplete_pointee(t) {
             self.error(span, "arithmetic on a pointer to an incomplete type");
             return;
@@ -8298,7 +8302,7 @@ impl Cx<'_> {
         }
     }
 
-    fn check_writable(&mut self, target: ExprId, what: &str) {
+    fn check_writable(&mut self, target: ExprId, t: TyId, what: &str) {
         // **One question about the type, not four questions about the syntax.**
         //
         // This was three scoped name-sets and a syntactic walk: `read_only` for a `const` object,
@@ -8308,8 +8312,16 @@ impl Cx<'_> {
         // now says outright. `s->m` where `m` is declared `const` was the case no amount of
         // spelling could reach, because the qualifier is on the *member*.
         //
-        // `type_of_written` types the target, which the callers do again immediately after;
-        // `type_expr` is memoized, so the second call is a lookup.
+        // **The target's type is passed in, not typed here.** This used to call
+        // `type_of_written`, on a comment claiming `type_expr` was memoized so the caller's
+        // own typing would be a lookup. `type_expr` is **not** memoized — `by_expr` records the
+        // outermost node but is never consulted to short-circuit — so the target was typed twice
+        // for an assignment and twice for `++`, and every diagnostic inside it was reported once
+        // per typing. Invisible until a *cast* could carry one: `((U)x).u = 1` said "ISO C
+        // forbids casts to union type" twice where gcc says it once. Typing at the call site and
+        // passing the type down is what makes it once, and it also puts the operand's own
+        // diagnostics before this one — gcc's order.
+        //
         // **Not an lvalue at all** (C 6.5.2.4p1, 6.5.3.1p1): `x++++` increments a value. Asked
         // before the qualifier question because it is the more basic failure and because the type
         // of `x++` is a perfectly ordinary `int` — nothing about the *type* is wrong.
@@ -8318,9 +8330,6 @@ impl Cx<'_> {
             self.error(span, format!("{what} something that is not an lvalue"));
             return;
         }
-        let Some(t) = self.type_of_written(target) else {
-            return;
-        };
         if !self.qual_of(t).const_ {
             return;
         }
@@ -8516,6 +8525,63 @@ impl Cx<'_> {
             return false;
         }
         if !scalar(self, target) {
+            // **Two GNU extensions meet here**, both measured accepted by `gcc -std=gnu11` and
+            // refused by `-pedantic-errors` — which is what makes them dialect rules rather than
+            // over-rejections, on wave 314's calibration. Cast-to-union is the largest kind left
+            // in the VPP queue: `(ip4_address_t) la`, `((iavf_rx_desc_qw1_t) qw1).length` and
+            // two more, 11 findings over four sites.
+            //
+            // **Poison is excluded from both arms.** An `Error` operand is `compatible` with
+            // everything (contract 20), so letting it reach either arm would turn an
+            // already-reported fault into a silently accepted extension. It falls through to the
+            // sentence below, exactly as it did before this arm existed.
+            let poisoned = matches!(self.out.types[operand.0 as usize], Ty::Error);
+            // **A cast to the operand's own record type**: `(struct S)s`. gcc says "ISO C
+            // forbids casting nonscalar to the same type", and it says *that* rather than the
+            // union sentence for `(union U)u` — which is why this arm is tested first and not
+            // folded into the member search below.
+            if !poisoned && self.compatible(self.bare(target), self.bare(operand)) {
+                if self.dialect.pedantic {
+                    self.error(span, "ISO C forbids casting nonscalar to the same type");
+                }
+                return true;
+            }
+            if let Ty::Record(r) = self.out.types[target.0 as usize]
+                && !poisoned
+                && self.out.layout(r).is_union
+            {
+                // **The member match is by compatibility, not by conversion**, and that is the
+                // half that keeps the extension from swallowing defects: gcc refuses `(U)x` for
+                // an `int` x against an `unsigned int` member, in *both* modes.
+                // `transparent_member_for` rightly asks `assignable` — the attribute widens a
+                // parameter — and a cast written the same way would go quiet on a real mismatch.
+                //
+                // `compatible` rather than `TyId` identity because C's compatibility is what gcc
+                // applies: an `enum e` operand matches an `unsigned int` member, and identity
+                // would refuse it.
+                //
+                // **`layout.fields` is the right list precisely because it is not flattened.**
+                // gcc does not search inside an anonymous member — `union { struct { u32 a; };
+                // u64 l; }` refuses `(U)some_u32` in both modes — while the member *access* on
+                // the result does see through it. Two of the three real VPP unions are that
+                // shape, so a search that reused the access path would be wrong on the corpus.
+                //
+                // Cloned because `compatible` borrows `self` while the layout is still held, and
+                // a union's member list is short.
+                let members: Vec<TyId> = self.out.layout(r).fields.iter().map(|f| f.ty).collect();
+                let from = self.bare(operand);
+                if members.iter().any(|&m| self.compatible(self.bare(m), from)) {
+                    if self.dialect.pedantic {
+                        self.error(span, "ISO C forbids casts to union type");
+                    }
+                    return true;
+                }
+                // **An incomplete union arrives here too, and wants this sentence**: it has no
+                // members, so gcc's complaint is "from type not present in union" rather than
+                // anything about completeness. Measured.
+                self.error(span, "a cast to a union names a type no member has");
+                return false;
+            }
             self.error(span, "a cast names a scalar type or `void`");
             return false;
         }
