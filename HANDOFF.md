@@ -549,7 +549,37 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > Reached through gcc's `avx512fintrin.h`, where every masked intrinsic is
 > `(__mmask16) __builtin_ia32_ptestmd512 (...)`.
 >
-> **The verifier's message decoded**, so the next wave starts from fact rather than the wording:
+> ### ✅ DIAGNOSED (2026-08-04): the cast is emitted **twice**
+>
+> CIR dumped for `long f(int x) { return (long) __builtin_ctz(x); }`, with both discard paths
+> disabled (see "how to see it" below):
+>
+> ```
+>   opaque %5:i32 writes reads %4 why builtin "__builtin_ctz"
+>   %6 = zext i32 %5 to i64        <- the AST `Cast` arm, in `raw_expr`
+>   %7 = zext i32 %6 to i64        <- again; %6 is already i64, hence the verifier error
+> ```
+>
+> The same source, with an ordinary declared callee, emits **one** `sext` and is clean.
+>
+> **Why.** `expr()` (lib.rs:2055) takes sema's `top(e)` and walks the typed-node chain in
+> `typed_node`, which emits a cast for every `TypedNode::Cast` and calls `raw_expr` at the
+> `Value` leaf — and `raw_expr`'s own AST `Cast` arm *also* emits one. For a call to a declared
+> function sema's top node is a `Value`, so only `raw_expr`'s cast is emitted. For an undeclared
+> builtin sema's top is a `Cast`, so both fire.
+>
+> **So the defect is in sema, not in the opaque lowering.** sema records a conversion node on an
+> *explicit cast* expression when the operand is an undeclared builtin call, and does not when it
+> is an ordinary call. The explicit cast **is** the conversion; recording another is the bug. Fix
+> it there and both `zext`s collapse to the one `raw_expr` already emits — do **not** try to
+> compensate in lowering, which would be a fourth place papering over one wrong answer.
+>
+> **How to see it again:** the function is discarded twice over. Disable the truncate at
+> `chiero-lower/src/lib.rs:1209` (015 §7, "cannot represent") *and* the `blamed` loop at
+> lib.rs:131 (the verifier-rejection sweep, which clears `blocks` and sets `Body::Declared`).
+> Only the second one is active for this shape.
+>
+> **The verifier's message decoded**, so the reading is unambiguous:
 > `require_ty(f, a, from, types, "cast source", …)` in `chiero-cir/src/verify.rs:1169` formats
 > `"{what} operand is {got}, declared {want}"` with **`got` = the operand value's registered
 > type** and **`want` = the cast's declared `from`**. So the value really is `Int(16)` while the
