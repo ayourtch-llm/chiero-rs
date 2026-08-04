@@ -604,7 +604,40 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >    strictly better) and timings were again unchanged. It is not the hot spot.
 > 3. Calls are **linear**: 1 function with 250/500/1000 call sites costs 3/10/20 ms.
 >
-> ### 🔬 CALLGRIND, first run (2026-08-04) — trustworthy parts and a trap
+> ### ✅ ROOT CAUSE FOUND (2026-08-04): `const_eval` re-walks the whole TU, once per call
+>
+> Callgrind on a build with `-C lto=off -C inline-threshold=0` (folding off, so the symbols are
+> honest):
+>
+> ```
+> 1,519,396,962 (96.65%)  chiero_sema::const_eval (62,500x)
+> ```
+>
+> **62,500 = 250².** `chiero-lower`'s `const_of` (lib.rs:5965) calls `chiero_sema::const_eval`
+> per expression; `const_eval` (sema lib.rs:1023) builds a throwaway `Cx` and then does
+> `for &item in ast.items()` — **processing every declaration in the translation unit on every
+> call.** With F functions that is O(F²), which is exactly the measured shape: cost per body
+> proportional to the module's function count, flat within a run.
+>
+> It also explains why sema symbols dominated a lowering profile: `const_eval` *is* sema, invoked
+> from lowering. The earlier "lowering never constructs a sema `Cx`" reasoning was wrong — it
+> does, indirectly, tens of thousands of times.
+>
+> ⏭️ **The fix, and pick deliberately:**
+>
+> 1. **Cache the context.** `const_eval`'s doc says the throwaway `Cx` exists "so `sizeof(int)`
+>    resolves standalone", and the declaration walk is there because "an address constant is
+>    *about* a declared object". Both hold for *one* call; neither requires rebuilding per call.
+>    A `Cx` built once per TU and reused is the smallest correct change.
+> 2. **Or use the real `Analysis`.** lib.rs:2166 already notes that `sizeof x` is asked of the
+>    real analysis "rather than of `const_eval`" — so the precedent for preferring it exists.
+>    Wider change, better end state.
+>
+> ⚠️ **Whichever, keep `const_eval` standalone-callable.** It is public API and a `.cir` fixture
+> or a caller with no `Analysis` still needs it to work alone; the fix is to stop paying for that
+> on every call, not to remove the capability.
+>
+> ### 🔬 CALLGRIND, first run — trustworthy parts and a trap
 >
 > `valgrind --tool=callgrind` on 500 trivial functions, 6.35 G instructions total.
 >
