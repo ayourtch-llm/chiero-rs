@@ -501,7 +501,8 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | 1 | 884 | 127 | 99.4% | **871** `1 << 31` — real defect |
 > | 2 | 879 | 132 | 99.4% | **867** inner-block declaration escaping — real defect |
 > | 3 | 755 | 256 | 99.5% | **735** `return void_expr;` in a `void` fn — pedantic |
-> | 4 | **60** | **951** | 99.5% | no lid left — a genuine long tail |
+> | 4 | 60 | 951 | 99.5% | no lid left — a genuine long tail |
+> | 5 | **49** | **962** | 99.5% | tail confirmed flat: 8, 5, 5, 4, 3, 3, 2 |
 >
 > **misses: 0 throughout.** 528 tool gaps (missing generated `.api` headers — widen `gen/`).
 >
@@ -511,13 +512,18 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > | n | kind | example |
 > |---|---|---|
-> | 11 | enumerator value is not an integer constant expression | `plugins/wireguard/wireguard_messages.h:13` |
 > | 8 | passing an argument from an incompatible pointer type | `plugins/ioam/analyse/ip6/node.c:442` |
 > | 5 | `clib_crc32c_with_init` was not declared | `plugins/cnat/cnat_node.h:226` |
 > | 5 | unknown escape sequence `\%` | `plugins/perfmon/arm/bundle/branch_pred.c:95` |
 > | 4 | passing an argument makes a pointer from an integer | `plugins/memif/socket.c:98` |
 > | 3+3 | conflicting types for `clib_bihash_add_with_overwrite_cb_*` | `vppinfra/bihash_template.c:299` |
 > | 3 | a cast names a scalar type or `void` | `vnet/ipsec/ipsec_output.h:23` |
+>
+> ⚠️ **The `ioam` reduction is unsolved.** The obvious shape —
+> `int mine(void*, u8*, unsigned)` passed where `int (*)(void*, u8*)` is wanted — makes gcc
+> **warn** under `gnu11`, which would classify as `SeverityMismatch`. The sweep reports it as a
+> `Finding` with **0 severity mismatches**, so gcc is *silent* on the real file and the
+> synthetic is not faithful. Reduce from the preprocessed TU before deciding anything.
 >
 > **Measure each against gcc both ways before touching it** — the four rounds produced two real
 > defects and two calibration questions, and they were indistinguishable until measured.
