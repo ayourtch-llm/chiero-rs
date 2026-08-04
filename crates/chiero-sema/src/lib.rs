@@ -2103,7 +2103,7 @@ impl Cx<'_> {
                 for p in &params {
                     if let DeclKind::Var { ty: pty, .. } = self.ast.decl(*p).kind.clone() {
                         let t = self.re_resolving(|cx| cx.ty_of(pty));
-                        let t = self.adjusted_param_ty(t);
+                        let t = self.adjusted_param_ty(pty, t);
                         self.out.decl_types.insert(*p, t);
                     }
                 }
@@ -2140,7 +2140,7 @@ impl Cx<'_> {
                         } = self.ast.decl(p).kind.clone()
                         {
                             let t = self.re_resolving(|cx| cx.ty_of(pty));
-                            let t = self.adjusted_param_ty(t);
+                            let t = self.adjusted_param_ty(pty, t);
                             // **A parameter of a definition needs a size**: the function has to
                             // receive the object. A *declaration* may name an incomplete
                             // parameter type — `struct T; int s(struct T t);` is legal, since
@@ -2463,7 +2463,7 @@ impl Cx<'_> {
                 let p = self.ty_of(inner);
                 self.intern(Ty::Ptr(p))
             }
-            TypeKind::Array { elem, len } => {
+            TypeKind::Array { elem, len, .. } => {
                 let e = self.ty_of(elem);
                 // **An array needs its element's size, whatever its own length is.** Without one
                 // there is no stride, so `a[1]` has no address — which is why this is an error
@@ -2661,7 +2661,7 @@ impl Cx<'_> {
                             let t = self.ty_of(ty);
                             self.declaring = outer;
                             self.check_alignment(ty, t, StorageContext::Parameter);
-                            self.adjusted_param_ty(t)
+                            self.adjusted_param_ty(ty, t)
                         }
                         _ => self.intern(Ty::Error),
                     })
@@ -8677,9 +8677,36 @@ impl Cx<'_> {
     ///
     /// Not `param_shape`'s job: that answers "do two declarations agree", while this is the
     /// parameter's actual type.
-    fn adjusted_param_ty(&mut self, t: TyId) -> TyId {
+    fn adjusted_param_ty(&mut self, pty: TypeId, t: TyId) -> TyId {
         match self.out.types[t.0 as usize] {
             Ty::Func { .. } => self.intern(Ty::Ptr(t)),
+            // **p7: "array of T" becomes "pointer to T".** Only the outermost dimension — the
+            // element keeps its own type, so a parameter `int q[3][4]` is `int (*)[4]` and
+            // `sizeof q[0]` is still 16. Recursing would be a different and wrong adjustment.
+            //
+            // **The bracket qualifiers land on the pointer, not the pointee.** `int p[const 4]`
+            // is `int *const p`: the *parameter* is read-only, while `const int p[4]` makes the
+            // element read-only and is a different diagnostic. They are read from the AST rather
+            // than from `t`, because the array `TyId` deliberately does not carry them — putting
+            // them there would have made `qualify` push them down onto the element, which is the
+            // wrong object.
+            Ty::Array { elem, .. } => {
+                let bracket = match self.ast.ty(pty).kind {
+                    TypeKind::Array { bracket_quals, .. } => bracket_quals,
+                    // A typedef'd array parameter — `typedef int A[4]; f(A p)` — reaches here
+                    // with an AST node that is not an `Array`. gcc allows no bracket qualifiers
+                    // in that spelling, so there are none to move.
+                    _ => chiero_ast::Quals::default(),
+                };
+                self.intern_qual(
+                    Ty::Ptr(elem),
+                    Qual {
+                        const_: bracket.const_,
+                        volatile_: bracket.volatile_,
+                        restrict_: bracket.restrict_,
+                    },
+                )
+            }
             _ => t,
         }
     }

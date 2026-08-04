@@ -3575,7 +3575,7 @@ fn a_multidimensional_array_keeps_its_dimension_order() {
     );
     agree_with(
         "int first(char *v[]) { return v[0][0]; }",
-        "char *s = \"A\"; char *v[2] = {s, 0}; return first(v);",
+        "char *s = \"A\"; char *t = \"B\"; char *v[2] = {s, t}; return first(v);",
     );
     // A row written through a parameter of array-of-array type: only the outer dimension
     // adjusts, so `a[1]` is still a row and `a[1][2]` still scales by the row's size.

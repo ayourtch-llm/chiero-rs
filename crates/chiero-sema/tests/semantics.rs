@@ -7925,7 +7925,10 @@ fn an_array_typed_parameter_is_a_pointer() {
             "void f(void){ int a[2], b[2]; a = b; }",
             "assignment to an array",
         ),
-        ("void f(void){ int a[2]; a++; }", "`++` needs a scalar operand"),
+        (
+            "void f(void){ int a[2]; a++; }",
+            "`++` needs a scalar operand",
+        ),
     ] {
         assert!(
             diags(src).iter().any(|m| m == expect),
@@ -7936,7 +7939,9 @@ fn an_array_typed_parameter_is_a_pointer() {
 
     // And its `sizeof` is still the array's.
     assert_eq!(
-        diags("void f(void){ int a[4]; _Static_assert(sizeof a == 16, \"the object is an array\"); (void)a; }"),
+        diags(
+            "void f(void){ int a[4]; _Static_assert(sizeof a == 16, \"the object is an array\"); (void)a; }"
+        ),
         Vec::<String>::new()
     );
 }

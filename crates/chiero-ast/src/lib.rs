@@ -460,6 +460,17 @@ pub enum TypeKind {
     Array {
         elem: TypeId,
         len: ArrayLen,
+        /// Qualifiers written **inside the brackets** of a parameter: `int p[const 4]`.
+        ///
+        /// **Not the element's qualifiers.** `const int p[4]` makes the *element* const;
+        /// `int p[const 4]` makes the adjusted *pointer* const (C 6.7.6.3p7), which is a
+        /// different object and a different diagnostic. They are kept apart because the
+        /// adjustment moves this set onto the pointer and leaves `TypeExpr::quals` on the
+        /// pointee.
+        ///
+        /// Empty everywhere but a parameter — outside one these are a constraint violation the
+        /// parser already reports.
+        bracket_quals: Quals,
     },
     Func {
         ret: TypeId,

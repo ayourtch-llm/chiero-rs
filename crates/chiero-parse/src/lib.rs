@@ -356,7 +356,7 @@ struct Specs {
 /// They are applied in reverse, so the type has to be buildable after the fact rather than as
 /// each bracket is consumed — see [`Parser::declarator_suffixes`].
 enum Suffix {
-    Arr(ArrayLen, Span),
+    Arr(ArrayLen, Span, chiero_ast::Quals),
     Fun(Vec<DeclId>, bool, bool, bool, Span),
 }
 
@@ -1886,9 +1886,14 @@ impl<'a> Parser<'a> {
         let mut ty = ty;
         for sfx in suffixes.into_iter().rev() {
             ty = match sfx {
-                Suffix::Arr(len, span) => {
-                    self.ast.add_type(TypeKind::Array { elem: ty, len }, span)
-                }
+                Suffix::Arr(len, span, bracket_quals) => self.ast.add_type(
+                    TypeKind::Array {
+                        elem: ty,
+                        len,
+                        bracket_quals,
+                    },
+                    span,
+                ),
                 Suffix::Fun(params, variadic, kr, prototyped, span) => {
                     // **From the return type through the parameter list.** The suffix's own span
                     // is `(…)` alone, so a diagnostic pointing at a function *type* named the
@@ -1927,19 +1932,26 @@ impl<'a> Parser<'a> {
                 // spelling is reported here and still discarded.
                 let deco = self.here();
                 let mut saw_static = false;
-                let mut saw_qual = false;
+                let mut bracket_quals = chiero_ast::Quals::default();
                 loop {
                     if self.eat_kw(Kw::Static) {
                         saw_static = true;
-                    } else if self.eat_kw(Kw::Const)
-                        || self.eat_kw(Kw::Volatile)
-                        || self.eat_kw(Kw::Restrict)
-                    {
-                        saw_qual = true;
+                    } else if self.eat_kw(Kw::Const) {
+                        bracket_quals.const_ = true;
+                    } else if self.eat_kw(Kw::Volatile) {
+                        bracket_quals.volatile_ = true;
+                    } else if self.eat_kw(Kw::Restrict) {
+                        bracket_quals.restrict_ = true;
                     } else {
                         break;
                     }
                 }
+                // **Which qualifier it was now matters.** C 6.7.6.3p7 moves these onto the
+                // *adjusted pointer*, so `int p[const 4]` is `int *const p` and `p = 0` is a
+                // write to a read-only object — measured, a gcc error in both modes. The
+                // comment that stood here said they "carry no meaning for us beyond that",
+                // which was true only for as long as the adjustment itself was missing.
+                let saw_qual = bracket_quals != chiero_ast::Quals::default();
                 if self.param_depth == 0 && (saw_static || saw_qual) {
                     let what = if saw_static {
                         "`static` in an array size belongs to a parameter"
@@ -1973,7 +1985,7 @@ impl<'a> Parser<'a> {
                 };
                 self.expect_punct(Punct::RBracket, "to close an array declarator");
                 let span = self.span_from(open);
-                out.push(Suffix::Arr(len, span));
+                out.push(Suffix::Arr(len, span, bracket_quals));
                 continue;
             }
             if self.is_punct(0, Punct::LParen) {
