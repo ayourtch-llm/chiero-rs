@@ -1839,6 +1839,29 @@ impl Lowerer<'_> {
     fn local_decl(&mut self, d: chiero_ast::DeclId) {
         let decl = self.ast.decl(d).kind.clone();
         let span = self.ast.decl(d).span;
+        // **A function declaration at block scope declares no object** (C 6.7p2), so there is
+        // nothing to allocate and nothing to emit. `vppinfra/format.h` writes one inside
+        // `unformat_check_input`, and that header reaches nearly every VPP translation unit —
+        // it was the dominant cause of discarded functions once the builtin and asm gaps closed.
+        //
+        // **Keyed on the type, not on `extern`.** `int g(int);` at block scope declares the same
+        // thing: C 6.2.2p5 gives a function declared with no storage-class specifier external
+        // linkage regardless, so a guard reading the storage class would take half the cases.
+        // **A function declared inside a body is a declaration, not an object** (C 6.7p2).
+        // `vppinfra/format.h` writes one inside `unformat_check_input`, and that header reaches
+        // nearly every VPP translation unit — it was the dominant cause of discarded functions
+        // once the builtin and asm gaps closed.
+        //
+        // **Registering it is the load-bearing half.** Skipping the declaration only avoids a
+        // useless alloca; the *call* still has to find a signature, and `declare` walks
+        // file-scope items only, so `callee_of` reported "call to undeclared function" and
+        // 015 §7 discarded the enclosing function. `declare` is exactly the right routine —
+        // this is the same `DeclKind::Func` it already handles, and it takes the linkage from
+        // the storage class rather than assuming.
+        if matches!(self.ast.decl(d).kind, DeclKind::Func { .. }) {
+            self.declare(d);
+            return;
+        }
         let DeclKind::Var {
             name,
             init,
@@ -5864,6 +5887,29 @@ impl Lowerer<'_> {
         let DeclKind::Var { name, .. } = self.ast.decl(d).kind.clone() else {
             return;
         };
+        // **A function declaration at block scope declares no object** (C 6.7p2), so there is
+        // nothing to allocate and nothing to emit. `vppinfra/format.h` writes one inside
+        // `unformat_check_input`, and that header reaches nearly every VPP translation unit —
+        // it was the dominant cause of discarded functions once the builtin and asm gaps closed.
+        //
+        // **Keyed on the type, not on `extern`.** `int g(int);` at block scope declares the same
+        // thing: C 6.2.2p5 gives a function declared with no storage-class specifier external
+        // linkage regardless, so a guard reading the storage class would take half the cases.
+        // **A function declared inside a body is a declaration, not an object** (C 6.7p2).
+        // `vppinfra/format.h` writes one inside `unformat_check_input`, and that header reaches
+        // nearly every VPP translation unit — it was the dominant cause of discarded functions
+        // once the builtin and asm gaps closed.
+        //
+        // **Registering it is the load-bearing half.** Skipping the declaration only avoids a
+        // useless alloca; the *call* still has to find a signature, and `declare` walks
+        // file-scope items only, so `callee_of` reported "call to undeclared function" and
+        // 015 §7 discarded the enclosing function. `declare` is exactly the right routine —
+        // this is the same `DeclKind::Func` it already handles, and it takes the linkage from
+        // the storage class rather than assuming.
+        if matches!(self.ast.decl(d).kind, DeclKind::Func { .. }) {
+            self.declare(d);
+            return;
+        }
         let Some(sty) = self.analysis.ty_of_decl(d) else {
             return;
         };

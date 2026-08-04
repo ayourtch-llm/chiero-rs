@@ -222,3 +222,78 @@ fn an_asm_output_is_written() {
     assert_eq!(writes, 1, "the one output is clobbered");
     assert_eq!(reads, 1, "and the one input is read");
 }
+
+/// **A function declaration at block scope declares no object** (C 6.7p2), so it lowers to
+/// nothing at all — and lowering discarded the enclosing function instead.
+///
+/// `vppinfra/format.h` writes it, inside `unformat_check_input`:
+///
+/// ```c
+/// always_inline uword unformat_check_input (unformat_input_t * i) {
+///   extern uword _unformat_fill_input (unformat_input_t * i);
+///   ...
+/// }
+/// ```
+///
+/// `format.h` is included nearly everywhere in VPP, which is why this was the dominant cause of
+/// lost functions the moment the builtin and asm gaps were closed — 12 of the first 18
+/// translation units, measured 2026-08-04.
+///
+/// **`extern` is not the distinguishing part**, and a fix keyed on the storage class would miss
+/// half of it: `int g(int);` at block scope declares the same thing with the same linkage, and
+/// C 6.2.2p5 gives a function declared with no storage-class specifier external linkage anyway.
+/// The type is what decides.
+#[test]
+fn a_block_scope_function_declaration_lowers_to_nothing() {
+    for src in [
+        "int f(int x) { extern int g(int); return g(x); }",
+        "int f(int x) { int g(int); return g(x); }",
+        // A pointer to a function is an ordinary object and must keep its slot.
+        "int f(int x) { int (*g)(int) = 0; return g ? g(x) : x; }",
+    ] {
+        let raw = lower_raw(src);
+        assert!(
+            raw.diagnostics.is_empty(),
+            "a block-scope declaration is not a construct lowering cannot represent: {src} -> {:?}",
+            raw.diagnostics
+        );
+        // `f` survives. The module may hold more than one function now: a block-scope
+        // declaration registers a signature, which is what lets the call to it resolve.
+        assert!(
+            lower_maybe(src)
+                .expect("lowers")
+                .funcs
+                .iter()
+                .any(|f| &*f.name == "f"),
+            "the enclosing function is kept: {src}"
+        );
+    }
+
+    // **The object case still allocates.** A guard written as "skip any block-scope declaration"
+    // would pass every row above and silently stop giving locals their storage.
+    let m = lower_maybe("int f(int x) { extern int g(int); int y = x + 1; return g(y); }")
+        .expect("lowers");
+    let f = m
+        .funcs
+        .iter()
+        .find(|f| &*f.name == "f")
+        .expect("`f` is in the module");
+    let named: Vec<String> = f
+        .allocas
+        .iter()
+        .filter_map(|a| a.name.as_ref().map(|n| n.to_string()))
+        .collect();
+    assert!(
+        named.iter().any(|n| n == "y"),
+        "`y` still has a slot: {named:?}"
+    );
+    assert!(
+        !named.iter().any(|n| n == "g"),
+        "the function declaration has none: {named:?}"
+    );
+    // And the declaration registered a signature, which is what lets the call resolve.
+    assert!(
+        m.funcs.iter().any(|f| &*f.name == "g"),
+        "the block-scope declaration is in the module"
+    );
+}
