@@ -414,6 +414,30 @@ fn a_function_typed_parameter_adjusts_to_a_pointer() {
         .is_empty(),
         "a mismatched callback is still an error"
     );
+
+    // **The adjustment has to reach the body, and it did not.** Everything above tests the
+    // *caller's* view — the parameter list of an interned `Ty::Func`, which is what an argument
+    // is checked against. The body reads a different store, and only the caller's view was
+    // adjusted, so inside `f` the parameter was still a function type.
+    //
+    // Measured on gcc 13.3.0, both modes: every row below compiles, and `sizeof g` is **8**.
+    // That is the failure mode this whole wave exists to prevent for arrays — an adjustment
+    // applied at one of the places a parameter's type is recorded and not the others — sitting
+    // in the tree already, for functions.
+    for src in [
+        "int f(int g(void)){ _Static_assert(sizeof g == 8, \"a pointer, not a function\"); return 0; }\n",
+        "int f(int g(void)){ g = 0; return 0; }\n",
+        "int f(int g(void)){ return g(); }\n",
+        "int f(int g(void)){ int (**q)(void) = &g; return (*q)(); }\n",
+    ] {
+        for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+            assert_eq!(
+                sema_messages(src, dialect),
+                Vec::<String>::new(),
+                "gcc compiles this in both modes: {src}"
+            );
+        }
+    }
 }
 
 /// **Only the escapes gcc accepts *silently* are a dialect question.**
