@@ -333,6 +333,40 @@ fn an_enumerator_folded_from_a_float_is_a_pedantic_rule_only() {
         );
     }
 
+    // **A cast to an integer truncates inside the fold, and only a value shows it.** Mutation
+    // removed the `.trunc()` and nothing failed: every row above asserts a message or its
+    // absence, and dropping the truncation changes no message at all — it changes the number.
+    // `(unsigned)(15.0/2) * 2` is 14 with truncation and 15 without.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages(
+                "#define H (unsigned)(15.0/2)\nenum e { X = H * 2 };\n\
+                 _Static_assert(X == 14, \"the cast truncates before the multiply\");\n",
+                dialect
+            )
+            .iter()
+            .any(|m| m.contains("static assertion failed")),
+            "a cast inside a folded constant truncates toward zero"
+        );
+    }
+
+    // **An earlier enumerator is foldable inside a later one.** VPP's headers chain them —
+    // `MAX_TIMER_HANDSHAKES = 90 / REKEY_TIMEOUT` two lines below the finding that started
+    // this — so a folder that stopped at identifiers would fall back to "one more than the
+    // previous" for the whole rest of the enumeration.
+    for dialect in [Dialect::pedantic(), Dialect::gnu()] {
+        assert!(
+            !sema_messages(
+                "#define H (unsigned)(1/0.01)\nenum e2 { A = 5, B = H / A };\n\
+                 _Static_assert(B == 20, \"100 / 5\");\n",
+                dialect
+            )
+            .iter()
+            .any(|m| m.contains("static assertion failed")),
+            "an enumerator reference folds inside a later enumerator"
+        );
+    }
+
     // **An enumerator that is not constant at all is still refused in both dialects**, because
     // gcc refuses it in both too — a variable is not a folding question.
     for dialect in [Dialect::pedantic(), Dialect::gnu()] {

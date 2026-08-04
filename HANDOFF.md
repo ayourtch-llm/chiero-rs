@@ -679,9 +679,9 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >   as SURVIVED — or omitting it — would have hidden the gap. Read anchors back out of the
 >   formatted file rather than retyping them.
 >
-> ### Method note that has now recurred five times — read this one
+> ### Method note that has now recurred seven times — read this one
 >
-> **A decision recorded in a commit message is a claim, not a test.** Five times in this
+> **A decision recorded in a commit message is a claim, not a test.** Seven times in this
 > stretch prose asserted something no assertion covered:
 >
 > | wave | claim | truth |
@@ -691,11 +691,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > | 414 | argument spans carry whitespace, so `.trim()` is load-bearing | **false** — they do not |
 > | 416 | rationale collapses its layout | true, untested (`starts_with` cannot see it) |
 > | 418 | fringe filtered against escalated handles a real case | **false** — unreachable state |
+> | 443 | a cast truncates inside a folded constant | true, untested |
+> | 443 | an enumerator reference folds inside a later one | true, untested |
 >
-> Three of five were wrong, not merely uncovered. **Measure before writing the justification.**
-> And a corollary that keeps paying: a *survivor* has four readings in order — the code is
-> wrong; a row is missing; the code is dead; the mutant is equivalent. Waves 413 (mutant was
-> correct), 414 and 418 (dead) each landed on a different one.
+> Three of seven were wrong, not merely uncovered. **Measure before writing the justification.**
+>
+> ### ⚠️ The sharpest form: a message-only test cannot see a wrong value
+>
+> Both wave-443 survivors share one cause, and it is not "a missing row". **Every assertion in
+> that test checked a message or its absence, and neither mutant changes any message** —
+> dropping `.trunc()` makes `(unsigned)(15.0/2) * 2` evaluate to 15 instead of 14 and says
+> nothing; dropping enumerator-reference folding silently falls back to "one more than the
+> previous". A suite built entirely from "does it complain?" is blind to every wrong answer
+> that complains identically.
+>
+> **Where a change touches arithmetic rather than reporting, at least one row must assert the
+> arithmetic** — `_Static_assert` is the tool. This is the same failure as wave 435's, and it
+> recurred *inside the same function, two commits later*, in a wave whose own RED existed to
+> prevent exactly it.
+>
+> A corollary that keeps paying: a *survivor* has four readings in order — the code is wrong;
+> a row is missing; the code is dead; the mutant is equivalent. Waves 413 (mutant was correct),
+> 414 and 418 (dead) each landed on a different one. And **predicting survivors is not running
+> them**: wave 443 predicted E4 would survive and E5 would survive; E4 died, E5 lived.
 >
 > ### Next on this front
 >
