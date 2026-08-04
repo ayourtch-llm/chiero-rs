@@ -487,7 +487,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 442) — 1664 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 452) — 1670 tests, 4 ignored, M1 268/268 by contract
 >
 > ### 🎯 FULL VPP SWEEP — 1552 files, four rounds
 >
@@ -548,8 +548,11 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 >
 > | n | kind |
 > |---|---|
-> | 100 | `ISO C does not support '__int128' types` — now reported (support unchanged) |
-> | 4 | `ISO C forbids an empty translation unit` — **open** |
+> | 100 | `ISO C does not support '__int128' types` — **fixed**: reported, support unchanged |
+> | 4 | `ISO C forbids an empty translation unit` (C 6.9p1) — **fixed**: reported under strict |
+>
+> Both follow the same pattern as `\e`: **accept the extension, report it under the strict
+> dialect.** A third strict sweep should show `misses: 0`; re-run before quoting it.
 >
 > **Run both dialects.** `--gnu` finds chiero being too strict; the default finds it being too
 > permissive. Six rounds of the first said nothing about the second.
