@@ -502,6 +502,49 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > `NotRun` rather than `Diagnosed` because a verifier rejection is a chiero gap, not a verdict on
 > VPP, and filing it as a finding would let suppressing it look like a fix to the tree.
 >
+> ### 🚨 TOP PRIORITY (found 2026-08-04, the moment lowering entered the sweep)
+>
+> **Most of VPP is not being analysed, and never has been.** In the first 30 translation units
+> of the honest sweep, **24 were `not-run`** — all one cause:
+>
+> ```
+> lower: /usr/lib/gcc/x86_64-linux-gnu/13/include/ia32intrin.h:29:1:
+>   `__bsfd` contains a construct lowering cannot represent, so it was skipped
+>
+> extern __inline int __bsfd (int __X) { return __builtin_ctz (__X); }
+> ```
+>
+> 015 §7 contract 20 discards a function **whole** when any part of it fails to lower — correct,
+> since a partial body reads downstream as "this branch cannot be taken" rather than as a gap.
+> But `ia32intrin.h` is reached by most of the tree, so most TUs lose functions, and until
+> 7e9501e nothing counted it.
+>
+> **Narrowed by probe** (`target/release/xtask cc` on one-line files, no rebuild needed):
+>
+> | source | outcome |
+> |---|---|
+> | `int g(int); … g(x)` | clean |
+> | `int __builtin_ctz(int); … __builtin_ctz(x)` | **clean** |
+> | undeclared `__builtin_ctz(x)` | **function skipped** |
+> | `__builtin_alloca(n)` | **CIR the verifier rejects** — "cast source operand is …" |
+>
+> So it is **not** builtin-specific: sema recognises an undeclared `__builtin_*` call, lowering
+> has no declaration to emit a call *to*, and the function is discarded. Every builtin probed
+> behaves this way — ctz, clz, popcount, ffs, bswap32, expect, unreachable, prefetch, memcpy,
+> memset, constant_p, trap, clzll, add_overflow, types_compatible_p. `__builtin_alloca` is a
+> **second, distinct** gap with its own message.
+>
+> **The fix has a precedent in this codebase and it is not "model every builtin".** `asm` is
+> lowered as an opaque effect that clobbers its outputs and marks the path `Approximated`
+> (013 §4, and the `StmtKind::Asm` doc). A builtin lowering cannot model should do the same:
+> **an opaque call, not a discarded function.** Dropping the function is the unsound-looking
+> choice here — it removes real code from analysis — where an approximated call is honest and
+> keeps everything around it. Then model the cheap pure ones exactly (ctz, clz, popcount,
+> bswap, expect) because they are total functions with obvious semantics.
+>
+> **Do not re-measure the corpus before this lands.** A cache-cold run costs 30 min and would
+> only report this one cause 1800 times.
+>
 > **The `CC` shim is the primary measurement now**, not the standalone sweep. Latest cache-cold
 > full VPP build **through sema only** (pre-7e9501e): 1871 TUs, **1864 clean**, 7 findings —
 > the array-parameter adjustment cleared its 3 and introduced none. The first honest
