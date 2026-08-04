@@ -279,7 +279,10 @@ fn returning_a_void_expression_from_a_void_function_is_a_pedantic_rule_only() {
             .any(|m| m.contains("return")),
         "the calibration default still reports it"
     );
-    assert_eq!(sema_messages(void_expr, Dialect::gnu()), Vec::<String>::new());
+    assert_eq!(
+        sema_messages(void_expr, Dialect::gnu()),
+        Vec::<String>::new()
+    );
 
     // A *value* is a different rule and stays diagnosed in both: gcc only warns, and chiero
     // matching that would mean saying nothing where gcc says something.

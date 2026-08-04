@@ -8665,8 +8665,18 @@ impl Cx<'_> {
                     .current_ret
                     .is_some_and(|r| matches!(self.out.types[r.0 as usize], Ty::Void))
                 {
-                    let span = self.ast.expr(e).span;
-                    self.error(span, "`return` with a value in a function returning `void`");
+                    // **The two halves differ and only one is a dialect question.** Measured:
+                    // `return void_expr;` is accepted *silently* by `gcc -std=gnu11` and
+                    // refused by `-pedantic-errors`; `return 5;` is **warned** about by
+                    // `gnu11`. Chiero has no warning level, so silencing the second would say
+                    // nothing where gcc says something — a `Miss`, not agreement. VPP wraps
+                    // void calls this way 735 times through `vnet/interface_funcs.h`.
+                    let expr_ty = self.out.typed.ty_of(node);
+                    let returns_void = matches!(self.out.types[expr_ty.0 as usize], Ty::Void);
+                    if self.dialect.pedantic || !returns_void {
+                        let span = self.ast.expr(e).span;
+                        self.error(span, "`return` with a value in a function returning `void`");
+                    }
                 }
                 // **A returned value is converted to the function's return type.**
                 // `Conversion::Return` existed in the enum and nothing produced it, so
