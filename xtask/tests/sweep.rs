@@ -547,6 +547,22 @@ fn a_parallel_tree_sweep_agrees_with_a_serial_one_in_order() {
     };
     let system = xtask::sweep::system_include_paths();
 
+    // **A tree with no translation units returns empty rather than panicking.** Pointing the
+    // sweep at a directory that holds no `.c` files is an ordinary operator mistake — a docs
+    // folder, a wrong path component — and `files.chunks(0)` panics, so the guard is real.
+    // Nothing else here sweeps an empty tree, which is why removing it changed no test.
+    let empty = std::env::temp_dir().join("chiero-sweep-empty-tree");
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(empty.join("README.md"), "not C\n").unwrap();
+    for threads in [1, 4] {
+        assert!(
+            xtask::sweep::sweep_with(&empty, &flags, &system, threads)
+                .expect("an empty tree is not an error")
+                .is_empty()
+        );
+    }
+
     let serial = xtask::sweep::sweep_with(&tmp, &flags, &system, 1).expect("serial");
     assert_eq!(serial.len(), 11, "ten at the top plus one nested");
     // **0 and 16 are the rows that matter.** Nothing between 2 and 8 reaches the lower clamp
