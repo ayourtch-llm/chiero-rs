@@ -666,6 +666,29 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > * Judges in `--gnu` by default — the project is compiling with GNU extensions.
 >   `CHIERO_CC_PEDANTIC=1` asks the strict question.
 >
+> ### 🔍 `transparent_union` identified: it is glibc's socket API, not VPP's code
+>
+> The finding reads `invalid initializer: a structure or union is copied only from its own
+> type` at a plain pointer cast — `bind (sock, (struct sockaddr *) &a, …)` in
+> `vppinfra/socket.c:58`, which gcc accepts silently in **both** modes.
+>
+> The cast is not the problem. `/usr/include/x86_64-linux-gnu/bits/socket.h:84` declares
+>
+> ```c
+> } __CONST_SOCKADDR_ARG __attribute__ ((__transparent_union__));
+> extern int bind (int __fd, __CONST_SOCKADDR_ARG __addr, socklen_t __len);
+> ```
+>
+> so every `bind`/`connect`/`sendto` call passes a `struct sockaddr *` where a **transparent
+> union** is expected. Chiero does not implement the attribute, so the struct-copy rule fires.
+>
+> ⚠️ **A minimal reduction does not reproduce it.** Two local structs and a hand-written
+> prototype are accepted; the attribute on glibc's declaration is the whole cause. Reducing
+> without the real header sends you looking at the cast, which is correct C.
+>
+> This is the owner's open `transparent_union` question, now with its cause pinned: supporting
+> the attribute closes every socket-calling TU at once.
+>
 > ### ⚠️ Read `BothRefused` pairs in `--gnu`, not under the strict dialect
 >
 > Under `-pedantic-errors` gcc's **first** message is usually the pedantic one, which masks its
