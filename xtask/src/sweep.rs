@@ -659,18 +659,20 @@ pub fn grouped_rows(
         // **`BothRefused` names both sides.** Grouped by gcc alone it read as agreement,
         // which it is not: each tool reports only its first message, so a file where they
         // object to different things looked settled. That is how `vcl/vppcom.h` hid a miss.
-        if bucket == Bucket::BothRefused {
-            let key = disagreement_key(&v.gcc, &v.chiero);
-            if !key.is_empty() {
-                let e = groups
-                    .entry(key)
-                    .or_insert((0, v.path.clone(), String::new()));
-                e.0 += 1;
-                if e.2.is_empty() {
-                    e.2 = v.path.display().to_string();
-                }
-                continue;
+        // **No bucket test: `disagreement_key` is the guard.** It answers empty unless *both*
+        // sides are `Diagnosed`, which is precisely what `BothRefused` means, so a
+        // `bucket == BothRefused` check could never change an outcome — mutation removed it and
+        // nothing moved. Dead, not defensive.
+        let key = disagreement_key(&v.gcc, &v.chiero);
+        if !key.is_empty() {
+            let e = groups
+                .entry(key)
+                .or_insert((0, v.path.clone(), String::new()));
+            e.0 += 1;
+            if e.2.is_empty() {
+                e.2 = v.path.display().to_string();
             }
+            continue;
         }
         let msg = match if side { &v.chiero } else { &v.gcc } {
             Outcome::Diagnosed(m) | Outcome::NotRun(m) | Outcome::Warned(m) => m.clone(),

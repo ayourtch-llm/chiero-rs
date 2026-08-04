@@ -860,3 +860,42 @@ fn the_report_groups_both_refused_by_the_pair() {
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].0.contains("||"), "not a pair: {}", rows[0].0);
 }
+
+/// **Which bucket and which side each section asks for is part of the report.**
+///
+/// Extracting `grouped_rows` made *what it computes* observable and left *what it is asked to
+/// compute* unpinned: mutation could make every section pass `side = true`, or group the wrong
+/// bucket, with no test noticing. Extracting a helper moves the risk to the caller rather than
+/// removing it.
+#[test]
+fn each_report_section_asks_for_its_own_bucket_and_side() {
+    use xtask::sweep::report_sections;
+    let s = report_sections();
+
+    // The side decides whose message a row names: findings and tool gaps are about chiero,
+    // misses and both-refused are read from gcc's side.
+    let by_bucket = |b| s.iter().find(|(_, bucket, _)| *bucket == b).copied();
+    assert_eq!(by_bucket(Bucket::Finding).expect("findings").2, true);
+    assert_eq!(by_bucket(Bucket::Miss).expect("misses").2, false);
+    assert_eq!(by_bucket(Bucket::ToolGap).expect("tool gaps").2, true);
+
+    // Every diagnosing bucket has a section, or a whole class of result is silently unprinted.
+    for b in [
+        Bucket::Finding,
+        Bucket::Miss,
+        Bucket::BothRefused,
+        Bucket::SeverityMismatch,
+        Bucket::ToolGap,
+    ] {
+        assert!(by_bucket(b).is_some(), "no section for {b:?}");
+    }
+    // `Agree` has none: there is nothing to report about files both tools accepted.
+    assert!(by_bucket(Bucket::Agree).is_none());
+
+    // No bucket appears twice, which would print one class of result under two headings.
+    let mut seen: Vec<Bucket> = s.iter().map(|(_, b, _)| *b).collect();
+    let n = seen.len();
+    seen.sort_by_key(|b| format!("{b:?}"));
+    seen.dedup();
+    assert_eq!(seen.len(), n, "a bucket is listed twice");
+}
