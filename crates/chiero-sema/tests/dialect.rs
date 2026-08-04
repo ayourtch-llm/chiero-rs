@@ -1237,7 +1237,10 @@ fn a_null_pointer_constant_reaches_an_array_typed_parameter() {
         for dialect in [Dialect::gnu(), Dialect::pedantic()] {
             assert_eq!(
                 sema_messages(src, dialect),
-                vec!["passing an argument makes a pointer from an integer without a cast".to_string()],
+                vec![
+                    "passing an argument makes a pointer from an integer without a cast"
+                        .to_string()
+                ],
                 "only `0` is the null pointer constant: {src}"
             );
         }

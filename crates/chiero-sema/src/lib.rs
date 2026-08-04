@@ -8039,7 +8039,18 @@ impl Cx<'_> {
         match (&f, &t) {
             // **`0` is a null pointer constant, `1` is not** (C 6.3.2.3p3). The distinction is the
             // value rather than the type, which is why this is a parameter and not a type test.
-            (_, Ty::Ptr(_)) if null_constant => true,
+            //
+            // **An array destination counts, and only a parameter can be one.** C 6.7.6.3p7
+            // adjusts a parameter declared "array of T" to "pointer to T"; chiero keeps the array
+            // type, which is why the arms below normalise pointer against array on both sides.
+            // This arm asks about the destination's *kind* rather than its pointee, so it is the
+            // one place that adjustment has to be spelled out — and until it was, all 6 of VPP's
+            // remaining `makes a pointer from an integer` findings were `clib_socket_sendmsg (…,
+            // 0, 0)` against `int fds[]`, which gcc compiles silently in both modes.
+            //
+            // Assigning `0` to an array *object* does not reach here: `a = 0` is already refused
+            // as "assignment to an array" and contract 20 suppresses the conversion behind it.
+            (_, Ty::Ptr(_) | Ty::Array { .. }) if null_constant => true,
             // A function converts to a pointer to itself.
             (Ty::Func { .. }, Ty::Ptr(b)) => self.compatible(from, *b),
             _ => match (pointee(&f), pointee(&t)) {
