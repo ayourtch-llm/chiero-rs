@@ -768,3 +768,43 @@ fn a_parameter_shadows_a_typedef_of_the_same_name() {
         Vec::<String>::new()
     );
 }
+
+/// **An enum may name its underlying type** — C23's `enum E : u8`, which gcc accepts under
+/// `gnu11` and refuses under `-pedantic-errors` ("ISO C does not support specifying `enum`
+/// underlying types before C2X").
+///
+/// The largest genuine unknown from the first full VPP build observed through the `CC` shim:
+/// **35 translation units**, all reaching `plugins/http/http.h:25`, which writes
+/// `typedef enum http_version_ : u8 { … }`. Every one was invisible to the standalone sweep,
+/// whose configuration could not reach those files at all.
+#[test]
+fn an_enum_may_specify_its_underlying_type() {
+    // Parses in both dialects: the *diagnostic* is a dialect question, the syntax is not.
+    assert_eq!(
+        diagnostics_with(
+            "typedef unsigned char u8;\ntypedef enum ver_ : u8 { V1, V2 } ver_t;\nver_t v;\n",
+            chiero_ast::Dialect::gnu()
+        ),
+        Vec::<String>::new()
+    );
+
+    // The tag is optional, as it is for a plain enum.
+    assert_eq!(
+        diagnostics_with(
+            "typedef unsigned char u8;\ntypedef enum : u8 { A, B } e_t;\ne_t e;\n",
+            chiero_ast::Dialect::gnu()
+        ),
+        Vec::<String>::new()
+    );
+
+    // **A bit-field is still a bit-field.** `enum E x : 3;` inside a record names a width, not
+    // an underlying type, and reading the `:` the same way in both places would break every
+    // enum-typed bit-field in the tree.
+    assert_eq!(
+        diagnostics_with(
+            "enum E { A };\nstruct S { enum E x : 3; };\nstruct S s;\n",
+            chiero_ast::Dialect::gnu()
+        ),
+        Vec::<String>::new()
+    );
+}
