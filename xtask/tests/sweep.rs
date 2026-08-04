@@ -810,3 +810,37 @@ fn a_both_refused_row_names_both_sides() {
     // An outcome that is not `Diagnosed` cannot be part of a disagreement pair.
     assert_eq!(disagreement_key(&Outcome::Clean, &d("sema: B")), "");
 }
+
+/// **The grouping the report prints must be testable.** Mutation showed the `BothRefused`
+/// pairing could be switched off entirely, or applied to every bucket, with no test noticing:
+/// `report` writes to stdout and returns nothing, so nothing could observe it. The helper was
+/// verified and its use was not — the same shape that let `in_system_header` sit unwired.
+#[test]
+fn the_report_groups_both_refused_by_the_pair() {
+    use xtask::sweep::{Verdict, grouped_rows};
+    let v = |path: &str, gcc: Outcome, chiero: Outcome| Verdict {
+        path: PathBuf::from(path),
+        bucket: classify(&gcc, &chiero),
+        gcc,
+        chiero,
+    };
+    let verdicts = vec![
+        v("a.c", d("/a.c:1:1: error: zero-size array"), d("sema: /a.c:2:2: no `__int128`")),
+        v("b.c", d("/b.c:3:3: error: zero-size array"), d("sema: /b.c:4:4: no `__int128`")),
+        v("c.c", d("/c.c:5:5: error: unknown type"), d("parse: /c.c:6:6: expected a type")),
+    ];
+
+    let rows = grouped_rows(&verdicts, Bucket::BothRefused, false);
+    // Two files disagreeing the same way collapse; the third is its own row.
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let two = rows.iter().find(|r| r.1 == 2).expect("the pair of two");
+    assert!(two.0.contains("zero-size array"), "{}", two.0);
+    assert!(two.0.contains("__int128"), "names chiero's side too: {}", two.0);
+
+    // **A finding row still names one side only.** Applying the pair everywhere would make
+    // every bucket unreadable, and is the other half of what mutation could switch freely.
+    let finding = vec![v("d.c", Outcome::Clean, d("sema: /d.c:1:1: something"))];
+    let rows = grouped_rows(&finding, Bucket::Finding, true);
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].0.contains("||"), "not a pair: {}", rows[0].0);
+}
