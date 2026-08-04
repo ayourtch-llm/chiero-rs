@@ -144,16 +144,10 @@ pub fn run(args: &[String]) -> i32 {
     // else's source is a real possibility and must not surface as a compiler crash.
     if let Some(path) = out {
         let recorded = std::panic::catch_unwind(|| observe(args));
-        if let Ok(lines) = recorded
-            && !lines.is_empty()
-            && let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-        {
-            use std::io::Write;
-            let _ = f.write_all(lines.join("\n").as_bytes());
-            let _ = f.write_all(b"\n");
+        if let Ok(lines) = recorded {
+            for line in lines {
+                append_record(std::path::Path::new(&path), &line);
+            }
         }
     }
 
@@ -188,4 +182,71 @@ fn observe(args: &[String]) -> Vec<String> {
             record_line(src, &outcome, started.elapsed().as_millis())
         })
         .collect()
+}
+
+/// Append one record, as a **single** write to an `O_APPEND` handle.
+///
+/// `make -j` runs many compilers at once against one log. Two writes per record — the line,
+/// then the newline — let another process interleave between them, which does not reorder the
+/// records but *tears* them: the file stops being JSONL and both writers lose their entry. One
+/// write, and the kernel serialises the append.
+///
+/// Every failure is silent. This runs inside somebody else's build, and a log that cannot be
+/// written must never be the reason it fails.
+pub fn append_record(log: &Path, line: &str) {
+    use std::io::Write;
+    let mut whole = String::with_capacity(line.len() + 1);
+    whole.push_str(line);
+    whole.push('\n');
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
+        let _ = f.write_all(whole.as_bytes());
+    }
+}
+
+/// What a collected log says, in the shape the sweep's report uses.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub total: usize,
+    pub clean: usize,
+    /// `(kind, count)`, commonest first. Locations are stripped so two files sharing a defect
+    /// are one row — the same grouping the sweep needs, for the same reason.
+    pub kinds: Vec<(String, usize)>,
+}
+
+/// Summarise collected records.
+///
+/// Reads the fields it needs out of each line rather than parsing JSON: the writer is three
+/// lines above, the format is fixed, and a dependency for this would be the tail wagging the
+/// dog. A line it cannot read is skipped rather than fatal — a torn log should still be
+/// partially useful.
+pub fn summarise(lines: &[String]) -> Summary {
+    let mut s = Summary::default();
+    let mut counts: indexmap::IndexMap<String, usize> = indexmap::IndexMap::new();
+    for l in lines {
+        let Some(status) = between(l, "\"status\":\"", "\"") else {
+            continue;
+        };
+        s.total += 1;
+        if status == "clean" {
+            s.clean += 1;
+            continue;
+        }
+        if let Some(msg) = between(l, "\"message\":\"", "\"}") {
+            *counts.entry(crate::sweep::kind(&msg)).or_default() += 1;
+        }
+    }
+    let mut kinds: Vec<(String, usize)> = counts.into_iter().collect();
+    kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    s.kinds = kinds;
+    s
+}
+
+fn between(s: &str, open: &str, close: &str) -> Option<String> {
+    let i = s.find(open)? + open.len();
+    let j = s[i..].find(close)? + i;
+    Some(s[i..j].to_owned())
 }

@@ -11,6 +11,7 @@ fn main() -> ExitCode {
         Some("sweep") => sweep(),
         Some("recipe-sweep") => recipe_sweep(),
         // `CC=...` shim: everything after `cc` is the compiler's own argument list.
+        Some("cc-report") => cc_report(),
         Some("cc") => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             let code = xtask::cc::run(&args);
@@ -316,6 +317,44 @@ fn recipe_sweep() -> ExitCode {
     }
     if !report.is_complete() {
         println!("  -> PARTIAL: these counts are not a baseline until they are complete");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `xtask cc-report --log <file>` — what a build collected.
+fn cc_report() -> ExitCode {
+    let mut log = std::env::var("CHIERO_CC_LOG").ok();
+    let mut args = std::env::args().skip(2);
+    while let Some(a) = args.next() {
+        if a == "--log" {
+            log = args.next();
+        }
+    }
+    let Some(log) = log else {
+        eprintln!("usage: xtask cc-report --log <file>   (or set CHIERO_CC_LOG)");
+        return ExitCode::FAILURE;
+    };
+    let text = match std::fs::read_to_string(&log) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("cc-report: cannot read {log}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let s = xtask::cc::summarise(&lines);
+    println!("{} translation units observed, {} clean", s.total, s.clean);
+    // **A build the shim never saw is not a clean build.** Saying so beats printing a
+    // reassuring pair of zeroes at someone who set the variable wrongly.
+    if s.total == 0 {
+        println!("  -> nothing recorded: was CHIERO_CC_LOG set for the build itself?");
+        return ExitCode::SUCCESS;
+    }
+    for (kind, n) in s.kinds.iter().take(25) {
+        println!("  {n:5}  {kind}");
+    }
+    if s.kinds.len() > 25 {
+        println!("  … {} more distinct kinds", s.kinds.len() - 25);
     }
     ExitCode::SUCCESS
 }

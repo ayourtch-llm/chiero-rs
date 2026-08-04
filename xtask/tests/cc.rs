@@ -142,7 +142,11 @@ fn the_log_summarises_by_kind() {
         ),
         xtask::cc::record_line(
             &PathBuf::from("c.c"),
-            &xtask::sweep::Outcome::Diagnosed("sema: /c.c:9:9: `y` was not declared".into()),
+            // **The same defect in another file**: only the location differs, which is what
+            // `kind` strips. An earlier version of this row used a different identifier and
+            // expected the two to collapse — they should not, because the identifier is part
+            // of the message and two undeclared names are two defects.
+            &xtask::sweep::Outcome::Diagnosed("sema: /c.c:9:9: `x` was not declared".into()),
             3,
         ),
     ];
@@ -153,4 +157,45 @@ fn the_log_summarises_by_kind() {
     assert_eq!(s.kinds.len(), 1, "{:?}", s.kinds);
     assert_eq!(s.kinds[0].1, 2);
     assert!(s.kinds[0].0.contains("was not declared"), "{:?}", s.kinds);
+}
+
+/// **A sidecar per translation unit, keyed on the *output*.**
+///
+/// Simpler than one shared log: each compiler writes its own file, so `make -j` needs no
+/// atomicity argument at all, and a record sits next to the object it describes where it can
+/// just be read.
+///
+/// Keyed on `-o`, not on the source, for a reason specific to this project: VPP compiles the
+/// same `.c` several times with different `-march` flags (060 §4.12's multiarch), so
+/// source-keyed sidecars would overwrite each other and the last variant would win silently.
+/// The output path is what the build already treats as unique, and it puts the file in the
+/// build tree rather than the source tree.
+#[test]
+fn a_sidecar_is_keyed_on_the_output_it_describes() {
+    use xtask::cc::sidecar_path;
+
+    assert_eq!(
+        sidecar_path(&args("-c foo.c -o build/x86/foo.o"), &PathBuf::from("foo.c")),
+        PathBuf::from("build/x86/foo.o.chiero")
+    );
+
+    // The multiarch case, which is why the key is the output: one source, two objects, two
+    // records. Source-keyed, the second would erase the first.
+    assert_ne!(
+        sidecar_path(&args("-c n.c -o n_avx2.o -mavx2"), &PathBuf::from("n.c")),
+        sidecar_path(&args("-c n.c -o n_sse42.o -msse4.2"), &PathBuf::from("n.c"))
+    );
+
+    // **No `-o`**: `configure` probes and `cc foo.c` compile-and-link. The sidecar falls back
+    // to the source, which is the only name available and is unique for that invocation.
+    assert_eq!(
+        sidecar_path(&args("probe.c -lm"), &PathBuf::from("probe.c")),
+        PathBuf::from("probe.c.chiero")
+    );
+
+    // **Several sources with one `-o` is a link, not a compilation of each.** Keying every
+    // source to the same output would make them fight over one file; each keeps its own name.
+    let a = sidecar_path(&args("a.c b.c -o prog"), &PathBuf::from("a.c"));
+    let b = sidecar_path(&args("a.c b.c -o prog"), &PathBuf::from("b.c"));
+    assert_ne!(a, b, "one sidecar per translation unit");
 }
