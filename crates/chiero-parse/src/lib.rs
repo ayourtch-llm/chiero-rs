@@ -362,6 +362,11 @@ enum Suffix {
 
 struct Parser<'a> {
     dialect: chiero_ast::Dialect,
+    /// Inside a `_Generic` association's type, where a following `:` separates the association
+    /// and is **not** an enum's underlying type. Three constructs spell that token: an
+    /// underlying type, a bit-field width, and this. Only a flag distinguishes the third,
+    /// because the text either side is identical.
+    in_generic_assoc: bool,
     toks: Vec<Tok>,
     pos: usize,
     ast: Ast,
@@ -414,6 +419,7 @@ impl<'a> Parser<'a> {
     fn new(tu: &PreprocessedTu, oracle: &'a mut dyn TypedefOracle) -> Parser<'a> {
         let mut p = Parser {
             dialect: chiero_ast::Dialect::pedantic(),
+            in_generic_assoc: false,
             toks: Vec::with_capacity(tu.tokens.len()),
             pos: 0,
             ast: Ast::new(),
@@ -1379,6 +1385,25 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
+        // **An enum may name its underlying type**: `enum E : u8 { … }` (C23; gcc takes it
+        // under `gnu11` and refuses it under `-pedantic-errors`). 35 VPP translation units
+        // reach `plugins/http/http.h`'s `typedef enum http_version_ : u8 { … }`.
+        //
+        // **Only for `enum`, and only here.** The same `:` after a declarator inside a record
+        // is a bit-field width, and reading the two alike would break every enum-typed
+        // bit-field in the tree. The type is parsed and discarded for now: it decides the
+        // enumeration's representation, which 014 owns, and inventing that here would be a
+        // layout claim this crate cannot make.
+        if tag == TagKind::Enum && self.is_punct(0, Punct::Colon) && !self.in_generic_assoc {
+            self.pos += 1;
+            let start = self.pos;
+            let specs = self.declaration_specifiers();
+            if self.pos == start {
+                let here = self.here();
+                self.error(here, "expected a type after `:` in an enum specifier");
+            }
+            let _ = specs;
+        }
         let members = if self.eat_punct(Punct::LBrace) {
             let mut out = Vec::new();
             while !self.at_end() && !self.is_punct(0, Punct::RBrace) {
@@ -2970,7 +2995,12 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                         None
                     } else {
-                        Some(self.type_name())
+                        // `_Generic(x, enum E: 1, …)`: the `:` ends the association, so an
+                        // `enum E` here must not swallow it as an underlying type.
+                        let outer = std::mem::replace(&mut self.in_generic_assoc, true);
+                        let t = self.type_name();
+                        self.in_generic_assoc = outer;
+                        Some(t)
                     };
                     self.expect_punct(Punct::Colon, "after a `_Generic` association's type");
                     let value = self.assignment_expr();

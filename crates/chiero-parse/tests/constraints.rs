@@ -797,6 +797,18 @@ fn an_enum_may_specify_its_underlying_type() {
         Vec::<String>::new()
     );
 
+    // **And a `_Generic` association's `:` is neither.** `_Generic(x, enum E: 1, default: 0)`
+    // ends its association with the same token; an enum specifier that swallowed it left the
+    // selection unparseable. Three constructs spell `:` after an enum, and the text either
+    // side is identical in two of them — only the surrounding construct tells them apart.
+    assert_eq!(
+        diagnostics_with(
+            "enum E { A };\nint f(enum E e) { return _Generic(e, enum E: 1, default: 0); }\n",
+            chiero_ast::Dialect::gnu()
+        ),
+        Vec::<String>::new()
+    );
+
     // **A bit-field is still a bit-field.** `enum E x : 3;` inside a record names a width, not
     // an underlying type, and reading the `:` the same way in both places would break every
     // enum-typed bit-field in the tree.
