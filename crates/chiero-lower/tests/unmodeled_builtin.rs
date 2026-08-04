@@ -19,7 +19,7 @@
 use chiero_cir::{InstKind, OpaqueReason};
 
 mod harness;
-use harness::{lower_raw, lower_maybe};
+use harness::{lower_maybe, lower_raw};
 
 /// The function survives, and the call becomes an `Opaque` naming the builtin.
 #[test]
@@ -65,31 +65,59 @@ fn an_unmodeled_builtin_reads_its_arguments_and_defines_its_result() {
         .flat_map(|b| b.insts.iter())
         .find_map(|i| match &i.kind {
             InstKind::Opaque {
-                dsts, reads, why: OpaqueReason::UnmodeledBuiltin(_), ..
+                dsts,
+                reads,
+                why: OpaqueReason::UnmodeledBuiltin(_),
+                ..
             } => Some((dsts.clone(), reads.clone())),
             _ => None,
         })
         .expect("an opaque effect");
-    assert_eq!(op.0.len(), 1, "the call has a value, so the effect defines one");
+    assert_eq!(
+        op.0.len(),
+        1,
+        "the call has a value, so the effect defines one"
+    );
     assert_eq!(op.1.len(), 1, "and it reads its one argument");
 }
 
-/// **A `void` builtin defines nothing**, so `dsts` is not merely always one.
+/// **`dsts` follows the expression's type rather than being a constant one** — and the type it
+/// follows is currently always `int`.
+///
+/// gcc gives `__builtin_prefetch` the type `void (const void *, ...)`, so this ought to define
+/// nothing. chiero types it `int`: sema exempts an undeclared `__builtin_*` from the
+/// undeclared-identifier rule but has **no signatures for the builtins**, so the call takes C's
+/// implicit-`int` result like any other undeclared call.
+///
+/// So the `void` arm in lowering is correct and **not yet reachable**, and this test says so
+/// rather than asserting a property the system cannot exhibit. The consequence is mild — a
+/// value nothing reads — but it is a real gap, recorded in HANDOFF §9: modelling the builtins
+/// exactly (Tier 1/2) needs their signatures, and `void` is the first thing a signature says.
 #[test]
-fn a_void_unmodeled_builtin_defines_no_result() {
-    let m = lower_maybe("void f(void *p) { __builtin_prefetch(p); }").expect("lowers");
-    let dsts = m.funcs[0]
-        .blocks
-        .iter()
-        .flat_map(|b| b.insts.iter())
-        .find_map(|i| match &i.kind {
-            InstKind::Opaque { dsts, why: OpaqueReason::UnmodeledBuiltin(_), .. } => {
-                Some(dsts.len())
-            }
-            _ => None,
-        })
-        .expect("an opaque effect");
-    assert_eq!(dsts, 0, "nothing is defined by a `void` builtin");
+fn the_result_follows_the_expressions_type() {
+    let dsts_of = |src: &str| {
+        lower_maybe(src).expect("lowers").funcs[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .find_map(|i| match &i.kind {
+                InstKind::Opaque {
+                    dsts,
+                    why: OpaqueReason::UnmodeledBuiltin(_),
+                    ..
+                } => Some(dsts.len()),
+                _ => None,
+            })
+            .expect("an opaque effect")
+    };
+    // Both are `int` to sema today, the second only because it has no signature to say
+    // otherwise. When signatures land, this row becomes 0 and the `void` arm goes live.
+    assert_eq!(dsts_of("int f(int x) { return __builtin_ctz(x); }"), 1);
+    assert_eq!(
+        dsts_of("void f(void *p) { __builtin_prefetch(p); }"),
+        1,
+        "sema has no builtin signatures, so even a `void` builtin is typed `int`"
+    );
 }
 
 /// **A genuinely undeclared function is still refused.** The exemption is the three prefixes gcc
@@ -101,7 +129,9 @@ fn an_ordinary_undeclared_call_is_still_refused() {
     // assertion is that the function was refused — not that the message names the callee.
     let raw = lower_raw("int f(int x) { return nonesuch_zz(x); }");
     assert!(
-        raw.diagnostics.iter().any(|d| d.message.contains("skipped")),
+        raw.diagnostics
+            .iter()
+            .any(|d| d.message.contains("skipped")),
         "an undeclared name is not a builtin and is still refused: {:?}",
         raw.diagnostics
     );

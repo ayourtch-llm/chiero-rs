@@ -2762,6 +2762,78 @@ impl Lowerer<'_> {
                     );
                     return Operand::Value(dst);
                 }
+                // **A builtin nothing declares and nothing above models is an opaque effect,
+                // not a reason to discard the function** (020 §4.3).
+                //
+                // sema accepts an undeclared `__builtin_*`/`__atomic_*`/`__sync_*` call and has
+                // to — `stdarg.h` is `#define va_start(v,l) __builtin_va_start(v,l)`. Lowering
+                // then had no declaration to emit a call *to*, reported "call to undeclared
+                // function", and 015 §7 refused the whole function. gcc's `ia32intrin.h` defines
+                // `__bsfd` as `__builtin_ctz`, so **24 of the first 30 VPP translation units
+                // were lost this way** — invisible until 7e9501e put lowering in the sweep.
+                //
+                // `OpaqueReason::UnmodeledBuiltin` has been in CIR since 020 was written and had
+                // no producer at all, exactly as the floating classification opcodes above did.
+                //
+                // **The floor, not the destination.** Each builtin modelled exactly — the arms
+                // above, and the Tier 1/2 tables in HANDOFF §9 — is one fewer approximation, and
+                // the reason to prefer modelling is not precision: `__builtin_ctz(0)` is
+                // *undefined behaviour* that VPP reaches, and an opaque effect discards a defect
+                // class this project exists to report.
+                //
+                // Only for a name nothing declared: `int __builtin_ctz(int); …` is an ordinary
+                // call and must stay one.
+                if let chiero_ast::ExprKind::Ident(n) = self.ast.expr(*callee).kind
+                    && let Some(name) = self.names.text(n)
+                    && is_compiler_builtin(name)
+                    && !self.module.funcs.iter().any(|f| *f.name == *name)
+                    && !self.fs().locals.contains_key(&n)
+                    && !self.globals.contains_key(&n)
+                {
+                    let name = name.to_owned();
+                    // Arguments are still evaluated, left to right: they may have effects, and
+                    // an effect that did not read them would let a later pass call them dead.
+                    let reads: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
+                    // **A `void` builtin defines nothing.** `width_of` answers `None` there, and
+                    // inventing a result would put a value in the tree that C says does not
+                    // exist.
+                    let dsts = match self.type_of(e) {
+                        Some(t) if !matches!(self.analysis.ty(t), chiero_sema::Ty::Void) => {
+                            let cty = self.cty(t);
+                            vec![(self.new_value(), cty)]
+                        }
+                        _ => Vec::new(),
+                    };
+                    let out = dsts.first().map(|(v, _)| Operand::Value(*v));
+                    self.emit(
+                        InstKind::Opaque {
+                            dsts,
+                            // **Conservative on memory, deliberately.** A builtin taking a
+                            // pointer may write through it; claiming otherwise is the unsound
+                            // direction, and unsound here means a confident wrong answer rather
+                            // than a gap. Every pointer argument is treated as clobbered.
+                            writes: reads
+                                .iter()
+                                .zip(args.iter())
+                                .filter(|(_, a)| {
+                                    self.type_of(**a).is_some_and(|t| {
+                                        matches!(self.analysis.ty(t), chiero_sema::Ty::Ptr(_))
+                                    })
+                                })
+                                .map(|(op, _)| chiero_cir::OpaqueWrite {
+                                    addr: op.clone(),
+                                    size: Operand::Const(Const::Undef(CTy::Int(64))),
+                                })
+                                .collect(),
+                            reads,
+                            why: chiero_cir::OpaqueReason::UnmodeledBuiltin(std::sync::Arc::from(
+                                &*name,
+                            )),
+                        },
+                        span,
+                    );
+                    return out.unwrap_or(Operand::Const(Const::Undef(CTy::Int(32))));
+                }
                 // Arguments left to right, **then** the call (015 §2.5).
                 let mut ops: Vec<Operand> = args.iter().map(|&a| self.expr(a)).collect();
                 let fid = self.callee_of(*callee);
@@ -6841,4 +6913,16 @@ fn conflicts(acc: &[(chiero_span::Symbol, Access)]) -> bool {
         }
     }
     false
+}
+
+/// The three families gcc declares nothing for, mirroring sema's `is_compiler_builtin`.
+///
+/// **Duplicated rather than shared, and the duplication is the smaller cost.** sema's copy is
+/// private and exporting it would put a lexical predicate on that crate's public surface; the
+/// two must agree, and the fixture in `unmodeled_builtin.rs` covering `__atomic_` and `__sync_`
+/// is what notices if they drift. The prefix match is deliberately exact — `atomic_load_n`
+/// without the underscores is an ordinary undeclared name, and a looser test would turn a typo
+/// into a silent approximation.
+fn is_compiler_builtin(name: &str) -> bool {
+    name.starts_with("__builtin_") || name.starts_with("__atomic_") || name.starts_with("__sync_")
 }
