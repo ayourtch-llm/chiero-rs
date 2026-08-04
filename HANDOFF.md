@@ -630,6 +630,27 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > That is two compensations for one missing adjustment, and the second was a live corpus defect
 > for as long as it went unwritten. A third site will eventually be missed the same way.
 >
+> ⚠️⚠️ **UPGRADED: this is not debt, it is a wrong answer.** Measured 2026-08-04, gcc 13.3.0
+> against chiero at a46bf70:
+>
+> | source | gcc gnu11 + pedantic | chiero |
+> |---|---|---|
+> | `int f(int argc, char *argv[]){ argv++; }` | OK | `` `++` needs a scalar operand `` |
+> | `int f(op_t *ops[], int i){ ops += i; }` | OK | `assignment to an array` |
+> | `int f(int argc, char *argv[]){ argv = argv + 1; }` | OK | `assignment to an array` |
+> | `int f(int p[4]){ sizeof p }` | **8** | **16 — silently** |
+>
+> The last row is the one that matters. The three above it are spurious diagnostics, which
+> announce themselves. `sizeof p` is a **wrong value with no diagnostic**, and it is the input to
+> layout and to 021's memory model — every offset computed from an array-typed parameter is
+> wrong, and nothing in the corpus sweep can see it. A sweep that reports 99.5% clean is not
+> evidence against this: the sweep only reports diagnostics.
+>
+> **It is also not one finding.** It is 3 of the 10 remaining, across *two* diagnostic kinds
+> (`assignment to an array` ×2 at `aes_cbc.c:77`, `` `++` needs a scalar operand `` ×1 at
+> `vppctl.c:191`), which is why the queue table never showed it as one class. Counting message
+> kinds hid a class of three.
+>
 > ⚠️ **This is no longer speculative debt — it has a corpus finding forcing it.** The note below
 > was written predicting "a third site will eventually be missed the same way". The third site
 > was already in the queue when that sentence was written: `crypto_engines/native/aes_cbc.c:77`
