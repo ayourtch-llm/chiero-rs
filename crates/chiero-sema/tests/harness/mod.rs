@@ -4,7 +4,7 @@
 
 use chiero_parse::{ParsedTu, ScopedTypedefs, parse_tu};
 use chiero_pp::{Config, preprocess_str};
-use chiero_sema::{Analysis, RecordLayout, SymbolText, TargetConfig, TyId, analyze};
+use chiero_sema::{Analysis, RecordLayout, SymbolText, TargetConfig, TyId, analyze, analyze_with};
 use chiero_span::Symbol;
 
 /// A parsed and analysed TU, with the symbol table needed to read names back.
@@ -155,7 +155,18 @@ pub fn corpus_analyses() -> Option<Vec<(&'static str, Parsed)>> {
             "{seed}: {:?}",
             parsed.diagnostics
         );
-        let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &Names(&parsed));
+        // **The corpus is judged in the dialect VPP builds with.** It is real GNU C —
+        // `__int128` in `vppinfra/types.h`, and more besides — so under the strict dialect it
+        // legitimately produces diagnostics that `gcc -std=gnu11` does not. The premise this
+        // corpus tests is written in its own doc comment: "shipped C that gcc compiles without
+        // complaint". That premise is a `gnu11` one, and was implicit until the strict dialect
+        // started reporting the extensions it names.
+        let analysis = analyze_with(
+            &parsed.ast,
+            &TargetConfig::x86_64_linux(),
+            &Names(&parsed),
+            chiero_ast::Dialect::gnu(),
+        );
         out.push((*seed, Parsed { parsed, analysis }));
     }
     Some(out)

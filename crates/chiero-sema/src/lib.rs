@@ -2382,6 +2382,19 @@ impl Cx<'_> {
         let node = self.ast.ty(ty).clone();
         match node.kind {
             TypeKind::Builtin(b) => {
+                // **A GNU extension is supported *and* reported under the strict dialect.**
+                // `gcc -pedantic-errors` refuses `__int128` ("ISO C does not support"), and
+                // wave 314 calibrates the default dialect to that; 013's construct table calls
+                // the type required at VPP scale, so support is unconditional and only the
+                // sentence follows the dialect. 100 of the first strict sweep's 104 misses.
+                if self.dialect.pedantic
+                    && matches!(
+                        b,
+                        chiero_ast::Builtin::Int128 | chiero_ast::Builtin::UInt128
+                    )
+                {
+                    self.error(node.span, "ISO C does not support `__int128` types");
+                }
                 let t = self.builtin(b);
                 self.intern(t)
             }

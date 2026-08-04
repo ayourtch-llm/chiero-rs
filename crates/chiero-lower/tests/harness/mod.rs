@@ -5,7 +5,7 @@
 use chiero_cir::Module;
 use chiero_parse::{ParsedTu, ScopedTypedefs, parse_tu};
 use chiero_pp::{Config, preprocess_str};
-use chiero_sema::{SymbolText, TargetConfig, analyze};
+use chiero_sema::{SymbolText, TargetConfig, analyze, analyze_with};
 use chiero_span::Symbol;
 
 struct Names<'a>(&'a ParsedTu);
@@ -37,7 +37,16 @@ pub fn lower(src: &str) -> Module {
         parsed.diagnostics
     );
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     assert!(
         analysis.diagnostics.is_empty(),
         "and analyse cleanly, or lowering is being graded on a broken tree: {:?}",
@@ -80,7 +89,16 @@ pub fn lower_file(
     let parsed = parse_tu(&tu, &mut oracle);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     assert!(
         analysis.diagnostics.is_empty(),
         "{:?}",
@@ -118,7 +136,16 @@ pub fn lower_raw(src: &str) -> chiero_lower::Lowered {
     let mut oracle = ScopedTypedefs::new();
     let parsed = parse_tu(&tu, &mut oracle);
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     chiero_lower::lower_tu(&parsed.ast, &analysis, &names)
 }
 
@@ -153,7 +180,16 @@ pub fn lower_with_config(
     let parsed = parse_tu(&tu, &mut oracle);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     assert!(
         analysis.diagnostics.is_empty(),
         "{:?}",
@@ -180,6 +216,10 @@ pub fn lower_diverging(src: &str, expect: &str) -> Module {
     let parsed = parse_tu(&tu, &mut oracle);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let names = Names(&parsed);
+    // **This one stays strict**, unlike the harness entry points above. Its whole subject is a
+    // divergence sema is *expected to report* — the enumerator-range rule among them — and
+    // several of those are exactly the rules the permissive dialect gates. Judging it in
+    // `gnu()` would assert that a diagnostic appears in the mode built to suppress it.
     let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
     let msgs: Vec<&str> = analysis
         .diagnostics
@@ -217,7 +257,16 @@ pub fn lower_maybe(src: &str) -> Option<Module> {
         return None;
     }
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     if !analysis.diagnostics.is_empty() {
         return None;
     }
@@ -244,7 +293,16 @@ pub fn lower_maybe_with_map(src: &str) -> Option<(Module, chiero_span::SourceMap
         return None;
     }
     let names = Names(&parsed);
-    let analysis = analyze(&parsed.ast, &TargetConfig::x86_64_linux(), &names);
+    let analysis = analyze_with(
+        &parsed.ast,
+        &TargetConfig::x86_64_linux(),
+        &names,
+        // **Fixtures are judged in the dialect they are written in.** They are GNU C — two
+        // use `__int128` — and the clean-sema assertion exists only so lowering is not
+        // graded on a tree sema already rejected. The strict dialect now reports extensions
+        // it still supports, which is a statement about ISO C, not about these fixtures.
+        chiero_ast::Dialect::gnu(),
+    );
     if !analysis.diagnostics.is_empty() {
         return None;
     }
