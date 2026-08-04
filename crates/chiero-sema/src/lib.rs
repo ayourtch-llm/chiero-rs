@@ -4930,6 +4930,28 @@ impl Cx<'_> {
         if self.bare(self.out.typed.ty_of(node)) == self.bare(to) {
             return node;
         }
+        // **Poison converts to nothing** (contract 20). A conversion *from* `Ty::Error` claims a
+        // width change no operand has: the `Cast` pushed here declares a source type the value
+        // does not carry, and 015 lowers it as a real instruction on top of whatever the
+        // expression itself already emitted.
+        //
+        // `(long) __builtin_ctz(x)` produced `zext i32 -> i64` **twice** — once from lowering's
+        // explicit-cast arm and once from this node — and the verifier rejected the function,
+        // which discarded it. That was 29 of the first 35 VPP translation units, reached through
+        // gcc's `avx512fintrin.h`, whose every masked intrinsic is
+        // `(__mmask16) __builtin_ia32_ptestmd512 (…)`.
+        //
+        // **Typing the builtins instead was tried and is wrong.** A blanket implicit-`int` makes
+        // `__builtin_alloca` return an integer and the `__builtin_ia32_*` family return scalars,
+        // so `vppinfra`'s own headers began reporting "returning a value makes a pointer from an
+        // integer". Real signatures are Tier 1/2 of the plan in HANDOFF §9; until then the type
+        // is honestly unknown, and the fix is to stop *converting* the unknown.
+        if matches!(
+            self.out.types[self.out.typed.ty_of(node).0 as usize],
+            Ty::Error
+        ) {
+            return node;
+        }
         self.push_typed(TypedNode::Cast {
             operand: node,
             ty: to,

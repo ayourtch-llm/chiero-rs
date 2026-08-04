@@ -297,3 +297,41 @@ fn a_block_scope_function_declaration_lowers_to_nothing() {
         "the block-scope declaration is in the module"
     );
 }
+
+/// **An explicit cast of a builtin call.**
+///
+/// gcc's `avx512fintrin.h` is built from these — every masked intrinsic is
+/// `(__mmask16) __builtin_ia32_ptestmd512 (...)` — and once the builtin, asm and block-scope
+/// gaps closed this was **29 of the first 35** translation units measured.
+///
+/// The root cause was in sema, not here: an undeclared builtin call was typed `Ty::Error`, so
+/// the cast over poison took a `Return` conversion an ordinary call does not, and lowering
+/// emitted a second `zext` on top of `raw_expr`'s own — CIR the verifier rejected, which
+/// discarded the function. Giving the builtin C's implicit declaration (`int ()`) collapses both
+/// casts to the one that was always correct.
+///
+/// **Both directions**, because the defect was never about narrowing: `long` widens and
+/// `unsigned short` narrows, and both failed identically.
+#[test]
+fn an_explicit_cast_of_a_builtin_call_lowers() {
+    for src in [
+        "unsigned short f(int x) { return (unsigned short) __builtin_ctz(x); }",
+        "long f(int x) { return (long) __builtin_ctz(x); }",
+        // The `avx512fintrin.h` shape: a cast of a builtin taking several arguments.
+        "unsigned short f(int a, int b) { return (unsigned short) __builtin_ia32_ptestmd512(a, b, 1); }",
+    ] {
+        let raw = lower_raw(src);
+        assert!(
+            raw.diagnostics.is_empty(),
+            "the cast lowers once, not twice: {src} -> {:?}",
+            raw.diagnostics
+        );
+        assert!(
+            lower_maybe(src)
+                .expect("lowers")
+                .funcs
+                .iter()
+                .any(|f| &*f.name == "f")
+        );
+    }
+}
