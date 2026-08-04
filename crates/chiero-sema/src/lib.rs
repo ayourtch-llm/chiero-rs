@@ -3006,15 +3006,39 @@ impl Cx<'_> {
                         // by the suite. The fallback is kept — an enumeration that stopped
                         // resolving would cascade into every use of its type, exactly as for an
                         // array bound — but it is now announced, unless something already has.
-                        None => {
-                            if !explained {
-                                self.error(
-                                    self.ast.expr(e).span,
-                                    "enumerator value is not an integer constant expression",
-                                );
+                        None => match self.fold_arith(e) {
+                            // **Foldable as an *arithmetic* constant expression (6.6p8) but
+                            // not an integer one (6.6p6).** Measured: `gnu11` folds
+                            // `(u32)(1/0.01)` silently, `-pedantic-errors` reports exactly
+                            // this sentence tagged `[-Wpedantic]`. 11 findings through
+                            // `plugins/wireguard/wireguard_messages.h`.
+                            //
+                            // The value is folded in **both** dialects: silencing the message
+                            // and leaving `next` behind would hand back 6 where gcc says 33,
+                            // with nothing said at all.
+                            Some(f) => {
+                                if !explained && self.dialect.pedantic {
+                                    self.error(
+                                        self.ast.expr(e).span,
+                                        "enumerator value is not an integer constant expression",
+                                    );
+                                }
+                                f.trunc() as i128
                             }
-                            next
-                        }
+                            // **Not a constant at all** — a variable, a call. gcc refuses
+                            // that under `gnu11` too, so the dialect does not enter. One
+                            // sentence, two causes; only the foldable one is a calibration
+                            // question.
+                            None => {
+                                if !explained {
+                                    self.error(
+                                        self.ast.expr(e).span,
+                                        "enumerator value is not an integer constant expression",
+                                    );
+                                }
+                                next
+                            }
+                        },
                     }
                 }
                 None => next,
@@ -3631,6 +3655,57 @@ impl Cx<'_> {
             }
         }
         best
+    }
+
+    /// Fold an **arithmetic** constant expression to a double (C 6.6p8).
+    ///
+    /// Deliberately *not* part of [`Self::eval`], which answers "is this an **integer**
+    /// constant expression" (6.6p6) — there, a floating operand counts only as a cast's
+    /// immediate operand, and recursing would wrongly accept `case (int)(1.5 + 2.5):`. 6.6p8
+    /// is the weaker rule an enumerator and an initializer may use, and it is what `gnu11`
+    /// applies when it folds `(u32)(1/0.01)` to 100.
+    fn fold_arith(&mut self, expr: ExprId) -> Option<f64> {
+        match self.ast.expr(expr).kind.clone() {
+            ExprKind::Number(sym) => {
+                let text = self.text(sym)?.to_owned();
+                match float_literal(&text) {
+                    Some((_, f)) => Some(f),
+                    None => parse_int_literal(&text, &self.target).map(|v| v.v as f64),
+                }
+            }
+            ExprKind::Unary { op, operand } => {
+                let v = self.fold_arith(operand)?;
+                match op {
+                    UnOp::Minus => Some(-v),
+                    UnOp::Plus => Some(v),
+                    _ => None,
+                }
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let (a, b) = (self.fold_arith(lhs)?, self.fold_arith(rhs)?);
+                match op {
+                    BinOp::Add => Some(a + b),
+                    BinOp::Sub => Some(a - b),
+                    BinOp::Mul => Some(a * b),
+                    // A division by zero is undefined, not zero: refuse rather than invent.
+                    BinOp::Div if b != 0.0 => Some(a / b),
+                    _ => None,
+                }
+            }
+            // A cast to an integer type truncates toward zero, as C requires, and the result
+            // stays in the double channel so an enclosing expression keeps folding.
+            ExprKind::Cast { ty, operand } => {
+                let t = self.ty_of(ty);
+                let v = self.fold_arith(operand)?;
+                match self.out.types.get(t.0 as usize) {
+                    Some(Ty::Int { .. }) => Some(v.trunc()),
+                    Some(Ty::Float(_)) => Some(v),
+                    _ => None,
+                }
+            }
+            ExprKind::Ident(sym) => self.enumerators.get(&sym).copied().map(|v| v as f64),
+            _ => None,
+        }
     }
 
     /// The `n` of `__attribute__((aligned(n)))` on a syntactic type node.
