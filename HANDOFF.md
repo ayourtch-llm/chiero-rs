@@ -487,44 +487,51 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 439) — 1662 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 442) — 1664 tests, 4 ignored, M1 268/268 by contract
 >
-> ### 🎯 FULL VPP SWEEP — 1552 files. Three real defects found, all fixed
+> ### 🎯 FULL VPP SWEEP — 1552 files, four rounds
 >
 > ```
 > cargo run --release -p xtask -- sweep --tree <vpp>/src \
 >     -I <vpp>/src -I <vpp>/src/plugins -I <gen> --std gnu11 --gnu
 > ```
 >
-> | sweep | findings | dominant kind |
-> |---|---|---|
-> | 1st | 884 | **871** × `1 << 31` "signed overflow" |
-> | 2nd (after fix) | 879 | **867** × inner-block declaration escaping its block |
-> | 3rd | *not yet run* — **run it** |
+> | round | findings | agree | coverage | dominant kind, and what it was |
+> |---|---|---|---|---|
+> | 1 | 884 | 127 | 99.4% | **871** `1 << 31` — real defect |
+> | 2 | 879 | 132 | 99.4% | **867** inner-block declaration escaping — real defect |
+> | 3 | 755 | 256 | 99.5% | **735** `return void_expr;` in a `void` fn — pedantic |
+> | 4 | *running* | | | **run it and read it** |
 >
-> **parser coverage 99.4%** (1016 of 1022 handed), **0 misses**, 528 tool gaps (missing
-> generated `.api` headers — widen `gen/`).
+> **misses: 0 throughout.** 528 tool gaps (missing generated `.api` headers — widen `gen/`).
 >
-> Fixed this stretch:
+> ### 🆕 `Outcome::Warned` / `Bucket::SeverityMismatch`
 >
-> 1. **`1 << 31` is not an overflow.** `gnu11` *and* `-pedantic-errors` both accept it; C
->    6.5.7p4 makes it UB, so the rule was right about ISO C and wrong about the job. Truncate
->    in the `Shl` arm. Refused in **neither** dialect — gating would have hidden it under
->    `--gnu` and left 871 false findings in the default mode.
-> 2. **Object names were not block-scoped.** `Cx::values` was a flat `IndexMap`, so an inner
->    declaration overwrote the outer and nothing restored it. Now `ScopedTypes`, matching the
->    `ScopedMeanings`/`ScopedNames` beside it. *The tell was a `values.clone()` per function* —
->    a clone is what you write when the structure cannot express the operation.
-> 3. **`declare_outer` discarded the prototype scope.** Pop-declare-push threw away every
->    parameter, so a parameter shadowing a typedef stopped shadowing it when the body began —
->    the only parse failure in 1552 files (`plugins/acl/hash_lookup.c`, `u64 word` against
->    `typedef i64 word`). `TypedefOracle` gained `declare_enclosing`.
+> `gcc_outcome` read the **exit status**, so a file gcc compiled *with warnings* counted as
+> `Clean` and every chiero diagnostic on it looked like an over-rejection. Two findings were
+> that: VPP redefines `MFD_CLOEXEC` (`0x0001U` vs glibc `1U`) and `ELF_NOTE_ABI` (`1` vs
+> `NT_GNU_ABI_TAG`) non-identically — C 6.10.3p2 forbids it, **both compilers were right**.
+>
+> * gcc silent + chiero complained → `Finding` (a bug to fix in chiero)
+> * gcc **warned** + chiero complained → `SeverityMismatch` (a warning-level policy question)
+> * gcc **warned** + chiero silent → `Miss` — a warning is a diagnostic
+>
+> ### ⚠️ Why that bucket had to exist before the next gate
+>
+> The 735 `return` findings split: `return void_expr;` is accepted **silently** by `gnu11`;
+> `return 5;` is **warned** about. Gating the whole rule removes all 735 either way and *looks
+> identical*. But chiero has no warning level, so silencing the value case says nothing where
+> gcc speaks — turning a finding into a **`Miss`**, spending the sweep's strongest claim to buy
+> a number. Only the void-typed half is gated.
+>
+> **Before `Warned` existed, "gcc exits zero" and "gcc is silent" were the same observation.**
+> Whenever a gate is proposed, check which of the two it actually rests on.
 >
 > ### ⚠️ A dominant finding is a lid, not a summary
 >
 > The report shows **one diagnostic per file**, so the largest category hides everything under
-> it. Three times now: the enumerator rule hid `1 << 31`, which hid the block-scoping bug.
-> **Re-sweep after every fix or gate.** Assume the tail is unknown, never unchanged.
+> it. Four rounds, four different dominant kinds, two of them real defects that were invisible
+> until the category above was removed. **Re-sweep after every fix or gate.**
 >
 > ### ⚠️ A test can pass for the wrong reason
 >
