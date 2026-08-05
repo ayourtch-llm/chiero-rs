@@ -896,9 +896,38 @@ typing the paths ever would.
 > - **§3's refinement** (contracts 5–8), which needs the solver and is where precision finally
 >   comes from — §3.2: "not from pretending the impact is smaller".
 >
-> ⚠️ **The two evaluation gates (18, 19) are the real bar**: 100% recall on a historical-replay
-> corpus, and 100% recall over N macro-body mutations. A single miss fails them. Neither exists
-> yet, and nothing in 032 should be called finished until they do.
+> ### 🎯 THE MUTATION GATE PASSES — the premise, measured (54a7ef6)
+>
+> ```
+> cargo run -p xtask -- mutation-gate
+>
+>   chiero recall        100.0%  (12/12)
+>   coverage-only recall   0.0%  (0/12)
+>   reduction             50.0%  (12 of 24 case-selections avoided)
+> ```
+>
+> Six macro-body mutations in a header, no `.c` touched. **The ground truth is observed, not
+> assumed**: each mutation is applied, the suite rebuilt and rerun, and the tests whose result
+> changed are the ones that would have caught it.
+>
+> **The coverage-only baseline is implemented, not asserted** — 032 §6 requires exactly that, "so
+> every report can state the delta chiero adds rather than asserting it". Its 0% comes from
+> looking up the macro's definition line in a real gcc-built index and finding nothing. That is
+> 030 §1's measurement arriving as a number in a report.
+>
+> ⚠️ **Two harness bugs, both caught by the gate's own output**, and both instructive:
+>
+> 1. the ingest found nothing — gcc names a one-step compile-and-link's notes `<output>-<source>`
+>    (`t_scaled-lib.gcno`, not `lib.gcno`). It failed *loudly* with "the baseline is not measured"
+>    rather than quietly reporting 0% for the wrong reason, which is the only reason it was seen.
+> 2. chiero selected all four cases every time, so reduction was 0%. **A recall gate that selects
+>    everything is satisfied and worthless** — precisely why contract 20 insists both numbers
+>    appear together.
+>
+> ⏭️ **Contract 18, the historical-replay gate, does not exist.** It is the ground-truth oracle and
+> "the one that would catch a real design flaw" (§6). It needs VPP commits with a known test
+> failure, and VPP's suite needs root and network namespaces — so the first question is what can
+> actually be run here, not how to write the harness.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
