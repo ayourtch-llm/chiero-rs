@@ -498,25 +498,34 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                         let block = c.u32().ok_or_else(|| short("line block"))?;
                         let mut file = String::new();
                         let mut lines: Vec<u32> = Vec::new();
+                        // **A group with no lines is still a group**, and gcc writes them: it
+                        // emits a filename alone when the file changes but the line number does
+                        // not, which is what a call inlined from a header whose body sits on the
+                        // call site's own line number looks like. gcov keeps it, and because its
+                        // `line` pointer persists across a block's groups, the empty one
+                        // attributes the block to the previous group's last line a **second**
+                        // time — counting that block's entry arcs twice. Dropping it undercounts.
+                        //
+                        // `open` is what distinguishes "no lines yet" from "a group that has no
+                        // lines": nothing is pushed before the first filename marker.
+                        let mut open = false;
                         let flush =
                             |file: &str, lines: &mut Vec<u32>, out: &mut Vec<BlockLines>| {
-                                if !lines.is_empty() {
-                                    // **Sorted, as gcov sorts it** (`gcc/gcov.cc` ~1413, the pass
-                                    // that sizes each source's line vector) — because the block is
-                                    // then attributed to the group's *last* entry, which makes it
-                                    // the greatest line rather than the last one written. The two
-                                    // differ wherever a call is inlined: the block holding the
-                                    // call carries the callee's lower line numbers after it, so
-                                    // the unsorted last entry is a line inside a function that
-                                    // block is not in. Duplicates stay — gcov sorts, it does not
-                                    // deduplicate, and a line listed twice is accumulated twice.
-                                    lines.sort_unstable();
-                                    out.push(BlockLines {
-                                        block,
-                                        file: file.to_string(),
-                                        lines: std::mem::take(lines),
-                                    });
-                                }
+                                // **Sorted, as gcov sorts it** (`gcc/gcov.cc` ~1413, the pass that
+                                // sizes each source's line vector) — because the block is then
+                                // attributed to the group's *last* entry, which makes it the
+                                // greatest line rather than the last one written. The two differ
+                                // wherever a call is inlined: the block holding the call carries
+                                // the callee's lower line numbers after it, so the unsorted last
+                                // entry is a line inside a function that block is not in.
+                                // Duplicates stay — gcov sorts, it does not deduplicate, and a
+                                // line listed twice is accumulated twice.
+                                lines.sort_unstable();
+                                out.push(BlockLines {
+                                    block,
+                                    file: file.to_string(),
+                                    lines: std::mem::take(lines),
+                                });
                             };
                         while let Some(v) = c.u32() {
                             if v != 0 {
@@ -524,13 +533,19 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                                 continue;
                             }
                             let name = c.string().ok_or_else(|| short("line file name"))?;
-                            flush(&file, &mut lines, &mut f.lines);
+                            if open {
+                                flush(&file, &mut lines, &mut f.lines);
+                            }
                             if name.is_empty() {
+                                open = false;
                                 break;
                             }
                             file = name;
+                            open = true;
                         }
-                        flush(&file, &mut lines, &mut f.lines);
+                        if open {
+                            flush(&file, &mut lines, &mut f.lines);
+                        }
                     }
                     _ => unreachable!("the arm matched these three tags"),
                 }
