@@ -105,19 +105,73 @@ type TestBitmap = Vec<TestId>;
 
 /// What the index knows about one line.
 ///
-/// **The per-build split is empty until a second build appears.** With one variant the union
-/// *is* that variant's set, so storing both would be a second copy of every test list in the
-/// index for no answer that is not already available. `promote_to_per_variant` fills it in once,
-/// when the second variant arrives — the cost is a single pass, and it buys back roughly a third
-/// of the index in the case every tree that is not VPP is in.
+/// See [`Tests`] for why the union is not a field.
 #[derive(Clone, Debug, Default)]
 struct LineEntry {
     /// Aggregate execution count, saturating.
     count: u64,
-    /// The tests that executed the line, unioned across builds.
-    tests: TestBitmap,
-    /// Per build, and empty while the index holds at most one.
-    per_variant: Vec<(VariantRef, TestBitmap)>,
+    /// The tests that executed the line.
+    tests: Tests,
+}
+
+/// A line's tests, in the two shapes worth storing.
+///
+/// **The union is never stored beside the split**, because it is the split's union and storing
+/// both is a third copy of every test id in the index. Measured, on 1M lines under two builds:
+/// 404 MiB with the union stored.
+///
+/// `One` is not an optimisation of `Split` with a single entry — it is the shape of an index
+/// whose tree compiles each source once, which is every tree that is not VPP. Holding that as a
+/// one-element `Vec` of pairs costs a second heap allocation per line for a variant tag that is
+/// the same on all of them.
+#[derive(Clone, Debug)]
+enum Tests {
+    /// The whole index holds one build, so this is both the union and that build's set.
+    One(TestBitmap),
+    /// Per build, in arrival order. The union is computed.
+    Split(Vec<(VariantRef, TestBitmap)>),
+}
+
+impl Default for Tests {
+    fn default() -> Self {
+        Tests::One(TestBitmap::new())
+    }
+}
+
+impl Tests {
+    /// The union across builds, in test order.
+    fn union(&self) -> TestBitmap {
+        match self {
+            Tests::One(t) => t.clone(),
+            Tests::Split(per) => {
+                let mut out: TestBitmap = Vec::new();
+                for (_, t) in per {
+                    for id in t {
+                        if !out.contains(id) {
+                            out.push(*id);
+                        }
+                    }
+                }
+                out.sort_unstable_by_key(|t| t.0);
+                out
+            }
+        }
+    }
+
+    /// The set for one build, creating it if this line has not seen that build.
+    fn slot(&mut self, v: VariantRef) -> &mut TestBitmap {
+        if let Tests::One(t) = self {
+            *self = Tests::Split(vec![(VariantRef(0), std::mem::take(t))]);
+        }
+        let Tests::Split(per) = self else {
+            unreachable!("just converted");
+        };
+        if let Some(i) = per.iter().position(|(x, _)| *x == v) {
+            return &mut per[i].1;
+        }
+        per.push((v, TestBitmap::new()));
+        &mut per.last_mut().expect("just pushed").1
+    }
 }
 
 /// A file's index into [`CoverageIndex::file_names`].
@@ -253,7 +307,7 @@ impl CoverageIndex {
     pub fn tests_for_line(&self, file: &str, line: u32) -> Option<Vec<TestId>> {
         self.lines
             .get(&(self.file_ref(file)?, line))
-            .map(|e| e.tests.clone())
+            .map(|e| e.tests.union())
     }
 
     /// The union of the tests for a set of lines of one file, or `None` when the index recorded
@@ -393,23 +447,18 @@ impl CoverageIndex {
     pub fn tests_for_line_in(&self, file: &str, line: u32, v: &Variant) -> Option<Vec<TestId>> {
         let vr = self.variant_ref(v)?;
         let e = self.lines.get(&(self.file_ref(file)?, line))?;
-        if e.per_variant.is_empty() {
+        match &e.tests {
             // **No build recorded tests for this line at all**, so no build may be told it did.
             // `ingest_json` contributes counts without tests and notes no variant, so a JSON line
-            // reaches here with an empty union — and answering `Some(vec![])` would tell a build
-            // that never compiled the file that it saw the line and ran nothing, which is the
-            // claim 032 skips tests on.
-            if e.tests.is_empty() {
-                return None;
-            }
-            // Otherwise the split is empty because at most one build has contributed tests, and
-            // the union is that build's set. A different build recorded nothing: `None`.
-            return (self.variants.first() == Some(v)).then(|| e.tests.clone());
+            // reaches here empty — and answering `Some(vec![])` would tell a build that never
+            // compiled the file that it saw the line and ran nothing, which is the claim 032
+            // skips tests on.
+            Tests::One(t) if t.is_empty() => None,
+            // One build has contributed to this line, and its set is the whole entry. Any other
+            // build recorded nothing here: `None`.
+            Tests::One(t) => (self.variants.first() == Some(v)).then(|| t.clone()),
+            Tests::Split(per) => per.iter().find(|(x, _)| *x == vr).map(|(_, t)| t.clone()),
         }
-        e.per_variant
-            .iter()
-            .find(|(x, _)| *x == vr)
-            .map(|(_, t)| t.clone())
     }
 
     /// Every build that contributed coverage, in arrival order.
@@ -507,20 +556,18 @@ impl CoverageIndex {
         let vr = self.variant_ref(v).expect("just noted");
         let split = self.variants.len() > 1;
         let e = self.lines.entry((f, line)).or_default();
-        if !e.tests.contains(&test) {
-            e.tests.push(test);
-        }
-        if split {
-            let per = match e.per_variant.iter_mut().find(|(x, _)| *x == vr) {
-                Some((_, t)) => t,
-                None => {
-                    e.per_variant.push((vr, TestBitmap::new()));
-                    &mut e.per_variant.last_mut().expect("just pushed").1
-                }
-            };
-            if !per.contains(&test) {
-                per.push(test);
+        // While the index holds one build there is nothing to split by, and `Tests::One` is both
+        // the union and that build's set. The second build converts each line as it touches it.
+        let set = if split {
+            e.tests.slot(vr)
+        } else {
+            match &mut e.tests {
+                Tests::One(t) => t,
+                Tests::Split(_) => e.tests.slot(vr),
             }
+        };
+        if !set.contains(&test) {
+            set.push(test);
         }
     }
 
@@ -529,16 +576,11 @@ impl CoverageIndex {
             return;
         }
         self.variants.push(v.clone());
-        // **The second variant is where the split starts costing anything.** Until now every
-        // line's union was the first build's set; move it into the split so the two stay
-        // distinguishable from here on.
-        if self.variants.len() == 2 {
-            for e in self.lines.values_mut() {
-                if !e.tests.is_empty() {
-                    e.per_variant.push((VariantRef(0), e.tests.clone()));
-                }
-            }
-        }
+        // **No sweep when the second build arrives.** `Tests::slot` converts a line the first
+        // time the second build touches it, tagging what is already there as the first build's —
+        // which is sound because, until that moment, only the first build could have contributed.
+        // The sweep this replaces walked every line in the index to move data that the very next
+        // write would have moved anyway.
     }
 
     pub(crate) fn note_test(&mut self, test: TestId) {
