@@ -501,6 +501,16 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                         let flush =
                             |file: &str, lines: &mut Vec<u32>, out: &mut Vec<BlockLines>| {
                                 if !lines.is_empty() {
+                                    // **Sorted, as gcov sorts it** (`gcc/gcov.cc` ~1413, the pass
+                                    // that sizes each source's line vector) — because the block is
+                                    // then attributed to the group's *last* entry, which makes it
+                                    // the greatest line rather than the last one written. The two
+                                    // differ wherever a call is inlined: the block holding the
+                                    // call carries the callee's lower line numbers after it, so
+                                    // the unsorted last entry is a line inside a function that
+                                    // block is not in. Duplicates stay — gcov sorts, it does not
+                                    // deduplicate, and a line listed twice is accumulated twice.
+                                    lines.sort_unstable();
                                     out.push(BlockLines {
                                         block,
                                         file: file.to_string(),
