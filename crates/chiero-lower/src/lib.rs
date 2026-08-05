@@ -6044,6 +6044,51 @@ impl<'a> Lowerer<'a> {
     /// never create the scope's objects, the eventual exit would retire objects that never
     /// existed, and every access on the case path would be a wild access. Any `switch`
     /// with a local has this shape.
+    /// Attach every label stacked on one switch arm to the same block, and answer the statement
+    /// underneath them.
+    ///
+    /// **Consecutive labels share one block.** `case 1: case 2: r = 20;` parses as a `Case` whose
+    /// *body* is another `Case`, so the switch's statement loop never sees the second one — it
+    /// reaches the generic statement path and reports "`case` or `default` outside a switch",
+    /// which 015 §7 turns into refusing the whole function. Every C switch with two labels on one
+    /// arm was unlowerable until this existed, and every one whose group *started* with
+    /// `default:` was unlowerable until both arms used it.
+    fn absorb_labels(
+        &mut self,
+        body: StmtId,
+        b: BlockId,
+        cases: &mut Vec<(i128, BlockId)>,
+        wide_ranges: &mut Vec<(i128, i128, BlockId)>,
+        default: &mut Option<BlockId>,
+    ) -> StmtId {
+        let mut inner = body;
+        loop {
+            match self.ast.stmt(inner).kind.clone() {
+                StmtKind::Case { lo, hi, body: next } => {
+                    let lo_v = self.const_of(lo).unwrap_or(0);
+                    let hi_v = hi.and_then(|h| self.const_of(h)).unwrap_or(lo_v);
+                    // A range past the bound becomes a guard rather than one entry per value,
+                    // for the reason the caller records.
+                    if hi_v.saturating_sub(lo_v) > MAX_ENUMERATED_CASE_RANGE {
+                        wide_ranges.push((lo_v, hi_v, b));
+                    } else {
+                        for v in lo_v..=hi_v.max(lo_v) {
+                            cases.push((v, b));
+                        }
+                    }
+                    inner = next;
+                }
+                // `case 1: default:` and `default: case 1:` are both legal C and land both
+                // labels on this block.
+                StmtKind::Default { body: next } => {
+                    *default = Some(b);
+                    inner = next;
+                }
+                _ => return inner,
+            }
+        }
+    }
+
     fn switch_stmt(&mut self, cond: ExprId, body: StmtId, span: Span) {
         let scrut = self.expr(cond);
         let ty = CTy::Int(self.width_of(cond));
@@ -6117,35 +6162,8 @@ impl<'a> Lowerer<'a> {
                             cases.push((v, b));
                         }
                     }
-                    // **Consecutive labels share one block.** `case 1: case 2: r = 20;`
-                    // parses as a `Case` whose *body* is another `Case`, so the switch's
-                    // statement loop never saw the second one — it reached the generic
-                    // statement path and reported "`case` or `default` outside a switch",
-                    // which 015 §7 turns into refusing the whole function. Every C switch
-                    // with two labels on one arm was unlowerable.
-                    let mut inner = body;
-                    loop {
-                        match self.ast.stmt(inner).kind.clone() {
-                            StmtKind::Case { lo, hi, body: next } => {
-                                let lo_v = self.const_of(lo).unwrap_or(0);
-                                let hi_v = hi.and_then(|h| self.const_of(h)).unwrap_or(lo_v);
-                                if hi_v.saturating_sub(lo_v) > MAX_ENUMERATED_CASE_RANGE {
-                                    wide_ranges.push((lo_v, hi_v, b));
-                                } else {
-                                    for v in lo_v..=hi_v.max(lo_v) {
-                                        cases.push((v, b));
-                                    }
-                                }
-                                inner = next;
-                            }
-                            // `case 1: default:` is legal C and lands both on this block.
-                            StmtKind::Default { body: next } => {
-                                default = Some(b);
-                                inner = next;
-                            }
-                            _ => break,
-                        }
-                    }
+                    let inner =
+                        self.absorb_labels(body, b, &mut cases, &mut wide_ranges, &mut default);
                     self.stmt(inner);
                     cur = Some(self.fs().cur);
                 }
@@ -6164,7 +6182,14 @@ impl<'a> Lowerer<'a> {
                         sspan,
                     );
                     default = Some(b);
-                    self.stmt(body);
+                    // **The same chain the `Case` arm walks.** `default: case 'd':` is how
+                    // `elog_event_type_register` writes its fall-through group, and without
+                    // this the `case` after the `default` reached the generic statement path
+                    // and reported "`case` or `default` outside a switch" — 70 translation
+                    // units, refused whole.
+                    let inner =
+                        self.absorb_labels(body, b, &mut cases, &mut wide_ranges, &mut default);
+                    self.stmt(inner);
                     cur = Some(self.fs().cur);
                 }
                 _ => {
