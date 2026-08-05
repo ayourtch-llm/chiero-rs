@@ -179,3 +179,123 @@ pub fn pair(notes: &Path, data: &Path) -> Result<Pair, IngestError> {
         header: n,
     })
 }
+
+/// The record tags this decoder recognises (030 §4).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Tag {
+    Function,
+    Blocks,
+    Arcs,
+    Lines,
+    CounterArcs,
+    ObjectSummary,
+    /// A tag gcc writes that this decoder has no use for.
+    ///
+    /// **Skipped, not refused.** The stream is self-describing — every record carries its own
+    /// length — so an unrecognised tag costs exactly its own bytes, and refusing one would make
+    /// every future gcc addition a hard failure on data that is otherwise perfectly readable.
+    Other(u32),
+}
+
+impl Tag {
+    fn from_word(w: u32) -> Tag {
+        match w {
+            0x0100_0000 => Tag::Function,
+            0x0141_0000 => Tag::Blocks,
+            0x0143_0000 => Tag::Arcs,
+            0x0145_0000 => Tag::Lines,
+            0x01a1_0000 => Tag::CounterArcs,
+            0xa100_0000 => Tag::ObjectSummary,
+            other => Tag::Other(other),
+        }
+    }
+}
+
+/// One record of the stream: a tag and its payload bytes.
+#[derive(Clone, Debug)]
+pub struct Record {
+    pub tag: Tag,
+    /// The offset the record's *tag* sits at, for a diagnostic that can be checked with `xxd`.
+    pub at: usize,
+    pub payload: Vec<u8>,
+}
+
+/// Where the records begin, which is not the same in the two artifacts.
+///
+/// A `.gcno` carries the working directory as a length-prefixed string plus a flag word after the
+/// four header words; a `.gcda` goes straight to its records. **Measured** — this is exactly the
+/// kind of offset 030 §4 refuses to take from documentation.
+fn records_offset(bytes: &[u8], kind: Kind, path: &Path) -> Result<usize, IngestError> {
+    match kind {
+        Kind::Data => Ok(16),
+        Kind::Notes => {
+            let len = bytes
+                .get(16..20)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+                .ok_or_else(|| IngestError::Malformed {
+                    path: path.to_path_buf(),
+                    why: "truncated before the working-directory length".into(),
+                })?;
+            // The string, then a flag word. Not padded to a word boundary: the fixture's records
+            // start at 121, which is `20 + 97 + 4`.
+            Ok(20 + len + 4)
+        }
+    }
+}
+
+/// Read the whole record stream of a `.gcno` or `.gcda`.
+///
+/// **All of it or none of it.** A stream that ends mid-record is a diagnostic rather than a short
+/// list: returning what was read hands downstream a coverage index quietly missing functions,
+/// which is the failure 030 contract 6 forbids for corrupt `.gcda` data and is no better here.
+pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
+    let h = header(path)?;
+    let bytes = std::fs::read(path).map_err(|e| IngestError::Unreadable {
+        path: path.to_path_buf(),
+        why: e.to_string(),
+    })?;
+    let mut i = records_offset(&bytes, h.kind, path)?;
+    let mut out = Vec::new();
+    while i < bytes.len() {
+        // **A trailing partial word is not a record.** `t.gcda` ends with four zero bytes after
+        // its last record; gcc pads, and a decoder that treats the padding as a tag reports a
+        // corrupt file for a perfectly good one.
+        if bytes.len() - i < 8 {
+            if bytes[i..].iter().all(|&b| b == 0) {
+                break;
+            }
+            return Err(IngestError::Malformed {
+                path: path.to_path_buf(),
+                why: format!(
+                    "truncated: {} bytes after the last record at {i}",
+                    bytes.len() - i
+                ),
+            });
+        }
+        let tag = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        if tag == 0 {
+            break;
+        }
+        // **Bytes, not words.** Measured: `FUNCTION` at 121 with length 49 is followed by
+        // `BLOCKS` at 178.
+        let len =
+            u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
+        let start = i + 8;
+        let Some(payload) = bytes.get(start..start + len) else {
+            return Err(IngestError::Malformed {
+                path: path.to_path_buf(),
+                why: format!(
+                    "truncated: the record at {i} claims {len} bytes and only {} remain",
+                    bytes.len() - start
+                ),
+            });
+        };
+        out.push(Record {
+            tag: Tag::from_word(tag),
+            at: i,
+            payload: payload.to_vec(),
+        });
+        i = start + len;
+    }
+    Ok(out)
+}
