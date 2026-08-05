@@ -800,6 +800,143 @@ impl Lowerer<'_> {
         }
     }
 
+    /// One record field's bytes: into its **bits** when it is a bit-field, over its bytes
+    /// otherwise.
+    ///
+    /// Split out of the record walk so the brace-elision run reaches the same code. The old
+    /// version refused a bit-field here to avoid clobbering its neighbours — correct about the
+    /// hazard, wrong about the outcome, since refusing meant the whole object became zeros.
+    /// `RecordLayout` carries the absolute bit offset and the width, so the bits go where 014
+    /// put them and the neighbours are untouched by construction.
+    fn encode_field(
+        &mut self,
+        f: &chiero_sema::FieldLayout,
+        value: ExprId,
+        at: u64,
+        out: &mut [u8],
+        relocs: &mut Vec<chiero_cir::Reloc>,
+    ) -> Option<()> {
+        match f.bits {
+            Some(b) => {
+                let v = self.const_of(value)?;
+                for i in 0..b.width {
+                    let bit = (v >> i) & 1;
+                    let abs = b.bit_offset + i;
+                    let byte = at as usize + (abs / 8) as usize;
+                    if byte >= out.len() {
+                        break;
+                    }
+                    let mask = 1u8 << (abs % 8);
+                    if bit == 1 {
+                        out[byte] |= mask;
+                    } else {
+                        out[byte] &= !mask;
+                    }
+                }
+                Some(())
+            }
+            None => self.encode_into(value, f.ty, at + f.offset, out, relocs),
+        }
+    }
+
+    /// Fill `ty` at `at` from a **brace-elided** run, and answer how many items it took.
+    ///
+    /// The file-scope mirror of `init_flat`, and it exists because the two paths had drifted:
+    /// `int m[2][3] = {1,2,3,4,5,6}` inside a function was right and the same declaration at
+    /// file scope was every byte zero. A folder that answers `None` becomes `GlobalInit::Zero`
+    /// at the caller, so *every* gap in this walk is a silently wrong program rather than a
+    /// refused one — which is why the run is implemented rather than refused.
+    ///
+    /// **A designator ends the run.** C11 6.7.9p17 makes a designator reposition within the
+    /// object of the current brace level, and inside an elided run that level is the *enclosing*
+    /// list — so the item belongs to the caller, and the count returned stops short of it.
+    fn encode_flat(
+        &mut self,
+        items: &[chiero_ast::InitItem],
+        ty: TyId,
+        at: u64,
+        out: &mut [u8],
+        relocs: &mut Vec<chiero_cir::Reloc>,
+    ) -> Option<usize> {
+        // The same normalisation `encode_into` makes: a vector is an array of its lanes.
+        let shape = match self.analysis.ty(ty).clone() {
+            Ty::Vector { elem, lanes, .. } => Ty::Array {
+                elem,
+                len: chiero_sema::ArrayLen::Fixed(u64::from(lanes)),
+            },
+            other => other,
+        };
+        let mut used = 0usize;
+        match shape {
+            Ty::Array { elem, len } => {
+                let esz = self.analysis.size_of(elem)?;
+                let n = match len {
+                    chiero_sema::ArrayLen::Fixed(n) => n,
+                    _ => items.len() as u64,
+                };
+                for i in 0..n {
+                    if used >= items.len() || !items[used].designators.is_empty() {
+                        break;
+                    }
+                    used += self.encode_run_slot(items, used, elem, at + i * esz, out, relocs)?;
+                }
+            }
+            Ty::Record(r) => {
+                let layout = self.analysis.layout(r).clone();
+                for f in &layout.fields {
+                    if used >= items.len() || !items[used].designators.is_empty() {
+                        break;
+                    }
+                    if f.bits.is_some() {
+                        self.encode_field(f, items[used].value, at, out, relocs)?;
+                        used += 1;
+                        continue;
+                    }
+                    used += self.encode_run_slot(items, used, f.ty, at + f.offset, out, relocs)?;
+                    // **A union takes one initializer, for its first member** (C11 6.7.9p15).
+                    // Walking the rest would spend the enclosing list's items on storage that
+                    // overlaps what was just written.
+                    if layout.is_union {
+                        break;
+                    }
+                }
+            }
+            // A scalar leaf ends the run: one item, one value.
+            _ => {
+                self.encode_into(items[0].value, ty, at, out, relocs)?;
+                used = 1;
+            }
+        }
+        Some(used)
+    }
+
+    /// One slot of a run: a nested `{…}` or a string takes exactly one item, an aggregate
+    /// recurses into the run, and anything else is a scalar.
+    fn encode_run_slot(
+        &mut self,
+        items: &[chiero_ast::InitItem],
+        used: usize,
+        ty: TyId,
+        at: u64,
+        out: &mut [u8],
+        relocs: &mut Vec<chiero_cir::Reloc>,
+    ) -> Option<usize> {
+        let value = items[used].value;
+        let braced = matches!(
+            self.ast.expr(value).kind,
+            chiero_ast::ExprKind::InitList(_) | chiero_ast::ExprKind::Str { .. }
+        );
+        if !braced && self.is_aggregate(ty) {
+            // `max(1)` so an empty subaggregate advances rather than spinning.
+            return Some(
+                self.encode_flat(&items[used..], ty, at, out, relocs)?
+                    .max(1),
+            );
+        }
+        self.encode_into(value, ty, at, out, relocs)?;
+        Some(1)
+    }
+
     fn encode_into(
         &mut self,
         e: ExprId,
@@ -853,7 +990,12 @@ impl Lowerer<'_> {
                         // "refused whole" as its comment said but silently replaced by
                         // zeros.
                         let mut cursor = 0u64;
-                        for it in items.iter() {
+                        // An index walk, not `for it in items`: an elided subaggregate
+                        // consumes several of them.
+                        let mut taken = 0usize;
+                        while taken < items.len() {
+                            let it = &items[taken].clone();
+                            taken += 1;
                             if let Some(chiero_ast::Designator::Index(idx)) = it.designators.first()
                             {
                                 let k = self.const_of(*idx)?;
@@ -873,6 +1015,25 @@ impl Lowerer<'_> {
                                 && cursor >= n
                             {
                                 break;
+                            }
+                            // **Brace elision, at file scope** (C11 6.7.9p20).
+                            // `static int m[2][3] = {1,2,3,4,5,6};` handed a scalar to a row,
+                            // `encode_into` answered `None`, and the caller turns `None` into
+                            // `GlobalInit::Zero` — so every byte of the object was zero and
+                            // nothing said so. The local path has done this since wave 140.
+                            if self.is_aggregate(elem)
+                                && !matches!(
+                                    self.ast.expr(it.value).kind,
+                                    chiero_ast::ExprKind::InitList(_)
+                                        | chiero_ast::ExprKind::Str { .. }
+                                )
+                            {
+                                let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                                let used =
+                                    self.encode_flat(&rest, elem, at + cursor * esz, out, relocs)?;
+                                taken = taken - 1 + used.max(1);
+                                cursor += 1;
+                                continue;
                             }
                             self.encode_into(it.value, elem, at + cursor * esz, out, relocs)?;
                             cursor += 1;
@@ -901,7 +1062,11 @@ impl Lowerer<'_> {
                 };
                 let fields = self.analysis.layout(r).fields.clone();
                 let mut cursor = 0usize;
-                for it in items.iter() {
+                // An index walk, not `for it in items`: an elided subaggregate consumes several.
+                let mut taken = 0usize;
+                while taken < items.len() {
+                    let it = &items[taken].clone();
+                    taken += 1;
                     // `.field` repositions the cursor, and the walk continues from there —
                     // the same rule as the array case above and as `init_list`.
                     if let Some(chiero_ast::Designator::Field(name)) = it.designators.first() {
@@ -911,32 +1076,23 @@ impl Lowerer<'_> {
                     }
                     let f = fields.get(cursor)?.clone();
                     cursor += 1;
-                    match f.bits {
-                        // **A bit-field is written into its bits, not over its bytes.** The
-                        // old code refused here to avoid clobbering neighbours — correct
-                        // about the hazard, wrong about the outcome, since refusing meant
-                        // the whole object became zeros. `RecordLayout` already carries the
-                        // absolute bit offset and the width, so the bits go where 014 put
-                        // them and the neighbours are untouched by construction.
-                        Some(b) => {
-                            let v = self.const_of(it.value)?;
-                            for i in 0..b.width {
-                                let bit = (v >> i) & 1;
-                                let abs = b.bit_offset + i;
-                                let byte = at as usize + (abs / 8) as usize;
-                                if byte >= out.len() {
-                                    break;
-                                }
-                                let mask = 1u8 << (abs % 8);
-                                if bit == 1 {
-                                    out[byte] |= mask;
-                                } else {
-                                    out[byte] &= !mask;
-                                }
-                            }
-                        }
-                        None => self.encode_into(it.value, f.ty, at + f.offset, out, relocs)?,
+                    // **Brace elision, at file scope** (C11 6.7.9p20). Without this the run
+                    // reached `encode_into` with a scalar against an aggregate type, which
+                    // answers `None` — and the caller reads `None` as `GlobalInit::Zero`, so
+                    // `static struct Out o = {1,2,3};` was every byte zero with no diagnostic.
+                    if f.bits.is_none()
+                        && self.is_aggregate(f.ty)
+                        && !matches!(
+                            self.ast.expr(it.value).kind,
+                            chiero_ast::ExprKind::InitList(_) | chiero_ast::ExprKind::Str { .. }
+                        )
+                    {
+                        let rest: Vec<chiero_ast::InitItem> = items[taken - 1..].to_vec();
+                        let used = self.encode_flat(&rest, f.ty, at + f.offset, out, relocs)?;
+                        taken = taken - 1 + used.max(1);
+                        continue;
                     }
+                    self.encode_field(&f, it.value, at, out, relocs)?;
                 }
                 Some(())
             }
@@ -6570,6 +6726,59 @@ impl Lowerer<'_> {
     /// **Lifted so `init_flat` uses the same store rather than a second one.** Wave 142 added
     /// the bit-field branch in front of the conversion instead of beside it and the new path
     /// silently skipped it; one function is one thing to get right.
+    /// A member initialized from a **whole aggregate value** — `struct T t = { .v = s };`.
+    ///
+    /// C11 6.7.9p13: the initializer for a structure or union member may be "a single expression
+    /// that has compatible structure or union type". CIR has no aggregate values (020 §1.4), so
+    /// that expression lowers to an *address* — and the slot walk's next move, whichever branch
+    /// it takes, is wrong for it: a scalar store writes eight bytes of pointer where the member
+    /// belongs, and the brace-elision branch takes the aggregate apart looking for scalars that
+    /// are not in the list.
+    ///
+    /// So it is a `CopyMem` of the destination's size, exactly as `struct pair p = mk()` already
+    /// does one layer up. Answers `false` when the initializer is not an aggregate value, which
+    /// is the ordinary case and leaves both existing branches untouched.
+    ///
+    /// gcc's `_mm512_cast*` intrinsics are all `union { … } __u = { .__v = __A };`, so this was
+    /// 84 of the first 89 VPP translation units.
+    fn copy_aggregate_init(&mut self, addr: Operand, fty: TyId, value: ExprId, span: Span) -> bool {
+        if !self.is_aggregate(fty) {
+            return false;
+        }
+        // **The initializer's own type decides**, not the slot's: `{1,2,3}` filling a nested
+        // struct is elision and must stay elision. Only a value that *is* an aggregate can be
+        // copied, and a braced list is not one.
+        let Some(vty) = self.type_of(value).filter(|t| self.is_aggregate(*t)) else {
+            return false;
+        };
+        if matches!(self.ast.expr(value).kind, chiero_ast::ExprKind::InitList(_)) {
+            return false;
+        }
+        // **The smaller of the two, and normally they are equal.** C requires compatible types
+        // here; taking the minimum means a source sema let through for some other reason cannot
+        // make this read past its end.
+        let size = self
+            .analysis
+            .size_of(fty)
+            .unwrap_or(0)
+            .min(self.analysis.size_of(vty).unwrap_or(0));
+        let align = self.analysis.align_of(fty).unwrap_or(1).max(1);
+        let src = self.expr(value);
+        self.emit(
+            InstKind::CopyMem {
+                dst: addr,
+                src,
+                size: Operand::Const(Const::Int {
+                    bits: 64,
+                    val: size as i128,
+                }),
+                align,
+            },
+            span,
+        );
+        true
+    }
+
     fn store_init_scalar(
         &mut self,
         addr: Operand,
@@ -6664,6 +6873,10 @@ impl Lowerer<'_> {
                 used += 1;
                 continue;
             }
+            if self.copy_aggregate_init(addr.clone(), fty, value, span) {
+                used += 1;
+                continue;
+            }
             if self.is_aggregate(fty) {
                 let rest: Vec<chiero_ast::InitItem> = items[used..].to_vec();
                 // `max(1)` so an empty subaggregate still advances rather than spinning.
@@ -6731,6 +6944,9 @@ impl Lowerer<'_> {
                 chiero_ast::ExprKind::InitList(_)
             ) {
                 self.init_list(addr, fty, item.value, span);
+                continue;
+            }
+            if self.copy_aggregate_init(addr.clone(), fty, item.value, span) {
                 continue;
             }
             // **Brace elision** (C11 6.7.9p20): a subaggregate whose initializer does not
