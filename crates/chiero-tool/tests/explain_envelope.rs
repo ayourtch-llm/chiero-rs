@@ -46,7 +46,10 @@ fn a_chain_is_proven_and_carries_each_frame() {
         "the full chain, not just the outermost: {names:?}"
     );
     for f in frames {
-        assert!(f["def_line"].is_number(), "each frame says where it is defined: {f}");
+        assert!(
+            f["def_line"].is_number(),
+            "each frame says where it is defined: {f}"
+        );
         assert!(f["body"].is_string(), "and what it expands to: {f}");
     }
 }

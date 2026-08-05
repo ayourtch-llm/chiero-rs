@@ -540,3 +540,55 @@ pub fn expansion_sites_envelope(
         env.truncated(summary.shown, summary.total)
     }
 }
+
+/// [`explain_macro_expansion`] in 050 §2's envelope (contract 6).
+///
+/// # The empty answer is the whole point
+///
+/// A chain comes from the preprocessor's own expansion records, so it is `Exact`. What needs the
+/// judgement is `[]`:
+///
+/// - **a line with no macro on it** is a *complete* answer that nothing expanded there, and is
+///   proven. `[]` from a scan would mean "nothing found within what the scan could see"; `[]`
+///   from the expansion table means "nothing is there", and only the second may be read plainly.
+/// - **a file the map has never heard of** is not that answer at all. It is a question about
+///   something outside this translation unit, and returning a confident empty list for it is the
+///   failure 050 §2 exists to prevent, in the smallest possible case.
+pub fn explain_macro_expansion_envelope(
+    map: &SourceMap,
+    file: &str,
+    line: u32,
+    column: Option<u32>,
+) -> Envelope {
+    let known = map.files().any(|f| path_matches(map, f.id(), file));
+    let chains = explain_macro_expansion(map, file, line, column);
+
+    let result = serde_json::json!({
+        "chains": chains
+            .iter()
+            .map(|c| c.iter().map(frame_json).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+    });
+
+    if known {
+        Envelope::new(result, Fidelity::Exact)
+    } else {
+        Envelope::new(result, Fidelity::Unknown)
+            .with_assumption("unknown_file", file)
+            .with_blind_spot(&format!(
+                "`{file}` is not in this translation unit, so an empty chain says nothing about it"
+            ))
+    }
+}
+
+fn frame_json(f: &MacroFrame) -> serde_json::Value {
+    serde_json::json!({
+        "name": f.name,
+        "def_file": f.def_file,
+        "def_line": f.def_line,
+        "body": f.body,
+        "call_line": f.call_line,
+        "call_col": f.call_col,
+        "args": f.args,
+    })
+}
