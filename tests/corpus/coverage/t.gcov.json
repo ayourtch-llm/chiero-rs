@@ -1,0 +1,58 @@
+{
+ "current_working_directory": "/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/66909b76-9140-4b55-94cc-f7adb56f7f97/scratchpad/cov",
+ "data_file": "t",
+ "files": [
+  {
+   "file": "t.c",
+   "functions": [
+    {
+     "blocks": 4,
+     "blocks_executed": 4,
+     "demangled_name": "main",
+     "end_column": 88,
+     "end_line": 3,
+     "execution_count": 1,
+     "name": "main",
+     "start_column": 5,
+     "start_line": 3
+    }
+   ],
+   "lines": [
+    {
+     "branches": [],
+     "count": 1,
+     "function_name": "main",
+     "line_number": 3,
+     "unexecuted_block": false
+    }
+   ]
+  },
+  {
+   "file": "m.h",
+   "functions": [
+    {
+     "blocks": 2,
+     "blocks_executed": 2,
+     "demangled_name": "hdr_fn",
+     "end_column": 57,
+     "end_line": 2,
+     "execution_count": 1,
+     "name": "hdr_fn",
+     "start_column": 19,
+     "start_line": 2
+    }
+   ],
+   "lines": [
+    {
+     "branches": [],
+     "count": 1,
+     "function_name": "hdr_fn",
+     "line_number": 2,
+     "unexecuted_block": false
+    }
+   ]
+  }
+ ],
+ "format_version": "1",
+ "gcc_version": "13.3.0"
+}
