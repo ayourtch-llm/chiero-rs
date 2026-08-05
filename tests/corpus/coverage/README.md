@@ -78,3 +78,26 @@ It also demonstrates the stem rule a second time, in the form a real build produ
 and linking in one step names the artifacts after the *output*, so the stems here are `prog-a`
 and `prog-b`, not `a` and `b`. Asking for `a` yields a JSON document with an empty `files` array
 rather than an error — which is exactly the silent nothing contract 3 is about.
+
+## A function that never ran (the negative counter length)
+
+Found by pointing the decoder at a real `--coverage` build of `vppinfra`: **83 of 98 `.gcda`
+files failed**, all of them claiming a record length near 2³². Read as `i32` those are negative:
+−40, −168, −304.
+
+```c
+int never_called(int x){ if (x > 3) return x * 2; return x + 1; }   /* line 1, count 0 */
+int ran(int x){ return x + 1; }
+int main(void){ return ran(1) == 2 ? 0 : 1; }
+```
+
+`unrun.gcda` holds three counter records: `16`, `8`, and **`-16`**. The negative one belongs to
+`never_called`, and it has **no payload at all** — the next record begins immediately after the
+length. Measured against the notes: `|len| / 8` equals the function's non-tree arc count exactly
+(`bihash_all_vector.c` gave −40 for 5 arcs and −32 for 4).
+
+So a negative length means *"this many counters, every one of them zero, none of them stored"* —
+gcc's compression for a function that never executed. gcov agrees: line 1 has count **0**, which
+is recorded-and-zero, not absent.
+
+None of the earlier fixtures could find this: in all of them, every function ran.
