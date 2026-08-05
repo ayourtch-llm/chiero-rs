@@ -544,9 +544,39 @@ typing the paths ever would.
 > future gcc starts recording the macro line, the test fails loudly and the justification for the
 > hand-written frontend gets re-argued rather than quietly ageing.
 >
+> ### 📐 THE NATIVE FORMAT, MEASURED — and 030 §4's sketch is wrong in two places
+>
+> 030 §4 says exact layouts are **not** transcribed from documentation "because a transcription
+> error is undetectable by reading", and then sketches one. The sketch is wrong, which is rather
+> the point. Measured against the committed `t.gcno`/`t.gcda`:
+>
+> | | spec sketch | what gcc 13.3.0 writes |
+> |---|---|---|
+> | record length | 4-byte **words** | **bytes** — `FUNCTION`@121 len 49, next record at 178 |
+> | record alignment | implied word | **none** — records at 121, 178, 190, 210, … |
+> | version `*33B` | "a letter for major counting from `A` = 10" | `(major/10 + 'A')(major%10 + '0')(minor + '0')(release)` — `B` is 10, `B3` is 13 |
+>
+> ```text
+> .gcno: magic version stamp checksum | cwd_len=97 cwd[97] flag | records at 121
+> .gcda: magic version stamp checksum |                        | records at 16, four zero
+>                                                                bytes of padding at the end
+> ```
+>
+> Both readings of the version give a plausible number, which is why only a fixture caught it:
+> "counting from A" yields 11.3 and matches no compiler that has ever existed.
+>
+> `t.gcno` inventory, pinned as a test: `FUNCTION BLOCKS ARCS×5 LINES×3 | FUNCTION BLOCKS ARCS×3
+> LINES×2`, ending exactly at byte 617. `t.gcda`: `OBJECT_SUMMARY FUNCTION COUNTER_ARCS FUNCTION
+> COUNTER_ARCS`.
+>
 > ⏭️ **Next in 030**, in the order the spec gives them:
-> - contract 5, the cross-validation gate: native `.gcno`/`.gcda` decode must produce line counts
->   *identical* to `gcov --json-format` on the same files. The fixture already has both artifacts.
+> - the record **payloads**: `FUNCTION`'s ident/checksums/name/source/line, `BLOCKS`, `ARCS`
+>   (destination + flags), `LINES` (block, file, line numbers). The stream reader is done and
+>   tested; nothing reads inside a record yet.
+> - contract 5, the cross-validation gate: native decode must produce line counts *identical* to
+>   `gcov --json-format` on the same files. Both artifacts and the JSON are committed, so the
+>   gate can be written the moment the payloads decode — and it is the gate that makes the flow
+>   solve trustworthy, so write it before believing any arc count.
 > - contracts 6–9: the flow solve, `FAKE` arcs, the stamp pairing, and an unknown version tag
 >   falling back to JSON rather than guessing.
 > - contract 10 onward needs `TestBitmap`; 030 §5 says roaring, and the workspace has no such
