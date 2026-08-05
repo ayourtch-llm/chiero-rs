@@ -588,7 +588,21 @@ guard fires.
 
 **Left to build, in rough order of value:**
 
-0. **⭐ `chiero-cli` — the user asked for it, 2026-08-05.** *"add the CLI to trigger all those
+0. **✅ DONE — `chiero-cli`, 2026-08-05.** Five operations from a command line:
+   `prove-equivalent`, `impact`, `select-tests`, `expansion-sites`, `explain-macro`, each
+   printing an envelope (`--json` for the machine form). `Envelope::render` now renders a
+   result as lines rather than as compact JSON, and `serde_json` gained `preserve_order` so
+   `verdict` leads instead of sorting alphabetically under `replay`.
+
+   **Every `$ chiero ...` block in the tutorials is a transcript under test**
+   (`crates/chiero-cli/tests/tutorial_transcripts.rs`) and must match byte for byte. That test
+   exists because I hand-wrote those blocks and every one was wrong — invented entity order,
+   omitted fields, and, on the page about telling a proof from a guess, a "proven, Exact" with
+   both blind spots missing.
+
+   *Superseded — kept for the reasoning:*
+
+   ~~**⭐ `chiero-cli` — the user asked for it, 2026-08-05.**~~ *"add the CLI to trigger all those
    great cases without the user having to do too much programming; and update the tutorials
    with how they are used."* `crates/chiero-cli/src/main.rs` is still a 5-line stub that prints
    a version. Every operation in `chiero-tool` is reachable only from Rust, so the tutorials
