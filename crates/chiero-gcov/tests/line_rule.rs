@@ -214,3 +214,26 @@ fn a_compiler_generated_function_is_not_counted() {
         "the outlined parallel region carries this line too, and gcov does not count it"
     );
 }
+
+/// **An empty location group is a group, and it attributes its block a second time.**
+///
+/// gcc writes a block's locations as a filename followed by its lines, and emits the filename
+/// alone when the file changes but the line number does not. So a call inlined from a header
+/// whose body sits on the *same line number* as the call site produces a group with a file and no
+/// lines — `samelin.gcno` block 2 reads `samelin.c [2]`, then `samelin.h []`.
+///
+/// gcov keeps that group. Its `line` pointer persists across a block's groups, so the empty one
+/// pushes the block onto the previous group's last line **again** (`gcov.cc` ~2735), and the
+/// duplicate counts that block's entry arcs twice. Dropping empty groups at decode loses the
+/// duplicate and undercounts.
+///
+/// A decoder is entitled to think an empty group carries no information. It carries the fact that
+/// there was a group.
+#[test]
+fn an_empty_location_group_still_attributes_its_block() {
+    assert_eq!(
+        count("samelin", "samelin.c", 2),
+        Some(3),
+        "the empty `samelin.h` group re-attributes block 2 to line 2, and gcov counts it twice"
+    );
+}
