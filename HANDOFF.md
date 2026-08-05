@@ -704,7 +704,52 @@ typing the paths ever would.
 > (`test_infra`, `test_pnat`, `vat2`, …), which is 322 of 1895 objects. The *notes* decoder is
 > exercised across all 1895, which is where the format complexity lives.
 
-> ### ⏭️ WHAT IS NEXT — 031, change impact
+> ### 🚀 031 HAS STARTED — entities, and the four contracts that say "nothing changed"
+>
+> `chiero-diff` was one line; it now extracts entities and answers 031 §3.1's **direct** half —
+> contracts 1, 2, 3 and 20 green, plus the classes §2 names (705643a, 9e8922a).
+>
+> **The four empty-set contracts come out of one decision**: an entity's fingerprint is its
+> *token spelling*, taken from the preprocessed stream. Whitespace, comments and line positions
+> are gone by then, so reformatting, an added comment and a hundred blank lines all compare equal
+> with no special case. 031 §2: *"`Cosmetic` producing no impact is a real, load-bearing
+> feature."* A tool that answers "everything" to any of those selects the whole suite, and the
+> maintainer stops believing it.
+>
+> Two decisions worth not re-deriving:
+>
+> - **The fingerprint is two token strings, not one**, split at the body's `{` or the
+>   initializer's first token. A signature change and a body change close over different things —
+>   every caller, against the callers that may now differ — so concatenating them makes the
+>   classes indistinguishable.
+> - **`Cosmetic` is absent from `ChangeClass` on purpose.** A cosmetic difference produces no
+>   entry at all; an `ImpactSet` a caller has to filter is one a caller will forget to filter.
+>
+> ⚠️ **`Entity` is keyed by file *name* and entity *name* as text**, where 031 §1 writes `FileId`
+> and `Symbol`. Both of those index one `SourceMap` and one interner, and impact compares two
+> separately parsed programs whose indices are unrelated — `FileId(3)` is a different file on each
+> side. Do not "fix" it back.
+>
+> ⏭️ **Next, in the order the spec gives them:**
+>
+> - **§3's closure** — the fixpoint over calls, types, globals and includes, with the
+>   `Justification` edge chain that makes a 400-test answer auditable. Every entity the direct
+>   half finds is a `root` of it.
+> - **§3.2, the differentiating step**: `SourceMap::expansion_sites(m)` for a changed macro,
+>   transitively. This is what coverage cannot do and the reason the preprocessor is ours —
+>   contract 5 is labelled "the headline contract".
+> - **contract 15 and §4**: a file that fails to parse puts all of its entities in the set and
+>   marks the result `Partial`. `Program::parse` returns `None` today, which is honest but not
+>   yet the contract.
+> - **`LayoutChanged`** (contracts 9–11), which is a *computed* comparison of `RecordLayout` from
+>   014 §3 and not a syntactic one — reordering two same-size fields changes offsets.
+>
+> ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
+> alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
+> machinery exists — but on the evidence of 030, expect the first real sweep to find something the
+> hand-written fixtures cannot.
+>
+> ### ⏭️ AFTER THAT — 032, test selection
 >
 > 030 is done. The next vertical is [031](docs/specs/031-change-impact.md), which diffs two
 > indices to find what a change touched — and is the first consumer of `tests_for_span`,
