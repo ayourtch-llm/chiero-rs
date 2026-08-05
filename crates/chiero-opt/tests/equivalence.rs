@@ -409,3 +409,239 @@ fn a_comparison_with_no_paths_is_not_a_proof() {
         other => panic!("a comparison with no paths must not be a verdict, got {other:?}"),
     }
 }
+
+/// A local named `i`, stored to and read back. `int f(int a) { int i = a + 1; return i; }`
+const NAMED_I: &str = "\
+func @f(%0: i32) -> i32 {
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"i\"
+entry:
+  .line 1
+  .scope enter 0
+  %1 = addrlocal %0
+  %2 = add i32 %0, 1i32
+  store i32 %2 -> %1 align 4
+  %3 = load i32, %1 align 4
+  .scope exit 0
+  ret %3
+}";
+
+/// The same function with the local called `idx`.
+const NAMED_IDX: &str = "\
+func @f(%0: i32) -> i32 {
+  alloca %0 : i32 x 1 align 4 scope 0 lifetime scope \"idx\"
+entry:
+  .line 1
+  .scope enter 0
+  %1 = addrlocal %0
+  %2 = add i32 %0, 1i32
+  store i32 %2 -> %1 align 4
+  %3 = load i32, %1 align 4
+  .scope exit 0
+  ret %3
+}";
+
+/// `int f(int a) { int x = a + 1; int y = a * 3; return x + y; }`
+const TWO_STATEMENTS: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = add i32 %0, 1i32
+  %2 = mul i32 %0, 3i32
+  %3 = add i32 %1, %2
+  ret %3
+}";
+
+/// The same two independent statements, in the other order.
+const TWO_STATEMENTS_SWAPPED: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %2 = mul i32 %0, 3i32
+  %1 = add i32 %0, 1i32
+  %3 = add i32 %1, %2
+  ret %3
+}";
+
+/// `int f(int a) { int s = 0; for (int i = 0; i < 3; i++) s += a & 7; return s; }` — the
+/// invariant computed inside the loop.
+const INVARIANT_INSIDE: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  goto bb1
+bb1:
+  .line 2
+  %1 = phi i32 [entry 0i32] [bb1 %5]
+  %2 = phi i32 [entry 0i32] [bb1 %3]
+  %3 = add i32 %2, 1i32
+  %4 = and i32 %0, 7i32
+  %5 = add i32 %1, %4
+  %6 = cmp slt i32 %3, 3i32
+  br %6, bb1, bb2
+bb2:
+  .line 4
+  ret %5
+}";
+
+/// The same loop with the invariant hoisted into the preheader.
+const INVARIANT_HOISTED: &str = "\
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %4 = and i32 %0, 7i32
+  goto bb1
+bb1:
+  .line 2
+  %1 = phi i32 [entry 0i32] [bb1 %5]
+  %2 = phi i32 [entry 0i32] [bb1 %3]
+  %3 = add i32 %2, 1i32
+  %5 = add i32 %1, %4
+  %6 = cmp slt i32 %3, 3i32
+  br %6, bb1, bb2
+bb2:
+  .line 4
+  ret %5
+}";
+
+/// **Contract 5: renaming locals, reordering independent statements, and hoisting an
+/// invariant out of a bounded loop are each `Equivalent`.**
+///
+/// These are the refactors the operation exists to bless. An adjudicator that only ever
+/// says `Differs` is as useless as one that only ever says `Equivalent`, and this is the
+/// half of contract 13b that catches it.
+#[test]
+fn the_three_refactors_that_must_be_blessed() {
+    let Some(cfg) = cfg() else { return };
+    for (what, before, after) in [
+        ("renaming a local", NAMED_I, NAMED_IDX),
+        (
+            "reordering independent statements",
+            TWO_STATEMENTS,
+            TWO_STATEMENTS_SWAPPED,
+        ),
+        (
+            "hoisting an invariant out of a bounded loop",
+            INVARIANT_INSIDE,
+            INVARIANT_HOISTED,
+        ),
+    ] {
+        match prove_equivalent(&m(before), &m(after), &cfg) {
+            Equivalence::Equivalent { fidelity, .. } => assert_eq!(
+                fidelity,
+                Fidelity::Exact,
+                "{what}: the loop is bounded by the program, so this is a proof"
+            ),
+            other => panic!("contract 5, {what}: wants a definite Equivalent, got {other:?}"),
+        }
+    }
+}
+
+/// **Contract 12: a solver that cannot decide yields `Unknown` with a reason — never
+/// `Equivalent`.**
+///
+/// Forced with `EquivCfg::lite`, which is tier 1 alone (022 §3.2's deliberately incomplete
+/// domain) rather than a wall-clock timeout — the same substance, and reproducible on a
+/// machine with no z3 rather than dependent on how fast one runs.
+///
+/// **The verbatim copy is in this list on purpose.** Two byte-identical modules are the one
+/// case where a syntactic shortcut would be sound and would make contract 1 pass without
+/// ever consulting a solver — and would then be the mechanism by which some later
+/// almost-identical pair got blessed. There is no such shortcut, and this is what says so.
+///
+/// A tier-1 improvement that decided any of these would fail this test. That is the right
+/// time for a person to look: the assertion is that incompleteness is *surfaced*, and a
+/// tier that stops being incomplete here needs a deliberate edit, not a silent pass.
+#[test]
+fn tier_one_incompleteness_surfaces_as_unknown_not_as_agreement() {
+    let cfg = EquivCfg::lite("f");
+    for (name, b, a) in [
+        ("verbatim copy", SUM, SUM),
+        ("x*2 vs x<<1", MUL2, SHL1),
+        ("x/2 vs x>>1", DIV2, ASHR1),
+        ("abs two ways", ABS_NAIVE, ABS_SATURATING),
+    ] {
+        match prove_equivalent(&m(b), &m(a), &cfg) {
+            Equivalence::Unknown { reason } => assert!(
+                reason.contains("solver could not decide"),
+                "{name}: the reason must name what went undecided, got {reason:?}"
+            ),
+            other => panic!(
+                "{name}: tier 1 cannot decide this; answering {other:?} means the verdict \
+                 came from somewhere other than a proof"
+            ),
+        }
+    }
+}
+
+/// **The complement of contract 5, in the shape of the mutation gate (032 §6).**
+///
+/// Contracts 1, 2, 5 and half of 3 all assert `Equivalent`, and every one of them passes
+/// under an implementation that answers `Equivalent` to everything. Contract 13b says
+/// exactly that, and points at the `Differs` contracts as the guard — but those use two
+/// deliberately different algorithms, which an implementation could conceivably tell apart
+/// for the wrong reason.
+///
+/// So: mutate one constant in each blessed pair and require the verdict to flip. A single
+/// character changes; the two functions still look alike, still have the same shape, still
+/// have the same control flow. Nothing but actually deciding the question distinguishes
+/// them.
+#[test]
+fn one_changed_constant_turns_every_blessing_into_a_divergence() {
+    let Some(cfg) = cfg() else { return };
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        // (what, before, after, needle in `after`, replacement)
+        (
+            "commuted add",
+            SUM,
+            SUM,
+            "%2 = add i32 %0, %1",
+            "%2 = add i32 %1, 1i32",
+        ),
+        (
+            "x*2 vs x<<1",
+            MUL2,
+            SHL1,
+            "shl i32 %0, 1i32",
+            "shl i32 %0, 2i32",
+        ),
+        (
+            "reordered statements",
+            TWO_STATEMENTS,
+            TWO_STATEMENTS_SWAPPED,
+            "mul i32 %0, 3i32",
+            "mul i32 %0, 4i32",
+        ),
+        (
+            "hoisted invariant",
+            INVARIANT_INSIDE,
+            INVARIANT_HOISTED,
+            "and i32 %0, 7i32",
+            "and i32 %0, 6i32",
+        ),
+    ];
+    for (what, before, after, needle, replacement) in cases {
+        assert!(
+            after.contains(needle),
+            "{what}: the mutation site must exist"
+        );
+        let mutated = after.replace(needle, replacement);
+        // The unmutated pair is blessed...
+        assert!(
+            matches!(
+                prove_equivalent(&m(before), &m(after), &cfg),
+                Equivalence::Equivalent { .. }
+            ),
+            "{what}: the unmutated pair must be Equivalent for this case to mean anything"
+        );
+        // ...and one changed constant is not.
+        match prove_equivalent(&m(before), &m(&mutated), &cfg) {
+            Equivalence::Differs { input, .. } => {
+                assert!(
+                    !input.bindings.is_empty(),
+                    "{what}: a Differs with no witness is an opinion (041 §1.3)"
+                );
+            }
+            other => panic!("{what}: one changed constant must be caught, got {other:?}"),
+        }
+    }
+}
