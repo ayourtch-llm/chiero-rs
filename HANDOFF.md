@@ -698,6 +698,22 @@ typing the paths ever would.
 > exactly that. **When a new query is added here, ask what its empty answer claims** before
 > deciding whether it should be able to give one.
 >
+> ### 🧱 KNOWN GAPS IN THE NATIVE DECODER — none reachable from gcc-compiled C, all reachable
+>
+> Found by the adversarial review of the line rule, verified against `gcov.cc`, and left undone
+> deliberately because the corpus cannot exercise them. Each is a *silent* wrong answer, not an
+> error, so none will announce itself:
+>
+> | gap | gcov | chiero | first input that breaks it |
+> |---|---|---|---|
+> | **artificial functions** are erased before any line accounting (`gcov.cc` 1391–1393) | skips them | counts them | C++ — the corpus has none |
+> | a function in the `.gcno` with **no counters in the `.gcda`** | skips it: "some other instance must have been selected" | hard-errors the whole object | COMDAT, so again C++ |
+> | an **empty location group** | still runs the attribution push, re-attributing the block to the carried line | `flush` drops the group | needs gcc to emit consecutive FILE markers |
+>
+> The first two are one decision — what `ingest_into` does with a function it cannot pair — and
+> 030 §4's rule that a missing function is corrupt rather than skippable was written before COMDAT
+> was in view. Re-argue it there rather than patching it here.
+>
 > ⏭️ **Next in 030**, in the order the spec gives them:
 > - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list with no
 >   implementation. `tests_for_span` is where contract 12's rule becomes code rather than a guard:
@@ -705,11 +721,8 @@ typing the paths ever would.
 >   needs `chiero-span`.
 > - **contract 13, `tests_for_block`**: the union over a CIR block's `gcov_lines`. The bridge to
 >   the rest of the system, and the join 020 §3 computed `gcov_lines` with `expansion_loc` for.
-> - **the line index needs `FuncKey`'s lesson too.** `CoverageIndex` keys lines by `(file, line)`,
->   which is right — but `ingest_native_as` merges objects into one index with **no** record of
->   which object a line came from, so two builds of one source (different `-march`) union silently.
->   030 §5 puts `march` in the key for exactly this reason. Fix it the same way and for the same
->   reason: the failure is silent and the fix is invasive later.
+> - ~~**the line index needs `FuncKey`'s lesson too**~~ — done: `Variant` is in the key and
+>   `tests_for_line_in` asks per variant, with the union still the default answer.
 > - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
 >   the system, and the first thing here that touches `chiero-cir`.
 > - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
