@@ -7381,6 +7381,32 @@ impl Lowerer<'_> {
             if let Some(chiero_ast::Designator::Field(name)) = item.designators.first() {
                 if let Some(i) = slots.iter().position(|(_, _, n, _)| *n == Some(*name)) {
                     cursor = i;
+                } else if let Ty::Record(r) = self.analysis.ty(ty).clone()
+                    && let Some((off, fty, top)) = self.field_path(r, *name)
+                {
+                    // **A member an anonymous struct or union promotes** (C 6.7.2.1p13). It is
+                    // not in this record's slot list, and leaving the cursor where it was filled
+                    // the value against whatever slot happened to be next — for
+                    // `vlib_fuse_file_op_data_t` that was the union's *first* arm, so a
+                    // three-member write went to one address and one of it through a bit-field.
+                    //
+                    // Placed by offset, and the cursor moves past the anonymous member carrying
+                    // it, exactly as the file-scope walk does.
+                    let addr = self.offset_addr(base.clone(), off, span);
+                    if !self.init_string_into(addr.clone(), fty, item.value, span)
+                        && !self.copy_aggregate_init(addr.clone(), fty, item.value, span)
+                    {
+                        if matches!(
+                            self.ast.expr(item.value).kind,
+                            chiero_ast::ExprKind::InitList(_)
+                        ) {
+                            self.init_list(addr, fty, item.value, span);
+                        } else {
+                            self.store_init_scalar(addr, fty, None, item.value, span);
+                        }
+                    }
+                    cursor = top + 1;
+                    continue;
                 }
             } else if let Some(chiero_ast::Designator::Index(idx)) = item.designators.first()
                 && let Some(v) = self.const_of(*idx)
