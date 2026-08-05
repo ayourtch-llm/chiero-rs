@@ -481,16 +481,49 @@ differing only in which side minted variable 0 may legitimately return different
 a first-`Sat` witness makes the contract a coin flip. Minimization is canonical, reproducible
 (001 §5), and "the smallest input that distinguishes them" is a better thing to hand a reader.
 
-**Two flattering failures found and fixed in one wave, both the project's recurring shape:**
+**Eight flattering failures found and fixed, all the project's recurring shape.** Two by
+asking what the pairing loop does with nothing to iterate over; six by an adversarial `fable`
+review, every one of which reproduced. `crates/chiero-opt/tests/adversarial.rs` holds them.
 
-- A comparison whose every path was budget-cut returned `Equivalent { Bounded }`. "No pair
-  disagreed" and "there were no pairs" are the same silence. Now counted: zero comparable
-  pairs is `Unknown` with the counts.
-- A pair with one side budget-cut was reported `Termination { Return, Budget }` — chiero
-  running out of depth, put in front of a reader as a defect in their rewrite.
+| what was blessed | verdict it got |
+|---|---|
+| `g = x; return 0` vs `return 0` | `Equivalent { Exact }` |
+| a volatile store vs no store | `Equivalent { Exact }` |
+| a dropped unmodeled extern call | `Equivalent { Approximated }` |
+| `max_forks = 0` / `max_states = 1`, no loop, disagreeing on 2^32-1 inputs | `Equivalent { Bounded }` |
+| every path budget-cut | `Equivalent { Bounded }` |
+| a pair with one side cut | `Differs { Termination { Return, Budget } }` |
+| termination differing at exactly `{(0,200), (3,7)}` | witness `(0, 7)`, where both return 32 |
+| the same as a return difference | `Unknown`, with a real model thrown away |
+
+**The one worth remembering: the first three were already ruled out in the module
+documentation, in the same commit as the code that did not do it.** *"A comparison that
+would have to reason about caller-visible memory or about a side-effect sequence answers
+`Unknown` naming the claim it could not check."* Nothing implemented that sentence. A written
+intention with no implementation is worse than an admitted gap — it is what a reader checks
+*instead of* the code.
+
+The two witness defects shared one cause: the minimizer fixed inputs one at a time but seeded
+each from a model taken before any were fixed. Where the divergence set is not a product,
+that seed is unreachable under the earlier pins. Now re-solved per input, one extra query, so
+the loop's invariant is true rather than asserted.
+
+**What the contract suite could not have caught:** its fixtures are pure, one-parameter,
+branch-light arithmetic — no global, no volatile, no extern, no two-parameter `Differs`, and
+its one budget test used `max_states = 0`, the single value where nothing finishes and the
+guard fires.
 
 **Left to build, in rough order of value:**
 
+0. **Un-refusing what the guard conservatively refuses.** `observable_beyond_the_return` is
+   syntactic and answers "could this touch caller-visible memory", not "does it". Every
+   `Unknown` it produces is a real refusal today and a comparison that should be possible
+   later. The first step is in chiero-exec: `EffectKind` has only `VolatileStore`, so an
+   extern call is not in the effect sequence and contract 6 is unreachable rather than
+   unimplemented. **The arguments are the load-bearing half** — contract 6's rewrite swaps
+   two calls to the *same* function, so a sequence of callee names is identical before and
+   after. A parked RED suite for this is at
+   `$SCRATCH/effect_sequence.rs.wip` (needs `Effect.args`).
 1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
    *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
    in the tree emits a C replay harness yet — 040 §3 wants one too.
