@@ -1187,10 +1187,6 @@ pub fn ingest_into(
     let notes = read_notes(&notes_path)?;
     let data = read_data(&data_path)?;
 
-    if let Some((t, v)) = &test {
-        idx.note_test(*t);
-        idx.note_variant(v);
-    }
     let mut object = ObjectLines::default();
     let in_group = group_members(&notes.functions);
     for (fi, f) in notes.functions.iter().enumerate() {
@@ -1231,6 +1227,15 @@ pub fn ingest_into(
             end_line: f.end_line,
         });
         object.add(line_counts(f, &arcs, &blocks), group.as_ref());
+    }
+    // **Nothing above this line touched `idx`.** Every failure so far returned before the index
+    // was told a test or a build had contributed, which is what contract 6 asks for and what the
+    // test list used to get wrong: noting the test up front left it looking ingested after an
+    // object was refused, so `coverage_complete` said yes, the test left the always-run set, and
+    // 032 would skip it on coverage that never arrived.
+    if let Some((t, v)) = &test {
+        idx.note_test(*t);
+        idx.note_variant(v);
     }
     // **Merged across the object before the index sees any of it.** A header inlined into three
     // functions contributes to its lines three times, and the index's merge cannot tell those
