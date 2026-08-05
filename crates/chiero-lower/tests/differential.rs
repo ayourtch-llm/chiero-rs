@@ -6117,3 +6117,51 @@ fn a_string_may_initialize_a_char_array_member_of_a_local() {
         "struct { char s[8]; int x; } v = {\"ab\", 3}; return v.s[1] + v.s[7] + v.x;",
     );
 }
+
+/// **A shift count wider than the value being shifted discards the function.**
+///
+/// ```text
+/// vppinfra/bitops.h:113:28: `compress_init` lowered to CIR the verifier rejects
+///   (Shl operand is Int(64), declared Int(32))
+///   zm = zm ^ q ^ (q >> (1 << i));        /* i is a uword */
+/// ```
+///
+/// C11 6.5.7p3 gives a shift **no usual arithmetic conversions**: each operand is promoted on its
+/// own and the result has the left operand's type. So `1 << i` with a `uword` `i` is an `int`
+/// with a 64-bit count, which is ordinary C — and CIR requires both operands at the declared
+/// width. Lowering widens a *narrower* count and has always done nothing for a wider one.
+///
+/// **170 of the first 179 translation units** at f4ef6a2, and unlike the four causes before it
+/// this one is VPP's own header rather than gcc's.
+///
+/// # The count may not simply be truncated
+///
+/// A count at or past the width is UB that 020 §4.1 requires as a `shift-UB` event with a value
+/// of 0, and the engine tests `count >= width` on the operand it is given. Truncating `1 << 64`
+/// to a 32-bit 0 would turn a reportable defect into a silent shift-by-nothing — so an
+/// out-of-range count has to stay out of range after narrowing.
+#[test]
+fn a_shift_count_wider_than_its_value_still_lowers() {
+    // The reduced `compress_init` loop, which is what the corpus fails on.
+    agree_with(
+        "typedef unsigned long uword;\n\
+         static void init(uword *masks, uword mask) {\n\
+           uword q, m, zm, n, i;\n\
+           m = ~mask; zm = mask;\n\
+           for (i = 0; i < 6; i++) {\n\
+             q = m; m ^= m << 1;\n\
+             masks[1 + i] = n = (m << 1) & zm;\n\
+             m = q & ~m; q = zm & n;\n\
+             zm = zm ^ q ^ (q >> (1 << i));\n\
+           }\n\
+         }",
+        "uword ms[8] = {0}; init(ms, 0x0f0fUL); return (int)(ms[1] & 0xff);",
+    );
+    // The shape alone: an `int` value with a `long` count, both directions.
+    agree_with("", "unsigned long i = 3; return 1 << i;");
+    agree_with("", "unsigned long i = 3; return 4096 >> i;");
+    agree_with("", "long i = 5; return (int)(1 << i);");
+    // A count that is in range for the *count's* type but not for the value's — still UB in C,
+    // and gcc computes something; what matters here is that both sides agree it is not a crash.
+    agree_with("", "unsigned long i = 3; int v = -8; return v >> i;");
+}
