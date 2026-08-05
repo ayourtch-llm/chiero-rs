@@ -80,7 +80,10 @@ fn the_json_is_stable_across_runs() {
     let a = impact(&prog(CHAIN), &prog(&edited)).to_json();
     let b = impact(&prog(CHAIN), &prog(&edited)).to_json();
     assert_eq!(a, b);
-    assert!(a.starts_with('{'), "an object, so fields can be added: {a:.60}");
+    assert!(
+        a.starts_with('{'),
+        "an object, so fields can be added: {a:.60}"
+    );
 }
 
 /// The machine format carries what 050 needs: the entity, the class, the root, the edges, the

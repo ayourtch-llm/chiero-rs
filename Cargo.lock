@@ -86,6 +86,7 @@ dependencies = [
  "chiero-sema",
  "chiero-span",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]

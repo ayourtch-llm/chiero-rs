@@ -1024,3 +1024,192 @@ fn classify(before: &Fingerprint, after: &Fingerprint) -> Option<ChangeClass> {
         ChangeClass::InitializerChanged
     })
 }
+
+impl ImpactSet {
+    /// The human rendering (031 §5), which **leads with the closure reason**.
+    ///
+    /// Grouped by root, because that is the question a maintainer asks: not "which 400 entities"
+    /// but "why am I running 400 tests". Each group's first line is the change somebody made; the
+    /// entities it reached follow, each with the edge it was reached by.
+    ///
+    /// `PARTIAL` is a line of its own rather than a field to go looking for — §4 requires the gap
+    /// to be prominent, and a report that buries it converts an unknown into a false assurance
+    /// just as surely as omitting it.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+
+        // Roots first, in the set's own order, so the report is as deterministic as the set.
+        let mut roots: Vec<&Entity> = Vec::new();
+        for j in self.entities.values() {
+            if !roots.contains(&&j.root) {
+                roots.push(&j.root);
+            }
+        }
+
+        for root in roots {
+            let Some(rj) = self.entities.get(root) else {
+                continue;
+            };
+            out.push_str(&format!(
+                "CHANGED  {} {}  ({})  {}\n",
+                kind_word(root),
+                root.name(),
+                root.file(),
+                class_word(rj.class)
+            ));
+            let reached: Vec<(&Entity, &Justification)> = self
+                .entities
+                .iter()
+                .filter(|(e, j)| &j.root == root && *e != root)
+                .collect();
+            for (i, (e, j)) in reached.iter().enumerate() {
+                let last = i + 1 == reached.len();
+                out.push_str(&format!(
+                    "  {} {} {}  {}\n",
+                    if last { "└─" } else { "├─" },
+                    e.file(),
+                    e.name(),
+                    edge_word(j.edges.first())
+                ));
+            }
+        }
+
+        if let Completeness::Partial {
+            unparsed_files,
+            unresolved_calls,
+            unknown_configs,
+            address_taken_fallbacks,
+        } = &self.completeness
+        {
+            let mut why: Vec<String> = Vec::new();
+            if !unparsed_files.is_empty() {
+                why.push(format!(
+                    "{} file(s) did not parse ({})",
+                    unparsed_files.len(),
+                    unparsed_files.join(", ")
+                ));
+            }
+            if *address_taken_fallbacks > 0 {
+                why.push(format!(
+                    "{address_taken_fallbacks} indirect call site(s) reached by address-taken \
+                     fallback"
+                ));
+            }
+            if *unresolved_calls > 0 {
+                why.push(format!("{unresolved_calls} unresolved call(s)"));
+            }
+            if !unknown_configs.is_empty() {
+                why.push(format!("{} unknown config(s)", unknown_configs.len()));
+            }
+            out.push_str(&format!(
+                "PARTIAL  {}; their tests are in the always-run set\n",
+                why.join("; ")
+            ));
+        } else if self.entities.is_empty() {
+            // **An empty answer must say so.** "Nothing to run" is the most consequential thing
+            // this tool says, and a blank report is indistinguishable from a crash.
+            out.push_str("no impact\n");
+        }
+        out
+    }
+
+    /// The machine format (031 §5), for 050.
+    ///
+    /// Deterministic: the entities are already ordered by kind, file and name, and nothing here
+    /// re-orders them. Two runs produce byte-identical documents, which is what lets a caller
+    /// diff two reports.
+    pub fn to_json(&self) -> String {
+        let entities: Vec<serde_json::Value> = self
+            .entities
+            .iter()
+            .map(|(e, j)| {
+                serde_json::json!({
+                    "kind": kind_word(e),
+                    "file": e.file(),
+                    "name": e.name(),
+                    "class": class_word(j.class),
+                    "root": {
+                        "kind": kind_word(&j.root),
+                        "file": j.root.file(),
+                        "name": j.root.name(),
+                    },
+                    "edges": j.edges.iter().map(edge_json).collect::<Vec<_>>(),
+                    "distance": j.distance,
+                })
+            })
+            .collect();
+
+        let completeness = match &self.completeness {
+            Completeness::Complete => serde_json::json!({ "kind": "Complete" }),
+            Completeness::Partial {
+                unparsed_files,
+                unresolved_calls,
+                unknown_configs,
+                address_taken_fallbacks,
+            } => serde_json::json!({
+                "kind": "Partial",
+                "unparsed_files": unparsed_files,
+                "unresolved_calls": unresolved_calls,
+                "unknown_configs": unknown_configs,
+                "address_taken_fallbacks": address_taken_fallbacks,
+            }),
+        };
+
+        serde_json::json!({ "entities": entities, "completeness": completeness }).to_string()
+    }
+}
+
+fn kind_word(e: &Entity) -> &'static str {
+    match e {
+        Entity::Function { .. } => "function",
+        Entity::Global { .. } => "global",
+        Entity::Typedef { .. } => "typedef",
+        Entity::Record { .. } => "record",
+        Entity::EnumConst { .. } => "enum-constant",
+        Entity::Macro { .. } => "macro",
+    }
+}
+
+fn class_word(c: ChangeClass) -> String {
+    match c {
+        ChangeClass::BodyChanged => "BodyChanged".into(),
+        ChangeClass::SignatureChanged => "SignatureChanged".into(),
+        ChangeClass::InitializerChanged => "InitializerChanged".into(),
+        ChangeClass::MacroBodyChanged => "MacroBodyChanged".into(),
+        ChangeClass::MacroInterfaceChanged => "MacroInterfaceChanged".into(),
+        // The delta is what tells a maintainer whether a wire format moved, so it is in the word
+        // rather than a field they have to go and read.
+        ChangeClass::LayoutChanged { size_delta } => {
+            format!("LayoutChanged (size {size_delta:+})")
+        }
+        ChangeClass::Added => "Added".into(),
+        ChangeClass::Removed => "Removed".into(),
+        ChangeClass::Unknown => "Unknown".into(),
+    }
+}
+
+fn edge_word(e: Option<&ImpactEdge>) -> String {
+    match e {
+        None => "?".into(),
+        Some(ImpactEdge::DirectlyChanged) => "DirectlyChanged".into(),
+        Some(ImpactEdge::Calls { callee }) => format!("Calls {callee}"),
+        Some(ImpactEdge::IndirectCall { callee }) => format!("IndirectCall {callee}"),
+        Some(ImpactEdge::UsesGlobal { name }) => format!("UsesGlobal {name}"),
+        Some(ImpactEdge::UsesType { name }) => format!("UsesType {name}"),
+        Some(ImpactEdge::ExpandsMacro { name }) => format!("ExpandsMacro {name}"),
+        Some(ImpactEdge::FileUnparsed { file }) => format!("FileUnparsed {file}"),
+    }
+}
+
+fn edge_json(e: &ImpactEdge) -> serde_json::Value {
+    let (kind, target) = match e {
+        ImpactEdge::DirectlyChanged => ("DirectlyChanged", None),
+        ImpactEdge::Calls { callee } => ("Calls", Some(callee)),
+        ImpactEdge::IndirectCall { callee } => ("IndirectCall", Some(callee)),
+        ImpactEdge::UsesGlobal { name } => ("UsesGlobal", Some(name)),
+        ImpactEdge::UsesType { name } => ("UsesType", Some(name)),
+        ImpactEdge::ExpandsMacro { name } => ("ExpandsMacro", Some(name)),
+        ImpactEdge::FileUnparsed { file } => ("FileUnparsed", Some(file)),
+    };
+    serde_json::json!({ "kind": kind, "target": target })
+}
