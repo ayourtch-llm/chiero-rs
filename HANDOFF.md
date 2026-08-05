@@ -598,7 +598,7 @@ typing the paths ever would.
 > | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
 > | §5 `FuncKey`, `MarchResolver` | done (376cd40) — file + name + start line, and the variant is a resolver, never a parse |
 > | **5 line rule** | done (0e08d70) — **98/98 objects, 0 of 30133 lines** against a real VPP build |
-> | **11 memory budget** | done (7d35375) — **190 MiB** against a documented 256 MiB, measured by a counting allocator |
+> | **11 memory budget** | **one build yes (162 MiB), two builds NO (330 MiB)** — see below |
 > | **13 `tests_for_block`** | done (3d7326f) — the union over a CIR block's `gcov_lines`, keyed on a file the caller supplies |
 > | **§5 `tests_for_span`, `uncovered_lines`** | done (4231609) — through `expansion_loc`, and zero-versus-absent kept apart |
 > | **17 `GCOV_PREFIX_STRIP`** | done (7744934) — computed from the build directory, measured against libgcov |
@@ -606,7 +606,43 @@ typing the paths ever would.
 >
 > **030 is complete except contract 18**, staleness. Everything else in the spec has a test.
 
-> ### ⏭️ THE ONE THING LEFT IN 030 — contract 18, and it needs a decision first
+> ### 🔴 CONTRACT 11 IS RED ON PURPOSE FOR MULTI-BUILD TREES
+>
+> `memory_budget::two_builds_of_every_line_stay_within_budget` **fails**, deliberately. Both
+> benchmarks are `#[ignore]`, so a plain `cargo test` is green; run them with:
+>
+> ```
+> cargo test --release -p chiero-gcov --lib -- --ignored --nocapture
+> ```
+>
+> | | measured | budget |
+> |---|---|---|
+> | one build | 162 MiB | 256 MiB ✅ |
+> | two builds of every line | **330 MiB** | 256 MiB ❌ |
+>
+> The first benchmark was the floor and nothing said so — adversarial review caught that the
+> configuration 030 §5's per-build split *exists for* was the one never measured. VPP compiles
+> under several `CLIB_MARCH_VARIANT`s; a budget met only without them is not met.
+>
+> **The next lever is the entry, not the bitmaps, and this is the second time contract 11 has
+> pointed away from 030 §5's roaring.** Measured: `IndexMap` grows its bucket array to a power of
+> two, so 1M entries occupy 2²¹ buckets at 56 bytes — **~118 MiB, more than the test ids
+> themselves**, and identical whether the index holds one build or four. Roaring bitmaps would not
+> touch it. Candidates, cheapest first:
+>
+> - shrink `LineEntry`: `count: u64` is 8 bytes on every line and gcov counters that exceed `u32`
+>   are rare — but a saturating narrow is a wrong answer, so measure how rare on the VPP corpus
+>   before deciding;
+> - a `(file, line)`-sorted `Vec` with binary search instead of a hash map, which removes the
+>   power-of-two slack entirely and suits an index that is built once and queried many times;
+> - inline storage for the common one- and two-build cases, avoiding `Split`'s per-line heap
+>   allocation (~64 MiB at two builds).
+>
+> ⚠️ Do not raise the budget to make this pass. 256 MiB was derived before the first measurement
+> and the derivation is in `src/memory_budget.rs`; a constant moved to fit the code is the failure
+> that section exists to prevent.
+
+> ### ⏭️ THE OTHER THING LEFT IN 030 — contract 18, and it needs a decision first
 >
 > > Modifying a source file after ingest makes `validity()` return `Stale` naming that file.
 >
