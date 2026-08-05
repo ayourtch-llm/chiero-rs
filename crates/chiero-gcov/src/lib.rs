@@ -14,6 +14,8 @@
 //! and can never answer "which tests executed this macro body" — that join belongs to 031,
 //! through the preprocessor's expansion index.
 
+pub mod native;
+
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -113,6 +115,18 @@ pub enum IngestError {
     Unreadable { path: PathBuf, why: String },
     /// It decompressed and is not the JSON 030 §3 records.
     Malformed { path: PathBuf, why: String },
+    /// A native artifact of a version this decoder has no fixture for (030 contract 9).
+    ///
+    /// **Its own variant, because the caller does something different about it**: an unknown
+    /// version falls back to the JSON path, where a malformed file is a fault to report.
+    UnknownVersion { path: PathBuf, tag: String },
+    /// A `.gcda` from a different compilation than its `.gcno` (030 contract 8).
+    StaleData {
+        notes: PathBuf,
+        data: PathBuf,
+        notes_stamp: u32,
+        data_stamp: u32,
+    },
 }
 
 impl std::fmt::Display for IngestError {
@@ -128,8 +142,28 @@ impl std::fmt::Display for IngestError {
                 write!(f, "cannot read {}: {why}", path.display())
             }
             IngestError::Malformed { path, why } => {
-                write!(f, "{} is not gcov JSON: {why}", path.display())
+                write!(f, "{} is malformed: {why}", path.display())
             }
+            IngestError::UnknownVersion { path, tag } => write!(
+                f,
+                "{} was written by a gcc whose format tag `{tag}` this decoder has no fixture \
+                 for; the JSON path reads any version, and guessing a record layout does not",
+                path.display()
+            ),
+            // **Both stamps, and both paths.** The number is the only thing that says which
+            // build a file came from, and the answer is always "rebuild one of these two".
+            IngestError::StaleData {
+                notes,
+                data,
+                notes_stamp,
+                data_stamp,
+            } => write!(
+                f,
+                "{} (stamp {notes_stamp:08x}) and {} (stamp {data_stamp:08x}) are from different \
+                 compilations; the counters do not belong to this control-flow graph",
+                notes.display(),
+                data.display()
+            ),
         }
     }
 }
