@@ -44,6 +44,11 @@ regex = "1"
 # Surface crates only.
 anyhow = "1"
 serde_json = "1"
+# gcov writes `--json-format` gzipped and the stem rule is gcc's to set (030 §3), so reading it
+# is not optional. **`rust_backend`, with default features off**: the default links miniz via C,
+# and §3 of the working notes makes "builds and runs with no external toolchain" a hard
+# constraint. `miniz_oxide` underneath is pure Rust.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
