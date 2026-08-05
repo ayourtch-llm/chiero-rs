@@ -2955,6 +2955,8 @@ impl Lowerer<'_> {
                                     span,
                                 );
                                 Operand::Value(wide)
+                            } else if bw > w {
+                                self.narrow_shift_count(b, bw, w, span)
                             } else {
                                 b
                             }
@@ -6859,6 +6861,66 @@ impl Lowerer<'_> {
     /// **Lifted so `init_flat` uses the same store rather than a second one.** Wave 142 added
     /// the bit-field branch in front of the conversion instead of beside it and the new path
     /// silently skipped it; one function is one thing to get right.
+    /// Narrow a shift count to the shift's own width, **keeping an out-of-range count out of
+    /// range**.
+    ///
+    /// `1 << i` with a `uword` `i` is an `int` shifted by a 64-bit count — C11 6.5.7p3 promotes
+    /// the operands independently — and CIR wants both at the declared width. A plain `Trunc`
+    /// would be wrong in the direction this project cannot afford: a count at or past the width
+    /// is UB that 020 §4.1 requires as a `shift-UB` event, and truncating `1 << 64` to a 32-bit
+    /// zero turns that report into a silent shift by nothing.
+    ///
+    /// So the count is clamped to the width first, and the width is itself out of range — the
+    /// engine's test is `count >= width`. Every in-range count passes through unchanged, every
+    /// out-of-range one arrives as exactly `width`, and the event still fires.
+    fn narrow_shift_count(&mut self, count: Operand, from: u32, to: u32, span: Span) -> Operand {
+        let too_big = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: too_big,
+                rv: RValue::Cmp {
+                    op: chiero_cir::CmpOp::UGe,
+                    a: count.clone(),
+                    b: Operand::Const(Const::Int {
+                        bits: from,
+                        val: i128::from(to),
+                    }),
+                    ty: CTy::Int(from),
+                },
+            },
+            span,
+        );
+        let narrow = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: narrow,
+                rv: RValue::Cast {
+                    kind: chiero_cir::CastKind::Trunc,
+                    a: count,
+                    from: CTy::Int(from),
+                    to: CTy::Int(to),
+                },
+            },
+            span,
+        );
+        let picked = self.new_value();
+        self.emit(
+            InstKind::Assign {
+                dst: picked,
+                rv: RValue::Select {
+                    cond: Operand::Value(too_big),
+                    t: Operand::Const(Const::Int {
+                        bits: to,
+                        val: i128::from(to),
+                    }),
+                    f: Operand::Value(narrow),
+                },
+            },
+            span,
+        );
+        Operand::Value(picked)
+    }
+
     /// Find a member by name, **through anonymous members** (C11 6.7.2.1p13).
     ///
     /// `struct { union { int a; unsigned f; }; int c; }` promotes `a` and `f` into the enclosing
