@@ -2935,7 +2935,13 @@ impl Lowerer<'_> {
                         // and inventing one for any *other* operator would be the bug
                         // 015 §2 forbids.
                         let b = if matches!(op, chiero_ast::BinOp::Shl | chiero_ast::BinOp::Shr) {
-                            let bw = self.raw_width_of(*rhs);
+                            // **The width of the operand as lowered, not as written.** A count
+                            // narrower than `int` has already been promoted by 014 and the value
+                            // in hand is 32 bits, so `raw_width_of` — which walks *past* every
+                            // conversion on purpose — described a `ZExt` from a width that no
+                            // longer existed. `width_of` reads the top of the same node chain,
+                            // which is what `b` actually holds.
+                            let bw = self.width_of(*rhs);
                             if bw < w {
                                 let wide = self.new_value();
                                 self.emit(
