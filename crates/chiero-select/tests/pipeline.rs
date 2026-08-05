@@ -336,3 +336,86 @@ fn a_partial_index_reduces_confidence() {
         sel.tests
     );
 }
+
+/// **Contract 20, and it is the sharpest in 032.**
+///
+/// > Reduction and safety are both present in every report; a report containing reduction alone
+/// > fails.
+///
+/// A selection tool's whole product is a claim that some tests need not run. A report that shows
+/// "3412 excluded" without showing what was *unconditionally kept* and how confident the answer
+/// is invites exactly one reading — "it works, we run fewer tests" — and that reading is
+/// unfalsifiable from the report itself.
+#[test]
+fn every_report_carries_reduction_and_safety_together() {
+    let before = Program::parse("t.c", t_c()).expect("parses");
+    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
+        .expect("parses");
+    let suite = Suite {
+        tests: vec![TestId(0), TestId(1), TestId(2)],
+        ..Suite::default()
+    };
+    let text = select_with(&impact(&before, &after), &after, &index_with(&[TestId(0)]), &suite)
+        .render();
+
+    assert!(text.contains("SELECTED"), "the reduction:\n{text}");
+    assert!(text.contains("ALWAYS-RUN"), "the safety set:\n{text}");
+    assert!(text.contains("CONFIDENCE"), "and how much to trust it:\n{text}");
+}
+
+/// **Contract 16.** The ranking is deterministic, and it leads with what the maintainer should
+/// look at first — the tests closest to the change.
+#[test]
+fn the_ranking_is_deterministic_and_leads_with_the_closest() {
+    let before = Program::parse("t.c", t_c()).expect("parses");
+    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
+        .expect("parses");
+    let idx = index_with(&[TestId(0)]);
+    let a = select(&impact(&before, &after), &after, &idx);
+    let b = select(&impact(&before, &after), &after, &idx);
+    assert_eq!(a.ranked(), b.ranked());
+    assert!(!a.ranked().is_empty());
+}
+
+/// **Contract 17.** A budget truncates the ranked list, and the report says so — truncation is
+/// **not** refinement.
+///
+/// §5.1: *"the dropped tests were selected, so the report states the count, the residual risk,
+/// and the rank cutoff, and `Confidence` becomes `Reduced`. A budgeted run must never render as
+/// if it covered the impact."*
+#[test]
+fn a_budget_truncates_and_says_so() {
+    let p = Program::parse("t.c", t_c()).expect("parses");
+    let suite = Suite {
+        tests: vec![TestId(0), TestId(1), TestId(2), TestId(3)],
+        ..Suite::default()
+    };
+    let full = select_with(&impact(&p, &p), &p, &index_with(&[TestId(0)]), &suite);
+    assert!(full.tests.len() >= 3, "the fixture needs something to cut");
+
+    let cut = full.clone().budgeted(2);
+    assert_eq!(cut.ranked().len(), 2);
+    match &cut.confidence {
+        Confidence::Reduced { reasons } => assert!(
+            reasons.iter().any(|r| r.contains("budget") && r.contains("dropped")),
+            "the report states the count and the cutoff: {reasons:?}"
+        ),
+        other => panic!("a budgeted run is never Full confidence, got {other:?}"),
+    }
+    let text = cut.render();
+    assert!(
+        text.contains("BUDGET"),
+        "a budgeted run must never render as if it covered the impact:\n{text}"
+    );
+}
+
+/// A budget that cuts nothing changes nothing — including the confidence.
+#[test]
+fn a_budget_that_fits_is_not_a_caveat() {
+    let before = Program::parse("t.c", t_c()).expect("parses");
+    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
+        .expect("parses");
+    let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
+    let n = sel.tests.len();
+    assert_eq!(sel.clone().budgeted(n + 5).confidence, sel.confidence);
+}
