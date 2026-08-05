@@ -319,6 +319,38 @@ impl CoverageIndex {
         &self.provenance
     }
 
+    /// Release the capacity ingest left behind (030 contract 11).
+    ///
+    /// **Growth slack, not data.** Every container here doubles as it fills, so an index of a
+    /// million lines sits in two million buckets and each line's test list in the next power of
+    /// two above what it holds. Measured on 1M lines under two builds: **330 MiB grown, 285
+    /// after this** — a quarter of the index was capacity nobody asked for.
+    ///
+    /// Ingest cannot do it: a caller merges many objects into one index and shrinking between
+    /// them would reallocate everything each time. So it is the caller's to call, once, when the
+    /// last artifact is in — which is also when an index stops growing and starts being queried,
+    /// and the shape 031 wants to hold or move.
+    pub fn shrink_to_fit(&mut self) {
+        self.lines.shrink_to_fit();
+        for e in self.lines.values_mut() {
+            match &mut e.tests {
+                Tests::Unknown => {}
+                Tests::One(t) => t.shrink_to_fit(),
+                Tests::Split(per) => {
+                    per.shrink_to_fit();
+                    for (_, t) in per.iter_mut() {
+                        t.shrink_to_fit();
+                    }
+                }
+            }
+        }
+        self.file_ids.shrink_to_fit();
+        self.file_names.shrink_to_fit();
+        self.variants.shrink_to_fit();
+        self.tests.shrink_to_fit();
+        self.provenance.shrink_to_fit();
+    }
+
     /// The tests that executed a line, in test order, or `None` when nothing recorded the line.
     ///
     /// **`None` rather than an empty set.** An empty set is the claim "no test covers this", which

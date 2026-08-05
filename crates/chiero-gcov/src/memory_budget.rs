@@ -163,7 +163,14 @@ fn measure(variants: &[Variant]) -> usize {
             lines += 1;
         }
     }
+    let grown = LIVE.load(Ordering::Relaxed).saturating_sub(before);
+    // What a caller holds: ingest is finished, so the growth slack is released (contract 11).
+    idx.shrink_to_fit();
     let used = LIVE.load(Ordering::Relaxed).saturating_sub(before);
+    println!(
+        "   (grown: {} MiB, held after shrink_to_fit:)",
+        grown / (1024 * 1024)
+    );
 
     // Read something back, so the index cannot be optimised away and so a representation that
     // saved memory by losing answers fails here rather than passing quietly.
