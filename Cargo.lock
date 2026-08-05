@@ -463,6 +463,8 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "chiero-ast",
+ "chiero-diff",
+ "chiero-gcov",
  "chiero-lower",
  "chiero-parse",
  "chiero-pp",

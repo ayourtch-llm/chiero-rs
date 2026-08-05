@@ -4,6 +4,7 @@
 pub mod cc;
 pub mod contracts;
 pub mod deps;
+pub mod mutation_gate;
 pub mod proof_surface;
 pub mod sweep;
 pub mod vpp_leak;

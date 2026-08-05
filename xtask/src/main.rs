@@ -21,6 +21,10 @@ fn main() -> ExitCode {
                 ExitCode::from(u8::try_from(code).unwrap_or(1))
             }
         }
+        Some("mutation-gate") => match xtask::mutation_gate::mutation_gate() {
+            0 => ExitCode::SUCCESS,
+            _ => ExitCode::FAILURE,
+        },
         Some("check-proof-surface") => match xtask::proof_surface::check_proof_surface() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,

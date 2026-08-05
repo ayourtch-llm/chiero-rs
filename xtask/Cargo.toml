@@ -18,6 +18,8 @@ chiero-sema.workspace = true
 chiero-lower.workspace = true
 chiero-recipe.workspace = true
 chiero-span.workspace = true
+chiero-gcov.workspace = true
+chiero-diff.workspace = true
 
 [lints]
 workspace = true
