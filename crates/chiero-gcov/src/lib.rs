@@ -308,11 +308,28 @@ impl CoverageIndex {
         sm: &chiero_span::SourceMap,
         sp: chiero_span::Span,
     ) -> Option<Vec<TestId>> {
+        // **A construct with no location has no coverage.** `expansion_loc` does not guard this —
+        // 010 §4 says resolving `DUMMY.lo` fabricates a location and its callers must — and
+        // synthesized CIR nodes carry `Span::DUMMY` (020 §6). Unguarded, they were answered with
+        // line 1 of whichever file sits at offset 0.
+        if sp.is_dummy() {
+            return None;
+        }
         let lo = sm.expansion_loc(sp)?;
-        // The end resolves through the same chain; a span inside one expansion collapses to a
-        // single call-site line, and one in ordinary code spans the lines it covers.
+        // **The last byte the span covers, not `sp.hi`**, which is exclusive and therefore not a
+        // position in the span at all. Resolving it directly went wrong twice: at the end of a
+        // file it is past `end_pos`, which `lookup_file` refuses, so the whole span collapsed to
+        // its first line; and one past a newline it is the *next* line, which the union then
+        // pulled in.
+        let last = if sp.hi > sp.lo {
+            chiero_span::BytePos(sp.hi.0 - 1)
+        } else {
+            sp.lo
+        };
+        // Resolved through the same expansion chain, so a span inside one expansion collapses to
+        // its single call-site line and one in ordinary code spans the lines it covers.
         let hi = sm
-            .expansion_loc(chiero_span::Span::new(sp.hi, sp.hi, sp.ctx))
+            .expansion_loc(chiero_span::Span::new(last, last, sp.ctx))
             .filter(|h| h.file == lo.file)
             .map_or(lo.line, |h| h.line);
         let file = sm.file(lo.file).path().to_string_lossy().into_owned();
