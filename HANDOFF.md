@@ -855,14 +855,30 @@ typing the paths ever would.
 > Its absence leaves a superset — the direction that never misses a regression. Do not "finish"
 > it by pruning without a proof.
 >
-> ⏭️ **Next in 032**, in the order the spec gives them:
+> ### 🏆 032's HEADLINE CONTRACT IS GREEN — and it passed on arrival (1271a6e)
 >
-> - **contract 4, the headline**: a macro-body-only change selects the tests exercising the
->   expansion sites. The machinery is all present — 031 turns the macro into impacted functions
->   and those have coverage — so this is a *test*, and if it passes first time say so.
-> - **contracts 10, 12, 13**: the rest of §4's safety set — a test in the tree but absent from the
->   index, a stale index (`validity() != Fresh`, which 030 contract 18 now answers), and
->   `Partial` → `Confidence::Reduced`.
+> > 4. For a macro-body-only change in a header, chiero selects the tests that exercise the
+> >    expansion sites.
+>
+> | | |
+> |---|---|
+> | 030 | `t.c:3` is covered by the test; **`m.h:1` is not recorded** |
+> | 031 | the macro change becomes `main`, via `expansion_sites` |
+> | 032 | `main`'s lines meet the index, and the test is selected |
+>
+> **It passed the first time it ran**, because every piece was already built and measured. That is
+> recorded rather than dressed up — and its *premises* are asserted inside the test rather than
+> trusted, because this project's history says a test that passes immediately is the shape that
+> proves nothing. It checks that `main` really is in the impact set, and that
+> `tests_for_line("m.h", 1)` really is `None`.
+>
+> Source and coverage are both the committed fixtures: `t.c`/`m.h` verbatim, and the `t.gcno`/
+> `t.gcda` gcov itself produced.
+>
+> ⏭️ **Next in 032**, in the order the spec gives them:
+> - ~~contracts 10, 12, 13~~ — done (26d80ea). ⚠️ `Suite::default()` is **the one place in the
+>   crate where the default is not the safe direction**: a caller who omits the suite list gets no
+>   contract-10 selections, which is a *smaller* answer. It is documented on the type.
 > - **§5's ranking and §5.1's `--budget`** (contracts 17, 20): a report must carry reduction *and*
 >   safety, and one showing reduction alone fails contract 20.
 > - **§3's refinement** (contracts 5–8), which needs the solver and is where precision finally
