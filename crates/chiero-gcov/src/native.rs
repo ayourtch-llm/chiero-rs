@@ -801,3 +801,121 @@ pub fn ingest_into(
 
 use crate::CoverageDetail;
 use indexmap::IndexMap;
+
+/// Line coverage **and** the arc-level data only the native path can produce (030 §5).
+///
+/// **Contract 4 is met by this type existing separately.** There is no `tests_for_arc` on
+/// [`crate::CoverageIndex`], so asking a JSON-derived index for arcs does not compile — rather
+/// than answering `None`, which a caller can read as "no tests took this arc" and act on.
+///
+/// Functions are keyed by name here. 030 §5's `FuncKey` adds the file, the start line and the
+/// multiarch variant, which matter the moment two objects are merged; this is the single-object
+/// shape and the key is where that grows.
+#[derive(Clone, Debug, Default)]
+pub struct ArcCoverage {
+    index: crate::CoverageIndex,
+    /// `(function, from, to) -> count`, real arcs only.
+    counts: IndexMap<(String, u32, u32), u64>,
+    /// The same keys, and who took them.
+    tests: IndexMap<(String, u32, u32), Vec<crate::TestId>>,
+    /// Arc order per function, so a query can list them as the CFG does.
+    order: IndexMap<String, Vec<(u32, u32)>>,
+}
+
+impl ArcCoverage {
+    /// The line-level index built from the same solve.
+    pub fn index(&self) -> &crate::CoverageIndex {
+        &self.index
+    }
+
+    /// The real arcs of a function, in the order the notes list them.
+    ///
+    /// `FAKE` arcs are not here: they run to the exit block from a call that may not return, so
+    /// they are not control flow a test can be selected by (contract 7).
+    pub fn arcs_of(&self, func: &str) -> Option<Vec<(u32, u32)>> {
+        self.order.get(func).cloned()
+    }
+
+    /// How often an arc was taken, or `None` when the graph has no such real arc.
+    pub fn arc_count(&self, func: &str, arc: (u32, u32)) -> Option<u64> {
+        self.counts.get(&(func.to_string(), arc.0, arc.1)).copied()
+    }
+
+    /// The tests that took an arc, or `None` when the graph has no such real arc.
+    pub fn tests_for_arc(&self, func: &str, arc: (u32, u32)) -> Option<Vec<crate::TestId>> {
+        self.tests.get(&(func.to_string(), arc.0, arc.1)).cloned()
+    }
+}
+
+/// Decode one object's arcs and lines together.
+pub fn arc_coverage(dir: &Path, stem: &str) -> Result<ArcCoverage, IngestError> {
+    let mut cov = ArcCoverage::default();
+    arc_coverage_read(&mut cov, None, dir, stem)?;
+    Ok(cov)
+}
+
+/// The same, attributing every arc it reads to `test`.
+pub fn arc_coverage_into(
+    cov: &mut ArcCoverage,
+    test: crate::TestId,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
+    arc_coverage_read(cov, Some(test), dir, stem)
+}
+
+fn arc_coverage_read(
+    cov: &mut ArcCoverage,
+    test: Option<crate::TestId>,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
+    let notes_path = dir.join(format!("{stem}.gcno"));
+    let data_path = dir.join(format!("{stem}.gcda"));
+    for p in [&notes_path, &data_path] {
+        if !p.exists() {
+            return Err(IngestError::Missing { path: p.clone() });
+        }
+    }
+    pair(&notes_path, &data_path)?;
+    let notes = read_notes(&notes_path)?;
+    let data = read_data(&data_path)?;
+
+    // The line half goes through the ordinary ingest, so there is exactly one solve and one line
+    // rule in this crate rather than a second copy that can drift from contract 5's gate.
+    ingest_into(&mut cov.index, test, dir, stem)?;
+
+    for f in &notes.functions {
+        let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
+            continue; // `ingest_into` has already refused this file.
+        };
+        let arcs = solve_arcs(f, &d.counters, &data_path)?;
+        let order = cov.order.entry(f.name.clone()).or_default();
+        for (i, a) in f.arcs.iter().enumerate() {
+            // **Included in the solve above, excluded here** (contract 7). `solve_arcs` saw every
+            // arc — conservation at the block a fake arc leaves does not balance without it — and
+            // the query surface holds only the ones a program can take.
+            if a.flags.contains(ArcFlags::FAKE) {
+                continue;
+            }
+            let key = (f.name.clone(), a.from, a.to);
+            if !order.contains(&(a.from, a.to)) {
+                order.push((a.from, a.to));
+            }
+            let slot = cov.counts.entry(key.clone()).or_insert(0);
+            *slot = slot.saturating_add(arcs[i]);
+            // **Recorded for the test even when the arc was not taken.** The graph knows the arc
+            // exists; only the traversal is absent, and that is the crate's absence-versus-zero
+            // rule one level down from the line index.
+            if let Some(t) = test {
+                let set = cov.tests.entry(key).or_default();
+                if !set.contains(&t) {
+                    set.push(t);
+                }
+            } else {
+                cov.tests.entry(key).or_default();
+            }
+        }
+    }
+    Ok(())
+}
