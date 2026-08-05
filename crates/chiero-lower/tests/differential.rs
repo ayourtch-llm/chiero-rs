@@ -6662,3 +6662,43 @@ fn a_scalar_compound_literal_converts_its_initializer() {
         "return take(&(int){ 5 });",
     );
 }
+
+/// **`b->m` where `b` is an *array* has no address, so an aggregate assignment through it fails.**
+///
+/// ```text
+/// vppinfra/cJSON.c:1180:1: `print` contains a construct lowering cannot represent
+///   printbuffer buffer[1];
+///   buffer->hooks = *hooks;        /* inner: an aggregate assignment to something with
+///                                     no address */
+/// ```
+///
+/// `buffer` is an array of one, so `buffer->hooks` is `(*buffer).hooks` after the array decays
+/// to a pointer to its first element (C11 6.3.2.1p3). `b[0].h = *s` — the same object written
+/// the other way — has always worked, so this is the decay that is missing rather than the
+/// assignment.
+///
+/// The one-element array is a C idiom for "a value the callee may modify without the caller
+/// writing `&`", and `va_list` is the same trick, so it is not rare.
+#[test]
+fn an_arrow_through_an_array_name_is_an_lvalue() {
+    agree_with(
+        "struct H { int a, b; }; struct B { struct H h; int z; };",
+        "struct H s = {3,4}; struct B b[1]; b->z = 5; b->h = s; return b->h.a*100 + b->h.b*10 + b->z;",
+    );
+    // Through a pointer parameter, which is the corpus shape exactly.
+    agree_with(
+        "struct H { int a, b; }; struct B { struct H h; };\n\
+         static int fill(const struct H *s) { struct B b[1]; b->h = *s; return b->h.a*10 + b->h.b; }",
+        "struct H s = {6,7}; return fill(&s);",
+    );
+    // A scalar member through the same arrow, which already worked.
+    agree_with(
+        "struct B { int z; };",
+        "struct B b[1]; b->z = 9; return b->z;",
+    );
+    // And a two-element array, so the fix cannot assume the first element.
+    agree_with(
+        "struct H { int a; }; struct B { struct H h; };",
+        "struct H s = {8}; struct B b[2]; (b+1)->h = s; return (b+1)->h.a;",
+    );
+}
