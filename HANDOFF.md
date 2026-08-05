@@ -464,9 +464,24 @@ have entrenched conventions real lowering then had to match.)
   selects has a non-zero count for the line, so some block carrying it was entered). Needs a
   line→block bridge on the change side. Both halves are built: `line_reached` and `changed_lines`.
 - **18, historical replay** — §6's ground-truth oracle, "the one that would catch a real design
-  flaw". **Unblocked 2026-08-05 — the user corrected this: `make test` in `/home/ubuntu/vpp`
-  is enough, no root and no network namespaces.** Every note below saying otherwise is wrong
-  and is kept only so the correction is legible.
+  flaw". **Unblocked and VERIFIED 2026-08-05.** The user corrected the premise and it holds:
+  `make test TEST=test_vlib` in `/home/ubuntu/vpp` builds and runs with **no root and no
+  network namespaces** — 6 scheduled, 6 executed, 1 passed, 5 skipped, "Test run was
+  successful". Every note below saying otherwise is wrong and is kept only so the correction
+  is legible.
+
+  > One stumble worth recording: `make build` refuses on `$(BR)/.deps.ok` because apt reports
+  > `openssl` one patch behind. It is a freshness check, not a missing dependency, and
+  > `touch build-root/.deps.ok` (a gitignored artifact directory) walks past it. The toolchain
+  > has built this tree many times.
+
+  **The harness is built** — `xtask/src/replay_gate.rs`, `cargo run -p xtask -- replay-gate`,
+  corpus at `tests/corpus/replay/corpus.tsv`. What remains is *populating* it, which means
+  finding a VPP commit with a known test failure and running the named test at `commit^` and
+  `commit` to confirm it fails then passes. The manifest records `observed` vs `asserted` and
+  **only `observed` counts towards recall**: a ground-truth oracle computed over beliefs
+  measures the beliefs, which is the exact failure the mutation gate had to be rebuilt to
+  avoid.
 
 ### 7.2 `prove_equivalent` — built 2026-08-05, and what is left of it
 
@@ -1019,7 +1034,7 @@ typing the paths ever would.
 > | 17, 20 budget and report | ✅ reduction and safety always together |
 > | **19 the mutation gate** | ✅ 100% / 14.3% / 65%, whole pipeline |
 > | 7 reachability refinement | ❌ **cannot fire at line granularity — proven, not guessed** (see below) |
-> | 18 historical replay | ⏳ **unblocked** — `make test` needs no root (user, 2026-08-05) |
+> | 18 historical replay | 🟡 harness built, corpus empty — `make test` verified to need no root |
 >
 > ### 🚀 032's FOUNDATION (contracts 1, 3, 9, 11, 15, 16)
 >

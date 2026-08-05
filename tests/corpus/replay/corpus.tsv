@@ -1,0 +1,20 @@
+# 032 contract 18 — the historical-replay corpus.
+#
+#   commit<TAB>test<TAB>evidence<TAB>note
+#
+# `evidence` is `observed` or `asserted`, and the difference is the whole point:
+#
+#   observed  the test was RUN at commit^ and at commit and changed its verdict.
+#             The only kind that counts towards recall.
+#   asserted  somebody read the commit and concluded the test would have caught it.
+#             Recorded so the candidate is not lost, and excluded from the figure —
+#             a recall computed over beliefs measures the beliefs.
+#
+# THIS FILE IS EMPTY OF OBSERVED ENTRIES, and the gate says so rather than printing
+# 100% over nothing. 032 §6 calls historical replay "the ground-truth oracle and the
+# one that would catch a real design flaw"; over an empty corpus it is not one.
+#
+# Establishing an entry: build VPP at commit^ and at commit, run the named test at
+# both, confirm it fails then passes. Verified 2026-08-05 that this is possible here
+# — `make test TEST=<name>` needs no root and no network namespaces, correcting a
+# premise this project carried for weeks.

@@ -184,7 +184,11 @@ impl Report {
                 "\n  recall {:.1}%  over {} observed entr{}\n",
                 r * 100.0,
                 self.counted().len(),
-                if self.counted().len() == 1 { "y" } else { "ies" }
+                if self.counted().len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             )),
             None => s.push_str(
                 "\n  recall: NOT MEASURED — the corpus has no `observed` entry.\n  \

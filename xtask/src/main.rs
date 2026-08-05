@@ -21,6 +21,37 @@ fn main() -> ExitCode {
                 ExitCode::from(u8::try_from(code).unwrap_or(1))
             }
         }
+        Some("replay-gate") => match xtask::replay_gate::replay_gate() {
+            Ok(r) => {
+                println!("{}", r.render());
+                // **An unmeasured recall is not a pass.** 032 contract 18 is a safety gate,
+                // and a gate that reports success over an empty corpus is the flattering
+                // failure this project has met seventeen times.
+                match r.recall() {
+                    Some(x) if x >= 1.0 => {
+                        println!("PASS: recall 100%");
+                        ExitCode::SUCCESS
+                    }
+                    Some(_) => {
+                        eprintln!(
+                            "FAIL: a test that would have caught a real commit was not selected"
+                        );
+                        ExitCode::FAILURE
+                    }
+                    None => {
+                        eprintln!(
+                            "NOT A GATE YET: the corpus has no observed entry, so nothing \
+                             was measured"
+                        );
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("replay-gate: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("mutation-gate") => match xtask::mutation_gate::mutation_gate() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
