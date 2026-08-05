@@ -29,3 +29,16 @@ hot logic *is* macros.
 That gap is what chiero's own preprocessor exists to close, so contract 2 pins the fact: if a
 future gcc starts recording `m.h:1`, this fixture fails loudly and the justification for the
 hand-written frontend has to be re-argued rather than quietly assumed.
+
+## The pairing and version fixtures (contracts 8 and 9)
+
+`other.c` is a **second, unrelated compilation**, committed with its own `.gcno`/`.gcda`. Its
+stamp differs from `t`'s — `9b8924d1` against `1f830cd1` — because gcc derives the stamp per
+compilation, so pairing `t.gcno` with `other.gcda` is a *genuinely* stale pairing rather than a
+mutated one. That is the single most common source of nonsense coverage in a build tree nobody
+cleaned, and contract 8 requires it rejected with both stamps named.
+
+`badversion.gcno` **is** a mutation, and the only one here: `other.gcno` with its version word
+replaced by `*99Z`, a tag gcc has never written. Everything else is byte-identical, so a decoder
+that ignored the version would read it happily — which is what contract 9 forbids. Regenerate it
+with the four-line script in the commit that added it.
