@@ -4159,10 +4159,24 @@ impl Cx<'_> {
                     signed,
                 })
             }
-            ExprKind::Ident(sym) => self.enumerators.get(&sym).copied().map(|v| IntVal {
-                v,
-                bits: int_bits,
-                signed: true,
+            // **At the enumeration's own width, not at `int`.** `type_expr` resolves an
+            // enumerator through `enumerator_ty` — it was taught to when `enum Big { X =
+            // 5000000000 }` lowered truncated — and this path kept its own answer, so a fold of
+            // `A_BIT | B_BIT` on `1ULL << 32` overflowed 32 bits and reported a defect in code
+            // gcc compiles silently. VPP's virtio feature bits are exactly that shape.
+            //
+            // The fallback stays `int` for an enumerator whose enumeration this context never
+            // saw defined: 6.4.4.3p2's rule is the right guess when there is nothing better.
+            ExprKind::Ident(sym) => self.enumerators.get(&sym).copied().map(|v| {
+                let (bits, signed) = self
+                    .out
+                    .enumerator_ty(sym)
+                    .and_then(|t| match self.out.types[t.0 as usize] {
+                        Ty::Int { signed, bits } => Some((bits, signed)),
+                        _ => None,
+                    })
+                    .unwrap_or((int_bits, true));
+                IntVal { v, bits, signed }
             }),
             ExprKind::SizeofType(ty) => {
                 let t = self.ty_of(ty);
