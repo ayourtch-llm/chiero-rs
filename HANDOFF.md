@@ -844,12 +844,33 @@ typing the paths ever would.
 >
 > ⚠️ Both guard `is_dummy` first — the **third** place in this codebase that has needed it.
 >
-> ### ⏭️ WHAT IS NEXT — 032, test selection
+> ### 🚀 032 HAS STARTED — the join is made (contracts 1, 3, 9, 11, 15, 16)
 >
-> `chiero-select` is one line. Both halves it joins are now real and measured: `chiero-gcov`
-> agrees with gcov exactly on a full VPP build, and `chiero-diff` answers all twenty of 031's
-> contracts. 032 §4's symbolic refinement is where the impact set gets *narrowed* — §3.2 is
-> explicit that precision comes from there and "not from pretending the impact is smaller".
+> `chiero-select` runs steps ①, ③ and ④ of §1's pipeline. `chiero-diff` gained
+> `Program::lines_of`, the entity's lines **through `expansion_loc`** — which is what makes the
+> join work at all, since gcov records the line a macro was *used* on and never the macro's own.
+>
+> ⚠️ **Step ② is deliberately absent.** Symbolic refinement is the only step that *removes*
+> anything; §3 requires a proof before a test may be dropped, and nothing here could produce one.
+> Its absence leaves a superset — the direction that never misses a regression. Do not "finish"
+> it by pruning without a proof.
+>
+> ⏭️ **Next in 032**, in the order the spec gives them:
+>
+> - **contract 4, the headline**: a macro-body-only change selects the tests exercising the
+>   expansion sites. The machinery is all present — 031 turns the macro into impacted functions
+>   and those have coverage — so this is a *test*, and if it passes first time say so.
+> - **contracts 10, 12, 13**: the rest of §4's safety set — a test in the tree but absent from the
+>   index, a stale index (`validity() != Fresh`, which 030 contract 18 now answers), and
+>   `Partial` → `Confidence::Reduced`.
+> - **§5's ranking and §5.1's `--budget`** (contracts 17, 20): a report must carry reduction *and*
+>   safety, and one showing reduction alone fails contract 20.
+> - **§3's refinement** (contracts 5–8), which needs the solver and is where precision finally
+>   comes from — §3.2: "not from pretending the impact is smaller".
+>
+> ⚠️ **The two evaluation gates (18, 19) are the real bar**: 100% recall on a historical-replay
+> corpus, and 100% recall over N macro-body mutations. A single miss fails them. Neither exists
+> yet, and nothing in 032 should be called finished until they do.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
