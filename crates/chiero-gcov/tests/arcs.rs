@@ -167,3 +167,47 @@ fn the_entry_block_is_entered_when_the_function_ran() {
     let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
     assert_eq!(cov.entered_block(&main_key(), 0), Some(true));
 }
+
+/// **032 §3.2's actual question, in one call: did this run reach the code on that line?**
+///
+/// §3.2's point is that line-level coverage is too coarse:
+///
+/// > it matters because line-level coverage attributes a whole line — including a multi-statement
+/// > macro expansion — to a test that only executed part of it.
+///
+/// `t.c:3` is exactly that line: `M; M;` — one line, two expansions of a multi-statement macro,
+/// several blocks. Line coverage says "this test covered line 3" for a run that entered any of
+/// them; the arcs say which.
+///
+/// The query takes a file and a line rather than a `FuncKey` and a block number, because that is
+/// what a caller has: 031 reports an entity's *lines*, and gcov's block numbering is an internal
+/// detail of the graph this crate decoded.
+#[test]
+fn a_line_is_reached_when_flow_entered_a_block_carrying_it() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
+    assert_eq!(
+        cov.line_reached("t.c", 3),
+        Some(true),
+        "the run executed the macro expansions on line 3"
+    );
+}
+
+/// A line whose blocks were never entered is `Some(false)` — which is what may drop a test.
+#[test]
+fn a_line_in_a_function_that_never_ran_is_not_reached() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "unrun").expect("unrun decodes");
+    assert_eq!(
+        cov.line_reached("unrun.c", 1),
+        Some(false),
+        "nothing called it, so no block carrying its line was entered"
+    );
+}
+
+/// **A line the graph does not mention is `None`, not `false`.** The distinction is the whole
+/// crate: `false` may drop a test, and "this line is not in the arc data" supports no such claim.
+#[test]
+fn a_line_the_arcs_do_not_mention_answers_nothing() {
+    let cov = chiero_gcov::native::arc_coverage(&corpus(), "t").expect("t decodes");
+    assert_eq!(cov.line_reached("t.c", 999), None);
+    assert_eq!(cov.line_reached("nosuch.c", 3), None);
+}
