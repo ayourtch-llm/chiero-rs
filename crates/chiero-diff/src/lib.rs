@@ -572,14 +572,49 @@ impl Program {
 /// **This is 031 §2's "normalized token stream".** Whitespace, comments and line positions are
 /// gone by the time the preprocessor is done, so two spellings that differ only in those produce
 /// the same vector — which is contracts 1, 2 and 3 together, and for free.
-fn tokens_between(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<String> {
-    // `text_at` rather than `token_texts`, which would collect a vector of every token's text
-    // *per entity* — quadratic in a translation unit, and VPP's headers expand to a million
-    // tokens before the first declaration of the file itself.
+/// The tokens **written** in `[lo, hi)`: what a reader would see in the source there.
+///
+/// Macro-expanded tokens are excluded, and that is the point. An entity's fingerprint is what
+/// changed *in its own text*; a change inside a macro it expands belongs to the **macro**, whose
+/// own fingerprint covers it and whose `ExpandsMacro` edge connects the two. Folding the
+/// expansion in here would report `a` as directly changed for an edit to a header it merely
+/// includes — true in a sense, and useless in a report: the maintainer edited `m.h`.
+fn tokens_written(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<String> {
     tu.tokens
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.span.lo.0 >= lo && t.span.lo.0 < hi)
+        .filter(|(_, t)| {
+            !t.span.is_dummy() && t.span.ctx.is_root() && t.span.lo.0 >= lo && t.span.lo.0 < hi
+        })
+        .filter_map(|(i, _)| tu.text_at(i).map(str::to_string))
+        .collect()
+}
+
+fn tokens_between(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<String> {
+    // **Through `expansion_loc`, never the token's own span.** A macro-expanded token is *spelled*
+    // in the macro body and *appears* at the call site, and only the second is inside the
+    // declaration that expanded it — so filtering on the raw span drops every expanded token from
+    // both the fingerprint and the reference set. VPP's `CLIB_MULTIARCH_FN` pastes a function's
+    // whole name that way, and its callers were invisible.
+    //
+    // This is 030's rule arriving in a second crate for the same reason: `expansion_loc` is where
+    // a token *is*, and `spelling_loc` is where it was written.
+    let sm = &tu.source_map;
+    tu.tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            // A dummy span resolves to `BytePos(0)` and would land in whichever declaration
+            // starts the file — 010 §4's fabricated location, guarded here as everywhere.
+            if t.span.is_dummy() {
+                return false;
+            }
+            let at = sm.expansion_loc(t.span).map_or(t.span.lo.0, |l| l.pos.0);
+            at >= lo && at < hi
+        })
+        // `text_at` rather than `token_texts`, which would collect a vector of every token's text
+        // *per entity* — quadratic in a translation unit, and VPP's headers expand to a million
+        // tokens before the first declaration of the file itself.
         .filter_map(|(i, _)| tu.text_at(i).map(str::to_string))
         .collect()
 }
@@ -655,8 +690,8 @@ fn extract(
         out.insert(
             entity,
             Fingerprint {
-                head: tokens_between(tu, lo, split),
-                tail: tokens_between(tu, split, hi),
+                head: tokens_written(tu, lo, split),
+                tail: tokens_written(tu, split, hi),
             },
         );
     }

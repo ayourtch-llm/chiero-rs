@@ -95,7 +95,10 @@ fn the_two_builds_declare_disjoint_entities() {
 
     let shared: Vec<&String> = v3.iter().filter(|n| v4.contains(n)).collect();
     assert!(
-        shared.iter().all(|n| n.starts_with('_') || n.contains("PASTE") || n.contains("NAME") || n.contains("MULTIARCH")),
+        shared.iter().all(|n| n.starts_with('_')
+            || n.contains("PASTE")
+            || n.contains("NAME")
+            || n.contains("MULTIARCH")),
         "only the naming macros are common to both builds; the functions are not: {shared:?}"
     );
     assert!(v3.iter().any(|n| n == "compress_v3"));
