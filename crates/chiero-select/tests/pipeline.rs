@@ -349,18 +349,26 @@ fn a_partial_index_reduces_confidence() {
 #[test]
 fn every_report_carries_reduction_and_safety_together() {
     let before = Program::parse("t.c", t_c()).expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
     let suite = Suite {
         tests: vec![TestId(0), TestId(1), TestId(2)],
         ..Suite::default()
     };
-    let text = select_with(&impact(&before, &after), &after, &index_with(&[TestId(0)]), &suite)
-        .render();
+    let text = select_with(
+        &impact(&before, &after),
+        &after,
+        &index_with(&[TestId(0)]),
+        &suite,
+    )
+    .render();
 
     assert!(text.contains("SELECTED"), "the reduction:\n{text}");
     assert!(text.contains("ALWAYS-RUN"), "the safety set:\n{text}");
-    assert!(text.contains("CONFIDENCE"), "and how much to trust it:\n{text}");
+    assert!(
+        text.contains("CONFIDENCE"),
+        "and how much to trust it:\n{text}"
+    );
 }
 
 /// **Contract 16.** The ranking is deterministic, and it leads with what the maintainer should
@@ -368,8 +376,8 @@ fn every_report_carries_reduction_and_safety_together() {
 #[test]
 fn the_ranking_is_deterministic_and_leads_with_the_closest() {
     let before = Program::parse("t.c", t_c()).expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
     let idx = index_with(&[TestId(0)]);
     let a = select(&impact(&before, &after), &after, &idx);
     let b = select(&impact(&before, &after), &after, &idx);
@@ -397,7 +405,9 @@ fn a_budget_truncates_and_says_so() {
     assert_eq!(cut.ranked().len(), 2);
     match &cut.confidence {
         Confidence::Reduced { reasons } => assert!(
-            reasons.iter().any(|r| r.contains("budget") && r.contains("dropped")),
+            reasons
+                .iter()
+                .any(|r| r.contains("budget") && r.contains("dropped")),
             "the report states the count and the cutoff: {reasons:?}"
         ),
         other => panic!("a budgeted run is never Full confidence, got {other:?}"),
@@ -413,8 +423,8 @@ fn a_budget_truncates_and_says_so() {
 #[test]
 fn a_budget_that_fits_is_not_a_caveat() {
     let before = Program::parse("t.c", t_c()).expect("parses");
-    let after = Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n")
-        .expect("parses");
+    let after =
+        Program::parse("t.c", "int main (void)\n{\n  M; M;\n  return 1;\n}\n").expect("parses");
     let sel = select(&impact(&before, &after), &after, &index_with(&[TestId(0)]));
     let n = sel.tests.len();
     assert_eq!(sel.clone().budgeted(n + 5).confidence, sel.confidence);

@@ -50,6 +50,9 @@ pub enum SelectionReason {
         entity: String,
         file: String,
         line: u32,
+        /// 031's shortest path from the entity that actually changed. 0 means this test covers
+        /// the change itself.
+        distance: u32,
     },
     /// It is in the safety set (§4) and was never a candidate for removal.
     AlwaysRun { why: String },
@@ -157,6 +160,7 @@ pub fn select_with(
                         entity: entity.name().to_string(),
                         file: entity.file().to_string(),
                         line: *line,
+                        distance: impact.entities[entity].distance,
                     },
                     &mut tests,
                 );
@@ -321,5 +325,129 @@ fn kind_of(e: &chiero_diff::Entity) -> &'static str {
         chiero_diff::Entity::Record { .. } => "record",
         chiero_diff::Entity::EnumConst { .. } => "enum constant",
         chiero_diff::Entity::Macro { .. } => "macro",
+    }
+}
+
+impl Selection {
+    /// The tests in the order a maintainer should look at them (032 §5).
+    ///
+    /// **Closest first**: a test that covers the change itself outranks one three calls away, and
+    /// a test kept only by the safety set sorts last — it is not evidence of anything, it is the
+    /// absence of evidence. Ties break on `TestId`, so the order is total and two runs agree
+    /// (contract 16).
+    ///
+    /// §5 specifies more inputs — change-class severity, how much of the change a test covers,
+    /// execution count, estimated duration — and names the weights as configuration that the
+    /// report must print. Those need data this crate does not yet carry; **distance alone is a
+    /// deliberate subset, not the finished ranking**, and it is ordered so that adding the rest
+    /// refines it rather than reversing it.
+    pub fn ranked(&self) -> Vec<TestId> {
+        let mut v: Vec<(u32, TestId)> = self.tests.iter().map(|(t, rs)| (score(rs), *t)).collect();
+        v.sort_by_key(|(s, t)| (*s, t.0));
+        v.into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// Keep the top `n` ranked tests (032 §5.1).
+    ///
+    /// **Truncation is not refinement.** The dropped tests *were* selected — nothing proved them
+    /// unnecessary — so the confidence drops and the report says how many went and where the
+    /// cutoff fell. A budgeted run must never render as if it covered the impact.
+    ///
+    /// A budget that fits is not a caveat, and does not touch the confidence.
+    pub fn budgeted(mut self, n: usize) -> Selection {
+        let order = self.ranked();
+        if order.len() <= n {
+            return self;
+        }
+        let dropped = order.len() - n;
+        let cutoff = n;
+        let keep: Vec<TestId> = order.into_iter().take(n).collect();
+        self.tests.retain(|t, _| keep.contains(t));
+        let note = format!(
+            "budget: {dropped} selected test(s) dropped below rank {cutoff}; they were not \
+             proven unnecessary"
+        );
+        self.confidence = match self.confidence {
+            Confidence::Full => Confidence::Reduced {
+                reasons: vec![note],
+            },
+            Confidence::Reduced { mut reasons } => {
+                reasons.push(note);
+                Confidence::Reduced { reasons }
+            }
+        };
+        self
+    }
+
+    /// The report (032 §5).
+    ///
+    /// **Reduction and safety always appear together** (contract 20). A selection tool's product
+    /// is a claim that some tests need not run; a report showing only how many were excluded
+    /// invites the one reading — "it works, we run fewer tests" — that its own output cannot
+    /// falsify.
+    pub fn render(&self) -> String {
+        let ranked = self.ranked();
+        let always: Vec<&TestId> = self
+            .tests
+            .iter()
+            .filter(|(_, rs)| {
+                rs.iter()
+                    .all(|r| matches!(r, SelectionReason::AlwaysRun { .. }))
+            })
+            .map(|(t, _)| t)
+            .collect();
+
+        let mut out = format!("SELECTED: {} test(s)\n", ranked.len());
+        for (i, t) in ranked.iter().enumerate() {
+            let reasons = &self.tests[t];
+            out.push_str(&format!(
+                "{:3}. test {:<6} {}\n",
+                i + 1,
+                t.0,
+                describe(reasons.first())
+            ));
+        }
+        out.push_str(&format!(
+            "ALWAYS-RUN: {} test(s) — never candidates for removal\n",
+            always.len()
+        ));
+        match &self.confidence {
+            Confidence::Full => out.push_str("CONFIDENCE: Full\n"),
+            Confidence::Reduced { reasons } => {
+                out.push_str("CONFIDENCE: Reduced\n");
+                for r in reasons {
+                    out.push_str(&format!("  - {r}\n"));
+                    if r.starts_with("budget:") {
+                        out.push_str("  BUDGET: this run did not cover the impact\n");
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Lower sorts earlier. A safety-set-only test has no distance at all, so it sorts last.
+fn score(reasons: &[SelectionReason]) -> u32 {
+    reasons
+        .iter()
+        .filter_map(|r| match r {
+            SelectionReason::CoversEntity { distance, .. } => Some(*distance),
+            SelectionReason::AlwaysRun { .. } => None,
+        })
+        .min()
+        .unwrap_or(u32::MAX)
+}
+
+fn describe(r: Option<&SelectionReason>) -> String {
+    match r {
+        None => "?".into(),
+        Some(SelectionReason::CoversEntity {
+            entity,
+            file,
+            line,
+            distance,
+        }) => format!("[distance {distance}] covers {entity} at {file}:{line}"),
+        Some(SelectionReason::AlwaysRun { why }) => format!("[always-run] {why}"),
     }
 }
