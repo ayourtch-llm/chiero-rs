@@ -6580,8 +6580,17 @@ impl Lowerer<'_> {
         // It is still an object: `&(int){42}` is valid, so the element is stored and the
         // *address* returned like every other case. The value form loads it back.
         let cty = self.cty(sty);
+        // **Converted as if by assignment** (C11 6.7.9p11), which is the rule every other
+        // initializer here goes through — `store_init_scalar` for a member, the declaration path
+        // for a named object. `(u64){ 1 }` initializes an eight-byte object from an `int`, and
+        // storing that straight in put four bytes where eight were declared. `(int){ 5 }` agreed
+        // by accident, which is why the omission survived.
         let val = match self.ast.expr(init).kind.clone() {
-            chiero_ast::ExprKind::InitList(items) if !items.is_empty() => self.expr(items[0].value),
+            chiero_ast::ExprKind::InitList(items) if !items.is_empty() => {
+                let v = self.expr(items[0].value);
+                let signed = self.ty_signed(sty);
+                self.convert_for_store(v, items[0].value, &cty, signed, span)
+            }
             _ => Operand::Const(Const::Int {
                 bits: match &cty {
                     CTy::Int(w) => *w,
