@@ -74,7 +74,12 @@ fn every_entity_says_why_it_is_there() {
     let root = Entity::function("f.c", "leaf");
 
     for (e, j) in &set.entities {
-        assert_eq!(j.root, root, "{} was reached from the change to `leaf`", e.name());
+        assert_eq!(
+            j.root,
+            root,
+            "{} was reached from the change to `leaf`",
+            e.name()
+        );
         assert!(!j.edges.is_empty(), "{} has no edge chain", e.name());
     }
     assert_eq!(
@@ -119,7 +124,8 @@ fn a_signature_change_reaches_callers_with_no_body_edit() {
 /// closure cannot walk the new side alone.
 #[test]
 fn deleting_a_function_reaches_its_callers() {
-    let without = CHAIN.replace("  return leaf (x) * 2;", "  return x * 2;")
+    let without = CHAIN
+        .replace("  return leaf (x) * 2;", "  return x * 2;")
         .replace("static int leaf (int x)\n{\n  return x + 1;\n}\n", "");
     let set = impact(&prog(CHAIN), &prog(&without));
     assert_eq!(
@@ -127,7 +133,8 @@ fn deleting_a_function_reaches_its_callers() {
         ChangeClass::Removed
     );
     assert!(
-        set.entities.contains_key(&Entity::function("f.c", "middle")),
+        set.entities
+            .contains_key(&Entity::function("f.c", "middle")),
         "`middle` called it and no longer does, which is a change to `middle` as well"
     );
 }
@@ -140,7 +147,8 @@ fn an_unrelated_function_stays_out() {
     let edited = src.replace("return x + 1;", "return x + 2;");
     let set = impact(&prog(&src), &prog(&edited));
     assert!(
-        !set.entities.contains_key(&Entity::function("f.c", "unrelated")),
+        !set.entities
+            .contains_key(&Entity::function("f.c", "unrelated")),
         "it calls nothing that changed: {:?}",
         names_in(&set)
     );
@@ -150,8 +158,10 @@ fn an_unrelated_function_stays_out() {
 /// entity whose behaviour could differ.
 #[test]
 fn a_changed_global_reaches_the_functions_that_read_it() {
-    let src = "int limit = 10;\nint over (int x) { return x > limit; }\nint idle (int x) { return x; }\n";
-    let edited = "int limit = 20;\nint over (int x) { return x > limit; }\nint idle (int x) { return x; }\n";
+    let src =
+        "int limit = 10;\nint over (int x) { return x > limit; }\nint idle (int x) { return x; }\n";
+    let edited =
+        "int limit = 20;\nint over (int x) { return x > limit; }\nint idle (int x) { return x; }\n";
     let set = impact(&prog(src), &prog(edited));
     assert_eq!(
         set.entities[&Entity::global("f.c", "limit")].class,
@@ -170,7 +180,10 @@ fn a_changed_global_reaches_the_functions_that_read_it() {
 fn mutual_recursion_terminates() {
     let src = "int ping (int x);\nint pong (int x) { return ping (x - 1); }\n\
                int ping (int x) { return x > 0 ? pong (x) : 0; }\n";
-    let edited = src.replace("return x > 0 ? pong (x) : 0;", "return x > 1 ? pong (x) : 0;");
+    let edited = src.replace(
+        "return x > 0 ? pong (x) : 0;",
+        "return x > 1 ? pong (x) : 0;",
+    );
     let set = impact(&prog(src), &prog(&edited));
     assert!(set.entities.contains_key(&Entity::function("f.c", "ping")));
     assert!(set.entities.contains_key(&Entity::function("f.c", "pong")));

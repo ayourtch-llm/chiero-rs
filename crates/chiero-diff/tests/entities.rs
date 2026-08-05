@@ -97,21 +97,31 @@ fn moving_a_function_changes_nothing() {
     );
 }
 
-/// And the gate is not vacuous: editing one statement is seen, and only in the function holding
-/// it. A test that only ever asserts emptiness passes on a function that returns nothing.
+/// And the gate is not vacuous: editing one statement is seen. A suite that only ever asserts
+/// emptiness passes on a function that returns nothing.
+///
+/// ⚠️ This asserted `[helper]` alone while §3's closure did not exist, with a note saying the
+/// callers were its job. They now arrive, so the expectation is `[add, helper]` — `add` calls
+/// `helper` and is reached at distance 1. The change is the contract arriving, not an assertion
+/// bent to fit; `closure.rs` is where it is pinned properly.
 #[test]
-fn editing_one_statement_impacts_one_function() {
+fn editing_one_statement_is_seen() {
     let edited = BASE.replace("return x + 1;", "return x + 2;");
     let set = impact(&prog(BASE), &prog(&edited));
     assert_eq!(
         set.entities.keys().collect::<Vec<_>>(),
-        vec![&Entity::function("f.c", "helper")],
-        "the edit is in `helper`, and `add` is untouched — closure to its callers is §3's job"
+        vec![
+            &Entity::function("f.c", "add"),
+            &Entity::function("f.c", "helper")
+        ],
+        "the edit is in `helper`; `add` calls it"
     );
     assert_eq!(
         set.entities[&Entity::function("f.c", "helper")].class,
         ChangeClass::BodyChanged
     );
+    assert_eq!(set.entities[&Entity::function("f.c", "helper")].distance, 0);
+    assert_eq!(set.entities[&Entity::function("f.c", "add")].distance, 1);
 }
 
 /// A signature change is a different class from a body change, because §3 closes over it

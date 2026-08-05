@@ -122,14 +122,34 @@ pub enum ChangeClass {
     Removed,
 }
 
+/// How an entity was reached (031 §3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImpactEdge {
+    /// This is the entity the change is *in*.
+    DirectlyChanged,
+    /// It calls something that changed.
+    Calls { callee: String },
+    /// It reads or writes a global that changed.
+    UsesGlobal { name: String },
+    /// It mentions a type or typedef that changed.
+    UsesType { name: String },
+}
+
 /// Why an entity is in the set (031 §3).
 ///
-/// Auditability is a requirement: a maintainer told to run 400 tests must be able to ask why.
-/// This wave records the class and the distance; the edge chain arrives with §3's closure.
+/// **Auditability is a requirement**, not a nicety: a maintainer told to run 400 tests must be
+/// able to ask why and get "because `foo()` calls `bar`, whose body you changed". A tool that
+/// cannot answer that is one whose answers get overridden, and an overridden test-selection tool
+/// is a slower way to run the whole suite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Justification {
+    /// The class of the change at the **root**, which is what a report leads with.
     pub class: ChangeClass,
-    /// 0 for an entity the change touched directly.
+    /// The entity that actually changed, at the far end of the chain.
+    pub root: Entity,
+    /// How this entity reaches the root. `[DirectlyChanged]` when it *is* the root.
+    pub edges: Vec<ImpactEdge>,
+    /// How far the closure walked: 0 for the root, 1 for its callers, and so on.
     pub distance: u32,
 }
 
@@ -143,6 +163,13 @@ pub struct ImpactSet {
 #[derive(Debug)]
 pub struct Program {
     entities: IndexMap<Entity, Fingerprint>,
+    /// Which names each entity mentions, for §3's closure.
+    ///
+    /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
+    /// holder in the set for a change it cannot see — an extra test run. Resolving would need
+    /// 014's scopes on both sides, and the error it removes is in the safe direction while every
+    /// error it could introduce is in the other.
+    refs: IndexMap<Entity, Vec<String>>,
 }
 
 /// What an entity *is*, reduced to what a change would have to alter for it to matter.
@@ -176,9 +203,8 @@ impl Program {
         if !parsed.diagnostics.is_empty() {
             return None;
         }
-        Some(Program {
-            entities: extract(file, &tu, &parsed),
-        })
+        let (entities, refs) = extract(file, &tu, &parsed);
+        Some(Program { entities, refs })
     }
 
     /// Every entity this translation unit declares, in written order.
@@ -205,14 +231,16 @@ fn tokens_between(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<Strin
 }
 
 /// Every entity of one translation unit, with what it would take to change it.
+#[allow(clippy::type_complexity)]
 fn extract(
     file: &str,
     tu: &chiero_pp::PreprocessedTu,
     parsed: &chiero_parse::ParsedTu,
-) -> IndexMap<Entity, Fingerprint> {
+) -> (IndexMap<Entity, Fingerprint>, IndexMap<Entity, Vec<String>>) {
     let ast = &parsed.ast;
     let name_of = |s| parsed.text(s).unwrap_or("?").to_string();
     let mut out: IndexMap<Entity, Fingerprint> = IndexMap::new();
+    let mut refs: IndexMap<Entity, Vec<String>> = IndexMap::new();
 
     for &id in ast.items() {
         let decl = ast.decl(id);
@@ -248,6 +276,22 @@ fn extract(
             }
             _ => continue,
         };
+        // **Every identifier the declaration mentions**, taken from its own token span. A body
+        // that calls `leaf` mentions `leaf`; one that reads `limit` mentions `limit`. Keywords
+        // and punctuation are not identifiers and cannot name an entity, so they are dropped.
+        let mut mentioned: Vec<String> = tokens_between(tu, lo, hi)
+            .into_iter()
+            .filter(|t| {
+                let mut cs = t.chars();
+                cs.next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .filter(|t| *t != entity.name())
+            .collect();
+        mentioned.sort();
+        mentioned.dedup();
+        refs.insert(entity.clone(), mentioned);
         out.insert(
             entity,
             Fingerprint {
@@ -256,7 +300,7 @@ fn extract(
             },
         );
     }
-    out
+    (out, refs)
 }
 
 /// What could behave differently between two programs (031 §3.1).
@@ -265,25 +309,36 @@ fn extract(
 /// callers, expansion sites and types is §3, and every entity here will be a `root` of it.
 pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     let mut entities: IndexMap<Entity, Justification> = IndexMap::new();
-    let mut record = |e: &Entity, class| {
-        entities.insert(e.clone(), Justification { class, distance: 0 });
+    let mut direct = |e: &Entity, class| {
+        entities.insert(
+            e.clone(),
+            Justification {
+                class,
+                root: e.clone(),
+                edges: vec![ImpactEdge::DirectlyChanged],
+                distance: 0,
+            },
+        );
     };
 
+    // §3.1 — the entities §2 classifies as changed.
     for (e, before) in &old.entities {
         match new.entities.get(e) {
             Some(after) => {
                 if let Some(class) = classify(before, after) {
-                    record(e, class);
+                    direct(e, class);
                 }
             }
-            None => record(e, ChangeClass::Removed),
+            None => direct(e, ChangeClass::Removed),
         }
     }
     for e in new.entities.keys() {
         if !old.entities.contains_key(e) {
-            record(e, ChangeClass::Added);
+            direct(e, ChangeClass::Added);
         }
     }
+
+    close_over_references(old, new, &mut entities);
 
     // **031 §5: by kind, then file, then name** — never by discovery order, so two runs give the
     // same report and two reports can be diffed.
@@ -291,6 +346,78 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
         (a.kind_rank(), a.file(), a.name()).cmp(&(b.kind_rank(), b.file(), b.name()))
     });
     ImpactSet { entities }
+}
+
+/// Grow the set to a fixpoint over the entities that mention what is already in it (031 §3).
+///
+/// **Both sides' reference graphs, unioned.** An entity that *stopped* calling a deleted function
+/// is reached only through the old program, and one that started calling a changed function only
+/// through the new — and contract 18 is exactly the first case. Taking the union over-approximates
+/// where they disagree, which is the safe direction.
+///
+/// Breadth-first, so `distance` is the length of the shortest path to a root and an entity placed
+/// once is never re-placed by a longer chain. That is also what terminates it: mutual recursion is
+/// ordinary C, and a fixpoint that revisited a placed entity would not stop.
+fn close_over_references(
+    old: &Program,
+    new: &Program,
+    entities: &mut IndexMap<Entity, Justification>,
+) {
+    let mut frontier: Vec<Entity> = entities.keys().cloned().collect();
+    let mut distance = 0u32;
+
+    while !frontier.is_empty() {
+        distance += 1;
+        let mut next: Vec<Entity> = Vec::new();
+        for (holder, mentioned) in old.refs.iter().chain(new.refs.iter()) {
+            if entities.contains_key(holder) {
+                continue;
+            }
+            let Some(target) = frontier
+                .iter()
+                .find(|t| mentioned.iter().any(|m| m == t.name()))
+            else {
+                continue;
+            };
+            let via = &entities[target];
+            let mut edges = vec![edge_to(target)];
+            edges.extend(
+                via.edges
+                    .iter()
+                    .filter(|e| **e != ImpactEdge::DirectlyChanged)
+                    .cloned(),
+            );
+            entities.insert(
+                holder.clone(),
+                Justification {
+                    // The class stays the *root's*: what a report leads with is the change
+                    // somebody made, not the fact that this entity mentions it.
+                    class: via.class,
+                    root: via.root.clone(),
+                    edges,
+                    distance,
+                },
+            );
+            next.push(holder.clone());
+        }
+        frontier = next;
+    }
+}
+
+/// The edge that reaching `target` represents.
+fn edge_to(target: &Entity) -> ImpactEdge {
+    match target {
+        Entity::Function { name, .. } => ImpactEdge::Calls {
+            callee: name.clone(),
+        },
+        Entity::Global { name, .. } => ImpactEdge::UsesGlobal { name: name.clone() },
+        Entity::Typedef { name, .. } | Entity::Record { tag: name, .. } => {
+            ImpactEdge::UsesType { name: name.clone() }
+        }
+        Entity::EnumConst { name, .. } | Entity::Macro { name, .. } => {
+            ImpactEdge::UsesGlobal { name: name.clone() }
+        }
+    }
 }
 
 /// Which class of change, or `None` for none at all.
