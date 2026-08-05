@@ -12,6 +12,9 @@ Cargo.lock.bak
 !/tests/corpus/coverage/*.gcno
 !/tests/corpus/coverage/*.gcda
 !/tests/corpus/coverage/*.gcov.json
+# and llvm-cov gcov's text output, which is the only oracle a clang build has — gcc's
+# own gcov refuses a *804 artifact outright.
+!/tests/corpus/coverage/*.c.gcov
 
 # editor
 .idea/
