@@ -879,8 +879,20 @@ typing the paths ever would.
 > - ~~contracts 10, 12, 13~~ — done (26d80ea). ⚠️ `Suite::default()` is **the one place in the
 >   crate where the default is not the safe direction**: a caller who omits the suite list gets no
 >   contract-10 selections, which is a *smaller* answer. It is documented on the type.
-> - **§5's ranking and §5.1's `--budget`** (contracts 17, 20): a report must carry reduction *and*
->   safety, and one showing reduction alone fails contract 20.
+> - ~~**§5's ranking and §5.1's `--budget`**~~ — done (df3f7bc). The report:
+>
+>   ```
+>   SELECTED: 3 test(s)
+>     1. test 0      [distance 0] covers main at t.c:3
+>     2. test 5      [always-run] no complete coverage: the run crashed…
+>   ALWAYS-RUN: 2 test(s) — never candidates for removal
+>   CONFIDENCE: Full
+>   ```
+>
+>   ⚠️ **Ranking is distance-only, deliberately.** §5 also specifies change-class severity,
+>   coverage fraction, execution count, duration, and *weights the report must print*. What is
+>   there is ordered so adding the rest refines it rather than reversing it — but a report that
+>   claims to rank by §5's inputs today would be overstating.
 > - **§3's refinement** (contracts 5–8), which needs the solver and is where precision finally
 >   comes from — §3.2: "not from pretending the impact is smaller".
 >
