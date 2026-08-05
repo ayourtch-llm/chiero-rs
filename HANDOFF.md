@@ -526,7 +526,55 @@ typing the paths ever would.
 > **Anchor a patch on the signature, not on the body**, and when instrumentation reports the
 > impossible, suspect the instrumentation before the code.
 >
-> ### 📊 THE NUMBER: **1757 of 1871 clean (93.9%)** at 99bc5bd — was 12 of 1871
+> ### 📊 THE NUMBER: **1852 of 1871 clean (99.0%)** at 9f35421 — was 1852 *not-run*
+>
+> | sweep | clean | not-run | diagnosed |
+> |---|---|---|---|
+> | 99d92d0, before this wave | 12 | 1852 | 7 |
+> | 3180a49 | 1552 | 312 | 7 |
+> | 99bc5bd | 1757 | 107 | 7 |
+> | **9f35421** | **1852** | 12 | 7 |
+>
+> The mirror image of where the wave started, on the same tree, the same 1871 translation units
+> and the same lowering-inclusive yardstick. Four fixes have landed *since* that sweep
+> (`typeof`, block-scope linkage, the anonymous-union designator, runtime `offsetof`), so the
+> next measurement should be higher still.
+>
+> ### ⏭️ EVERYTHING THAT IS LEFT, and it fits on one screen
+>
+> | count | verdict | where | note |
+> |---|---|---|---|
+> | 12 | not-run | `drivers/iavf/iavf.c` `iavf_vc_op_config_vsi_queues` | **the only multi-TU cause left** — see below |
+> | 2 | diagnosed | `elf.h` / `linux/memfd.h` macro redefinitions | **not a defect** — VPP really does redefine `ELF_NOTE_ABI` and `MFD_CLOEXEC` with different bodies; gcc warns, and this project calibrates to `-pedantic-errors` where gcc errors. A finding about VPP. |
+> | 1 | diagnosed | `vec_bootstrap.h:212` | fixed in 37b577d |
+> | 1 | diagnosed | `l2_api.c:1243` | fixed in 37b577d |
+> | 1 | diagnosed | `vtep.c:19` | "a `void` value is used where a value is required" — **unreduced**; `c ? a() : b()` on two `void` calls lowers clean, so it is some other shape |
+> | 1 | diagnosed | `tap.c:36` | "signed overflow in a constant expression" — likely a real finding about VPP; read the line before assuming otherwise |
+> | 1 | diagnosed | `sock_test.h:23` | `unknown escape sequence \(` — gcc warns; a calibration question for 042 |
+>
+> #### The iavf offsetof gap, with what is already ruled out
+>
+> `iavf.c` reports "an `__builtin_offsetof` whose member designator does not resolve" **six
+> times** even after 2640083 taught `offsetof` to compute a runtime subscript. Every reduction
+> tried lowers clean: a runtime subscript (`qpair[(n)+1]`), through a typedef'd struct, a
+> flexible array member (`counters[]`), and the two combined.
+>
+> **The recipe that found every cause this wave**, and the one to use here:
+>
+> ```
+> # 1. the inner diagnostic, which 015 §7 replaces with "contains a construct ..."
+> #    add to `function()` in chiero-lower, next to `self.diagnostics.truncate(diags_before)`:
+> #      if std::env::var("KEEPDIAG").is_ok() { for d in &self.diagnostics[diags_before..] { eprintln!("INNER: {:?} {}", d.span, d.message); } }
+> cd $VPPBUILD && CMD=$(ninja -t commands <the .o> | tail -1 | sed -E 's|^/usr/bin/ccache [^ ]+ ||')
+> KEEPDIAG=1 target/release/xtask cc $CMD 2>&1 | grep INNER
+> # 2. the span it prints is into the *preprocessed* stream; `gcc -E` the same command line and
+> #    read the bytes at that offset to find which macro expansion it is.
+> ```
+>
+> The span was `4095046..4095079` in `ExpnCtx(16285)` — a *macro expansion* context, so read the
+> expansion, not the source line.
+>
+> ### 📊 SUPERSEDED: 1757 of 1871 clean (93.9%) at 99bc5bd
 >
 > | sweep | clean | not-run | diagnosed |
 > |---|---|---|---|
