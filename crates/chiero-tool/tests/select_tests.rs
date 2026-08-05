@@ -49,13 +49,22 @@ const AFTER: &str = "int main (void)\n{\n  M; M;\n  return 1;\n}\n";
 fn a_selection_is_bounded_by_the_coverage_it_was_measured_from() {
     let before = Program::parse("t.c", BEFORE).expect("parses");
     let after = Program::parse("t.c", AFTER).expect("parses");
-    let env = select_tests(&impact(&before, &after), &after, &index(), &Suite::default());
+    let env = select_tests(
+        &impact(&before, &after),
+        &after,
+        &index(),
+        &Suite::default(),
+    );
 
-    assert!(!env.proven, "coverage is historical; no selection is a proof");
+    assert!(
+        !env.proven,
+        "coverage is historical; no selection is a proof"
+    );
     assert_eq!(env.fidelity, Fidelity::Bounded);
     assert!(
-        env.blind_spots.iter().any(|b| b.contains("historical")
-            || b.contains("previous")),
+        env.blind_spots
+            .iter()
+            .any(|b| b.contains("historical") || b.contains("previous")),
         "and the bound is named: {:?}",
         env.blind_spots
     );
@@ -67,7 +76,12 @@ fn a_selection_is_bounded_by_the_coverage_it_was_measured_from() {
 fn the_result_carries_the_tests_and_why() {
     let before = Program::parse("t.c", BEFORE).expect("parses");
     let after = Program::parse("t.c", AFTER).expect("parses");
-    let env = select_tests(&impact(&before, &after), &after, &index(), &Suite::default());
+    let env = select_tests(
+        &impact(&before, &after),
+        &after,
+        &index(),
+        &Suite::default(),
+    );
 
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
     let tests = v["result"]["tests"].as_array().expect("a list of tests");
@@ -87,7 +101,12 @@ fn the_result_carries_the_tests_and_why() {
 fn the_result_reports_reduction_beside_safety() {
     let before = Program::parse("t.c", BEFORE).expect("parses");
     let after = Program::parse("t.c", AFTER).expect("parses");
-    let env = select_tests(&impact(&before, &after), &after, &index(), &Suite::default());
+    let env = select_tests(
+        &impact(&before, &after),
+        &after,
+        &index(),
+        &Suite::default(),
+    );
     let v: serde_json::Value = serde_json::from_str(&env.to_json()).expect("valid JSON");
 
     assert!(v["result"]["always_run"].is_number(), "{v}");
@@ -101,7 +120,12 @@ fn an_incomplete_analysis_is_reported_as_an_assumption() {
     let good = Program::parse("t.c", BEFORE).expect("parses");
     let broken =
         Program::parse("t.c", "int main (void) { int x = 0; return x + ; }\n").expect("recovers");
-    let env = select_tests(&impact(&good, &broken), &broken, &index(), &Suite::default());
+    let env = select_tests(
+        &impact(&good, &broken),
+        &broken,
+        &index(),
+        &Suite::default(),
+    );
 
     assert_eq!(env.fidelity, Fidelity::Unknown);
     assert!(
@@ -118,7 +142,17 @@ fn an_incomplete_analysis_is_reported_as_an_assumption() {
 fn the_answer_is_deterministic() {
     let before = Program::parse("t.c", BEFORE).expect("parses");
     let after = Program::parse("t.c", AFTER).expect("parses");
-    let a = select_tests(&impact(&before, &after), &after, &index(), &Suite::default());
-    let b = select_tests(&impact(&before, &after), &after, &index(), &Suite::default());
+    let a = select_tests(
+        &impact(&before, &after),
+        &after,
+        &index(),
+        &Suite::default(),
+    );
+    let b = select_tests(
+        &impact(&before, &after),
+        &after,
+        &index(),
+        &Suite::default(),
+    );
     assert_eq!(a.determinism_key(), b.determinism_key());
 }

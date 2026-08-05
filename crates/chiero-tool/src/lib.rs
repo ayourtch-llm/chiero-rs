@@ -384,3 +384,98 @@ impl Envelope {
         out
     }
 }
+
+/// Which tests must run for a change (050 §3, 032).
+///
+/// # Never `Exact`, and the reason is not a limitation of the implementation
+///
+/// `proven` means proven for all inputs. A selection cannot be, because **coverage is
+/// historical**: it records what the tests did on the code as it was, and the method rests on
+/// that being a good guide to what they will do on the code as it is.
+///
+/// 032 §4's safety set covers the cases with no measurement at all — a new test, a crashed run, a
+/// stale index — and 031 §3's closure covers a test reaching new code through a caller it already
+/// covered. Neither turns the answer into a proof. So the fidelity is [`Fidelity::Bounded`] at
+/// best, the bound is named as a blind spot, and a caller reading the envelope cannot miss it.
+///
+/// Returning `Exact` here would be exactly the failure 050 §2 exists to prevent, committed by the
+/// crate that enforces it.
+pub fn select_tests(
+    impact: &chiero_diff::ImpactSet,
+    program: &chiero_diff::Program,
+    coverage: &chiero_gcov::CoverageIndex,
+    suite: &chiero_select::Suite,
+) -> Envelope {
+    let selection = chiero_select::select_with(impact, program, coverage, suite);
+    let ranked = selection.ranked();
+
+    let tests: Vec<serde_json::Value> = ranked
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            serde_json::json!({
+                "test": t.0,
+                "rank": i + 1,
+                "reasons": selection.tests[t]
+                    .iter()
+                    .map(describe_reason)
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let always_run = selection
+        .tests
+        .values()
+        .filter(|rs| {
+            rs.iter()
+                .all(|r| matches!(r, chiero_select::SelectionReason::AlwaysRun { .. }))
+        })
+        .count();
+
+    // **Reduction beside safety** (032 contract 20), through the boundary rather than stopping at
+    // it: a caller reading `tests` alone sees a number and nothing to judge it by.
+    let result = serde_json::json!({
+        "tests": tests,
+        "selected": ranked.len(),
+        "always_run": always_run,
+        "excluded": selection.excluded.len(),
+    });
+
+    let (fidelity, caveats) = match &selection.confidence {
+        chiero_select::Confidence::Full => (Fidelity::Bounded, Vec::new()),
+        // Something upstream could not be computed, so the answer rests on more than the
+        // coverage bound.
+        chiero_select::Confidence::Reduced { reasons } => (Fidelity::Unknown, reasons.clone()),
+    };
+
+    let mut env = Envelope::new(result, fidelity)
+        .with_blind_spot(
+            "coverage is historical: it records what these tests did on the previous build",
+        )
+        .with_blind_spot("symbolic refinement did not run, so nothing was proven unnecessary");
+    for c in caveats {
+        env = env.with_assumption("incomplete_analysis", &c);
+    }
+    env
+}
+
+fn describe_reason(r: &chiero_select::SelectionReason) -> serde_json::Value {
+    match r {
+        chiero_select::SelectionReason::CoversEntity {
+            entity,
+            file,
+            line,
+            distance,
+        } => serde_json::json!({
+            "kind": "covers_entity",
+            "entity": entity,
+            "file": file,
+            "line": line,
+            "distance": distance,
+        }),
+        chiero_select::SelectionReason::AlwaysRun { why } => {
+            serde_json::json!({ "kind": "always_run", "why": why })
+        }
+    }
+}
