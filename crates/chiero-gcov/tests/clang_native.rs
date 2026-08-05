@@ -47,7 +47,10 @@ fn the_clang_version_tag_is_read_as_four_oh_eight() {
         "the tag reads back to front as `408*`, so it is 4.08 — the letter-for-tens encoding gcc \
          13 uses does not apply below 10"
     );
-    assert!(h.is_known(), "and it is a version this decoder has a fixture for");
+    assert!(
+        h.is_known(),
+        "and it is a version this decoder has a fixture for"
+    );
 }
 
 /// **The line counts match `llvm-cov gcov`'s own**, which is contract 5's gate applied to the
@@ -57,11 +60,7 @@ fn clang_line_counts_match_llvm_covs_own() {
     let idx = chiero_gcov::ingest_native(&corpus(), "clg").expect("clg decodes");
     // From `clg.c.gcov`, committed beside the fixture.
     for (line, want) in [(6, 1), (8, 1), (9, 5), (10, 4), (11, 1), (15, 1), (17, 1)] {
-        assert_eq!(
-            idx.line_count("clg.c", line),
-            Some(want),
-            "clg.c:{line}"
-        );
+        assert_eq!(idx.line_count("clg.c", line), Some(want), "clg.c:{line}");
     }
     // Line 7 is `{` and line 12 is `}` — llvm-cov records neither.
     assert_eq!(idx.line_count("clg.c", 7), None);
@@ -101,4 +100,42 @@ fn a_clang_object_attributes_to_a_test() {
     chiero_gcov::ingest_native_as(&mut idx, TestId(0), &corpus(), "clg").expect("clg as a test");
     assert_eq!(idx.tests_for_line("clg.c", 9), Some(vec![TestId(0)]));
     assert_eq!(idx.detail(), chiero_gcov::CoverageDetail::LinesAndArcs);
+}
+
+/// **A block nothing can reach still needs an answer, and the answer is zero.**
+///
+/// Found by pointing the decoder at a real clang `--coverage` build of `vppinfra`: **66 of 108
+/// objects were refused**, every one with "arc N->M could not be determined; the spanning tree
+/// guarantees it unless the data is corrupt". The data was fine. These graphs contain blocks with
+/// *no incoming arcs at all* — `clib_bihash_copied` in this very fixture has one — whose outgoing
+/// arc is on the spanning tree and therefore carries no counter.
+///
+/// Conservation cannot derive it, because there is nothing on the incoming side to conserve
+/// against. The solver read that empty side as "this is the entry or exit block, which conserves
+/// nothing" and gave up on the object. An unreachable block is a third case: no flow enters, so
+/// no flow leaves, and every one of its arcs is zero.
+///
+/// # Why the fixture is a real object rather than a written one
+///
+/// Two attempts to synthesize the shape failed — code after a `return`, and code after a
+/// `noreturn` call — because clang folds both away before it emits the graph. Whatever produces
+/// an orphan block here is not reproducible by writing the obvious C, so the fixture is the
+/// smallest object of the clang build that exhibits it, with `llvm-cov gcov`'s own output beside
+/// it. That is the same reason `unrun` and `inl` were taken from a real tree.
+#[test]
+fn an_unreachable_block_is_zero_rather_than_unknown() {
+    let idx = chiero_gcov::ingest_native(&corpus(), "clgdead")
+        .expect("an orphan block is a count of zero, not a corrupt file");
+
+    // llvm-cov records 13 lines of this source and executes none of them.
+    let file = "/home/ubuntu/vpp/src/vppinfra/bihash_all_vector.c";
+    let lines = idx.lines_of(file);
+    assert_eq!(lines.len(), 13, "llvm-cov records 13 lines: {lines:?}");
+    for line in &lines {
+        assert_eq!(
+            idx.line_count(file, *line),
+            Some(0),
+            "{file}:{line} — recorded and never executed, which is not the same as absent"
+        );
+    }
 }

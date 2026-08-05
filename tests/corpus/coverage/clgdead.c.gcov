@@ -1,0 +1,44 @@
+        -:    0:Source:/home/ubuntu/vpp/src/vppinfra/bihash_all_vector.c
+        -:    0:Graph:clgdead.gcno
+        -:    0:Data:clgdead.gcda
+        -:    0:Runs:1
+        -:    0:Programs:1
+        -:    1:/*
+        -:    2: * SPDX-License-Identifier: Apache-2.0
+        -:    3: * Copyright (c) 2015 Cisco and/or its affiliates.
+        -:    4: */
+        -:    5:
+        -:    6:#include <vppinfra/mem.h>
+        -:    7:
+        -:    8:/* Vector of all bihashes */
+        -:    9:__clib_export void **clib_all_bihashes;
+        -:   10:static clib_mem_heap_t *clib_all_bihash_heap;
+        -:   11:
+        -:   12:__clib_export clib_mem_heap_t *
+    #####:   13:clib_all_bihash_set_heap (void)
+        -:   14:{
+    #####:   15:  if (PREDICT_FALSE (clib_all_bihash_heap == 0))
+    #####:   16:    clib_all_bihash_heap = clib_mem_get_heap ();
+        -:   17:
+    #####:   18:  return clib_mem_set_heap (clib_all_bihash_heap);
+        -:   19:}
+        -:   20:
+        -:   21:/*
+        -:   22: * Leave it to Beaver to change the size of a bihash
+        -:   23: * by making a clone in a stack local and then copying it...
+        -:   24: */
+        -:   25:__clib_export void
+    #####:   26:clib_bihash_copied (void *dst, void *src)
+        -:   27:{
+    #####:   28:  int i;
+        -:   29:
+    #####:   30:  for (i = 0; i < vec_len (clib_all_bihashes); i++)
+        -:   31:    {
+    #####:   32:      if (clib_all_bihashes[i] == src)
+        -:   33:	{
+    #####:   34:	  clib_all_bihashes[i] = dst;
+    #####:   35:	  return;
+        -:   36:	}
+    #####:   37:    }
+    #####:   38:  clib_warning ("Couldn't find bihash copy source %llx!", src);
+    #####:   39:}
