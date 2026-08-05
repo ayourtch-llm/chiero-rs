@@ -226,3 +226,79 @@ fn two_static_helpers_of_one_name_are_two_entities() {
     let b_again = Program::parse("b.c", b).expect("b.c parses");
     assert!(impact(&b_prog, &b_again).entities.is_empty());
 }
+
+/// **Which lines of an entity changed — the granularity 032 §3.2 needs and 031 did not report.**
+///
+/// §3.2 drops "a test whose arc-level coverage shows it never entered the block containing the
+/// change". *The change*, not *the entity*: a test that entered a twenty-line function has
+/// reached some of its lines, so an impact set located only to entities can never let that
+/// refinement fire. `chiero-gcov` can answer `line_reached` for a line; nothing was telling it
+/// which line to ask about.
+///
+/// The lines are computed by trimming the common prefix and suffix of the two sides' per-line
+/// tokens — the classic diff trim. It **over-approximates within the entity**, which is the safe
+/// direction: a wrong answer here adds lines to ask about, and asking about a line the test
+/// reached keeps the test.
+#[test]
+fn a_body_edit_reports_the_lines_that_differ() {
+    let before = "int f (int x)\n{\n  int a = 1;\n  int b = 2;\n  int c = 3;\n  return a + b + c;\n}\n";
+    let after = "int f (int x)\n{\n  int a = 1;\n  int b = 9;\n  int c = 3;\n  return a + b + c;\n}\n";
+    let set = impact(
+        &Program::parse("f.c", before).expect("parses"),
+        &Program::parse("f.c", after).expect("parses"),
+    );
+
+    let j = &set.entities[&Entity::function("f.c", "f")];
+    assert_eq!(
+        j.changed_lines,
+        vec![4],
+        "only line 4 differs; the rest of the function is untouched"
+    );
+}
+
+/// An entity reached by the closure changed nothing *in itself*, so it reports no lines — and a
+/// caller must read that as "no line to ask about", not "no lines changed anywhere".
+#[test]
+fn an_entity_reached_by_closure_reports_no_changed_lines() {
+    let edited = CHAIN.replace("return x + 1;", "return x + 2;");
+    let set = impact(&prog(CHAIN), &prog(&edited));
+    assert!(
+        set.entities[&Entity::function("f.c", "middle")]
+            .changed_lines
+            .is_empty(),
+        "`middle` is in the set because it calls `leaf`, not because it changed"
+    );
+    assert!(!set.entities[&Entity::function("f.c", "leaf")]
+        .changed_lines
+        .is_empty());
+}
+
+/// A signature change reports the line the declarator is on, which is what a test would have to
+/// have reached to observe it.
+#[test]
+fn a_signature_change_reports_its_own_line() {
+    let before = "int f (int x)\n{\n  return x;\n}\n";
+    let after = "long f (int x)\n{\n  return x;\n}\n";
+    let set = impact(
+        &Program::parse("f.c", before).expect("parses"),
+        &Program::parse("f.c", after).expect("parses"),
+    );
+    assert_eq!(set.entities[&Entity::function("f.c", "f")].changed_lines, vec![1]);
+}
+
+/// **Added and removed entities report every line they have**, because the whole thing is the
+/// change — and for a removal there is no new side to diff against at all.
+#[test]
+fn an_added_entity_reports_all_of_its_lines() {
+    let before = "int f (int x) { return x; }\n";
+    let after = "int f (int x) { return x; }\nint g (int y)\n{\n  return y + 1;\n}\n";
+    let set = impact(
+        &Program::parse("f.c", before).expect("parses"),
+        &Program::parse("f.c", after).expect("parses"),
+    );
+    let lines = &set.entities[&Entity::function("f.c", "g")].changed_lines;
+    assert!(
+        lines.contains(&2) && lines.contains(&4),
+        "the whole of `g` is new: {lines:?}"
+    );
+}
