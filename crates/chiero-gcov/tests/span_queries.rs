@@ -173,3 +173,68 @@ fn a_line_with_no_record_is_not_uncovered() {
 fn an_unknown_file_has_no_uncovered_lines() {
     assert!(index().uncovered_lines("nosuch.c").is_empty());
 }
+
+/// **A span that reaches the end of its file must not collapse to its first line.**
+///
+/// `Span::hi` is exclusive, so a span covering a whole file ends *one past* its last byte —
+/// and `SourceMap::lookup_file` refuses that position (`pos < end_pos`). `expansion_loc` then
+/// answers `None` and the range silently narrows to the first line, dropping every test attached
+/// to every line after it. The unsafe direction: 032 skips those.
+#[test]
+fn a_span_reaching_the_end_of_a_file_keeps_its_last_line() {
+    let mut sm = SourceMap::new();
+    let f = sm.add_file("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n");
+    let file = sm.file(f);
+    let whole = Span::new(
+        BytePos(file.start_pos.0),
+        BytePos(file.start_pos.0 + file.byte_len()),
+        ExpnCtx::ROOT,
+    );
+    assert_eq!(
+        index().tests_for_span(&sm, whole),
+        Some(vec![TestId(0)]),
+        "the file's covered line is line 3, and a span over the whole file covers it"
+    );
+}
+
+/// **A dummy span resolves to nothing**, which is what this file's own header claims and what
+/// `expansion_loc` does *not* do on its own — 010 §4 says resolving `DUMMY.lo` fabricates a
+/// location, and its call sites are expected to guard.
+///
+/// Synthesized CIR nodes carry `Span::DUMMY` (020 §6). Without the guard they were answered with
+/// line 1 of whichever file happens to sit at offset 0 — coverage for a construct that has no
+/// source location at all.
+#[test]
+fn a_dummy_span_resolves_to_nothing() {
+    let mut sm = SourceMap::new();
+    sm.add_file("loop.c", "while (i--)\n  ;\n");
+    let mut idx = chiero_gcov::CoverageIndex::default();
+    chiero_gcov::ingest_native_as(&mut idx, TestId(3), &corpus(), "loop").expect("loop decodes");
+    assert_eq!(
+        idx.tests_for_span(&sm, Span::DUMMY),
+        None,
+        "a construct with no location has no coverage, and line 1 of the first file is not it"
+    );
+}
+
+/// **The exclusive end must not pull in the following line.** A span covering exactly one line
+/// *including its newline* ends at the first byte of the next one, and resolving that position
+/// rather than the last byte the span contains unions in a line the construct does not occupy.
+#[test]
+fn a_spans_exclusive_end_is_not_a_line_it_covers() {
+    let mut sm = SourceMap::new();
+    let f = sm.add_file("t.c", "int main (void)\n{\n  M; M;\n  return 0;\n}\n");
+    let file = sm.file(f);
+    // Line 2 is `{` — one character and a newline, and gcov records nothing for it.
+    let start = file.src().find('{').expect("line 2") as u32;
+    let sp = Span::new(
+        BytePos(file.start_pos.0 + start),
+        BytePos(file.start_pos.0 + start + 2),
+        ExpnCtx::ROOT,
+    );
+    assert_eq!(
+        index().tests_for_span(&sm, sp),
+        None,
+        "line 2 is unrecorded; line 3's tests belong to line 3"
+    );
+}
