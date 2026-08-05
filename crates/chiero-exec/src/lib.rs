@@ -145,6 +145,20 @@ pub enum EffectKind {
     /// A consumer looking for observable effects filters this out. A consumer matching calls
     /// between two runs must not.
     PureCall,
+    /// A call to a declared function that chiero **models** — a registry entry (024) or an
+    /// analysis intrinsic.
+    ///
+    /// Neither `Call` nor `PureCall`, and the distinction is load-bearing for a relational
+    /// comparison (041 §1.2). `EffectKind::Call`'s contract is "a call chiero can see through
+    /// is not here", and a modeled call is exactly one chiero sees through — recording it as
+    /// unmodeled I/O made deleting a dead `memcpy` between two locals a *divergence*. Worse,
+    /// a model may **fork** (`malloc` into a success path and a NULL path) on a guard nothing
+    /// links between two runs, and it may overwrite the extern-return symbol linking works on:
+    /// with that, one run's success pairs against the other's failure and a function differs
+    /// from itself. Both found by review.
+    ///
+    /// A consumer comparing two runs must refuse on this kind rather than align it.
+    ModeledCall,
     /// A call to a function whose body chiero does not have and which is not marked pure —
     /// 041 §1.1's "calls to unmodeled or effectful externs".
     ///
@@ -3869,8 +3883,18 @@ impl<'m> Engine<'m> {
             let call_seq = s.effects.len();
             s.call_seq = Some(call_seq);
             {
+                // **Which kind, decided from the registry rather than after it.** The lookup
+                // below resolves the same name for dispatch; asking it here is what lets the
+                // record say whether this is a call chiero can see through.
+                let modeled = self
+                    .models
+                    .lookup(&Symbol::from(resolve_builtin(&name)))
+                    .is_some()
+                    || is_analysis_intrinsic(&name);
                 s.effects.push(Effect {
-                    kind: if pure {
+                    kind: if modeled {
+                        EffectKind::ModeledCall
+                    } else if pure {
                         EffectKind::PureCall
                     } else {
                         EffectKind::Call
@@ -7045,14 +7069,7 @@ impl<'m> Engine<'m> {
         } = c;
         use chiero_model::models;
 
-        if matches!(
-            name,
-            "chiero_assume"
-                | "chiero_assert"
-                | "chiero_mark_fidelity"
-                | "chiero_make_symbolic"
-                | "chiero_is_symbolic"
-        ) {
+        if is_analysis_intrinsic(name) {
             self.intrinsic(a, s, name, dst, args, span);
             return;
         }
@@ -7946,6 +7963,22 @@ enum Feas {
 /// Not a blanket strip. `__builtin_expect`, `__builtin_frame_address` and friends have no
 /// non-prefixed counterpart, and aliasing them to a name that does not exist would turn a
 /// clear "no model" into a confusing lookup miss for a different symbol.
+/// The harness intrinsics (024 §7) — analysis directives, not program behaviour.
+///
+/// **One list**, because it is now consulted twice: once by the dispatcher, and once by the
+/// effect record so that dropping a `chiero_assume` is not reported as removing an I/O call.
+/// A second copy would have drifted the first time somebody added an intrinsic.
+fn is_analysis_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "chiero_assume"
+            | "chiero_assert"
+            | "chiero_mark_fidelity"
+            | "chiero_make_symbolic"
+            | "chiero_is_symbolic"
+    )
+}
+
 fn resolve_builtin(name: &str) -> &str {
     match name.strip_prefix("__builtin_") {
         Some(base) if chiero_model::dispatchable().contains(&base) => base,

@@ -405,6 +405,27 @@ pub fn prove_equivalent(before: &Module, after: &Module, cfg: &EquivCfg) -> Equi
             // §1.1's third claim, decided before the return: two versions that made
             // different calls are not equivalent whatever they went on to return, and the
             // effect is the more legible finding of the two.
+            // **A modeled call is refused, not aligned.** A model may fork on a guard nothing
+            // links between the two runs — `malloc` into a success path and a NULL path — and
+            // may overwrite the extern-return symbol `link_inputs` works on. With that, one
+            // run's success pairs against the other's failure and a function differs from
+            // *itself*. Aligning a modeled call by name and arguments says nothing about which
+            // of its branches each side took.
+            for (side, st) in [("before", sb), ("after", sa)] {
+                if let Some(e) = st
+                    .effects()
+                    .iter()
+                    .find(|e| e.kind == chiero_exec::EffectKind::ModeledCall)
+                {
+                    return unknown(format!(
+                        "the {side} version calls `{}`, which chiero models — a model may \
+                         fork on a guard this comparison cannot match between the two runs \
+                         (041 §1.2)",
+                        e.detail
+                    ));
+                }
+            }
+
             // Only a genuinely observable one counts towards §1.1's third claim: a pure call
             // is in the sequence for its ordinal, and claiming `SideEffects` because one was
             // compared would name a claim nobody made.
@@ -584,7 +605,17 @@ fn observable_inst(
         InstKind::StoreBits { addr, .. } => {
             escapes(addr).then(|| "stores bits through an address that is not a local".to_string())
         }
-        InstKind::CopyMem { dst, .. } | InstKind::SetMem { dst, .. } => escapes(dst)
+        // **Both ends of a block copy.** Only `dst` was checked, and `copymem local <- @g` is
+        // a read of a global — the same claim-2 read the `Load` arm exists for, and the same
+        // defect back through a different door. The rule is about the *role* an address plays,
+        // not about which instruction spells it.
+        InstKind::CopyMem { dst, src, .. } => escapes(dst)
+            .then(|| "writes a block through an address that is not a local".to_string())
+            .or_else(|| {
+                escapes(src)
+                    .then(|| "reads a block through an address that is not a local".to_string())
+            }),
+        InstKind::SetMem { dst, .. } => escapes(dst)
             .then(|| "writes a block through an address that is not a local".to_string()),
         InstKind::Opaque { .. } => {
             Some("contains inline asm or an unmodeled construct".to_string())
@@ -660,55 +691,57 @@ fn observable_inst(
 /// Keyed on the assumption's own text, which is fragile in the direction that fails *closed*:
 /// a rename in the engine turns a would-be `Bounded` blessing into an `Unknown`.
 fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
+    // **The truncation screen runs over every assumption, whatever fidelity won.**
+    //
+    // This used to live inside the `Bounded` arm — a point fix at the site where the defect
+    // was demonstrated rather than at the level the rule lives. A `max_forks` hit records a
+    // `BudgetHit` at fidelity `Bounded`; add one unmodeled call and the *run* degrades to
+    // `Approximated`, whose arm screened only `Approximated`-fidelity assumptions, so the
+    // dropped fork sat in the verdict unexamined and the fork-truncation defect came straight
+    // back one tier up. Found by review, twice.
+    //
+    // The rule has nothing to do with which fidelity won. A dropped path is a hole in the
+    // pairing argument — "any input follows some path on each side" — and that argument does
+    // not care what else the run also had to approximate.
+    for a in assumptions {
+        if a.kind == AssumptionKind::BudgetHit && !a.detail.starts_with("max_loop_iters") {
+            return Err(format!(
+                "the search was truncated by something other than a loop bound ({}), so \
+                 paths were dropped rather than bounded",
+                a.detail
+            ));
+        }
+    }
     match f {
         Fidelity::Exact => Ok(()),
-        Fidelity::Bounded => {
-            for a in assumptions {
-                if a.fidelity == Fidelity::Bounded && !a.detail.starts_with("max_loop_iters") {
-                    return Err(format!(
-                        "the search was truncated by something other than a loop bound \
-                         ({}), so paths were dropped rather than bounded",
-                        a.detail
-                    ));
-                }
-            }
-            Ok(())
-        }
-        // **An unmodeled call is a shared approximation — and this is the third version of
-        // that sentence, the first two having been wrong.** Both earlier ones are recorded
-        // here because the failure mode was a *plausible rationale*, and a plausible
-        // rationale is harder to check than none.
+        // §1.2's own word for a loop cut at `max_loop_iters`: a statement about inputs within
+        // the bound. Every other way of reaching `Bounded` was refused above.
+        Fidelity::Bounded => Ok(()),
+        // **An unmodeled call is a shared approximation — the third version of this sentence,
+        // the first two having been wrong.** Both are recorded because the failure mode was a
+        // *plausible rationale*, which is harder to check than none.
         //
         // The relational question is not "what did the callee do" but "did it do the same to
-        // both sides". A callee reaches this comparison through exactly three channels, and
-        // each is now closed by a mechanism rather than by an argument:
+        // both sides". A callee reaches this comparison through three channels, each closed by
+        // a mechanism rather than by an argument:
         //
         // 1. **The effect sequence.** `compare_effects` walks it position by position, callee
-        //    and arguments, and every declared call is in it — `pure` ones included, which is
-        //    the point of `EffectKind::PureCall`. A mismatch at any position refuses.
-        // 2. **Memory.** `observable_beyond_the_return` refuses a load *or* a store through an
-        //    address that is not provably a local, and `compare_effects` refuses a pointer
-        //    argument outright — so the callee has no caller-visible object to reach, and no
-        //    havoc of one can go unnoticed.
+        //    and arguments; every declared call is in it, `pure` ones included.
+        // 2. **Memory.** `observable_beyond_the_return` refuses any *read or write* through an
+        //    address that is not provably a local — including a block copy's **source**, which
+        //    the previous attempt missed and which brought the global-read defect back.
+        //    `compare_effects` refuses a pointer argument outright.
         // 3. **Its return value.** `link_inputs` matches extern returns by effect-sequence
-        //    position, and that key is only used after (1) has shown the two calls at that
-        //    position are the same call with the same arguments.
+        //    position, used only after (1) has shown the two calls are the same call.
         //
-        // **What was wrong before.** Version one said a matching effect sequence sufficed —
-        // false, because reads interleave with the callee's writes, and global *loads* were
-        // permitted (channel 2 was open). Version two added "and a `pure` callee is harmless"
-        // — false, because `pure` means no side effects, not a return value independent of
-        // the arguments; `abs` is pure, and pure calls were outside the sequence entirely
-        // (channels 1 and 3 both open). Each hole is now named above by the thing that closes
-        // it, which is the only form of this argument worth writing down.
+        // What was wrong before: that a matching effect sequence alone suffices — reads
+        // interleave with the callee's writes — and that a `pure` callee is harmless. `pure`
+        // means no side effects, not a return value independent of its arguments; `abs` is
+        // pure.
         //
         // What it still does not say: nothing here proved anything about the callee. The
         // verdict stays `Approximated`, envelope `proven` stays false, and 032 §3.1 refuses to
-        // drop a test on it. The blessing is "these two agree", not "chiero understands this".
-        //
-        // Only for assumption kinds that account for a call. `OpaqueCode` is deliberately
-        // absent — inline asm is not a call, has no argument list to compare, and the
-        // observability guard refuses it upstream.
+        // drop a test on it.
         Fidelity::Approximated => {
             for a in assumptions {
                 if a.fidelity == Fidelity::Approximated
@@ -727,7 +760,8 @@ fn blessable(f: Fidelity, assumptions: &[Assumption]) -> Result<(), String> {
             Ok(())
         }
         other => Err(format!(
-            "the run is {other:?}, and 041 §1.2 gives `Equivalent` only `Exact` or `Bounded`"
+            "the run is {other:?}, and 041 §1.2 gives `Equivalent` only `Exact`, `Bounded` or \
+             `Approximated`"
         )),
     }
 }

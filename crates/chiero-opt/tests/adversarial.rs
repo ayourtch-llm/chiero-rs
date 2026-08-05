@@ -614,7 +614,7 @@ func @f(%0: i32) -> i32 {
 entry:
   .line 1
   %1 = call @malloc(8i64)
-  %2 = cmp ne %1, null
+  %2 = cmp ne ptr %1, null
   br %2, bb1, bb2
 bb1:
   .line 2
