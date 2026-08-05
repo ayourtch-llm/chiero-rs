@@ -1339,3 +1339,52 @@ fn an_ordered_comparison_with_a_null_constant_is_a_pedantic_rule_only() {
         }
     }
 }
+
+/// **`c ? (x = 1) : v()` — a conditional with one `void` side — is a GNU extension.**
+///
+/// ```text
+/// vnet/ip/vtep.c:19:5: a `void` value is used where a value is required
+///   ip46_address_is_ip4 (ip) ? hash_set (t->vtep4, key4.as_u64, 1)
+///                            : hash_set_mem_alloc (&t->vtep6, &key6, 1);
+/// ```
+///
+/// One arm is an assignment inside a statement expression and the other a `void` call. Measured
+/// against gcc 13.3.0:
+///
+/// | mode | gcc |
+/// |---|---|
+/// | `-std=gnu11 -Wall -Wextra` | **silent** |
+/// | `-std=c11 -pedantic-errors` | error: "ISO C forbids conditional expr with only one void side" |
+///
+/// So it is exactly the shape 014's dialect gate exists for: supported unconditionally, reported
+/// under the strict dialect, and worded the way gcc words it. The old message — "a `void` value
+/// is used where a value is required" — came out of `coerce` and described a constraint
+/// violation rather than a divergence, which sends a reader looking for a missing return type.
+///
+/// **The result is `void`**, which is what makes it usable only as a statement: gcc gives
+/// `sizeof(c ? (x=1) : v())` an error, and nothing in the corpus asks for the value.
+#[test]
+fn a_conditional_with_one_void_side_is_a_gnu_extension() {
+    let src = "void v(void); int x;\nvoid f(int c) { c ? (x = 1) : v(); }\n";
+    assert_eq!(
+        sema_messages(src, Dialect::gnu()),
+        Vec::<String>::new(),
+        "gnu11 compiles this silently"
+    );
+    assert_eq!(
+        sema_messages(src, Dialect::pedantic()),
+        vec!["ISO C forbids a conditional expression with only one void side".to_string()],
+        "and the strict dialect reports it once, as a divergence"
+    );
+    // Both sides `void` is ordinary C and stays silent in both.
+    let both = "void v(void); void w(void);\nvoid f(int c) { c ? v() : w(); }\n";
+    assert_eq!(sema_messages(both, Dialect::gnu()), Vec::<String>::new());
+    assert_eq!(sema_messages(both, Dialect::pedantic()), Vec::<String>::new());
+    // A `void` value where a value is genuinely required is still an error in both dialects —
+    // the rule is not being dropped, only the one shape gcc accepts.
+    let used = "void v(void);\nint f(void) { return v(); }\n";
+    assert_eq!(
+        sema_messages(used, Dialect::gnu()),
+        vec!["a `void` value is used where a value is required".to_string()]
+    );
+}
