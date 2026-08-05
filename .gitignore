@@ -17,3 +17,6 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# scratch downloads (gcc sources for reading, never committed)
+/tmp/
