@@ -156,7 +156,11 @@ fn uncovered_lines_are_the_recorded_zeroes() {
 #[test]
 fn a_line_with_no_record_is_not_uncovered() {
     let idx = index();
-    assert_eq!(idx.line_count("t.c", 1), None, "the fixture records no line 1");
+    assert_eq!(
+        idx.line_count("t.c", 1),
+        None,
+        "the fixture records no line 1"
+    );
     assert!(
         !idx.uncovered_lines("t.c").contains(&1),
         "a line with no record is not evidence that nothing ran it"

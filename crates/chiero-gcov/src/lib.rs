@@ -180,6 +180,78 @@ impl CoverageIndex {
         self.line_tests.get(&(file.to_string(), line)).cloned()
     }
 
+    /// The tests that executed the code a [`Span`] stands for (030 §5).
+    ///
+    /// **Through `expansion_loc`, never the spelling location** (030 §1, contract 12). A span
+    /// inside a macro expansion was *written* in the macro body and *happened* at the call site,
+    /// and gcov records only the call site — `tests/corpus/coverage/t.c` pins that, and `m.h:1`
+    /// has no record at all. Asking the index about the macro body therefore returns `None`,
+    /// which reads as "no test covers this" and is the answer 032 acts on by running nothing.
+    /// The failure is silent, survives every unit test, and is why this method exists rather than
+    /// callers doing their own lookup.
+    ///
+    /// A span covering several lines contributes all of them: it is one construct, and a test
+    /// that reached any part of it reached the construct. Inside an expansion that collapses to
+    /// the call site's own line, which is all gcov ever wrote.
+    ///
+    /// `None` when the index recorded none of those lines — not an empty set, for the reason
+    /// [`tests_for_line`](Self::tests_for_line) gives.
+    pub fn tests_for_span(
+        &self,
+        sm: &chiero_span::SourceMap,
+        sp: chiero_span::Span,
+    ) -> Option<Vec<TestId>> {
+        let lo = sm.expansion_loc(sp)?;
+        // The end resolves through the same chain; a span inside one expansion collapses to a
+        // single call-site line, and one in ordinary code spans the lines it covers.
+        let hi = sm
+            .expansion_loc(chiero_span::Span::new(sp.hi, sp.hi, sp.ctx))
+            .filter(|h| h.file == lo.file)
+            .map_or(lo.line, |h| h.line);
+        let file = sm.file(lo.file).path().to_string_lossy().into_owned();
+
+        let mut out: Vec<TestId> = Vec::new();
+        let mut any = false;
+        for line in lo.line.min(hi)..=lo.line.max(hi) {
+            let Some(tests) = self.tests_for_line(&file, line) else {
+                continue;
+            };
+            any = true;
+            for t in tests {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        }
+        any.then(|| {
+            out.sort_unstable_by_key(|t| t.0);
+            out
+        })
+    }
+
+    /// The lines of a file gcov **recorded as zero** — seen by the compiler, executed by nothing.
+    ///
+    /// **Not the lines with no record.** A blank line, a comment or a declaration is absent from
+    /// the index, and absence is not evidence that nothing ran it; reporting those would call
+    /// most of every file untested. This is the crate's absence-versus-zero rule (030 §1) pointed
+    /// at a whole file, and it is the direction that matters: an uncovered line is a claim, and a
+    /// claim needs a record behind it.
+    ///
+    /// Ascending and without repeats, so two of them can be diffed. A `Vec` rather than the
+    /// spec's `impl Iterator` for the reason [`lines_of`](Self::lines_of) is one — the order is
+    /// part of the answer, and materialising it is what makes that checkable.
+    pub fn uncovered_lines(&self, file: &str) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .line_counts
+            .iter()
+            .filter(|((f, _), c)| f == file && **c == 0)
+            .map(|((_, l), _)| *l)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// The tests that executed a line **in one build**, or `None` when that build recorded
     /// nothing for it.
     ///
