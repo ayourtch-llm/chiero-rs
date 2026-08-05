@@ -487,7 +487,31 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 
 ## 9. Next actions
 
-> ### ⏭️ START HERE (wave 479) — 1694 tests, 4 ignored, M1 268/268 by contract
+> ### ⏭️ START HERE (wave 480) — 1712 tests, 4 ignored, M1 268/268 by contract
+>
+> ### ✅ THE 673-SECOND REGRESSION IS FIXED (bd5fc12) — the sweep is runnable again
+>
+> `chiero_sema::ConstEvaluator` prepares the translation unit **once** and is `eval`'d
+> repeatedly; `Lowerer` holds one per TU, built lazily. `const_eval` is now that preparation
+> plus one `eval`, so it stays standalone-callable — the constraint the previous wave flagged.
+>
+> Measured before/after on the **same plain release profile** (the on-disk binary was a
+> profiling build, so the old table was never comparable — that trap is now discharged):
+>
+> | translation unit | before | after |
+> |---|---|---|
+> | 250 trivial functions | 275 ms | 175 ms |
+> | 500 | 1029 ms | 175 ms |
+> | 1000 | 3600 ms | 333 ms |
+> | `#include <x86intrin.h>` + one `__rdpmc` | **164.1 s** | **1.05 s** |
+>
+> 156x on the reproducer, and the shape is linear — per-function symbol lookups no longer grow
+> with the module's function count. RED (4a12028) counts `SymbolText::text` calls at F=40/F=80
+> rather than timing anything: 3.90x before, 1.99x after.
+>
+> ⏭️ **A full VPP corpus sweep was launched immediately after** (the `cc-report` recipe below,
+> ~30 min). **If no corpus number appears in this file below this line, that run did not finish
+> — re-run it.** It is the first honest, lowering-inclusive number the project will have.
 >
 > ### 🎯 WHERE THINGS STAND
 >
@@ -560,7 +584,7 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > (`__builtin_ia32_paddd512_mask`), `ia32_rdpmc`, and `void (void)` builtins like `ia32_pause`
 > all lower clean.
 >
-> ### 🛑 BLOCKING REGRESSION (2026-08-04, found immediately after 9f7e575): 673 s per TU
+> ### ✅ CLOSED (bd5fc12) — kept for the method: the 673 s regression, as it was hunted
 >
 > Measured on the first corpus run with the generated table: **one translation unit took 673
 > seconds**, against ~1 s before. A direct one-line `__builtin_ia32_rdpmc` call is clean and
@@ -635,19 +659,10 @@ instruction otherwise discourages unrequested subagent use — this is the carve
 > from lowering. The earlier "lowering never constructs a sema `Cx`" reasoning was wrong — it
 > does, indirectly, tens of thousands of times.
 >
-> ⏭️ **The fix, and pick deliberately:**
->
-> 1. **Cache the context.** `const_eval`'s doc says the throwaway `Cx` exists "so `sizeof(int)`
->    resolves standalone", and the declaration walk is there because "an address constant is
->    *about* a declared object". Both hold for *one* call; neither requires rebuilding per call.
->    A `Cx` built once per TU and reused is the smallest correct change.
-> 2. **Or use the real `Analysis`.** lib.rs:2166 already notes that `sizeof x` is asked of the
->    real analysis "rather than of `const_eval`" — so the precedent for preferring it exists.
->    Wider change, better end state.
->
-> ⚠️ **Whichever, keep `const_eval` standalone-callable.** It is public API and a `.cir` fixture
-> or a caller with no `Analysis` still needs it to work alone; the fix is to stop paying for that
-> on every call, not to remove the capability.
+> ✅ **Option 1 was taken (bd5fc12): the context is prepared once per TU.** Option 2 — routing
+> lowering's folding through the real `Analysis` instead — remains the better *end state* and is
+> still open; it is now an ordinary cleanup rather than a blocking item, since the cost is gone.
+> `const_eval` stayed standalone-callable, as required.
 >
 > ### 🔬 CALLGRIND, first run — trustworthy parts and a trap
 >
