@@ -20,6 +20,7 @@ chiero-recipe.workspace = true
 chiero-span.workspace = true
 chiero-gcov.workspace = true
 chiero-diff.workspace = true
+chiero-select.workspace = true
 
 [lints]
 workspace = true

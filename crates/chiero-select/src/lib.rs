@@ -250,14 +250,22 @@ pub fn select_refined(
         }
         let lines = program.lines_of(entity);
         if lines.is_empty() {
-            // **Not "unaffected" — unmeasured.** An entity with no lines here has no coverage to
-            // intersect, so nothing can say which tests reach it, and §4 sends the question to
-            // the safety set rather than answering it.
-            reasons.push(format!(
-                "no source lines for {} `{}`, so no test could be excluded on its account",
-                kind_of(entity),
-                entity.name()
-            ));
+            // **A macro having no coverage lines is not a gap — it is 030 §1, measured.** gcov
+            // records the line a macro was *used* on and never the macro's own, so expecting
+            // coverage for a `Macro` entity is expecting something that cannot exist. 031 §3.2
+            // already turned the macro change into the *functions* that expand it, and those are
+            // what carry the coverage; reducing confidence here would make every macro edit
+            // report a caveat that says nothing.
+            //
+            // Any other entity with no lines is a real gap: something changed that this program
+            // cannot locate, so nothing can say which tests reach it.
+            if !matches!(entity, chiero_diff::Entity::Macro { .. }) {
+                reasons.push(format!(
+                    "no source lines for {} `{}`, so no test could be excluded on its account",
+                    kind_of(entity),
+                    entity.name()
+                ));
+            }
             continue;
         }
         let mut measured = false;
@@ -279,7 +287,7 @@ pub fn select_refined(
                 );
             }
         }
-        if !measured {
+        if !measured && !matches!(entity, chiero_diff::Entity::Macro { .. }) {
             reasons.push(format!(
                 "no coverage recorded for {} `{}` in {}",
                 kind_of(entity),

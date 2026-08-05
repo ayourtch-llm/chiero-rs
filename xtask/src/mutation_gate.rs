@@ -209,58 +209,62 @@ fn failing_cases(dir: &Path) -> Vec<String> {
     failed
 }
 
-/// Which cases chiero selects for a header-only macro edit.
+/// Which cases chiero selects, **through the whole pipeline**.
 ///
-/// The chain is the real one: `chiero-diff` compares the two trees per case, and the selection is
-/// the union of every case whose own translation unit is impacted. A test *is* a translation
-/// unit here, so "the test is impacted" is the honest reading of "the test would be selected".
+/// ⚠️ The first version of this function called `chiero_diff::impact` and stopped there, so the
+/// gate measured 031 and reported it as though it had measured selection. It now runs what a user
+/// would: one impact set for the change, one coverage index over the suite, one `select_with` —
+/// 030's index, 031's closure and 032's intersection and safety set, in that order.
+///
+/// The unit compared is the **library**, because that is what the change is in. The tests are
+/// whatever the coverage index attributes to the impacted entities' lines, which is 032 §2's join
+/// and not a proxy for it.
 fn chiero_selects(
     dir: &Path,
     before: &str,
     after: &str,
     lib_before: &str,
     lib_after: &str,
+    coverage: &chiero_gcov::CoverageIndex,
 ) -> Vec<String> {
-    let mut out = Vec::new();
-    for c in CASES {
-        let src = std::fs::read_to_string(dir.join(format!("{}.c", c.name))).unwrap_or_default();
-        // Each case is compiled with the library, so the unit chiero analyses is both — and a
-        // mutation may be in either the header or the library, so both sides vary.
-        let whole_before = format!("{src}\n{lib_before}");
-        let whole_after = format!("{src}\n{lib_after}");
-        let mut cfg = chiero_pp::Config::default();
-        cfg.iquote_paths.push(dir.to_path_buf());
-        let a = chiero_diff::Program::parse_with(
-            "unit.c",
-            &whole_before,
-            cfg.clone(),
-            &mut Header(before.to_string()),
-        );
-        let b = chiero_diff::Program::parse_with(
-            "unit.c",
-            &whole_after,
-            cfg,
-            &mut Header(after.to_string()),
-        );
-        let (Some(a), Some(b)) = (a, b) else {
-            // Unparseable is 031 §4's gap: the answer widens, so the case is selected.
-            out.push(c.name.to_string());
-            continue;
-        };
-        // **The test's own entry point**, not "any entity of the unit". Every case is compiled
-        // against the whole library, so a unit always *contains* the impacted functions; what
-        // decides whether the test would be selected is whether the change reaches `main`, which
-        // is exactly what 031's closure computes. Asking the looser question made the harness
-        // select all four cases every time and report 0% reduction — a recall gate that selects
-        // everything is satisfied and worthless, which is why contract 20 pairs the two numbers.
-        if chiero_diff::impact(&a, &b)
-            .entities
-            .contains_key(&chiero_diff::Entity::function("unit.c", "main"))
-        {
-            out.push(c.name.to_string());
-        }
+    // **The unit is named with the path gcov recorded.** `CoverageIndex` stores paths "as gcov
+    // wrote them" and says resolving them is the caller's job (030); gcc compiled with an
+    // absolute path, so an entity called `lib.c` matches nothing in the index and the join
+    // silently yields no tests. Naming the unit the same way is what a real tool does — it knows
+    // its own build directory — and the alternative, matching by basename inside `select`, would
+    // conflate two files of the same name in different directories.
+    let unit = dir.join("lib.c");
+    let unit = unit.to_string_lossy().into_owned();
+    let mut cfg = chiero_pp::Config::default();
+    cfg.iquote_paths.push(dir.to_path_buf());
+    let a = chiero_diff::Program::parse_with(
+        &unit,
+        lib_before,
+        cfg.clone(),
+        &mut Header(before.to_string()),
+    );
+    let b = chiero_diff::Program::parse_with(&unit, lib_after, cfg, &mut Header(after.to_string()));
+    let (Some(a), Some(b)) = (a, b) else {
+        // Unparseable is 031 §4's gap: the answer widens to the whole suite.
+        return CASES.iter().map(|c| c.name.to_string()).collect();
+    };
+
+    let suite = chiero_select::Suite {
+        tests: (0..CASES.len() as u32).map(chiero_gcov::TestId).collect(),
+        ..Default::default()
+    };
+    let selection = chiero_select::select_with(&chiero_diff::impact(&a, &b), &b, coverage, &suite);
+    // **A `Reduced` confidence here means the join did not land**, not that the change was
+    // subtle: every entity of this fixture has coverage. Surfaced rather than swallowed, because
+    // a pipeline that quietly finds no coverage selects nothing and looks like a great reduction.
+    if let chiero_select::Confidence::Reduced { reasons } = &selection.confidence {
+        eprintln!("  [confidence reduced] {}", reasons.join("; "));
     }
-    out
+    selection
+        .tests
+        .keys()
+        .filter_map(|t| CASES.get(t.0 as usize).map(|c| c.name.to_string()))
+        .collect()
 }
 
 /// A loader answering for the fixture's one header.
@@ -383,7 +387,7 @@ pub fn mutation_gate() -> i32 {
             return 1;
         }
 
-        let picked = chiero_selects(&root, HEADER, &header, LIB, &lib);
+        let picked = chiero_selects(&root, HEADER, &header, LIB, &lib, &coverage);
         // **The line the diff touched, found in the file** rather than hard-coded: a constant
         // would silently point at the wrong line the moment the fixture grew.
         let original = if m.file == "lib.h" { HEADER } else { LIB };
