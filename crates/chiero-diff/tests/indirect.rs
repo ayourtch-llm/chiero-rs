@@ -64,7 +64,8 @@ fn an_address_taken_change_reaches_indirect_call_sites() {
     let set = impact(&prog(TABLE), &prog(&edited));
 
     assert!(
-        set.entities.contains_key(&Entity::function("f.c", "dispatch")),
+        set.entities
+            .contains_key(&Entity::function("f.c", "dispatch")),
         "`handler`'s address is in `table` and `dispatch` calls through a pointer: {:?}",
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );
@@ -107,7 +108,8 @@ fn a_function_whose_address_is_not_taken_reaches_no_indirect_site() {
     let set = impact(&prog(&src), &prog(&edited));
 
     assert!(
-        !set.entities.contains_key(&Entity::function("f.c", "dispatch")),
+        !set.entities
+            .contains_key(&Entity::function("f.c", "dispatch")),
         "nothing put `private` in a table: {:?}",
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );
@@ -136,7 +138,8 @@ fn an_incompatible_arity_is_not_a_potential_caller() {
     let set = impact(&prog(src), &prog(&edited));
 
     assert!(
-        !set.entities.contains_key(&Entity::function("f.c", "call_one")),
+        !set.entities
+            .contains_key(&Entity::function("f.c", "call_one")),
         "it calls through a one-argument pointer; `two` takes two: {:?}",
         set.entities.keys().map(Entity::name).collect::<Vec<_>>()
     );
@@ -149,7 +152,9 @@ fn a_direct_caller_keeps_its_call_edge() {
     let edited = TABLE.replace("return y * 2;", "return y * 3;");
     let set = impact(&prog(TABLE), &prog(&edited));
     assert_eq!(
-        set.entities[&Entity::function("f.c", "direct")].edges.first(),
+        set.entities[&Entity::function("f.c", "direct")]
+            .edges
+            .first(),
         Some(&ImpactEdge::Calls {
             callee: "other".to_string()
         }),

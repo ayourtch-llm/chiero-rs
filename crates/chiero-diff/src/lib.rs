@@ -167,6 +167,12 @@ pub enum ImpactEdge {
     ExpandsMacro { name: String },
     /// Its file could not be parsed, so nothing about it is known (031 §4).
     FileUnparsed { file: String },
+    /// **It calls through a pointer, and a changed function's address was taken** (031 §3.4).
+    ///
+    /// A fallback rather than a resolved call: chiero could not prove this site *does* reach that
+    /// function, only that it could. `chiero-vpp` narrows this with knowledge of the registration
+    /// tables; the general engine does not guess.
+    IndirectCall { callee: String },
 }
 
 /// What the analysis could not see (031 §4).
@@ -280,6 +286,65 @@ impl chiero_pp::FileLoader for NoIncludes {
     }
 }
 
+/// Words that are followed by `(` and are not calls.
+const NOT_A_CALLEE: &[&str] = &[
+    "if",
+    "while",
+    "for",
+    "switch",
+    "return",
+    "sizeof",
+    "_Alignof",
+    "__alignof__",
+    "_Generic",
+    "__typeof__",
+    "typeof",
+    "defined",
+    "__attribute__",
+    "asm",
+    "__asm__",
+    "catch",
+];
+
+/// The number of arguments of the call whose `(` is at `open`, or `None` if the parentheses do
+/// not close.
+///
+/// Commas at depth 1 only: `f (g (a, b), c)` passes two arguments, not three.
+fn call_arity(tokens: &[String], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut commas = 0usize;
+    let mut any = false;
+    for (i, t) in tokens.iter().enumerate().skip(open) {
+        match t.as_str() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(if any { commas + 1 } else { 0 });
+                }
+            }
+            "," if depth == 1 => commas += 1,
+            _ if depth == 1 => any = true,
+            _ => {}
+        }
+        let _ = i;
+    }
+    None
+}
+
+/// Whether `name` appears anywhere in `tokens` *not* immediately followed by `(`.
+///
+/// **That is what "address taken" means at this level**: `f (x)` is a call, while `p = &f`,
+/// `g (f)` and `{ f, h }` are the address escaping into something chiero cannot follow. It
+/// over-approximates — a struct field or a local of the same name counts — which is the direction
+/// §4 requires of every gap.
+fn address_escapes(tokens: &[String], name: &str) -> bool {
+    tokens
+        .iter()
+        .enumerate()
+        .any(|(i, t)| t == name && tokens.get(i + 1).map(String::as_str) != Some("("))
+}
+
 /// One side of a comparison: a translation unit, preprocessed and parsed.
 #[derive(Debug)]
 pub struct Program {
@@ -304,6 +369,18 @@ pub struct Program {
     /// struct changes no byte, and a field rename changes no offset; both differ in the token
     /// stream and neither is a layout change.
     layouts: IndexMap<String, RecordShape>,
+    /// Functions whose address is taken somewhere in this translation unit.
+    ///
+    /// **Taken, not called.** `f (x)` is a call; `table[] = { f }`, `p = &f` and `g (f)` are the
+    /// address escaping into something chiero cannot follow.
+    address_taken: Vec<String>,
+    /// How many parameters each function declares, and whether it is variadic.
+    ///
+    /// The compatibility filter the general engine can apply without types: a call passing one
+    /// argument cannot be a call to a two-parameter function.
+    arity: IndexMap<String, (usize, bool)>,
+    /// The argument counts of the indirect call sites each entity contains.
+    indirect_calls: IndexMap<Entity, Vec<usize>>,
     /// Which names each entity mentions, for §3's closure.
     ///
     /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
@@ -395,6 +472,55 @@ impl Program {
         }
 
         let (entities, refs, spans) = extract(file, &tu, &parsed);
+
+        // **031 §3.4's gap, computed from the token stream** like the rest of this crate. Every
+        // function's arity comes from its declaration; a name that appears anywhere without a `(`
+        // after it has escaped; and a call through something that is not a known function name is
+        // an indirect one.
+        let mut arity: IndexMap<String, (usize, bool)> = IndexMap::new();
+        for &id in parsed.ast.items() {
+            let chiero_ast::DeclKind::Func { name, ty, .. } = &parsed.ast.decl(id).kind else {
+                continue;
+            };
+            if let chiero_ast::TypeKind::Func {
+                params, variadic, ..
+            } = &parsed.ast.ty(*ty).kind
+            {
+                arity.insert(
+                    parsed.text(*name).unwrap_or("?").to_string(),
+                    (params.len(), *variadic),
+                );
+            }
+        }
+        let all_tokens = tokens_between(&tu, 0, u32::MAX);
+        let address_taken: Vec<String> = arity
+            .keys()
+            .filter(|n| address_escapes(&all_tokens, n))
+            .cloned()
+            .collect();
+        let mut indirect_calls: IndexMap<Entity, Vec<usize>> = IndexMap::new();
+        for (e, (lo, hi)) in &spans {
+            let toks = tokens_between(&tu, *lo, *hi);
+            let mut sites: Vec<usize> = Vec::new();
+            for (i, t) in toks.iter().enumerate() {
+                if toks.get(i + 1).map(String::as_str) != Some("(") {
+                    continue;
+                }
+                let is_name = t
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_');
+                if !is_name || NOT_A_CALLEE.contains(&t.as_str()) || arity.contains_key(t) {
+                    continue;
+                }
+                if let Some(n) = call_arity(&toks, i + 1) {
+                    sites.push(n);
+                }
+            }
+            if !sites.is_empty() {
+                indirect_calls.insert(e.clone(), sites);
+            }
+        }
         let (macros, expands) = extract_macros(&tu, &spans);
         let mut entities = entities;
         entities.extend(macros);
@@ -402,6 +528,9 @@ impl Program {
             file: file.to_string(),
             parsed_cleanly,
             layouts,
+            address_taken,
+            arity,
+            indirect_calls,
             entities,
             expands,
             refs,
@@ -655,6 +784,11 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
         }
     }
 
+    // **§3.4's address-taken fallback, before the closure** so that whatever an indirect caller
+    // reaches comes with it. Counted, because a maintainer reading "412 impacted" needs to know
+    // how many arrived through a gap rather than a resolved call.
+    let address_taken_fallbacks = apply_address_taken(old, new, &mut entities);
+
     close_over_references(old, new, &mut entities);
 
     // **031 §5: by kind, then file, then name** — never by discovery order, so two runs give the
@@ -664,17 +798,76 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     });
     ImpactSet {
         entities,
-        completeness: if unparsed_files.is_empty() {
+        completeness: if unparsed_files.is_empty() && address_taken_fallbacks == 0 {
             Completeness::Complete
         } else {
             Completeness::Partial {
                 unparsed_files,
                 unresolved_calls: 0,
                 unknown_configs: Vec::new(),
-                address_taken_fallbacks: 0,
+                address_taken_fallbacks,
             }
         },
     }
+}
+
+/// Treat every signature-compatible indirect call site as a caller of a changed function whose
+/// address was taken (031 §3.4). Returns how many such fallbacks were applied.
+///
+/// **A gap, not an analysis.** chiero cannot prove the site reaches that function, only that it
+/// could — so §4 governs it and it widens the set. `chiero-vpp` narrows this with knowledge of
+/// the registration tables; the general engine does not guess.
+///
+/// Compatibility is **arity**, which is what can be checked without types: a call passing one
+/// argument is not a call to a two-parameter function. Weaker than a type check, and weaker in
+/// the safe direction — it matches more sites, never fewer. A variadic function matches any call
+/// with at least its declared count.
+fn apply_address_taken(
+    old: &Program,
+    new: &Program,
+    entities: &mut IndexMap<Entity, Justification>,
+) -> u32 {
+    let changed: Vec<Entity> = entities.keys().cloned().collect();
+    let mut applied = 0u32;
+
+    for target in &changed {
+        let Entity::Function { name, .. } = target else {
+            continue;
+        };
+        if !old.address_taken.contains(name) && !new.address_taken.contains(name) {
+            continue;
+        }
+        let Some(&(params, variadic)) = old.arity.get(name).or_else(|| new.arity.get(name)) else {
+            continue;
+        };
+        let via = entities[target].clone();
+        for p in [old, new] {
+            for (holder, sites) in &p.indirect_calls {
+                if entities.contains_key(holder) {
+                    continue;
+                }
+                let compatible = sites
+                    .iter()
+                    .any(|&n| if variadic { n >= params } else { n == params });
+                if !compatible {
+                    continue;
+                }
+                entities.insert(
+                    holder.clone(),
+                    Justification {
+                        class: via.class,
+                        root: via.root.clone(),
+                        edges: vec![ImpactEdge::IndirectCall {
+                            callee: name.clone(),
+                        }],
+                        distance: via.distance + 1,
+                    },
+                );
+                applied += 1;
+            }
+        }
+    }
+    applied
 }
 
 /// Grow the set to a fixpoint over the entities that mention what is already in it (031 §3).
