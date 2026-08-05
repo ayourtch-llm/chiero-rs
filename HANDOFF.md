@@ -807,7 +807,7 @@ typing the paths ever would.
 > have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
 > functions do get their own entries. Ask about the changed *line*.
 >
-> ### 📊 031 CONTRACT STATUS — 19 of 20 green
+> ### ✅ 031 IS COMPLETE — 20 of 20 contracts green
 >
 > | | |
 > |---|---|
@@ -819,33 +819,37 @@ typing the paths ever would.
 > | 15 unparsed → `Partial` | ✅ every entity of the file, classed `Unknown` |
 > | **17 precision** | ✅ guard — a macro edit does **not** impact every includer |
 > | **9, 10, 11 `LayoutChanged`** | ✅ computed from 014's `RecordLayout`, keyed by field *name* |
-> | 13 `CLIB_MARCH_VARIANT` | ❌ |
+> | **13 `CLIB_MARCH_VARIANT`** | ✅ guard — the token paste already distinguishes them |
 > | **14 address-taken indirect calls** | ✅ arity-compatible, counted, and `Partial` |
 > | **16 `#if` and `ConfigId`** | ✅ `chiero-pp` now records conditionals |
 >
 > ⏭️ **Next, in the order the spec gives them:**
 >
-> #### ⏭️ THE ONE THAT IS LEFT
+> ### 🔀 AN ENTITY'S TEXT IS NOT ITS EXPANSIONS — two token sets, and why (contract 13's wave)
 >
-> - **contract 13 (`CLIB_MARCH_VARIANT`)** is the identity problem `chiero-gcov` already solved
->   twice, with `FuncKey` and `Variant`. ⚠️ But 001 §4 rule 4 puts VPP knowledge only in
->   `chiero-vpp`, and `chiero-gcov`'s answer was a `MarchResolver` extension point whose default
->   *splits nothing*. Copy that shape rather than teaching `chiero-diff` about
->   `CLIB_MARCH_VARIANT`: a resolver that guessed from a bare suffix would collapse `foo_avx2`
->   into `foo` and attribute the vector variant's impact to the scalar path.
-> - ~~**§5's output**~~ — done (c16c8b0). `ImpactSet::render()` and `::to_json()`:
+> Contract 13 itself needed no VPP knowledge: `cpu.h`'s token paste gives the two builds
+> differently *named* functions, so `Entity` already tells them apart and 001 §4 rule 4 holds
+> without `chiero-diff` learning what `CLIB_MARCH_VARIANT` is. But its test found a defect that
+> had nothing to do with march variants, and fixing it split one function in two:
 >
->   ```
->   CHANGED  function leaf  (f.c)  BodyChanged
->     ├─ f.c middle  Calls leaf
->     └─ f.c top  Calls middle
->   CHANGED  record hdr  (f.c)  LayoutChanged (size -3)
->     └─ f.c of  UsesType hdr
->   ```
+> | | |
+> |---|---|
+> | **`tokens_written`** — root context only | an entity's **fingerprint**: what changed in its *own* text |
+> | **`tokens_between`** — resolved through `expansion_loc` | what the code **references** after expansion: the call graph, the indirect-call scan |
 >
->   Grouped by **root**, because the question is "why am I running 400 tests", not "which 400".
->   `PARTIAL` is a line rather than a field, and an empty answer says `no impact` — a blank
->   report is indistinguishable from a crash.
+> Filtering on a token's own span dropped every macro-expanded token, so a caller reached only
+> through a pasted name was invisible. Resolving through `expansion_loc` fixed that and broke the
+> headline contract the other way: with the expansion folded in, a function was reported
+> `DirectlyChanged` when a *header's* macro changed. True in a sense, useless in a report.
+>
+> ⚠️ Both guard `is_dummy` first — the **third** place in this codebase that has needed it.
+>
+> ### ⏭️ WHAT IS NEXT — 032, test selection
+>
+> `chiero-select` is one line. Both halves it joins are now real and measured: `chiero-gcov`
+> agrees with gcov exactly on a full VPP build, and `chiero-diff` answers all twenty of 031's
+> contracts. 032 §4's symbolic refinement is where the impact set gets *narrowed* — §3.2 is
+> explicit that precision comes from there and "not from pretending the impact is smaller".
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
