@@ -586,24 +586,35 @@ typing the paths ever would.
 > not-contradicted. `t.c`'s blocks are all 1 and cannot tell the three apart — which is why the
 > second fixture exists and why it is worth its bytes.
 >
+> ### ✅ 030 STATUS — contracts 1–6, 8, 9, 10 and 12 are green
+>
+> | contract | state |
+> |---|---|
+> | 1–4 JSON ingest, versions, stem rule, `Lines` detail | done (f29a098) |
+> | 8, 9 stamp pairing, unknown version | done (89796ad) |
+> | §4 record stream and payloads | done (2d9610d, cd558c1) |
+> | **5 cross-validation gate** | **done (d5b06c9)** — native counts identical to `gcov --json-format` on every fixture |
+> | 6 corrupt data, no partial index | done, for the truncation cases the fixtures reach |
+> | 10 `tests_for_line`, union | done (88aae92) |
+> | 12 `expansion_loc` only | done (959e7ea), and the guard is verified to fail on a planted violation |
+>
+> **Contract 5 is the one that matters and it discriminates.** Replacing the measured `max` line
+> rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
+> would have passed the wrong rule, which is why the second fixture exists.
+>
 > ⏭️ **Next in 030**, in the order the spec gives them:
-> - ~~the record payloads~~ — done (cd558c1). `read_notes` gives functions, blocks, arcs with
->   flags, and per-block line sets, all pinned against the fixture.
-> - **the `.gcda` counters and the flow solve**, which is the next increment and has no code yet.
->   Everything it needs is measured and written above: non-tree counters in arc order keyed by
->   `ident`, conservation to fixpoint, then `max` per line. ⚠️ A naive propagation loop is easy to
->   get wrong — the throwaway Python that took the measurement produced a `-1` for one arc from
->   an ordering bug, while still getting every block count right. Iterate to a fixpoint over *all*
->   blocks rather than trusting one pass, and refuse the data if anything is still unknown
->   (contract 6: report it, do not guess).
-> - contract 5, the cross-validation gate: native decode must produce line counts *identical* to
->   `gcov --json-format` on the same files. Both artifacts and the JSON are committed, so the
->   gate can be written the moment the payloads decode — and it is the gate that makes the flow
->   solve trustworthy, so write it before believing any arc count.
-> - contracts 6–9: the flow solve, `FAKE` arcs, the stamp pairing, and an unknown version tag
->   falling back to JSON rather than guessing.
-> - contract 10 onward needs `TestBitmap`; 030 §5 says roaring, and the workspace has no such
->   dependency yet — that is a deliberate decision to make, like `flate2` was.
+> - **contract 7**: `FAKE` arcs excluded from arc-level queries but included in the conservation
+>   solve. The decoder keeps the flags and the solve already uses them; what is missing is the
+>   arc-level *query surface* (`tests_for_arc`), which is also contract 4's other half.
+> - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
+>   the system, and the first thing here that touches `chiero-cir`.
+> - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
+>   `Vec<TestId>` and will not meet it; 030 §5 says roaring. The type is private to the crate, so
+>   the swap is an implementation detail — **that is deliberate, and the reason to do the
+>   benchmark before reaching for a dependency.**
+> - **contract 2's sibling**: a fixture at VPP scale. Everything so far is two small programs; the
+>   frontend vertical only became trustworthy when it met 1871 real translation units, and there
+>   is no reason to expect this one to differ.
 >
 > ### 📊 SUPERSEDED: **1866 of 1871 clean, ZERO `not-run`** at 5dff817
 >
