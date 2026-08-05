@@ -526,53 +526,48 @@ typing the paths ever would.
 > **Anchor a patch on the signature, not on the body**, and when instrumentation reports the
 > impossible, suspect the instrumentation before the code.
 >
-> ### 📊 THE NUMBER: **1852 of 1871 clean (99.0%)** at 9f35421 — was 1852 *not-run*
+> ### 📊 THE NUMBER: **1866 of 1871 clean, ZERO `not-run`** at 5dff817
 >
 > | sweep | clean | not-run | diagnosed |
 > |---|---|---|---|
 > | 99d92d0, before this wave | 12 | 1852 | 7 |
 > | 3180a49 | 1552 | 312 | 7 |
 > | 99bc5bd | 1757 | 107 | 7 |
-> | **9f35421** | **1852** | 12 | 7 |
+> | 9f35421 | 1852 | 12 | 7 |
+> | **5dff817** | **1866** | **0** | 5 |
 >
-> The mirror image of where the wave started, on the same tree, the same 1871 translation units
-> and the same lowering-inclusive yardstick. Four fixes have landed *since* that sweep
-> (`typeof`, block-scope linkage, the anonymous-union designator, runtime `offsetof`), so the
-> next measurement should be higher still.
+> **Every translation unit in VPP now lowers.** `not-run` means chiero could not represent
+> something and dropped a function; there are none. The five `diagnosed` are chiero *reporting*
+> on VPP, which is the tool working — and one of them is fixed in 515b518, after this sweep.
 >
-> ### ⏭️ EVERYTHING THAT IS LEFT, and it fits on one screen
+> ### ⏭️ WHAT IS LEFT — four files, and none of them is a lowering gap
 >
-> | count | verdict | where | note |
-> |---|---|---|---|
-> | 12 | not-run | `drivers/iavf/iavf.c` `iavf_vc_op_config_vsi_queues` | **the only multi-TU cause left** — see below |
-> | 2 | diagnosed | `elf.h` / `linux/memfd.h` macro redefinitions | **not a defect** — VPP really does redefine `ELF_NOTE_ABI` and `MFD_CLOEXEC` with different bodies; gcc warns, and this project calibrates to `-pedantic-errors` where gcc errors. A finding about VPP. |
-> | 1 | diagnosed | `vec_bootstrap.h:212` | fixed in 37b577d |
-> | 1 | diagnosed | `l2_api.c:1243` | fixed in 37b577d |
-> | 1 | diagnosed | `vtep.c:19` | "a `void` value is used where a value is required" — **unreduced**; `c ? a() : b()` on two `void` calls lowers clean, so it is some other shape |
-> | 1 | diagnosed | `tap.c:36` | "signed overflow in a constant expression" — likely a real finding about VPP; read the line before assuming otherwise |
-> | 1 | diagnosed | `sock_test.h:23` | `unknown escape sequence \(` — gcc warns; a calibration question for 042 |
+> | file | report | verdict |
+> |---|---|---|
+> | `elf_clib.c`, `mem.c` | pp: redefinition of `ELF_NOTE_ABI` / `MFD_CLOEXEC` | **not a defect.** VPP and glibc define these with *different* bodies; gcc warns, and this project calibrates to `-pedantic-errors` where gcc errors. A finding about VPP. |
+> | `vtep.c` | sema: a `void` value is used where a value is required | **fixed in 515b518** — one `void` side in a `?:` is a GNU extension, now reported only under the strict dialect and in gcc's words |
+> | `sock_test.h` | sema: unknown escape sequence `\(` | gcc warns; a calibration question for 042 — decide it rather than leaving it |
+> | `tap.c:36` | sema: signed overflow in a constant expression | **the real next item**, measured below |
 >
-> #### The iavf offsetof gap, with what is already ruled out
+> #### `tap.c` — an enumerator wider than `int`
 >
-> `iavf.c` reports "an `__builtin_offsetof` whose member designator does not resolve" **six
-> times** even after 2640083 taught `offsetof` to compute a runtime subscript. Every reduction
-> tried lowers clean: a runtime subscript (`qpair[(n)+1]`), through a typedef'd struct, a
-> flexible array member (`counters[]`), and the two combined.
->
-> **The recipe that found every cause this wave**, and the one to use here:
->
-> ```
-> # 1. the inner diagnostic, which 015 §7 replaces with "contains a construct ..."
-> #    add to `function()` in chiero-lower, next to `self.diagnostics.truncate(diags_before)`:
-> #      if std::env::var("KEEPDIAG").is_ok() { for d in &self.diagnostics[diags_before..] { eprintln!("INNER: {:?} {}", d.span, d.message); } }
-> cd $VPPBUILD && CMD=$(ninja -t commands <the .o> | tail -1 | sed -E 's|^/usr/bin/ccache [^ ]+ ||')
-> KEEPDIAG=1 target/release/xtask cc $CMD 2>&1 | grep INNER
-> # 2. the span it prints is into the *preprocessed* stream; `gcc -E` the same command line and
-> #    read the bytes at that offset to find which macro expansion it is.
+> ```c
+> #define _(f, n) VIRTIO_NET_F_##f##_BIT = 1ULL << (n),      /* plugins/tap/virtio_net.h:87 */
+> const static u64 virtio_features = VIRTIO_NET_F_MRG_RXBUF_BIT | VIRTIO_F_VERSION_1_BIT | …;
 > ```
 >
-> The span was `4095046..4095079` in `ExpnCtx(16285)` — a *macro expansion* context, so read the
-> expansion, not the source line.
+> `VIRTIO_F_VERSION_1_BIT` is `1ULL << 32`. Measured against gcc 13.3.0 on a four-line
+> reduction:
+>
+> | mode | gcc |
+> |---|---|
+> | `-std=gnu11 -Wall -Wextra` | accepted (only an unrelated `-Wold-style-declaration`) |
+> | `-std=c11 -pedantic-errors` | error: **"ISO C restricts enumerator values to range of `int`"**, at the *enumerator* |
+>
+> chiero says "signed overflow in a constant expression" at the **use**, ungated by dialect. Three
+> things are wrong with that: the place, the sentence, and the gate. The fix is the same shape as
+> 515b518 — widen the enumerator's type as gcc does, and report gcc's sentence at the enumerator
+> under the strict dialect only. 014 contract 10 owns the underlying-type choice.
 >
 > ### 📊 SUPERSEDED: 1757 of 1871 clean (93.9%) at 99bc5bd
 >
