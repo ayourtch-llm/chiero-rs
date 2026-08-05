@@ -136,6 +136,11 @@ pub enum ChangeClass {
     Added,
     /// Also a build break for every user, which is why it is not merely "the entity is gone".
     Removed,
+    /// **chiero could not read this entity**, so it must be assumed changed (031 §4).
+    ///
+    /// Not a guess about what happened to it. A file that failed to parse tells you nothing about
+    /// its contents, and the only safe reading of nothing is everything.
+    Unknown,
 }
 
 /// How an entity was reached (031 §3).
@@ -151,6 +156,38 @@ pub enum ImpactEdge {
     UsesType { name: String },
     /// **It expands a macro that changed** — 031 §3.2, and the edge coverage cannot produce.
     ExpandsMacro { name: String },
+    /// Its file could not be parsed, so nothing about it is known (031 §4).
+    FileUnparsed { file: String },
+}
+
+/// What the analysis could not see (031 §4).
+///
+/// **Every gap widens the set rather than narrowing it.** Missing an impacted entity means
+/// silently skipping the test that would have caught the regression; an extra entity costs a test
+/// run. §4 is explicit that a tool which quietly narrows here "is worse than no tool: it converts
+/// an unknown into a false assurance".
+///
+/// `Partial` is what makes 032's always-run set non-empty, so a caller must match on it rather
+/// than read the entity list alone.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Completeness {
+    #[default]
+    Complete,
+    Partial {
+        /// Files neither side could parse. Every entity of one is in the set, classed
+        /// [`ChangeClass::Unknown`].
+        unparsed_files: Vec<String>,
+        /// Indirect calls whose targets could not be resolved. §4 widens each to every
+        /// signature-compatible target; **not yet implemented**, so this is always 0 and a
+        /// caller must not read 0 as "there were none".
+        unresolved_calls: u32,
+        /// Build configurations the analysis did not enumerate. §4 widens to all of them;
+        /// **not yet implemented**, so this is always empty.
+        unknown_configs: Vec<String>,
+        /// Functions whose address was taken and whose indirect callers were approximated.
+        /// **Not yet implemented**, so this is always 0.
+        address_taken_fallbacks: u32,
+    },
 }
 
 /// Why an entity is in the set (031 §3).
@@ -175,6 +212,9 @@ pub struct Justification {
 #[derive(Clone, Debug, Default)]
 pub struct ImpactSet {
     pub entities: IndexMap<Entity, Justification>,
+    /// What the analysis could not see. **Match on this**; the entity list alone is not the
+    /// answer (031 §4).
+    pub completeness: Completeness,
 }
 
 /// A loader for a translation unit that includes nothing.
@@ -206,6 +246,14 @@ pub struct Program {
     /// on and nothing about the macro itself (030 §1, measured), so a coverage index has no way
     /// back from a header edit to the functions it reaches.
     expands: IndexMap<Entity, Vec<String>>,
+    /// The file this translation unit is, for reporting it as unparsed.
+    file: String,
+    /// Whether the preprocessor and the parser were both silent.
+    ///
+    /// **Recorded rather than refused.** An unparseable file's entities must reach the impact set
+    /// (031 §4), so the program is still built from whatever the parser recovered — and the flag
+    /// is what stops that partial recovery being read as a complete answer.
+    parsed_cleanly: bool,
     /// Which names each entity mentions, for §3's closure.
     ///
     /// **Names, not resolved bindings.** A local variable shadowing a global's name puts its
@@ -232,10 +280,10 @@ struct Fingerprint {
 impl Program {
     /// Preprocess and parse one translation unit.
     ///
-    /// `None` when it does not parse. 031 contract 15 puts an unparseable file's entities in the
-    /// set and marks the result `Partial`, which is §4's job and not this wave's — and refusing
-    /// here is the honest placeholder, because returning an empty program would report *no
-    /// impact* for a file nobody could read.
+    /// **`None` only when the source cannot be turned into a program at all.** A file that fails
+    /// to *parse* still yields one, flagged: 031 §4 requires its entities to reach the impact set
+    /// and the result to be `Partial`, because a file nobody could read tells you nothing about
+    /// its contents and the only safe reading of nothing is everything.
     pub fn parse(file: &str, src: &str) -> Option<Program> {
         Program::parse_with(file, src, chiero_pp::Config::default(), &mut NoIncludes)
     }
@@ -253,19 +301,16 @@ impl Program {
         loader: &mut L,
     ) -> Option<Program> {
         let tu = chiero_pp::preprocess_with_loader(file, src, config, loader);
-        if !tu.diagnostics.is_empty() {
-            return None;
-        }
         let mut oracle = chiero_parse::ScopedTypedefs::new();
         let parsed = chiero_parse::parse_tu(&tu, &mut oracle);
-        if !parsed.diagnostics.is_empty() {
-            return None;
-        }
+        let parsed_cleanly = tu.diagnostics.is_empty() && parsed.diagnostics.is_empty();
         let (entities, refs, spans) = extract(file, &tu, &parsed);
         let (macros, expands) = extract_macros(&tu, &spans);
         let mut entities = entities;
         entities.extend(macros);
         Some(Program {
+            file: file.to_string(),
+            parsed_cleanly,
             entities,
             expands,
             refs,
@@ -489,6 +534,27 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
         }
     }
 
+    // **§4: a file nobody could read puts every one of its entities in the set.** Done before the
+    // closure, so that whatever those entities reach comes with them — a gap that widened the set
+    // and then stopped would be a narrower gap than the one that exists.
+    let mut unparsed_files: Vec<String> = Vec::new();
+    for p in [old, new] {
+        if p.parsed_cleanly || unparsed_files.contains(&p.file) {
+            continue;
+        }
+        unparsed_files.push(p.file.clone());
+        for e in p.entities.keys().filter(|e| e.file() == p.file) {
+            entities.entry(e.clone()).or_insert_with(|| Justification {
+                class: ChangeClass::Unknown,
+                root: e.clone(),
+                edges: vec![ImpactEdge::FileUnparsed {
+                    file: p.file.clone(),
+                }],
+                distance: 0,
+            });
+        }
+    }
+
     close_over_references(old, new, &mut entities);
 
     // **031 §5: by kind, then file, then name** — never by discovery order, so two runs give the
@@ -496,7 +562,19 @@ pub fn impact(old: &Program, new: &Program) -> ImpactSet {
     entities.sort_by(|a, _, b, _| {
         (a.kind_rank(), a.file(), a.name()).cmp(&(b.kind_rank(), b.file(), b.name()))
     });
-    ImpactSet { entities }
+    ImpactSet {
+        entities,
+        completeness: if unparsed_files.is_empty() {
+            Completeness::Complete
+        } else {
+            Completeness::Partial {
+                unparsed_files,
+                unresolved_calls: 0,
+                unknown_configs: Vec::new(),
+                address_taken_fallbacks: 0,
+            }
+        },
+    }
 }
 
 /// Grow the set to a fixpoint over the entities that mention what is already in it (031 §3).
