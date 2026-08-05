@@ -530,25 +530,27 @@ impl CoverageIndex {
         self.file_names.iter().map(|f| f.as_str())
     }
 
-    /// Merge one line's count across *objects*, taking the **maximum** where a line already has
-    /// one.
+    /// Merge one line's count across *objects*, **summing** where a line already has one.
     ///
-    /// ⚠️ This doc used to justify the max by "which is what gcov does", citing the line rule.
-    /// That rule was wrong (see `tests/line_rule.rs`) and this was never what it did within an
-    /// object anyway: gcov accumulates a source's lines across every function and then overwrites
-    /// them with a graph count. `native::ObjectLines` now does that merge, and what reaches here
-    /// is one already-correct number per object.
+    /// `line_count` is an aggregate, and a `static inline` compiled into two translation units
+    /// and executed once in each was executed twice. What reaches here is one already-correct
+    /// number per object — `native::ObjectLines` does the within-object merge, which is gcov's
+    /// own and not this one.
     ///
-    /// What is left for this method is the question the merge does *not* answer: the same header
-    /// line reported by two different builds — VPP compiles many, one per `CLIB_MARCH_VARIANT`.
-    /// Summing those would report a line as executed more often than any build executed it. The
-    /// maximum is a claim about the busiest build, which is the conservative direction for 032:
-    /// too-high a count never causes a test to be skipped. Per-variant answers, which is what a
-    /// caller should ask when the distinction matters, come from `tests_for_line_in`.
+    /// ⚠️ Twice now this method has been given a rule for the wrong reason. It first took the
+    /// maximum "because that is what gcov does", citing the line rule, which was wrong (see
+    /// `tests/line_rule.rs`) and was never about merging objects anyway. It then kept the maximum
+    /// to stop a multi-build tree over-reporting — but that is a different question ("how often
+    /// did any one build execute this line") with its own answer in `tests_for_line_in`, and
+    /// meanwhile `ingest_json` had been summing all along, so the same artifacts read two ways
+    /// disagreed.
+    ///
+    /// The sum is also the conservative direction for 032, which never skips a test because a
+    /// count is too high.
     pub(crate) fn add_line(&mut self, file: String, line: u32, count: u64) {
         let f = self.intern_file(&file);
         let e = self.lines.entry((f, line)).or_default();
-        e.count = e.count.max(count);
+        e.count = e.count.saturating_add(count);
     }
 
     /// The same, attributed to a test and to the build it came from.

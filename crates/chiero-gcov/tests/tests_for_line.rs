@@ -73,12 +73,24 @@ fn a_line_nobody_recorded_has_no_test_set_at_all() {
     assert_eq!(idx.tests_for_line("nosuch.c", 1), None);
 }
 
-/// The counts still merge as they did, and the test set is carried beside them rather than
-/// instead of them.
+/// The counts merge beside the test sets rather than instead of them, **and they sum**.
+///
+/// This test asserted `Some(1)` for `t.c:3` while `t` was ingested twice, because `add_line` took
+/// the maximum. It now asserts 2, and the change is deliberate rather than an assertion bent to
+/// fit: `line_count` is an aggregate over everything ingested, two runs each executed the line
+/// once, and `ingest_json` had been summing all along — so the same artifacts read the two ways
+/// disagreed. See `json_ingest::both_ingest_paths_merge_two_objects_the_same_way`.
+///
+/// The index cannot tell two runs of one object from two objects holding one header line, so one
+/// rule serves both, and the sum is honest for each: that many recorded executions.
 #[test]
 fn counts_and_test_sets_coexist() {
     let idx = three_tests();
-    assert_eq!(idx.line_count("t.c", 3), Some(1));
+    assert_eq!(
+        idx.line_count("t.c", 3),
+        Some(2),
+        "`t` was ingested as two tests, and the line ran once in each"
+    );
     assert_eq!(idx.line_count("loop.c", 1), Some(5));
     let mut files: Vec<&str> = idx.files().collect();
     files.sort();
