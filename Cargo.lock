@@ -103,6 +103,8 @@ dependencies = [
 name = "chiero-gcov"
 version = "0.1.0"
 dependencies = [
+ "chiero-cir",
+ "chiero-span",
  "flate2",
  "indexmap",
  "serde_json",
