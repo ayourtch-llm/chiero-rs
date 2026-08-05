@@ -757,12 +757,35 @@ typing the paths ever would.
 > have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
 > functions do get their own entries. Ask about the changed *line*.
 >
+> ### 📊 031 CONTRACT STATUS — 13 of 20 green
+>
+> | | |
+> |---|---|
+> | 1, 2, 3, 20 empty set | ✅ one decision: the fingerprint is the *token spelling* |
+> | 4, 8, 18, 19 closure and justification | ✅ breadth-first fixpoint, auditable edge chain |
+> | **5 the headline contract** | ✅ with the coverage baseline in the same test |
+> | 6, 7 macro closure, transitive | ✅ three deep, and a renamed parameter is a change |
+> | 12 two `static`s of one name | ✅ guard — `Entity` carries the file (014 §4) |
+> | 15 unparsed → `Partial` | ✅ every entity of the file, classed `Unknown` |
+> | **17 precision** | ✅ guard — a macro edit does **not** impact every includer |
+> | 9, 10, 11 `LayoutChanged` | ❌ |
+> | 13 `CLIB_MARCH_VARIANT` | ❌ |
+> | 14 address-taken indirect calls | ❌ |
+> | 16 `#if` and `ConfigId` | ❌ |
+>
 > ⏭️ **Next, in the order the spec gives them:**
-> - **contract 15 and §4**: a file that fails to parse puts all of its entities in the set and
->   marks the result `Partial`. `Program::parse` returns `None` today, which is honest but not
->   yet the contract.
-> - **`LayoutChanged`** (contracts 9–11), which is a *computed* comparison of `RecordLayout` from
->   014 §3 and not a syntactic one — reordering two same-size fields changes offsets.
+>
+> - **`LayoutChanged`** (contracts 9–11). ⚠️ §2 is explicit that this is a **computed comparison
+>   of `RecordLayout`** (014 §3), *not* a syntactic one: reordering two same-size fields changes
+>   every offset while the token stream barely moves, and adding `__attribute__((packed))`
+>   changes everything downstream. The fingerprint machinery that carried contracts 1–8 is the
+>   wrong tool here and will quietly under-report — the one place in 031 where tokens are not
+>   enough. VPP's wire-format structs make it the highest-severity class in §2's table.
+> - **contract 14**, address-taken functions, which is also the first thing to increment
+>   `address_taken_fallbacks` — one of the three `Completeness::Partial` fields that report zero
+>   today and say so on themselves.
+> - **contract 16**, `#if` conditions and `ConfigId`, which needs the preprocessor's config
+>   plumbing rather than new analysis.
 >
 > ⚠️ **Nothing here has met a real tree yet.** `Program::parse` takes a string and preprocesses it
 > alone; VPP's files need include paths and a `ConfigId`. The frontend lowers all 1871 TUs, so the
