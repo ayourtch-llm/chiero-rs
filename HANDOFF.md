@@ -660,55 +660,50 @@ typing the paths ever would.
 > `Fresh` for want of evidence to the contrary. That is why §7 makes 032 pattern-match on
 > `validity()` rather than trust it.
 >
-> ### 🟡 CLANG IS DECODED — 107 of 108 objects, and the last one is diagnosed
+> ### ✅ BOTH COMPILERS, THE ENTIRE VPP CODEBASE — verified
 >
-> VPP's cmake defaults to clang, so this was the difference between chiero reading a default VPP
-> build and refusing every object of it. `*804` is **4.08, and a different layout**, not a
-> different number — `Header::layout()` selects between `Words` and `Bytes` and the reader
-> branches in five places. All of it measured from the bytes; the table is in
-> `crates/chiero-gcov/tests/clang_native.rs`.
+> VPP's cmake defaults to clang, so this was the difference between reading a default VPP build
+> and refusing every object of it. Both builds are full: `ninja` over all 2125 targets.
 >
 > ```
-> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covbuild    # clang
-> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc      # gcc
+> cargo run --release -p chiero-gcov --example notes -- $SCRATCH/covgcc     # every .gcno
+> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc     # counts vs gcov
+> python3 crates/chiero-gcov/examples/cross-validate-clang.py $SCRATCH/covbuild
 > ```
+>
+> | | gcc 13.3 | clang 18 |
+> |---|---|---|
+> | `.gcno` decoded | **1895 / 1895** | **1872 / 1872** |
+> | functions / blocks / arcs | 51824 / 1.95M / 3.04M | 141313 / 1.21M / 1.34M |
+> | objects ingested | **322 / 322** | **334 / 334** |
+> | line counts vs the compiler's own tool | **0 of 156991 differ** | 263 of 90677 (0.29%) |
+> | whole-tree decode time | 2.8 s | 1.3 s |
+>
+> **The gcc column is exact.** The clang residue is a difference between gcov and llvm-cov, not a
+> chiero defect, and the shape says so: every `cpu.h:389` case is exactly 2×. That line holds two
+> short-circuit conditions of one `static inline` whose four blocks each ran 12 times; gcc's rule
+> counts *entries into the line's block subgraph* and says 12, llvm-cov says 24. chiero implements
+> gcc's rule, and **llvm-cov's own accounting is demonstrably loose** — on `internal_memalign` it
+> prints a line executed 48 times inside a function entered 24. ⚠️ **Do not converge on
+> llvm-cov.** It would break the column that is exact.
+>
+> #### What the full-tree runs found that vppinfra alone did not
+>
+> Four defects, all fixed, and every one invisible to the ~100-object subset:
 >
 > | | |
 > |---|---|
-> | clang vppinfra | **107 of 108 objects ingest** (was 0, then 42) |
-> | gcc vppinfra | 98/98, 0 of 30133 lines — unchanged throughout |
+> | the version tag's two encodings differ in *every* position — `"408*"` is 4.08, not 40.8 | clang refused entirely |
+> | an empty side of a conservation equation is **three** things; a block with no arcs *into* it is unreachable and its arcs are zero | 66 of 108 objects refused |
+> | a graph the counters contradict is **one function's** problem — skip it, name it, record no lines | 1 object refused, 59 good functions lost with it |
+> | **every counter zero ⇒ every arc zero**, by uniqueness of the spanning-tree solution; propagation stalls on a `noreturn` sink beside the exit | 18 lines missing, the last gcc gap |
+> | an LTO `.wpa.gcno` holds a **second artifact** where its records start | 1 of 1895 `.gcno` refused |
 >
-> Two bugs, and **the second was found by the scale run after four fixtures passed** — the same
-> way round as the gcc side, for the fourth time:
->
-> 1. the version tag's two encodings mean different things in *every* position, not just the
->    first: `"B33*"` is 13.3 but `"408*"` is 4.08, because before gcc 10 the major had one digit
->    and the minor two. Reading the old tag with the new rule gives 40.8.
-> 2. **an empty side of a conservation equation is three things.** Entry and exit conserve
->    nothing; a block with no arcs *into* it is unreachable, and its outgoing arcs are **zero**.
->    Reading the third case as the first refused 66 of 108 objects.
->
-> #### ⏭️ THE ONE THAT IS LEFT, already diagnosed — do not re-derive it
->
-> `dlmalloc.c`, `internal_memalign`, block 23. Its shape:
->
-> ```
-> into 23:     (17 -> 23, non-tree, so it has a counter)
-> out of 23:   (23 -> 24, ON_TREE)   (23 -> 25, ON_TREE)
-> block 22:    unreachable, its only arc (22 -> 25) is therefore 0
-> ```
->
-> Two unknowns out of one block, so 23 needs a second equation — which has to come from 24's and
-> 25's own conservation. The solve instead reaches a state where the flow into a block exceeds the
-> flow out and reports it. Start by dumping the solved values around blocks 22–25 and finding the
-> first one that is wrong; the error is a *symptom*, and the bad value is upstream of it.
->
-> ⚠️ **`scale` cannot cross-validate a clang object's counts.** `llvm-cov gcov` emits no JSON, so
-> the harness can only report whether an object ingests; the four committed fixtures are checked
-> against `llvm-cov`'s `.gcov` text by hand in `clang_native.rs`. Teaching `scale` to parse that
-> text would turn 107 ingests into 107 *verified* ingests, and is worth doing before trusting the
-> clang path the way the gcc path is trusted.
->
+> ⚠️ **`.gcda` coverage is partial by nature here.** VPP's real test suite needs root and network
+> namespaces; what these numbers rest on is the unit-test binaries that run standalone
+> (`test_infra`, `test_pnat`, `vat2`, …), which is 322 of 1895 objects. The *notes* decoder is
+> exercised across all 1895, which is where the format complexity lives.
+
 > ### ⏭️ WHAT IS NEXT — 031, change impact
 >
 > 030 is done. The next vertical is [031](docs/specs/031-change-impact.md), which diffs two
