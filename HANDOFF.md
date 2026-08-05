@@ -1044,6 +1044,23 @@ typing the paths ever would.
 > machinery exists — but on the evidence of 030, expect the first real sweep to find something the
 > hand-written fixtures cannot.
 >
+> ### 🧾 050 §2's ENVELOPE EXISTS (82d2995) — and `chiero-tool` was already there
+>
+> `Envelope::new(result, fidelity)` derives `proven`; there is **no way to build one whose
+> `proven` disagrees with its fidelity**. Contract 2 is a property test over every fidelity, not a
+> sample. Text follows the same rule — "within this run's bounds", never a bare answer, unless
+> proven — and truncation is visible, because an LLM shown 50 of 1043 sites and told nothing will
+> reason about 50.
+>
+> ⚠️ **`chiero-tool` already existed** with 060 work in it — `explain_macro_expansion`,
+> `expansion_sites`, `x_macro_items` — and I overwrote its `Cargo.toml` and `lib.rs` before
+> noticing. Restored from git, redone additively, prior tests still pass. **Look before writing:
+> `mkdir -p` on an existing path says nothing.**
+>
+> ⏭️ **Next in 050**, and the operations are mostly assembly now that the envelope exists:
+> `select_tests` (032's `Selection` is ready), and wrapping `expansion_sites` —
+> which already computes truncation and predates the envelope, so it reports it in its own shape.
+>
 > ### ⏭️ AFTER THAT — 032, test selection
 >
 > 030 is done. The next vertical is [031](docs/specs/031-change-impact.md), which diffs two
