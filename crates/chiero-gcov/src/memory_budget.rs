@@ -33,7 +33,7 @@
 //! debug build, which is not something to put in the path of every `cargo test`. Run it with:
 //!
 //! ```text
-//! cargo test --release -p chiero-gcov --test memory_budget -- --ignored --nocapture
+//! cargo test --release -p chiero-gcov --lib -- --ignored --nocapture
 //! ```
 //!
 //! `--nocapture` because the number it prints is the point: the contract is a budget, and a
@@ -115,6 +115,11 @@ fn tests_on_line(i: u64) -> u32 {
 
 /// A deterministic spread of test ids, so the benchmark measures the same thing every run.
 ///
+/// **`n` is a number of draws, not a set size.** After `dedup`, 2000 draws from 5000 ids yield
+/// about 1649 distinct ones and 40 draw about 39.8. The measured bytes are insensitive to the
+/// difference — `Vec` growth is powers of two, so 1649 and 2000 both land at capacity 2048 —
+/// but the sizes named in `tests_on_line` are draws.
+///
 /// **No `rand` and no `HashMap`.** 001 §5 forbids unordered containers on output paths, and a
 /// benchmark whose numbers move between runs cannot be compared with the last one — which is the
 /// only thing a budget test is for.
@@ -132,30 +137,33 @@ fn spread(seed: u64, n: u32) -> Vec<TestId> {
     out
 }
 
-#[test]
-#[ignore = "builds a 1M-line index; run with --release --ignored"]
-fn an_index_over_a_million_lines_stays_within_budget() {
-    let before = LIVE.load(Ordering::Relaxed);
+/// Held for the whole of a measurement.
+///
+/// **`LIVE` is one counter for the process**, so two benchmarks running concurrently each read
+/// the other's allocations as their own. Adding the second one made the first report 335 MiB
+/// where it measures 190 — a number that moved because of a test that was not even running the
+/// same code. Anything that reads `LIVE` as a delta must hold this.
+static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Build the index and report the live bytes it holds.
+fn measure(variants: &[Variant]) -> usize {
+    let _guard = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    let before = LIVE.load(Ordering::Relaxed);
     let mut idx = crate::CoverageIndex::default();
     let mut lines = 0u64;
     for f in 0..FILES {
         let file = format!("src/vppinfra/generated_{f}.c");
         for l in 1..=LINES_PER_FILE {
-            let n = tests_on_line(lines);
-            for t in spread(lines, n) {
-                idx.add_line_for_variant(t, &Variant::None, file.clone(), l, 1);
+            let tests = spread(lines, tests_on_line(lines));
+            for v in variants {
+                for t in &tests {
+                    idx.add_line_for_variant(*t, v, file.clone(), l, 1);
+                }
             }
             lines += 1;
         }
     }
-
     let used = LIVE.load(Ordering::Relaxed).saturating_sub(before);
-    println!(
-        "030 contract 11: {lines} lines x {TESTS} tests -> {} MiB live ({} MiB budget)",
-        used / (1024 * 1024),
-        BUDGET / (1024 * 1024)
-    );
 
     // Read something back, so the index cannot be optimised away and so a representation that
     // saved memory by losing answers fails here rather than passing quietly.
@@ -164,11 +172,52 @@ fn an_index_over_a_million_lines_stays_within_budget() {
         idx.tests_for_line("src/vppinfra/generated_0.c", 1)
             .is_some()
     );
+    for v in variants {
+        assert!(
+            idx.tests_for_line_in("src/vppinfra/generated_0.c", 1, v)
+                .is_some_and(|t| !t.is_empty()),
+            "every build must still answer for its own lines"
+        );
+    }
+    used
+}
 
+fn report(what: &str, used: usize) {
+    println!(
+        "030 contract 11: 1M lines x {TESTS} tests, {what} -> {} MiB live ({} MiB budget)",
+        used / (1024 * 1024),
+        BUDGET / (1024 * 1024)
+    );
+}
+
+#[test]
+#[ignore = "builds a 1M-line index; run with --release --ignored"]
+fn an_index_over_a_million_lines_stays_within_budget() {
+    let used = measure(&[Variant::None]);
+    report("one build", used);
     assert!(
         used <= BUDGET,
-        "the index needs {} MiB against a {} MiB budget — 030 §5's roaring bitmaps and an \
-         interned file table are what close that gap, and neither changes an answer",
+        "the index needs {} MiB against a {} MiB budget",
+        used / (1024 * 1024),
+        BUDGET / (1024 * 1024)
+    );
+}
+
+/// **The same index for a tree that compiles its sources more than once.**
+///
+/// The single-build measurement above is the *floor*, and 030 §5's whole reason for a per-build
+/// split is VPP — which compiles one source under several `CLIB_MARCH_VARIANT`s. A budget met
+/// only in the configuration the design does not exist for is not met.
+#[test]
+#[ignore = "builds a 1M-line index twice over; run with --release --ignored"]
+fn two_builds_of_every_line_stay_within_budget() {
+    let used = measure(&[Variant::None, Variant::named("x86_64_v3")]);
+    report("two builds", used);
+    assert!(
+        used <= BUDGET,
+        "two builds need {} MiB against a {} MiB budget — the union and both per-build sets are \
+         three copies of the same ids, and the union is the one that could be computed rather \
+         than stored",
         used / (1024 * 1024),
         BUDGET / (1024 * 1024)
     );
