@@ -303,3 +303,195 @@ bb2:
         other => panic!("contract 9's bound must survive the fix: {other:?}"),
     }
 }
+
+// =========================================================================================
+// Second review, after contract 6 landed. Four more, three of them false `Equivalent`.
+// =========================================================================================
+
+/// **A global read moved across an unmodeled call.**
+///
+/// The `Approximated` blessing argued that if the effect sequences agree then "whatever the
+/// callee did, it did to both". That is true of the call's *position in the sequence* and says
+/// nothing about how the callee's writes interleave with the caller's **reads**. `tick`
+/// increments `g` — the ordinary reason to call such a function — and one version returns the
+/// value before, the other after.
+///
+/// The guard refused global *stores* and permitted global *loads*, which is the same defect
+/// the first review found, one indirection further out.
+#[test]
+fn reading_a_global_across_an_unmodeled_call_is_not_the_same_either_side_of_it() {
+    let Some(cfg) = cfg() else { return };
+    let after_call = "\
+global @g : size 4 align 4 bytes 00000000
+
+func @tick(%0: i32) -> void
+
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  call @tick(%0)
+  %1 = addrglobal @g
+  %2 = load i32, %1 align 4
+  ret %2
+}";
+    let before_call = "\
+global @g : size 4 align 4 bytes 00000000
+
+func @tick(%0: i32) -> void
+
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = addrglobal @g
+  %2 = load i32, %1 align 4
+  call @tick(%0)
+  ret %2
+}";
+    must_not_bless(
+        "a global read either side of a call that may write it",
+        prove_equivalent(&m(after_call), &m(before_call), &cfg),
+    );
+}
+
+/// **A pure extern called with a different argument.**
+///
+/// `pure` (`no_side_effects`) says the call has no side effects. It does not say the *return
+/// value* is independent of the arguments — `abs` is pure. The extern-return linking equated
+/// the nth call's return on each side unconditionally, which asserts `p(x) == p(x + 1)`.
+#[test]
+fn a_pure_extern_called_with_a_different_argument_is_not_the_same_call() {
+    let Some(cfg) = cfg() else { return };
+    let f = |arg: &str| {
+        format!(
+            "\
+func @p(%0: i32) -> i32 pure
+
+func @f(%0: i32) -> i32 {{
+entry:
+  .line 1
+{arg}
+  ret %2
+}}"
+        )
+    };
+    let plain = f("  %1 = add i32 %0, 0i32\n  %2 = call @p(%1)");
+    let bumped = f("  %1 = add i32 %0, 1i32\n  %2 = call @p(%1)");
+    must_not_bless(
+        "p(x) against p(x + 1)",
+        prove_equivalent(&m(&plain), &m(&bumped), &cfg),
+    );
+}
+
+/// **A call whose result is discarded desynchronizes the ordinal.**
+///
+/// `InputOrigin::ExternReturn` is minted only for a call with a destination, so `inputs()`
+/// counts *result-bearing* calls while `effects()` counts *all* calls. Keying the link by "the
+/// nth call to `p`" therefore counts two different things: here the effect sequences match
+/// position for position and the link still equates the before version's `p(2)` with the after
+/// version's `p(1)`. The two versions return the results of different calls.
+#[test]
+fn a_discarded_result_must_not_shift_which_calls_are_matched() {
+    let Some(cfg) = cfg() else { return };
+    let discard_first = "\
+func @p(%0: i32) -> i32
+
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  call @p(1i32)
+  %1 = call @p(2i32)
+  ret %1
+}";
+    let discard_second = "\
+func @p(%0: i32) -> i32
+
+func @f(%0: i32) -> i32 {
+entry:
+  .line 1
+  %1 = call @p(1i32)
+  call @p(2i32)
+  ret %1
+}";
+    must_not_bless(
+        "returning p(2) against returning p(1)",
+        prove_equivalent(&m(discard_first), &m(discard_second), &cfg),
+    );
+}
+
+/// **And the same defect the other way: a false `Differs` with a witness that witnesses
+/// nothing.**
+///
+/// Two calls to a pure extern, issued in the opposite order, subtracted. The values are the
+/// same either way; the ordinal linking crossed them and produced `-1` against `1` at an input
+/// where both versions return 0. Contract 5 (reordering independent statements is
+/// `Equivalent`) and contract 10 (a `Differs` distinguishes) both broken by one defect.
+#[test]
+fn reordering_two_pure_calls_is_not_a_divergence() {
+    let Some(cfg) = cfg() else { return };
+    let order = |first: &str, second: &str| {
+        format!(
+            "\
+func @p(%0: i32) -> i32 pure
+
+func @f(%0: i32, %1: i32) -> i32 {{
+entry:
+  .line 1
+  %2 = call @p({first})
+  %3 = call @p({second})
+  %4 = sub i32 %2, %3
+  ret %4
+}}"
+        )
+    };
+    // Both compute p(a) - p(b); they differ only in which call is issued first.
+    let ab = order("%0", "%1");
+    let ba = "\
+func @p(%0: i32) -> i32 pure
+
+func @f(%0: i32, %1: i32) -> i32 {
+entry:
+  .line 1
+  %3 = call @p(%1)
+  %2 = call @p(%0)
+  %4 = sub i32 %2, %3
+  ret %4
+}";
+    match prove_equivalent(&m(&ab), &m(ba), &cfg) {
+        Equivalence::Differs { input, .. } => {
+            panic!("these compute the same thing; a Differs here is fabricated, witness {input:?}")
+        }
+        // Equivalent or Unknown are both defensible. A wrong Differs is not.
+        _ => {}
+    }
+}
+
+/// **One function, two spellings.**
+///
+/// gcc emits the `__builtin_` spelling for everything it recognises, so an optimized
+/// translation unit and its unoptimized original disagree on the name of every libc call they
+/// share — which is exactly the before/after pair this operation is for. The effect comparison
+/// string-matched the *unresolved* name and returned a definite `Differs` on two byte-identical
+/// programs.
+#[test]
+fn the_builtin_spelling_of_a_function_is_the_same_function() {
+    let Some(cfg) = cfg() else { return };
+    let call = |name: &str| {
+        format!(
+            "\
+func @{name}(%0: i32) -> void
+
+func @f(%0: i32) -> i32 {{
+entry:
+  .line 1
+  call @{name}(%0)
+  ret %0
+}}"
+        )
+    };
+    match prove_equivalent(&m(&call("memset")), &m(&call("__builtin_memset")), &cfg) {
+        Equivalence::Differs { observation, .. } => {
+            panic!("the same call spelled two ways is not a divergence: {observation:?}")
+        }
+        _ => {}
+    }
+}
