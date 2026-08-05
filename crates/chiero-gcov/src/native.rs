@@ -449,7 +449,9 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                     cfg_checksum: c.u32().ok_or_else(|| short("cfg checksum"))?,
                     name: c.string().ok_or_else(|| short("function name"))?,
                     artificial: c.u32().ok_or_else(|| short("artificial flag"))? != 0,
-                    source: c.string().ok_or_else(|| short("source name"))?,
+                    // Canonical from the moment it is read, so nothing downstream compares two
+                    // spellings of one path — [`canonical_path`] says why.
+                    source: canonical_path(&c.string().ok_or_else(|| short("source name"))?),
                     start_line: c.u32().ok_or_else(|| short("start line"))?,
                     start_column: c.u32().ok_or_else(|| short("start column"))?,
                     end_line: c.u32().ok_or_else(|| short("end line"))?,
@@ -523,7 +525,7 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                                 lines.sort_unstable();
                                 out.push(BlockLines {
                                     block,
-                                    file: file.to_string(),
+                                    file: canonical_path(file),
                                     lines: std::mem::take(lines),
                                 });
                             };
@@ -896,6 +898,42 @@ struct GroupRange {
 impl GroupRange {
     fn holds(&self, file: &str, line: u32) -> bool {
         file == self.source && self.start_line <= line && line <= self.end_line
+    }
+}
+
+/// A file name as gcov makes it a source: separators collapsed and `.` components elided.
+///
+/// gcov canonicalizes on the way to a source *index* (`find_source` → `canonicalize_name`,
+/// `gcov.cc` ~2544) and everything downstream compares indices, so `gen.c` and `./gen.c` are one
+/// file — and two functions on one line of it are a group. Comparing the raw strings makes them
+/// two files and misses that. `#line` directives are where this arrives from: yacc, bison and
+/// protoc all emit them, and build systems produce `./`- and `..`-bearing paths on their own.
+///
+/// **`..` is left alone, deliberately.** gcov elides it only after `stat`ing the accumulated
+/// prefix and finding it readable and not a symlink, so its answer depends on the filesystem the
+/// artifacts are read on — and coverage artifacts get read on machines that never built them.
+/// Decoding stays a pure function of the bytes (001 §5). The cost is bounded in the safe
+/// direction: two spellings gcov would have joined may stay apart, which under-merges; nothing
+/// that is genuinely two files can ever be joined.
+fn canonical_path(name: &str) -> String {
+    let absolute = name.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in name.split('/') {
+        // Collapsed separators leave empty components, and `.` elides.
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        parts.push(part);
+    }
+    let joined = parts.join("/");
+    match (absolute, joined.is_empty()) {
+        // `/` and `/.` canonicalize to the root, not to nothing.
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{joined}"),
+        // A name that is entirely elided — `.`, `./` — is still a name; keep it recognisable
+        // rather than turning it into the empty string, which reads as "no file".
+        (false, true) => ".".to_string(),
+        (false, false) => joined,
     }
 }
 
