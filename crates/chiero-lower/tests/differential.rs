@@ -6011,3 +6011,109 @@ fn the_review_of_the_initializer_walk() {
         "struct O s = {.in.b=5}; return s.in.b*10 + s.in.a;",
     );
 }
+
+/// **sema refuses valid C, and the refusal hides the lowering paths behind it.**
+///
+/// "excess elements in a struct initializer" for shapes gcc compiles without a word. sema
+/// recognises brace elision only when the *first* field elides, and its array cursor counts every
+/// post-designator item as a whole element — so a leading scalar before a nested aggregate, or a
+/// designator anywhere in the middle, is rejected outright.
+///
+/// This is the loud half of the class, and it is why the wave that fixed the file-scope walk saw
+/// so few of these: every fixture below dies in sema before lowering runs at all.
+///
+/// Found by the Fable review in pty-2, whose finding #9 this is.
+#[test]
+fn sema_accepts_the_elision_shapes_gcc_accepts() {
+    // Elision that does not start at the first field — the flagship shape with a leading scalar.
+    agree_with(
+        "static struct { int a; struct { int b; int c; } in; int d; } s = {1,2,3,4};",
+        "return s.a + s.in.b + s.in.c + s.d;",
+    );
+    // A designator that then leads an elided run.
+    agree_with(
+        "static int m[2][3] = {[1]=5,6};",
+        "return m[1][0]*10 + m[1][1];",
+    );
+    agree_with(
+        "static struct { int a; struct { int b, c; } in; } s = {.in=1,2};",
+        "return s.in.b*10 + s.in.c;",
+    );
+    // A designator *after* an elided run, which restarts at the level the list is at.
+    agree_with(
+        "static int m[2][3] = {1,2,3,[1]=9};",
+        "return m[0][0]*10 + m[1][0];",
+    );
+    // A run, then a field designator.
+    agree_with(
+        "static struct { struct { int a, b; } in; int z; } s = {1,2,.z=7};",
+        "return s.in.a*100 + s.in.b*10 + s.z;",
+    );
+    // A vector member filled by elision, which is VPP's own idiom.
+    agree_with(
+        "typedef int v4si __attribute__((vector_size(16)));\n\
+         static struct { v4si v; int z; } s = {1,2,3,4,5};",
+        "return s.v[0] + s.v[3]*10 + s.z*100;",
+    );
+    // The same, inside a function.
+    agree_with("", "int m[2][3] = {[1]=5,6}; return m[1][0]*10 + m[1][1];");
+}
+
+/// **File scope folds four more valid initializers to a zeroed object, silently.**
+///
+/// Every one of these reads back 0 where gcc computes a number, with no diagnostic anywhere —
+/// the `None` → `GlobalInit::Zero` failure mode again, in the corners the elision fix did not
+/// reach. The local path handles all four correctly, which is the drift that keeps producing
+/// this class.
+///
+/// Fable's findings #6, #7 and #8.
+#[test]
+fn a_file_scope_initializer_is_never_silently_zero() {
+    // Redundant braces round a scalar. sema explicitly deems these legal; the folder calls
+    // `const_of` on the brace list without unwrapping the single item.
+    agree_with("static int x = {5};", "return x;");
+    agree_with(
+        "static struct { int a; int b; } s = {{1},{2}};",
+        "return s.a*10 + s.b;",
+    );
+    // A string literal starting an elided run: legal for a nested `char` array, and excluded
+    // from starting a run by the new guards.
+    agree_with(
+        "static struct { char s[4]; int x; } a[2] = {\"ab\", 1, \"cd\", 2};",
+        "return a[0].s[0] + a[0].x + a[1].s[1] + a[1].x;",
+    );
+    agree_with(
+        "static struct { struct { char s[4]; int n; } in; int y; } t = {\"ab\", 1, 2};",
+        "return t.in.s[1] + t.in.n*10 + t.y;",
+    );
+    // A braced string initializing a `char` array.
+    agree_with("static char g[4] = {\"ab\"};", "return g[0]*10 + g[1];");
+    // A designator naming a member of an **anonymous** union.
+    agree_with(
+        "static struct { union { int a; unsigned f; }; int c; } s = {.a=5, .c=2};",
+        "return s.a*10 + s.c;",
+    );
+}
+
+/// **A string literal initializing a `char` member of a local aggregate is refused.**
+///
+/// `cast source operand is Ptr, declared Int(32)` — the string's address reaches a scalar store
+/// where the member is an array and the bytes should be copied and zero-padded. Loud, unlike the
+/// four above, but it discards the function.
+#[test]
+fn a_string_may_initialize_a_char_array_member_of_a_local() {
+    agree_with(
+        "",
+        "struct { char s[4]; int x; } v = {\"ab\", 7}; return v.s[0] + v.x;",
+    );
+    // The tail must be zero-padded, not left as whatever was there.
+    agree_with(
+        "",
+        "struct { char s[4]; int x; } v = {\"ab\", 7}; return v.s[2] + v.s[3] + v.x;",
+    );
+    // A string shorter than the member, and one exactly filling it minus the terminator.
+    agree_with(
+        "",
+        "struct { char s[8]; int x; } v = {\"ab\", 3}; return v.s[1] + v.s[7] + v.x;",
+    );
+}
