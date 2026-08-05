@@ -6524,3 +6524,56 @@ fn a_narrow_increment_yields_its_promoted_value() {
     // The `_Bool` case the existing arm covers, so a generalisation cannot lose it.
     agree_with("", "_Bool b = 0; return (++b) * 10 + b;");
 }
+
+/// **A `case` label immediately after `default:` is not seen as part of the switch.**
+///
+/// ```text
+/// vppinfra/clib.h:108:23: `elog_event_type_register` contains a construct lowering cannot
+///   represent, so it was skipped
+///
+///   switch (t->format[i + 1])
+///     {
+///     default:
+///     case 'd':
+///     case 'x':
+/// ```
+///
+/// The inner diagnostic — the one 015 §7 replaces with the sentence above — is "`case` or
+/// `default` outside a switch". Lowering collects a switch's labels by walking its body, and a
+/// labelled statement whose own statement is *another* label is only followed for `case`;
+/// `default:` stopped the walk, so every label after it belonged to no switch.
+///
+/// `case 1: default:` — the same two labels the other way round — has always worked, which is
+/// what makes this a walk bug rather than a design gap.
+///
+/// **70 translation units at 99bc5bd**, the largest single cause left, and the only remaining
+/// one that is a lowering *gap* rather than a type mismatch.
+#[test]
+fn a_case_after_default_belongs_to_its_switch() {
+    // The corpus shape: `default:` leading a fall-through group.
+    agree_with(
+        "static int pick(int c) { switch (c) { default: case 1: return 5; case 3: return 7; } }",
+        "return pick(1)*100 + pick(3)*10 + pick(9);",
+    );
+    // With `break` rather than `return`, so the join block is exercised too.
+    agree_with(
+        "static int pick(int c) { int r = 0; \
+           switch (c) { default: case 1: case 2: r = 4; break; case 3: r = 8; break; } return r; }",
+        "return pick(2)*100 + pick(3)*10 + pick(9);",
+    );
+    // The other order, which already worked and must keep working.
+    agree_with(
+        "static int pick(int c) { switch (c) { case 1: default: return 5; case 3: return 7; } }",
+        "return pick(1)*100 + pick(3)*10 + pick(9);",
+    );
+    // `default:` in the middle of a fall-through group.
+    agree_with(
+        "static int pick(int c) { switch (c) { case 1: default: case 2: return 5; case 3: return 7; } }",
+        "return pick(2)*100 + pick(3)*10 + pick(9);",
+    );
+    // And a label on a label on a label, which is the same rule twice over.
+    agree_with(
+        "static int pick(int c) { switch (c) { default: case 1: case 2: case 4: return 6; case 3: return 7; } }",
+        "return pick(4)*100 + pick(3)*10 + pick(9);",
+    );
+}
