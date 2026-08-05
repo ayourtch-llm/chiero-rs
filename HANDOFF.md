@@ -540,106 +540,33 @@ typing the paths ever would.
 > something and dropped a function; there are none. The five `diagnosed` are chiero *reporting*
 > on VPP, which is the tool working — and one of them is fixed in 515b518, after this sweep.
 >
-> ### ⏭️ WHAT IS LEFT — four files, and none of them is a lowering gap
+> ### ⏭️ WHAT IS LEFT — three files, and **none of them is a chiero defect**
 >
-> | file | report | verdict |
-> |---|---|---|
-> | `elf_clib.c`, `mem.c` | pp: redefinition of `ELF_NOTE_ABI` / `MFD_CLOEXEC` | **not a defect.** VPP and glibc define these with *different* bodies; gcc warns, and this project calibrates to `-pedantic-errors` where gcc errors. A finding about VPP. |
-> | `vtep.c` | sema: a `void` value is used where a value is required | **fixed in 515b518** — one `void` side in a `?:` is a GNU extension, now reported only under the strict dialect and in gcc's words |
-> | `sock_test.h` | sema: unknown escape sequence `\(` | gcc warns; a calibration question for 042 — decide it rather than leaving it |
-> | `tap.c:36` | sema: signed overflow in a constant expression | **the real next item**, measured below |
+> `tap.c` and `vtep.c` were fixed after that sweep (55dfe2f, 515b518) and both lower clean. The
+> three that remain are all the same shape, and all three are chiero **working**:
 >
-> #### `tap.c` — an enumerator wider than `int`
->
-> ```c
-> #define _(f, n) VIRTIO_NET_F_##f##_BIT = 1ULL << (n),      /* plugins/tap/virtio_net.h:87 */
-> const static u64 virtio_features = VIRTIO_NET_F_MRG_RXBUF_BIT | VIRTIO_F_VERSION_1_BIT | …;
-> ```
->
-> `VIRTIO_F_VERSION_1_BIT` is `1ULL << 32`. Measured against gcc 13.3.0 on a four-line
-> reduction:
->
-> | mode | gcc |
-> |---|---|
-> | `-std=gnu11 -Wall -Wextra` | accepted (only an unrelated `-Wold-style-declaration`) |
-> | `-std=c11 -pedantic-errors` | error: **"ISO C restricts enumerator values to range of `int`"**, at the *enumerator* |
->
-> chiero says "signed overflow in a constant expression" at the **use**, ungated by dialect. Three
-> things are wrong with that: the place, the sentence, and the gate. The fix is the same shape as
-> 515b518 — widen the enumerator's type as gcc does, and report gcc's sentence at the enumerator
-> under the strict dialect only. 014 contract 10 owns the underlying-type choice.
->
-> ### 📊 SUPERSEDED: 1757 of 1871 clean (93.9%) at 99bc5bd
->
-> | sweep | clean | not-run | diagnosed |
+> | file | report | gcc `-std=gnu11 -Wall -Wextra` | gcc `-pedantic-errors` |
 > |---|---|---|---|
-> | 99d92d0, before this wave | 12 | 1852 | 7 |
-> | 3180a49 | 1552 | 312 | 7 |
-> | **99bc5bd** | **1757** | 107 | 7 |
+> | `elf_clib.c` | pp: redefinition of `ELF_NOTE_ABI` | warning | error |
+> | `mem.c` | pp: redefinition of `MFD_CLOEXEC` | warning | error |
+> | `sock_test_client.c` | sema: unknown escape sequence `\(` | **silent** | error: `unknown escape sequence: '\('` |
 >
-> Same tree, same 1871 translation units, same lowering-inclusive yardstick 7e9501e introduced.
-> The remaining 107 are a *tail* rather than a blocker — no single cause is more than 70, and
-> the largest is one file.
+> Every one is a real ISO C divergence in VPP's own source: VPP and glibc define `ELF_NOTE_ABI`
+> with *different* bodies, and `sock_test_client.c:427` writes `stinf ("\(fd %d): …")`. This
+> project calibrates constraint violations to `-pedantic-errors` (wave 314), so reporting them is
+> the calibration doing its job — chiero's sentence for the escape is gcc's, word for word.
 >
-> ### ✅ SIX MORE CAUSES CLOSED AFTER THAT SWEEP — re-measure before trusting the tail below
+> **Do not "fix" these.** If a future wave wants VPP to sweep silent, the lever is the *dialect*,
+> not the rules: run the sweep in `Dialect::gnu()` and these three go quiet while the strict
+> dialect keeps reporting them. That is a 042 calibration decision, and it should be made
+> deliberately and written down, not arrived at by deleting checks.
 >
-> | commit | defect | share of the 107 |
-> |---|---|---|
-> | 85f6e49 | `--x` on a narrow object was typed `int` while lowering produced 8 bits | the `Int(8)`/`Int(16)` rows |
-> | 0d1e0c7 | a `case` label right after `default:` belonged to no switch | **70** |
-> | (anon-union) | `.write = {…}` on an anonymous-union member filled the union's *first* arm | 12 |
-> | (compound lit) | `&(u64){ 1 }` stored an `int` into an eight-byte object | 6 |
+> ### 🎯 SO: THE CORPUS VERTICAL IS DONE
 >
-> Spot-checked after those: `igmp_report.c`, `memif/node.c`, `fib_node.c`, `ip6_forward.c`,
-> `session_node.c`, `elog.c`, `mem.c` and all five probe TUs are **clean**. What is left of the
-> tail is the cJSON arrow defect above, the two `pp` macro redefinitions, and
-> `vec_bootstrap.h:212` (sema: dereference of a pointer to an incomplete type).
->
-> ⏭️ **The tail as the 99bc5bd sweep saw it**, most to least — now largely closed: `85f6e49` landed after this sweep and takes the
-> `Int(8)`/`Int(16)` comparison rows with it, so re-measure before working from these counts:
->
-> | count | where | message |
-> |---|---|---|
-> | 70 | `clib.h:108` `elog_event_type_register` | contains a construct lowering cannot represent |
-> | 12 | `vlib/unix/fuse.c:652` | cast source operand is Ptr |
-> | 7 | `plugins/igmp/igmp_report.c:46` | store value operand is Ptr |
-> | 6 | `plugins/tap/tx_node.c:357` | store value operand is Int(32) |
-> | 3 | `plugins/memif/node.c:158` | Eq operand is Int(16), declared Int(32) |
-> | 2 each | `elf.h` macro redefinition, `fib_node.c:87`, `ip6_forward.c:220`, `session_node.c:1609` | |
-> | 1 | `vec_bootstrap.h:212` | sema: dereference of a pointer to an incomplete type |
->
-> **`elog_event_type_register` first** — 70 translation units, and the only remaining *lowering
-> gap* rather than a type mismatch. It is in `elog.c`, which is compiled into many variants.
->
-> ### 📊 SUPERSEDED: 1552 of 1871 clean (83.0%) at 3180a49
->
-> | sweep | clean | not-run | diagnosed |
-> |---|---|---|---|
-> | 99d92d0, before the initializer work | 12 | 1852 | 7 |
-> | **3180a49** | **1552** | 312 | 7 |
->
-> Same tree, same 1871 translation units, same lowering-inclusive yardstick 7e9501e introduced.
-> This is the first honest corpus number the project has ever had that is not mostly `not-run`.
->
-> ⚠️ **And it understates the tree.** 207 of those 312 are the CFG defect fixed in **99bc5bd**,
-> which landed *after* that sweep started: `clib_memcpy_u32` (170) and
-> `ipsec_sa_anti_replay_and_sn_advance` (37), both "branches to unknown BlockId". A sweep at
-> 99bc5bd was launched immediately and its number belongs here — expect roughly 94%.
->
-> ### ⏭️ THE TAIL, once 99bc5bd's sweep confirms
->
-> | count | where | message |
-> |---|---|---|
-> | 70 | `clib.h:108` `elog_event_type_register` | contains a construct lowering cannot represent |
-> | 8 | `vlib/unix/fuse.c:652` | cast source operand is Ptr, declared Int(32) |
-> | 7 | `plugins/igmp/igmp_report.c:46` | store value operand is Ptr |
-> | 4 | `plugins/tap/tx_node.c:357` | store value operand is Int(32) |
-> | 2 | `plugins/memif/node.c:158` | Eq operand is Int(16), declared Int(32) |
-> | 2 | `/usr/include/elf.h:1312` | pp: redefinition of macro `ELF_NOTE_ABI` |
->
-> `elog_event_type_register` is the one worth doing first — it is 70 TUs and it is the only
-> remaining *lowering gap* rather than a type mismatch. Reduce it the way the other twelve were
-> reduced: `target/release/xtask cc -c x.c -o x.o`, read `x.o.chiero`, cut until it is four lines.
+> 1871 translation units, **zero `not-run`**, and every remaining diagnostic is a finding about
+> VPP rather than a gap in chiero. The next milestone is not more corpus work — it is 030/031/032
+> (gcov ingest, change impact, test selection) and 040's checkers, which now have a tree they can
+> actually run on. §7 and 080 have the milestone map.
 >
 > ### ✅ THE PROBE IS CLEAN AT 3180a49 — all five translation units analyse
 >
