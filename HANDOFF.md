@@ -939,6 +939,29 @@ typing the paths ever would.
 > by basename inside `select` is rejected, because it would conflate two files of one name in
 > different directories — the identity mistake `FuncKey` exists to prevent.
 >
+> ### 🧭 PATH IDENTITY IS THIS PROJECT'S RECURRING SILENT FAILURE — now guarded (90d0e2a)
+>
+> Three times, in three places, the same mistake produced a **flattering** answer with no error:
+>
+> | where | symptom |
+> |---|---|
+> | `chiero-diff`'s macro baseline | looked up `m.h`, found the `static inline`'s coverage, premise test passed for the wrong reason |
+> | the gate's coverage-only baseline | looked up `lib.c` while gcov recorded an absolute path — 0% on exactly the mutations where the baseline *works* |
+> | the gate's own pipeline | same mismatch, selected nothing, read as a **100% reduction** |
+>
+> `chiero_select::select` now says *"`X` is not in the coverage index at all — if it should be,
+> the paths were not resolved against the build directory"*, distinctly from "this entity has no
+> coverage".
+>
+> ⚠️ **Matching by basename inside `select` is the tempting fix and stays rejected.** It would
+> conflate two files of one name in different directories — the identity mistake `FuncKey` and
+> `Entity`'s file component exist to prevent — trading a loud failure for a quiet wrong answer.
+> 030's division is right: paths are stored as gcov wrote them, and resolving them is the
+> caller's.
+>
+> **A selection tool's failures hide in the direction that looks like success.** An empty answer
+> is indistinguishable from an excellent one unless something says why.
+>
 > ⚠️ **Four harness bugs, all caught by the gate's own output**, and all instructive:
 >
 > 1. the ingest found nothing — gcc names a one-step compile-and-link's notes `<output>-<source>`
