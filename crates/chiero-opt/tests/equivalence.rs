@@ -20,7 +20,8 @@ use chiero_opt::{Claim, Divergence, EquivCfg, Equivalence, prove_equivalent};
 /// One function named `f`, wrapped in the minimum module around it.
 fn m(body: &str) -> Module {
     let text = format!("target x86_64-unknown-linux-gnu\n\n{body}\n");
-    chiero_cir::text::parse(&text).unwrap_or_else(|e| panic!("fixture does not parse: {e:?}\n{text}"))
+    chiero_cir::text::parse(&text)
+        .unwrap_or_else(|e| panic!("fixture does not parse: {e:?}\n{text}"))
 }
 
 /// The comparison every contract here wants: a discovered backend, default budget.
@@ -68,7 +69,11 @@ fn a_verbatim_copy_is_exactly_equivalent() {
             footprint,
             ..
         } => {
-            assert_eq!(fidelity, Fidelity::Exact, "a copy of itself is a proof, not a bound");
+            assert_eq!(
+                fidelity,
+                Fidelity::Exact,
+                "a copy of itself is a proof, not a bound"
+            );
             assert!(
                 footprint.compared.contains(&Claim::ReturnValue),
                 "the footprint must say what was compared: {footprint:?}"
@@ -261,12 +266,20 @@ fn the_verdict_is_symmetric_and_the_witness_swaps_with_it() {
         (
             Equivalence::Differs {
                 input: i1,
-                observation: Divergence::ReturnValue { before: b1, after: a1 },
+                observation:
+                    Divergence::ReturnValue {
+                        before: b1,
+                        after: a1,
+                    },
                 ..
             },
             Equivalence::Differs {
                 input: i2,
-                observation: Divergence::ReturnValue { before: b2, after: a2 },
+                observation:
+                    Divergence::ReturnValue {
+                        before: b2,
+                        after: a2,
+                    },
                 ..
             },
         ) => {
@@ -294,13 +307,17 @@ fn no_contract_in_this_suite_is_answered_with_unknown() {
     let Some(cfg) = cfg() else { return };
     let cases: &[(&str, &str, &str)] = &[
         ("verbatim copy", SUM, SUM),
-        ("commuted add", SUM, "\
+        (
+            "commuted add",
+            SUM,
+            "\
 func @f(%0: i32, %1: i32) -> i32 {
 entry:
   .line 1
   %2 = add i32 %1, %0
   ret %2
-}"),
+}",
+        ),
         ("x*2 vs x<<1", MUL2, SHL1),
         ("x/2 vs x>>1", DIV2, ASHR1),
         ("abs two ways", ABS_NAIVE, ABS_SATURATING),

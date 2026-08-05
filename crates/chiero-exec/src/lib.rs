@@ -787,6 +787,18 @@ impl State {
         matches!(self.ret, Some(Value::Scalar(_)) | Some(Value::Ptr(_)))
     }
 
+    /// The returned value **as the engine holds it** — the term, not a number.
+    ///
+    /// The two accessors either side of this one each answer a question about a *value*:
+    /// `return_value_bits` wants ground bits, `return_value_under` wants bits under a
+    /// model. A relational comparison (041 §1.2) wants neither — it wants the term itself,
+    /// so it can assert that this path's return and the other version's disagree and hand
+    /// that to the solver. Rebuilding the term from a model is not the same thing: a model
+    /// is one input, and the question is about all of them.
+    pub fn return_value(&self) -> Option<Value> {
+        self.ret
+    }
+
     /// The returned value as concrete bits, when it is one.
     pub fn return_value_bits(&self, a: &mut TermArena) -> Option<u128> {
         match self.ret? {
