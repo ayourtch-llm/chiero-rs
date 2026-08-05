@@ -42,3 +42,19 @@ cleaned, and contract 8 requires it rejected with both stamps named.
 replaced by `*99Z`, a tag gcc has never written. Everything else is byte-identical, so a decoder
 that ignored the version would read it happily — which is what contract 9 forbids. Regenerate it
 with the four-line script in the commit that added it.
+
+## The line-count rule (contract 5's prerequisite)
+
+`loop.c` exists to answer one question the `t` fixture cannot: **when several blocks are
+attributed to one line, what count does gcov report for it?**
+
+```c
+int f(int n){ int s=0; for(int i=0;i<n;i++) s+=i; return s; }   /* all of it on line 1 */
+```
+
+`f`'s seven blocks solve to counts `0 0 1 4 5 1 1`, and the five blocks carrying line 1 have
+counts **[1, 4, 5, 1, 1]**. gcov reports `line 1 count 5`.
+
+So the rule is **the maximum**, and the fixture refutes the two other readings outright: the sum
+is 12 and the first block's count is 1. `t.c`'s three blocks are all 1, so it cannot tell the
+three apart — which is exactly why this second fixture is here.

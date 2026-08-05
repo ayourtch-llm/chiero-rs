@@ -1,0 +1,62 @@
+{
+ "current_working_directory": "/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/66909b76-9140-4b55-94cc-f7adb56f7f97/scratchpad/cov2",
+ "data_file": "loop",
+ "files": [
+  {
+   "file": "loop.c",
+   "functions": [
+    {
+     "blocks": 5,
+     "blocks_executed": 5,
+     "demangled_name": "f",
+     "end_column": 61,
+     "end_line": 1,
+     "execution_count": 1,
+     "name": "f",
+     "start_column": 5,
+     "start_line": 1
+    },
+    {
+     "blocks": 3,
+     "blocks_executed": 3,
+     "demangled_name": "main",
+     "end_column": 43,
+     "end_line": 2,
+     "execution_count": 1,
+     "name": "main",
+     "start_column": 5,
+     "start_line": 2
+    }
+   ],
+   "lines": [
+    {
+     "branches": [
+      {
+       "count": 4,
+       "fallthrough": false,
+       "throw": false
+      },
+      {
+       "count": 1,
+       "fallthrough": true,
+       "throw": false
+      }
+     ],
+     "count": 5,
+     "function_name": "f",
+     "line_number": 1,
+     "unexecuted_block": false
+    },
+    {
+     "branches": [],
+     "count": 1,
+     "function_name": "main",
+     "line_number": 2,
+     "unexecuted_block": false
+    }
+   ]
+  }
+ ],
+ "format_version": "1",
+ "gcc_version": "13.3.0"
+}
