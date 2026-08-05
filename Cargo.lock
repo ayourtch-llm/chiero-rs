@@ -263,6 +263,7 @@ dependencies = [
  "chiero-span",
  "chiero-vpp",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]
