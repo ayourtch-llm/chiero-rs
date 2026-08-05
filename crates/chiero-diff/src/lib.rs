@@ -193,12 +193,14 @@ impl Program {
 /// gone by the time the preprocessor is done, so two spellings that differ only in those produce
 /// the same vector — which is contracts 1, 2 and 3 together, and for free.
 fn tokens_between(tu: &chiero_pp::PreprocessedTu, lo: u32, hi: u32) -> Vec<String> {
-    let texts: Vec<&str> = tu.token_texts().collect();
+    // `text_at` rather than `token_texts`, which would collect a vector of every token's text
+    // *per entity* — quadratic in a translation unit, and VPP's headers expand to a million
+    // tokens before the first declaration of the file itself.
     tu.tokens
         .iter()
         .enumerate()
         .filter(|(_, t)| t.span.lo.0 >= lo && t.span.lo.0 < hi)
-        .filter_map(|(i, _)| texts.get(i).map(|s| (*s).to_string()))
+        .filter_map(|(i, _)| tu.text_at(i).map(str::to_string))
         .collect()
 }
 
