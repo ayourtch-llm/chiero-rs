@@ -654,20 +654,34 @@ typing the paths ever would.
 > `tmp/` is gitignored. Read `add_line_counts`, `accumulate_line_info`, `get_cycles_count`,
 > `circuit`, `handle_cycle`, `solve_flow_graph`.
 >
-> #### Where it stands, and the next lead
+> #### ✅ WHERE IT STANDS: **98/98 objects, 0 of 30133 lines differ**
 >
 > ```
 > cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc
 >
->     line counts differing   799 / 30133   (2.6%)
->     objects fully agreeing   73 / 98      (was 67 with `max`, 63 with `sum`)
+>     line counts differing     0 / 30133
+>     objects fully agreeing   98 / 98
 > ```
 >
-> The remaining 799 concentrate in headers holding several inline functions — `compress.h:90`
-> reports 30 where gcov says 10 — which is the shape of gcov's **function groups**: when several
-> functions share lines in one source, `fn->group_line_p` sends their counts to a *private
-> per-function* line array instead of the source's, and they are merged later. Not yet modelled.
-> Start at `gcov.cc`'s `group_line_p` (~line 700) and the `is_group` handling in `process_file`.
+> The native decoder reproduces gcov exactly on every line of every object of the vppinfra
+> coverage build. Four defects stood between `max` and that, and each was invisible to the one
+> before it:
+>
+> | # | defect | after fixing |
+> |---|---|---|
+> | 0 | the rule is entry arcs + elementary cycles, not an aggregation | 73/98, 799 rows |
+> | 1 | gcov **sorts** each block's line group before attributing it, so the attribution is to the *greatest* line, not the last written (`gcov.cc` ~1413) | 80/98, 727 rows |
+> | 2 | a source's lines are accounted **once per object**, not once per function — and the graph count *overwrites* every function's accumulation rather than adding to it | 93/98, 14 rows |
+> | 3 | two non-artificial functions sharing a `(source, start_line)` are a **group**, and each member keeps a private line table that `--json-format` emits separately | **98/98, 0 rows** |
+>
+> Defect 2's direction was the unsafe one: merging per-function counts by `max` reports one
+> caller's count for an inlined header line and drops the rest, so a line looks *less* covered
+> than it is — and 032 skips tests on exactly that evidence.
+>
+> ⚠️ **Fixtures for 1 and 3 took two attempts each.** The obvious shape passes: a group whose
+> members agree, or an inlined block whose line list is already ascending, gives the same answer
+> under both rules. The shapes that discriminate are `tests/corpus/coverage/{nonmono,group}.c`,
+> and each carries a comment saying which reading it refutes.
 >
 > ### 🧭 THE ONE IDEA THIS CRATE KEEPS RE-DERIVING
 >
