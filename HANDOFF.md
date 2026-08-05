@@ -454,8 +454,9 @@ have entrenched conventions real lowering then had to match.)
 | **030 coverage** | ✅ 19/19 contracts | full VPP, gcc: **1895/1895 `.gcno`, 322/322 objects, 0 of 156991 lines differ**. clang: **1872/1872** |
 | **031 change impact** | ✅ 20/20 contracts | incl. the headline — a header macro edit impacts every expansion site while coverage sees nothing |
 | **032 test selection** | 🟡 18/20 | mutation gate: **recall 100%, coverage-only 14.3%, reduction 65%** |
-| **050 tool interface** | 🟡 4 operations | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion` |
-| 040 checkers, 041 opt, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-opt`, `chiero-recipe`, `chiero-vpp` exist; `prove_equivalent` does **not** |
+| **041 `prove_equivalent`** | 🟡 contracts 1–5, 9, 12, 13, 13b | z3 proves `x*2 == x<<1` over all 2^32; finds `INT_MIN` as the one input two `abs()`s disagree on |
+| **050 tool interface** | 🟡 5 operations | envelope + `select_tests`, `expansion_sites`, `explain_macro_expansion`, `prove_equivalent` |
+| 040 checkers, 042 recipes, 060 vpp | partial | `chiero-check`, `chiero-recipe`, `chiero-vpp` exist |
 
 **The two 032 contracts left, and why neither is "just work":**
 
@@ -465,11 +466,41 @@ have entrenched conventions real lowering then had to match.)
 - **18, historical replay** — §6's ground-truth oracle, "the one that would catch a real design
   flaw". Needs VPP tests, which need root and network namespaces.
 
-**`prove_equivalent` (041) is the highest-leverage thing not built.** 032 §3.1's `Prover` seam is
-waiting for it — the refinement that removes *entities* rather than tests — and 050 contract 8
-wants it returning a distinguishing input, which is the LLM-facing half of the whole design:
-*"the LLM proposes; chiero adjudicates."* `chiero-exec` (8.4k lines, `ExactWitness`, `seal`) and
-`chiero-solver` (3.4k) are the machinery it would sit on.
+### 7.2 `prove_equivalent` — built 2026-08-05, and what is left of it
+
+`crates/chiero-opt/src/equiv.rs`. Relational (product) execution per 041 §1.2: both versions
+run on **one shared `TermArena`**, every terminated path of `before` is paired with every
+terminated path of `after`, and each pair is conjoined with an explicit equality per matched
+entry parameter. `TermArena::var` mints a fresh `VarId` per call, so "the same symbolic
+inputs" is *imposed* rather than assumed — which is the useful accident, because it makes the
+matching visible: an input with no counterpart is a refusal (`Unknown`), never a zero.
+
+**The witness is minimized by binary search, not taken from the first `Sat`.** Contract 13
+wants the swapped argument order to give a correspondingly swapped witness, and two queries
+differing only in which side minted variable 0 may legitimately return different models — so
+a first-`Sat` witness makes the contract a coin flip. Minimization is canonical, reproducible
+(001 §5), and "the smallest input that distinguishes them" is a better thing to hand a reader.
+
+**Two flattering failures found and fixed in one wave, both the project's recurring shape:**
+
+- A comparison whose every path was budget-cut returned `Equivalent { Bounded }`. "No pair
+  disagreed" and "there were no pairs" are the same silence. Now counted: zero comparable
+  pairs is `Unknown` with the counts.
+- A pair with one side budget-cut was reported `Termination { Return, Budget }` — chiero
+  running out of depth, put in front of a reader as a defect in their rewrite.
+
+**Left to build, in rough order of value:**
+
+1. **§1.3's replay harness** (contracts 10, 11) — the half of 050 contract 8 that is missing.
+   *"Your rewrite is wrong" is an opinion; "here is the program" ends the discussion.* Nothing
+   in the tree emits a C replay harness yet — 040 §3 wants one too.
+2. **§1.1's other two claims** — caller-visible memory (with the object bijection, contracts
+   13c/13d) and the ordered side-effect sequence (contract 6). Contract 6 needs extern calls
+   recorded as `Effect`s; `EffectKind` today has only `VolatileStore`.
+3. **Pointer parameters and pointer returns**, which currently answer `Unknown` by name.
+4. **032 §3.1's `Prover` seam wired to it.** The blocker is not equivalence — it is that
+   `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
+   modules, which needs the frontend from a crate that must not depend on it.
 
 **Every spec must end with a `## Testable contracts` section** — numbered, checkable
 assertions. Those become the RED tests. This is what makes the specs actually drive TDD
