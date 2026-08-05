@@ -601,6 +601,32 @@ typing the paths ever would.
 > | **11 memory budget** | done (7d35375) — **190 MiB** against a documented 256 MiB, measured by a counting allocator |
 > | **13 `tests_for_block`** | done (3d7326f) — the union over a CIR block's `gcov_lines`, keyed on a file the caller supplies |
 > | **§5 `tests_for_span`, `uncovered_lines`** | done (4231609) — through `expansion_loc`, and zero-versus-absent kept apart |
+> | **17 `GCOV_PREFIX_STRIP`** | done (7744934) — computed from the build directory, measured against libgcov |
+> | **19 determinism** | done (a78d0f0) — a guard, verified to fail when one `IndexMap` becomes a `HashMap` |
+>
+> **030 is complete except contract 18**, staleness. Everything else in the spec has a test.
+
+> ### ⏭️ THE ONE THING LEFT IN 030 — contract 18, and it needs a decision first
+>
+> > Modifying a source file after ingest makes `validity()` return `Stale` naming that file.
+>
+> §7 wants `CoverageIndex::validity() -> Fresh | Stale { files } | Partial { missing_tests }`,
+> with every `IngestRecord` carrying a **`source_hash: Blake3`**. Two things must be settled
+> before the red test, and neither is a coding question:
+>
+> 1. **The hash.** 030 §7 names Blake3; the workspace has no hash dependency and has just
+>    demonstrated (contract 11) that a spec's pre-chosen library is worth re-deriving before
+>    adding. But this is not the same case: a weak hash's collision is a *false `Fresh`*, which
+>    is the unsafe direction — stale coverage read as current. Measure what a 128-bit
+>    non-cryptographic hash costs in false-fresh probability before deciding, and if in doubt add
+>    the dependency; contract 11's lesson was "measure first", not "never add".
+> 2. **What `Partial { missing_tests }` means** when a test crashed and wrote nothing. §6 already
+>    routes that through `coverage_complete` and `always_run`, so `Partial` and the always-run set
+>    must not disagree — decide which is derived from which.
+>
+> `IngestRecord` today holds `artifact`/`gcc_version`/`format_version`; §6 specifies `test`,
+> `outcome`, `coverage_complete`, `source_hash`, `config`, `march` and `stamp` as well. Widening
+> it is most of the work.
 >
 > **Contract 5 is the one that matters and it discriminates** — but it discriminates between the
 > candidates someone thought of. It rejected `sum` on `loop.c` and kept `max`, and `max` was
