@@ -852,6 +852,65 @@ struct FunctionLines {
     graphed: IndexMap<(String, u32), u64>,
 }
 
+impl FunctionLines {
+    /// This function's own answer for one line: the graph count where it has one, the
+    /// accumulation otherwise. This is the resolution gcov performs per *table*, which for a
+    /// group member is its private one.
+    fn resolved(&self) -> impl Iterator<Item = (&(String, u32), u64)> {
+        self.graphed.iter().map(|(k, &c)| (k, c)).chain(
+            self.accumulated
+                .iter()
+                .filter(|(k, _)| !self.graphed.contains_key(*k))
+                .map(|(k, &c)| (k, c)),
+        )
+    }
+}
+
+/// The lines a function accounts into its own private table rather than the source's.
+///
+/// gcov gives a function one when it shares a `(source, start_line)` with another non-artificial
+/// function — a *group* — and the table covers `start_line ..= end_line` of that function's own
+/// source. Lines outside it, and lines in any other file, still go to the shared table.
+#[derive(Clone)]
+struct GroupRange {
+    source: String,
+    start_line: u32,
+    end_line: u32,
+}
+
+impl GroupRange {
+    fn holds(&self, file: &str, line: u32) -> bool {
+        file == self.source && self.start_line <= line && line <= self.end_line
+    }
+}
+
+/// Which functions of an object are in a group, by index into `notes.functions`.
+///
+/// **Both members are marked, and the first is only known to be one when the second turns up** —
+/// which is why this is a pass over the whole object before any of it is counted, exactly as
+/// `process_all_functions` does it.
+fn group_members(functions: &[NoteFunction]) -> Vec<bool> {
+    let mut out = vec![false; functions.len()];
+    let mut first: IndexMap<(&str, u32), usize> = IndexMap::new();
+    for (i, f) in functions.iter().enumerate() {
+        // Artificial functions are removed before gcov gets this far, so they neither form a
+        // group nor join one.
+        if f.artificial {
+            continue;
+        }
+        match first.get(&(f.source.as_str(), f.start_line)) {
+            Some(&j) => {
+                out[i] = true;
+                out[j] = true;
+            }
+            None => {
+                first.insert((f.source.as_str(), f.start_line), i);
+            }
+        }
+    }
+    out
+}
+
 /// The lines of one object, merged across its functions the way gcov merges them.
 ///
 /// **Attribution by any function wins for every function.** gcov's `accumulate_line_info`
@@ -867,17 +926,35 @@ struct FunctionLines {
 struct ObjectLines {
     accumulated: IndexMap<(String, u32), u64>,
     graphed: IndexMap<(String, u32), u64>,
+    /// Group members' private tables, already resolved per function and summed. These are added
+    /// to whatever the shared table says rather than merged into it, because `--json-format`
+    /// emits them as separate line entries and their meaning is the sum.
+    private: IndexMap<(String, u32), u64>,
 }
 
 impl ObjectLines {
-    fn add(&mut self, f: FunctionLines) {
-        for (key, c) in f.accumulated {
-            let slot = self.accumulated.entry(key).or_insert(0);
-            *slot = slot.saturating_add(c);
+    fn add(&mut self, f: FunctionLines, group: Option<&GroupRange>) {
+        // A group member's own-range lines are resolved here, alone, and only their total joins
+        // the object — the shared table's overwrite must not reach them.
+        if let Some(g) = group {
+            for (key, c) in f.resolved() {
+                if g.holds(&key.0, key.1) {
+                    let slot = self.private.entry(key.clone()).or_insert(0);
+                    *slot = slot.saturating_add(c);
+                }
+            }
         }
-        for (key, c) in f.graphed {
-            let slot = self.graphed.entry(key).or_insert(0);
-            *slot = slot.saturating_add(c);
+        let shared = |g: Option<&GroupRange>, k: &(String, u32)| match g {
+            Some(g) => !g.holds(&k.0, k.1),
+            None => true,
+        };
+        for (key, c) in f.accumulated.iter().filter(|(k, _)| shared(group, k)) {
+            let slot = self.accumulated.entry(key.clone()).or_insert(0);
+            *slot = slot.saturating_add(*c);
+        }
+        for (key, c) in f.graphed.iter().filter(|(k, _)| shared(group, k)) {
+            let slot = self.graphed.entry(key.clone()).or_insert(0);
+            *slot = slot.saturating_add(*c);
         }
     }
 
@@ -885,6 +962,10 @@ impl ObjectLines {
     fn finish(mut self) -> Vec<(String, u32, u64)> {
         for (key, c) in self.graphed {
             self.accumulated.insert(key, c);
+        }
+        for (key, c) in self.private {
+            let slot = self.accumulated.entry(key).or_insert(0);
+            *slot = slot.saturating_add(c);
         }
         self.accumulated
             .into_iter()
@@ -1050,7 +1131,8 @@ pub fn ingest_into(
         idx.note_variant(v);
     }
     let mut object = ObjectLines::default();
-    for f in &notes.functions {
+    let in_group = group_members(&notes.functions);
+    for (fi, f) in notes.functions.iter().enumerate() {
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
             return Err(IngestError::Malformed {
                 path: data_path.clone(),
@@ -1074,7 +1156,12 @@ pub fn ingest_into(
         }
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
         let blocks = block_counts(f, &arcs);
-        object.add(line_counts(f, &arcs, &blocks));
+        let group = in_group[fi].then(|| GroupRange {
+            source: f.source.clone(),
+            start_line: f.start_line,
+            end_line: f.end_line,
+        });
+        object.add(line_counts(f, &arcs, &blocks), group.as_ref());
     }
     // **Merged across the object before the index sees any of it.** A header inlined into three
     // functions contributes to its lines three times, and the index's merge cannot tell those
