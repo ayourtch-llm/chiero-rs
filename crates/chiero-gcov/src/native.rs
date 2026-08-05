@@ -816,9 +816,27 @@ fn solve_arcs(f: &NoteFunction, counters: &[u64], path: &Path) -> Result<Vec<u64
                         }
                     })
                     .collect();
-                // **The entry and exit blocks conserve nothing**: flow enters at one and leaves at
-                // the other, so a rule derived from their empty side would be arithmetic about
-                // nothing.
+                // **An empty side is three different things**, and reading it as one refused 66
+                // of 108 objects of a real clang build.
+                //
+                // The *entry* block has nothing incoming and the *exit* block nothing outgoing:
+                // flow originates at one and is absorbed by the other, so neither conserves and a
+                // rule derived from their empty side would be arithmetic about nothing.
+                //
+                // A block that is neither, with no arcs *into* it, is **unreachable** — no flow
+                // can enter, so none leaves, and every arc out of it is zero. That is a value,
+                // not an absence, and the graphs contain such blocks: `clib_bihash_copied` has
+                // one whose single outgoing arc is on the spanning tree and therefore carries no
+                // counter, so conservation is the only thing that could ever have determined it.
+                if incoming && side.is_empty() && b != 0 {
+                    for &i in &other {
+                        if known[i].is_none() {
+                            known[i] = Some(0);
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
                 if side.is_empty() || other.is_empty() {
                     continue;
                 }
