@@ -603,8 +603,9 @@ typing the paths ever would.
 > | **§5 `tests_for_span`, `uncovered_lines`** | done (4231609) — through `expansion_loc`, and zero-versus-absent kept apart |
 > | **17 `GCOV_PREFIX_STRIP`** | done (7744934) — computed from the build directory, measured against libgcov |
 > | **19 determinism** | done (a78d0f0) — a guard, verified to fail when one `IndexMap` becomes a `HashMap` |
+> | **18 staleness** | done (be464c3) — `validity()`, FNV-1a-128 over each source's text |
 >
-> **030 is complete except contract 18**, staleness. Everything else in the spec has a test.
+> ## ✅ 030 IS COMPLETE — contracts 1–19 all have tests, 88 green in the crate.
 
 > ### ✅ CONTRACT 11 IS MET, AND 030 §5's ROARING WAS NEVER NEEDED
 >
@@ -638,113 +639,33 @@ typing the paths ever would.
 > cannot: merging many objects would reallocate everything between each. The benchmark prints the
 > grown figure beside the held one so the next reader can see which lever they are pulling.
 
-> ### ⏭️ THE OTHER THING LEFT IN 030 — contract 18, and it needs a decision first
+> ### 📌 THE THREE DECISIONS CONTRACT 18 FIXED — do not re-litigate without reading these
 >
-> > Modifying a source file after ingest makes `validity()` return `Stale` naming that file.
+> All three are stated at `crates/chiero-gcov/tests/staleness.rs` and on the methods:
 >
-> §7 wants `CoverageIndex::validity() -> Fresh | Stale { files } | Partial { missing_tests }`,
-> with every `IngestRecord` carrying a **`source_hash: Blake3`**. Two things must be settled
-> before the red test, and neither is a coding question:
+> 1. **FNV-1a-128, not Blake3**, which 030 §7 names. The job is noticing an *accidental*
+>    difference between two versions of one file; at 128 bits that is ~2⁻¹²⁸, and the failure that
+>    actually happens is having no hash or comparing mtimes. Blake3 buys resistance to a
+>    *constructed* collision — a threat model this project has adopted nowhere else. `source_hash`
+>    is private, so adopting it later is one function. **A judgement, not a measurement** — unlike
+>    contract 11, where the benchmark had something to say.
+> 2. **Hashed at ingest, per file, by reading the path gcov recorded.** Nothing in the artifacts
+>    pins the source text: the stamp pairs the two files and the per-function checksums cover the
+>    CFG, so both are blind to an edit that rewrites a constant or a comment. A test pins exactly
+>    that — a whitespace-only edit leaves every checksum equal and must still be `Stale`.
+> 3. **`Stale` outranks `Partial`.** `Partial` means some tests are unaccounted for and selection
+>    runs them; `Stale` means none of the answers describe the source in front of you.
 >
-> 1. **The hash.** 030 §7 names Blake3; the workspace has no hash dependency and has just
->    demonstrated (contract 11) that a spec's pre-chosen library is worth re-deriving before
->    adding. But this is not the same case: a weak hash's collision is a *false `Fresh`*, which
->    is the unsafe direction — stale coverage read as current. Measure what a 128-bit
->    non-cryptographic hash costs in false-fresh probability before deciding, and if in doubt add
->    the dependency; contract 11's lesson was "measure first", not "never add".
-> 2. **What `Partial { missing_tests }` means** when a test crashed and wrote nothing. §6 already
->    routes that through `coverage_complete` and `always_run`, so `Partial` and the always-run set
->    must not disagree — decide which is derived from which.
+> ⚠️ `record_sources(root)` is the **caller's** to call, and an index that never calls it reports
+> `Fresh` for want of evidence to the contrary. That is why §7 makes 032 pattern-match on
+> `validity()` rather than trust it.
 >
-> `IngestRecord` today holds `artifact`/`gcc_version`/`format_version`; §6 specifies `test`,
-> `outcome`, `coverage_complete`, `source_hash`, `config`, `march` and `stamp` as well. Widening
-> it is most of the work.
+> ### ⏭️ WHAT IS NEXT — 031, change impact
 >
-> **Contract 5 is the one that matters and it discriminates** — but it discriminates between the
-> candidates someone thought of. It rejected `sum` on `loop.c` and kept `max`, and `max` was
-> wrong; what finally caught that was cross-validating against a whole build, not a better
-> fixture. **A gate can only refute the hypotheses it is shown.**
->
-> ### ✅ SETTLED — the line rule is a graph algorithm, and no formula could have been fitted
->
-> **Pointing the decoder at a real `--coverage` build of `vppinfra` found four things**, which is
-> what a scale test is for — the four hand-built fixtures agreed with gcov and were not
-> representative:
->
-> | found | status |
-> |---|---|
-> | VPP's cmake defaults to **clang**, whose `.gcno` tag is `*804` | refused correctly (contract 9). Use `-DCMAKE_C_COMPILER=gcc`. A clang decoder is a separate job. |
-> | a **negative counter length** means "this many counters, all zero, none stored" | fixed. It was **83 of 98** objects — every source with a function nothing calls. |
-> | one `LINES` record can carry **several file groups** | fixed. It was attributing `mem.h:191` to `bihash_all_vector.c`. |
-> | the **line-count rule** is neither `max` nor `sum` nor any other aggregation | **fixed (d889e97)** |
->
-> #### The rule
->
-> From `gcc/gcov.cc`, `accumulate_line_info`, in gcc's own words:
->
-> > The user expects the line count to be the number of times a line has been executed. Simply
-> > summing the block count will give an artificially high number. The Right Thing is to sum the
-> > entry counts to the graph of blocks on this line, then find the elementary cycles of the
-> > local graph and add the transition counts of those cycles.
->
-> So: every arc entering the subgraph induced by the line's blocks contributes its count, and
-> every elementary cycle inside it contributes its bottleneck arc, which is then subtracted from
-> that cycle's arcs so a shared arc is not claimed twice. Cycles are enumerated by Hawick and
-> James' algorithm (`circuit`/`unblock`). **A `for` loop written on one line is counted by finding
-> the loop.**
->
-> Three fixtures, three refutations — `inl.c:2` `[1,1,1]` → 3 kills `max`, `loop.c:1`
-> `[1,4,5,1,1]` → 5 kills `sum`, `cyc.c:5` (a whole loop on one line) → 5 kills entry-counts-only,
-> which is the obvious half of the rule and answers 1.
->
-> #### ⚠️ THE LESSON, and it is the most expensive one this crate has taught
->
-> `max` was measured, not guessed. It fit `loop.c`, then `t.c`, then `cyc.c`, then **beat every
-> rival over 92,920 real `(file, line)` rows** — 67 of 98 objects against 63 for `sum`. *Being the
-> best of the wrong answers is what kept it alive through four fixtures and a scale run.*
->
-> No amount of that data could have found the rule, because **the answer depends on the arcs and
-> every column measured was a block count.** A larger sample can only ever say "still wrong", never
-> "wrong in this way". The move that worked was to stop fitting and read the algorithm — the gcc
-> source is a 90 MB tarball, or one file:
->
-> ```
-> curl -sSL -o tmp/gcov.cc \
->   https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-13.3.0/gcc/gcov.cc
-> ```
->
-> `tmp/` is gitignored. Read `add_line_counts`, `accumulate_line_info`, `get_cycles_count`,
-> `circuit`, `handle_cycle`, `solve_flow_graph`.
->
-> #### ✅ WHERE IT STANDS: **98/98 objects, 0 of 30133 lines differ**
->
-> ```
-> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc
->
->     line counts differing     0 / 30133
->     objects fully agreeing   98 / 98
-> ```
->
-> The native decoder reproduces gcov exactly on every line of every object of the vppinfra
-> coverage build. Four defects stood between `max` and that, and each was invisible to the one
-> before it:
->
-> | # | defect | after fixing |
-> |---|---|---|
-> | 0 | the rule is entry arcs + elementary cycles, not an aggregation | 73/98, 799 rows |
-> | 1 | gcov **sorts** each block's line group before attributing it, so the attribution is to the *greatest* line, not the last written (`gcov.cc` ~1413) | 80/98, 727 rows |
-> | 2 | a source's lines are accounted **once per object**, not once per function — and the graph count *overwrites* every function's accumulation rather than adding to it | 93/98, 14 rows |
-> | 3 | two non-artificial functions sharing a `(source, start_line)` are a **group**, and each member keeps a private line table that `--json-format` emits separately | **98/98, 0 rows** |
->
-> Defect 2's direction was the unsafe one: merging per-function counts by `max` reports one
-> caller's count for an inlined header line and drops the rest, so a line looks *less* covered
-> than it is — and 032 skips tests on exactly that evidence.
->
-> ⚠️ **Fixtures for 1 and 3 took two attempts each.** The obvious shape passes: a group whose
-> members agree, or an inlined block whose line list is already ascending, gives the same answer
-> under both rules. The shapes that discriminate are `tests/corpus/coverage/{nonmono,group}.c`,
-> and each carries a comment saying which reading it refutes.
->
+> 030 is done. The next vertical is [031](docs/specs/031-change-impact.md), which diffs two
+> indices to find what a change touched — and is the first consumer of `tests_for_span`,
+> `tests_for_block` and `validity()`. Read 030 §5's query list first; every one of them now exists.
+
 > ### 🧭 THE ONE IDEA THIS CRATE KEEPS RE-DERIVING
 >
 > Three times now the design has turned on the same distinction, and it is worth naming because
