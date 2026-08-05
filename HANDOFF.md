@@ -526,7 +526,33 @@ typing the paths ever would.
 > **Anchor a patch on the signature, not on the body**, and when instrumentation reports the
 > impossible, suspect the instrumentation before the code.
 >
-> ### 📊 THE NUMBER: **1866 of 1871 clean, ZERO `not-run`** at 5dff817
+> ### 📊 THE NUMBER: **1867 of 1870 clean, ZERO `not-run`, and the 3 are VPP's** at 55dfe2f
+>
+> The three remaining `diagnosed` are the ones §"WHAT IS LEFT" describes and **none is a chiero
+> defect**: two macro redefinitions VPP really makes, and one `\(` escape. Every one is silent
+> in gcc under `gnu11` and an error under `-pedantic-errors`, which is this project's calibration.
+>
+> ### 🚀 THE NEXT VERTICAL HAS STARTED — 030, coverage ingest
+>
+> `chiero-gcov` was one line; it now ingests `gcov --json-format` and answers line counts
+> (f29a098), with 030 contracts 1–4 tested against **gcov's own output**, committed under
+> `tests/corpus/coverage/` with the sources and a README recording how it was produced.
+>
+> **Contract 2 is the crown jewel and it is now a test**: a macro expanded twice at `t.c:3` puts
+> both expansions on that line and leaves `m.h:1` — the macro body — with *no record at all*.
+> `line_count` returns `Option` precisely so that `None` and `Some(0)` stay different facts. If a
+> future gcc starts recording the macro line, the test fails loudly and the justification for the
+> hand-written frontend gets re-argued rather than quietly ageing.
+>
+> ⏭️ **Next in 030**, in the order the spec gives them:
+> - contract 5, the cross-validation gate: native `.gcno`/`.gcda` decode must produce line counts
+>   *identical* to `gcov --json-format` on the same files. The fixture already has both artifacts.
+> - contracts 6–9: the flow solve, `FAKE` arcs, the stamp pairing, and an unknown version tag
+>   falling back to JSON rather than guessing.
+> - contract 10 onward needs `TestBitmap`; 030 §5 says roaring, and the workspace has no such
+>   dependency yet — that is a deliberate decision to make, like `flate2` was.
+>
+> ### 📊 SUPERSEDED: **1866 of 1871 clean, ZERO `not-run`** at 5dff817
 >
 > | sweep | clean | not-run | diagnosed |
 > |---|---|---|---|
