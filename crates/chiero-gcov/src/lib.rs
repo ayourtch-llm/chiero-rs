@@ -69,6 +69,27 @@ impl TestOutcome {
     }
 }
 
+/// Which build of a source file coverage came from (030 §5).
+///
+/// VPP compiles one source many times under different `CLIB_MARCH_VARIANT`, and the copies are
+/// **different code**: `#if defined(CLIB_HAVE_VEC512)` is in one and not another. Recording the
+/// variant beside the line is what stops a change inside such a block being attributed to the
+/// tests of a build that never contained it.
+///
+/// `None` is a variant rather than an absence, so a tree with no variants — everything that is
+/// not VPP — has exactly one and nothing is filed under an invented name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Variant {
+    None,
+    Named(String),
+}
+
+impl Variant {
+    pub fn named(v: &str) -> Variant {
+        Variant::Named(v.to_string())
+    }
+}
+
 /// The tests that executed one line.
 ///
 /// **A sorted `Vec` today, roaring eventually.** 030 §5 specifies roaring bitmaps and contract 11
@@ -102,8 +123,15 @@ pub struct CoverageIndex {
     /// cannot see this" into "nothing ran this", which is the misreading 030 §1 exists to
     /// prevent.
     line_counts: IndexMap<(String, u32), u64>,
-    /// `(file, line) -> the tests that executed it`.
+    /// `(file, line) -> the tests that executed it`, unioned across variants.
     line_tests: IndexMap<(String, u32), TestBitmap>,
+    /// The same, per build.
+    ///
+    /// **Beside the union rather than instead of it.** Most changes are variant-independent and
+    /// the union is the right answer for them; the split matters for code only one build compiles.
+    variant_tests: IndexMap<(Variant, String, u32), TestBitmap>,
+    /// Every variant that contributed, in arrival order.
+    variants: Vec<Variant>,
     /// Every test that contributed an ingest, in the order they arrived.
     ///
     /// Kept even when a test covered nothing, so a selection can tell "ran and covered nothing"
@@ -150,6 +178,23 @@ impl CoverageIndex {
     /// 032 acts on by running nothing; a line gcov never recorded supports no such claim (030 §1).
     pub fn tests_for_line(&self, file: &str, line: u32) -> Option<Vec<TestId>> {
         self.line_tests.get(&(file.to_string(), line)).cloned()
+    }
+
+    /// The tests that executed a line **in one build**, or `None` when that build recorded
+    /// nothing for it.
+    ///
+    /// `None` and an empty set differ here as everywhere in this crate: "no coverage recorded for
+    /// the AVX-512 build" is not "the AVX-512 build ran nothing", and only the second lets a test
+    /// be skipped.
+    pub fn tests_for_line_in(&self, file: &str, line: u32, v: &Variant) -> Option<Vec<TestId>> {
+        self.variant_tests
+            .get(&(v.clone(), file.to_string(), line))
+            .cloned()
+    }
+
+    /// Every build that contributed coverage, in arrival order.
+    pub fn variants(&self) -> Vec<Variant> {
+        self.variants.clone()
     }
 
     /// Every test that contributed an ingest, in arrival order.
@@ -215,17 +260,37 @@ impl CoverageIndex {
         *slot = (*slot).max(count);
     }
 
-    /// The same, attributed to a test.
+    /// The same, attributed to a test and to the build it came from.
     ///
     /// **A line is recorded for the test even when its count is 0.** gcov writing `0` means it
     /// *saw* the line and the test did not execute it, which is a different fact from the line
     /// being absent — and it is the fact 032 needs to not re-run a test for a line it demonstrably
     /// never reached.
-    pub(crate) fn add_line_for(&mut self, test: TestId, file: String, line: u32, count: u64) {
+    pub(crate) fn add_line_for_variant(
+        &mut self,
+        test: TestId,
+        v: &Variant,
+        file: String,
+        line: u32,
+        count: u64,
+    ) {
         self.add_line(file.clone(), line, count);
-        let set = self.line_tests.entry((file, line)).or_default();
+        let set = self.line_tests.entry((file.clone(), line)).or_default();
         if !set.contains(&test) {
             set.push(test);
+        }
+        let per = self
+            .variant_tests
+            .entry((v.clone(), file, line))
+            .or_default();
+        if !per.contains(&test) {
+            per.push(test);
+        }
+    }
+
+    pub(crate) fn note_variant(&mut self, v: &Variant) {
+        if !self.variants.contains(v) {
+            self.variants.push(v.clone());
         }
     }
 
@@ -343,7 +408,18 @@ pub fn ingest_native_as(
     dir: &Path,
     stem: &str,
 ) -> Result<(), IngestError> {
-    native::ingest_into(idx, Some(test), dir, stem)
+    native::ingest_into(idx, Some((test, Variant::None)), dir, stem)
+}
+
+/// The same, recording which build the object came from (030 §5).
+pub fn ingest_native_as_variant(
+    idx: &mut CoverageIndex,
+    test: TestId,
+    variant: Variant,
+    dir: &Path,
+    stem: &str,
+) -> Result<(), IngestError> {
+    native::ingest_into(idx, Some((test, variant)), dir, stem)
 }
 
 /// Ingest `gcov --json-format` output for one object stem.

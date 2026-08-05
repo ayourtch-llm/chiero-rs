@@ -128,7 +128,11 @@ fn a_truncated_gcda_produces_no_partial_index() {
 fn a_function_that_never_ran_decodes_as_zeros() {
     let json = chiero_gcov::ingest_json(&corpus(), "unrun").expect("json");
     let native = chiero_gcov::ingest_native(&corpus(), "unrun").expect("native");
-    assert_eq!(json.line_count("unrun.c", 1), Some(0), "gcov: seen, never executed");
+    assert_eq!(
+        json.line_count("unrun.c", 1),
+        Some(0),
+        "gcov: seen, never executed"
+    );
     assert_eq!(native.line_count("unrun.c", 1), Some(0));
     assert_eq!(native.line_count("unrun.c", 2), Some(1));
     assert_eq!(native.line_count("unrun.c", 3), Some(1));

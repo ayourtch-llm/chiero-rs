@@ -218,6 +218,11 @@ pub struct Record {
     /// The offset the record's *tag* sits at, for a diagnostic that can be checked with `xxd`.
     pub at: usize,
     pub payload: Vec<u8>,
+    /// Bytes of counters gcc elided because every one of them is zero.
+    ///
+    /// Non-zero only for a record whose stored length was negative. The counters are **not**
+    /// missing data — their value is known exactly, and it is zero.
+    pub elided_zeros: usize,
 }
 
 /// Where the records begin, which is not the same in the two artifacts.
@@ -278,8 +283,21 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
         }
         // **Bytes, not words.** Measured: `FUNCTION` at 121 with length 49 is followed by
         // `BLOCKS` at 178.
-        let len =
-            u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
+        //
+        // **And signed.** A *negative* length is gcc's compression for a counter set that is
+        // entirely zero: the magnitude is the bytes the counters would have taken and **none of
+        // them is stored**, so the next record begins immediately after the length word. Read as
+        // a `u32` it is about 4294967280 and every such file looks truncated — which is how 83 of
+        // 98 objects in a real `--coverage` build of `vppinfra` failed to ingest, and why none of
+        // the fixtures written before that build could find it: in all of them, every function
+        // ran.
+        let raw = i32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]);
+        let len = if raw < 0 { 0 } else { raw as usize };
+        let elided = if raw < 0 {
+            raw.unsigned_abs() as usize
+        } else {
+            0
+        };
         let start = i + 8;
         let Some(payload) = bytes.get(start..start + len) else {
             return Err(IngestError::Malformed {
@@ -294,6 +312,7 @@ pub fn records(path: &Path) -> Result<Vec<Record>, IngestError> {
             tag: Tag::from_word(tag),
             at: i,
             payload: payload.to_vec(),
+            elided_zeros: elided,
         });
         i = start + len;
     }
@@ -469,21 +488,39 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
                     Tag::Lines => {
                         // **A grammar, not fields**: a 0 introduces a file name, anything else is
                         // a line, and a 0 with an empty name ends the record.
+                        //
+                        // **One record, possibly several files.** An `always_inline` call puts the
+                        // callee's lines in the caller's block, so a block reads
+                        // `FILE inl.c 2  FILE inl.h 3 4  END`. Keeping a single `file` per record
+                        // attributed `inl.h:3` to `inl.c` — a line that need not exist, and an
+                        // answer about the wrong code that reads exactly like a right one. Each
+                        // group becomes its own `BlockLines`, all of them for the same block.
                         let block = c.u32().ok_or_else(|| short("line block"))?;
                         let mut file = String::new();
-                        let mut lines = Vec::new();
+                        let mut lines: Vec<u32> = Vec::new();
+                        let flush =
+                            |file: &str, lines: &mut Vec<u32>, out: &mut Vec<BlockLines>| {
+                                if !lines.is_empty() {
+                                    out.push(BlockLines {
+                                        block,
+                                        file: file.to_string(),
+                                        lines: std::mem::take(lines),
+                                    });
+                                }
+                            };
                         while let Some(v) = c.u32() {
                             if v != 0 {
                                 lines.push(v);
                                 continue;
                             }
                             let name = c.string().ok_or_else(|| short("line file name"))?;
+                            flush(&file, &mut lines, &mut f.lines);
                             if name.is_empty() {
                                 break;
                             }
                             file = name;
                         }
-                        f.lines.push(BlockLines { block, file, lines });
+                        flush(&file, &mut lines, &mut f.lines);
                     }
                     _ => unreachable!("the arm matched these three tags"),
                 }
@@ -547,12 +584,14 @@ pub fn read_data(path: &Path) -> Result<Data, IngestError> {
                 // **`u64` each, and a payload that is not a multiple of 8 is corrupt.** Rounding
                 // down would drop a counter and leave the flow solve short by exactly one arc,
                 // which is the shape of failure that looks like a decoder bug for days.
-                if rec.payload.len() % 8 != 0 {
+                if rec.payload.len() % 8 != 0 || rec.elided_zeros % 8 != 0 {
                     return Err(IngestError::Malformed {
                         path: path.to_path_buf(),
                         why: format!(
-                            "a counter record of {} bytes is not a whole number of counters",
-                            rec.payload.len()
+                            "a counter record of {} bytes ({} elided) is not a whole number of \
+                             counters",
+                            rec.payload.len(),
+                            rec.elided_zeros
                         ),
                     });
                 }
@@ -561,6 +600,12 @@ pub fn read_data(path: &Path) -> Result<Data, IngestError> {
                     f.counters.push(u64::from_le_bytes([
                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
                     ]));
+                }
+                // **Materialised rather than left short.** The flow solve wants one counter per
+                // non-tree arc and would otherwise report a graph that disagrees with its data —
+                // a true sentence about the wrong thing, since the counters are known and zero.
+                for _ in 0..rec.elided_zeros / 8 {
+                    f.counters.push(0);
                 }
             }
             _ => {}
@@ -737,7 +782,7 @@ fn line_counts(f: &NoteFunction, blocks: &[u64]) -> Vec<(String, u32, u64)> {
 /// "no test covered this".
 pub fn ingest_into(
     idx: &mut crate::CoverageIndex,
-    test: Option<crate::TestId>,
+    test: Option<(crate::TestId, crate::Variant)>,
     dir: &Path,
     stem: &str,
 ) -> Result<(), IngestError> {
@@ -753,8 +798,9 @@ pub fn ingest_into(
     let notes = read_notes(&notes_path)?;
     let data = read_data(&data_path)?;
 
-    if let Some(t) = test {
-        idx.note_test(t);
+    if let Some((t, v)) = &test {
+        idx.note_test(*t);
+        idx.note_variant(v);
     }
     for f in &notes.functions {
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
@@ -781,8 +827,8 @@ pub fn ingest_into(
         let arcs = solve_arcs(f, &d.counters, &data_path)?;
         let blocks = block_counts(f, &arcs);
         for (file, line, count) in line_counts(f, &blocks) {
-            match test {
-                Some(t) => idx.add_line_for(t, file, line, count),
+            match &test {
+                Some((t, v)) => idx.add_line_for_variant(*t, v, file, line, count),
                 None => idx.add_line(file, line, count),
             }
         }
@@ -935,7 +981,12 @@ fn arc_coverage_read(
 
     // The line half goes through the ordinary ingest, so there is exactly one solve and one line
     // rule in this crate rather than a second copy that can drift from contract 5's gate.
-    ingest_into(&mut cov.index, test, dir, stem)?;
+    ingest_into(
+        &mut cov.index,
+        test.map(|t| (t, crate::Variant::None)),
+        dir,
+        stem,
+    )?;
 
     for f in &notes.functions {
         let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
@@ -979,4 +1030,10 @@ fn arc_coverage_read(
         }
     }
     Ok(())
+}
+
+/// Block counts for one function, for the measurement harness in `examples/`.
+pub fn debug_block_counts(f: &NoteFunction, counters: &[u64]) -> Option<Vec<u64>> {
+    let arcs = solve_arcs(f, counters, Path::new("<probe>")).ok()?;
+    Some(block_counts(f, &arcs))
 }
