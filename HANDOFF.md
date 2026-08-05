@@ -575,16 +575,12 @@ typing the paths ever would.
 > (matched to the notes by `ident`). `t.gcno`'s `main` has 7 arcs, 4 of them `ON_TREE`, and the
 > `.gcda` carries exactly 3 counters. Conservation recovers the rest, as 030 §4.1 describes.
 >
-> **The line rule is `max`, and `loop.c` is the fixture that proves it.** When several blocks
-> carry one line, gcov reports the *maximum* of their counts:
->
-> ```
-> loop.c:1   block counts [1, 4, 5, 1, 1]   gcov says 5
-> ```
->
-> Sum would be 12 and first-block would be 1, so both are refuted rather than merely
-> not-contradicted. `t.c`'s blocks are all 1 and cannot tell the three apart — which is why the
-> second fixture exists and why it is worth its bytes.
+> ❌ **This section once said "the line rule is `max`, and `loop.c` is the fixture that proves
+> it".** It was wrong, it survived four fixtures and a 92,920-row scale run, and the correction is
+> under "SETTLED — the line rule is a graph algorithm" below. The sentence is kept because the
+> reasoning that produced it was sound and still yielded a wrong answer: `loop.c` genuinely
+> refutes sum and first-block, and refuting two candidates is not the same as confirming the
+> third.
 >
 > ### ✅ 030 STATUS — contracts 1–6, 8, 9, 10 and 12 are green
 >
@@ -602,16 +598,14 @@ typing the paths ever would.
 > | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
 > | §5 `FuncKey`, `MarchResolver` | done (376cd40) — file + name + start line, and the variant is a resolver, never a parse |
 >
-> **Contract 5 is the one that matters and it discriminates.** Replacing the measured `max` line
-> rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
-> would have passed the wrong rule, which is why the second fixture exists.
+> **Contract 5 is the one that matters and it discriminates** — but it discriminates between the
+> candidates someone thought of. It rejected `sum` on `loop.c` and kept `max`, and `max` was
+> wrong; what finally caught that was cross-validating against a whole build, not a better
+> fixture. **A gate can only refute the hypotheses it is shown.**
 >
-> ### 🔴 START HERE — two tests are red on purpose, and the question is *attribution*
+> ### ✅ SETTLED — the line rule is a graph algorithm, and no formula could have been fitted
 >
-> `cross_validation::{a_block_may_carry_lines_from_more_than_one_file, native_decoding_agrees_with_gcov_json}`
-> fail. Everything else passes.
->
-> **Pointing the decoder at a real `--coverage` build of `vppinfra` found three things**, which is
+> **Pointing the decoder at a real `--coverage` build of `vppinfra` found four things**, which is
 > what a scale test is for — the four hand-built fixtures agreed with gcov and were not
 > representative:
 >
@@ -620,30 +614,60 @@ typing the paths ever would.
 > | VPP's cmake defaults to **clang**, whose `.gcno` tag is `*804` | refused correctly (contract 9). Use `-DCMAKE_C_COMPILER=gcc`. A clang decoder is a separate job. |
 > | a **negative counter length** means "this many counters, all zero, none stored" | fixed. It was **83 of 98** objects — every source with a function nothing calls. |
 > | one `LINES` record can carry **several file groups** | fixed. It was attributing `mem.h:191` to `bihash_all_vector.c`. |
-> | the **line-count rule** is not `max` and not `sum` | **open** |
+> | the **line-count rule** is neither `max` nor `sum` nor any other aggregation | **fixed (d889e97)** |
 >
-> #### The measurement, and why no formula fits
+> #### The rule
+>
+> From `gcc/gcov.cc`, `accumulate_line_info`, in gcc's own words:
+>
+> > The user expects the line count to be the number of times a line has been executed. Simply
+> > summing the block count will give an artificially high number. The Right Thing is to sum the
+> > entry counts to the graph of blocks on this line, then find the elementary cycles of the
+> > local graph and add the transition counts of those cycles.
+>
+> So: every arc entering the subgraph induced by the line's blocks contributes its count, and
+> every elementary cycle inside it contributes its bottleneck arc, which is then subtracted from
+> that cycle's arcs so a shared arc is not claimed twice. Cycles are enumerated by Hawick and
+> James' algorithm (`circuit`/`unblock`). **A `for` loop written on one line is counted by finding
+> the loop.**
+>
+> Three fixtures, three refutations — `inl.c:2` `[1,1,1]` → 3 kills `max`, `loop.c:1`
+> `[1,4,5,1,1]` → 5 kills `sum`, `cyc.c:5` (a whole loop on one line) → 5 kills entry-counts-only,
+> which is the obvious half of the rule and answers 1.
+>
+> #### ⚠️ THE LESSON, and it is the most expensive one this crate has taught
+>
+> `max` was measured, not guessed. It fit `loop.c`, then `t.c`, then `cyc.c`, then **beat every
+> rival over 92,920 real `(file, line)` rows** — 67 of 98 objects against 63 for `sum`. *Being the
+> best of the wrong answers is what kept it alive through four fixtures and a scale run.*
+>
+> No amount of that data could have found the rule, because **the answer depends on the arcs and
+> every column measured was a block count.** A larger sample can only ever say "still wrong", never
+> "wrong in this way". The move that worked was to stop fitting and read the algorithm — the gcc
+> source is a 90 MB tarball, or one file:
 >
 > ```
-> loop.c:1   gcov's own blocks 1,4,5,1   gcov says 5    (sum 11, max 5)
-> inl.c:2    gcov's own blocks 1,1,1     gcov says 3    (sum 3,  max 1)
-> t.c:3      gcov's own blocks 1         gcov says 1    (the notes give 3 blocks)
+> curl -sSL -o tmp/gcov.cc \
+>   https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-13.3.0/gcc/gcov.cc
 > ```
 >
-> `max` fits rows 1 and 3, `sum` fits row 2. **The rule is not arithmetic over "every block that
-> lists the line", because gcov's per-line block list is not the notes'.** For `t.c:3` it reports
-> one block where the notes give three; for `loop.c:1`, four where the notes give five.
+> `tmp/` is gitignored. Read `add_line_counts`, `accumulate_line_info`, `get_cycles_count`,
+> `circuit`, `handle_cycle`, `solve_flow_graph`.
 >
-> So find what gcov *excludes* before touching the arithmetic. Reproduce with:
+> #### Where it stands, and the next lead
 >
 > ```
-> gcov -a -b <stem>        # the .gcov text lists each block of each line with its count
-> cargo run --release -p chiero-gcov --example scale -- <build-dir>
+> cargo run --release -p chiero-gcov --example scale -- $SCRATCH/covgcc
+>
+>     line counts differing   799 / 30133   (2.6%)
+>     objects fully agreeing   73 / 98      (was 67 with `max`, 63 with `sum`)
 > ```
 >
-> ⚠️ **Do not fit a formula to three of four rows.** 030 §4 asks for behavioural validation
-> precisely because a plausible-looking rule that is wrong in one shape is undetectable by reading
-> — and `max` was exactly that, measured on `loop` alone, which cannot tell the two apart.
+> The remaining 799 concentrate in headers holding several inline functions — `compress.h:90`
+> reports 30 where gcov says 10 — which is the shape of gcov's **function groups**: when several
+> functions share lines in one source, `fn->group_line_p` sends their counts to a *private
+> per-function* line array instead of the source's, and they are merged later. Not yet modelled.
+> Start at `gcov.cc`'s `group_line_p` (~line 700) and the `is_group` handling in `process_file`.
 >
 > ### 🧭 THE ONE IDEA THIS CRATE KEEPS RE-DERIVING
 >
