@@ -598,7 +598,7 @@ typing the paths ever would.
 > | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
 > | §5 `FuncKey`, `MarchResolver` | done (376cd40) — file + name + start line, and the variant is a resolver, never a parse |
 > | **5 line rule** | done (0e08d70) — **98/98 objects, 0 of 30133 lines** against a real VPP build |
-> | **11 memory budget** | **one build yes (162 MiB), two builds NO (330 MiB)** — see below |
+> | **11 memory budget** | done (cd744e9) — **107 MiB one build, 203 two**, against 256; roaring never needed |
 > | **13 `tests_for_block`** | done (3d7326f) — the union over a CIR block's `gcov_lines`, keyed on a file the caller supplies |
 > | **§5 `tests_for_span`, `uncovered_lines`** | done (4231609) — through `expansion_loc`, and zero-versus-absent kept apart |
 > | **17 `GCOV_PREFIX_STRIP`** | done (7744934) — computed from the build directory, measured against libgcov |
@@ -606,41 +606,37 @@ typing the paths ever would.
 >
 > **030 is complete except contract 18**, staleness. Everything else in the spec has a test.
 
-> ### 🔴 CONTRACT 11 IS RED ON PURPOSE FOR MULTI-BUILD TREES
->
-> `memory_budget::two_builds_of_every_line_stay_within_budget` **fails**, deliberately. Both
-> benchmarks are `#[ignore]`, so a plain `cargo test` is green; run them with:
+> ### ✅ CONTRACT 11 IS MET, AND 030 §5's ROARING WAS NEVER NEEDED
 >
 > ```
 > cargo test --release -p chiero-gcov --lib -- --ignored --nocapture
+>
+>     one build    162 MiB grown -> 107 held      (budget 256)
+>     two builds   330 MiB grown -> 203 held
 > ```
 >
-> | | measured | budget |
-> |---|---|---|
-> | one build | 162 MiB | 256 MiB ✅ |
-> | two builds of every line | **330 MiB** | 256 MiB ❌ |
+> Four levers, none of them the bitmap representation, in the order they paid:
 >
-> The first benchmark was the floor and nothing said so — adversarial review caught that the
-> configuration 030 §5's per-build split *exists for* was the one never measured. VPP compiles
-> under several `CLIB_MARCH_VARIANT`s; a budget met only without them is not met.
+> | | |
+> |---|---|
+> | intern paths — three maps each held their own copy of a 40-byte path | 577 → 341 |
+> | one map entry per line instead of three maps keyed alike | 341 → 190 |
+> | stop storing the union beside the per-build split | 190 → 162 |
+> | `shrink_to_fit` — a quarter of the index was doubling slack | 162 → **107** |
 >
-> **The next lever is the entry, not the bitmaps, and this is the second time contract 11 has
-> pointed away from 030 §5's roaring.** Measured: `IndexMap` grows its bucket array to a power of
-> two, so 1M entries occupy 2²¹ buckets at 56 bytes — **~118 MiB, more than the test ids
-> themselves**, and identical whether the index holds one build or four. Roaring bitmaps would not
-> touch it. Candidates, cheapest first:
+> **Twice now this contract has pointed away from the solution the spec chose in advance.** 030
+> §5 specifies roaring bitmaps; the test sets are still sorted `Vec`s and the budget is met with
+> 20% to spare on the harder configuration. Write the benchmark before reaching for the
+> dependency — that is the transferable part.
 >
-> - shrink `LineEntry`: `count: u64` is 8 bytes on every line and gcov counters that exceed `u32`
->   are rare — but a saturating narrow is a wrong answer, so measure how rare on the VPP corpus
->   before deciding;
-> - a `(file, line)`-sorted `Vec` with binary search instead of a hash map, which removes the
->   power-of-two slack entirely and suits an index that is built once and queried many times;
-> - inline storage for the common one- and two-build cases, avoiding `Split`'s per-line heap
->   allocation (~64 MiB at two builds).
+> ⚠️ **The one-build figure was the floor and nothing said so.** Adversarial review caught that
+> the configuration 030 §5's per-build split *exists for* — VPP's several `CLIB_MARCH_VARIANT`s —
+> was never measured. Both are measured now, and `measure()` takes a variant list so a third is
+> one line.
 >
-> ⚠️ Do not raise the budget to make this pass. 256 MiB was derived before the first measurement
-> and the derivation is in `src/memory_budget.rs`; a constant moved to fit the code is the failure
-> that section exists to prevent.
+> ⚠️ **`shrink_to_fit` is the caller's to call**, once, when the last artifact is in. Ingest
+> cannot: merging many objects would reallocate everything between each. The benchmark prints the
+> grown figure beside the held one so the next reader can see which lever they are pulling.
 
 > ### ⏭️ THE OTHER THING LEFT IN 030 — contract 18, and it needs a decision first
 >
