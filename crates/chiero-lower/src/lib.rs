@@ -3844,7 +3844,14 @@ impl Lowerer<'_> {
         // the true arm would run its side effects twice, and no shape test can see the
         // difference when it has none.
         if then.is_none() {
-            self.generated(|s| s.store_slot(slot, c.clone(), &slot_ty, span));
+            // **Converted to the result's type on the way in.** `a ?: b` is `a ? a : b`, so the
+            // condition *is* the true arm and the usual arithmetic conversions apply to it —
+            // sema types the node accordingly, but the conversion it would insert belongs to an
+            // operand that appears once and is used twice, so there is nowhere for it to sit.
+            // `int b; long c; b ?: c` stored a four-byte condition into an eight-byte slot
+            // without this, which is the same defect as the type being wrong, mirrored.
+            let v = self.convert_for_store(c.clone(), cond, &slot_ty, self.is_signed(cond), span);
+            self.generated(|s| s.store_slot(slot, v, &slot_ty, span));
         }
         let test = {
             let t = self.compare_ty(cond);

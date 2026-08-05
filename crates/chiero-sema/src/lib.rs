@@ -5677,7 +5677,16 @@ impl Cx<'_> {
                         let tty = self.out.typed.ty_of(t);
                         self.common_type(tty, ety)
                     }
-                    None => ety,
+                    // **The elvis form's first operand is also its true arm** (GNU: `a ?: b` is
+                    // `a ? a : b`), so the usual arithmetic conversions run across the *condition*
+                    // and the else arm. Answering `ety` alone made `unsigned long ?: 1` an `int`,
+                    // and lowering then allocated four bytes for a value that needs eight.
+                    // `_Generic` against gcc 13.3.0 says `unsigned long`, and says `long` for
+                    // both `int ?: long` and `unsigned ?: long`.
+                    None => {
+                        let cty = self.out.typed.ty_of(c);
+                        self.common_type(cty, ety)
+                    }
                 };
                 let mut ops = vec![c];
                 if let (Some(t), Some(te)) = (t, then.as_ref()) {
