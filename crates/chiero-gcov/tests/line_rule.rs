@@ -139,3 +139,30 @@ fn a_blocks_lines_are_sorted_as_gcov_sorts_them() {
         "the block belongs to line 21, the greatest line it carries"
     );
 }
+
+/// **A source's lines are accounted once per object, not once per function.**
+///
+/// gcov keeps one record per `(source, line)` for the whole object: every function's blocks
+/// accumulate into it, every function's attributed blocks join one block list, and the graph
+/// count is computed over that union (`add_line_counts` writes into `sources[src].lines`, and
+/// `accumulate_line_info` overwrites it once). Arcs never cross functions, so the union's count
+/// is the sum of the per-function counts.
+///
+/// `multi.h`'s `bump` is force-inlined into both `one` and `two`, so both contribute to its lines
+/// and gcov reports 2. Computing per function and merging by `max` reports 1 — one caller's
+/// count, with the other silently dropped. On a real VPP object the same defect reports 310 for
+/// `memcpy_x86_64.h:42` where the three callers sum to gcov's 410.
+///
+/// The direction of the error is the dangerous one. 032 skips a test when a line's coverage says
+/// another test already reached it, and a count that is missing a caller is a line that looks
+/// less covered than it is — or, where the dropped caller is the only one that ran, a line that
+/// looks uncovered.
+#[test]
+fn every_function_of_an_object_contributes_to_a_shared_line() {
+    assert_eq!(
+        count("multi", "multi.h", 5),
+        Some(2),
+        "`one` and `two` each inline `bump` once"
+    );
+    assert_eq!(count("multi", "multi.h", 6), Some(2));
+}
