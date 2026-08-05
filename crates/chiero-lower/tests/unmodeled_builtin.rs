@@ -101,9 +101,11 @@ fn the_result_follows_the_expressions_type() {
             .flat_map(|f| f.blocks.iter())
             .flat_map(|b| b.insts.iter())
             .find_map(|i| match &i.kind {
-                InstKind::Opaque { dsts, why: OpaqueReason::UnmodeledBuiltin(_), .. } => {
-                    Some(dsts.len())
-                }
+                InstKind::Opaque {
+                    dsts,
+                    why: OpaqueReason::UnmodeledBuiltin(_),
+                    ..
+                } => Some(dsts.len()),
                 _ => None,
             })
             .expect("an opaque effect")

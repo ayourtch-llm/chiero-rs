@@ -4,6 +4,8 @@
 //! IR reach the engine — where the symptom is a confusing wrong answer rather than a
 //! clear error.
 
+use indexmap::IndexSet;
+
 use crate::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -126,8 +128,13 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
     // one measured 673 s against ~1 s before. The scaling was the giveaway: 250 functions 303 ms,
     // 500 850 ms, 1000 3237 ms, with *no calls at all* — so the cost was per function, not per
     // call site, which ruled out the call-resolution scans that look like the obvious suspect.
-    let mut gids: std::collections::HashSet<GlobalId> = std::collections::HashSet::new();
-    let mut gnames: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    //
+    // `IndexSet`, not `HashSet`: 001 §5 bans the std sets outright because their iteration order
+    // is not stable across runs, and clippy enforces it. Nothing here iterates — but a set that
+    // *is* iterated later, by someone who did not know why the type was chosen, is exactly the
+    // non-determinism the rule exists to prevent, and the lookup cost is the same.
+    let mut gids: IndexSet<GlobalId> = IndexSet::new();
+    let mut gnames: IndexSet<&str> = IndexSet::new();
     for g in &m.globals {
         if !gids.insert(g.id) {
             err(
@@ -150,7 +157,7 @@ fn check_module_identity(m: &Module, out: &mut Vec<VerifyError>) {
         // Rule 7 applies to globals too.
         check_align(&anon, g.align, g.span, out);
     }
-    let mut fnames: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut fnames: IndexSet<&str> = IndexSet::new();
     for f in &m.funcs {
         // **No duplicate-*id* check here, and that is not an omission.** The rule above requires
         // `funcs[i].id == FuncId(i)`, so two functions can only share an id if one of them also
