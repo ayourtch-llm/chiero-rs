@@ -598,6 +598,8 @@ typing the paths ever would.
 > | 10 `tests_for_line`, union | done (88aae92) |
 > | 12 `expansion_loc` only | done (959e7ea), and the guard is verified to fail on a planted violation |
 > | §6 outcomes, `always_run` | done (32d6005) |
+> | **7** `FAKE` in the solve, out of the queries | done (e48d151) |
+> | **4** arc queries unavailable on a JSON index | done (e48d151) — by *where the method is*: there is no `tests_for_arc` on `CoverageIndex` at all |
 >
 > **Contract 5 is the one that matters and it discriminates.** Replacing the measured `max` line
 > rule with a sum fails it on `loop.c` with the file and line named. A gate that only ran on `t`
@@ -619,13 +621,16 @@ typing the paths ever would.
 > deciding whether it should be able to give one.
 >
 > ⏭️ **Next in 030**, in the order the spec gives them:
-> - **contract 7**: `FAKE` arcs excluded from arc-level queries but included in the conservation
->   solve. The decoder keeps the flags and the solve already uses them; what is missing is the
->   arc-level *query surface* (`tests_for_arc`), which is also contract 4's other half. Note
->   `t.gcno`'s `main` has two `FAKE` arcs to the exit block, so the fixture already discriminates.
-> - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list that have
->   no implementation yet. `tests_for_span` is where contract 12's rule becomes code rather than a
->   guard: it must go through `SourceMap::expansion_loc`.
+> - **§5's `tests_for_span` and `uncovered_lines`**, the two queries in the spec's list with no
+>   implementation. `tests_for_span` is where contract 12's rule becomes code rather than a guard:
+>   it must go through `SourceMap::expansion_loc`, and it is the first thing in this crate that
+>   needs `chiero-span`.
+> - **contract 13, `tests_for_block`**: the union over a CIR block's `gcov_lines`. The bridge to
+>   the rest of the system, and the join 020 §3 computed `gcov_lines` with `expansion_loc` for.
+> - **`FuncKey`**: `ArcCoverage` keys functions by *name* today, which is right for one object and
+>   wrong the moment two are merged — 030 §5 wants file, start line and the multiarch variant.
+>   Two `static` helpers of the same name in different files currently collide. Fix this before
+>   any multi-object ingest, not after.
 > - **contract 13**: `tests_for_block` over a CIR block's `gcov_lines` — the join to the rest of
 >   the system, and the first thing here that touches `chiero-cir`.
 > - **contract 11**: the memory budget, 1M lines × 5000 tests. `TestBitmap` is a sorted
