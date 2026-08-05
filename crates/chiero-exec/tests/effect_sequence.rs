@@ -91,7 +91,7 @@ fn an_unmodeled_extern_call_lands_in_the_effect_sequence() {
 #[test]
 fn the_effect_carries_the_arguments_that_distinguish_two_calls_to_one_function() {
     let module = m(TWO_CALLS);
-    let (r, mut a) = run(&module, "f");
+    let (r, a) = run(&module, "f");
     let terminated: Vec<&State> = r
         .states()
         .iter()

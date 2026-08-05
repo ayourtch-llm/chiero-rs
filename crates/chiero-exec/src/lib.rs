@@ -113,12 +113,39 @@ pub struct Effect {
     pub kind: EffectKind,
     pub span: Span,
     pub detail: String,
+    /// The call's arguments, in order — `None` for one the engine could not evaluate.
+    ///
+    /// **Not a detail, and not a string.** 041 §1.1 counts "calls to unmodeled or effectful
+    /// externs **with their arguments**" as observable, and its contract 6 swaps two calls
+    /// *to the same function*: a sequence of callee names is identical before and after, so
+    /// a comparison built on names alone would report those two programs equivalent while
+    /// looking like it had checked. The arguments are the only thing that distinguishes
+    /// them.
+    ///
+    /// Terms rather than numbers, because the interesting arguments are symbolic — the
+    /// question a relational comparison asks is whether two calls agree *for every input*,
+    /// which no concrete pair of values answers.
+    ///
+    /// Empty for effects that are not calls.
+    pub args: Vec<Option<Value>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EffectKind {
     /// A `Volatility::Volatile` store.
     VolatileStore,
+    /// A call to a function whose body chiero does not have and which is not marked pure —
+    /// 041 §1.1's "calls to unmodeled or effectful externs".
+    ///
+    /// **`Body::Declared` and not `no_side_effects`**, which is the conservative direction:
+    /// a function chiero has never seen the body of is assumed to do something.
+    /// Over-recording makes a safe refactor look unsafe; under-recording blesses a rewrite
+    /// that reordered I/O.
+    ///
+    /// A call chiero *can* see through is not here — whatever the body does is recorded by
+    /// the body, and an entry per call in the program would stop this being a record of
+    /// what is observable from outside, which is the only thing it is for.
+    Call,
 }
 
 /// What a model-fork branch carries besides its value: a report about the program, or a
@@ -3518,6 +3545,7 @@ impl<'m> Engine<'m> {
                         kind: EffectKind::VolatileStore,
                         span: i.span,
                         detail: format!("volatile store of {size} byte(s) to {p:?}"),
+                        args: Vec::new(),
                     });
                 }
                 let r = s.mem.write_term(a, p, t, size, Endian::Little, i.span);
@@ -3786,7 +3814,7 @@ impl<'m> Engine<'m> {
             span,
             Ev::Call {
                 callee: callee.clone(),
-                args: arg_vals,
+                args: arg_vals.clone(),
             },
         );
         let id = match callee {
@@ -3800,14 +3828,27 @@ impl<'m> Engine<'m> {
             s.give_up("call to an unknown function".into(), span);
             return;
         };
-        let (noreturn, body, name, ret_ty) = (
+        let (noreturn, body, name, ret_ty, pure) = (
             f.attrs.noreturn,
             f.body.clone(),
             f.name.clone(),
             f.ret.clone(),
+            f.attrs.no_side_effects,
         );
 
         if body == Body::Declared {
+            // **041 §1.1's third observable**, recorded before the call is modeled so that
+            // a model which faults cannot lose it: the outside world saw the call either
+            // way. The arguments travel with it because contract 6's rewrite swaps two
+            // calls to *one* function, where the name sequence does not change.
+            if !pure {
+                s.effects.push(Effect {
+                    kind: EffectKind::Call,
+                    span,
+                    detail: name.to_string(),
+                    args: arg_vals.clone(),
+                });
+            }
             // **The module's own definition always wins** — this branch is only reached
             // when there is no body. A registry that shadowed local definitions would
             // analyse a different program than the one on disk, most often exactly where
