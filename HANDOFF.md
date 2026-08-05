@@ -559,11 +559,17 @@ guard fires.
    where both earlier attempts failed. So the condition is that neither side has an
    extern-return input at all. `proven` stays false; 032 §3.1 still refuses to drop a test.
 
-   **§1.2's shared extern-return symbols are still not matched**, and that is what keeps the
-   operation from answering about most real functions. A sound key is the call's position in
-   the *effect sequence*; `InputOrigin::ExternReturn` does not carry that ordinal. **Adding it
-   is the highest-value next step in this file** — it unblocks every function with a
-   value-returning callee, and it is what the ordinal-by-name attempt was reaching for.
+   **§1.2's shared extern-return symbols are matched, on the third attempt** (2026-08-05).
+   `InputOrigin::ExternReturn`/`ModelReturn` carry `seq`, the call's index in the effect
+   sequence; **every** declared call is in that sequence, pure ones as `EffectKind::PureCall`,
+   so the ordinal counts one thing. `comparable_effects` then drops pure calls whose result
+   nobody bound — `pure` plus an unread return is genuinely unobservable — and the link key is
+   the position in *that* list, because dropping one from one side would shift every later raw
+   index. `compare_effects` runs before any return is linked, so position *n* is only used as a
+   key once the two runs' *n*th calls are shown to be the same callee with the same arguments.
+
+   A function with a value-returning callee is now answerable: `return p(x)` against
+   `return p(x + 0)` is `Equivalent`, `p(a) - p(b)` against `p(b) - p(a)` is not.
 3. **Pointer parameters and pointer returns**, which currently answer `Unknown` by name.
 4. **032 §3.1's `Prover` seam wired to it.** The blocker is not equivalence — it is that
    `Prover::prove_equivalent(&chiero_diff::Entity)` has to turn an entity into two runnable
