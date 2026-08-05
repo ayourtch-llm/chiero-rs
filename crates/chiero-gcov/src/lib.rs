@@ -91,6 +91,34 @@ impl CoverageIndex {
         &self.provenance
     }
 
+    /// Every file the index holds coverage for, in ingest order.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for (f, _) in self.line_counts.keys() {
+            if !seen.contains(&f.as_str()) {
+                seen.push(f);
+            }
+        }
+        seen.into_iter()
+    }
+
+    /// Merge one line's count, taking the **maximum** where a line already has one.
+    ///
+    /// Max rather than sum, for the reason `line_counts` in `native` records: several blocks on
+    /// one line report the largest, which is what gcov does and what `loop.c` measures.
+    pub(crate) fn add_line(&mut self, file: String, line: u32, count: u64) {
+        let slot = self.line_counts.entry((file, line)).or_insert(0);
+        *slot = (*slot).max(count);
+    }
+
+    pub(crate) fn set_detail(&mut self, d: CoverageDetail) {
+        self.detail = Some(d);
+    }
+
+    pub(crate) fn push_provenance(&mut self, r: IngestRecord) {
+        self.provenance.push(r);
+    }
+
     /// The gcc that produced the coverage, from the first ingest.
     pub fn gcc_version(&self) -> &str {
         self.provenance.first().map_or("", |p| &*p.gcc_version)
@@ -175,6 +203,11 @@ impl std::error::Error for IngestError {}
 /// `stem` is the **object** name — `t` for `t.o`, giving `t.gcov.json.gz`. Passing the source
 /// name is the first-day mistake 030 contract 3 pins, and it is an error naming the file that was
 /// looked for rather than an empty index.
+pub fn ingest_native(dir: &Path, stem: &str) -> Result<CoverageIndex, IngestError> {
+    native::ingest(dir, stem)
+}
+
+/// Ingest `gcov --json-format` output for one object stem.
 pub fn ingest_json(dir: &Path, stem: &str) -> Result<CoverageIndex, IngestError> {
     let mut idx = CoverageIndex::default();
     ingest_json_into(&mut idx, dir, stem)?;

@@ -494,3 +494,300 @@ pub fn read_notes(path: &Path) -> Result<Note, IngestError> {
     }
     Ok(Note { header, functions })
 }
+
+/// One function's counters, as the `.gcda` stores them.
+#[derive(Clone, Debug)]
+pub struct DataFunction {
+    pub ident: u32,
+    pub lineno_checksum: u32,
+    pub cfg_checksum: u32,
+    /// One `u64` per **non-tree** arc, in the order the notes list them.
+    pub counters: Vec<u64>,
+}
+
+/// A decoded `.gcda`.
+#[derive(Clone, Debug)]
+pub struct Data {
+    pub header: Header,
+    pub functions: Vec<DataFunction>,
+}
+
+/// Decode a `.gcda` into its per-function counters.
+pub fn read_data(path: &Path) -> Result<Data, IngestError> {
+    let header = header(path)?;
+    if header.kind != Kind::Data {
+        return Err(IngestError::Malformed {
+            path: path.to_path_buf(),
+            why: "expected a `.gcda`, found the notes".into(),
+        });
+    }
+    let short = |why: &str| IngestError::Malformed {
+        path: path.to_path_buf(),
+        why: format!("truncated record: {why}"),
+    };
+    let mut functions: Vec<DataFunction> = Vec::new();
+    for rec in records(path)? {
+        match rec.tag {
+            Tag::Function => {
+                let mut c = Cursor::new(&rec.payload);
+                functions.push(DataFunction {
+                    ident: c.u32().ok_or_else(|| short("function ident"))?,
+                    lineno_checksum: c.u32().ok_or_else(|| short("lineno checksum"))?,
+                    cfg_checksum: c.u32().ok_or_else(|| short("cfg checksum"))?,
+                    counters: Vec::new(),
+                });
+            }
+            Tag::CounterArcs => {
+                let Some(f) = functions.last_mut() else {
+                    return Err(IngestError::Malformed {
+                        path: path.to_path_buf(),
+                        why: format!("counters at {} before any function", rec.at),
+                    });
+                };
+                // **`u64` each, and a payload that is not a multiple of 8 is corrupt.** Rounding
+                // down would drop a counter and leave the flow solve short by exactly one arc,
+                // which is the shape of failure that looks like a decoder bug for days.
+                if rec.payload.len() % 8 != 0 {
+                    return Err(IngestError::Malformed {
+                        path: path.to_path_buf(),
+                        why: format!(
+                            "a counter record of {} bytes is not a whole number of counters",
+                            rec.payload.len()
+                        ),
+                    });
+                }
+                for k in (0..rec.payload.len()).step_by(8) {
+                    let b = &rec.payload[k..k + 8];
+                    f.counters.push(u64::from_le_bytes([
+                        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                    ]));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Data { header, functions })
+}
+
+/// Recover every arc's count from the non-tree counters (030 §4.1).
+///
+/// `.gcda` stores counters only for arcs **off** gcc's spanning tree — that omission is the space
+/// optimisation the format exists for. The rest follow from conservation: at every block other
+/// than entry and exit, in-flow equals out-flow, and the spanning-tree property guarantees that
+/// iterating to a fixpoint determines all of them.
+///
+/// **Iterated over every block until nothing changes, rather than in one pass.** A single sweep in
+/// block order gets most arcs right and silently leaves one wrong when a block's determining
+/// neighbour comes later — the Python that first took this measurement produced a negative count
+/// that way while every *block* total still looked correct.
+///
+/// Anything still unknown at the fixpoint is corrupt data and is reported, never guessed
+/// (contract 6).
+fn solve_arcs(f: &NoteFunction, counters: &[u64], path: &Path) -> Result<Vec<u64>, IngestError> {
+    let n = f.arcs.len();
+    let mut known: Vec<Option<u64>> = vec![None; n];
+    let mut next = 0usize;
+    for (i, a) in f.arcs.iter().enumerate() {
+        if !a.flags.contains(ArcFlags::ON_TREE) {
+            let Some(&c) = counters.get(next) else {
+                return Err(IngestError::Malformed {
+                    path: path.to_path_buf(),
+                    why: format!(
+                        "`{}` has more non-tree arcs than the {} counters recorded for it",
+                        f.name,
+                        counters.len()
+                    ),
+                });
+            };
+            known[i] = Some(c);
+            next += 1;
+        }
+    }
+    if next != counters.len() {
+        return Err(IngestError::Malformed {
+            path: path.to_path_buf(),
+            why: format!(
+                "`{}` has {next} non-tree arcs and {} counters; the notes and the data disagree \
+                 about its control-flow graph",
+                f.name,
+                counters.len()
+            ),
+        });
+    }
+
+    // Conservation, to a fixpoint.
+    loop {
+        let mut changed = false;
+        for b in 0..f.blocks {
+            for incoming in [true, false] {
+                let side: Vec<usize> = (0..n)
+                    .filter(|&i| {
+                        if incoming {
+                            f.arcs[i].to == b
+                        } else {
+                            f.arcs[i].from == b
+                        }
+                    })
+                    .collect();
+                let other: Vec<usize> = (0..n)
+                    .filter(|&i| {
+                        if incoming {
+                            f.arcs[i].from == b
+                        } else {
+                            f.arcs[i].to == b
+                        }
+                    })
+                    .collect();
+                // **The entry and exit blocks conserve nothing**: flow enters at one and leaves at
+                // the other, so a rule derived from their empty side would be arithmetic about
+                // nothing.
+                if side.is_empty() || other.is_empty() {
+                    continue;
+                }
+                let missing: Vec<usize> = side
+                    .iter()
+                    .copied()
+                    .filter(|&i| known[i].is_none())
+                    .collect();
+                if missing.len() != 1 || other.iter().any(|&i| known[i].is_none()) {
+                    continue;
+                }
+                let total: u64 = other.iter().map(|&i| known[i].unwrap()).sum();
+                let accounted: u64 = side
+                    .iter()
+                    .filter(|&&i| i != missing[0])
+                    .map(|&i| known[i].unwrap())
+                    .sum();
+                let Some(rest) = total.checked_sub(accounted) else {
+                    return Err(IngestError::Malformed {
+                        path: path.to_path_buf(),
+                        why: format!(
+                            "`{}` block {b}: the arcs into it already exceed the flow out of it, \
+                             so the counters do not belong to this graph",
+                            f.name
+                        ),
+                    });
+                };
+                known[missing[0]] = Some(rest);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    known
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.ok_or_else(|| IngestError::Malformed {
+                path: path.to_path_buf(),
+                why: format!(
+                    "`{}` arc {}->{} could not be determined; the spanning tree guarantees it \
+                     unless the data is corrupt",
+                    f.name, f.arcs[i].from, f.arcs[i].to
+                ),
+            })
+        })
+        .collect()
+}
+
+/// A block's execution count is the flow **into** it — except the entry block, which nothing
+/// flows into and whose count is the flow out.
+fn block_counts(f: &NoteFunction, arcs: &[u64]) -> Vec<u64> {
+    let mut counts = vec![0u64; f.blocks as usize];
+    for b in 0..f.blocks {
+        let (mut into, mut out) = (0u64, 0u64);
+        for (i, a) in f.arcs.iter().enumerate() {
+            if a.to == b {
+                into = into.saturating_add(arcs[i]);
+            }
+            if a.from == b {
+                out = out.saturating_add(arcs[i]);
+            }
+        }
+        counts[b as usize] = if b == 0 { out } else { into };
+    }
+    counts
+}
+
+/// The line counts one function contributes, as `(file, line, count)`.
+///
+/// **The maximum over the blocks on a line, not the sum.** Measured: `loop.c`'s five blocks on
+/// line 1 have counts `[1, 4, 5, 1, 1]` and gcov reports 5. Summing gives 12 and taking the first
+/// block gives 1, so the fixture refutes both — and `t.c`, whose blocks are all 1, cannot tell
+/// the three apart, which is why it is not the only fixture.
+fn line_counts(f: &NoteFunction, blocks: &[u64]) -> Vec<(String, u32, u64)> {
+    let mut out: IndexMap<(String, u32), u64> = IndexMap::new();
+    for bl in &f.lines {
+        let c = blocks.get(bl.block as usize).copied().unwrap_or(0);
+        for &line in &bl.lines {
+            let slot = out.entry((bl.file.clone(), line)).or_insert(0);
+            *slot = (*slot).max(c);
+        }
+    }
+    out.into_iter().map(|((f, l), c)| (f, l, c)).collect()
+}
+
+/// Ingest a `.gcno`/`.gcda` pair for one object stem (030 §4).
+///
+/// The counters are matched to the notes by `ident`; a function in one and not the other is
+/// corrupt rather than skippable, because a missing function is a set of lines that will read as
+/// "no test covered this".
+pub fn ingest(dir: &Path, stem: &str) -> Result<crate::CoverageIndex, IngestError> {
+    let notes_path = dir.join(format!("{stem}.gcno"));
+    let data_path = dir.join(format!("{stem}.gcda"));
+    for p in [&notes_path, &data_path] {
+        if !p.exists() {
+            return Err(IngestError::Missing { path: p.clone() });
+        }
+    }
+    // The stamp check first: every later failure would look like a decoder bug.
+    pair(&notes_path, &data_path)?;
+    let notes = read_notes(&notes_path)?;
+    let data = read_data(&data_path)?;
+
+    let mut idx = crate::CoverageIndex::default();
+    for f in &notes.functions {
+        let Some(d) = data.functions.iter().find(|d| d.ident == f.ident) else {
+            return Err(IngestError::Malformed {
+                path: data_path.clone(),
+                why: format!(
+                    "no counters for `{}` (ident {:#x}); a function missing from the data reads \
+                     downstream as lines no test covered",
+                    f.name, f.ident
+                ),
+            });
+        };
+        // **The checksums pair a *function*, as the stamp pairs a file.** Same name, same object,
+        // recompiled after an edit: the stamps match and this does not.
+        if d.cfg_checksum != f.cfg_checksum || d.lineno_checksum != f.lineno_checksum {
+            return Err(IngestError::Malformed {
+                path: data_path.clone(),
+                why: format!(
+                    "`{}` has checksums {:#x}/{:#x} in the notes and {:#x}/{:#x} in the data",
+                    f.name, f.lineno_checksum, f.cfg_checksum, d.lineno_checksum, d.cfg_checksum
+                ),
+            });
+        }
+        let arcs = solve_arcs(f, &d.counters, &data_path)?;
+        let blocks = block_counts(f, &arcs);
+        for (file, line, count) in line_counts(f, &blocks) {
+            idx.add_line(file, line, count);
+        }
+    }
+    idx.set_detail(CoverageDetail::LinesAndArcs);
+    idx.push_provenance(crate::IngestRecord {
+        artifact: notes_path,
+        gcc_version: {
+            let (maj, min) = notes.header.gcc_version().unwrap_or((0, 0));
+            format!("{maj}.{min}")
+        },
+        format_version: notes.header.version_tag(),
+    });
+    Ok(idx)
+}
+
+use crate::CoverageDetail;
+use indexmap::IndexMap;

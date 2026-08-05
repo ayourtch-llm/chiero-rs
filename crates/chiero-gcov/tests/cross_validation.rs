@@ -32,7 +32,10 @@ fn stems() -> Vec<String> {
         .filter_map(|e| {
             let p = e.ok()?.path();
             let stem = p.file_name()?.to_str()?.strip_suffix(".gcov.json.gz")?;
-            corpus().join(format!("{stem}.gcno")).exists().then(|| stem.to_string())
+            corpus()
+                .join(format!("{stem}.gcno"))
+                .exists()
+                .then(|| stem.to_string())
         })
         .collect();
     v.sort();
