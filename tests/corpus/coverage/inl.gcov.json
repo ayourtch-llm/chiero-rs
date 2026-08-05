@@ -1,0 +1,51 @@
+{
+ "current_working_directory": "/tmp/claude-1000/-home-ubuntu-rust-chiero-rs/66909b76-9140-4b55-94cc-f7adb56f7f97/scratchpad/cov5",
+ "data_file": "inl",
+ "files": [
+  {
+   "file": "inl.c",
+   "functions": [
+    {
+     "blocks": 6,
+     "blocks_executed": 6,
+     "demangled_name": "main",
+     "end_column": 73,
+     "end_line": 2,
+     "execution_count": 1,
+     "name": "main",
+     "start_column": 5,
+     "start_line": 2
+    }
+   ],
+   "lines": [
+    {
+     "branches": [],
+     "count": 3,
+     "function_name": "main",
+     "line_number": 2,
+     "unexecuted_block": false
+    }
+   ]
+  },
+  {
+   "file": "inl.h",
+   "functions": [],
+   "lines": [
+    {
+     "branches": [],
+     "count": 2,
+     "line_number": 3,
+     "unexecuted_block": false
+    },
+    {
+     "branches": [],
+     "count": 2,
+     "line_number": 4,
+     "unexecuted_block": false
+    }
+   ]
+  }
+ ],
+ "format_version": "1",
+ "gcc_version": "13.3.0"
+}

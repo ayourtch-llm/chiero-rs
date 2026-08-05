@@ -101,3 +101,27 @@ gcc's compression for a function that never executed. gcov agrees: line 1 has co
 is recorded-and-zero, not absent.
 
 None of the earlier fixtures could find this: in all of them, every function ran.
+
+## One block, two files (the `LINES` record's file groups)
+
+Also found at scale, in the same `vppinfra` build. A `LINES` record is a block followed by a
+*stream* of file groups, and one block can carry lines from **several** files:
+
+```text
+block 5  FILE mem.h  191   FILE bihash_all_vector.c  16   END
+```
+
+`inl.h` holds an `always_inline` function called twice from `inl.c`, which is enough to produce
+it at `-O0`:
+
+```text
+block 2  FILE inl.c 2   FILE inl.h 3 4   END
+block 4  FILE inl.c 2   FILE inl.h 3 4   END
+```
+
+A decoder that keeps one file per record attributes every line to whichever group came last —
+`mem.h:191` becomes `bihash_all_vector.c:191`, a line that may not even exist. That is worse than
+dropping it: a wrong file and line is a coverage answer about the wrong code.
+
+None of `t`, `loop`, `unrun` or `prog-a`/`prog-b` has a multi-file block, which is why this
+needed a real tree to surface.
