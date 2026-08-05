@@ -97,8 +97,10 @@ fn json_ingest_records_line_detail_only() {
 #[test]
 fn both_ingest_paths_merge_two_objects_the_same_way() {
     let mut native = chiero_gcov::CoverageIndex::default();
-    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(0), &corpus(), "loop").expect("once");
-    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(1), &corpus(), "loop").expect("twice");
+    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(0), &corpus(), "loop")
+        .expect("once");
+    chiero_gcov::ingest_native_as(&mut native, chiero_gcov::TestId(1), &corpus(), "loop")
+        .expect("twice");
 
     let mut json = chiero_gcov::CoverageIndex::default();
     chiero_gcov::ingest_json_into(&mut json, &corpus(), "loop").expect("once");
