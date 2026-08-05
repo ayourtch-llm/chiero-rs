@@ -20,6 +20,18 @@
 //!   defect. No pass here rewrites a bit-granular access at all, which is the only way to
 //!   be sure of this rather than merely careful about it.
 
+//! # `prove_equivalent`
+//!
+//! [041 §1](../../../docs/specs/041-optimization-analysis.md)'s adjudicator lives in
+//! [`equiv`]. It shares this crate with the passes because they are the same vertical —
+//! "chiero is bad at inventing rewrites and good at deciding whether two functions agree"
+//! — and it obeys the same rule they do: **it never writes to a source file** (contract 17).
+
+pub mod equiv;
+pub use equiv::{
+    Claim, Divergence, EquivCfg, Equivalence, Footprint, Replay, Unmatched, prove_equivalent,
+};
+
 use chiero_cir::{
     AllocaDecl, AllocaId, BinOp, Block, BlockId, CTy, Const, Function, Inst, InstKind, Module,
     Operand, RValue, Terminator, ValueId, Volatility,
@@ -31,6 +43,7 @@ use indexmap::IndexMap;
 /// A registry rather than a set of free functions someone remembers to call: 020
 /// contract 44 is written over *every* pass, and a test that names the ones it knows about
 /// stops covering the next one added — silently, and in the direction nobody looks.
+
 #[derive(Debug)]
 pub struct Pass {
     pub name: &'static str,
