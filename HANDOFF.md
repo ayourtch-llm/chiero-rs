@@ -730,14 +730,34 @@ typing the paths ever would.
 > separately parsed programs whose indices are unrelated — `FileId(3)` is a different file on each
 > side. Do not "fix" it back.
 >
-> ⏭️ **Next, in the order the spec gives them:**
+> ### 🏆 THE HEADLINE CONTRACT IS GREEN (1a815bd)
 >
-> - **§3's closure** — the fixpoint over calls, types, globals and includes, with the
->   `Justification` edge chain that makes a 400-test answer auditable. Every entity the direct
->   half finds is a `root` of it.
-> - **§3.2, the differentiating step**: `SourceMap::expansion_sites(m)` for a changed macro,
->   transitively. This is what coverage cannot do and the reason the preprocessor is ours —
->   contract 5 is labelled "the headline contract".
+> > 5. editing the body of a macro defined in a header and used in N functions, with no `.c` file
+> >    touched, yields an `ImpactSet` containing all N functions with `ExpandsMacro`
+> >    justifications — and the coverage-only baseline for the same diff yields the empty set.
+> >    **Both are asserted in the same test, so the difference is the artifact.**
+>
+> `crates/chiero-diff/tests/macro_closure.rs`. The baseline runs against the **committed gcov
+> fixture**, not a mock, so it cannot drift from what gcov does — and a second test asserts the
+> same lookup *does* find the test for `t.c:3`, so "coverage selects nothing" can never be a
+> broken lookup.
+>
+> **The macro edge is separate from the name edge, and has to be.** After preprocessing, `a()`
+> never writes `BUMP` anywhere — the token stream it is fingerprinted on holds the *expansion*.
+> Only `SourceMap::expansion_sites` knows, which is the whole of why this project owns a
+> preprocessor.
+>
+> Contracts 4, 6, 7, 8, 18, 19 are green with it: transitive closure three deep, the auditable
+> edge chain, and §3's fixpoint.
+>
+> ⚠️ **Two bugs this wave, both of the kind that pass tests.** The macro body fingerprint indexed
+> the *TU's* token stream by body position, so every macro got the file's first N tokens —
+> identical on both sides, making a body edit invisible — and the parameter-rename test passed
+> throughout because its *head* differed. And the coverage baseline first asked "does the index
+> have any line for `m.h`", which is **true**: `m.h` also holds a `static inline`, and inline
+> functions do get their own entries. Ask about the changed *line*.
+>
+> ⏭️ **Next, in the order the spec gives them:**
 > - **contract 15 and §4**: a file that fails to parse puts all of its entities in the set and
 >   marks the result `Partial`. `Program::parse` returns `None` today, which is honest but not
 >   yet the contract.
